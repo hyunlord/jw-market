@@ -263,6 +263,21 @@ def _lookup_source_value(lookup: dict[str, Any], source_column: str | None) -> A
     return None
 
 
+def _lookup_position_value(values: list[Any] | tuple[Any, ...], position: Any) -> Any:
+    """Return a 0-based physical column value for blank-header source columns."""
+    if position is None:
+        return None
+    try:
+        column_index = int(position)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid catalog position: {position!r}") from None
+    if column_index < 0:
+        raise ValueError(f"catalog position must be >= 0: {position!r}")
+    if column_index >= len(values):
+        return None
+    return values[column_index]
+
+
 def _extra_key(metadata_key: str) -> str:
     return metadata_key[len(STANDARD_PREFIX) :]
 
@@ -277,7 +292,10 @@ def apply_column_mapping(
     extras: dict[str, Any] = {}
     for target_column, spec in metadata.items():
         source_column = normalize_header(spec.get("source_column"))
-        value = _lookup_source_value(lookup, source_column)
+        if "position" in spec and spec.get("position") is not None:
+            value = _lookup_position_value(values, spec.get("position"))
+        else:
+            value = _lookup_source_value(lookup, source_column)
         if target_column.startswith(STANDARD_PREFIX):
             extras[_extra_key(target_column)] = to_jsonable(value)
         else:

@@ -201,8 +201,12 @@ def sheet_product_name(brand_row: dict[str, Any]) -> str:
     return f"{name} {strength}"
 
 
-def is_sheet_product_grain(brand_row: dict[str, Any]) -> bool:
+def is_sheet_product_grain(brand_row: dict[str, Any], context: dict[str, Any] | None = None) -> bool:
     """Rows with an explicit strength/pack are already product-grain in MI Master."""
+    if context and context.get("strategic_market_id") == "strategy_007":
+        # strategy_007 strength_pack is Phase 14 serving materialization from 성분용량;
+        # keep UBIST product expansion semantics from Step 14-6.
+        return False
     return clean_text(brand_row.get("strength_pack")) is not None
 
 
@@ -539,7 +543,7 @@ def load_strategic_product_records(
         join_keys: list[str] = []
         source_views: list[str] = []
 
-        if is_sheet_product_grain(brand_row):
+        if is_sheet_product_grain(brand_row, context):
             product_id = f"sp_{ml_index_from_brand_id(brand_id):03d}_{source_row_id_from_brand_id(brand_id):05d}_001"
             records.append(product_record_from_sheet_product(brand_row, product_id, timestamp))
             match_status = "sheet_product"

@@ -330,11 +330,11 @@ def strategic_fields(
     standard_values: dict[str, Any],
     extras: dict[str, Any],
 ) -> dict[str, str | None]:
-    class_value = first_present(standard_values.get("class_2"), standard_values.get("class"))
+    class_value = first_present(standard_values.get("class_2"), standard_values.get("class"), extras.get("class_raw"))
     return {
         "class": class_value,
         "molecule": first_present(standard_values.get("molecule")),
-        "dosage_form": first_present(standard_values.get("dosage_form")),
+        "dosage_form": first_present(standard_values.get("dosage_form"), extras.get("administration_route")),
         "strength_pack": first_present(standard_values.get("strength"), standard_values.get("pack_desc"), extras.get("product_pack")),
         "nhi_type": first_present(standard_values.get("nhi_type")),
         "ox_gx": first_present(standard_values.get("ox_gx"), extras.get("ox_gx"), extras.get("ox_gx_biosimilar")),
