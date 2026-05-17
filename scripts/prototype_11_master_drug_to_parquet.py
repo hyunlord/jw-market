@@ -48,7 +48,7 @@ DEFAULT_OUTPUT_FILE = Path("parquet/master_drug/master_drug.parquet")
 STANDARD_PREFIX = "drug_extra_json."
 EXPECTED_ROW_COUNT = 3912
 EXPECTED_EXCLUDED_ROWS = 583
-EXPECTED_SOURCE_TYPE_DISTRIBUTION = {"IQVIA": 904, "UBIST": 3008}
+EXPECTED_SOURCE_TYPE_DISTRIBUTION = {"IQVIA": 610, "UBIST": 3302}
 
 MASTER_DRUG_COLUMNS = (
     "strategic_market_id",
@@ -113,7 +113,7 @@ MARKET_SHEETS: tuple[MarketSheetConfig, ...] = (
     MarketSheetConfig("strategy_002", "제이클", 5, "IQVIA"),
     MarketSheetConfig("strategy_003", "가드렛 가드메트", 5, "IQVIA"),
     MarketSheetConfig("strategy_004", "타발리스", 5, "IQVIA"),
-    MarketSheetConfig("strategy_005", "시그마트", 5, "IQVIA"),
+    MarketSheetConfig("strategy_005", "시그마트", 5, "UBIST"),
     MarketSheetConfig("strategy_006", "리바로 리바로젯", 4, "UBIST"),
     MarketSheetConfig("strategy_007", "리바로페노", 4, "UBIST"),
     MarketSheetConfig("strategy_008", "리바로하이 리바로브이", 5, "UBIST"),
@@ -285,6 +285,62 @@ def apply_column_mapping(
     return standard, extras
 
 
+def _position_value(values: list[Any] | tuple[Any, ...], column_index: int) -> Any:
+    if column_index <= 0 or column_index > len(values):
+        return None
+    return values[column_index - 1]
+
+
+def _lookup_key(*values: Any) -> tuple[str, ...] | None:
+    key: list[str] = []
+    for value in values:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        key.append(text)
+    return tuple(key)
+
+
+def _single_lookup_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def explicit_lookup_join(data_rows: list[tuple[int, tuple[Any, ...]]]) -> dict[int, dict[str, Any]]:
+    """Return strategy_008 lookup-derived standard column overwrites."""
+    lookup1: dict[tuple[str, str], dict[str, Any]] = {}
+    for _, values in data_rows:
+        key = _lookup_key(_position_value(values, 17), _position_value(values, 18))
+        if key and key not in lookup1:
+            lookup1[key] = {
+                "molecule": _position_value(values, 19),
+                "molecule_disease_definition": _position_value(values, 20),
+                "composition_type": _position_value(values, 21),
+                "class": _position_value(values, 22),
+            }
+
+    lookup2: dict[str, Any] = {}
+    for _, values in data_rows:
+        key = _single_lookup_key(_position_value(values, 25))
+        if key and key not in lookup2:
+            lookup2[key] = _position_value(values, 26)
+
+    overrides: dict[int, dict[str, Any]] = {}
+    for source_row_id, values in data_rows:
+        left_key = _lookup_key(_position_value(values, 2), _position_value(values, 3))
+        if not left_key or left_key not in lookup1:
+            continue
+        row_override = dict(lookup1[left_key])
+        molecule_key = _single_lookup_key(row_override.get("molecule"))
+        row_override["class_2"] = lookup2.get(molecule_key) if molecule_key else None
+        overrides[source_row_id] = row_override
+    return overrides
+
+
 def load_column_metadata_catalog(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
     text = path.read_text(encoding="utf-8")
     catalog: dict[str, dict[str, dict[str, Any]]] = {}
@@ -344,10 +400,15 @@ def load_drug_records(
             )
             drug_index = 0
 
-            for source_row_id, values in enumerate(
+            row_items = list(enumerate(
                 ws.iter_rows(min_row=config.header_row + 1, values_only=True),
                 start=config.header_row + 1,
-            ):
+            ))
+            explicit_overrides = (
+                explicit_lookup_join(row_items) if config.strategic_market_id == "strategy_008" else {}
+            )
+
+            for source_row_id, values in row_items:
                 market_stats.raw_rows_scanned += 1
                 if is_empty_row(values):
                     market_stats.empty_rows += 1
@@ -358,6 +419,8 @@ def load_drug_records(
                     continue
 
                 standard_values, extras = apply_column_mapping(headers, values, metadata)
+                if source_row_id in explicit_overrides:
+                    standard_values.update(explicit_overrides[source_row_id])
                 drug_index += 1
                 market_stats.staging_rows += 1
 

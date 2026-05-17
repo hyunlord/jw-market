@@ -1,10 +1,10 @@
 """
 verify_dim_jw_products_parquet.py
 =================================
-Verify Phase 10 dim_jw_products Parquet.
+Verify Phase 12 Round 3 dim_jw_products Parquet.
 
 Small-data policy:
-- 26 rows total, so Phase 2 compares every row, not samples.
+- 25 rows total, so Phase 2 compares every row, not samples.
 - Expected rows are regenerated from prototype_12_dim_jw_products_to_parquet.py.
 - ingested_at is checked for format only, not value equality.
 
@@ -15,7 +15,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from collections import Counter
@@ -137,7 +136,7 @@ def phase2_full_row_compare(
 ) -> tuple[int, int]:
     print()
     print("=" * 72)
-    print("[Phase 2] 26 row 전수 7-column 비교")
+    print("[Phase 2] 25 row 전수 7-column 비교")
     print("=" * 72)
 
     expected_by_key = {natural_key(row): normalize_for_compare(row) for row in expected_rows}
@@ -217,7 +216,6 @@ def phase4_source_corroboration(
     print("=" * 72)
 
     market_rows = load_parquet_rows(market_definition_file)
-    qa_rows = load_parquet_rows(qa_file)
     failures = []
 
     if len(market_rows) != 16:
@@ -232,37 +230,32 @@ def phase4_source_corroboration(
         for token in market_name.split():
             sheet_tokens.append((record["strategic_market_id"], token))
 
-    qa_0011 = [row for row in qa_rows if row.get("qa_id") == "qa_0011"]
-    if len(qa_0011) != 1:
-        failures.append(f"qa_0011 expected once, found={len(qa_0011)}")
-    else:
-        qa_payload = json.dumps(qa_0011[0], ensure_ascii=False, sort_keys=True)
-        if qa_0011[0].get("strategic_market_id") != "strategy_015":
-            failures.append("qa_0011 strategic_market_id is not strategy_015")
-        if "하모닐란" not in qa_payload:
-            failures.append("qa_0011 does not contain 하모닐란")
-
     parquet_keys = {(row["strategic_market_id"], row["jw_product_name"]) for row in parquet_rows}
-    sheet_token_keys = set(sheet_tokens)
-    harmonilan_key = ("strategy_015", "하모닐란")
+    expected_sheet_token_keys = {
+        (market_id, "위너프에이플러스") if market_id == "strategy_014" and token == "위너프A+"
+        else (market_id, token)
+        for market_id, token in sheet_tokens
+    }
 
     if len(sheet_tokens) != 25:
         failures.append(f"sheet split token count expected=25 actual={len(sheet_tokens)}")
-    if len(sheet_token_keys) != 25:
-        failures.append(f"sheet split token unique expected=25 actual={len(sheet_token_keys)}")
-    if not sheet_token_keys.issubset(parquet_keys):
-        failures.append(f"sheet split tokens missing from parquet: {sorted(sheet_token_keys - parquet_keys)}")
-    if harmonilan_key not in parquet_keys:
-        failures.append("하모닐란 override row missing from parquet")
-    if len(sheet_token_keys | {harmonilan_key}) != EXPECTED_ROW_COUNT:
-        failures.append("25 sheet split + 1 하모닐란 override != 26")
+    if len(expected_sheet_token_keys) != 25:
+        failures.append(f"sheet split token unique expected=25 actual={len(expected_sheet_token_keys)}")
+    if expected_sheet_token_keys != parquet_keys:
+        failures.append(
+            f"sheet-name brand set mismatch: "
+            f"missing={sorted(expected_sheet_token_keys - parquet_keys)}, "
+            f"extra={sorted(parquet_keys - expected_sheet_token_keys)}"
+        )
+    if ("strategy_015", "하모닐란") in parquet_keys:
+        failures.append("하모닐란 override row must be removed in Phase 12")
+    if ("strategy_014", "위너프A+") in parquet_keys:
+        failures.append("위너프A+ token must be renamed to 위너프에이플러스")
 
     print(f"  market_definition rows: {len(market_rows)}")
     print(f"  sheet split tokens:     {len(sheet_tokens)}")
-    print(f"  unique sheet tokens:    {len(sheet_token_keys)}")
-    print(f"  qa_0011 rows:           {len(qa_0011)}")
-    print(f"  하모닐란 in qa_0011:     {'yes' if qa_0011 and '하모닐란' in json.dumps(qa_0011[0], ensure_ascii=False) else 'no'}")
-    print(f"  final row formula:      25 + 1 = {len(sheet_token_keys | {harmonilan_key})}")
+    print(f"  unique final tokens:    {len(expected_sheet_token_keys)}")
+    print("  final row formula:      25 sheet-name brands, no Q&A override")
 
     if failures:
         for failure in failures:
@@ -355,7 +348,7 @@ def main() -> None:
 
     print("  result: PASS")
     print()
-    print("Phase 10 Step E 완료. 검증 결과 검토 필요.")
+    print("Phase 12 Round 3 dim_jw_products verification complete.")
 
 
 if __name__ == "__main__":

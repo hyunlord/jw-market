@@ -3,10 +3,12 @@ prototype_12_dim_jw_products_to_parquet.py
 ==========================================
 Phase 10 dim_jw_products -> Parquet.
 
-Phase 10 policy:
+Phase 12 Round 3 policy:
 - This table is newly defined by the prototype track.
-- Final source-of-truth is master_market_definition.market_name split plus
-  the strategy_015 Q&A/description override for 하모닐란.
+- Final source-of-truth is master_market_definition.market_name split only.
+- The Phase 10 하모닐란 Q&A override is removed because dim_jw_products
+  stores sheet-name JW product brands only.
+- The strategy_014 sheet token 위너프A+ is materialized as 위너프에이플러스.
 - master_drug fuzzy matching / alias resolution is intentionally out of scope
   for this prototype table. The final schema has 7 columns and no
   master_drug_indexes_json column.
@@ -38,7 +40,7 @@ DEFAULT_MARKET_DEFINITION_FILE = Path(
 DEFAULT_QA_FILE = Path("parquet/master_qa/master_qa.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_jw_products/dim_jw_products.parquet")
 
-EXPECTED_ROW_COUNT = 26
+EXPECTED_ROW_COUNT = 25
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
 
 DIM_JW_PRODUCTS_COLUMNS = (
@@ -66,13 +68,13 @@ EXPECTED_FINAL_ROWS = (
         "strategy_008",
         "리바로하이 리바로브이",
         "리바로하이",
-        "sheet split / qa_0006 announces future registration: 트루베타, 텔로핀 (UBIST)",
+        "sheet split",
     ),
     (
         "strategy_008",
         "리바로하이 리바로브이",
         "리바로브이",
-        "sheet split / qa_0006 announces future registration: 트루베타, 텔로핀 (UBIST)",
+        "sheet split",
     ),
     ("strategy_009", "트루패스 피나스타 제이다트", "트루패스", "sheet split"),
     ("strategy_009", "트루패스 피나스타 제이다트", "피나스타", "sheet split"),
@@ -87,16 +89,10 @@ EXPECTED_FINAL_ROWS = (
     (
         "strategy_014",
         "위너프 위너프A+",
-        "위너프A+",
-        "sheet split (master raw alias candidates: 위너프에이플러스, 위너프에이플러스페리)",
+        "위너프에이플러스",
+        "sheet split (renamed from 위너프A+)",
     ),
     ("strategy_015", "엔커버", "엔커버", "sheet split"),
-    (
-        "strategy_015",
-        "엔커버",
-        "하모닐란",
-        "Q&A qa_0011 override + description (하모닐란과 엔커버 2개)",
-    ),
     ("strategy_016", "플라주오피", "플라주오피", "sheet split"),
 )
 
@@ -115,7 +111,7 @@ EXPECTED_MARKET_DISTRIBUTION = {
     "strategy_012": 2,
     "strategy_013": 1,
     "strategy_014": 2,
-    "strategy_015": 2,
+    "strategy_015": 1,
     "strategy_016": 1,
 }
 
@@ -138,10 +134,8 @@ def jw_product_id(strategic_market_id: str, jw_product_name: str) -> str:
 def source_note_for(strategic_market_id: str, jw_product_name: str) -> str:
     if strategic_market_id == "strategy_003":
         return "sheet split (molecule market)"
-    if strategic_market_id == "strategy_008":
-        return "sheet split / qa_0006 announces future registration: 트루베타, 텔로핀 (UBIST)"
-    if strategic_market_id == "strategy_014" and jw_product_name == "위너프A+":
-        return "sheet split (master raw alias candidates: 위너프에이플러스, 위너프에이플러스페리)"
+    if strategic_market_id == "strategy_014" and jw_product_name == "위너프에이플러스":
+        return "sheet split (renamed from 위너프A+)"
     return "sheet split"
 
 
@@ -159,18 +153,6 @@ def _source_file_version_from_market_definition(
             f"expected={EXPECTED_SOURCE_FILE_VERSION!r}, actual={sorted(versions)}"
         )
     return EXPECTED_SOURCE_FILE_VERSION
-
-
-def _validate_qa_reference(qa_records: list[dict[str, Any]]) -> None:
-    qa_0011 = [record for record in qa_records if record.get("qa_id") == "qa_0011"]
-    if len(qa_0011) != 1:
-        raise ValueError(f"qa_0011 reference must exist exactly once, found={len(qa_0011)}")
-    record = qa_0011[0]
-    if record.get("strategic_market_id") != "strategy_015":
-        raise ValueError(
-            f"qa_0011 strategic_market_id mismatch: expected=strategy_015, "
-            f"actual={record.get('strategic_market_id')}"
-        )
 
 
 def blank_record() -> dict[str, str | None]:
@@ -202,12 +184,10 @@ def make_record(
 
 def load_dim_jw_product_records(
     market_definition_path: Path,
-    qa_path: Path,
+    qa_path: Path | None = None,
     ingested_at: str | None = None,
 ) -> list[dict[str, str | None]]:
     market_definition_records = read_parquet_records(market_definition_path)
-    qa_records = read_parquet_records(qa_path)
-    _validate_qa_reference(qa_records)
     source_file_version = _source_file_version_from_market_definition(market_definition_records)
     timestamp = ingested_at or utc_now_text()
 
@@ -232,23 +212,15 @@ def load_dim_jw_product_records(
         if not market_name:
             raise ValueError(f"empty market_name: {strategic_market_id}")
         for token in market_name.split():
+            jw_product_name = "위너프에이플러스" if (
+                strategic_market_id == "strategy_014" and token == "위너프A+"
+            ) else token
             records.append(
                 make_record(
                     strategic_market_id,
                     market_name,
-                    token,
-                    source_note_for(strategic_market_id, token),
-                    source_file_version,
-                    timestamp,
-                )
-            )
-        if strategic_market_id == "strategy_015":
-            records.append(
-                make_record(
-                    strategic_market_id,
-                    market_name,
-                    "하모닐란",
-                    "Q&A qa_0011 override + description (하모닐란과 엔커버 2개)",
+                    jw_product_name,
+                    source_note_for(strategic_market_id, jw_product_name),
                     source_file_version,
                     timestamp,
                 )
@@ -314,7 +286,7 @@ def validate_records(records: list[dict[str, Any]]) -> None:
     ]
     if actual_without_run_fields != expected_rows:
         raise ValueError(
-            f"final 26-row list mismatch: expected={expected_rows}, "
+            f"final 25-row list mismatch: expected={expected_rows}, "
             f"actual={actual_without_run_fields}"
         )
 
@@ -325,15 +297,20 @@ def validate_records(records: list[dict[str, Any]]) -> None:
             f"actual={market_distribution}"
         )
 
+    if any(record["jw_product_name"] == "하모닐란" for record in records):
+        raise ValueError("하모닐란 row must not exist in Phase 12 dim_jw_products")
+    if any(record["jw_product_name"] == "위너프A+" for record in records):
+        raise ValueError("위너프A+ token must be renamed to 위너프에이플러스")
+
     winnerf_aplus = [
         record for record in records
         if record["strategic_market_id"] == "strategy_014"
-        and record["jw_product_name"] == "위너프A+"
+        and record["jw_product_name"] == "위너프에이플러스"
     ]
     if len(winnerf_aplus) != 1:
-        raise ValueError(f"위너프A+ row must exist exactly once, found={len(winnerf_aplus)}")
-    if "위너프에이플러스" not in str(winnerf_aplus[0].get("source_note")):
-        raise ValueError("위너프A+ source_note must include raw alias candidates")
+        raise ValueError(f"위너프에이플러스 row must exist exactly once, found={len(winnerf_aplus)}")
+    if "renamed from 위너프A+" not in str(winnerf_aplus[0].get("source_note")):
+        raise ValueError("위너프에이플러스 source_note must include rename evidence")
 
 
 def write_parquet(records: list[dict[str, Any]], output_file: Path) -> None:
@@ -357,7 +334,7 @@ def main() -> None:
     records = load_dim_jw_product_records(args.market_definition, args.qa)
     write_parquet(records, args.output)
 
-    print("prototype Phase 10 dim_jw_products -> Parquet")
+    print("prototype Phase 12 Round 3 dim_jw_products patch -> Parquet")
     print(f"rows={len(records)}")
     print(f"columns={len(DIM_JW_PRODUCTS_COLUMNS)}")
     print(f"output={args.output}")
