@@ -1,0 +1,6 @@
+virtual column insert/select/delete test
+inserted_id=1
+selected={"id": 1, "period_yyyymm": "2025.07", "period_yyyy": 2025, "period_mm": 7}
+cleanup_remaining_test_rows=0
+expected period_yyyy=2025, period_mm=7
+status=PASS
