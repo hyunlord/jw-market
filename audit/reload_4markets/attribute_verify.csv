@@ -1,0 +1,20 @@
+check,expected,actual,status
+ml_002 수프렙미니에스 class,Sulfate 2종,Sulfate 2종,PASS
+ml_006 에젯토 SKU 3종,"{""에젯토 정 10/10mg"": 1, ""에젯토 정 10/20mg"": 1, ""에젯토 정 10/40mg"": 1}","{""에젯토 정 10/10mg"": 1, ""에젯토 정 10/20mg"": 1, ""에젯토 정 10/40mg"": 1}",PASS
+ml_010 듀라스틴 molecule,PEGFILGRASTIM,PEGFILGRASTIM,PASS
+ml_012 sb_012_00006 strength_pack,100,100,PASS
+ml_012 sb_012_00007 strength_pack,200,200,PASS
+ml_012 sb_012_00008 strength_pack,100,100,PASS
+ml_012 sb_012_00009 strength_pack,500,500,PASS
+ml_012 sb_012_00010 strength_pack,1000,1000,PASS
+ml_012 sb_012_00011 strength_pack,100,100,PASS
+ml_012 sb_012_00012 strength_pack,100,100,PASS
+ml_012 sb_012_00013 strength_pack,100,100,PASS
+ml_012 sb_012_00014 strength_pack,100,100,PASS
+ml_012 sb_012_00015 strength_pack,200,200,PASS
+ml_012 sb_012_00016 strength_pack,100,100,PASS
+ml_012 sb_012_00017 strength_pack,6.75,6.75,PASS
+ml_012 sb_012_00018 strength_pack,200,200,PASS
+ml_012 sb_012_00019 strength_pack,500,500,PASS
+ml_012 sb_012_00020 strength_pack,100,100,PASS
+ml_012 sb_012_00021 strength_pack,200,200,PASS
