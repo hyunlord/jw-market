@@ -1,0 +1,4 @@
+migration_id	status	description
+000	applied	migration state
+001	applied	layer1 raw tables
+003	applied	layer1 hybrid split

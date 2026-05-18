@@ -4,3 +4,7 @@ outputs/
 __pycache__/
 *.pyc
 .DS_Store
+parquet/ubist/*.parquet
+parquet/ubist/year=*/
+parquet/ubist.__tmp_*/
+parquet/ubist.__backup_*/
