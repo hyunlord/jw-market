@@ -8,3 +8,4 @@ parquet/ubist/*.parquet
 parquet/ubist/year=*/
 parquet/ubist.__tmp_*/
 parquet/ubist.__backup_*/
+parquet/enriched/

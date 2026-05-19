@@ -1,0 +1,35 @@
+[2026-05-19T13:18:04+09:00] enriching ml_001 dry_run=False
+  rows=16,218,116 matched_products=1,411/1,411 (100.00%) sources={'ubist': 16218116}
+[2026-05-19T13:18:08+09:00] enriching ml_002 dry_run=False
+  rows=23,723 matched_products=186/186 (100.00%) sources={'nsa': 12563, 'chso': 11160}
+[2026-05-19T13:18:50+09:00] enriching ml_003 dry_run=False
+  rows=128,340 matched_products=2,139/2,139 (100.00%) sources={'ubist': 0, 'nsa': 0, 'chso': 128340}
+[2026-05-19T13:19:34+09:00] enriching ml_004 dry_run=False
+  rows=520 matched_products=8/10 (80.00%) sources={'nsa': 40, 'chso': 480}
+[2026-05-19T13:20:16+09:00] enriching ml_005 dry_run=False
+  rows=9,097,413 matched_products=808/808 (100.00%) sources={'ubist': 9097413}
+[2026-05-19T13:20:22+09:00] enriching ml_006 dry_run=False
+  rows=6,466,168 matched_products=1,127/1,127 (100.00%) sources={'ubist': 6466168}
+[2026-05-19T13:20:25+09:00] enriching ml_007 dry_run=False
+  rows=7,465,124 matched_products=982/986 (99.59%) sources={'ubist': 7465124}
+[2026-05-19T13:20:28+09:00] enriching ml_008 dry_run=False
+  rows=27,601,445 matched_products=3,547/3,553 (99.83%) sources={'ubist': 27601445}
+[2026-05-19T13:20:34+09:00] enriching ml_009 dry_run=False
+  rows=6,196,701 matched_products=1,059/1,060 (99.91%) sources={'ubist': 6196701}
+[2026-05-19T13:20:38+09:00] enriching ml_010 dry_run=False
+  rows=6,066 matched_products=20/20 (100.00%) sources={'nsa': 4866, 'chso': 1200}
+[2026-05-19T13:21:20+09:00] enriching ml_011 dry_run=False
+  rows=10,194 matched_products=60/60 (100.00%) sources={'nsa': 6594, 'chso': 3600}
+[2026-05-19T13:22:02+09:00] enriching ml_012 dry_run=False
+  rows=17,133 matched_products=76/76 (100.00%) sources={'nsa': 8231, 'chso': 8902}
+[2026-05-19T13:22:44+09:00] enriching ml_013 dry_run=False
+  rows=11,469 matched_products=42/42 (100.00%) sources={'nsa': 9009, 'chso': 2460}
+[2026-05-19T13:23:25+09:00] enriching ml_014 dry_run=False
+  rows=48,433 matched_products=331/331 (100.00%) sources={'nsa': 28573, 'chso': 19860}
+[2026-05-19T13:24:07+09:00] enriching ml_015 dry_run=False
+  rows=1,406 matched_products=4/4 (100.00%) sources={'ubist': 0, 'nsa': 1166, 'chso': 240}
+[2026-05-19T13:24:50+09:00] enriching ml_016 dry_run=False
+  rows=6,573 matched_products=52/52 (100.00%) sources={'nsa': 3453, 'chso': 3120}
+real 449.26
+user 564.19
+sys 47.76
