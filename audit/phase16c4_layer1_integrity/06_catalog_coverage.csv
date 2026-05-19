@@ -1,0 +1,17 @@
+ml_id,ml_name,data_source,atc_codes,target_iqvia,strategic_brands,strategic_products,strategic_products_with_bracket_code,strategic_products_bracket_code_in_ubist,ubist_atc_rows,ubist_atc_unique_drugs,nsa_atc_rows_all_channels,nsa_atc_target_channel_rows,nsa_unique_product_pack_keys_target,direct_ubist_drug_code_column_in_strategic_product,direct_nsa_audit_code_column_in_strategic_product
+ml_001,라베칸 라베칸듀오,ubist,A02B2,,358,1411,1411,1411,0,0,52598,0,0,no,no
+ml_002,제이클,iqvia,A06B2,"KHPA, KCPA, KPA",45,186,0,0,0,0,1926,1926,65,no,no
+ml_003,가드렛 가드메트,both,"A10N1, A10N3","KHPA, KCPA, KPA",82,2139,0,0,1950907,694,30495,30495,1298,no,no
+ml_004,타발리스,iqvia,B02E9,"KHPA, KCPA, KPA",10,10,0,0,0,0,20,20,4,no,no
+ml_005,시그마트,ubist,C01D0,,294,808,808,808,0,0,3429,0,0,no,no
+ml_006,리바로 리바로젯,ubist,C10A1,,1095,1127,79,79,3780217,756,78943,0,0,no,no
+ml_007,리바로페노,ubist,"C10A1, C10A3",,611,986,983,983,3786397,757,79048,0,0,no,no
+ml_008,리바로하이 리바로브이,ubist,"C10A1, C09B3",,1081,3553,3547,3547,3780217,756,79237,0,0,no,no
+ml_009,트루패스 피나스타 제이다트,ubist,G04C0,,406,1060,1059,1059,0,0,0,0,0,no,no
+ml_010,뉴트로진 모빌리아,iqvia,L03A1,"KHPA, KCPA, KPA",10,20,0,0,0,0,1192,1192,34,no,no
+ml_011,악템라,iqvia,L04B0,"KHPA, KCPA, KPA",26,60,0,0,0,0,1927,1927,48,no,no
+ml_012,페린젝트 베노훼럼,iqvia,B03A1,"KHPA, KCPA, KPA",76,76,0,0,0,0,3816,3816,82,no,no
+ml_013,헴리브라,iqvia,"B02D1, B02D2","KHPA, KCPA, KPA",14,42,0,0,0,0,3363,3363,89,no,no
+ml_014,위너프 위너프에이플러스,iqvia,"K01D2, K01E0","KHPA, KCPA, KPA",331,331,0,0,0,0,4607,4607,140,no,no
+ml_015,엔커버,both,V06D0,"KHPA, KCPA, KPA",4,4,0,0,0,0,583,583,10,no,no
+ml_016,플라주오피,iqvia,"K01A3, K01A1","KHPA, KCPA, KPA",52,52,0,0,0,0,1633,1633,44,no,no

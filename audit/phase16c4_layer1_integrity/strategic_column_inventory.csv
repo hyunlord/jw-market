@@ -1,0 +1,34 @@
+table,column,dtype,non_null,null,sample_values
+strategic_brand,brand_id,str,4495,0,sb_001_00006 | sb_001_00007 | sb_001_00008 | sb_001_00009 | sb_001_00010
+strategic_brand,name,str,4495,0,에소카보 | 에소카 | 에소피드 | 란소 듀오 | 란스타
+strategic_brand,merge_name,str,4495,0,에소카보 | 에소카 | 에소피드 | 란소 듀오 | 란스타
+strategic_brand,ml_id,str,4495,0,ml_001 | ml_002 | ml_003 | ml_004 | ml_005
+strategic_brand,cd_id,str,2379,2116,cd_001 | cd_002 | cd_003 | cd_004 | cd_005
+strategic_brand,class,str,3902,593,PPI/제산제 FDC | PPI | P-CAB | 기타 | SPMC
+strategic_brand,molecule,str,4489,6,Esomeprazole | Lansoprazole | Dexlansoprazole | Fexuprazan | Ilaprazole
+strategic_brand,dosage_form,str,296,4199,산제 | 액제 | 경구 | Oral | Inj
+strategic_brand,strength_pack,str,2125,2370,C.TAB FILM 20MG 15 | C.TAB FILM 20MG 30 | C.TAB FILM 25MG 28 | C.TAB FILM 50MG 28 | V.SC DRY 0.25MG
+strategic_brand,nhi_type,str,530,3965,NON-NHI | NHI
+strategic_brand,ox_gx,str,31,4464,PTV Ox | Ox | Biosimilar | Gx
+strategic_brand,fish_oil,str,85,4410,fish | non-fish
+strategic_brand,판매사,str,3842,653,경동제약 | 녹십자 | 유한양행 | 구주제약 | 명문제약
+strategic_brand,제조사,str,4407,88,경동제약 | 녹십자 | 유한양행 | 구주제약 | 명문제약
+strategic_brand,source_file_version,str,4495,0,MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx | MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx
+strategic_brand,ingested_at,datetime64[us],4495,0,2026-05-17 07:07:25.045131 | 2026-05-18 16:21:40.000000
+strategic_product,product_id,str,11865,0,sp_001_00006_001 | sp_001_00006_002 | sp_001_00006_003 | sp_001_00006_004 | sp_001_00006_005
+strategic_product,name,str,11865,0,에소카보 정 20/600mg | 에소카보 정 40/600mg | 에소카 정 20/600mg | 에소카 정 40/600mg | 에소피드 정 20/600mg
+strategic_product,merge_name,str,11865,0,에소카보 | 에소카 | 에소피드 | 란소 듀오 | 란스타
+strategic_product,brand_id,str,11865,0,sb_001_00006 | sb_001_00007 | sb_001_00008 | sb_001_00009 | sb_001_00010
+strategic_product,ml_id,str,11865,0,ml_001 | ml_002 | ml_003 | ml_004 | ml_005
+strategic_product,cd_id,str,4822,7043,cd_001 | cd_002 | cd_003 | cd_004 | cd_005
+strategic_product,class,str,10978,887,PPI/제산제 FDC | PPI | P-CAB | 기타 | SPMC
+strategic_product,molecule,str,11859,6,"calcium carbonate p.p.t.,  esomeprazole magnesium trihydrate | calcium carbonate p.p.t.,  esomeprazole magnesium | calcium carbonate p.p.t.,  lansoprazole | lansoprazole,  precipitated calcium carbonate | dexlansoprazole"
+strategic_product,dosage_form,str,10439,1426,"정제, 저작정(TB) | 서방캡슐제(CR) | 경질캡슐제(CH) | 장용정제(TE) | 장용캡슐제(CE)"
+strategic_product,strength_pack,str,11841,24,"calcium carbonate p.p.t. 600㎎,  esomeprazole magnesium trihydrate 22.3㎎ (20㎎ as esomeprazole) [694400ATB] | calcium carbonate p.p.t. 600㎎,  esomeprazole magnesium 44.5㎎ (40㎎ as esomeprazole) [694500ATB] | calcium carbonate p.p.t. 600㎎,  lansoprazole 30㎎ [718400ATB] | lansoprazole 15㎎,  precipitated calcium carbonate 600㎎ [740900ATB] | dexlansoprazole 60mg [621902ACR]"
+strategic_product,nhi_type,str,10727,1138,급여 | 비급여 | 본인부담 | NON-NHI | NHI
+strategic_product,ox_gx,str,65,11800,PTV Ox | Ox | Biosimilar | Gx
+strategic_product,fish_oil,str,85,11780,fish | non-fish
+strategic_product,판매사,str,8942,2923,경동제약 | 녹십자 | 유한양행 | 구주제약 | 명문제약
+strategic_product,제조사,str,11854,11,경동제약 | 녹십자 | 유한양행 | 구주제약 | 명문제약
+strategic_product,source_file_version,str,11865,0,MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx | MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx
+strategic_product,ingested_at,datetime64[us],11865,0,2026-05-17 07:09:02.212513 | 2026-05-18 16:23:58.000000
