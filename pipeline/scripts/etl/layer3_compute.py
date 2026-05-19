@@ -50,6 +50,35 @@ KST = ZoneInfo("Asia/Seoul")
 SOURCES = ("ubist", "nsa", "chso", "csd")
 COMPUTATION_VERSION = "v1"
 GROWTH_WARNING_THRESHOLD = 5.0
+JW_TARGET_BRAND_IDS = {
+    # Phase 12 dim_jw_products 25-row sheet-token reference, mapped to
+    # representative strategic_brand.brand_id values for Layer 3.
+    "sb_001_00344",  # ml_001 라베칸
+    "sb_001_00357",  # ml_001 라베칸듀오
+    "sb_002_00047",  # ml_002 제이클
+    "sb_003_00020",  # ml_003 가드렛
+    "sb_003_00007",  # ml_003 가드메트
+    "sb_004_00013",  # ml_004 타발리스
+    "sb_005_00021",  # ml_005 시그마트
+    "sb_006_00771",  # ml_006 리바로
+    "sb_006_00219",  # ml_006 리바로젯
+    "sb_007_00499",  # ml_007 리바로페노
+    "sb_008_00972",  # ml_008 리바로하이
+    "sb_008_01033",  # ml_008 리바로브이
+    "sb_009_00036",  # ml_009 트루패스
+    "sb_009_00305",  # ml_009 피나스타
+    "sb_009_00221",  # ml_009 제이다트
+    "sb_010_00009",  # ml_010 뉴트로진
+    "sb_010_00015",  # ml_010 모빌리아
+    "sb_011_00025",  # ml_011 악템라
+    "sb_012_00009",  # ml_012 페린젝트
+    "sb_012_00012",  # ml_012 베노훼럼
+    "sb_013_00009",  # ml_013 헴리브라
+    "sb_014_00073",  # ml_014 위너프
+    "sb_014_00012",  # ml_014 위너프에이플러스
+    "sb_015_00010",  # ml_015 엔커버
+    "sb_016_00006",  # ml_016 플라주오피
+}
 
 OUTPUT_COLUMNS = [
     "ml_id",
@@ -87,9 +116,8 @@ def clean_text(value: Any) -> str:
     return text
 
 
-def is_jw_company(*values: Any) -> bool:
-    text = " ".join(clean_text(value) for value in values)
-    return any(token in text for token in ("JW", "중외", "제이더블유"))
+def is_jw_target_brand_id(brand_id: Any) -> bool:
+    return clean_text(brand_id) in JW_TARGET_BRAND_IDS
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -137,10 +165,7 @@ def load_brand_bridge(ml_id: str) -> pd.DataFrame:
     sb = sb[sb["ml_id"] == ml_id].copy()
 
     sb["brand_name"] = sb["name"].fillna(sb["merge_name"]).fillna("")
-    sb["is_jw"] = [
-        is_jw_company(row.get("판매사"), row.get("제조사"))
-        for row in sb[["판매사", "제조사"]].to_dict("records")
-    ]
+    sb["is_jw"] = sb["brand_id"].map(is_jw_target_brand_id)
 
     bridge = sp[["product_id", "brand_id"]].merge(
         sb[["brand_id", "brand_name", "is_jw"]],
@@ -671,7 +696,7 @@ def write_dry_run_artifacts(df: pd.DataFrame, stats: dict[str, Any], validation:
         "# 05. Script Design Notes",
         "",
         "- DuckDB reads Layer 2 parquet and performs brand-level aggregation before pandas growth/MAT calculations.",
-        "- `is_jw` is derived from strategic_brand `판매사` / `제조사` containing `JW`, `중외`, or `제이더블유` because no source `is_jw` column exists.",
+        "- `is_jw` is derived from the Phase 12 dim_jw_products 25-row target list mapped to representative strategic_brand.brand_id values.",
         "- MAT is calculated only for monthly periods and requires a consecutive 12-month window.",
         "- QoQ uses minus three months for monthly periods and previous quarter for quarterly labels.",
         "- Non-dry-run insert support is present for Phase 16-E-3, but this phase executed dry-run only.",
@@ -703,7 +728,7 @@ def write_dry_run_artifacts(df: pd.DataFrame, stats: dict[str, Any], validation:
     return csv_gz
 
 
-def insert_to_mariadb(df: pd.DataFrame, ml_id: str, batch_size: int = 1000) -> int:
+def insert_to_mariadb(df: pd.DataFrame, ml_id: str, batch_size: int = 5000) -> int:
     sql = """
         INSERT INTO mart_core_brand_metric
           (ml_id, brand_id, brand_name, is_jw, period_yyyymm, channel, specialty,
@@ -729,18 +754,30 @@ def insert_to_mariadb(df: pd.DataFrame, ml_id: str, batch_size: int = 1000) -> i
           computation_version = VALUES(computation_version),
           computed_at = CURRENT_TIMESTAMP
     """
-    records = df.where(pd.notna(df), None).to_dict("records")
+    records = df.astype(object).where(pd.notna(df), None).to_dict("records")
     inserted = 0
     with mariadb_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM mart_core_brand_metric WHERE ml_id = %s", (ml_id,))
-            for start in range(0, len(records), batch_size):
-                batch = records[start : start + batch_size]
-                cur.executemany(sql, batch)
-                conn.commit()
-                inserted += len(batch)
-                LOGGER.info("[%s] inserted/upserted %s rows", ml_id, f"{inserted:,}")
+            try:
+                cur.execute("DELETE FROM mart_core_brand_metric WHERE ml_id = %s", (ml_id,))
+                for start in range(0, len(records), batch_size):
+                    batch = records[start : start + batch_size]
+                    cur.executemany(sql, batch)
+                    conn.commit()
+                    inserted += len(batch)
+                    LOGGER.info("[%s] inserted/upserted %s rows", ml_id, f"{inserted:,}")
+            except Exception:
+                conn.rollback()
+                raise
     return inserted
+
+
+def sample_brand_period(df: pd.DataFrame) -> pd.DataFrame:
+    """Return one brand x one period slice for insert path validation."""
+    if df.empty:
+        return df.copy()
+    first = df[["brand_id", "period_yyyymm"]].drop_duplicates().sort_values(["brand_id", "period_yyyymm"]).iloc[0]
+    return df[(df["brand_id"] == first["brand_id"]) & (df["period_yyyymm"] == first["period_yyyymm"])].copy()
 
 
 def ml_ids_from_catalog() -> list[str]:
@@ -774,8 +811,30 @@ def dry_run(ml_id: str) -> int:
 def run_load(ml_ids: Iterable[str]) -> None:
     for ml_id in ml_ids:
         df, _ = compute_layer3_for_ml(ml_id)
+        validation = validate_metrics(df)
+        if validation["hard_anomaly"]:
+            raise RuntimeError(f"[{ml_id}] hard anomaly before insert: {validation}")
+        LOGGER.info(
+            "[%s] validation PASS before insert: ERROR=%s WARNING=%s",
+            ml_id,
+            f"{validation['error_count']:,}",
+            f"{validation['warning_rows_any']:,}",
+        )
         inserted = insert_to_mariadb(df, ml_id)
         LOGGER.info("[%s] load complete: %s rows", ml_id, f"{inserted:,}")
+
+
+def run_sample_insert(ml_id: str) -> int:
+    df, _ = compute_layer3_for_ml(ml_id)
+    sample = sample_brand_period(df)
+    if sample.empty:
+        raise RuntimeError(f"[{ml_id}] sample slice is empty")
+    inserted = insert_to_mariadb(sample, ml_id)
+    LOGGER.info("[%s] sample insert complete: %s rows", ml_id, f"{inserted:,}")
+    print(f"Sample brand: {sample['brand_id'].iloc[0]}")
+    print(f"Sample period: {sample['period_yyyymm'].iloc[0]}")
+    print(f"Sample rows inserted: {inserted:,}")
+    return inserted
 
 
 def parse_args() -> argparse.Namespace:
@@ -783,6 +842,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ml", help="One ml_id to compute, e.g. ml_006")
     parser.add_argument("--all", action="store_true", help="Compute all ml markets")
     parser.add_argument("--dry-run", action="store_true", help="Write dry-run artifacts only; do not insert")
+    parser.add_argument("--sample-brand-period", action="store_true", help="Insert one brand x one period slice for path validation")
     return parser.parse_args()
 
 
@@ -797,6 +857,12 @@ def main() -> int:
         if args.all:
             raise SystemExit("--dry-run currently supports one --ml at a time for PL review")
         return dry_run(args.ml)
+
+    if args.sample_brand_period:
+        if args.all:
+            raise SystemExit("--sample-brand-period requires one --ml")
+        run_sample_insert(args.ml)
+        return 0
 
     ml_ids = ml_ids_from_catalog() if args.all else [args.ml]
     run_load(ml_ids)
