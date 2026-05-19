@@ -16,25 +16,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import openpyxl
 import pandas as pd
 import pymysql
 
-
-def find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
-            return candidate
-    raise RuntimeError(f"Unable to locate project root from {start}")
+from ops_utils import configure_logging, find_project_root, first_existing, retry
 
 
-def first_existing(*paths: Path) -> Path:
-    for path in paths:
-        if path.exists():
-            return path
-    return paths[0]
-
-
+LOGGER = configure_logging(__name__)
 REPO_ROOT = find_project_root(Path(__file__).resolve())
 IQVIA_ROOT = REPO_ROOT / "data" / "IQVIA"
 AUDIT_DIR = REPO_ROOT / "audit" / "phase16c3_iqvia_mariadb"
@@ -129,8 +120,11 @@ def load_env(path: Path) -> dict[str, str]:
     return env
 
 
+@retry((pymysql.err.OperationalError, pymysql.err.InterfaceError), logger=LOGGER)
 def connect() -> pymysql.connections.Connection:
     env_path = first_existing(REPO_ROOT / "pipeline" / "docker" / ".env", REPO_ROOT / "docker" / ".env")
+    if not env_path.exists():
+        raise FileNotFoundError(f"Missing MariaDB env file: {env_path}")
     env = load_env(env_path)
     return pymysql.connect(
         host="127.0.0.1",
@@ -187,21 +181,30 @@ def dumps_payload(payload: dict[str, Any]) -> str:
 
 def discover_files(source: str) -> list[Path]:
     if source == "nsa":
+        root = IQVIA_ROOT / "NSA"
+        if not root.exists():
+            raise FileNotFoundError(f"Missing IQVIA NSA directory: {root}")
         return sorted(
             p
-            for p in (IQVIA_ROOT / "NSA").iterdir()
+            for p in root.iterdir()
             if p.suffix.lower() in {".csv", ".xlsx", ".xls"}
         )
     if source == "csd":
+        root = IQVIA_ROOT / "CSD"
+        if not root.exists():
+            raise FileNotFoundError(f"Missing IQVIA CSD directory: {root}")
         return sorted(
             p
-            for p in (IQVIA_ROOT / "CSD").rglob("*")
+            for p in root.rglob("*")
             if p.suffix.lower() in {".xlsx", ".xls"}
         )
     if source == "chso":
+        root = IQVIA_ROOT / "CHSO"
+        if not root.exists():
+            raise FileNotFoundError(f"Missing IQVIA CHSO directory: {root}")
         return sorted(
             p
-            for p in (IQVIA_ROOT / "CHSO").iterdir()
+            for p in root.iterdir()
             if p.suffix.lower() in {".xlsx", ".xls"}
         )
     raise ValueError(f"unknown source: {source}")
@@ -565,14 +568,14 @@ def batch_insert(
                 cursor.executemany(sql, batch)
                 conn.commit()
                 total += len(batch)
-                print(f"  [{target_table}] {total:,} rows committed", flush=True)
+                LOGGER.info("[%s] %s rows committed", target_table, f"{total:,}")
                 batch.clear()
                 batch_bytes = 0
         if batch:
             cursor.executemany(sql, batch)
             conn.commit()
             total += len(batch)
-            print(f"  [{target_table}] {total:,} rows committed", flush=True)
+            LOGGER.info("[%s] %s rows committed", target_table, f"{total:,}")
     return total
 
 
@@ -682,25 +685,25 @@ def load_source(source: str, files: list[Path], batch_size: int, dry: bool = Fal
     try:
         for path in files:
             stats.files += 1
-            print(f"reading {source.upper()} {path}", flush=True)
+            LOGGER.info("reading %s %s", source.upper(), path)
             if source in {"nsa"} and path.suffix.lower() == ".csv":
                 sheet_keys = [("CSV",)]
             else:
                 wb = openpyxl.load_workbook(path, read_only=True)
                 sheet_keys = [(s,) for s in wb.sheetnames]
             if all((path.name, sheet_name) in loaded for (sheet_name,) in sheet_keys):
-                print(f"  skip already loaded file: {path.name}", flush=True)
+                LOGGER.info("skip already loaded file: %s", path.name)
                 continue
             try:
                 count = batch_insert(conn, table, iter_records(source, path), batch_size)
                 stats.rows += count
                 stats.sheets += len(sheet_keys)
-                print(f"  loaded {path.name}: {count:,} rows", flush=True)
+                LOGGER.info("loaded %s: %s rows", path.name, f"{count:,}")
             except Exception as exc:  # noqa: BLE001
                 conn.rollback()
                 message = f"{path}: {exc}"
                 stats.errors.append(message)
-                print(f"  ERROR {message}", flush=True)
+                LOGGER.error("ERROR %s", message)
     finally:
         conn.close()
     return stats
@@ -717,35 +720,42 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    if not args.all and not args.source:
-        print("ERROR: provide --source or --all", file=sys.stderr)
-        return 2
+    try:
+        args = parse_args()
+        if not args.all and not args.source:
+            LOGGER.error("ERROR: provide --source or --all")
+            return 2
 
-    sources = ["nsa", "chso", "csd"] if args.all else [args.source]
-    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
-    all_errors: list[str] = []
-    for source in sources:
-        files = [args.file] if args.file else discover_files(source)
-        files = [p for p in files if p is not None]
-        if args.dry_run:
-            out_path = AUDIT_DIR / f"dry_run_{source}.md"
-            dry_run(source, files, out_path)
-            continue
-        stats = load_source(source, files, args.batch_size)
-        print(
-            f"SUMMARY {source.upper()}: files={stats.files}, sheets={stats.sheets}, "
-            f"rows={stats.rows:,}, errors={len(stats.errors)}",
-            flush=True,
-        )
-        all_errors.extend(stats.errors)
+        sources = ["nsa", "chso", "csd"] if args.all else [args.source]
+        AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        all_errors: list[str] = []
+        for source in sources:
+            files = [args.file] if args.file else discover_files(source)
+            files = [p for p in files if p is not None]
+            if args.dry_run:
+                out_path = AUDIT_DIR / f"dry_run_{source}.md"
+                dry_run(source, files, out_path)
+                continue
+            stats = load_source(source, files, args.batch_size)
+            LOGGER.info(
+                "SUMMARY %s: files=%s, sheets=%s, rows=%s, errors=%s",
+                source.upper(),
+                stats.files,
+                stats.sheets,
+                f"{stats.rows:,}",
+                len(stats.errors),
+            )
+            all_errors.extend(stats.errors)
 
-    if all_errors:
-        print("ERRORS:", file=sys.stderr)
-        for error in all_errors:
-            print(f"- {error}", file=sys.stderr)
+        if all_errors:
+            LOGGER.error("ERRORS:")
+            for error in all_errors:
+                LOGGER.error("- %s", error)
+            return 1
+        return 0
+    except Exception:
+        LOGGER.exception("IQVIA loader failed")
         return 1
-    return 0
 
 
 if __name__ == "__main__":

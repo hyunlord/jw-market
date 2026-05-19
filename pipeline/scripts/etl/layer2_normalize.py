@@ -4,17 +4,15 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-def find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
-            return candidate
-    raise RuntimeError(f"Unable to locate project root from {start}")
+from ops_utils import find_project_root  # noqa: E402
 
 
 REPO_ROOT = find_project_root(Path(__file__).resolve())

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import re
 import sys
 from dataclasses import dataclass
@@ -13,22 +12,11 @@ from pathlib import Path
 
 import pymysql
 
+from ops_utils import configure_logging, find_project_root, first_existing, retry
+
 
 DEFAULT_DB = "jw_mart"
-
-
-def find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
-            return candidate
-    raise RuntimeError(f"Unable to locate project root from {start}")
-
-
-def first_existing(*paths: Path) -> Path:
-    for path in paths:
-        if path.exists():
-            return path
-    return paths[0]
+LOGGER = configure_logging(__name__)
 
 
 ROOT = find_project_root(Path(__file__).resolve())
@@ -58,6 +46,7 @@ def load_env(path: Path) -> dict[str, str]:
     return env
 
 
+@retry((pymysql.err.OperationalError, pymysql.err.InterfaceError), logger=LOGGER)
 def connect():
     env = load_env(ENV_PATH)
     user = env.get("MARIADB_USER", "jwapp")
@@ -84,6 +73,8 @@ def checksum(path: Path) -> str:
 
 
 def list_migrations() -> list[Migration]:
+    if not MIGRATIONS_DIR.exists():
+        raise FileNotFoundError(f"Missing migrations directory: {MIGRATIONS_DIR}")
     migrations: list[Migration] = []
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
         match = re.match(r"^(\d{3})_(.+)\.sql$", path.name)
@@ -175,13 +166,13 @@ def apply_migration(conn, migration: Migration) -> str:
 
     sql = migration.path.read_text(encoding="utf-8")
     statements = split_sql(sql)
-    print(f"Applying {migration.path.name} ({len(statements)} statements)")
+    LOGGER.info("Applying %s (%s statements)", migration.path.name, len(statements))
 
     try:
         with conn.cursor() as cur:
             for idx, stmt in enumerate(statements, start=1):
                 preview = " ".join(stmt.split())[:120]
-                print(f"  [{idx}/{len(statements)}] {preview}")
+                LOGGER.info("[%s/%s] %s", idx, len(statements), preview)
                 cur.execute(stmt)
 
             if migration.migration_id == "000":
@@ -223,7 +214,7 @@ def command_apply(selection: str) -> int:
     with connect() as conn:
         for migration in migrations:
             result = apply_migration(conn, migration)
-            print(f"{migration.migration_id}: {result}")
+            LOGGER.info("%s: %s", migration.migration_id, result)
     return 0
 
 
@@ -245,7 +236,7 @@ def main(argv: list[str]) -> int:
         if args.command == "apply":
             return command_apply(args.migration_id)
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        LOGGER.error("ERROR: %s", exc)
         return 1
     return 1
 

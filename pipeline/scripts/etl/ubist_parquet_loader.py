@@ -22,19 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import openpyxl
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
-def find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
-            return candidate
-    raise RuntimeError(f"Unable to locate project root from {start}")
+from ops_utils import configure_logging, find_project_root
 
 
+LOGGER = configure_logging(__name__)
 ROOT = find_project_root(Path(__file__).resolve())
 UBIST_ROOT = ROOT / "data" / "UBIST"
 TARGET_DIR = ROOT / "output" / "ubist"
@@ -219,6 +217,8 @@ def resolve_path(raw_path: str) -> Path:
 def discover_xlsx(args: argparse.Namespace) -> list[Path]:
     paths: list[Path] = []
     if args.all:
+        if not UBIST_ROOT.exists():
+            raise FileNotFoundError(f"Missing UBIST root: {UBIST_ROOT}")
         paths.extend(sorted(UBIST_ROOT.rglob("*.xlsx")))
     if args.folder:
         folder = resolve_path(args.folder)
@@ -399,12 +399,12 @@ def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate
     total_rows = 0
     try:
         for idx, xlsx_path in enumerate(xlsx_paths, start=1):
-            print(f"[{idx}/{len(xlsx_paths)}] reading {xlsx_path}")
+            LOGGER.info("[%s/%s] reading %s", idx, len(xlsx_paths), xlsx_path)
             for period, row in iter_xlsx_rows(xlsx_path):
                 buffers[period].append(row)
                 total_rows += 1
                 if total_rows % 250_000 == 0:
-                    print(f"  rows={total_rows:,} active_partitions={len(buffers)}")
+                    LOGGER.info("rows=%s active_partitions=%s", f"{total_rows:,}", len(buffers))
                     flush_buffers(writer, buffers)
             flush_buffers(writer, buffers)
         flush_buffers(writer, buffers, final=True)
@@ -421,7 +421,7 @@ def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate
     tmp_target.rename(target)
     if backup_target.exists():
         shutil.rmtree(backup_target)
-    print(f"loaded rows={total_rows:,} partitions={len(writer.stats)} target={target}")
+    LOGGER.info("loaded rows=%s partitions=%s target=%s", f"{total_rows:,}", len(writer.stats), target)
     return writer.stats
 
 
@@ -518,11 +518,11 @@ def main(argv: list[str]) -> int:
             dry_run(xlsx_paths)
             return 0
         stats = load_to_parquet(xlsx_paths, Path(args.target_dir), mode=args.mode, truncate=args.truncate)
-        print("partition summary:")
+        LOGGER.info("partition summary")
         for period in sorted(stats):
-            print(f"  {period}: {stats[period].row_count:,}")
+            LOGGER.info("%s: %s", period, f"{stats[period].row_count:,}")
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        LOGGER.error("ERROR: %s", exc)
         return 1
     return 0
 

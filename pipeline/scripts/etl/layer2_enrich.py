@@ -20,8 +20,10 @@ import pandas as pd
 import pymysql
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from ops_utils import configure_logging, find_project_root, first_existing, retry  # noqa: E402
 from layer2_normalize import (  # noqa: E402
     canonical_iqvia_channel,
     clean_scalar,
@@ -35,20 +37,7 @@ from layer2_normalize import (  # noqa: E402
 )
 
 
-def find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
-            return candidate
-    raise RuntimeError(f"Unable to locate project root from {start}")
-
-
-def first_existing(*paths: Path) -> Path:
-    for path in paths:
-        if path.exists():
-            return path
-    return paths[0]
-
-
+LOGGER = configure_logging(__name__)
 REPO_ROOT = find_project_root(Path(__file__).resolve())
 UBIST_DIR = first_existing(REPO_ROOT / "output" / "ubist", REPO_ROOT / "parquet" / "ubist")
 UBIST_GLOB = str(UBIST_DIR / "year=*" / "month=*" / "data.parquet")
@@ -115,8 +104,11 @@ def load_env(path: Path) -> dict[str, str]:
     return env
 
 
+@retry((pymysql.err.OperationalError, pymysql.err.InterfaceError), logger=LOGGER)
 def mariadb_connect(cursorclass: type | None = None) -> pymysql.connections.Connection:
     env_path = first_existing(REPO_ROOT / "pipeline" / "docker" / ".env", REPO_ROOT / "docker" / ".env")
+    if not env_path.exists():
+        raise FileNotFoundError(f"Missing MariaDB env file: {env_path}")
     env = load_env(env_path)
     kwargs: dict[str, Any] = {
         "host": "127.0.0.1",
@@ -133,16 +125,25 @@ def mariadb_connect(cursorclass: type | None = None) -> pymysql.connections.Conn
 
 
 def load_market_metadata() -> dict[str, Any]:
-    with (REPO_ROOT / "catalog" / "market_metadata.yaml").open(encoding="utf-8") as fp:
+    path = REPO_ROOT / "catalog" / "market_metadata.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing market metadata: {path}")
+    with path.open(encoding="utf-8") as fp:
         return yaml.safe_load(fp) or {}
 
 
 def load_ml_market() -> pd.DataFrame:
-    return pd.read_parquet(CATALOG_OUTPUT_DIR / "ml_market" / "ml_market.parquet")
+    path = CATALOG_OUTPUT_DIR / "ml_market" / "ml_market.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing ml_market parquet: {path}")
+    return pd.read_parquet(path)
 
 
 def load_strategic_product(ml_id: str) -> pd.DataFrame:
-    sp = pd.read_parquet(CATALOG_OUTPUT_DIR / "strategic_product" / "strategic_product.parquet")
+    path = CATALOG_OUTPUT_DIR / "strategic_product" / "strategic_product.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing strategic_product parquet: {path}")
+    sp = pd.read_parquet(path)
     products = sp[sp["ml_id"] == ml_id].copy()
     products["ubist_product_title"] = products["name"].fillna(products["merge_name"]).fillna("")
     products["iqvia_product_title"] = products["merge_name"].fillna(products["name"]).fillna("")
@@ -612,6 +613,8 @@ def enrich_ml(
     if output_path.exists():
         output_path.unlink()
     if data_source in {"ubist", "both"}:
+        if not UBIST_DIR.exists():
+            raise FileNotFoundError(f"Missing UBIST parquet directory: {UBIST_DIR}")
         rows, prod_count = write_ubist_ml(ml_id, products, customer_dict, output_path)
         sources["ubist"] = rows
         total_rows += rows
@@ -695,28 +698,35 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    audit_dir = Path(args.audit_dir)
-    output_dir = Path(args.output_dir)
-    audit_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        args = parse_args()
+        audit_dir = Path(args.audit_dir)
+        output_dir = Path(args.output_dir)
+        audit_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.truncate and output_dir.exists() and not args.dry_run:
-        shutil.rmtree(output_dir)
+        if args.truncate and output_dir.exists() and not args.dry_run:
+            shutil.rmtree(output_dir)
 
-    targets = [args.ml] if args.ml else all_ml_ids()
-    results: list[EnrichResult] = []
-    for ml_id in targets:
-        print(f"[{now_iso()}] enriching {ml_id} dry_run={args.dry_run}", flush=True)
-        result = enrich_ml(ml_id, dry_run=args.dry_run, audit_dir=audit_dir, output_dir=output_dir)
-        results.append(result)
-        print(
-            f"  rows={result.rows:,} matched_products={result.matched_products:,}/"
-            f"{result.total_products:,} ({result.product_match_rate:.2%}) sources={result.sources}",
-            flush=True,
-        )
+        targets = [args.ml] if args.ml else all_ml_ids()
+        results: list[EnrichResult] = []
+        for ml_id in targets:
+            LOGGER.info("enriching %s dry_run=%s", ml_id, args.dry_run)
+            result = enrich_ml(ml_id, dry_run=args.dry_run, audit_dir=audit_dir, output_dir=output_dir)
+            results.append(result)
+            LOGGER.info(
+                "rows=%s matched_products=%s/%s (%s) sources=%s",
+                f"{result.rows:,}",
+                f"{result.matched_products:,}",
+                f"{result.total_products:,}",
+                f"{result.product_match_rate:.2%}",
+                result.sources,
+            )
 
-    write_loading_csv(results, audit_dir)
-    return 0
+        write_loading_csv(results, audit_dir)
+        return 0
+    except Exception:
+        LOGGER.exception("Layer 2 enrichment failed")
+        return 1
 
 
 if __name__ == "__main__":
