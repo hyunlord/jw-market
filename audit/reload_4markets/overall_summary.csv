@@ -1,9 +1,0 @@
-gate,result,status
-strategic_brand shape unchanged,"(4495, 16)",PASS
-strategic_product shape unchanged,"(11865, 17)",PASS
-cd_brand membership unchanged,0 diff,PASS
-ml_market label-only update,4 rows,PASS
-cd_market label-only update,5 rows,PASS
-strategic_brand changed data rows,19,PASS
-strategic_product changed data rows,19,PASS
-catalog v0.8 consistency,75 PASS,PASS

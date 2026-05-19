@@ -1,3 +1,0 @@
-migration_id	checksum	description	applied_at
-000	893648a6f81089a3dddbfa743ca80fd1483d990a5462fb674fb848a8cdb465d4	migration state	2026-05-18 17:50:06
-001	1ea7ad0885e89c3b9b58aa3cd747f699b4993db2291f426eb07c82c77406379b	layer1 raw tables	2026-05-18 17:51:46

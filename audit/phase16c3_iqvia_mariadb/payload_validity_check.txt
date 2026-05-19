@@ -1,3 +1,0 @@
-nsa: valid=2,677,394 / total=2,677,394
-csd: valid=442,735 / total=442,735
-chso: valid=424,428 / total=424,428
