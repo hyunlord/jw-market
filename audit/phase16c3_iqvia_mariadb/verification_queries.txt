@@ -1,0 +1,55 @@
+# Phase 16-C-3 Verification Queries
+
+## Row Counts
+| source | row_count |
+| --- | --- |
+| nsa | 2677394 |
+| csd | 442735 |
+| chso | 424428 |
+
+
+Total rows: 3,544,557
+
+## Period Ranges
+- NSA: 2020Q3 ~ 2025Q4 (22 quarters)
+- CSD: 2024-12 ~ 2025-10 (6 report months)
+- CHSO: 2021-02 ~ 2026-01 (60 months)
+
+## NSA Distinct Audit Code
+- 4
+
+## Payload JSON Validity
+nsa: valid=2,677,394 / total=2,677,394
+csd: valid=442,735 / total=442,735
+chso: valid=424,428 / total=424,428
+
+
+## CSD Channel Distribution
+| channel | row_count |
+| --- | --- |
+| CPPI | 148932 |
+| GH+SHPPI | 100128 |
+| GH | 76043 |
+| SHPPI | 51083 |
+| TOTAL | 30245 |
+| GH + SHPPI | 19409 |
+| TOTAL(GH+SHPPI+CPPI) | 5503 |
+| HOSPITAL | 5356 |
+| PRIV. PRACTICE | 4156 |
+| (NULL) | 1573 |
+| JW Channel | 75 |
+| Rx Intention | 42 |
+| GH+SHPPI+CPPI | 40 |
+| *인사차 방문 제외 | 25 |
+| Data Type : Monthly | 25 |
+| Usefulness | 25 |
+| Value Type : Product Detail | 25 |
+| Specialty : Cardio, Dermato, Endo, E.N.T., Gastro, G/S, OBGY, Ne | 10 |
+| Hospital Type : CPPI | 5 |
+| Hospital Type : GH | 5 |
+| Hospital Type : GH + SHPPI | 5 |
+| Hospital Type : SHPPI | 5 |
+| Hospital Type : TOTAL(GH+SHPPI+CPPI) | 5 |
+| Specialty : CPPI | 5 |
+| Specialty : GH + SHPPI + CPPI | 5 |
+| Specialty : SHPPI | 5 |
