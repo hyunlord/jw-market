@@ -26,7 +26,7 @@ This is the base environment for Phase 16-C and later:
 ## Initial Setup
 
 ```bash
-cd /Users/rexxa/github/jw-market-test/docker
+cd /Users/rexxa/github/jw-market-test/pipeline/docker
 cp .env.example .env
 ```
 
@@ -105,7 +105,7 @@ docker compose ps
 docker compose logs --tail=200 mariadb
 ```
 
-If Galera refuses to bootstrap after an unclean local shutdown, reset the local dev volume. This deletes only local Docker data under `docker/data/`.
+If Galera refuses to bootstrap after an unclean local shutdown, reset the local dev volume. This deletes only local Docker data under `pipeline/docker/data/`.
 
 Reset local data when the container was initialized with the wrong credentials:
 

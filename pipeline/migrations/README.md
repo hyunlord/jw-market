@@ -26,13 +26,13 @@ Examples:
 ## Commands
 
 ```bash
-python scripts/run_migration.py status
-python scripts/run_migration.py apply 000
-python scripts/run_migration.py apply 001
-python scripts/run_migration.py apply --all
+python pipeline/scripts/run_migration.py status
+python pipeline/scripts/run_migration.py apply 000
+python pipeline/scripts/run_migration.py apply 001
+python pipeline/scripts/run_migration.py apply --all
 ```
 
-The runner reads database credentials from `docker/.env`.
+The runner reads database credentials from `pipeline/docker/.env`.
 
 ## Rollback Policy
 

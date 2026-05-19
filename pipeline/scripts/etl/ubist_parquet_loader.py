@@ -28,9 +28,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-ROOT = Path(__file__).resolve().parents[2]
+def find_project_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate project root from {start}")
+
+
+ROOT = find_project_root(Path(__file__).resolve())
 UBIST_ROOT = ROOT / "data" / "UBIST"
-TARGET_DIR = ROOT / "parquet" / "ubist"
+TARGET_DIR = ROOT / "output" / "ubist"
 KST = ZoneInfo("Asia/Seoul")
 
 CANONICAL_DIMENSIONS = [
@@ -497,7 +504,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     source.add_argument("--file", help="Single UBIST xlsx file")
     source.add_argument("--all", action="store_true", help="Load all xlsx files below data/UBIST")
     parser.add_argument("--dry-run", action="store_true", help="Analyze schema and sample rows without writing")
-    parser.add_argument("--truncate", action="store_true", help="Replace the existing parquet/ubist target")
+    parser.add_argument("--truncate", action="store_true", help="Replace the existing output/ubist target")
     parser.add_argument("--mode", choices=["replace", "append"], default="replace")
     parser.add_argument("--target-dir", default=str(TARGET_DIR))
     return parser.parse_args(argv)

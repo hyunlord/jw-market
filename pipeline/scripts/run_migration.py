@@ -14,10 +14,26 @@ from pathlib import Path
 import pymysql
 
 
-ROOT = Path(__file__).resolve().parents[1]
-MIGRATIONS_DIR = ROOT / "migrations"
-ENV_PATH = ROOT / "docker" / ".env"
 DEFAULT_DB = "jw_mart"
+
+
+def find_project_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate project root from {start}")
+
+
+def first_existing(*paths: Path) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+ROOT = find_project_root(Path(__file__).resolve())
+MIGRATIONS_DIR = first_existing(ROOT / "pipeline" / "migrations", ROOT / "migrations")
+ENV_PATH = first_existing(ROOT / "pipeline" / "docker" / ".env", ROOT / "docker" / ".env")
 
 
 @dataclass(frozen=True)
@@ -49,7 +65,7 @@ def connect():
     port = int(env.get("HOST_PORT", "3307"))
     database = env.get("MARIADB_DATABASE", DEFAULT_DB)
     if not password:
-        raise RuntimeError("MARIADB_PASSWORD is missing in docker/.env")
+        raise RuntimeError(f"MARIADB_PASSWORD is missing in {ENV_PATH}")
 
     return pymysql.connect(
         host="127.0.0.1",

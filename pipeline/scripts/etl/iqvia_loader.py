@@ -21,7 +21,21 @@ import pandas as pd
 import pymysql
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def find_project_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate project root from {start}")
+
+
+def first_existing(*paths: Path) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+REPO_ROOT = find_project_root(Path(__file__).resolve())
 IQVIA_ROOT = REPO_ROOT / "data" / "IQVIA"
 AUDIT_DIR = REPO_ROOT / "audit" / "phase16c3_iqvia_mariadb"
 
@@ -116,7 +130,8 @@ def load_env(path: Path) -> dict[str, str]:
 
 
 def connect() -> pymysql.connections.Connection:
-    env = load_env(REPO_ROOT / "docker" / ".env")
+    env_path = first_existing(REPO_ROOT / "pipeline" / "docker" / ".env", REPO_ROOT / "docker" / ".env")
+    env = load_env(env_path)
     return pymysql.connect(
         host="127.0.0.1",
         port=int(env.get("HOST_PORT", "3307")),

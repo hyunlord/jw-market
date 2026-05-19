@@ -1,11 +1,56 @@
-data/cache/
+# Raw input
+data/
+!data/.gitkeep
+
+# Generated reports / ad-hoc bundles
 outputs/
 *.zip
-__pycache__/
-*.pyc
-.DS_Store
+
+# Output data
+# Catalog parquet dimensions stay trackable under output/catalog/.
+output/ubist/year=*/
+output/ubist/*.parquet
+output/ubist.__tmp_*/
+output/ubist.__backup_*/
+output/enriched/ml_id=*/
+output/enriched/
+output/**/*.tmp.parquet
+
+# Transitional pre-R2 output paths. Keep until PL executes restructure.
 parquet/ubist/*.parquet
 parquet/ubist/year=*/
 parquet/ubist.__tmp_*/
 parquet/ubist.__backup_*/
 parquet/enriched/
+
+# Audit zip bundles
+audit/**/*.zip
+audits/**/*.zip
+
+# Docker local state
+docker/.env
+docker/.env.*
+!docker/.env.example
+docker/data/
+pipeline/docker/.env
+pipeline/docker/.env.*
+!pipeline/docker/.env.example
+pipeline/docker/data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Misc
+*.bak
+*.tmp

@@ -10,7 +10,14 @@ from typing import Any
 import yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def find_project_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate project root from {start}")
+
+
+REPO_ROOT = find_project_root(Path(__file__).resolve())
 
 
 CATALOG_TO_UBIST_ATC_MAP = {

@@ -35,9 +35,25 @@ from layer2_normalize import (  # noqa: E402
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-UBIST_GLOB = str(REPO_ROOT / "parquet" / "ubist" / "year=*" / "month=*" / "data.parquet")
-ENRICHED_DIR = REPO_ROOT / "parquet" / "enriched"
+def find_project_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate project root from {start}")
+
+
+def first_existing(*paths: Path) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+REPO_ROOT = find_project_root(Path(__file__).resolve())
+UBIST_DIR = first_existing(REPO_ROOT / "output" / "ubist", REPO_ROOT / "parquet" / "ubist")
+UBIST_GLOB = str(UBIST_DIR / "year=*" / "month=*" / "data.parquet")
+CATALOG_OUTPUT_DIR = first_existing(REPO_ROOT / "output" / "catalog", REPO_ROOT / "parquet")
+ENRICHED_DIR = REPO_ROOT / "output" / "enriched"
 AUDIT_DIR = REPO_ROOT / "audit" / "phase16d_layer2"
 KST = ZoneInfo("Asia/Seoul")
 
@@ -100,7 +116,8 @@ def load_env(path: Path) -> dict[str, str]:
 
 
 def mariadb_connect(cursorclass: type | None = None) -> pymysql.connections.Connection:
-    env = load_env(REPO_ROOT / "docker" / ".env")
+    env_path = first_existing(REPO_ROOT / "pipeline" / "docker" / ".env", REPO_ROOT / "docker" / ".env")
+    env = load_env(env_path)
     kwargs: dict[str, Any] = {
         "host": "127.0.0.1",
         "port": int(env.get("HOST_PORT", "3307")),
@@ -121,11 +138,11 @@ def load_market_metadata() -> dict[str, Any]:
 
 
 def load_ml_market() -> pd.DataFrame:
-    return pd.read_parquet(REPO_ROOT / "parquet" / "ml_market" / "ml_market.parquet")
+    return pd.read_parquet(CATALOG_OUTPUT_DIR / "ml_market" / "ml_market.parquet")
 
 
 def load_strategic_product(ml_id: str) -> pd.DataFrame:
-    sp = pd.read_parquet(REPO_ROOT / "parquet" / "strategic_product" / "strategic_product.parquet")
+    sp = pd.read_parquet(CATALOG_OUTPUT_DIR / "strategic_product" / "strategic_product.parquet")
     products = sp[sp["ml_id"] == ml_id].copy()
     products["ubist_product_title"] = products["name"].fillna(products["merge_name"]).fillna("")
     products["iqvia_product_title"] = products["merge_name"].fillna(products["name"]).fillna("")
