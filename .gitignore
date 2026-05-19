@@ -46,11 +46,21 @@ __pycache__/
 
 # Editor / OS
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
 *.swp
+*.swo
 *~
 
 # Misc
 *.bak
 *.tmp
+
+# Excel temp lock files
+*.omx
+~$*
+
+# Codex / agent runtime metadata
+.omx/
+.codex_metadata/
