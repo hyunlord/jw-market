@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Build dry-run strategic ML JSON mart rows from general v3 rows.
-
-Phase 16-G-4-Fix-ETL-v3 is dry-run only. If general dry-run JSONL files are
-missing, this script creates a bounded general dry-run for the requested ml_id
-and then applies catalog filter/overlay logic.
-"""
+"""Build and load strategic ML JSON marts from general-view rows."""
 
 from __future__ import annotations
 
@@ -13,21 +8,26 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 
+from brand_key_normalize import normalize_brand_name
 from layer3_compute_general_v3 import (
     ALLOWED_SOURCES,
-    compute_general,
+    GENERAL_BRAND_INSERT_COLUMNS,
+    JSON_INSERT_COLUMNS,
+    dumps,
     general_brand_jsonl_path,
     json_ready,
+    mariadb_connect,
     read_jsonl,
     write_jsonl,
 )
+from layer3_compute_market_metric import compute_market_mart_payload
 from ops_utils import configure_logging, find_project_root
 
 
@@ -35,198 +35,210 @@ LOGGER = configure_logging(__name__)
 PROJECT_ROOT = find_project_root(Path(__file__).resolve())
 CATALOG_DIR = PROJECT_ROOT / "output" / "catalog"
 DRY_RUN_DIR = Path("/tmp")
-ML_BRAND_JSONL = DRY_RUN_DIR / "strategic_ml_v3_{ml_id}_brand_rows.jsonl"
-ML_MARKET_JSONL = DRY_RUN_DIR / "strategic_ml_v3_{ml_id}_market_rows.jsonl"
+ML_BRAND_JSONL = "strategic_ml_v3_brand_rows.jsonl"
+ML_MARKET_JSONL = "strategic_ml_v3_market_rows.jsonl"
+ML_BRAND_COLUMNS = [
+    "ml_id",
+    "brand_id",
+    "brand_key",
+    "brand_name",
+    "source",
+    "measure",
+    "is_jw",
+    "unit_label",
+    "metric_history",
+    "extended_metric_history",
+    "channel_data",
+    "specialty_data",
+    "by_dimension",
+    "raw_value_history",
+    "overlay_data",
+    "payload",
+]
+ML_MARKET_COLUMNS = [
+    "ml_id",
+    "ml_name",
+    "source",
+    "measure",
+    "unit_label",
+    "market_size_series",
+    "hhi_series_5y",
+    "brand_ranking_stacked",
+    "company_ranking_stacked",
+    "company_concentration_trend",
+    "ei_ms_matrix",
+    "growth_contribution_ms_matrix",
+    "growth_contribution",
+    "analysis_levels",
+    "level_top5_trend",
+    "target_customer_competition",
+    "payload",
+]
 
 
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame]:
     ml_market = pd.read_parquet(CATALOG_DIR / "ml_market" / "ml_market.parquet")
     strategic_brand = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
+    strategic_brand["brand_key"] = strategic_brand["name"].map(normalize_brand_name)
     return ml_market, strategic_brand
 
 
-def source_rows_from_general_or_compute(source: str, ml_id: str, max_rows: int, limit_atc4: int | None) -> list[dict[str, Any]]:
-    path = general_brand_jsonl_path(source, ml=ml_id)
-    rows = read_jsonl(path)
-    if rows:
-        return rows
-    brand_rows, _, _ = compute_general(source=source, dry_run=True, limit_atc4=limit_atc4, max_rows=max_rows, ml=ml_id)
-    return brand_rows
-
-
-def metric_periods(row: dict[str, Any]) -> list[str]:
-    return sorted((row.get("metric_history") or {}).keys())
-
-
-def latest_period(row: dict[str, Any]) -> str | None:
-    periods = metric_periods(row)
-    return periods[-1] if periods else None
-
-
-def latest_metric(row: dict[str, Any], key: str) -> Any:
-    period = latest_period(row)
-    if not period:
-        return None
-    return (row.get("metric_history") or {}).get(period, {}).get(key)
-
-
-def build_company_ranking(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    by_period: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]]:
+    where = "WHERE source=%s" if source else ""
+    params = (source,) if source else ()
+    sql = "SELECT * FROM mart_general_brand_metric " + where
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
     for row in rows:
-        company = (row.get("by_dimension") or {}).get("company") or "Unknown"
-        for period, metric in (row.get("metric_history") or {}).items():
-            value = metric.get("raw_value") or 0
-            by_period[period][company] += float(value)
-    result: dict[str, list[dict[str, Any]]] = {}
-    for period, values in by_period.items():
-        total = sum(values.values())
-        ranked = []
-        for idx, (company, value) in enumerate(sorted(values.items(), key=lambda kv: kv[1], reverse=True), start=1):
-            ranked.append({"company": company, "rank": idx, "raw_value": value, "ms": (value / total * 100) if total else None})
-        result[period] = ranked[:20]
-    return result
+        for col in GENERAL_BRAND_INSERT_COLUMNS:
+            if col in {"metric_history", "extended_metric_history", "channel_data", "specialty_data", "by_dimension", "raw_value_history", "payload"}:
+                row[col] = json.loads(row[col]) if row.get(col) else {}
+        row["channel_specialty_matrix"] = {}
+    return rows
 
 
-def build_market_row(ml_row: pd.Series, source: str, measure: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    market_size: dict[str, float] = defaultdict(float)
-    hhi_series: dict[str, float] = {}
-    brand_ranking: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    ei_ms_matrix = []
-    gc_ms_matrix = []
+def load_general_rows(output_dir: Path, source: str) -> list[dict[str, Any]]:
+    rows = read_jsonl(general_brand_jsonl_path(source, output_dir))
+    return rows if rows else fetch_general_rows_from_db(source)
 
+
+def is_jw_name(name: Any) -> bool:
+    text = str(name or "")
+    return any(token in text for token in ("리바로", "가드", "라베칸", "제이클", "타발리스", "시그마트", "악템라", "페린젝트", "베노훼럼", "헴리브라", "엔커버", "위너프", "플라주오피"))
+
+
+def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for key, part in brands.groupby("brand_key", dropna=False):
+        if not key:
+            continue
+        first = part.iloc[0].to_dict()
+        first["catalog_brand_ids"] = part["brand_id"].astype(str).tolist()
+        first["catalog_names"] = part["name"].astype(str).tolist()
+        grouped[str(key)] = first
+    return grouped
+
+
+def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    by_key = catalog_by_key(catalog_rows)
+    selected: list[dict[str, Any]] = []
+    for row in general_rows:
+        overlay = by_key.get(str(row.get("brand_key")))
+        if not overlay:
+            continue
+        copied = dict(row)
+        dim = dict(copied.get("by_dimension") or {})
+        for key in ("class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
+            dim[key] = overlay.get(key)
+        copied.update(
+            {
+                "ml_id": ml_row["ml_id"],
+                "brand_id": overlay.get("brand_id"),
+                "is_jw": is_jw_name(overlay.get("name")),
+                "by_dimension": dim,
+                "overlay_data": {
+                    "catalog_source": "strategic_brand",
+                    "ml_id": ml_row["ml_id"],
+                    "catalog_brand_ids": overlay.get("catalog_brand_ids"),
+                    "catalog_names": overlay.get("catalog_names"),
+                    "class": overlay.get("class"),
+                    "molecule": overlay.get("molecule"),
+                    "dosage_form": overlay.get("dosage_form"),
+                    "strength_pack": overlay.get("strength_pack"),
+                    "nhi_type": overlay.get("nhi_type"),
+                    "ox_gx": overlay.get("ox_gx"),
+                    "fish_oil": overlay.get("fish_oil"),
+                },
+            }
+        )
+        selected.append(copied)
+
+    market_rows: list[dict[str, Any]] = []
+    for (source, measure), rows in _group_by_source_measure(selected).items():
+        payload = compute_market_mart_payload(rows, source=source, measure=measure, view_type="strategic_ml", catalog_market_row=ml_row.to_dict())
+        market_rows.append(
+            {
+                "ml_id": ml_row["ml_id"],
+                "ml_name": ml_row.get("name"),
+                "source": source,
+                "measure": measure,
+                "unit_label": rows[0].get("unit_label") if rows else "",
+                **payload,
+            }
+        )
+    return selected, market_rows
+
+
+def _group_by_source_measure(rows: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        for period, metric in (row.get("metric_history") or {}).items():
-            market_size[period] += float(metric.get("raw_value") or 0)
-            brand_ranking[period].append(
-                {
-                    "brand_id": row.get("brand_id"),
-                    "brand": row.get("brand_name"),
-                    "rank": metric.get("rank"),
-                    "ms": metric.get("ms"),
-                    "raw_value": metric.get("raw_value"),
-                }
-            )
-        period = latest_period(row)
-        if period:
-            ext = (row.get("extended_metric_history") or {}).get(period, {})
-            metric = (row.get("metric_history") or {}).get(period, {})
-            if ext.get("hhi") is not None:
-                hhi_series[period] = ext.get("hhi")
-            ei_ms_matrix.append(
-                {
-                    "brand_id": row.get("brand_id"),
-                    "brand": row.get("brand_name"),
-                    "ms": metric.get("ms"),
-                    "ei_5y": ext.get("ei_5y"),
-                    "momentum_score": ext.get("momentum_score"),
-                }
-            )
-            gc_ms_matrix.append(
-                {
-                    "brand_id": row.get("brand_id"),
-                    "brand": row.get("brand_name"),
-                    "ms": metric.get("ms"),
-                    "growth_contribution": ext.get("growth_contribution"),
-                }
-            )
-
-    ranking_clean = {
-        period: sorted(items, key=lambda item: (item.get("rank") is None, item.get("rank") or 999999))[:20]
-        for period, items in brand_ranking.items()
-    }
-    return {
-        "ml_id": ml_row["ml_id"],
-        "ml_name": ml_row.get("name"),
-        "source": source,
-        "measure": measure,
-        "unit_label": rows[0].get("unit_label") if rows else "",
-        "market_size_series": dict(market_size),
-        "hhi_series_5y": hhi_series,
-        "brand_ranking_stacked": ranking_clean,
-        "company_ranking_stacked": build_company_ranking(rows),
-        "company_concentration_trend": {},
-        "ei_ms_matrix": ei_ms_matrix,
-        "growth_contribution_ms_matrix": gc_ms_matrix,
-        "growth_contribution": {},
-        "analysis_levels": {},
-        "level_top5_trend": {},
-        "target_customer_competition": {},
-        "payload": {"phase": "16-G-4-Fix-ETL-v3", "dry_run": True, "brand_rows": len(rows)},
-    }
+        grouped[(str(row.get("source")), str(row.get("measure")))].append(row)
+    return grouped
 
 
-def compute_strategic_ml(ml_id: str, dry_run: bool, max_rows: int, limit_atc4: int | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    if not dry_run:
-        raise RuntimeError("Phase 16-G-4-Fix-ETL-v3 is dry-run only; INSERT is deferred to Fix-Load")
+def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]], unique_cols: set[str], batch_size: int = 500) -> None:
+    if not rows:
+        return
+    placeholders = ",".join(["%s"] * len(columns))
+    update_sql = ",".join([f"{col}=VALUES({col})" for col in columns if col not in unique_cols])
+    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_sql}"
+    payloads = [
+        tuple(dumps(row.get(col)) if col in JSON_INSERT_COLUMNS else row.get(col) for col in columns)
+        for row in rows
+    ]
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            for start in range(0, len(payloads), batch_size):
+                cur.executemany(sql, payloads[start : start + batch_size])
+    finally:
+        conn.close()
+
+
+def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    if not dry_run and not insert:
+        raise RuntimeError("Use --dry-run or --insert")
     ml_market, strategic_brand = load_catalogs()
-    ml_match = ml_market.loc[ml_market["ml_id"] == ml_id]
-    if ml_match.empty:
-        raise RuntimeError(f"unknown ml_id: {ml_id}")
-    ml_row = ml_match.iloc[0]
-    brands = strategic_brand.loc[strategic_brand["ml_id"] == ml_id].copy()
-    brand_ids = set(brands["brand_id"].astype(str))
-    brand_overlay = brands.set_index("brand_id").to_dict(orient="index")
-
-    ml_brand_rows: list[dict[str, Any]] = []
-    ml_market_rows: list[dict[str, Any]] = []
+    if ml:
+        ml_market = ml_market.loc[ml_market["ml_id"] == ml]
+    all_general: list[dict[str, Any]] = []
     for source in ALLOWED_SOURCES:
-        general_rows = source_rows_from_general_or_compute(source, ml_id, max_rows=max_rows, limit_atc4=limit_atc4)
-        selected = [row for row in general_rows if str(row.get("brand_id")) in brand_ids]
-        if not selected:
-            general_rows, _, _ = compute_general(source=source, dry_run=True, limit_atc4=limit_atc4, max_rows=max_rows, ml=ml_id)
-            selected = [row for row in general_rows if str(row.get("brand_id")) in brand_ids]
-        by_measure: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-        for row in selected:
-            overlay = brand_overlay.get(str(row.get("brand_id")), {})
-            copied = dict(row)
-            copied.update(
-                {
-                    "ml_id": ml_id,
-                    "is_jw": str(row.get("brand_id")) in set(brands.loc[brands["name"].astype(str).str.contains("리바로|가드|라베칸|제이클|타발리스|시그마트|악템라|페린젝트|베노훼럼|헴리브라|엔커버|위너프|플라주오피", na=False), "brand_id"].astype(str)),
-                    "overlay_data": {
-                        "catalog_source": "strategic_brand",
-                        "class": overlay.get("class"),
-                        "molecule": overlay.get("molecule"),
-                        "dosage_form": overlay.get("dosage_form"),
-                        "strength_pack": overlay.get("strength_pack"),
-                        "nhi_type": overlay.get("nhi_type"),
-                        "ox_gx": overlay.get("ox_gx"),
-                        "company": overlay.get("판매사"),
-                        "manufacturer": overlay.get("제조사"),
-                    },
-                }
-            )
-            ml_brand_rows.append(copied)
-            by_measure[(copied["source"], copied["measure"])].append(copied)
-        for (source_name, measure), rows in by_measure.items():
-            ml_market_rows.append(build_market_row(ml_row, source_name, measure, rows))
-
-    write_jsonl(ML_BRAND_JSONL.with_name(ML_BRAND_JSONL.name.format(ml_id=ml_id)), ml_brand_rows)
-    write_jsonl(ML_MARKET_JSONL.with_name(ML_MARKET_JSONL.name.format(ml_id=ml_id)), ml_market_rows)
-    stats = {
-        "ml_id": ml_id,
-        "catalog_brands": int(len(brands)),
-        "brand_rows": len(ml_brand_rows),
-        "market_rows": len(ml_market_rows),
-        "sources": sorted({r["source"] for r in ml_brand_rows}),
-        "measures": sorted({r["measure"] for r in ml_brand_rows}),
-    }
-    return ml_brand_rows, ml_market_rows, stats
+        all_general.extend(load_general_rows(output_dir, source))
+    brand_rows: list[dict[str, Any]] = []
+    market_rows: list[dict[str, Any]] = []
+    for _, ml_row in ml_market.iterrows():
+        catalog_rows = strategic_brand.loc[strategic_brand["ml_id"] == ml_row["ml_id"]].copy()
+        rows, markets = build_ml_rows(ml_row, catalog_rows, all_general)
+        brand_rows.extend(rows)
+        market_rows.extend(markets)
+    if dry_run:
+        write_jsonl(output_dir / ML_BRAND_JSONL, brand_rows)
+        write_jsonl(output_dir / ML_MARKET_JSONL, market_rows)
+    if insert:
+        insert_rows("mart_strategic_ml_brand_metric", ML_BRAND_COLUMNS, brand_rows, {"ml_id", "brand_id", "source", "measure"})
+        insert_rows("mart_strategic_ml_market_metric", ML_MARKET_COLUMNS, market_rows, {"ml_id", "source", "measure"})
+    stats = {"brand_rows": len(brand_rows), "market_rows": len(market_rows), "ml_count": int(ml_market["ml_id"].nunique())}
+    return brand_rows, market_rows, stats
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ml", required=True)
+    parser.add_argument("--ml")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--max-rows", type=int, default=250_000)
-    parser.add_argument("--limit-atc4", type=int, default=None)
+    parser.add_argument("--insert", action="store_true")
+    parser.add_argument("--output-dir", type=Path, default=DRY_RUN_DIR)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    brand_rows, market_rows, stats = compute_strategic_ml(args.ml, args.dry_run, args.max_rows, args.limit_atc4)
-    print(f"\n=== {args.ml} strategic ML dry-run ===")
+    brand_rows, market_rows, stats = compute_strategic_ml(args.dry_run, args.insert, args.output_dir, ml=args.ml)
+    print("\n=== strategic ML v3.1 ===")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
     if brand_rows:
         print("sample brand row:")
