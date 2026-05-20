@@ -18,6 +18,8 @@ from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
 
 
 FORM_BOUNDARY = re.compile(r"(?:$|\\s|정|캡슐|주|액|서방|시럽|현탁|구강|SR|CR|OD)", re.IGNORECASE)
+DEFAULT_MARKET_STATUS_TOP_N = 20
+MAX_MARKET_STATUS_TOP_N = 100
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,12 @@ def latest_period_for_brand(brand_id: str) -> str:
     return str(row["period"])
 
 
+def normalize_market_status_top_n(top_n: int | None) -> int:
+    if top_n is None:
+        return DEFAULT_MARKET_STATUS_TOP_N
+    return max(1, min(int(top_n), MAX_MARKET_STATUS_TOP_N))
+
+
 def build_brands_response(include_snapshot: bool = False) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for display in DISPLAY_BRANDS:
@@ -136,15 +144,30 @@ def build_brands_response(include_snapshot: bool = False) -> dict[str, Any]:
     return {"data": data, "total": len(data), "generated_at": now_iso()}
 
 
-def build_market_status_response(period: str | None = None, top_n: int = 10) -> dict[str, Any]:
+def build_market_status_response(period: str | None = None, top_n: int = DEFAULT_MARKET_STATUS_TOP_N) -> dict[str, Any]:
+    top_n = normalize_market_status_top_n(top_n)
     if period and period != "latest":
         rows = db.fetch_all(
             """
             SELECT ml_id, brand_id, brand_name, is_jw, market_share, rank_in_market,
                    cagr_5y, ei_5y, hhi, market_cagr_5y
             FROM mart_core_brand_metric
-            WHERE period_yyyymm = %s AND channel IS NULL AND specialty IS NULL
+            WHERE period_yyyymm = %s
+              AND channel_norm = '__ALL__'
+              AND specialty_norm = '__ALL__'
+              AND rank_in_market <= %s
             ORDER BY ml_id, rank_in_market
+            """,
+            (period, top_n),
+        )
+        counts = db.fetch_all(
+            """
+            SELECT ml_id, COUNT(*) AS total_brands
+            FROM mart_core_brand_metric
+            WHERE period_yyyymm = %s
+              AND channel_norm = '__ALL__'
+              AND specialty_norm = '__ALL__'
+            GROUP BY ml_id
             """,
             (period,),
         )
@@ -154,20 +177,32 @@ def build_market_status_response(period: str | None = None, top_n: int = 10) -> 
             WITH latest AS (
               SELECT ml_id, MAX(period_yyyymm) AS period_yyyymm
               FROM mart_core_brand_metric
-              WHERE channel IS NULL AND specialty IS NULL
+              WHERE channel_norm = '__ALL__' AND specialty_norm = '__ALL__'
               GROUP BY ml_id
+            ), counts AS (
+              SELECT m.ml_id, COUNT(*) AS total_brands
+              FROM mart_core_brand_metric m
+              JOIN latest l ON l.ml_id = m.ml_id AND l.period_yyyymm = m.period_yyyymm
+              WHERE m.channel_norm = '__ALL__' AND m.specialty_norm = '__ALL__'
+              GROUP BY m.ml_id
             )
             SELECT m.ml_id, m.brand_id, m.brand_name, m.is_jw, m.period_yyyymm,
                    m.market_share, m.rank_in_market, m.cagr_5y, m.ei_5y,
-                   m.hhi, m.market_cagr_5y
+                   m.hhi, m.market_cagr_5y, c.total_brands
             FROM mart_core_brand_metric m
             JOIN latest l ON l.ml_id = m.ml_id AND l.period_yyyymm = m.period_yyyymm
-            WHERE m.channel IS NULL AND m.specialty IS NULL
+            JOIN counts c ON c.ml_id = m.ml_id
+            WHERE m.channel_norm = '__ALL__'
+              AND m.specialty_norm = '__ALL__'
+              AND m.rank_in_market <= %s
             ORDER BY m.ml_id, m.rank_in_market
-            """
+            """,
+            (top_n,),
         )
+        counts = []
         period = "latest"
 
+    count_by_ml = {str(row["ml_id"]): int(row["total_brands"]) for row in counts}
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(str(row["ml_id"]), []).append(to_jsonable(row))
@@ -176,7 +211,6 @@ def build_market_status_response(period: str | None = None, top_n: int = 10) -> 
     for ml_id, group in sorted(grouped.items()):
         if not group:
             continue
-        top = group[:top_n]
         markets.append(
             {
                 "ml_id": ml_id,
@@ -194,9 +228,9 @@ def build_market_status_response(period: str | None = None, top_n: int = 10) -> 
                         "cagr_5y": item["cagr_5y"],
                         "ei_5y": item["ei_5y"],
                     }
-                    for item in top
+                    for item in group
                 ],
-                "total_brands": len(group),
+                "total_brands": int(group[0].get("total_brands") or count_by_ml.get(ml_id, len(group))),
             }
         )
     return {"period": str(period), "markets": markets, "total_markets": len(markets), "generated_at": now_iso()}
