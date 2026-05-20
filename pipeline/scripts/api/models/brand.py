@@ -2,7 +2,25 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class BrandResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brand: str
+    market_id: str
+    market_name: str
+    market_name_short: str
+    market_label_kor: str
+    mkt_team: str | None
+    sources: list[str]
+    atc_codes: list[str]
+    atc_desc: str
+    is_jw: bool
+    is_target: bool
+    is_dual_source: bool
+    rank: int
 
 
 class BrandInfo(BaseModel):

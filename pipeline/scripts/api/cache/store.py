@@ -8,7 +8,7 @@ from pipeline.scripts.api.db import connect, fetch_one
 from pipeline.scripts.api.utils import json_dumps, loads_json_maybe
 
 
-def get_cache(cache_key: str) -> dict[str, Any] | None:
+def get_cache(cache_key: str) -> Any | None:
     row = fetch_one(
         """
         SELECT response_json
@@ -20,14 +20,13 @@ def get_cache(cache_key: str) -> dict[str, Any] | None:
     )
     if not row:
         return None
-    payload = loads_json_maybe(row["response_json"])
-    return payload if isinstance(payload, dict) else None
+    return loads_json_maybe(row["response_json"])
 
 
 def set_cache(
     cache_key: str,
     endpoint: str,
-    response: dict[str, Any],
+    response: Any,
     *,
     brand_name: str | None = None,
     period_yyyymm: str | None = None,

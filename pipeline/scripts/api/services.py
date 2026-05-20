@@ -14,6 +14,8 @@ from pipeline.scripts.api.catalog import (
     validate_source_measure,
 )
 from pipeline.scripts.api.drivers import compute_drivers
+from pipeline.scripts.api.market_id import to_strategy_id
+from pipeline.scripts.api.metadata import BRAND_METADATA
 from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
 
 
@@ -116,32 +118,21 @@ def normalize_market_status_top_n(top_n: int | None) -> int:
     return max(1, min(int(top_n), MAX_MARKET_STATUS_TOP_N))
 
 
-def build_brands_response(include_snapshot: bool = False) -> dict[str, Any]:
-    data: list[dict[str, Any]] = []
-    for display in DISPLAY_BRANDS:
-        item: dict[str, Any] = {
-            "brand": display.brand_name,
-            "market_id": display.market_id,
-            "ml_id": display.ml_id,
-            "market_name": None,
-            "source_class": display.source_class,
-            "sources": display.sources,
-            "available_measures": display.available_measures,
-            "cause_variants": display.cause_variants,
-        }
-        try:
-            resolved = resolve_brand(display.brand_name)
-            item["resolved_brand_id"] = resolved.brand_id
-            item["resolved_brand_name"] = resolved.brand_name
-            if include_snapshot:
-                item["snapshot"] = resolved.snapshot
-        except HTTPException:
-            item["resolved_brand_id"] = None
-            item["resolved_brand_name"] = None
-            if include_snapshot:
-                item["snapshot"] = None
-        data.append(item)
-    return {"data": data, "total": len(data), "generated_at": now_iso()}
+def build_brands_response(
+    q: str | None = None,
+    market_id: str | None = None,
+    include_snapshot: bool = False,
+) -> list[dict[str, Any]]:
+    del include_snapshot  # Kept for old callers; v0.9.0 brands is catalog metadata only.
+    normalized_market_id = to_strategy_id(market_id) if market_id else None
+    query = q.casefold() if q else None
+
+    data = [brand.to_response() for brand in BRAND_METADATA]
+    if query:
+        data = [brand for brand in data if query in str(brand["brand"]).casefold()]
+    if normalized_market_id:
+        data = [brand for brand in data if brand["market_id"] == normalized_market_id]
+    return data
 
 
 def build_market_status_response(period: str | None = None, top_n: int = DEFAULT_MARKET_STATUS_TOP_N) -> dict[str, Any]:

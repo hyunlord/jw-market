@@ -1,4 +1,4 @@
-from pipeline.scripts.api.models.brand import BrandInfo, BrandsResponse
+from pipeline.scripts.api.models.brand import BrandInfo, BrandResponse, BrandsResponse
 from pipeline.scripts.api.models.cause import (
     CauseDriver,
     CausePoint,
@@ -17,6 +17,7 @@ from pipeline.scripts.api.models.market_status import (
 
 __all__ = [
     "BrandInfo",
+    "BrandResponse",
     "BrandsResponse",
     "CauseDriver",
     "CausePoint",

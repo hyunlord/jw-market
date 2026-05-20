@@ -57,20 +57,16 @@ def compute_168_variants() -> list[CauseVariant]:
     return variants
 
 
-def _timed_build(builder, *args, **kwargs) -> tuple[dict[str, Any], int]:
+def _timed_build(builder, *args, **kwargs) -> tuple[Any, int]:
     start = time.perf_counter()
     response = builder(*args, **kwargs)
     return response, int((time.perf_counter() - start) * 1000)
 
 
-def rebuild_all_cache(*, clear_existing: bool = True) -> dict[str, Any]:
-    if clear_existing:
-        truncate_cache()
-
+def rebuild_brands_cache() -> dict[str, Any]:
     stats: dict[str, Any] = {
         "keys_rebuilt": 0,
         "errors": [],
-        "variants": len(compute_168_variants()),
         "details": [],
     }
 
@@ -78,6 +74,15 @@ def rebuild_all_cache(*, clear_existing: bool = True) -> dict[str, Any]:
     set_cache(cache_key_brands(), "brands", response, computation_ms=elapsed)
     stats["keys_rebuilt"] += 1
     stats["details"].append({"endpoint": "brands", "cache_key": cache_key_brands(), "ms": elapsed})
+    return stats
+
+
+def rebuild_all_cache(*, clear_existing: bool = True) -> dict[str, Any]:
+    if clear_existing:
+        truncate_cache()
+
+    stats: dict[str, Any] = rebuild_brands_cache()
+    stats["variants"] = len(compute_168_variants())
 
     response, elapsed = _timed_build(build_market_status_response, "latest")
     set_cache(cache_key_market_status("latest"), "market_status", response, period_yyyymm="latest", computation_ms=elapsed)
@@ -140,9 +145,10 @@ def rebuild_all_cache(*, clear_existing: bool = True) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Rebuild Layer 4 response_store cache")
     parser.add_argument("--keep-existing", action="store_true", help="Do not truncate response_store first")
+    parser.add_argument("--rebuild-brands", action="store_true", help="Only rebuild the /api/brands cache key")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    stats = rebuild_all_cache(clear_existing=not args.keep_existing)
+    stats = rebuild_brands_cache() if args.rebuild_brands else rebuild_all_cache(clear_existing=not args.keep_existing)
     print(json.dumps(json.loads(json_dumps(stats)), ensure_ascii=False, indent=2))
     return 1 if stats["errors"] else 0
 
