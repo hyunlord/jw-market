@@ -366,7 +366,12 @@ def build_payloads_cd(df: pd.DataFrame) -> list[str]:
         "source_value_csd",
         "source_count_csd",
     ]
-    for row in df[payload_cols].itertuples(index=False):
+    threshold_warning_cols = [
+        col
+        for col in ("growth_contribution_warning", "ei_warning")
+        if col in df.columns
+    ]
+    for row in df[payload_cols + threshold_warning_cols].itertuples(index=False):
         raw_value = float(row.raw_value or 0)
         source_split: dict[str, float] = {}
         source_count: dict[str, int] = {}
@@ -384,6 +389,10 @@ def build_payloads_cd(df: pd.DataFrame) -> list[str]:
             "aggregation_level": row.aggregation_level,
         }
         warnings = growth_warning_flags(row.mom, row.qoq, row.yoy)
+        for col in threshold_warning_cols:
+            flag = getattr(row, col)
+            if flag is not None and not pd.isna(flag):
+                warnings.append(str(flag))
         if warnings:
             payload["warnings"] = warnings
         payloads.append(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))

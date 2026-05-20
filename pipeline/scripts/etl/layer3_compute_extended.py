@@ -71,6 +71,10 @@ ANOMALY_THRESHOLDS = {
     "hhi_gt_10000": ("hhi", "gt", 10000.0),
     "ei_abs_gt_1000": ("ei_5y", "abs_gt", 1000.0),
 }
+GROWTH_CONTRIBUTION_THRESHOLD = 10_000.0
+EI_DENOMINATOR_THRESHOLD = 0.001
+GC_SMALL_DENOMINATOR_WARNING = "gc_small_denominator"
+EI_SMALL_DENOMINATOR_WARNING = "ei_small_denominator"
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -121,19 +125,26 @@ def periods_per_year(period_kind: str) -> int:
     raise ValueError(f"unsupported period kind: {period_kind!r}")
 
 
-def safe_ratio(numerator: Any, denominator: Any) -> float | None:
+def safe_number(value: Any) -> float | None:
     try:
-        if numerator is None or denominator is None or pd.isna(numerator) or pd.isna(denominator):
+        if value is None or pd.isna(value):
             return None
-        denominator_f = float(denominator)
-        if denominator_f == 0 or math.isnan(denominator_f):
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
             return None
-        numerator_f = float(numerator)
-        if math.isnan(numerator_f):
-            return None
-        return numerator_f / denominator_f
     except (TypeError, ValueError):
         return None
+    return number
+
+
+def safe_ratio(numerator: Any, denominator: Any) -> float | None:
+    denominator_f = safe_number(denominator)
+    if denominator_f is None or denominator_f == 0:
+        return None
+    numerator_f = safe_number(numerator)
+    if numerator_f is None:
+        return None
+    return numerator_f / denominator_f
 
 
 def compute_cagr_value(end_value: Any, start_value: Any, years: int) -> float | None:
@@ -143,18 +154,24 @@ def compute_cagr_value(end_value: Any, start_value: Any, years: int) -> float | 
     return (ratio ** (1 / years)) - 1
 
 
-def compute_ei(brand_cagr_5y: Any, market_cagr_5y: Any) -> float | None:
+def compute_ei(brand_cagr_5y: Any, market_cagr_5y: Any) -> tuple[float | None, str | None]:
+    denominator_f = safe_number(market_cagr_5y)
+    if denominator_f is not None and abs(denominator_f) < EI_DENOMINATOR_THRESHOLD:
+        return None, EI_SMALL_DENOMINATOR_WARNING
     ratio = safe_ratio(brand_cagr_5y, market_cagr_5y)
     if ratio is None:
-        return None
-    return ratio * 100
+        return None, None
+    return ratio * 100, None
 
 
-def compute_growth_contribution(brand_growth_abs: Any, market_growth_abs: Any) -> float | None:
+def compute_growth_contribution(brand_growth_abs: Any, market_growth_abs: Any) -> tuple[float | None, str | None]:
+    denominator_f = safe_number(market_growth_abs)
+    if denominator_f is not None and abs(denominator_f) <= GROWTH_CONTRIBUTION_THRESHOLD:
+        return None, GC_SMALL_DENOMINATOR_WARNING
     ratio = safe_ratio(brand_growth_abs, market_growth_abs)
     if ratio is None:
-        return None
-    return ratio * 100
+        return None, None
+    return ratio * 100, None
 
 
 def compute_hhi(brand_ms_list: Iterable[Any]) -> float | None:
@@ -179,15 +196,7 @@ def compute_momentum(quarterly_ms_percent: list[float]) -> float | None:
 
 
 def safe_db_float(value: Any) -> float | None:
-    if value is None or pd.isna(value):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number) or math.isinf(number):
-        return None
-    return number
+    return safe_number(value)
 
 
 def load_mart_rows(ml_id: str, conn: pymysql.connections.Connection) -> pd.DataFrame:
@@ -326,10 +335,14 @@ def add_market_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_ei(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
-    result["ei_5y"] = [
-        compute_ei(brand_cagr, market_cagr)
-        for brand_cagr, market_cagr in zip(result["cagr_5y"], result["market_cagr_5y"], strict=False)
-    ]
+    values: list[float | None] = []
+    warnings: list[str | None] = []
+    for brand_cagr, market_cagr in zip(result["cagr_5y"], result["market_cagr_5y"], strict=False):
+        value, warning = compute_ei(brand_cagr, market_cagr)
+        values.append(value)
+        warnings.append(warning)
+    result["ei_5y"] = values
+    result["ei_warning"] = warnings
     return result
 
 
@@ -342,10 +355,14 @@ def add_growth_contribution(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     result = result.merge(market_growth, on=["period_yyyymm", "channel_norm", "specialty_norm"], how="left")
-    result["growth_contribution"] = [
-        compute_growth_contribution(brand_growth, market_growth_abs)
-        for brand_growth, market_growth_abs in zip(result["growth_abs"], result["market_growth_abs"], strict=False)
-    ]
+    values: list[float | None] = []
+    warnings: list[str | None] = []
+    for brand_growth, market_growth_abs in zip(result["growth_abs"], result["market_growth_abs"], strict=False):
+        value, warning = compute_growth_contribution(brand_growth, market_growth_abs)
+        values.append(value)
+        warnings.append(warning)
+    result["growth_contribution"] = values
+    result["growth_contribution_warning"] = warnings
     return result.drop(columns=["market_growth_abs"])
 
 
