@@ -14,7 +14,7 @@ from pipeline.scripts.api.catalog import (
     validate_source_measure,
 )
 from pipeline.scripts.api.drivers import compute_drivers
-from pipeline.scripts.api.market_id import to_strategy_id
+from pipeline.scripts.api.market_id import to_ml_id, to_strategy_id
 from pipeline.scripts.api.metadata import BRAND_METADATA
 from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
 
@@ -22,6 +22,35 @@ from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
 FORM_BOUNDARY = re.compile(r"(?:$|\\s|정|캡슐|주|액|서방|시럽|현탁|구강|SR|CR|OD)", re.IGNORECASE)
 DEFAULT_MARKET_STATUS_TOP_N = 20
 MAX_MARKET_STATUS_TOP_N = 100
+
+
+MARKET_STATUS_COMPANY_BY_BRAND: dict[str, str] = {
+    "라베칸": "녹십자",
+    "라베칸듀오": "JW중외제약",
+    "제이클": "한미약품",
+    "가드렛": "엘지화학",
+    "가드메트": "유한양행",
+    "타발리스": "유한양행",
+    "시그마트": "대웅제약",
+    "리바로": "일동제약",
+    "리바로젯": "종근당",
+    "리바로페노": "종근당",
+    "리바로하이": "동아에스티",
+    "리바로브이": "유한양행",
+    "트루패스": "엘지화학",
+    "피나스타": "셀트리온제약",
+    "제이다트": "한미약품",
+    "뉴트로진": "한독",
+    "모빌리아": "한미약품",
+    "악템라": "한미약품",
+    "페린젝트": "일동제약",
+    "베노훼럼": "한미약품",
+    "헴리브라": "대웅제약",
+    "위너프": "한미약품",
+    "위너프A+": "한독",
+    "엔커버": "삼성바이오에피스",
+    "플라주오피": "한독",
+}
 
 
 @dataclass(frozen=True)
@@ -135,96 +164,325 @@ def build_brands_response(
     return data
 
 
-def build_market_status_response(period: str | None = None, top_n: int = DEFAULT_MARKET_STATUS_TOP_N) -> dict[str, Any]:
-    top_n = normalize_market_status_top_n(top_n)
-    if period and period != "latest":
-        rows = db.fetch_all(
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _round_or_none(value: float | None, ndigits: int = 2) -> float | None:
+    if value is None:
+        return None
+    return round(value, ndigits)
+
+
+def _pct(value: Any, ndigits: int = 2) -> float | None:
+    concrete = _float_or_none(value)
+    if concrete is None:
+        return None
+    return round(concrete * 100, ndigits)
+
+
+def _growth_pct(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous is None or previous == 0:
+        return None
+    return round((current / previous - 1) * 100, 2)
+
+
+def _period_minus_months(period: str, months: int) -> str:
+    year, month = (int(part) for part in period.split("-", 1))
+    index = year * 12 + month - 1 - months
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+
+def _period_range(start: str, end: str) -> list[str]:
+    periods: list[str] = []
+    cursor = start
+    while cursor <= end:
+        periods.append(cursor)
+        cursor = _period_minus_months(cursor, -1)
+    return periods
+
+
+def _format_quarter(period: str | None) -> str | None:
+    if not period:
+        return None
+    year, month = (int(part) for part in period.split("-", 1))
+    return f"{year}-Q{((month - 1) // 3) + 1}"
+
+
+def _sum_raw_value_for_periods(brand_id: str, periods: list[str]) -> float | None:
+    if not periods:
+        return None
+    placeholders = ", ".join(["%s"] * len(periods))
+    row = db.fetch_one(
+        f"""
+        SELECT SUM(raw_value) AS total_value
+        FROM mart_core_brand_metric
+        WHERE brand_id = %s
+          AND period_yyyymm IN ({placeholders})
+          AND channel_norm = '__ALL__'
+          AND specialty_norm = '__ALL__'
+        """,
+        (brand_id, *periods),
+    )
+    return _float_or_none(row["total_value"]) if row else None
+
+
+def _mat_growth_pct(brand_id: str, latest_period: str) -> float | None:
+    current_start = _period_minus_months(latest_period, 11)
+    previous_start = _period_minus_months(latest_period, 23)
+    previous_end = _period_minus_months(latest_period, 12)
+    current_total = _sum_raw_value_for_periods(brand_id, _period_range(current_start, latest_period))
+    previous_total = _sum_raw_value_for_periods(brand_id, _period_range(previous_start, previous_end))
+    return _growth_pct(current_total, previous_total)
+
+
+def _ym_growth_pct(brand_id: str, latest_period: str) -> float | None:
+    year, month = latest_period.split("-", 1)
+    current_start = f"{year}-01"
+    previous_start = f"{int(year) - 1:04d}-01"
+    previous_end = f"{int(year) - 1:04d}-{month}"
+    current_total = _sum_raw_value_for_periods(brand_id, _period_range(current_start, latest_period))
+    previous_total = _sum_raw_value_for_periods(brand_id, _period_range(previous_start, previous_end))
+    return _growth_pct(current_total, previous_total)
+
+
+def _ms_change_yoy_pct(brand_id: str, latest_period: str, current_market_share: Any) -> float | None:
+    current_ms = _float_or_none(current_market_share)
+    if current_ms is None:
+        return None
+    previous_period = _period_minus_months(latest_period, 12)
+    row = db.fetch_one(
+        """
+        SELECT market_share
+        FROM mart_core_brand_metric
+        WHERE brand_id = %s
+          AND period_yyyymm = %s
+          AND channel_norm = '__ALL__'
+          AND specialty_norm = '__ALL__'
+        """,
+        (brand_id, previous_period),
+    )
+    if not row or row["market_share"] is None:
+        return None
+    return round((current_ms - float(row["market_share"])) * 100, 2)
+
+
+def _first_period_snapshot(brand_id: str, latest_period: str) -> dict[str, Any] | None:
+    five_year_start = _period_minus_months(latest_period, 60)
+    row = db.fetch_one(
+        """
+        SELECT period_yyyymm, raw_value, market_share
+        FROM mart_core_brand_metric
+        WHERE brand_id = %s
+          AND period_yyyymm >= %s
+          AND period_yyyymm <= %s
+          AND channel_norm = '__ALL__'
+          AND specialty_norm = '__ALL__'
+        ORDER BY period_yyyymm
+        LIMIT 1
+        """,
+        (brand_id, five_year_start, latest_period),
+    )
+    if row:
+        return to_jsonable(row)
+    row = db.fetch_one(
+        """
+        SELECT period_yyyymm, raw_value, market_share
+        FROM mart_core_brand_metric
+        WHERE brand_id = %s
+          AND period_yyyymm <= %s
+          AND channel_norm = '__ALL__'
+          AND specialty_norm = '__ALL__'
+        ORDER BY period_yyyymm
+        LIMIT 1
+        """,
+        (brand_id, latest_period),
+    )
+    return to_jsonable(row) if row else None
+
+
+def _market_context_snapshot(ml_id: str, period: str, cache: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+    key = (ml_id, period)
+    if key not in cache:
+        row = db.fetch_one(
             """
-            SELECT ml_id, brand_id, brand_name, is_jw, market_share, rank_in_market,
-                   cagr_5y, ei_5y, hhi, market_cagr_5y
+            SELECT SUM(raw_value) AS market_size_recent,
+                   COUNT(*) AS direct_competition_count
             FROM mart_core_brand_metric
-            WHERE period_yyyymm = %s
+            WHERE ml_id = %s
+              AND period_yyyymm = %s
               AND channel_norm = '__ALL__'
               AND specialty_norm = '__ALL__'
-              AND rank_in_market <= %s
-            ORDER BY ml_id, rank_in_market
             """,
-            (period, top_n),
+            (ml_id, period),
         )
-        counts = db.fetch_all(
-            """
-            SELECT ml_id, COUNT(*) AS total_brands
-            FROM mart_core_brand_metric
-            WHERE period_yyyymm = %s
-              AND channel_norm = '__ALL__'
-              AND specialty_norm = '__ALL__'
-            GROUP BY ml_id
-            """,
-            (period,),
-        )
-    else:
-        rows = db.fetch_all(
-            """
-            WITH latest AS (
-              SELECT ml_id, MAX(period_yyyymm) AS period_yyyymm
-              FROM mart_core_brand_metric
-              WHERE channel_norm = '__ALL__' AND specialty_norm = '__ALL__'
-              GROUP BY ml_id
-            ), counts AS (
-              SELECT m.ml_id, COUNT(*) AS total_brands
-              FROM mart_core_brand_metric m
-              JOIN latest l ON l.ml_id = m.ml_id AND l.period_yyyymm = m.period_yyyymm
-              WHERE m.channel_norm = '__ALL__' AND m.specialty_norm = '__ALL__'
-              GROUP BY m.ml_id
-            )
-            SELECT m.ml_id, m.brand_id, m.brand_name, m.is_jw, m.period_yyyymm,
-                   m.market_share, m.rank_in_market, m.cagr_5y, m.ei_5y,
-                   m.hhi, m.market_cagr_5y, c.total_brands
-            FROM mart_core_brand_metric m
-            JOIN latest l ON l.ml_id = m.ml_id AND l.period_yyyymm = m.period_yyyymm
-            JOIN counts c ON c.ml_id = m.ml_id
-            WHERE m.channel_norm = '__ALL__'
-              AND m.specialty_norm = '__ALL__'
-              AND m.rank_in_market <= %s
-            ORDER BY m.ml_id, m.rank_in_market
-            """,
-            (top_n,),
-        )
-        counts = []
-        period = "latest"
+        cache[key] = to_jsonable(row or {})
+    return cache[key]
 
-    count_by_ml = {str(row["ml_id"]): int(row["total_brands"]) for row in counts}
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        grouped.setdefault(str(row["ml_id"]), []).append(to_jsonable(row))
 
-    markets: list[dict[str, Any]] = []
-    for ml_id, group in sorted(grouped.items()):
-        if not group:
-            continue
-        markets.append(
+def _default_source(sources: list[str]) -> str:
+    if "IQVIA" in sources:
+        return "IQVIA"
+    return sources[0] if sources else "UBIST"
+
+
+def _source_metrics(front: dict[str, Any], sources: list[str]) -> dict[str, dict[str, Any]]:
+    source_metric = {
+        "value_recent": front["value_recent"],
+        "ms_recent_pct": front["ms_recent_pct"],
+        "gr_mom_pct": front["gr_mom_pct"],
+        "gr_qoq_pct": front["gr_qoq_pct"],
+        "gr_yoy_pct": front["gr_yoy_pct"],
+        "gr_yoy_mat_pct": front["gr_yoy_mat_pct"],
+        "gr_yoy_ym_pct": front["gr_yoy_ym_pct"],
+    }
+    return {source: dict(source_metric) for source in sources}
+
+
+def _empty_front(sources: list[str]) -> dict[str, Any]:
+    front = {
+        "value_recent": None,
+        "ms_recent_pct": None,
+        "gr_qoq_pct": None,
+        "gr_yoy_pct": None,
+        "ms_change_yoy_pct": None,
+        "gr_mom_pct": None,
+        "gr_yoy_mat_pct": None,
+        "gr_yoy_ym_pct": None,
+    }
+    return {**front, "sources_data": _source_metrics(front, sources), "default_source": _default_source(sources)}
+
+
+def _market_definition_label(atc_codes: list[str]) -> str:
+    return "1 ATC" if len(atc_codes) == 1 else f"{len(atc_codes)} ATC 통합"
+
+
+def _build_market_status_card(
+    meta: Any,
+    *,
+    market_context_cache: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    ml_id = to_ml_id(meta.market_id)
+    sources = list(meta.sources)
+    try:
+        resolved = resolve_brand(meta.brand)
+        snapshot = resolved.snapshot
+        latest = resolved.period_yyyymm
+    except HTTPException:
+        resolved = None
+        snapshot = {}
+        latest = latest_period()
+
+    front = _empty_front(sources)
+    back = {
+        "cagr_5y_pct": None,
+        "sales_first_period_krw": None,
+        "ms_first_period_pct": None,
+        "period_first": None,
+    }
+    back_extended = {
+        "market_size_recent": None,
+        "market_cagr_5y_pct": None,
+        "brand_cagr_5y_pct": None,
+        "excess_growth_pct": None,
+        "source_label": _default_source(sources),
+        "is_dual_source": bool(meta.is_dual_source),
+        "sources": sources,
+        "market_definition_label": _market_definition_label(list(meta.atc_codes)),
+        "market_definition_full": f"{meta.market_name} 경쟁 시장 ({', '.join(meta.atc_codes)})",
+        "atc_count": len(meta.atc_codes),
+        "direct_competition_count": None,
+        "market_label_kor": meta.market_label_kor,
+    }
+
+    if resolved:
+        mat_growth = _mat_growth_pct(resolved.brand_id, latest)
+        ym_growth = _ym_growth_pct(resolved.brand_id, latest)
+        front = {
+            "value_recent": _round_or_none(_float_or_none(snapshot.get("raw_value")), 2),
+            "ms_recent_pct": _pct(snapshot.get("market_share")),
+            "gr_qoq_pct": _pct(snapshot.get("qoq")),
+            "gr_yoy_pct": _pct(snapshot.get("yoy")),
+            "ms_change_yoy_pct": _ms_change_yoy_pct(resolved.brand_id, latest, snapshot.get("market_share")),
+            "gr_mom_pct": _pct(snapshot.get("mom")),
+            "gr_yoy_mat_pct": mat_growth,
+            "gr_yoy_ym_pct": ym_growth,
+        }
+        front["sources_data"] = _source_metrics(front, sources)
+        front["default_source"] = _default_source(sources)
+
+        first = _first_period_snapshot(resolved.brand_id, latest)
+        if first:
+            back = {
+                "cagr_5y_pct": _pct(snapshot.get("cagr_5y")),
+                "sales_first_period_krw": _round_or_none(_float_or_none(first.get("raw_value")), 2),
+                "ms_first_period_pct": _pct(first.get("market_share")),
+                "period_first": _format_quarter(str(first.get("period_yyyymm"))),
+            }
+
+        market_context = _market_context_snapshot(ml_id, latest, market_context_cache)
+        brand_cagr = _float_or_none(snapshot.get("cagr_5y"))
+        market_cagr = _float_or_none(snapshot.get("market_cagr_5y"))
+        back_extended.update(
             {
-                "ml_id": ml_id,
-                "ml_name": next((b.brand_name + " 시장" for b in DISPLAY_BRANDS if b.ml_id == ml_id), ml_id),
-                "period_yyyymm": str(group[0].get("period_yyyymm") or period),
-                "hhi": group[0].get("hhi"),
-                "market_cagr_5y": group[0].get("market_cagr_5y"),
-                "top_brands": [
-                    {
-                        "brand_id": item["brand_id"],
-                        "brand_name": item["brand_name"],
-                        "is_jw": bool(item["is_jw"]),
-                        "market_share": item["market_share"],
-                        "rank": item["rank_in_market"],
-                        "cagr_5y": item["cagr_5y"],
-                        "ei_5y": item["ei_5y"],
-                    }
-                    for item in group
-                ],
-                "total_brands": int(group[0].get("total_brands") or count_by_ml.get(ml_id, len(group))),
+                "market_size_recent": _round_or_none(_float_or_none(market_context.get("market_size_recent")), 2),
+                "market_cagr_5y_pct": _pct(market_cagr),
+                "brand_cagr_5y_pct": _pct(brand_cagr),
+                "excess_growth_pct": _round_or_none((brand_cagr - market_cagr) * 100, 2)
+                if brand_cagr is not None and market_cagr is not None
+                else None,
+                "direct_competition_count": int(market_context["direct_competition_count"])
+                if market_context.get("direct_competition_count") is not None
+                else None,
             }
         )
-    return {"period": str(period), "markets": markets, "total_markets": len(markets), "generated_at": now_iso()}
+
+    return {
+        "rank": int(meta.rank),
+        "brand": meta.brand,
+        "company": MARKET_STATUS_COMPANY_BY_BRAND.get(meta.brand, "JW중외제약"),
+        "is_jw": bool(meta.is_jw),
+        "is_target": bool(meta.is_target),
+        "market_id": to_strategy_id(meta.market_id),
+        "market_name": meta.market_name,
+        "market_name_short": meta.market_name_short,
+        "market_label_kor": meta.market_label_kor,
+        "mkt_team": meta.mkt_team,
+        "atc_codes": list(meta.atc_codes),
+        "atc_desc": meta.atc_desc,
+        "sources": sources,
+        "nhi_type": "NHI",
+        "front": front,
+        "back": back,
+        "back_extended": back_extended,
+    }
+
+
+def filter_market_status_cards(cards: list[dict[str, Any]], market_id: str | None = None) -> list[dict[str, Any]]:
+    if not market_id:
+        return cards
+    normalized_market_id = to_strategy_id(market_id)
+    return [card for card in cards if card["market_id"] == normalized_market_id]
+
+
+def build_market_status_cards(market_id: str | None = None) -> list[dict[str, Any]]:
+    market_context_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    cards = [
+        _build_market_status_card(meta, market_context_cache=market_context_cache)
+        for meta in sorted(BRAND_METADATA, key=lambda item: item.rank)
+    ]
+    return filter_market_status_cards(cards, market_id=market_id)
+
+
+def build_market_status_response(
+    period: str | None = None,
+    top_n: int = DEFAULT_MARKET_STATUS_TOP_N,
+    market_id: str | None = None,
+) -> list[dict[str, Any]]:
+    del period, top_n  # v0.9.0 market-status is a 25 JW brand card list.
+    return build_market_status_cards(market_id=market_id)
 
 
 def _warnings_from_row(row: dict[str, Any]) -> list[str]:

@@ -77,6 +77,21 @@ def rebuild_brands_cache() -> dict[str, Any]:
     return stats
 
 
+def rebuild_market_status_cache() -> dict[str, Any]:
+    stats: dict[str, Any] = {
+        "keys_rebuilt": 0,
+        "errors": [],
+        "details": [],
+    }
+
+    response, elapsed = _timed_build(build_market_status_response)
+    key = cache_key_market_status("all")
+    set_cache(key, "market_status", response, computation_ms=elapsed)
+    stats["keys_rebuilt"] += 1
+    stats["details"].append({"endpoint": "market_status", "cache_key": key, "ms": elapsed})
+    return stats
+
+
 def rebuild_all_cache(*, clear_existing: bool = True) -> dict[str, Any]:
     if clear_existing:
         truncate_cache()
@@ -84,12 +99,10 @@ def rebuild_all_cache(*, clear_existing: bool = True) -> dict[str, Any]:
     stats: dict[str, Any] = rebuild_brands_cache()
     stats["variants"] = len(compute_168_variants())
 
-    response, elapsed = _timed_build(build_market_status_response, "latest")
-    set_cache(cache_key_market_status("latest"), "market_status", response, period_yyyymm="latest", computation_ms=elapsed)
-    stats["keys_rebuilt"] += 1
-    stats["details"].append(
-        {"endpoint": "market_status", "cache_key": cache_key_market_status("latest"), "ms": elapsed}
-    )
+    market_stats = rebuild_market_status_cache()
+    stats["keys_rebuilt"] += market_stats["keys_rebuilt"]
+    stats["errors"].extend(market_stats["errors"])
+    stats["details"].extend(market_stats["details"])
 
     for brand in DISPLAY_BRANDS:
         try:
@@ -146,9 +159,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Rebuild Layer 4 response_store cache")
     parser.add_argument("--keep-existing", action="store_true", help="Do not truncate response_store first")
     parser.add_argument("--rebuild-brands", action="store_true", help="Only rebuild the /api/brands cache key")
+    parser.add_argument(
+        "--rebuild-market-status",
+        action="store_true",
+        help="Only rebuild the /api/market-status cache key",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    stats = rebuild_brands_cache() if args.rebuild_brands else rebuild_all_cache(clear_existing=not args.keep_existing)
+    if args.rebuild_brands:
+        stats = rebuild_brands_cache()
+    elif args.rebuild_market_status:
+        stats = rebuild_market_status_cache()
+    else:
+        stats = rebuild_all_cache(clear_existing=not args.keep_existing)
     print(json.dumps(json.loads(json_dumps(stats)), ensure_ascii=False, indent=2))
     return 1 if stats["errors"] else 0
 
