@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .build_cause import build_cause_response_from_rows
-from .utils import latest_period, now_iso
+from .utils import (
+    latest_period,
+    market_id_for_brand_row,
+    normalise_market_row,
+    now_iso,
+    parse_json,
+)
 
 
 def _series_values(series: dict[str, Any]) -> list[float | None]:
@@ -21,30 +26,38 @@ def build_deep_analysis_response_from_rows(
     brand_row: dict[str, Any],
     market_row: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    cause = build_cause_response_from_rows(view_type, brand_row, market_row)
-    raw_history = cause.get("raw_value_history") or {}
+    raw_history = parse_json(brand_row.get("raw_value_history")) or {}
     periods = sorted(raw_history.keys())
     current_period = latest_period(raw_history)
-    combo = f"{cause.get('view')}|{cause.get('source')}|{cause.get('measure')}"
+    source = brand_row.get("source")
+    measure = brand_row.get("measure")
+    unit_label = brand_row.get("unit_label")
+    market_id = market_id_for_brand_row(view_type, brand_row)
+    market_payload = normalise_market_row(view_type, market_row)
+    by_dimension = parse_json(brand_row.get("by_dimension")) or {}
+    combo = f"{view_type}|{source}|{measure}"
 
     return {
-        "brand": cause.get("brand_name"),
-        "brand_key": cause.get("brand_key"),
-        "market_id": cause.get("market_id"),
+        "brand": brand_row.get("brand_name"),
+        "brand_key": brand_row.get("brand_key"),
+        "market_id": market_id,
+        "view": view_type,
+        "source": source,
+        "measure": measure,
         "generated_at": now_iso(),
         "available_combos": [
             {
-                "view": cause.get("view"),
-                "source": cause.get("source"),
-                "measure": cause.get("measure"),
-                "unit_label": cause.get("unit_label"),
-                "market_id": cause.get("market_id"),
+                "view": view_type,
+                "source": source,
+                "measure": measure,
+                "unit_label": unit_label,
+                "market_id": market_id,
             }
         ],
         "market_meta": {
-            "market_name": cause.get("market_name"),
-            "by_dimension": cause.get("by_dimension"),
-            "target_customer_competition": cause.get("target_customer_competition"),
+            "market_name": market_payload.get("market_name"),
+            "market_id": market_id,
+            "by_dimension": by_dimension,
         },
         "data": {
             "forecast": {
@@ -55,8 +68,8 @@ def build_deep_analysis_response_from_rows(
                         "history_values": _series_values(raw_history),
                         "forecast_periods": [],
                         "forecast_values": [],
-                        "unit_label": cause.get("unit_label"),
-                        "note": "Layer 4 cache preserves mart history; forecasting model is outside this phase.",
+                        "unit_label": unit_label,
+                        "note": "History-only shell; forecasting model is outside this phase.",
                     }
                 }
             },
@@ -78,11 +91,11 @@ def build_deep_analysis_response_from_rows(
                 "generated_at": now_iso(),
                 "phenomenon": {
                     "title": "Current KPI snapshot",
-                    "bullets": [f"Latest period: {cause.get('kpi', {}).get('latest_period')}"],
+                    "bullets": [f"Latest period: {current_period}"],
                 },
                 "cause": {
                     "title": "Market context",
-                    "bullets": ["Market-level chart fields are embedded from the Layer 3 market mart."],
+                    "bullets": ["Use cause and market-status cache payloads for chart-level context."],
                 },
                 "prediction": {
                     "title": "Forecast status",
@@ -93,6 +106,5 @@ def build_deep_analysis_response_from_rows(
                     "bullets": ["Use cached cause and market-status payloads for immediate API responses."],
                 },
             },
-            "cause": cause,
         },
     }

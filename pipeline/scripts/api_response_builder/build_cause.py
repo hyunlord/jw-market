@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from .utils import (
-    market_chart_fields,
     market_id_for_brand_row,
     normalise_market_row,
     latest_period,
@@ -45,6 +44,13 @@ def build_cause_response_from_rows(
     brand_row: dict[str, Any],
     market_row: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """Build compact cause cache payload.
+
+    Phase 16-G-4-Fix-CacheSize:
+    - data.* is the source of truth.
+    - Top-level chart/history duplicates are removed.
+    - Large market charts are referenced through market_cache_key.
+    """
     metric_history = parse_json(brand_row.get("metric_history")) or {}
     extended_history = parse_json(brand_row.get("extended_metric_history")) or {}
     raw_value_history = parse_json(brand_row.get("raw_value_history")) or {}
@@ -54,49 +60,40 @@ def build_cause_response_from_rows(
     overlay_data = parse_json(brand_row.get("overlay_data"))
     cd_overlay = parse_json(brand_row.get("cd_overlay"))
     market_payload = normalise_market_row(view_type, market_row)
-    charts = market_chart_fields(market_payload)
     market_id = market_id_for_brand_row(view_type, brand_row)
+    source = brand_row.get("source")
+    measure = brand_row.get("measure")
+    market_cache_key = None
+    if market_id:
+        market_cache_key = (
+            f"endpoint=market-status|view={view_type}|market_id={market_id}"
+            f"|source={source}|measure={measure}"
+        )
 
-    response = {
+    return {
         "brand_name": brand_row.get("brand_name"),
         "brand_key": brand_row.get("brand_key"),
         "is_jw": bool(brand_row.get("is_jw", False)),
         "view": view_type,
-        "source": brand_row.get("source"),
-        "measure": brand_row.get("measure"),
+        "source": source,
+        "measure": measure,
         "unit_label": brand_row.get("unit_label"),
         "market_id": market_id,
         "market_name": market_payload.get("market_name"),
-        "kpi": _kpi(metric_history, extended_history),
-        "metric_history": metric_history,
-        "extended_metric_history": extended_history,
-        "raw_value_history": raw_value_history,
-        "channel_data": channel_data,
-        "specialty_data": specialty_data,
-        "by_dimension": by_dimension,
-        "overlay_data": overlay_data,
-        "cd_overlay": cd_overlay,
-        **charts,
-    }
-    response["data"] = {
-        "kpi": response["kpi"],
-        "sources_data": {
-            "metric_history": metric_history,
-            "extended_metric_history": extended_history,
-            "raw_value_history": raw_value_history,
-            "channel_data": channel_data,
-            "specialty_data": specialty_data,
-            "market_size_series": charts["market_size_series"],
-            "hhi_series_5y": charts["hhi_series_5y"],
+        "market_cache_key": market_cache_key,
+        "data": {
+            "kpi": _kpi(metric_history, extended_history),
+            "sources_data": {
+                "metric_history": metric_history,
+                "extended_metric_history": extended_history,
+                "raw_value_history": raw_value_history,
+                "channel_data": channel_data,
+                "specialty_data": specialty_data,
+                "market_size_series": market_payload.get("market_size_series"),
+                "hhi_series_5y": market_payload.get("hhi_series_5y"),
+            },
+            "by_dimension": by_dimension,
+            "overlay_data": overlay_data,
+            "cd_overlay": cd_overlay,
         },
-        "ei_ms_matrix": charts["ei_ms_matrix"],
-        "growth_contribution": charts["growth_contribution"],
-        "growth_contribution_ms_matrix": charts["growth_contribution_ms_matrix"],
-        "target_customer_competition": charts["target_customer_competition"],
-        "company_concentration_trend": charts["company_concentration_trend"],
-        "level_top5_trend": charts["level_top5_trend"],
-        "brand_ranking_stacked": charts["brand_ranking_stacked"],
-        "company_ranking_stacked": charts["company_ranking_stacked"],
-        "analysis_levels": charts["analysis_levels"],
     }
-    return response
