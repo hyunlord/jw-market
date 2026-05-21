@@ -700,6 +700,12 @@ const GROUP_LABELS = {
   mart: "Mart",
   cache: "Cache",
 	};
+	const LAYER_4_ENTRY_ORDER = [
+	  "cache_brands",
+	  "cache_market_status",
+	  "cache_cause",
+	  "cache_deep_analysis",
+	];
 	let currentMode = "by-layer";
 	let sampleTableSequence = 0;
 	let jsonCellSequence = 0;
@@ -727,6 +733,18 @@ function groupLabel(key) {
   return GROUP_LABELS[key] || String(key || "unknown").replace(/_/g, " ");
 }
 
+function orderedGroupItems(groupKey, items) {
+  if (groupKey !== "layer_4_cache") return items;
+  return items.slice().sort((left, right) => {
+    const leftRank = LAYER_4_ENTRY_ORDER.indexOf(left.name);
+    const rightRank = LAYER_4_ENTRY_ORDER.indexOf(right.name);
+    const normalizedLeftRank = leftRank === -1 ? 999 : leftRank;
+    const normalizedRightRank = rightRank === -1 ? 999 : rightRank;
+    if (normalizedLeftRank !== normalizedRightRank) return normalizedLeftRank - normalizedRightRank;
+    return left.name.localeCompare(right.name);
+  });
+}
+
 function renderSideNav(grouping) {
   currentMode = grouping;
   const nav = document.getElementById("sideNav");
@@ -746,7 +764,7 @@ function renderSideNav(grouping) {
     section.className = "layer-group";
     section.innerHTML = "<h3>" + escapeHtml(groupLabel(groupKey)) + "</h3>";
     const list = document.createElement("ul");
-    for (const { name, info } of groups[groupKey]) {
+    for (const { name, info } of orderedGroupItems(groupKey, groups[groupKey])) {
       const item = document.createElement("li");
       item.dataset.table = name;
       item.innerHTML = "<span class=\"table-name\">" + escapeHtml(name) + "</span>"
@@ -783,7 +801,7 @@ function renderSideNavDictionary() {
     section.className = "layer-group";
     section.innerHTML = "<h3>" + escapeHtml(groupLabel(groupKey)) + "</h3>";
     const list = document.createElement("ul");
-    for (const { name } of groups[groupKey]) {
+    for (const { name } of orderedGroupItems(groupKey, groups[groupKey])) {
       const item = document.createElement("li");
       item.dataset.table = name;
       const status = DICTIONARY[name] ? "dict" : "no dict";
@@ -817,8 +835,9 @@ function renderTable(tableName) {
   html += renderOverview(table);
   html += renderStorage(table.storage_info || {});
   if (table.schema && table.schema.length) html += renderSchema(table.schema);
-  if (table.endpoint_view_breakdown && table.endpoint_view_breakdown.length) {
-    html += renderEndpointViewBreakdown(table.endpoint_view_breakdown, tableName);
+  const breakdownRows = table.cache_breakdown || table.endpoint_view_breakdown;
+  if (breakdownRows && breakdownRows.length) {
+    html += renderCacheBreakdown(breakdownRows, tableName);
   }
 	  if (table.sample_rows && table.sample_rows.length) {
 	    html += "<details open><summary>Sample (" + table.sample_rows.length + " rows)</summary>"
@@ -948,10 +967,15 @@ function renderStorage(storage) {
   return html;
 }
 
-function renderEndpointViewBreakdown(rows, tableName) {
-  return "<details open><summary>Endpoint × view_type breakdown (" + rows.length + " groups)</summary>"
-    + "<p class=\"note\">response_store cache rows and payload size by API endpoint and view_type.</p>"
-    + renderRowsTable(rows, tableName + " endpoint breakdown") + "</details>";
+function renderCacheBreakdown(rows, tableName) {
+  const hasEndpoint = rows.some(row => Object.prototype.hasOwnProperty.call(row, "endpoint"));
+  const title = hasEndpoint ? "Endpoint × view_type breakdown" : "View/source/measure breakdown";
+  const note = hasEndpoint
+    ? "Cache rows and payload size by API endpoint and view_type."
+    : "Cache rows and payload size by view_type, source, and measure where available.";
+  return "<details open><summary>" + escapeHtml(title) + " (" + rows.length + " groups)</summary>"
+    + "<p class=\"note\">" + escapeHtml(note) + "</p>"
+    + renderRowsTable(rows, tableName + " cache breakdown") + "</details>";
 }
 
 function isSimpleSampleInterpretation(sample) {

@@ -9,7 +9,15 @@ import pandas as pd
 from pipeline.scripts.viewers import build_data_state_viewer as viewer_builder
 from pipeline.scripts.viewers import collect_data_state as data_state_collector
 from pipeline.scripts.viewers.build_data_state_viewer import build_html
-from pipeline.scripts.viewers.collect_data_state import collect_catalog, collect_response_store, find_enriched_jw_rows, json_safe
+from pipeline.scripts.viewers.collect_data_state import (
+    collect_cache_brands,
+    collect_cache_cause,
+    collect_cache_deep_analysis,
+    collect_cache_market_status,
+    collect_catalog,
+    find_enriched_jw_rows,
+    json_safe,
+)
 
 
 def test_json_safe_converts_non_json_values_and_truncates_long_strings() -> None:
@@ -253,7 +261,7 @@ def test_load_dictionary_returns_empty_dict_when_file_is_missing(tmp_path: Path,
     assert viewer_builder.load_dictionary() == {}
 
 
-class _FakeResponseStoreCursor:
+class _FakeSplitCacheCursor:
     def __init__(self) -> None:
         self.result: list[dict] = []
         self.one: dict | None = None
@@ -266,17 +274,46 @@ class _FakeResponseStoreCursor:
 
     def execute(self, query: str, params=None) -> None:
         normalized = " ".join(query.split()).lower()
-        if "group by endpoint" in normalized and "row_count" in normalized:
-            self.result = [
-                {"endpoint": "cause", "view_type": "strategic_ml", "row_count": 2, "size_mb": 1.5, "avg_kb": 768.0},
-                {"endpoint": "market-status", "view_type": "strategic_ml", "row_count": 1, "size_mb": 0.5, "avg_kb": 512.0},
-            ]
+        if "count(*) as cnt" in normalized:
+            if "cache_brands" in normalized:
+                self.one = {"cnt": 6}
+            elif "cache_market_status" in normalized:
+                self.one = {"cnt": 3038}
+            elif "cache_cause" in normalized:
+                self.one = {"cnt": 137978}
+            elif "cache_deep_analysis" in normalized:
+                self.one = {"cnt": 137978}
+            else:
+                self.one = {"cnt": 0}
             return
-        if "endpoint in ('cause', 'deep-analysis')" in normalized:
+        if "group by `view_type`, `source`, `measure`" in normalized:
             self.result = [
                 {
-                    "cache_key": "endpoint=cause|view=strategic_ml|brand_key=리바로",
-                    "endpoint": "cause",
+                    "view_type": "strategic_ml",
+                    "source": "ubist",
+                    "measure": "sales",
+                    "row_count": 2,
+                    "rows": 2,
+                    "size_mb": 1.5,
+                    "avg_kb": 768.0,
+                }
+            ]
+            return
+        if "group by `view_type`, `source`" in normalized:
+            self.result = [
+                {
+                    "view_type": "strategic_ml",
+                    "source": "ubist",
+                    "row_count": 1,
+                    "rows": 1,
+                    "size_mb": 0.03,
+                    "avg_kb": 30.0,
+                }
+            ]
+            return
+        if "where brand_key = %s or brand_name = %s" in normalized:
+            self.result = [
+                {
                     "view_type": "strategic_ml",
                     "brand_key": "리바로",
                     "market_id": "ml_006",
@@ -286,27 +323,25 @@ class _FakeResponseStoreCursor:
                     "payload_size": 12_345,
                     "response_json_preview": '{"brand_key":"리바로","data":{"kpi":1}}',
                     "preview_note": "complete JSON sample",
-                    "computed_at": "2026-05-21 11:00:00",
+                    "updated_at": "2026-05-21 11:00:00",
                 }
             ]
             return
-        if "order by length(`response_json`) desc" in normalized or "response_json_preview" in normalized:
-            endpoint = params[5]
-            view_type = params[6]
+        if "response_json_preview" in normalized:
+            view_type = params[5]
+            source = params[6]
             self.result = [
                 {
-                    "cache_key": f"endpoint={endpoint}|view={view_type}",
-                    "endpoint": endpoint,
                     "view_type": view_type,
-                    "brand_key": "리바로" if endpoint == "cause" else None,
+                    "brand_key": "리바로" if "cache_cause" in normalized or "cache_deep_analysis" in normalized else None,
                     "market_id": "ml_006",
-                    "brand_name": "리바로" if endpoint == "cause" else None,
-                    "source": "ubist",
-                    "measure": "sales",
+                    "brand_name": "리바로" if "cache_cause" in normalized or "cache_deep_analysis" in normalized else None,
+                    "source": source,
+                    "measure": params[7] if "measure" in normalized else None,
                     "payload_size": 12_345,
-                    "response_json_preview": '{"endpoint":"' + endpoint + '","view":"' + view_type + '"}',
+                    "response_json_preview": '{"view":"' + view_type + '","data":{"kpi":1}}',
                     "preview_note": "complete JSON sample",
-                    "computed_at": "2026-05-21 11:00:00",
+                    "updated_at": "2026-05-21 11:00:00",
                 }
             ]
             return
@@ -320,9 +355,9 @@ class _FakeResponseStoreCursor:
         return self.one or {}
 
 
-class _FakeResponseStoreConnection:
+class _FakeSplitCacheConnection:
     def __init__(self) -> None:
-        self.cursor_obj = _FakeResponseStoreCursor()
+        self.cursor_obj = _FakeSplitCacheCursor()
         self.closed = False
 
     def cursor(self):
@@ -332,18 +367,39 @@ class _FakeResponseStoreConnection:
         self.closed = True
 
 
-def test_collect_response_store_reports_layer_4_cache_entry(monkeypatch) -> None:
+def test_layer_4_split_collectors_report_four_cache_entries(monkeypatch) -> None:
     monkeypatch.setattr(data_state_collector, "table_exists", lambda cur, table_name: True)
+
+    def fake_schema(cur, table_name):
+        common = [
+            {"name": "view_type", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "source", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "response_json", "type": "longtext", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "payload_size", "type": "int", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "updated_at", "type": "timestamp", "nullable": True, "null_rate": 0.0, "unique_count": 1},
+        ]
+        if table_name == "cache_brands":
+            return common
+        if table_name == "cache_market_status":
+            return [
+                {"name": "market_id", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+                {"name": "measure", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+                {"name": "market_name", "type": "varchar", "nullable": True, "null_rate": 0.0, "unique_count": 1},
+                *common,
+            ]
+        return [
+            {"name": "brand_key", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "market_id", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "measure", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 1},
+            {"name": "brand_name", "type": "varchar", "nullable": True, "null_rate": 0.0, "unique_count": 1},
+            {"name": "is_jw", "type": "tinyint", "nullable": True, "null_rate": 0.0, "unique_count": 1},
+            *common,
+        ]
+
     monkeypatch.setattr(
         data_state_collector,
         "get_db_schema",
-        lambda cur, table_name: [
-            {"name": "cache_key", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 3},
-            {"name": "endpoint", "type": "varchar", "nullable": False, "null_rate": 0.0, "unique_count": 2},
-            {"name": "brand_key", "type": "varchar", "nullable": True, "null_rate": 0.0, "unique_count": 1},
-            {"name": "brand_name", "type": "varchar", "nullable": True, "null_rate": 0.0, "unique_count": 1},
-            {"name": "response_json", "type": "longtext", "nullable": False, "null_rate": 0.0, "unique_count": 3},
-        ],
+        fake_schema,
     )
     monkeypatch.setattr(data_state_collector, "enrich_db_column_stats", lambda cur, table, schema, total, sample_limit=None: schema)
     monkeypatch.setattr(
@@ -351,67 +407,98 @@ def test_collect_response_store_reports_layer_4_cache_entry(monkeypatch) -> None
         "get_mart_storage_info",
         lambda cur, table_name: {"table_name": table_name, "engine": "InnoDB", "size_mb": 2.0},
     )
+    conn = _FakeSplitCacheConnection()
 
-    result = collect_response_store(conn=_FakeResponseStoreConnection(), sample_limit_per_group=1, jw_limit_per_brand=1)
+    brands = collect_cache_brands(conn=conn, sample_limit_per_group=1, jw_limit_per_brand=1)
+    market = collect_cache_market_status(conn=conn, sample_limit_per_group=1, jw_limit_per_brand=1)
+    cause = collect_cache_cause(conn=conn, sample_limit_per_group=1, jw_limit_per_brand=1)
+    deep = collect_cache_deep_analysis(conn=conn, sample_limit_per_group=1, jw_limit_per_brand=1)
 
-    assert result["logical_table"] == "response_store"
-    assert result["layer"] == "layer_4_cache"
-    assert result["purpose"] == "cache"
-    assert result["total_rows"] == 3
-    assert result["total_columns"] == 5
-    assert len(result["endpoint_view_breakdown"]) == 2
-    assert result["sample_rows"]
-    assert result["sample_rows"][0]["response_json_preview"].startswith("{")
-    assert result["jw_deep_sample"]
+    assert brands["logical_table"] == "cache_brands"
+    assert market["logical_table"] == "cache_market_status"
+    assert cause["logical_table"] == "cache_cause"
+    assert deep["logical_table"] == "cache_deep_analysis"
+    assert brands["total_rows"] == 6
+    assert market["total_rows"] == 3038
+    assert cause["total_rows"] == 137978
+    assert deep["total_rows"] == 137978
+    assert brands["layer"] == market["layer"] == cause["layer"] == deep["layer"] == "layer_4_cache"
+    assert "cache_breakdown" in cause
+    assert cause["sample_rows"][0]["response_json_preview"].startswith("{")
+    assert cause["jw_deep_sample"]
 
 
-def test_data_dictionary_contains_response_store_cache_shapes() -> None:
+def test_data_dictionary_contains_split_cache_shapes() -> None:
     dictionary = viewer_builder.load_dictionary()
 
-    assert "response_store" in dictionary
-    response_store = dictionary["response_store"]
-    assert response_store["layer"] == "layer_4_cache"
-    assert "response_json" in response_store["columns"]
-    assert "sample_interpretation" in response_store
-    for endpoint in ["cause", "deep-analysis", "market-status", "brands"]:
-        assert endpoint in response_store["sample_interpretation"]
+    assert "response_store" not in dictionary
+    for table in ["cache_brands", "cache_market_status", "cache_cause", "cache_deep_analysis"]:
+        assert table in dictionary
+        assert dictionary[table]["layer"] == "layer_4_cache"
+        assert "response_json" in dictionary[table]["columns"]
+        assert "primary_key" in dictionary[table]
+        assert "sample_interpretation" in dictionary[table]
+    assert dictionary["cache_cause"]["join_target"]["table"] == "cache_market_status"
+    assert set(dictionary["cache_cause"]["join_target"]["on"]) == {"view_type", "market_id", "source", "measure"}
 
 
-def test_build_html_renders_layer_4_cache_nav_and_response_store_sections(tmp_path: Path, monkeypatch) -> None:
+def test_build_html_renders_layer_4_split_cache_sections(tmp_path: Path, monkeypatch) -> None:
     dictionary_path = tmp_path / "data_dictionary.json"
     dictionary_path.write_text(
         """
         {
           "_meta": {"version": "test"},
-          "response_store": {
+          "cache_brands": {
             "layer": "layer_4_cache",
-            "purpose": "Layer 4 cache entry",
-            "row_grain": "1 row = endpoint × view_type cache key",
-            "row_count_approx": "279,000",
+            "purpose": "Brands cache",
+            "row_grain": "view_type × source",
+            "row_count_approx": "6",
+            "primary_key": ["view_type", "source"],
             "columns": {
-              "cache_key": "cache key",
-              "endpoint": "endpoint",
+              "view_type": "view type",
+              "source": "source",
               "response_json": "JSON response"
             },
             "sample_interpretation": {
-              "cause": {
-                "description": "Cause compact response",
-                "shape": {"market_cache_key": "market-status reference"}
-              },
-              "deep-analysis": {
-                "description": "Deep-analysis reference response",
-                "shape": {"data": {"forecast": "placeholder"}}
-              },
-              "market-status": {
-                "description": "Market chart source of truth",
-                "shape": {"data": {"market_size_series": "{period: total}"}}
-              },
               "brands": {
                 "description": "Brand list response",
                 "shape": {"brands": "[]"}
               }
-            },
-            "notes": ["response_json_preview is truncated."]
+            }
+          },
+          "cache_market_status": {
+            "layer": "layer_4_cache",
+            "purpose": "Market cache",
+            "row_grain": "view_type × market_id × source × measure",
+            "row_count_approx": "3,038",
+            "primary_key": ["view_type", "market_id", "source", "measure"],
+            "columns": {"response_json": "JSON response"},
+            "sample_interpretation": {
+              "market-status": {"shape": {"data": {"target_customer_competition": "{...}"}}}
+            }
+          },
+          "cache_cause": {
+            "layer": "layer_4_cache",
+            "purpose": "Cause cache",
+            "row_grain": "view_type × brand_key × market_id × source × measure",
+            "row_count_approx": "137,978",
+            "primary_key": ["view_type", "brand_key", "market_id", "source", "measure"],
+            "join_target": {"table": "cache_market_status", "on": ["view_type", "market_id", "source", "measure"]},
+            "columns": {"response_json": "JSON response"},
+            "sample_interpretation": {
+              "cause": {"shape": {"data": {"kpi": "{...}", "target_customer_competition": "served via JOIN"}}}
+            }
+          },
+          "cache_deep_analysis": {
+            "layer": "layer_4_cache",
+            "purpose": "Deep-analysis cache",
+            "row_grain": "view_type × brand_key × market_id × source × measure",
+            "row_count_approx": "137,978",
+            "primary_key": ["view_type", "brand_key", "market_id", "source", "measure"],
+            "columns": {"response_json": "JSON response"},
+            "sample_interpretation": {
+              "deep-analysis": {"shape": {"data": {"forecast": "placeholder"}}}
+            }
           }
         }
         """,
@@ -424,32 +511,38 @@ def test_build_html_renders_layer_4_cache_nav_and_response_store_sections(tmp_pa
         "repo_tag": "",
         "total_rows": 3,
         "tables": {
-            "response_store": {
-                "logical_table": "response_store",
+            name: {
+                "logical_table": name,
                 "layer": "layer_4_cache",
                 "purpose": "cache",
-                "total_rows": 3,
+                "total_rows": rows,
                 "total_columns": 3,
                 "schema": [
-                    {"name": "cache_key", "type": "varchar", "null_rate": 0.0, "unique_count": 3},
-                    {"name": "endpoint", "type": "varchar", "null_rate": 0.0, "unique_count": 4},
-                    {"name": "response_json_preview", "type": "longtext", "null_rate": 0.0, "unique_count": 3},
+                    {"name": "view_type", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "source", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "response_json_preview", "type": "longtext", "null_rate": 0.0, "unique_count": 1},
                 ],
-                "endpoint_view_breakdown": [
-                    {"endpoint": "cause", "view_type": "strategic_ml", "row_count": 2, "size_mb": 1.5, "avg_kb": 768.0}
+                "cache_breakdown": [
+                    {"view_type": "strategic_ml", "source": "ubist", "measure": "sales", "row_count": rows, "size_mb": 1.5, "avg_kb": 768.0}
                 ],
                 "sample_rows": [
                     {
-                        "cache_key": "endpoint=cause|view=strategic_ml|brand_key=리바로",
-                        "endpoint": "cause",
                         "view_type": "strategic_ml",
-                        "response_json_preview": "{\"brand_key\":\"리바로\",\"data\":{\"kpi\":1}}",
+                        "source": "ubist",
+                        "measure": "sales",
+                        "response_json_preview": "{\"data\":{\"kpi\":1}}",
                     }
                 ],
                 "jw_deep_sample": [],
                 "distribution": {},
                 "storage_info": {"size_mb": 2.0},
             }
+            for name, rows in {
+                "cache_brands": 6,
+                "cache_market_status": 3038,
+                "cache_cause": 137978,
+                "cache_deep_analysis": 137978,
+            }.items()
         },
     }
     output_path = tmp_path / "viewer.html"
@@ -458,10 +551,14 @@ def test_build_html_renders_layer_4_cache_nav_and_response_store_sections(tmp_pa
 
     html = output_path.read_text(encoding="utf-8")
     assert "LAYER 4 CACHE" in html
-    assert "response_store" in html
+    assert "cache_brands" in html
+    assert "cache_market_status" in html
+    assert "cache_cause" in html
+    assert "cache_deep_analysis" in html
+    assert html.count("response_store") == 0
     assert "layer_4_cache" in html
-    assert "Endpoint × view_type breakdown" in html
+    assert "View/source/measure breakdown" in html
     assert "Response Shape Documentation" in html
-    assert "market_cache_key" in html
+    assert "target_customer_competition" in html
     assert "function openJsonModal" in html
     assert "json-cell-clickable" in html
