@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild Layer 4 response_store from the six JSON Layer 3 marts."""
+"""Rebuild split Layer 4 cache tables from the six JSON Layer 3 marts."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from pipeline.scripts.api_response_builder.utils import (
 )
 
 
-BUILDER_VERSION = "phase16g4-fix-cache-v1"
+BUILDER_VERSION = "phase16g4-fix-cachesplit-v1"
 
 
 def log(message: str) -> None:
@@ -52,13 +52,13 @@ def summarize_response(endpoint: str, cache_key: str, response: dict[str, Any]) 
             "target_source_type": target.get("source_type"),
         }
     if endpoint == "cause":
-        target = response.get("target_customer_competition") or {}
+        data = response.get("data") or {}
         return {
             "cache_key": cache_key,
             "brand_key": response.get("brand_key"),
             "market_id": response.get("market_id"),
-            "latest_period": (response.get("kpi") or {}).get("latest_period"),
-            "target_source_type": target.get("source_type"),
+            "latest_period": (data.get("kpi") or {}).get("latest_period"),
+            "data_keys": sorted(data.keys()),
         }
     if endpoint == "deep-analysis":
         data = response.get("data") or {}
@@ -71,39 +71,13 @@ def summarize_response(endpoint: str, cache_key: str, response: dict[str, Any]) 
     return {"cache_key": cache_key}
 
 
-def insert_response_rows(rows: list[dict[str, Any]], batch_size: int = 1000) -> None:
+def payload_size(response_json: str) -> int:
+    return len(response_json.encode("utf-8"))
+
+
+def execute_many(sql: str, rows: list[dict[str, Any]], batch_size: int = 1000) -> None:
     if not rows:
         return
-    sql = """
-        INSERT INTO response_store (
-          cache_key, endpoint, brand_name, brand_key, market_id, period_yyyymm,
-          view, view_type, source, measure, response_json, payload, ttl_seconds,
-          computed_at, expires_at, computation_ms, size_bytes
-        )
-        VALUES (
-          %(cache_key)s, %(endpoint)s, %(brand_name)s, %(brand_key)s, %(market_id)s,
-          %(period_yyyymm)s, %(view)s, %(view_type)s, %(source)s, %(measure)s,
-          %(response_json)s, %(payload)s, %(ttl_seconds)s, NOW(), NULL,
-          %(computation_ms)s, %(size_bytes)s
-        )
-        ON DUPLICATE KEY UPDATE
-          endpoint = VALUES(endpoint),
-          brand_name = VALUES(brand_name),
-          brand_key = VALUES(brand_key),
-          market_id = VALUES(market_id),
-          period_yyyymm = VALUES(period_yyyymm),
-          view = VALUES(view),
-          view_type = VALUES(view_type),
-          source = VALUES(source),
-          measure = VALUES(measure),
-          response_json = VALUES(response_json),
-          payload = VALUES(payload),
-          ttl_seconds = VALUES(ttl_seconds),
-          computed_at = NOW(),
-          expires_at = NULL,
-          computation_ms = VALUES(computation_ms),
-          size_bytes = VALUES(size_bytes)
-    """
     with connect() as conn:
         with conn.cursor() as cur:
             for start in range(0, len(rows), batch_size):
@@ -111,44 +85,83 @@ def insert_response_rows(rows: list[dict[str, Any]], batch_size: int = 1000) -> 
         conn.commit()
 
 
-def response_row(
-    *,
-    endpoint: str,
-    cache_key: str,
-    response: dict[str, Any],
-    view_type: str | None = None,
-    source: str | None = None,
-    measure: str | None = None,
-    brand_name: str | None = None,
-    brand_key: str | None = None,
-    market_id: str | None = None,
-    payload: dict[str, Any] | None = None,
-    computation_ms: int | None = None,
-) -> dict[str, Any]:
-    response_json = json_dumps(response)
-    return {
-        "cache_key": cache_key,
-        "endpoint": endpoint,
-        "brand_name": brand_name,
-        "brand_key": brand_key,
-        "market_id": market_id,
-        "period_yyyymm": None,
-        "view": view_type,
-        "view_type": view_type,
-        "source": source,
-        "measure": measure,
-        "response_json": response_json,
-        "payload": json_dumps(payload or {}),
-        "ttl_seconds": 86400,
-        "computation_ms": computation_ms,
-        "size_bytes": len(response_json.encode("utf-8")),
+def insert_brand_rows(rows: list[dict[str, Any]], batch_size: int = 1000) -> None:
+    execute_many(
+        """
+        INSERT INTO cache_brands (view_type, source, response_json, payload_size)
+        VALUES (%(view_type)s, %(source)s, %(response_json)s, %(payload_size)s)
+        ON DUPLICATE KEY UPDATE
+          response_json = VALUES(response_json),
+          payload_size = VALUES(payload_size),
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        rows,
+        batch_size=batch_size,
+    )
+
+
+def insert_market_status_rows(rows: list[dict[str, Any]], batch_size: int = 1000) -> None:
+    execute_many(
+        """
+        INSERT INTO cache_market_status (
+          view_type, market_id, source, measure, market_name, response_json, payload_size
+        )
+        VALUES (
+          %(view_type)s, %(market_id)s, %(source)s, %(measure)s, %(market_name)s,
+          %(response_json)s, %(payload_size)s
+        )
+        ON DUPLICATE KEY UPDATE
+          market_name = VALUES(market_name),
+          response_json = VALUES(response_json),
+          payload_size = VALUES(payload_size),
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        rows,
+        batch_size=batch_size,
+    )
+
+
+def insert_brand_endpoint_rows(endpoint: str, rows: list[dict[str, Any]], batch_size: int = 1000) -> None:
+    if endpoint == "cause":
+        table = "cache_cause"
+    elif endpoint == "deep-analysis":
+        table = "cache_deep_analysis"
+    else:
+        raise ValueError(endpoint)
+
+    execute_many(
+        f"""
+        INSERT INTO {table} (
+          view_type, brand_key, market_id, source, measure, brand_name, is_jw,
+          response_json, payload_size
+        )
+        VALUES (
+          %(view_type)s, %(brand_key)s, %(market_id)s, %(source)s, %(measure)s,
+          %(brand_name)s, %(is_jw)s, %(response_json)s, %(payload_size)s
+        )
+        ON DUPLICATE KEY UPDATE
+          brand_name = VALUES(brand_name),
+          is_jw = VALUES(is_jw),
+          response_json = VALUES(response_json),
+          payload_size = VALUES(payload_size),
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        rows,
+        batch_size=batch_size,
+    )
+
+
+def truncate_split_cache_tables(endpoints: set[str]) -> None:
+    table_by_endpoint = {
+        "brands": "cache_brands",
+        "market-status": "cache_market_status",
+        "cause": "cache_cause",
+        "deep-analysis": "cache_deep_analysis",
     }
-
-
-def truncate_response_store() -> None:
     with connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE response_store")
+            for endpoint in endpoints:
+                cur.execute(f"TRUNCATE TABLE {table_by_endpoint[endpoint]}")
         conn.commit()
 
 
@@ -174,19 +187,18 @@ def rebuild_brands_cache(dry_run: bool = False) -> dict[str, Any]:
         if missing:
             raise RuntimeError(f"{cache_key}: missing keys {missing}")
         samples[cache_key] = summarize_response("brands", cache_key, response)
+        response_json = json_dumps(response)
         rows.append(
-            response_row(
-                endpoint="brands",
-                cache_key=cache_key,
-                response=response,
-                view_type=view_type or "all",
-                source=source,
-                payload={"builder_version": BUILDER_VERSION, "computed_at": now_iso()},
-                computation_ms=elapsed,
-            )
+            {
+                "view_type": key_view,
+                "source": key_source,
+                "response_json": response_json,
+                "payload_size": payload_size(response_json),
+                "computation_ms": elapsed,
+            }
         )
     if not dry_run:
-        insert_response_rows(rows)
+        insert_brand_rows(rows)
     return {"rows": len(rows), "samples": samples}
 
 
@@ -222,23 +234,21 @@ def rebuild_market_status_cache(
         missing = validate_response("market-status", response)
         if missing:
             raise RuntimeError(f"market-status {view_type}/{market_id}/{source}/{measure}: missing {missing}")
+        if not all([view_type, market_id, source, measure]):
+            raise RuntimeError(f"market-status row has incomplete key: {view_type}/{market_id}/{source}/{measure}")
         cache_key = f"endpoint=market-status|view={view_type}|market_id={market_id}|source={source}|measure={measure}"
+        response_json = json_dumps(response)
         rows.append(
-            response_row(
-                endpoint="market-status",
-                cache_key=cache_key,
-                response=response,
-                view_type=view_type,
-                source=source,
-                measure=measure,
-                market_id=market_id,
-                payload={
-                    "builder_version": BUILDER_VERSION,
-                    "source_mart": BRAND_MARTS[view_type]["market_mart"],
-                    "computed_at": now_iso(),
-                },
-                computation_ms=elapsed,
-            )
+            {
+                "view_type": view_type,
+                "market_id": market_id,
+                "source": source,
+                "measure": measure,
+                "market_name": response.get("market_name"),
+                "response_json": response_json,
+                "payload_size": payload_size(response_json),
+                "computation_ms": elapsed,
+            }
         )
         if len(samples) < 5:
             samples.append(summarize_response("market-status", cache_key, response))
@@ -246,7 +256,7 @@ def rebuild_market_status_cache(
         if count % 500 == 0:
             log(f"[market-status] built {count:,} rows")
     if not dry_run:
-        insert_response_rows(rows, batch_size=batch_size)
+        insert_market_status_rows(rows, batch_size=batch_size)
     return {"rows": len(rows), "samples": samples}
 
 
@@ -309,29 +319,28 @@ def rebuild_brand_endpoint_cache(
                     raise RuntimeError(
                         f"{endpoint} {view_type}/{brand_row.get('brand_key')}/{source}/{measure}: missing {missing}"
                     )
+                if not all([view_type, brand_row.get("brand_key"), market_id, source, measure]):
+                    raise RuntimeError(
+                        f"{endpoint} row has incomplete key: {view_type}/{brand_row.get('brand_key')}/{market_id}/{source}/{measure}"
+                    )
                 cache_key = (
                     f"endpoint={endpoint}|view={view_type}|brand_key={brand_row.get('brand_key')}"
                     f"|market_id={market_id}|source={source}|measure={measure}"
                 )
+                response_json = json_dumps(response)
                 pending.append(
-                    response_row(
-                        endpoint=endpoint,
-                        cache_key=cache_key,
-                        response=response,
-                        view_type=view_type,
-                        source=source,
-                        measure=measure,
-                        brand_name=brand_row.get("brand_name"),
-                        brand_key=brand_row.get("brand_key"),
-                        market_id=market_id,
-                        payload={
-                            "builder_version": BUILDER_VERSION,
-                            "source_mart": BRAND_MARTS[view_type]["brand_mart"],
-                            "market_mart": BRAND_MARTS[view_type]["market_mart"],
-                            "computed_at": now_iso(),
-                        },
-                        computation_ms=elapsed,
-                    )
+                    {
+                        "view_type": view_type,
+                        "brand_key": brand_row.get("brand_key"),
+                        "market_id": market_id,
+                        "source": source,
+                        "measure": measure,
+                        "brand_name": brand_row.get("brand_name"),
+                        "is_jw": bool(brand_row.get("is_jw", False)),
+                        "response_json": response_json,
+                        "payload_size": payload_size(response_json),
+                        "computation_ms": elapsed,
+                    }
                 )
                 if len(samples) < 5:
                     samples.append(summarize_response(endpoint, cache_key, response))
@@ -339,7 +348,7 @@ def rebuild_brand_endpoint_cache(
                 by_view[view_type] = by_view.get(view_type, 0) + 1
                 if len(pending) >= batch_size:
                     if not dry_run:
-                        insert_response_rows(pending, batch_size=batch_size)
+                        insert_brand_endpoint_rows(endpoint, pending, batch_size=batch_size)
                     pending.clear()
                 if total % 1000 == 0:
                     log(f"[{endpoint}] built {total:,} rows")
@@ -348,15 +357,20 @@ def rebuild_brand_endpoint_cache(
         if limit is not None and total >= limit:
             break
     if pending and not dry_run:
-        insert_response_rows(pending, batch_size=batch_size)
+        insert_brand_endpoint_rows(endpoint, pending, batch_size=batch_size)
     return {"rows": total, "by_view": by_view, "samples": samples}
 
 
 def rebuild_cache(args: argparse.Namespace) -> dict[str, Any]:
-    if args.truncate_first and not args.dry_run:
-        truncate_response_store()
-
     endpoints = set(args.endpoints.split(","))
+    valid_endpoints = {"brands", "market-status", "cause", "deep-analysis"}
+    unknown = endpoints - valid_endpoints
+    if unknown:
+        raise ValueError(f"Unknown endpoints: {sorted(unknown)}")
+
+    if args.truncate_first and not args.dry_run:
+        truncate_split_cache_tables(endpoints)
+
     result: dict[str, Any] = {
         "started_at": now_iso(),
         "dry_run": args.dry_run,

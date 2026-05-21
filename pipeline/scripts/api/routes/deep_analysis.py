@@ -36,9 +36,8 @@ def deep_analysis(
     concrete_source = _normalise_source(source)
     sql = """
         SELECT response_json
-        FROM response_store
-        WHERE endpoint = 'deep-analysis'
-          AND view_type = %s
+        FROM cache_deep_analysis
+        WHERE view_type = %s
           AND source = %s
           AND measure = %s
           AND (brand_key = %s OR brand_name = %s)

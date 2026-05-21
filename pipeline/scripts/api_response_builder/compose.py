@@ -35,8 +35,8 @@ def compose_cause_response(
     """
     Compose compact cause cache with market-status cache.
 
-    Phase 16-G-4-Fix-CacheSize stores cause rows as brand-specific data plus a
-    market cache reference. The served API response keeps the same compact
+    Phase 16-G-4-Fix-CacheSplit stores cause rows in cache_cause and market
+    charts in cache_market_status. The served API response keeps compact
     top-level metadata while injecting market charts into data.*.
     """
     data = dict(cause_response.get("data") or {})

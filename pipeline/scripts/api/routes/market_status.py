@@ -29,9 +29,8 @@ def _fetch_market_status(market_id: str, view: str, source: str, measure: str) -
     row = db.fetch_one(
         """
         SELECT response_json
-        FROM response_store
-        WHERE endpoint = 'market-status'
-          AND view_type = %s
+        FROM cache_market_status
+        WHERE view_type = %s
           AND market_id = %s
           AND source = %s
           AND measure = %s

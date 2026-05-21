@@ -35,9 +35,8 @@ def _fetch_cause_cache(
 ) -> dict[str, Any] | None:
     sql = """
         SELECT response_json
-        FROM response_store
-        WHERE endpoint = 'cause'
-          AND view_type = %s
+        FROM cache_cause
+        WHERE view_type = %s
           AND source = %s
           AND measure = %s
           AND (brand_key = %s OR brand_name = %s)
@@ -55,22 +54,6 @@ def _fetch_cause_cache(
 
 
 def _fetch_market_cache(cause_response: dict[str, Any]) -> dict[str, Any] | None:
-    market_cache_key = cause_response.get("market_cache_key")
-    if market_cache_key:
-        row = db.fetch_one(
-            """
-            SELECT response_json
-            FROM response_store
-            WHERE endpoint = 'market-status'
-              AND cache_key = %s
-            LIMIT 1
-            """,
-            [market_cache_key],
-        )
-        cached = _load_response(row)
-        if cached is not None:
-            return cached
-
     market_id = cause_response.get("market_id")
     view = cause_response.get("view")
     source = cause_response.get("source")
@@ -81,9 +64,8 @@ def _fetch_market_cache(cause_response: dict[str, Any]) -> dict[str, Any] | None
     row = db.fetch_one(
         """
         SELECT response_json
-        FROM response_store
-        WHERE endpoint = 'market-status'
-          AND view_type = %s
+        FROM cache_market_status
+        WHERE view_type = %s
           AND market_id = %s
           AND source = %s
           AND measure = %s

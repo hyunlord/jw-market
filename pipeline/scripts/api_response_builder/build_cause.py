@@ -49,7 +49,7 @@ def build_cause_response_from_rows(
     Phase 16-G-4-Fix-CacheSize:
     - data.* is the source of truth.
     - Top-level chart/history duplicates are removed.
-    - Large market charts are referenced through market_cache_key.
+    - Large market charts are joined from cache_market_status at serve time.
     """
     metric_history = parse_json(brand_row.get("metric_history")) or {}
     extended_history = parse_json(brand_row.get("extended_metric_history")) or {}
@@ -63,12 +63,6 @@ def build_cause_response_from_rows(
     market_id = market_id_for_brand_row(view_type, brand_row)
     source = brand_row.get("source")
     measure = brand_row.get("measure")
-    market_cache_key = None
-    if market_id:
-        market_cache_key = (
-            f"endpoint=market-status|view={view_type}|market_id={market_id}"
-            f"|source={source}|measure={measure}"
-        )
 
     return {
         "brand_name": brand_row.get("brand_name"),
@@ -80,7 +74,6 @@ def build_cause_response_from_rows(
         "unit_label": brand_row.get("unit_label"),
         "market_id": market_id,
         "market_name": market_payload.get("market_name"),
-        "market_cache_key": market_cache_key,
         "data": {
             "kpi": _kpi(metric_history, extended_history),
             "sources_data": {

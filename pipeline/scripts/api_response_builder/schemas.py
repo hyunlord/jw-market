@@ -22,7 +22,6 @@ REQUIRED_KEYS = {
         "measure",
         "market_id",
         "market_name",
-        "market_cache_key",
         "data",
     ],
     "deep-analysis": [

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import json
 
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.scripts.api.main import app
+from pipeline.scripts.api.db import connect
 
 
 client = TestClient(app)
@@ -47,6 +49,66 @@ def test_cause_endpoint_joins_compact_cause_with_market_status() -> None:
         "target_customer_competition",
     ]:
         assert key in data
+
+
+def test_four_split_cache_tables_exist_and_legacy_is_preserved() -> None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SHOW TABLES LIKE 'cache_%'")
+            cache_tables = {next(iter(row.values())) for row in cur.fetchall()}
+
+            cur.execute("SHOW TABLES LIKE 'response_store_legacy'")
+            legacy_row = cur.fetchone()
+
+    assert {
+        "cache_brands",
+        "cache_market_status",
+        "cache_cause",
+        "cache_deep_analysis",
+    } <= cache_tables
+    assert legacy_row is not None
+
+
+def test_split_cache_row_counts_match_legacy_response_store() -> None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT endpoint, COUNT(*) AS cnt FROM response_store_legacy GROUP BY endpoint")
+            legacy_counts = {row["endpoint"]: row["cnt"] for row in cur.fetchall()}
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM cache_brands")
+            brands_count = cur.fetchone()["cnt"]
+            cur.execute("SELECT COUNT(*) AS cnt FROM cache_market_status")
+            market_count = cur.fetchone()["cnt"]
+            cur.execute("SELECT COUNT(*) AS cnt FROM cache_cause")
+            cause_count = cur.fetchone()["cnt"]
+            cur.execute("SELECT COUNT(*) AS cnt FROM cache_deep_analysis")
+            deep_count = cur.fetchone()["cnt"]
+
+    assert brands_count == legacy_counts.get("brands")
+    assert market_count == legacy_counts.get("market-status")
+    assert cause_count == legacy_counts.get("cause")
+    assert deep_count == legacy_counts.get("deep-analysis")
+
+
+def test_cause_split_cache_payload_has_no_market_cache_key() -> None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT response_json
+                FROM cache_cause
+                WHERE brand_key = '리바로'
+                  AND view_type = 'strategic_ml'
+                  AND source = 'ubist'
+                  AND measure = 'sales'
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+
+    assert row is not None
+    cached = json.loads(row["response_json"])
+    assert "market_cache_key" not in cached
 
 
 def test_cause_endpoint_uses_market_id_when_brand_has_multiple_markets() -> None:

@@ -67,33 +67,31 @@ def list_brands(
 ) -> dict:
     view_key = view or "all"
     source_key = _normalise_source(source)
-    cache_key = f"endpoint=brands|view={view_key}|source={source_key}"
 
     response = _load_response(
         db.fetch_one(
             """
             SELECT response_json
-            FROM response_store
-            WHERE endpoint = 'brands'
-              AND cache_key = %s
+            FROM cache_brands
+            WHERE view_type = %s
+              AND source = %s
             LIMIT 1
             """,
-            [cache_key],
+            [view_key, source_key],
         )
     )
 
     if response is None and view and source:
-        fallback_key = f"endpoint=brands|view=all|source={source_key}"
         response = _load_response(
             db.fetch_one(
                 """
                 SELECT response_json
-                FROM response_store
-                WHERE endpoint = 'brands'
-                  AND cache_key = %s
+                FROM cache_brands
+                WHERE view_type = 'all'
+                  AND source = %s
                 LIMIT 1
                 """,
-                [fallback_key],
+                [source_key],
             )
         )
 
