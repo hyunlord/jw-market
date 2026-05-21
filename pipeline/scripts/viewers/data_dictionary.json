@@ -511,5 +511,146 @@
       "row_example": "product_id='sp_001_00194_001', name='라피 듀오 정 10/350mg', merge_name='라피 듀오'",
       "meaning": "→ cd_001 의 라피 듀오 brand 의 첫 product. 정제 10mg/350mg."
     }
+  },
+
+  "response_store": {
+    "table_name": "response_store",
+    "layer": "layer_4_cache",
+    "purpose": "Layer 4 API response cache. Phase 16-G-4-Fix-CacheSize 이후 compact JSON shape 로 재생성된 endpoint 응답 저장소.",
+    "row_grain": "1 row = endpoint × view_type/view × brand/market/source/measure 조합의 pre-computed API response cache key",
+    "row_count_approx": "279,000 rows / 약 4.94 GB payload (compact cache)",
+    "etl_source": "PreCache / Cache rebuild output; API endpoints read this as source of truth.",
+    "columns": {
+      "cache_key": "PK. endpoint=<endpoint>|view=<view>|brand_key=<brand>|source=<source>|measure=<measure>|market_id=<market_id> 형식의 unique cache key.",
+      "endpoint": "API endpoint name. 주요 값: brands, market-status, cause, deep-analysis.",
+      "brand_name": "Brand display name. cause / deep-analysis 등 brand 단위 cache 에서 사용.",
+      "brand_key": "정규화된 brand key. JW brand deep sample 은 이 값으로 리바로/가드메트/페린젝트 등을 찾음.",
+      "market_id": "시장 식별자. general 은 ATC 계열 market id, strategic view 는 ml_id/cd_id.",
+      "period_yyyymm": "기간 key. 기간별 cache row 에서 사용될 수 있으며 대부분 endpoint 집계 row 에서는 null 가능.",
+      "view": "Legacy/compat view field. view_type 과 함께 보존되며 viewer 는 COALESCE(view_type, view) 로 grouping.",
+      "view_type": "View type. 주요 값: general, strategic_ml, strategic_cd, all.",
+      "source": "Data source. 주요 값: ubist, iqvia_nsa.",
+      "measure": "Measure. 주요 값: sales, volume, unit, dosage_unit, counting_unit.",
+      "response_json": "Pre-computed API 응답 JSON. endpoint 별 shape 가 다르며 viewer sample 에서는 response_json_preview 로 5000 char prefix 만 embed.",
+      "payload": "Compatibility payload column. response_json 과 병행 보존되는 legacy/secondary payload.",
+      "ttl_seconds": "Cache TTL seconds. 기본 86400.",
+      "computed_at": "Cache row 계산 시각.",
+      "expires_at": "TTL 기준 만료 예정 시각.",
+      "computation_ms": "해당 response 생성에 걸린 시간(ms).",
+      "size_bytes": "response_json payload byte size. viewer 의 endpoint × view_type size 집계와 sample ordering 에 사용."
+    },
+    "sample_interpretation": {
+      "cause": {
+        "description": "Cause endpoint cache. compact shape 로 brand-specific data 를 보유하고, 큰 market chart payload 는 market_cache_key 로 market-status cache 를 참조.",
+        "shape": {
+          "brand_name": "리바로",
+          "brand_key": "리바로",
+          "is_jw": true,
+          "view": "strategic_ml",
+          "source": "ubist",
+          "measure": "sales",
+          "market_id": "ml_006",
+          "market_name": "Statin/Lipid market",
+          "market_cache_key": "endpoint=market-status|view=strategic_ml|market_id=ml_006|source=ubist|measure=sales",
+          "data": {
+            "kpi": "{latest period KPI}",
+            "sources_data": {
+              "metric_history": "{period: {value, ms, mom, ...}}",
+              "extended_metric_history": "{period: extended metrics}",
+              "raw_value_history": "{period: raw value}",
+              "channel_data": "{한글 channel label: values}",
+              "specialty_data": "{한글 specialty label: values}",
+              "market_size_series": "{period: total market size}",
+              "hhi_series_5y": "{period: hhi}"
+            },
+            "by_dimension": {
+              "products": "[{product_id, name, class, molecule, dosage_form, strength_pack, ...}]"
+            },
+            "overlay_data": "{catalog overlay}",
+            "cd_overlay": "{CD market overlay when applicable}"
+          }
+        }
+      },
+      "deep-analysis": {
+        "description": "Deep-analysis endpoint cache. Phase 16-G-4-Fix-CacheSize 이후 cause embed 없이 reference/placeholder analysis shape 를 반환.",
+        "shape": {
+          "brand": "리바로",
+          "brand_key": "리바로",
+          "market_id": "ml_006",
+          "view": "strategic_ml",
+          "source": "ubist",
+          "measure": "sales",
+          "generated_at": "ISO 8601 datetime",
+          "available_combos": "[view × source × measure combinations]",
+          "market_meta": {
+            "market_name": "시장명",
+            "market_id": "ml_006"
+          },
+          "data": {
+            "forecast": {
+              "history": "{period: value}",
+              "predictions": [],
+              "model_meta": {"type": "placeholder"}
+            },
+            "simulation": {
+              "scenarios": [],
+              "model_meta": {"type": "placeholder"}
+            },
+            "events": [],
+            "ai_analysis": {
+              "summary": null,
+              "highlights": [],
+              "model_meta": {"type": "placeholder"}
+            }
+          }
+        }
+      },
+      "market-status": {
+        "description": "Market-status endpoint cache. 시장 단위 11 chart 의 source of truth 이며 cause 는 market_cache_key 로 이를 참조.",
+        "shape": {
+          "view": "strategic_ml",
+          "market_id": "ml_006",
+          "market_name": "시장명",
+          "source": "ubist",
+          "measure": "sales",
+          "data": {
+            "market_size_series": "{period: total}",
+            "hhi_series_5y": "{period: hhi 0-10000}",
+            "brand_ranking_stacked": "{period: [{brand_key, ms}]}",
+            "company_ranking_stacked": "{period: [{company, ms}]}",
+            "company_concentration_trend": "{period: concentration metrics}",
+            "ei_ms_matrix": "[entry index × market share matrix]",
+            "growth_contribution_ms_matrix": "[growth contribution × market share matrix]",
+            "growth_contribution": "{brand/company contribution}",
+            "analysis_levels": "{class/molecule/... flags from catalog analyze_*}",
+            "level_top5_trend": "{analysis level top5 trend}",
+            "target_customer_competition": {
+              "source_type": "catalog | mixed | computed | computed_fixed",
+              "channels": [],
+              "history": "{period: {top4: [...]}}",
+              "latest": {
+                "period": "YYYY-MM",
+                "top4": "[{rank, source, code_label, label, raw_label_candidates, catalog_definition, ms}]"
+              },
+              "catalog_override": "{target_ubist_1~4 original catalog values}",
+              "catalog_definition": []
+            }
+          }
+        }
+      },
+      "brands": {
+        "description": "Brand list endpoint cache. view/source 별 brand selector 를 빠르게 제공.",
+        "shape": {
+          "view": "strategic_ml | strategic_cd | general | all",
+          "source": "ubist | iqvia_nsa",
+          "brands": "[{brand_key, brand_name, is_jw, market_id, source, measure, ...}]"
+        }
+      }
+    },
+    "notes": [
+      "viewer 는 response_json 전체를 embed 하지 않고 response_json_preview 5000 char prefix 만 저장한다.",
+      "JSON modal 은 truncated prefix 를 가능한 범위에서 repair 하며, 완전한 payload 검증은 DB 원문 또는 API endpoint 를 통해 수행한다.",
+      "cause 의 compact shape 는 큰 market chart payload 를 직접 담지 않고 market_cache_key 로 market-status cache 를 참조한다."
+    ]
   }
 }

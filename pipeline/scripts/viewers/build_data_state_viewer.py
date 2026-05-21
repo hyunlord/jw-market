@@ -432,6 +432,43 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 13px;
     line-height: 1.6;
   }
+  .shape-doc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .shape-doc-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 12px;
+  }
+  .shape-doc-card h4 {
+    margin: 0 0 6px;
+    color: #0b66c3;
+    font-size: 13px;
+  }
+  .shape-doc-card p {
+    margin: 0 0 10px;
+    color: #4b5563;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .shape-json {
+    margin: 0;
+    max-height: 360px;
+    overflow: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    padding: 10px;
+    color: #111827;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
 	  .sample-link {
 	    margin-top: 12px;
 	    border: 1px solid #0b66c3;
@@ -655,11 +692,13 @@ const GROUP_LABELS = {
   layer_1_raw: "Layer 1 raw",
   layer_2_enriched: "Layer 2 enriched",
   layer_3_mart: "Layer 3 6 mart",
+  layer_4_cache: "LAYER 4 CACHE",
   catalog: "Catalog 7 table",
   ubist: "UBIST",
   iqvia: "IQVIA NSA",
   enriched: "Layer 2 enriched",
   mart: "Mart",
+  cache: "Cache",
 	};
 	let currentMode = "by-layer";
 	let sampleTableSequence = 0;
@@ -699,8 +738,8 @@ function renderSideNav(grouping) {
     groups[key].push({ name, info });
   }
   const order = grouping === "by-layer"
-    ? ["layer_1_raw", "layer_2_enriched", "layer_3_mart", "catalog"]
-    : ["ubist", "iqvia", "enriched", "mart", "catalog"];
+    ? ["layer_1_raw", "layer_2_enriched", "layer_3_mart", "layer_4_cache", "catalog"]
+    : ["ubist", "iqvia", "enriched", "mart", "cache", "catalog"];
   for (const groupKey of order) {
     if (!groups[groupKey]) continue;
     const section = document.createElement("section");
@@ -730,6 +769,7 @@ function renderSideNavDictionary() {
     layer_1_raw: [],
     layer_2_enriched: [],
     layer_3_mart: [],
+    layer_4_cache: [],
     catalog: [],
   };
   for (const [name, info] of Object.entries(DATA.tables || {})) {
@@ -737,7 +777,7 @@ function renderSideNavDictionary() {
     if (!groups[layer]) groups[layer] = [];
     groups[layer].push({ name, info });
   }
-  for (const groupKey of ["layer_1_raw", "layer_2_enriched", "layer_3_mart", "catalog"]) {
+  for (const groupKey of ["layer_1_raw", "layer_2_enriched", "layer_3_mart", "layer_4_cache", "catalog"]) {
     if (!groups[groupKey] || !groups[groupKey].length) continue;
     const section = document.createElement("section");
     section.className = "layer-group";
@@ -777,6 +817,9 @@ function renderTable(tableName) {
   html += renderOverview(table);
   html += renderStorage(table.storage_info || {});
   if (table.schema && table.schema.length) html += renderSchema(table.schema);
+  if (table.endpoint_view_breakdown && table.endpoint_view_breakdown.length) {
+    html += renderEndpointViewBreakdown(table.endpoint_view_breakdown, tableName);
+  }
 	  if (table.sample_rows && table.sample_rows.length) {
 	    html += "<details open><summary>Sample (" + table.sample_rows.length + " rows)</summary>"
 	      + renderRowsTable(table.sample_rows, tableName) + "</details>";
@@ -790,6 +833,11 @@ function renderTable(tableName) {
   if (table.distribution && Object.keys(table.distribution).length) {
     html += renderDistribution(table.distribution);
 	  }
+  const dictionary = DICTIONARY[tableName] || {};
+  const shapeDocs = table.response_shape_documentation || dictionary.sample_interpretation;
+  if (shapeDocs && !isSimpleSampleInterpretation(shapeDocs)) {
+    html += renderResponseShapeDocumentation(shapeDocs);
+  }
 	  panel.innerHTML = html;
 	  attachSampleWidthHandlers(panel);
 	}
@@ -843,12 +891,7 @@ function renderTableDictionary(tableName) {
   }
 
   if (dict.sample_interpretation) {
-    html += "<details open class=\"dict-sample\"><summary>Sample Interpretation</summary>"
-      + "<div class=\"dict-sample-box\"><strong>예시 row</strong><pre>"
-      + escapeHtml(dict.sample_interpretation.row_example || "-")
-      + "</pre><strong>해석</strong><p>"
-      + escapeHtml(dict.sample_interpretation.meaning || "-")
-      + "</p></div></details>";
+    html += renderDictionarySampleInterpretation(dict.sample_interpretation);
   }
 
   if (dict.notes && dict.notes.length) {
@@ -900,6 +943,44 @@ function renderStorage(storage) {
   for (const [key, value] of entries) {
     html += "<div class=\"storage-item\"><b>" + escapeHtml(key.replace(/_/g, " ")) + "</b>"
       + escapeHtml(typeof value === "object" ? JSON.stringify(value) : value) + "</div>";
+  }
+  html += "</div></details>";
+  return html;
+}
+
+function renderEndpointViewBreakdown(rows, tableName) {
+  return "<details open><summary>Endpoint × view_type breakdown (" + rows.length + " groups)</summary>"
+    + "<p class=\"note\">response_store cache rows and payload size by API endpoint and view_type.</p>"
+    + renderRowsTable(rows, tableName + " endpoint breakdown") + "</details>";
+}
+
+function isSimpleSampleInterpretation(sample) {
+  return !!(sample && (Object.prototype.hasOwnProperty.call(sample, "row_example")
+    || Object.prototype.hasOwnProperty.call(sample, "meaning")));
+}
+
+function renderDictionarySampleInterpretation(sample) {
+  if (isSimpleSampleInterpretation(sample)) {
+    return "<details open class=\"dict-sample\"><summary>Sample Interpretation</summary>"
+      + "<div class=\"dict-sample-box\"><strong>예시 row</strong><pre>"
+      + escapeHtml(sample.row_example || "-")
+      + "</pre><strong>해석</strong><p>"
+      + escapeHtml(sample.meaning || "-")
+      + "</p></div></details>";
+  }
+  return renderResponseShapeDocumentation(sample);
+}
+
+function renderResponseShapeDocumentation(docs) {
+  const entries = Object.entries(docs || {}).filter(([key]) => !key.startsWith("_"));
+  if (!entries.length) return "";
+  let html = "<details open><summary>Response Shape Documentation</summary><div class=\"shape-doc-grid\">";
+  for (const [endpoint, doc] of entries) {
+    const description = doc && typeof doc === "object" && doc.description ? doc.description : "";
+    const shape = doc && typeof doc === "object" && doc.shape ? doc.shape : doc;
+    html += "<section class=\"shape-doc-card\"><h4>" + escapeHtml(endpoint) + "</h4>";
+    if (description) html += "<p>" + escapeHtml(description) + "</p>";
+    html += "<pre class=\"shape-json\">" + escapeHtml(JSON.stringify(shape, null, 2)) + "</pre></section>";
   }
   html += "</div></details>";
   return html;
@@ -1431,14 +1512,15 @@ def html_safe_json_dumps(value: Any) -> str:
     )
 
 
-def load_dictionary() -> dict[str, Any]:
-    if not DICTIONARY_PATH.exists():
+def load_dictionary(path: Path | str | None = None) -> dict[str, Any]:
+    dictionary_path = Path(path) if path is not None else DICTIONARY_PATH
+    if not dictionary_path.exists():
         return {}
-    with DICTIONARY_PATH.open("r", encoding="utf-8") as handle:
+    with dictionary_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
-def build_html(state: dict[str, Any], output_path: Path | str) -> Path:
+def build_html(state: dict[str, Any], output_path: Path | str, *, dictionary_path: Path | str | None = None) -> Path:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     repo_tag = state.get("repo_tag") or "no tag"
@@ -1449,7 +1531,7 @@ def build_html(state: dict[str, Any], output_path: Path | str) -> Path:
         .replace("__REPO_TAG__", str(repo_tag))
         .replace("__TOTAL_ROWS__", f"{int(state.get('total_rows') or 0):,}")
         .replace("__DATA_JSON__", html_safe_json_dumps(state))
-        .replace("__DICTIONARY_JSON__", html_safe_json_dumps(load_dictionary()))
+        .replace("__DICTIONARY_JSON__", html_safe_json_dumps(load_dictionary(dictionary_path)))
     )
     output.write_text(html, encoding="utf-8")
     print(f"Generated: {output}")
@@ -1459,13 +1541,19 @@ def build_html(state: dict[str, Any], output_path: Path | str) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data", type=Path, help="Optional pre-collected JSON state path.")
+    parser.add_argument("--dictionary", type=Path, help="Optional data dictionary JSON path.")
     parser.add_argument("--output", type=Path, help="HTML output path. Defaults to viewer/data_state_<timestamp>.html")
     args = parser.parse_args()
 
-    state = collect_all()
+    if args.data:
+        with args.data.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    else:
+        state = collect_all()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     output_path = args.output or (PROJECT_ROOT / "viewer" / f"data_state_{timestamp}.html")
-    build_html(state, output_path)
+    build_html(state, output_path, dictionary_path=args.dictionary)
 
 
 if __name__ == "__main__":

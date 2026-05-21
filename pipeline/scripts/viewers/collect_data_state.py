@@ -45,6 +45,8 @@ CATALOG_TABLES = [
     "cd_brand",
     "cd_product",
 ]
+RESPONSE_STORE_TABLE = "response_store"
+RESPONSE_STORE_PREVIEW_CHARS = 5_000
 IQVIA_RAW_CANDIDATES = ["staging_iqvia_nsa", "iqvia_nsa_quarterly_raw"]
 JW_BRANDS = [
     "리바로",
@@ -671,6 +673,184 @@ def collect_mart(mart_name: str, *, conn: pymysql.connections.Connection | None 
             conn.close()
 
 
+def _response_store_preview_expr(payload_column: str = "response_json") -> str:
+    column = quote_identifier(payload_column)
+    return (
+        f"CASE WHEN LENGTH({column}) > %s "
+        f"THEN CONCAT(LEFT({column}, %s), '... (+', LENGTH({column}) - %s, ' chars truncated)') "
+        f"ELSE LEFT({column}, %s) END"
+    )
+
+
+def collect_response_store(
+    *,
+    conn: pymysql.connections.Connection | None = None,
+    sample_limit_per_group: int = 20,
+    jw_limit_per_brand: int = 8,
+) -> dict[str, Any]:
+    """Collect read-only Layer 4 cache metadata and bounded JSON previews."""
+    own_conn = conn is None
+    conn = conn or get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            table_name = RESPONSE_STORE_TABLE
+            if not table_exists(cur, table_name):
+                return {
+                    "logical_table": table_name,
+                    "layer": "layer_4_cache",
+                    "purpose": "cache",
+                    "error": "table_not_found",
+                    "table_name": table_name,
+                    "total_rows": 0,
+                    "total_columns": 0,
+                    "schema": [],
+                    "endpoint_view_breakdown": [],
+                    "sample_rows": [],
+                    "samples": [],
+                    "jw_deep_sample": [],
+                    "jw_brand_samples": [],
+                    "distribution": {},
+                    "storage_info": {},
+                }
+
+            schema = get_db_schema(cur, table_name)
+            column_names = {col["name"] for col in schema}
+            table = quote_identifier(table_name)
+            view_group_column = "view_type" if "view_type" in column_names else "view"
+            view_expr = quote_identifier(view_group_column)
+            payload_size_expr = "`size_bytes`" if "size_bytes" in column_names else "LENGTH(`response_json`)"
+
+            cur.execute(
+                f"""
+                SELECT endpoint,
+                       {view_expr} AS view_type,
+                       COUNT(*) AS row_count,
+                       ROUND(SUM({payload_size_expr}) / 1024 / 1024, 2) AS size_mb,
+                       ROUND(AVG({payload_size_expr}) / 1024, 1) AS avg_kb
+                FROM {table}
+                GROUP BY endpoint, {view_expr}
+                ORDER BY endpoint, {view_expr}
+                """
+            )
+            breakdown = rows_json_safe(cur.fetchall())
+            total_rows = sum(int(row.get("row_count") or 0) for row in breakdown)
+            total_size_mb = round(sum(float(row.get("size_mb") or 0.0) for row in breakdown), 2)
+            schema = enrich_db_column_stats(cur, table_name, schema, total_rows, sample_limit=5_000)
+
+            base_columns = [
+                "cache_key",
+                "endpoint",
+                "view_type",
+                "view",
+                "brand_key",
+                "market_id",
+                "brand_name",
+                "period_yyyymm",
+                "source",
+                "measure",
+                "ttl_seconds",
+                "computed_at",
+                "expires_at",
+                "computation_ms",
+            ]
+            select_columns = [quote_identifier(name) for name in base_columns if name in column_names]
+            preview_expr = _response_store_preview_expr()
+            select_sql = ", ".join(
+                select_columns
+                + [
+                    f"{payload_size_expr} AS payload_size",
+                    f"{preview_expr} AS response_json_preview",
+                    (
+                        "CASE WHEN LENGTH(`response_json`) > %s "
+                        "THEN 'truncated to 5000 chars for viewer sample' "
+                        "ELSE 'complete JSON sample' END AS preview_note"
+                    ),
+                ]
+            )
+
+            sample_rows: list[dict[str, Any]] = []
+            for row in breakdown:
+                cur.execute(
+                    f"""
+                    SELECT {select_sql}
+                    FROM {table}
+                    WHERE endpoint = %s
+                      AND {view_expr} <=> %s
+                    LIMIT %s
+                    """,
+                    (
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        row.get("endpoint"),
+                        row.get("view_type"),
+                        sample_limit_per_group,
+                    ),
+                )
+                sample_rows.extend(rows_json_safe(cur.fetchall()))
+
+            jw_rows: list[dict[str, Any]] = []
+            brand_match_clauses = []
+            if "brand_key" in column_names:
+                brand_match_clauses.append("brand_key = %s")
+            if "brand_name" in column_names:
+                brand_match_clauses.append("brand_name = %s")
+            if brand_match_clauses:
+                for brand in JW_BRANDS:
+                    params: list[Any] = [
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                        RESPONSE_STORE_PREVIEW_CHARS,
+                    ]
+                    params.extend([brand for _ in brand_match_clauses])
+                    params.append(jw_limit_per_brand)
+                    cur.execute(
+                        f"""
+                        SELECT {select_sql}
+                        FROM {table}
+                        WHERE endpoint IN ('cause', 'deep-analysis')
+                          AND ({" OR ".join(brand_match_clauses)})
+                        LIMIT %s
+                        """,
+                        params,
+                    )
+                    jw_rows.extend(rows_json_safe(cur.fetchall()))
+
+            storage_info = get_mart_storage_info(cur, table_name)
+            storage_info.update(
+                {
+                    "payload_size_mb": total_size_mb,
+                    "preview_chars_per_response": RESPONSE_STORE_PREVIEW_CHARS,
+                    "sample_strategy": f"endpoint x view_type first {sample_limit_per_group} rows using cache indexes",
+                    "jw_sample_strategy": f"{len(JW_BRANDS)} JW brands x up to {jw_limit_per_brand} cause/deep-analysis rows",
+                }
+            )
+
+            return {
+                "logical_table": table_name,
+                "layer": "layer_4_cache",
+                "purpose": "cache",
+                "table_name": table_name,
+                "total_rows": total_rows,
+                "total_columns": len(schema),
+                "schema": schema,
+                "endpoint_view_breakdown": breakdown,
+                "sample_rows": sample_rows,
+                "samples": sample_rows,
+                "jw_deep_sample": jw_rows,
+                "jw_brand_samples": jw_rows,
+                "distribution": {"endpoint_view_breakdown": breakdown},
+                "storage_info": storage_info,
+            }
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def collect_catalog(catalog_name: str, *, project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     path = project_root / "output" / "catalog" / catalog_name / f"{catalog_name}.parquet"
     if not path.exists():
@@ -804,6 +984,7 @@ def collect_all(*, project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         tables["enriched_parquet"] = collect_enriched_layer2(project_root)
         for mart_name in MART_TABLES:
             tables[mart_name] = collect_mart(mart_name, conn=conn)
+        tables["response_store"] = collect_response_store(conn=conn)
 
     for catalog_name in CATALOG_TABLES:
         tables[catalog_name] = collect_catalog(catalog_name, project_root=project_root)
