@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from pipeline.scripts.viewers import build_data_state_viewer as viewer_builder
 from pipeline.scripts.viewers.build_data_state_viewer import build_html
 from pipeline.scripts.viewers.collect_data_state import collect_catalog, find_enriched_jw_rows, json_safe
 
@@ -125,3 +126,72 @@ def test_build_html_creates_self_contained_viewer_with_escaped_rendering(tmp_pat
     assert "src=\"http" not in html
     assert "href=\"http" not in html
     assert "<script>alert(1)</script>" not in html
+
+
+def test_build_html_embeds_data_dictionary_tab_and_schema_types(tmp_path: Path, monkeypatch) -> None:
+    dictionary_path = tmp_path / "data_dictionary.json"
+    dictionary_path.write_text(
+        """
+        {
+          "_meta": {"version": "test"},
+          "mart_general_brand_metric": {
+            "purpose": "브랜드 단위 mart 설명",
+            "row_grain": "brand × source × measure",
+            "row_count_approx": "1 row",
+            "etl_source": "Layer 3 general view",
+            "columns": {
+              "brand_name": "브랜드명 설명",
+              "payload": "payload JSON 설명"
+            },
+            "sample_interpretation": {
+              "row_example": "brand_name=리바로",
+              "meaning": "리바로 브랜드의 지표 row"
+            },
+            "notes": ["metric_history는 JSON 문자열이다."]
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(viewer_builder, "DICTIONARY_PATH", dictionary_path, raising=False)
+    state = {
+        "generated_at": "2026-05-21T10:00:00",
+        "repo_commit": "49a535c",
+        "repo_tag": "",
+        "total_rows": 1,
+        "tables": {
+            "mart_general_brand_metric": {
+                "layer": "layer_3_mart",
+                "purpose": "mart",
+                "total_rows": 1,
+                "total_columns": 2,
+                "schema": [
+                    {"name": "brand_name", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "payload", "type": "longtext", "null_rate": 0.0, "unique_count": 1},
+                ],
+                "sample_rows": [{"brand_name": "리바로", "payload": "{}"}],
+                "jw_deep_sample": [],
+                "distribution": {},
+                "storage_info": {},
+            }
+        },
+    }
+
+    output_path = tmp_path / "viewer.html"
+    viewer_builder.build_html(state, output_path)
+
+    html = output_path.read_text(encoding="utf-8")
+    assert "Data Dictionary" in html
+    assert "const DICTIONARY =" in html
+    assert "renderTableDictionary" in html
+    assert "switchToLayerTabAndSelect" in html
+    assert "<details open><summary>Sample Rows</summary>" in html
+    assert "브랜드 단위 mart 설명" in html
+    assert "브랜드명 설명" in html
+    assert "longtext" in html
+
+
+def test_load_dictionary_returns_empty_dict_when_file_is_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(viewer_builder, "DICTIONARY_PATH", tmp_path / "missing.json", raising=False)
+
+    assert viewer_builder.load_dictionary() == {}

@@ -16,6 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from pipeline.scripts.viewers.collect_data_state import PROJECT_ROOT, collect_all
 
 
+DICTIONARY_PATH = Path(__file__).resolve().with_name("data_dictionary.json")
+
+
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -249,12 +252,126 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-radius: 8px;
     margin-bottom: 16px;
   }
+  .dict-overview {
+    background: #fff;
+    padding: 20px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .dict-section h3 {
+    margin: 0 0 8px;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .dict-section p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .dict-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    gap: 14px;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid #eef0f3;
+  }
+  .dict-stat label {
+    display: block;
+    margin-bottom: 5px;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .dict-stat span {
+    display: block;
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .dict-table .dict-col-name {
+    width: 210px;
+    color: #0b66c3;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 700;
+  }
+  .dict-table .dict-col-type {
+    width: 130px;
+    color: #6b7280;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+  }
+  .dict-table .dict-col-desc {
+    min-width: 320px;
+    line-height: 1.55;
+  }
+  details.dict-sample { border-left: 4px solid #22c55e; }
+  .dict-sample-box {
+    margin-top: 12px;
+    padding: 14px;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
+    background: #f0fdf4;
+  }
+  .dict-sample-box strong {
+    display: block;
+    margin: 12px 0 6px;
+    color: #15803d;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .dict-sample-box strong:first-child { margin-top: 0; }
+  .dict-sample-box pre {
+    margin: 0;
+    padding: 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .dict-sample-box p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  .dict-notes {
+    margin: 10px 0 0 18px;
+    padding: 0;
+  }
+  .dict-notes li {
+    margin: 6px 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .sample-link {
+    margin-top: 12px;
+    border: 1px solid #0b66c3;
+    border-radius: 8px;
+    background: #fff;
+    color: #0b66c3;
+    padding: 8px 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .sample-link:hover { background: #eef4fb; }
   @media (max-width: 860px) {
     .top-bar { align-items: flex-start; flex-direction: column; }
     .meta { text-align: left; }
     .container { flex-direction: column; }
     .side-nav { width: 100%; flex-basis: auto; max-height: 260px; border-right: 0; border-bottom: 1px solid #dadce0; }
     .overview-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dict-row { grid-template-columns: 1fr; }
     .bar-row { grid-template-columns: 1fr; gap: 4px; }
   }
 </style>
@@ -270,6 +387,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <nav class="tab-bar" aria-label="Grouping">
   <button class="tab active" type="button" data-grouping="by-layer">By Layer</button>
   <button class="tab" type="button" data-grouping="by-purpose">By Purpose</button>
+  <button class="tab" type="button" data-grouping="data-dictionary">Data Dictionary</button>
 </nav>
 <div class="container">
   <aside class="side-nav" id="sideNav"></aside>
@@ -277,6 +395,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 <script>
 const DATA = __DATA_JSON__;
+const DICTIONARY = __DICTIONARY_JSON__;
 const GROUP_LABELS = {
   layer_1_raw: "Layer 1 raw",
   layer_2_enriched: "Layer 2 enriched",
@@ -287,6 +406,7 @@ const GROUP_LABELS = {
   enriched: "Layer 2 enriched",
   mart: "Mart",
 };
+let currentMode = "by-layer";
 
 function escapeHtml(value) {
   return String(value)
@@ -307,6 +427,7 @@ function groupLabel(key) {
 }
 
 function renderSideNav(grouping) {
+  currentMode = grouping;
   const nav = document.getElementById("sideNav");
   nav.innerHTML = "";
   const groups = {};
@@ -337,6 +458,43 @@ function renderSideNav(grouping) {
   }
   const first = nav.querySelector("li");
   if (first) renderTable(first.dataset.table);
+}
+
+function renderSideNavDictionary() {
+  currentMode = "data-dictionary";
+  const nav = document.getElementById("sideNav");
+  nav.innerHTML = "";
+  const groups = {
+    layer_1_raw: [],
+    layer_2_enriched: [],
+    layer_3_mart: [],
+    catalog: [],
+  };
+  for (const [name, info] of Object.entries(DATA.tables || {})) {
+    const layer = info.layer || "catalog";
+    if (!groups[layer]) groups[layer] = [];
+    groups[layer].push({ name, info });
+  }
+  for (const groupKey of ["layer_1_raw", "layer_2_enriched", "layer_3_mart", "catalog"]) {
+    if (!groups[groupKey] || !groups[groupKey].length) continue;
+    const section = document.createElement("section");
+    section.className = "layer-group";
+    section.innerHTML = "<h3>" + escapeHtml(groupLabel(groupKey)) + "</h3>";
+    const list = document.createElement("ul");
+    for (const { name } of groups[groupKey]) {
+      const item = document.createElement("li");
+      item.dataset.table = name;
+      const status = DICTIONARY[name] ? "dict" : "no dict";
+      item.innerHTML = "<span class=\"table-name\">" + escapeHtml(name) + "</span>"
+        + "<span class=\"row-count\">" + escapeHtml(status) + "</span>";
+      item.onclick = () => renderTableDictionary(name);
+      list.appendChild(item);
+    }
+    section.appendChild(list);
+    nav.appendChild(section);
+  }
+  const first = nav.querySelector("li");
+  if (first) renderTableDictionary(first.dataset.table);
 }
 
 function renderTable(tableName) {
@@ -371,6 +529,95 @@ function renderTable(tableName) {
     html += renderDistribution(table.distribution);
   }
   panel.innerHTML = html;
+}
+
+function schemaTypeMap(tableName) {
+  const table = DATA.tables && DATA.tables[tableName];
+  const typeMap = {};
+  if (!table || !table.schema) return typeMap;
+  for (const column of table.schema) {
+    typeMap[column.name] = column.type;
+  }
+  return typeMap;
+}
+
+function renderTableDictionary(tableName) {
+  const dict = DICTIONARY[tableName];
+  const panel = document.getElementById("mainPanel");
+  document.querySelectorAll(".side-nav li").forEach(item => {
+    item.classList.toggle("active", item.dataset.table === tableName);
+  });
+  let html = "<div class=\"title-line\"><h2>" + escapeHtml(tableName) + "</h2>"
+    + "<span class=\"badge\">Data Dictionary</span></div>";
+  if (!dict) {
+    panel.innerHTML = html + "<div class=\"error\">Data dictionary 없음. data_dictionary.json에 항목 추가 필요.</div>";
+    return;
+  }
+
+  html += "<section class=\"dict-overview\">"
+    + "<div class=\"dict-section\"><h3>Purpose</h3><p>" + escapeHtml(dict.purpose || "-") + "</p></div>"
+    + "<div class=\"dict-row\">"
+    + "<div class=\"dict-stat\"><label>Row Grain</label><span>" + escapeHtml(dict.row_grain || "-") + "</span></div>"
+    + "<div class=\"dict-stat\"><label>Row Count Approx</label><span>" + escapeHtml(dict.row_count_approx || "-") + "</span></div>";
+  if (dict.etl_source) {
+    html += "<div class=\"dict-stat\"><label>ETL Source</label><span>" + escapeHtml(dict.etl_source) + "</span></div>";
+  }
+  html += "</div></section>";
+
+  const columns = dict.columns || {};
+  const typeMap = schemaTypeMap(tableName);
+  if (Object.keys(columns).length) {
+    html += "<details open><summary>Column Dictionary (" + Object.keys(columns).length + " columns)</summary>"
+      + "<div class=\"sample-table-wrapper\"><table class=\"dict-table\"><thead><tr>"
+      + "<th>Column</th><th>Type</th><th>설명 / 의미</th>"
+      + "</tr></thead><tbody>";
+    for (const [columnName, description] of Object.entries(columns)) {
+      html += "<tr><td class=\"dict-col-name\">" + escapeHtml(columnName) + "</td>"
+        + "<td class=\"dict-col-type\">" + escapeHtml(typeMap[columnName] || "?") + "</td>"
+        + "<td class=\"dict-col-desc\">" + escapeHtml(description) + "</td></tr>";
+    }
+    html += "</tbody></table></div></details>";
+  }
+
+  if (dict.sample_interpretation) {
+    html += "<details open class=\"dict-sample\"><summary>Sample Interpretation</summary>"
+      + "<div class=\"dict-sample-box\"><strong>예시 row</strong><pre>"
+      + escapeHtml(dict.sample_interpretation.row_example || "-")
+      + "</pre><strong>해석</strong><p>"
+      + escapeHtml(dict.sample_interpretation.meaning || "-")
+      + "</p></div></details>";
+  }
+
+  if (dict.notes && dict.notes.length) {
+    html += "<details open><summary>Notes</summary><ul class=\"dict-notes\">";
+    for (const note of dict.notes) {
+      html += "<li>" + escapeHtml(note) + "</li>";
+    }
+    html += "</ul></details>";
+  }
+
+  html += "<details open><summary>Sample Rows</summary>"
+    + "<p class=\"note\">동일 table의 실제 sample row 화면으로 이동합니다.</p>"
+    + "<button class=\"sample-link\" type=\"button\" data-table=\"" + escapeHtml(tableName) + "\">By Layer 탭에서 sample 보기</button>"
+    + "</details>";
+  panel.innerHTML = html;
+  const sampleButton = panel.querySelector(".sample-link");
+  if (sampleButton) {
+    sampleButton.onclick = () => switchToLayerTabAndSelect(tableName);
+  }
+}
+
+function switchToLayerTabAndSelect(tableName) {
+  const layerTab = document.querySelector(".tab[data-grouping=\"by-layer\"]");
+  if (layerTab) layerTab.click();
+  window.setTimeout(() => {
+    for (const item of document.querySelectorAll(".side-nav li")) {
+      if (item.dataset.table === tableName) {
+        item.click();
+        break;
+      }
+    }
+  }, 0);
 }
 
 function renderOverview(table) {
@@ -470,7 +717,12 @@ document.querySelectorAll(".tab").forEach(tab => {
   tab.onclick = () => {
     document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
     tab.classList.add("active");
-    renderSideNav(tab.dataset.grouping);
+    currentMode = tab.dataset.grouping;
+    if (currentMode === "data-dictionary") {
+      renderSideNavDictionary();
+    } else {
+      renderSideNav(currentMode);
+    }
   };
 });
 
@@ -492,6 +744,13 @@ def html_safe_json_dumps(value: Any) -> str:
     )
 
 
+def load_dictionary() -> dict[str, Any]:
+    if not DICTIONARY_PATH.exists():
+        return {}
+    with DICTIONARY_PATH.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def build_html(state: dict[str, Any], output_path: Path | str) -> Path:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -503,6 +762,7 @@ def build_html(state: dict[str, Any], output_path: Path | str) -> Path:
         .replace("__REPO_TAG__", str(repo_tag))
         .replace("__TOTAL_ROWS__", f"{int(state.get('total_rows') or 0):,}")
         .replace("__DATA_JSON__", html_safe_json_dumps(state))
+        .replace("__DICTIONARY_JSON__", html_safe_json_dumps(load_dictionary()))
     )
     output.write_text(html, encoding="utf-8")
     print(f"Generated: {output}")
