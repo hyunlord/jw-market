@@ -191,6 +191,61 @@ def test_build_html_embeds_data_dictionary_tab_and_schema_types(tmp_path: Path, 
     assert "longtext" in html
 
 
+def test_build_html_adds_json_modal_and_clickable_json_cells(tmp_path: Path) -> None:
+    state = {
+        "generated_at": "2026-05-21T11:00:00",
+        "repo_commit": "d212458",
+        "repo_tag": "",
+        "total_rows": 1,
+        "tables": {
+            "mart_strategic_ml_brand_metric": {
+                "layer": "layer_3_mart",
+                "purpose": "mart",
+                "total_rows": 1,
+                "total_columns": 3,
+                "schema": [
+                    {"name": "brand_name", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "metric_history", "type": "longtext", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "payload", "type": "json", "null_rate": 0.0, "unique_count": 1},
+                ],
+                "sample_rows": [
+                    {
+                        "brand_name": "리바로",
+                        "metric_history": '{"2026-Q1":{"raw_value":1234,"ms":5.2,"mom":null}}',
+                        "payload": {"is_jw": True, "channels": ["KHPA", "KCPA"]},
+                    }
+                ],
+                "jw_deep_sample": [],
+                "distribution": {},
+                "storage_info": {},
+            }
+        },
+    }
+    output_path = tmp_path / "viewer.html"
+
+    build_html(state, output_path)
+
+    html = output_path.read_text(encoding="utf-8")
+    assert 'id="jsonModal"' in html
+    assert "function openJsonModal" in html
+    assert "function renderJsonValue" in html
+    assert "function repairTruncatedJsonPrefix" in html
+    assert "function applySearchHighlight" in html
+    assert "function copyJsonContent" in html
+    assert "function showCopyFallback" in html
+    assert "function setSampleWidth" in html
+    assert "json-copy-fallback" in html
+    assert "json-cell-clickable" in html
+    assert "json-cell-trigger" in html
+    assert "Open JSON" in html
+    assert "JSON_CELL_PAYLOADS" in html
+    assert "sample-toggle-bar" in html
+    assert "Wide JSON" in html
+    assert "Wide All" in html
+    assert "data-json-path" in html
+    assert '" › " + col' in html
+
+
 def test_load_dictionary_returns_empty_dict_when_file_is_missing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(viewer_builder, "DICTIONARY_PATH", tmp_path / "missing.json", raising=False)
 
