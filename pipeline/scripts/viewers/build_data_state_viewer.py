@@ -280,6 +280,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 	    font-size: 10px;
 	    font-weight: 700;
 	  }
+	  .json-open-label.truncated {
+	    border-color: #f59e0b;
+	    background: #fffbeb;
+	    color: #92400e;
+	  }
+	  .json-open-label.full {
+	    border-color: #22c55e;
+	    background: #f0fdf4;
+	    color: #15803d;
+	  }
 	  .json-cell-preview {
 	    margin: 0;
 	    max-height: 110px;
@@ -560,6 +570,54 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 	    font-size: 16px !important;
 	    font-weight: 700;
 	  }
+	  .json-modal-banner {
+	    display: none;
+	    border-bottom: 1px solid #e5e7eb;
+	    padding: 10px 18px;
+	    font-size: 12px;
+	    line-height: 1.5;
+	  }
+	  .json-modal-banner.truncated {
+	    display: block;
+	    border-left: 4px solid #f59e0b;
+	    background: #fffbeb;
+	    color: #78350f;
+	  }
+	  .json-modal-banner.full {
+	    display: block;
+	    border-left: 4px solid #22c55e;
+	    background: #f0fdf4;
+	    color: #14532d;
+	  }
+	  .json-modal-banner strong {
+	    display: inline-block;
+	    margin-right: 4px;
+	  }
+	  .json-modal-sql {
+	    margin: 7px 0 0;
+	    padding: 8px 10px;
+	    border: 1px solid #fcd34d;
+	    border-radius: 6px;
+	    background: #fff;
+	    color: #111827;
+	    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	    font-size: 11px;
+	    white-space: pre-wrap;
+	    user-select: text;
+	  }
+	  .json-modal-sql-copy {
+	    margin-top: 7px;
+	    border: 1px solid #d97706;
+	    border-radius: 6px;
+	    background: #fff7ed;
+	    color: #92400e;
+	    padding: 5px 9px;
+	    font: inherit;
+	    font-size: 11px;
+	    font-weight: 700;
+	    cursor: pointer;
+	  }
+	  .json-modal-sql-copy:hover { background: #ffedd5; }
 	  .json-modal-body {
 	    flex: 1;
 	    overflow: auto;
@@ -681,6 +739,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 	        <button id="jsonModalClose" class="json-modal-close" type="button" title="Close">×</button>
 	      </div>
 	    </header>
+	    <div id="jsonModalBanner" class="json-modal-banner"></div>
 	    <div class="json-modal-body" id="jsonModalBody"></div>
 	    <footer class="json-modal-footer"><span id="jsonModalStats">-</span></footer>
 	  </section>
@@ -1048,6 +1107,51 @@ function jsonPreview(value) {
   return rendered.length > 800 ? rendered.slice(0, 800) + "\n..." : rendered;
 }
 
+function baseTableName(tableName) {
+  return String(tableName || "").replace(/\s+\(.+\)$/, "");
+}
+
+function sqlEscape(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "1" : "0";
+  return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
+function buildDbQuery(tableName, row) {
+  if (row && row.db_query) return String(row.db_query);
+  const table = baseTableName(tableName);
+  const pkMap = {
+    cache_brands: ["view_type", "source"],
+    cache_market_status: ["view_type", "market_id", "source", "measure"],
+    cache_cause: ["view_type", "brand_key", "market_id", "source", "measure"],
+    cache_deep_analysis: ["view_type", "brand_key", "market_id", "source", "measure"],
+  };
+  const keys = pkMap[table] || [];
+  const clauses = keys
+    .filter(key => row && row[key] !== null && row[key] !== undefined && row[key] !== "")
+    .map(key => key + " = " + sqlEscape(row[key]));
+  if (!table || !table.startsWith("cache_")) return "";
+  if (!clauses.length) return "SELECT response_json FROM " + table + " LIMIT 1;";
+  return "SELECT response_json FROM " + table + " WHERE " + clauses.join(" AND ") + ";";
+}
+
+function buildJsonCellMetadata(row, tableName) {
+  const hasPreviewMetadata = Boolean(row && (
+    Object.prototype.hasOwnProperty.call(row, "truncated")
+    || Object.prototype.hasOwnProperty.call(row, "payload_size")
+    || Object.prototype.hasOwnProperty.call(row, "is_jw_deep_sample")
+    || Object.prototype.hasOwnProperty.call(row, "db_query")
+  ));
+  return {
+    hasPreviewMetadata,
+    truncated: Boolean(row && row.truncated),
+    isJwDeepSample: Boolean(row && row.is_jw_deep_sample),
+    payloadSize: Number(row && row.payload_size ? row.payload_size : 0),
+    dbQuery: buildDbQuery(tableName, row),
+  };
+}
+
 function renderRowsTable(rows, tableName) {
 	  if (!rows || !rows.length) return "<p>No data.</p>";
 	  const columns = Object.keys(rows[0]);
@@ -1072,11 +1176,16 @@ function renderRowsTable(rows, tableName) {
 	      } else if (isJson) {
 	        const jsonId = "json_payload_" + (++jsonCellSequence);
 	        const path = (tableName || "table") + " › " + col;
-	        JSON_CELL_PAYLOADS[jsonId] = value;
+	        const metadata = buildJsonCellMetadata(row, tableName);
+	        JSON_CELL_PAYLOADS[jsonId] = { payload: value, metadata };
+	        const statusClass = metadata.hasPreviewMetadata ? (metadata.truncated ? "truncated" : "full") : "";
+	        const statusLabel = metadata.hasPreviewMetadata
+	          ? (metadata.truncated ? "Open JSON · Truncated" : "Open JSON · Full response")
+	          : "Open JSON";
 	        html += "<td class=\"json-cell json-cell-clickable\" title=\"Open JSON viewer\">"
 	          + "<button type=\"button\" class=\"json-cell-trigger\" onclick=\"openJsonModal(JSON_CELL_PAYLOADS[this.dataset.jsonId], this.dataset.jsonPath || '')\" data-json-id=\"" + escapeHtml(jsonId)
 	          + "\" data-json-path=\"" + escapeHtml(path) + "\">"
-	          + "<span class=\"json-open-label\">Open JSON</span>"
+	          + "<span class=\"json-open-label " + statusClass + "\">" + escapeHtml(statusLabel) + "</span>"
 	          + "<pre class=\"json-cell-preview\">" + escapeHtml(jsonPreview(value)) + "</pre></button></td>";
 	      } else {
 	        const rendered = String(value);
@@ -1116,7 +1225,10 @@ function escCloseHandler(event) {
   if (event.key === "Escape") closeJsonModal();
 }
 
-function openJsonModal(jsonPayload, path) {
+function openJsonModal(jsonEntry, path) {
+  const hasMetadata = jsonEntry && typeof jsonEntry === "object" && Object.prototype.hasOwnProperty.call(jsonEntry, "payload");
+  const jsonPayload = hasMetadata ? jsonEntry.payload : jsonEntry;
+  const metadata = hasMetadata ? (jsonEntry.metadata || {}) : {};
   const parsed = parseJsonPayload(jsonPayload);
   currentJsonObject = parsed;
   currentSearchTerm = "";
@@ -1126,11 +1238,48 @@ function openJsonModal(jsonPayload, path) {
   const modal = document.getElementById("jsonModal");
   document.getElementById("jsonModalPath").textContent = path || "JSON";
   document.getElementById("jsonModalSearch").value = "";
+  renderJsonModalBanner(metadata);
   renderJsonTree(parsed);
   modal.style.display = "flex";
   modal.setAttribute("aria-hidden", "false");
   document.addEventListener("keydown", escCloseHandler);
   document.getElementById("jsonModalSearch").focus();
+}
+
+function formatBytes(bytes) {
+  const number = Number(bytes || 0);
+  if (!Number.isFinite(number) || number <= 0) return "unknown size";
+  if (number >= 1024 * 1024) return (number / 1024 / 1024).toFixed(2) + " MB";
+  return (number / 1024).toFixed(1) + " KB";
+}
+
+function renderJsonModalBanner(metadata) {
+  const banner = document.getElementById("jsonModalBanner");
+  if (!banner) return;
+  const payloadSize = metadata && metadata.payloadSize ? metadata.payloadSize : 0;
+  const dbQuery = metadata && metadata.dbQuery ? String(metadata.dbQuery) : "";
+  banner.className = "json-modal-banner";
+  banner.style.display = "none";
+  banner.innerHTML = "";
+  if (metadata && metadata.hasPreviewMetadata && metadata.truncated) {
+    banner.className = "json-modal-banner truncated";
+    banner.style.display = "block";
+    banner.innerHTML = "<strong>Truncated</strong> Only the 5,000 character prefix is embedded in this viewer. Full size: "
+      + escapeHtml(formatBytes(payloadSize))
+      + ".<br>Full response is available with this DB query:"
+      + "<pre class=\"json-modal-sql\">" + escapeHtml(dbQuery || "-") + "</pre>"
+      + "<button id=\"jsonModalCopySql\" class=\"json-modal-sql-copy\" type=\"button\">Copy SQL</button>";
+    const copyButton = document.getElementById("jsonModalCopySql");
+    if (copyButton && dbQuery) copyButton.onclick = () => copyTextToClipboard(dbQuery);
+    return;
+  }
+  if (metadata && metadata.hasPreviewMetadata && (payloadSize || metadata.isJwDeepSample)) {
+    banner.className = "json-modal-banner full";
+    banner.style.display = "block";
+    banner.innerHTML = "<strong>Full response</strong> Full JSON embedded in this viewer"
+      + (payloadSize ? " (" + escapeHtml(formatBytes(payloadSize)) + ")" : "")
+      + ".";
+  }
 }
 
 function parseJsonPayload(jsonPayload) {
@@ -1323,6 +1472,18 @@ function fallbackCopyText(text) {
   const copied = document.execCommand("copy");
   textarea.remove();
   if (!copied) throw new Error("document.execCommand returned false");
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    fallbackCopyText(text);
+  } catch (_) {
+    fallbackCopyText(text);
+  }
 }
 
 function showCopyFallback(text) {

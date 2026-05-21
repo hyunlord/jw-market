@@ -52,6 +52,12 @@ CACHE_TABLES = [
     "cache_deep_analysis",
 ]
 CACHE_PREVIEW_CHARS = 5_000
+CACHE_PRIMARY_KEYS = {
+    "cache_brands": ["view_type", "source"],
+    "cache_market_status": ["view_type", "market_id", "source", "measure"],
+    "cache_cause": ["view_type", "brand_key", "market_id", "source", "measure"],
+    "cache_deep_analysis": ["view_type", "brand_key", "market_id", "source", "measure"],
+}
 IQVIA_RAW_CANDIDATES = ["staging_iqvia_nsa", "iqvia_nsa_quarterly_raw"]
 JW_BRANDS = [
     "리바로",
@@ -105,7 +111,7 @@ def quote_identifier(identifier: str) -> str:
     return "`" + identifier.replace("`", "``") + "`"
 
 
-def json_safe(value: Any, *, max_string_length: int = 5_000) -> Any:
+def json_safe(value: Any, *, max_string_length: int | None = 5_000) -> Any:
     """Convert Python, pandas, and DB scalar values into JSON-safe values."""
     if isinstance(value, dict):
         return {str(k): json_safe(v, max_string_length=max_string_length) for k, v in value.items()}
@@ -129,13 +135,13 @@ def json_safe(value: Any, *, max_string_length: int = 5_000) -> Any:
         pass
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return None
-    if isinstance(value, str) and len(value) > max_string_length:
+    if max_string_length is not None and isinstance(value, str) and len(value) > max_string_length:
         return value[:max_string_length] + f"... (+{len(value) - max_string_length} chars truncated)"
     return value
 
 
-def rows_json_safe(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [json_safe(dict(row)) for row in rows]
+def rows_json_safe(rows: Iterable[dict[str, Any]], *, max_string_length: int | None = 5_000) -> list[dict[str, Any]]:
+    return [json_safe(dict(row), max_string_length=max_string_length) for row in rows]
 
 
 def get_git_commit(project_root: Path = PROJECT_ROOT) -> str:
@@ -712,6 +718,41 @@ def _cache_payload_size_expr(column_names: set[str]) -> str:
     return "`payload_size`" if "payload_size" in column_names else "LENGTH(`response_json`)"
 
 
+def _sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _cache_response_query(table_name: str, row: dict[str, Any]) -> str:
+    pk_columns = CACHE_PRIMARY_KEYS.get(table_name, [])
+    clauses = [f"{column} = {_sql_literal(row.get(column))}" for column in pk_columns if row.get(column) is not None]
+    if not clauses:
+        return f"SELECT response_json FROM {table_name} LIMIT 1;"
+    return f"SELECT response_json FROM {table_name} WHERE {' AND '.join(clauses)};"
+
+
+def _annotate_cache_rows(
+    table_name: str,
+    rows: list[dict[str, Any]],
+    *,
+    full_response: bool,
+    is_jw_deep_sample: bool = False,
+) -> list[dict[str, Any]]:
+    for row in rows:
+        if "truncated" in row:
+            row["truncated"] = bool(row["truncated"])
+        else:
+            row["truncated"] = bool((row.get("payload_size") or 0) > CACHE_PREVIEW_CHARS and not full_response)
+        row["is_jw_deep_sample"] = is_jw_deep_sample
+        row["db_query"] = _cache_response_query(table_name, row)
+    return rows
+
+
 def _cache_breakdown(
     cur: pymysql.cursors.DictCursor,
     table_name: str,
@@ -747,35 +788,53 @@ def _cache_sample_rows(
     payload_size_expr: str,
     *,
     sample_limit_per_group: int,
+    full_response: bool = False,
 ) -> list[dict[str, Any]]:
     table = quote_identifier(table_name)
     available_sample_columns = [
         col for col in sample_columns if col in column_names and col not in {"response_json", "payload_size"}
     ]
     select_columns = [quote_identifier(col) for col in available_sample_columns]
-    preview_expr = _json_preview_expr()
-    select_sql = ", ".join(
-        select_columns
-        + [
-            f"{payload_size_expr} AS payload_size",
-            f"{preview_expr} AS response_json_preview",
-            (
-                "CASE WHEN LENGTH(`response_json`) > %s "
-                "THEN 'truncated to 5000 chars for viewer sample' "
-                "ELSE 'complete JSON sample' END AS preview_note"
-            ),
-        ]
-    )
+    if full_response:
+        select_sql = ", ".join(
+            select_columns
+            + [
+                f"{payload_size_expr} AS payload_size",
+                "`response_json` AS response_json_preview",
+                "FALSE AS truncated",
+                "'complete JSON sample' AS preview_note",
+            ]
+        )
+    else:
+        preview_expr = _json_preview_expr()
+        select_sql = ", ".join(
+            select_columns
+            + [
+                f"{payload_size_expr} AS payload_size",
+                f"{preview_expr} AS response_json_preview",
+                "CASE WHEN LENGTH(`response_json`) > %s THEN TRUE ELSE FALSE END AS truncated",
+                (
+                    "CASE WHEN LENGTH(`response_json`) > %s "
+                    "THEN 'truncated to 5000 chars for viewer sample; full response available via db_query' "
+                    "ELSE 'complete JSON sample' END AS preview_note"
+                ),
+            ]
+        )
     where_clause = " AND ".join(f"{quote_identifier(col)} <=> %s" for col in group_columns)
     sample_rows: list[dict[str, Any]] = []
     for group in breakdown:
-        params: list[Any] = [
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-        ]
+        params: list[Any] = []
+        if not full_response:
+            params.extend(
+                [
+                    CACHE_PREVIEW_CHARS,
+                    CACHE_PREVIEW_CHARS,
+                    CACHE_PREVIEW_CHARS,
+                    CACHE_PREVIEW_CHARS,
+                    CACHE_PREVIEW_CHARS,
+                    CACHE_PREVIEW_CHARS,
+                ]
+            )
         params.extend(group.get(col) for col in group_columns)
         params.append(sample_limit_per_group)
         cur.execute(
@@ -788,7 +847,14 @@ def _cache_sample_rows(
             """,
             params,
         )
-        sample_rows.extend(rows_json_safe(cur.fetchall()))
+        max_string_length = None if full_response else CACHE_PREVIEW_CHARS
+        sample_rows.extend(
+            _annotate_cache_rows(
+                table_name,
+                rows_json_safe(cur.fetchall(), max_string_length=max_string_length),
+                full_response=full_response,
+            )
+        )
     return sample_rows
 
 
@@ -809,17 +875,14 @@ def _cache_jw_rows(
         col for col in sample_columns if col in column_names and col not in {"response_json", "payload_size"}
     ]
     select_columns = [quote_identifier(col) for col in available_sample_columns]
-    preview_expr = _json_preview_expr()
     select_sql = ", ".join(
         select_columns
         + [
             f"{payload_size_expr} AS payload_size",
-            f"{preview_expr} AS response_json_preview",
-            (
-                "CASE WHEN LENGTH(`response_json`) > %s "
-                "THEN 'truncated to 5000 chars for viewer sample' "
-                "ELSE 'complete JSON sample' END AS preview_note"
-            ),
+            "`response_json` AS response_json_preview",
+            "FALSE AS truncated",
+            "TRUE AS is_jw_deep_sample",
+            "'complete JSON sample (JW deep sample)' AS preview_note",
         ]
     )
     brand_match_clauses = []
@@ -830,13 +893,7 @@ def _cache_jw_rows(
 
     jw_rows: list[dict[str, Any]] = []
     for brand in JW_BRANDS:
-        params: list[Any] = [
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-            CACHE_PREVIEW_CHARS,
-        ]
+        params: list[Any] = []
         params.extend([brand for _ in brand_match_clauses])
         params.append(jw_limit_per_brand)
         cur.execute(
@@ -849,7 +906,14 @@ def _cache_jw_rows(
             """,
             params,
         )
-        jw_rows.extend(rows_json_safe(cur.fetchall()))
+        jw_rows.extend(
+            _annotate_cache_rows(
+                table_name,
+                rows_json_safe(cur.fetchall(), max_string_length=None),
+                full_response=True,
+                is_jw_deep_sample=True,
+            )
+        )
     return jw_rows
 
 
@@ -862,6 +926,7 @@ def _collect_cache_table(
     sample_limit_per_group: int = 20,
     jw_limit_per_brand: int = 8,
     include_jw_sample: bool = False,
+    full_sample_response: bool = False,
 ) -> dict[str, Any]:
     own_conn = conn is None
     conn = conn or get_db_conn()
@@ -887,6 +952,7 @@ def _collect_cache_table(
                 column_names,
                 payload_size_expr,
                 sample_limit_per_group=sample_limit_per_group,
+                full_response=full_sample_response,
             )
             jw_rows = (
                 _cache_jw_rows(
@@ -907,7 +973,8 @@ def _collect_cache_table(
                     "payload_size_mb": total_size_mb,
                     "preview_chars_per_response": CACHE_PREVIEW_CHARS,
                     "sample_strategy": (
-                        f"{' x '.join(group_columns)} first {sample_limit_per_group} rows ordered by payload_size"
+                        f"{' x '.join(group_columns)} first {sample_limit_per_group} rows ordered by payload_size; "
+                        + ("full response_json" if full_sample_response else f"truncated to {CACHE_PREVIEW_CHARS} chars")
                     ),
                     "jw_sample_strategy": (
                         f"{len(JW_BRANDS)} JW brands x up to {jw_limit_per_brand} rows"
@@ -946,6 +1013,9 @@ def collect_cache_brands(
     jw_limit_per_brand: int = 8,
 ) -> dict[str, Any]:
     """Collect read-only Layer 4 brands cache metadata and bounded JSON previews."""
+    # cache_brands has only 6 rows, but the current payloads are multi-MB.
+    # Keep regular prefix+query samples so the self-contained viewer stays usable;
+    # JW deep samples are the only cache payloads intentionally embedded in full.
     return _collect_cache_table(
         "cache_brands",
         conn=conn,

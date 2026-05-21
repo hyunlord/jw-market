@@ -312,6 +312,7 @@ class _FakeSplitCacheCursor:
             ]
             return
         if "where brand_key = %s or brand_name = %s" in normalized:
+            full_payload = '{"brand_key":"리바로","data":{"payload":"' + ("x" * 6000) + '"}}'
             self.result = [
                 {
                     "view_type": "strategic_ml",
@@ -320,16 +321,22 @@ class _FakeSplitCacheCursor:
                     "brand_name": "리바로",
                     "source": "ubist",
                     "measure": "sales",
-                    "payload_size": 12_345,
-                    "response_json_preview": '{"brand_key":"리바로","data":{"kpi":1}}',
+                    "payload_size": len(full_payload),
+                    "response_json_preview": full_payload,
                     "preview_note": "complete JSON sample",
                     "updated_at": "2026-05-21 11:00:00",
                 }
             ]
             return
         if "response_json_preview" in normalized:
-            view_type = params[5]
-            source = params[6]
+            if len(params) >= 9:
+                view_type = params[6]
+                source = params[7]
+                measure = params[8] if "measure" in normalized else None
+            else:
+                view_type = params[0]
+                source = params[1]
+                measure = params[2] if "measure" in normalized and len(params) > 3 else None
             self.result = [
                 {
                     "view_type": view_type,
@@ -337,7 +344,7 @@ class _FakeSplitCacheCursor:
                     "market_id": "ml_006",
                     "brand_name": "리바로" if "cache_cause" in normalized or "cache_deep_analysis" in normalized else None,
                     "source": source,
-                    "measure": params[7] if "measure" in normalized else None,
+                    "measure": measure,
                     "payload_size": 12_345,
                     "response_json_preview": '{"view":"' + view_type + '","data":{"kpi":1}}',
                     "preview_note": "complete JSON sample",
@@ -426,6 +433,12 @@ def test_layer_4_split_collectors_report_four_cache_entries(monkeypatch) -> None
     assert "cache_breakdown" in cause
     assert cause["sample_rows"][0]["response_json_preview"].startswith("{")
     assert cause["jw_deep_sample"]
+    assert brands["sample_rows"][0]["truncated"] is True
+    assert cause["sample_rows"][0]["truncated"] is True
+    assert cause["jw_deep_sample"][0]["truncated"] is False
+    assert cause["jw_deep_sample"][0]["is_jw_deep_sample"] is True
+    assert len(cause["jw_deep_sample"][0]["response_json_preview"]) > 5_000
+    assert "(+" not in cause["jw_deep_sample"][0]["response_json_preview"]
 
 
 def test_data_dictionary_contains_split_cache_shapes() -> None:
@@ -562,3 +575,77 @@ def test_build_html_renders_layer_4_split_cache_sections(tmp_path: Path, monkeyp
     assert "target_customer_competition" in html
     assert "function openJsonModal" in html
     assert "json-cell-clickable" in html
+
+
+def test_build_html_marks_truncated_l4_json_with_db_query_and_full_banner(tmp_path: Path) -> None:
+    state = {
+        "generated_at": "2026-05-21T14:40:00",
+        "repo_commit": "eea040f",
+        "repo_tag": "",
+        "total_rows": 2,
+        "tables": {
+            "cache_cause": {
+                "logical_table": "cache_cause",
+                "layer": "layer_4_cache",
+                "purpose": "cache",
+                "total_rows": 2,
+                "total_columns": 8,
+                "schema": [
+                    {"name": "view_type", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "brand_key", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "market_id", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "source", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "measure", "type": "varchar", "null_rate": 0.0, "unique_count": 1},
+                    {"name": "response_json_preview", "type": "longtext", "null_rate": 0.0, "unique_count": 2},
+                ],
+                "sample_rows": [
+                    {
+                        "view_type": "strategic_ml",
+                        "brand_key": "리바로",
+                        "market_id": "ml_006",
+                        "source": "ubist",
+                        "measure": "sales",
+                        "payload_size": 28_500,
+                        "response_json_preview": "{\"brand_key\":\"리바로\",\"data\":{\"kpi\":1}",
+                        "truncated": True,
+                        "db_query": (
+                            "SELECT response_json FROM cache_cause WHERE view_type = 'strategic_ml' "
+                            "AND brand_key = '리바로' AND market_id = 'ml_006' "
+                            "AND source = 'ubist' AND measure = 'sales';"
+                        ),
+                    }
+                ],
+                "jw_deep_sample": [
+                    {
+                        "view_type": "strategic_ml",
+                        "brand_key": "리바로",
+                        "market_id": "ml_006",
+                        "source": "ubist",
+                        "measure": "sales",
+                        "payload_size": 28_500,
+                        "response_json_preview": "{\"brand_key\":\"리바로\",\"data\":{\"kpi\":1,\"sources_data\":{\"metric_history\":{}}}}",
+                        "truncated": False,
+                        "is_jw_deep_sample": True,
+                        "db_query": (
+                            "SELECT response_json FROM cache_cause WHERE view_type = 'strategic_ml' "
+                            "AND brand_key = '리바로' AND market_id = 'ml_006' "
+                            "AND source = 'ubist' AND measure = 'sales';"
+                        ),
+                    }
+                ],
+                "distribution": {},
+                "storage_info": {"size_mb": 1.0},
+            }
+        },
+    }
+    output_path = tmp_path / "viewer.html"
+
+    build_html(state, output_path)
+
+    html = output_path.read_text(encoding="utf-8")
+    assert "Truncated" in html
+    assert "Full response" in html
+    assert "SELECT response_json FROM cache_cause WHERE" in html
+    assert "view_type = 'strategic_ml'" in html
+    assert "brand_key = '리바로'" in html
+    assert "Copy SQL" in html
