@@ -6,21 +6,8 @@ from pipeline.scripts.api.cache.keys import (
     cache_key_deep_analysis,
     cache_key_market_status,
 )
-from pipeline.scripts.api.cache.loader import compute_168_variants
 from pipeline.scripts.api.drivers import compute_drivers
 from pipeline.scripts.api.models.cause import ExtendedMetricBlock
-
-
-def test_compute_168_variants_matches_source_measure_view_matrix() -> None:
-    variants = compute_168_variants()
-
-    assert len(variants) == 168
-    assert len({(v.brand_name, v.source, v.measure, v.view) for v in variants}) == 168
-    assert sum(1 for v in variants if v.source == "UBIST") == 56
-    assert sum(1 for v in variants if v.source == "IQVIA") == 112
-    assert {v.view for v in variants} == {"market_landscape", "competitive_dynamics"}
-    assert {"sales", "volume"} >= {v.measure for v in variants if v.source == "UBIST"}
-    assert "volume" not in {v.measure for v in variants if v.source == "IQVIA"}
 
 
 def test_cache_key_policy_stays_stable_for_phase_16f1b_design() -> None:

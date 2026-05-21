@@ -51,14 +51,14 @@ def test_cause_endpoint_joins_compact_cause_with_market_status() -> None:
         assert key in data
 
 
-def test_four_split_cache_tables_exist_and_legacy_is_preserved() -> None:
+def test_four_split_cache_tables_exist_and_legacy_is_removed() -> None:
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SHOW TABLES LIKE 'cache_%'")
             cache_tables = {next(iter(row.values())) for row in cur.fetchall()}
 
-            cur.execute("SHOW TABLES LIKE 'response_store_legacy'")
-            legacy_row = cur.fetchone()
+            cur.execute("SHOW TABLES LIKE 'response_store%'")
+            response_store_tables = list(cur.fetchall())
 
     assert {
         "cache_brands",
@@ -66,15 +66,12 @@ def test_four_split_cache_tables_exist_and_legacy_is_preserved() -> None:
         "cache_cause",
         "cache_deep_analysis",
     } <= cache_tables
-    assert legacy_row is not None
+    assert response_store_tables == []
 
 
-def test_split_cache_row_counts_match_legacy_response_store() -> None:
+def test_split_cache_row_counts_match_reconciled_contract() -> None:
     with connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT endpoint, COUNT(*) AS cnt FROM response_store_legacy GROUP BY endpoint")
-            legacy_counts = {row["endpoint"]: row["cnt"] for row in cur.fetchall()}
-
             cur.execute("SELECT COUNT(*) AS cnt FROM cache_brands")
             brands_count = cur.fetchone()["cnt"]
             cur.execute("SELECT COUNT(*) AS cnt FROM cache_market_status")
@@ -84,10 +81,19 @@ def test_split_cache_row_counts_match_legacy_response_store() -> None:
             cur.execute("SELECT COUNT(*) AS cnt FROM cache_deep_analysis")
             deep_count = cur.fetchone()["cnt"]
 
-    assert brands_count == legacy_counts.get("brands")
-    assert market_count == legacy_counts.get("market-status")
-    assert cause_count == legacy_counts.get("cause")
-    assert deep_count == legacy_counts.get("deep-analysis")
+    counts = {
+        "brands": brands_count,
+        "market-status": market_count,
+        "cause": cause_count,
+        "deep-analysis": deep_count,
+    }
+    assert counts == {
+        "brands": 6,
+        "market-status": 3_038,
+        "cause": 137_978,
+        "deep-analysis": 137_978,
+    }
+    assert sum(counts.values()) == 279_000
 
 
 def test_cause_split_cache_payload_has_no_market_cache_key() -> None:

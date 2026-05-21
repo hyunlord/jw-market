@@ -1,2 +1,1 @@
-"""Layer 4 response_store helpers."""
-
+"""Layer 4 cache key helpers."""
