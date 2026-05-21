@@ -1,47 +1,74 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from pathlib import Path
 
-from pipeline.scripts.ops_utils import find_project_root, first_existing
-
-
-PROJECT_ROOT = find_project_root(Path(__file__).resolve())
-ENV_PATH = first_existing(PROJECT_ROOT / "pipeline" / "docker" / ".env", PROJECT_ROOT / "docker" / ".env")
+import pymysql
 
 
-def load_env(path: Path = ENV_PATH) -> dict[str, str]:
-    env: dict[str, str] = {}
-    if not path.exists():
-        return env
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return int(value)
 
 
 @dataclass(frozen=True)
-class ApiSettings:
+class APIConfig:
     db_host: str
     db_port: int
     db_user: str
     db_password: str
     db_name: str
+    app_version: str
+    external_path_prefix: str
+    log_level: str
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
     cache_ttl_seconds: int = 86400
 
 
-def get_settings() -> ApiSettings:
-    env = load_env()
-    password = env.get("MARIADB_PASSWORD")
-    if not password:
-        raise RuntimeError(f"MARIADB_PASSWORD is missing in {ENV_PATH}")
-    return ApiSettings(
-        db_host="127.0.0.1",
-        db_port=int(env.get("HOST_PORT", "3307")),
-        db_user=env.get("MARIADB_USER", "jwapp"),
-        db_password=password,
-        db_name=env.get("MARIADB_DATABASE", "jw_mart"),
+ApiSettings = APIConfig
+
+
+def load_config() -> APIConfig:
+    """Load API settings from env vars, with local-dev fallbacks."""
+    return APIConfig(
+        db_host=os.getenv("DB_HOST", "127.0.0.1"),
+        db_port=_env_int("DB_PORT", 3308),
+        db_user=os.getenv("DB_USER", "root"),
+        db_password=os.getenv("DB_PASSWORD", ""),
+        db_name=os.getenv("DB_NAME", "jw_mart"),
+        app_version=os.getenv("APP_VERSION", "v0.1.0"),
+        external_path_prefix=os.getenv("EXTERNAL_PATH_PREFIX", ""),
+        log_level=os.getenv("LOG_LEVEL", "INFO"),
+        api_host=os.getenv("API_HOST", "0.0.0.0"),
+        api_port=_env_int("API_PORT", 8000),
+    )
+
+
+config = load_config()
+
+
+DB_HOST = config.db_host
+DB_PORT = config.db_port
+DB_USER = config.db_user
+DB_PASSWORD = config.db_password
+DB_NAME = config.db_name
+
+
+def get_settings() -> APIConfig:
+    return config
+
+
+def get_db_connection() -> pymysql.connections.Connection:
+    return pymysql.connect(
+        host=config.db_host,
+        port=config.db_port,
+        user=config.db_user,
+        password=config.db_password,
+        database=config.db_name,
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
     )
