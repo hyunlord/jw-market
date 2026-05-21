@@ -1,31 +1,103 @@
 from __future__ import annotations
 
-import time
+from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from pipeline.scripts.api.cache.keys import cache_key_brands
-from pipeline.scripts.api.cache.store import get_cache, set_cache
-from pipeline.scripts.api.models.brand import BrandResponse
-from pipeline.scripts.api.services import build_brands_response
+from pipeline.scripts.api import db
+from pipeline.scripts.api.utils import loads_json_maybe
 
 
 router = APIRouter()
 
 
-@router.get("/api/brands", response_model=list[BrandResponse])
+def _normalise_source(source: str | None) -> str:
+    if not source:
+        return "all"
+    lowered = source.lower()
+    if lowered == "iqvia":
+        return "iqvia_nsa"
+    return lowered
+
+
+def _load_response(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    response = loads_json_maybe(row.get("response_json"))
+    return response if isinstance(response, dict) else None
+
+
+def _filter_brands(response: dict[str, Any], q: str | None, market_id: str | None) -> dict[str, Any]:
+    if not q and not market_id:
+        return response
+    brands = response.get("brands")
+    if not isinstance(brands, list):
+        return response
+
+    filtered = []
+    needle = q.casefold() if q else None
+    for brand in brands:
+        if not isinstance(brand, dict):
+            continue
+        if needle and needle not in str(brand.get("brand_name") or brand.get("brand_key") or "").casefold():
+            continue
+        if market_id:
+            market_ids = brand.get("market_ids") or brand.get("available_markets") or brand.get("atc4_codes") or []
+            if market_id not in market_ids:
+                continue
+        filtered.append(brand)
+
+    result = dict(response)
+    result["brands"] = filtered
+    result["total_count"] = len(filtered)
+    result["filters_applied"] = {
+        **(response.get("filters_applied") or {}),
+        "q": q,
+        "market_id": market_id,
+    }
+    return result
+
+
+@router.get("/api/brands")
 def list_brands(
     q: str | None = Query(None, description="브랜드명 부분 일치 검색"),
     market_id: str | None = Query(None, description="strategy_NNN market id"),
-) -> list[dict]:
-    key = cache_key_brands()
-    cacheable = q is None and market_id is None
-    if cacheable:
-        cached = get_cache(key)
-        if cached is not None:
-            return cached
-    start = time.perf_counter()
-    response = build_brands_response(q=q, market_id=market_id)
-    if cacheable:
-        set_cache(key, "brands", response, computation_ms=int((time.perf_counter() - start) * 1000))
-    return response
+    view: str | None = Query(None, pattern="^(general|strategic_ml|strategic_cd)$"),
+    source: str | None = Query(None, pattern="^(ubist|iqvia|iqvia_nsa|UBIST|IQVIA|IQVIA_NSA)$"),
+) -> dict:
+    view_key = view or "all"
+    source_key = _normalise_source(source)
+    cache_key = f"endpoint=brands|view={view_key}|source={source_key}"
+
+    response = _load_response(
+        db.fetch_one(
+            """
+            SELECT response_json
+            FROM response_store
+            WHERE endpoint = 'brands'
+              AND cache_key = %s
+            LIMIT 1
+            """,
+            [cache_key],
+        )
+    )
+
+    if response is None and view and source:
+        fallback_key = f"endpoint=brands|view=all|source={source_key}"
+        response = _load_response(
+            db.fetch_one(
+                """
+                SELECT response_json
+                FROM response_store
+                WHERE endpoint = 'brands'
+                  AND cache_key = %s
+                LIMIT 1
+                """,
+                [fallback_key],
+            )
+        )
+
+    if response is None:
+        raise HTTPException(status_code=404, detail=f"Brands cache not found for view={view_key}, source={source_key}")
+
+    return _filter_brands(response, q=q, market_id=market_id)
