@@ -72,7 +72,7 @@ ANOMALY_THRESHOLDS = {
     "ei_abs_gt_1000": ("ei_5y", "abs_gt", 1000.0),
 }
 GROWTH_CONTRIBUTION_THRESHOLD = 10_000.0
-EI_DENOMINATOR_THRESHOLD = 0.001
+EI_DENOMINATOR_THRESHOLD = 0.0
 GC_SMALL_DENOMINATOR_WARNING = "gc_small_denominator"
 EI_SMALL_DENOMINATOR_WARNING = "ei_small_denominator"
 
@@ -156,7 +156,7 @@ def compute_cagr_value(end_value: Any, start_value: Any, years: int) -> float | 
 
 def compute_ei(brand_cagr_5y: Any, market_cagr_5y: Any) -> tuple[float | None, str | None]:
     denominator_f = safe_number(market_cagr_5y)
-    if denominator_f is not None and abs(denominator_f) < EI_DENOMINATOR_THRESHOLD:
+    if denominator_f is not None and abs(denominator_f) <= EI_DENOMINATOR_THRESHOLD:
         return None, EI_SMALL_DENOMINATOR_WARNING
     ratio = safe_ratio(brand_cagr_5y, market_cagr_5y)
     if ratio is None:

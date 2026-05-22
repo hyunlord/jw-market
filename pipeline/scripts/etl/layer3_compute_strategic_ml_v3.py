@@ -296,6 +296,19 @@ def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]], uniq
         conn.close()
 
 
+def delete_existing_rows(table: str, market_col: str, market_ids: set[str]) -> None:
+    if not market_ids:
+        return
+    placeholders = ",".join(["%s"] * len(market_ids))
+    sql = f"DELETE FROM {table} WHERE {market_col} IN ({placeholders})"
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(sorted(market_ids)))
+    finally:
+        conn.close()
+
+
 def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if not dry_run and not insert:
         raise RuntimeError("Use --dry-run or --insert")
@@ -316,6 +329,9 @@ def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str 
         write_jsonl(output_dir / ML_BRAND_JSONL, brand_rows)
         write_jsonl(output_dir / ML_MARKET_JSONL, market_rows)
     if insert:
+        market_ids = {str(row["ml_id"]) for _, row in ml_market.iterrows()}
+        delete_existing_rows("mart_strategic_ml_brand_metric", "ml_id", market_ids)
+        delete_existing_rows("mart_strategic_ml_market_metric", "ml_id", market_ids)
         insert_rows("mart_strategic_ml_brand_metric", ML_BRAND_COLUMNS, brand_rows, {"ml_id", "brand_id", "source", "measure"})
         insert_rows("mart_strategic_ml_market_metric", ML_MARKET_COLUMNS, market_rows, {"ml_id", "source", "measure"})
     stats = {"brand_rows": len(brand_rows), "market_rows": len(market_rows), "ml_count": int(ml_market["ml_id"].nunique())}

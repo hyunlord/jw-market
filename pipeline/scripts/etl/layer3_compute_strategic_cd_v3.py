@@ -22,6 +22,7 @@ from layer3_compute_strategic_ml_v3 import (
     _display_brand_name,
     _output_brand_key,
     _truthy,
+    delete_existing_rows,
     expected_measure_pairs,
     fetch_general_rows_from_db,
     is_jw_name,
@@ -239,6 +240,9 @@ def compute_strategic_cd(dry_run: bool, insert: bool, output_dir: Path, cd_marke
         write_jsonl(output_dir / CD_BRAND_JSONL, brand_rows)
         write_jsonl(output_dir / CD_MARKET_JSONL, market_rows)
     if insert:
+        market_ids = {str(row["cd_id"]) for _, row in cd_markets.iterrows()}
+        delete_existing_rows("mart_strategic_cd_brand_metric", "cd_market_id", market_ids)
+        delete_existing_rows("mart_strategic_cd_market_metric", "cd_market_id", market_ids)
         insert_rows("mart_strategic_cd_brand_metric", CD_BRAND_COLUMNS, brand_rows, {"cd_market_id", "cd_brand_id", "source", "measure"})
         insert_rows("mart_strategic_cd_market_metric", CD_MARKET_COLUMNS, market_rows, {"cd_market_id", "source", "measure"})
     stats = {"brand_rows": len(brand_rows), "market_rows": len(market_rows), "cd_market_count": int(cd_markets["cd_id"].nunique())}

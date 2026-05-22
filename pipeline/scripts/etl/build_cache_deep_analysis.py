@@ -457,6 +457,7 @@ def main() -> None:
     sql = f"REPLACE INTO `cache_deep_analysis` ({names}) VALUES ({placeholders})"
     conn = mariadb_connect()
     cur = conn.cursor()
+    cur.execute("DELETE FROM `cache_deep_analysis`")
     batch: list[tuple[Any, ...]] = []
     inserted = 0
 

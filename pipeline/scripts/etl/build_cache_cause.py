@@ -883,9 +883,14 @@ def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]
 
 
 def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> list[dict[str, Any]]:
-    if strategic_brand is None or not view_source_id.startswith("ml_"):
+    if strategic_brand is None:
         return []
-    sub = strategic_brand[strategic_brand["ml_id"].astype(str) == view_source_id]
+    if view_source_id.startswith("ml_"):
+        sub = strategic_brand[strategic_brand["ml_id"].astype(str) == view_source_id]
+    elif view_source_id.startswith("cd_") and "cd_id" in strategic_brand.columns:
+        sub = strategic_brand[strategic_brand["cd_id"].astype(str) == view_source_id]
+    else:
+        return []
     members = []
     for _, row in sub.iterrows():
         name = str(row.get("canonical_name") or row.get("name") or "")
@@ -1092,6 +1097,7 @@ def main() -> None:
     inserted = 0
     conn = mariadb_connect()
     cur = conn.cursor()
+    cur.execute("DELETE FROM `cache_cause`")
     batch: list[tuple[Any, ...]] = []
 
     def flush_batch() -> None:
