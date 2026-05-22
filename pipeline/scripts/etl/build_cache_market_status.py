@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import sys
+from typing import Any
 
 from cache_build_common import (
     API_TO_SOURCE,
@@ -11,6 +13,7 @@ from cache_build_common import (
     display_ukrw,
     dump_payload,
     fetch_all,
+    first_pair,
     load_catalog,
     metric_first,
     metric_recent,
@@ -25,7 +28,16 @@ from cache_build_common import (
     decode_json,
     safe_float,
     series_cagr,
+    PROJECT_ROOT,
 )
+
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.scripts.api.metadata import BRAND_METADATA
+from pipeline.scripts.api.services import MARKET_STATUS_COMPANY_BY_BRAND
+
+
+BRAND_META_BY_NAME = {meta.brand: meta for meta in BRAND_METADATA}
 
 
 def _history_number(item: object) -> float | None:
@@ -75,7 +87,69 @@ def source_card_payload(row: dict) -> dict:
     }
 
 
-def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], market_rows: dict) -> dict:
+def _valid_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def _period_first(metric_history: dict | None) -> str | None:
+    period, _ = first_pair(metric_history)
+    return str(period) if period is not None else None
+
+
+def _source_label(sources: list[str]) -> str:
+    if not sources:
+        return ""
+    return " + ".join(sources)
+
+
+def _ordered_sources(sources: list[str]) -> list[str]:
+    order = {"UBIST": 0, "IQVIA": 1}
+    return sorted(dict.fromkeys(sources), key=lambda source: order.get(source, 99))
+
+
+def _ratio_to_pct(value: Any) -> float | None:
+    if value is None:
+        return None
+    return round(safe_float(value) * 100, 4)
+
+
+def _market_definition_label(atc_codes: list[str]) -> str:
+    return "1 ATC" if len(atc_codes) == 1 else f"{len(atc_codes)} ATCs"
+
+
+def _catalog_company(catalog_row: dict) -> str | None:
+    return _valid_text(catalog_row.get("판매사")) or _valid_text(catalog_row.get("제조사"))
+
+
+def _direct_competition_count(strategic_brand: Any, cd_id: Any) -> int:
+    cd = _valid_text(cd_id)
+    if not cd or strategic_brand is None or "cd_id" not in strategic_brand:
+        return 0
+    return int((strategic_brand["cd_id"].astype(str) == cd).sum())
+
+
+def _first_existing(*values: Any) -> Any:
+    for value in values:
+        if isinstance(value, list):
+            if value:
+                return value
+        elif _valid_text(value) is not None:
+            return value
+    return None
+
+
+def build_brand_card(
+    brand_row: dict,
+    market: dict,
+    sales_rows: list[dict],
+    market_rows: dict,
+    strategic_brand: Any,
+) -> dict:
     preferred = next((r for r in sales_rows if r["source"] == "ubist"), None) or (sales_rows[0] if sales_rows else {})
     metric_history = decode_json(preferred.get("metric_history"))
     extended = decode_json(preferred.get("extended_metric_history"))
@@ -90,15 +164,45 @@ def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], mark
         for row in sales_rows
     }
     default_source = "UBIST" if "UBIST" in sources_data else (next(iter(sources_data.keys()), None))
+    brand_name = brand_row["brand"]
+    meta = BRAND_META_BY_NAME.get(brand_name)
+    meta_sources = list(meta.sources) if meta else []
+    sources = _ordered_sources(meta_sources or brand_row["sources"])
+    atc_codes = list(meta.atc_codes) if meta else []
+    brand_cagr = _ratio_to_pct(ext_recent.get("cagr_5y"))
+    if brand_cagr is None:
+        brand_cagr = 0.0
+    market_cagr = series_cagr(market_series)
+    excess_growth = round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None
+    company = (
+        MARKET_STATUS_COMPANY_BY_BRAND.get(brand_name)
+        or _catalog_company(brand_row.get("catalog_row", {}))
+        or "JW중외제약"
+    )
+    market_name = _first_existing(meta.market_name if meta else None, market.get("name"))
+    market_name_short = _first_existing(meta.market_name_short if meta else None, market_name, brand_name)
+    atc_desc = _first_existing(meta.atc_desc if meta else None, "")
+    market_label_kor = _first_existing(meta.market_label_kor if meta else None, market_name_short)
+    mkt_team = _valid_text(meta.mkt_team if meta else None)
+    nhi_type = _valid_text(brand_row.get("catalog_row", {}).get("nhi_type")) or "NHI"
+    direct_competition_count = _direct_competition_count(strategic_brand, brand_row.get("catalog_row", {}).get("cd_id"))
 
     return {
-        "brand": brand_row["brand"],
+        "rank": int(meta.rank) if meta else safe_float(recent.get("rank")),
+        "brand": brand_name,
         "brand_key": brand_row["brand_key"],
+        "company": company,
         "market_id": brand_row["market_id"],
-        "market_name": market.get("name"),
+        "market_name": market_name,
+        "market_name_short": market_name_short,
+        "market_label_kor": market_label_kor,
+        "mkt_team": mkt_team,
+        "atc_codes": atc_codes,
+        "atc_desc": atc_desc,
+        "nhi_type": nhi_type,
         "is_jw": True,
         "is_target": brand_row["is_target"],
-        "sources": brand_row["sources"],
+        "sources": sources,
         "front": {
             "value_recent": safe_float(recent.get("raw_value")),
             "ms_recent_pct": safe_float(recent.get("ms")),
@@ -112,13 +216,24 @@ def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], mark
             "default_source": default_source,
         },
         "back": {
-            "cagr_5y_pct": safe_float(ext_recent.get("cagr_5y")),
+            "cagr_5y_pct": brand_cagr,
             "sales_first_period_krw": safe_float(first.get("raw_value")),
             "ms_first_period_pct": safe_float(first.get("ms")),
+            "period_first": _period_first(metric_history),
         },
         "back_extended": {
             "market_size_recent": market_recent,
-            "market_cagr_5y_pct": series_cagr(market_series),
+            "market_cagr_5y_pct": market_cagr,
+            "brand_cagr_5y_pct": brand_cagr,
+            "excess_growth_pct": excess_growth,
+            "source_label": _source_label(sources),
+            "is_dual_source": len(sources) > 1,
+            "sources": sources,
+            "market_definition_label": _market_definition_label(atc_codes),
+            "market_definition_full": ", ".join(atc_codes),
+            "atc_count": len(atc_codes),
+            "direct_competition_count": direct_competition_count,
+            "market_label_kor": market_label_kor,
         },
         "source_cards": [
             {
@@ -235,10 +350,12 @@ def main() -> None:
                     "market_id": ml_to_strategy(ml_id),
                     "is_target": bool(row.get("is_target")),
                     "sources": source_list(market.get("data_source")),
+                    "catalog_row": row.to_dict(),
                 },
                 market,
                 sales_by_brand.get(brand, []),
                 market_rows,
+                strategic_brand,
             )
         )
 
