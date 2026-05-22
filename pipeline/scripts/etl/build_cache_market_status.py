@@ -18,6 +18,7 @@ from cache_build_common import (
     numeric_mean,
     parser,
     payload_size,
+    period_key,
     replace_rows,
     series_latest_number,
     source_list,
@@ -25,6 +26,35 @@ from cache_build_common import (
     safe_float,
     series_cagr,
 )
+
+
+def _history_number(item: object) -> float | None:
+    if isinstance(item, dict):
+        value = item.get("raw_value")
+    else:
+        value = item
+    if value is None:
+        return None
+    try:
+        number = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def movement_pct_from_history(metric_history: dict | None) -> float | None:
+    """Return latest-vs-previous movement pct from a period keyed history."""
+    data = metric_history or {}
+    if len(data) < 2:
+        return None
+    keys = sorted(data.keys(), key=period_key)
+    previous = _history_number(data.get(keys[-2]))
+    recent = _history_number(data.get(keys[-1]))
+    if previous is None or recent is None or previous == 0:
+        return None
+    return (recent - previous) / previous * 100
 
 
 def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], market_rows: dict) -> dict:
@@ -79,24 +109,29 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
     source_rows = [r for r in rows if r["source"] == API_TO_SOURCE[source] and r["measure"] == "sales"]
     latest_values = []
     ms_values = []
-    yoy_values = []
+    movement_values = []
     cagr_values = []
     for row in source_rows:
-        recent = metric_recent(decode_json(row["metric_history"]))
+        history = decode_json(row["metric_history"])
+        recent = metric_recent(history)
         ext_recent = metric_recent(decode_json(row["extended_metric_history"]))
         latest_values.append(safe_float(recent.get("raw_value")))
         ms_values.append(safe_float(recent.get("ms")))
-        yoy_values.append(safe_float(recent.get("yoy")))
+        movement = movement_pct_from_history(history)
+        if movement is not None:
+            movement_values.append(movement)
         cagr_values.append(safe_float(ext_recent.get("cagr_5y")))
     total = sum(latest_values)
+    rising = sum(1 for value in movement_values if value >= 0)
+    declining = sum(1 for value in movement_values if value < 0)
     return {
         "total_revenue": total,
         "total_revenue_display": display_ukrw(total),
         "avg_market_share_pct": numeric_mean(ms_values),
-        "rising_brand_count": sum(1 for v in yoy_values if v > 0),
-        "declining_brand_count": sum(1 for v in yoy_values if v < 0),
+        "rising_brand_count": rising,
+        "declining_brand_count": declining,
         "cagr_5y_pct": numeric_mean(cagr_values),
-        "brand_count": len(source_rows),
+        "brand_count": rising + declining,
     }
 
 
