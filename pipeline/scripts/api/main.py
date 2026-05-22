@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 
 if __package__ in {None, ""}:
@@ -40,6 +41,19 @@ app = FastAPI(
     version=config.app_version,
     root_path=config.external_path_prefix,
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:8013",
+        "http://localhost:8013",
+        "http://127.0.0.1:8888",
+        "http://localhost:8888",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 app.include_router(health.router)
