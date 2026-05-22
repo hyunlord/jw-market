@@ -275,12 +275,43 @@ def load_catalog_key_map() -> dict[str, dict[str, Any]]:
 
 def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) -> pd.DataFrame:
     if ml is None:
-        frames: list[pd.DataFrame] = []
-        for parquet in sorted((OUTPUT_DIR / "enriched").glob("ml_id=*/data.parquet")):
-            ml_id = parquet.parent.name.split("=", 1)[-1]
-            LOGGER.info("[ubist] aggregating partition %s", ml_id)
-            frames.append(load_ubist_base_frame(max_rows=max_rows, ml=ml_id))
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        limit = f"LIMIT {int(max_rows)}" if max_rows else ""
+        query = f"""
+            SELECT
+              CAST("약품코드" AS VARCHAR) AS product_code,
+              first("제품") AS product_name,
+              first("브랜드") AS brand_name,
+              first("ATC") AS atc_text,
+              period_yyyymm,
+              "종별" AS channel,
+              "진료과" AS specialty,
+              first("제조사") AS manufacturer,
+              first("판매사") AS company,
+              SUM(TRY_CAST(rx_amt AS DOUBLE)) AS raw_sales,
+              SUM(TRY_CAST(rx_qty AS DOUBLE)) AS raw_volume
+            FROM (
+              SELECT *
+              FROM read_parquet('{UBIST_GLOB}', hive_partitioning=true)
+              WHERE TRY_CAST(rx_amt AS DOUBLE) > 0 OR TRY_CAST(rx_qty AS DOUBLE) > 0
+              {limit}
+            ) AS u
+            GROUP BY 1,5,6,7
+        """
+        LOGGER.info("[ubist] aggregating raw UBIST parquet for all ATC4")
+        con = duckdb.connect()
+        try:
+            frame = con.execute(query).df()
+        finally:
+            con.close()
+        frame["source"] = "ubist"
+        frame["brand_name"] = frame.apply(lambda r: best_name(r.get("brand_name"), r.get("product_name"), r.get("product_code")), axis=1)
+        frame["brand_key"] = frame["brand_name"].map(normalize_brand_name)
+        atc = frame["atc_text"].map(extract_atc4)
+        frame["atc4_code"] = atc.map(lambda pair: pair[0])
+        frame["atc4_desc"] = atc.map(lambda pair: pair[1])
+        frame["channel"] = frame["channel"].map(ubist_channel_to_raw)
+        frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
+        return frame.loc[frame["brand_key"] != ""].copy()
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
     parquet_glob = str(OUTPUT_DIR / "enriched" / f"ml_id={ml}" / "data.parquet") if ml else ENRICHED_GLOB
@@ -350,6 +381,7 @@ def ubist_measure_frame(base: pd.DataFrame, measure: str) -> pd.DataFrame:
 
 def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
     limit = f" LIMIT {int(max_rows)}" if max_rows else ""
+    LOGGER.info("[iqvia_nsa] fetching raw rows%s", f" limit={max_rows}" if max_rows else "")
     conn = mariadb_connect()
     try:
         with conn.cursor() as cur:
@@ -361,8 +393,9 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
     finally:
         conn.close()
 
+    LOGGER.info("[iqvia_nsa] fetched %s raw rows; parsing JSON payloads", f"{len(rows):,}")
     parsed: list[dict[str, Any]] = []
-    for row in rows:
+    for idx, row in enumerate(rows, start=1):
         payload = json.loads(row["payload"])
         static = payload.get("static") or {}
         period_values = payload.get("period_values") or {}
@@ -393,6 +426,9 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
                 "raw_counting_unit": safe_float(period_values.get("Counting Units")),
             }
         )
+        if idx % 500_000 == 0:
+            LOGGER.info("[iqvia_nsa] parsed %s/%s raw rows", f"{idx:,}", f"{len(rows):,}")
+    LOGGER.info("[iqvia_nsa] parsed %s usable channel rows", f"{len(parsed):,}")
     return pd.DataFrame(parsed)
 
 
@@ -678,6 +714,15 @@ def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]], batc
         conn.close()
 
 
+def delete_source_rows(table: str, source: str) -> None:
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {table} WHERE source=%s", (source,))
+    finally:
+        conn.close()
+
+
 def compute_general(
     source: str,
     dry_run: bool = False,
@@ -710,6 +755,8 @@ def compute_general(
         write_jsonl(general_brand_jsonl_path(source, output_dir), all_brand_rows)
         write_jsonl(general_market_jsonl_path(source, output_dir), all_market_rows)
     if insert:
+        delete_source_rows("mart_general_brand_metric", source)
+        delete_source_rows("mart_general_market_metric", source)
         insert_rows("mart_general_brand_metric", GENERAL_BRAND_INSERT_COLUMNS, all_brand_rows)
         insert_rows("mart_general_market_metric", GENERAL_MARKET_INSERT_COLUMNS, all_market_rows)
     stats = {
