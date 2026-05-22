@@ -25,6 +25,178 @@ from cache_build_common import (
 )
 
 
+def _period_year(period: str) -> int | None:
+    try:
+        return int(str(period)[:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_value(row: dict[str, Any]) -> float:
+    return safe_float(row.get("raw_value") or row.get("value")) or 0.0
+
+
+def _row_share(row: dict[str, Any]) -> float:
+    return safe_float(row.get("ms") or row.get("ms_pct") or row.get("share_pct")) or 0.0
+
+
+def _normalize_rank_row(row: dict[str, Any], *, label_key: str, target_name: str | None) -> dict[str, Any]:
+    name = row.get(label_key) or row.get("brand") or row.get("brand_key") or row.get("company") or row.get("name")
+    is_target = bool(target_name and name == target_name)
+    return {
+        label_key: name,
+        "brand": name if label_key == "brand" else row.get("brand"),
+        "company": row.get("company") or row.get("company_name"),
+        "is_target": is_target,
+        "is_jw": bool(row.get("is_jw")) or is_target,
+        "is_others": False,
+        "value": _row_value(row),
+        "rank": row.get("rank"),
+        "ms_pct": _row_share(row),
+    }
+
+
+def _stacked_ranking(
+    period_map: dict[str, Any],
+    *,
+    label_key: str,
+    target_name: str | None,
+    catalog_members: list[dict[str, Any]] | None = None,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    by_year: dict[int, tuple[str, list[dict[str, Any]]]] = {}
+    for period, rows in sorted((period_map or {}).items()):
+        year = _period_year(period)
+        if year is None or not isinstance(rows, list):
+            continue
+        by_year[year] = (str(period), rows)
+
+    years = sorted(by_year.keys())[-5:]
+    yearly = []
+    for year in years:
+        _, rows = by_year[year]
+        normalized = [_normalize_rank_row(row, label_key=label_key, target_name=target_name) for row in rows]
+        existing = {row.get(label_key) for row in normalized}
+        if catalog_members:
+            for member in catalog_members:
+                name = member.get("name")
+                if name and name not in existing:
+                    normalized.append(
+                        {
+                            label_key: name,
+                            "brand": name if label_key == "brand" else None,
+                            "company": member.get("company"),
+                            "is_target": bool(target_name and name == target_name),
+                            "is_jw": bool(member.get("is_jw")),
+                            "is_others": False,
+                            "value": 0.0,
+                            "rank": None,
+                            "ms_pct": 0.0,
+                        }
+                    )
+                    existing.add(name)
+
+        target = next((row for row in normalized if row["is_target"]), None)
+        target_id = row_identity(target, label_key)
+        competitors = []
+        for candidate in sorted(normalized, key=lambda item: item["value"], reverse=True):
+            if row_identity(candidate, label_key) != target_id:
+                competitors.append(candidate)
+        selected = ([target] if target else []) + competitors[:top_n]
+        selected_ids = {row_identity(row, label_key) for row in selected}
+        others = [row for row in normalized if row_identity(row, label_key) not in selected_ids]
+        if others:
+            selected.append(
+                {
+                    label_key: "기타",
+                    "brand": "기타" if label_key == "brand" else None,
+                    "company": "기타" if label_key == "company" else None,
+                    "is_target": False,
+                    "is_jw": False,
+                    "is_others": True,
+                    "value": sum(row["value"] for row in others),
+                    "rank": None,
+                    "ms_pct": sum(row["ms_pct"] for row in others),
+                }
+            )
+        for index, row in enumerate(selected, start=1):
+            row["rank"] = row["rank"] or index
+        yearly.append({"year": year, "rankings": selected})
+    return {"years": years, "yearly": yearly}
+
+
+def row_identity(row: dict[str, Any] | None, label_key: str) -> str | None:
+    if not row:
+        return None
+    return str(row.get(label_key) or row.get("brand") or row.get("company") or row.get("name"))
+
+
+def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
+    levels = list((level_top5 or {}).keys())
+    data = {}
+    for level, period_map in (level_top5 or {}).items():
+        latest = []
+        if isinstance(period_map, dict):
+            for _, rows in sorted(period_map.items(), reverse=True):
+                if isinstance(rows, list) and rows:
+                    latest = rows
+                    break
+        segments = [
+            {
+                "name": row.get("label") or row.get("level") or row.get("name") or row.get(level),
+                "rank": row.get("rank") or idx,
+                "recent_share_pct": row.get("ms") or row.get("share_pct"),
+                "value_recent": row.get("raw_value") or row.get("value"),
+            }
+            for idx, row in enumerate(latest, start=1)
+        ]
+        data[level] = {"segments": segments, "by_channel": {}}
+    return {
+        "levels": levels,
+        "channels": [],
+        "period_unit": "monthly" if source == "UBIST" else "quarterly",
+        "data": data,
+    }
+
+
+def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
+    rows = ei_rows if isinstance(ei_rows, list) else []
+    output = []
+    for row in rows:
+        share = safe_float(row.get("ms") or row.get("share_pct"))
+        contribution = safe_float(row.get("momentum_score") or row.get("growth_contribution") or row.get("contribution_pct"))
+        output.append(
+            {
+                "brand": row.get("brand") or row.get("brand_key"),
+                "company": row.get("company"),
+                "is_target": bool(row.get("is_target")),
+                "is_jw": bool(row.get("is_jw")),
+                "share_pct": share,
+                "contribution_pct": contribution,
+                "growth_contribution": contribution,
+                "value_recent": row.get("raw_value") or row.get("value"),
+            }
+        )
+    shares = [row["share_pct"] for row in output if row["share_pct"] is not None]
+    return {
+        "data": output,
+        "ms_avg_pct": round(sum(shares) / len(shares), 4) if shares else None,
+        "share_avg_pct": round(sum(shares) / len(shares), 4) if shares else None,
+    }
+
+
+def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> list[dict[str, Any]]:
+    if strategic_brand is None or not view_source_id.startswith("ml_"):
+        return []
+    sub = strategic_brand[strategic_brand["ml_id"].astype(str) == view_source_id]
+    members = []
+    for _, row in sub.iterrows():
+        name = str(row.get("canonical_name") or row.get("name") or "")
+        if name:
+            members.append({"name": name, "is_jw": bool(row.get("is_jw")), "company": row.get("판매사")})
+    return members
+
+
 def latest_market_series_payload(series: dict[str, Any]) -> dict[str, Any]:
     return {
         "periods_unit": "월간",
@@ -65,6 +237,7 @@ def build_response(
     view_source_id: str,
     market_name: str | None,
     market_sources: list[str],
+    strategic_brand: Any = None,
 ) -> dict[str, Any]:
     metric_history = decode_json(brand_row.get("metric_history"))
     extended = decode_json(brand_row.get("extended_metric_history"))
@@ -73,9 +246,27 @@ def build_response(
     market_series = decode_json(market_row.get("market_size_series"))
     hhi_series = decode_json(market_row.get("hhi_series_5y") or market_row.get("hhi_series"))
     hhi_recent = series_latest_number(hhi_series)
+    source_api = source
     target = choose_target(sibling_rows, brand_row)
     target_recent = metric_recent(decode_json(target.get("metric_history")))
     target_ext = metric_recent(decode_json(target.get("extended_metric_history")))
+
+    brand_ranking = decode_json(market_row.get("brand_ranking_stacked"))
+    company_ranking = decode_json(market_row.get("company_ranking_stacked"))
+    level_top5 = decode_json(market_row.get("level_top5_trend"))
+    ei_ms = decode_json(market_row.get("ei_ms_matrix"))
+    catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
+    brand_ranking_stacked = _stacked_ranking(
+        brand_ranking,
+        label_key="brand",
+        target_name=brand_row.get("brand_name"),
+        catalog_members=catalog_members,
+    )
+    company_ranking_stacked = _stacked_ranking(company_ranking, label_key="company", target_name=target.get("company_name"))
+    direct_competition_count = max(
+        len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
+        len({member["name"] for member in catalog_members if member.get("name")}),
+    )
 
     return {
         "brand": brand_row["brand_name"],
@@ -91,7 +282,7 @@ def build_response(
                 "market_cagr_5y_pct": series_cagr(market_series),
                 "top3_share_pct": top3_share(sibling_rows),
                 "hhi_recent": hhi_recent,
-                "direct_competition_count": len({r.get("brand_key") for r in sibling_rows}),
+                "direct_competition_count": direct_competition_count,
                 "target_brand": target.get("brand_name"),
                 "target_company": target.get("company_name") or ("JW중외제약" if target.get("is_jw") else None),
                 "target_ei": safe_float(target_ext.get("ei")),
@@ -104,14 +295,19 @@ def build_response(
             "sources_data": {
                 **latest_market_series_payload(market_series),
                 "periods_unit": "월간" if brand_row["source"] == "ubist" else "분기",
+                "hhi_series_5y": hhi_series,
+                "hhi_recent": hhi_recent,
+                "cagr_5y_pct": series_cagr(market_series),
             },
-            "ei_ms_matrix": decode_json(market_row.get("ei_ms_matrix")),
+            "ei_ms_matrix": ei_ms,
+            "growth_contribution_ms_matrix": decode_json(market_row.get("growth_contribution_ms_matrix")) or _growth_ms_matrix(ei_ms),
             "growth_contribution": decode_json(market_row.get("growth_contribution")),
-            "level_top5_trend": decode_json(market_row.get("level_top5_trend")),
+            "level_top5_trend": level_top5,
             "target_customer_competition": decode_json(market_row.get("target_customer_competition")),
-            "brand_ranking": decode_json(market_row.get("brand_ranking_stacked")),
-            "company_ranking": decode_json(market_row.get("company_ranking_stacked")),
+            "brand_ranking_stacked": brand_ranking_stacked,
+            "company_ranking_stacked": company_ranking_stacked,
             "company_concentration_trend": decode_json(market_row.get("company_concentration_trend")),
+            "analysis_levels": decode_json(market_row.get("analysis_levels")) or _analysis_levels(level_top5, source_api),
         },
         "market_meta": {
             "market_name": market_name,
@@ -137,6 +333,7 @@ def make_sibling_map(rows: list[dict[str, Any]], market_key: str) -> dict[tuple[
 
 def main() -> None:
     args = parser(__doc__).parse_args()
+    strategic_brand = load_catalog("strategic_brand")
     ml_market = load_catalog("ml_market").set_index("ml_id", drop=False)
     cd_market = load_catalog("cd_market").rename(columns={"cd_id": "cd_market_id"}).set_index("cd_market_id", drop=False)
 
@@ -173,6 +370,7 @@ def main() -> None:
             view_source_id=row["ml_id"],
             market_name=market.get("name"),
             market_sources=source_list(market.get("data_source")),
+            strategic_brand=strategic_brand,
         )
         out = {
             "brand": row["brand_name"],
@@ -205,6 +403,7 @@ def main() -> None:
             view_source_id=row["cd_market_id"],
             market_name=cd.get("name") or ml.get("name"),
             market_sources=source_list(cd.get("data_source") or ml.get("data_source")),
+            strategic_brand=strategic_brand,
         )
         out = {
             "brand": row["brand_name"],

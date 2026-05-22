@@ -57,6 +57,24 @@ def movement_pct_from_history(metric_history: dict | None) -> float | None:
     return (recent - previous) / previous * 100
 
 
+def source_card_payload(row: dict) -> dict:
+    history = decode_json(row.get("metric_history"))
+    recent = metric_recent(history)
+    movement = movement_pct_from_history(history)
+    return {
+        "value_recent": safe_float(recent.get("raw_value")),
+        "ms_recent_pct": safe_float(recent.get("ms")),
+        "gr_mom_pct": movement if row.get("source") == "ubist" else safe_float(recent.get("mom")),
+        "gr_qoq_pct": movement if row.get("source") == "iqvia_nsa" else safe_float(recent.get("qoq")),
+        "gr_yoy_pct": safe_float(recent.get("yoy")),
+        "gr_yoy_mat_pct": safe_float(recent.get("yoy_mat")),
+        "gr_yoy_ym_pct": safe_float(recent.get("yoy_ym")),
+        "ms_change_yoy_pct": safe_float(recent.get("ms_change_yoy")),
+        "unit_label": row.get("unit_label"),
+        "measure": row.get("measure"),
+    }
+
+
 def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], market_rows: dict) -> dict:
     preferred = next((r for r in sales_rows if r["source"] == "ubist"), None) or (sales_rows[0] if sales_rows else {})
     metric_history = decode_json(preferred.get("metric_history"))
@@ -67,6 +85,11 @@ def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], mark
     market_metric = market_rows.get((preferred.get("ml_id"), preferred.get("source"), "sales"), {})
     market_series = decode_json(market_metric.get("market_size_series"))
     market_recent = series_latest_number(market_series)
+    sources_data = {
+        "UBIST" if row["source"] == "ubist" else "IQVIA": source_card_payload(row)
+        for row in sales_rows
+    }
+    default_source = "UBIST" if "UBIST" in sources_data else (next(iter(sources_data.keys()), None))
 
     return {
         "brand": brand_row["brand"],
@@ -79,9 +102,14 @@ def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], mark
         "front": {
             "value_recent": safe_float(recent.get("raw_value")),
             "ms_recent_pct": safe_float(recent.get("ms")),
+            "gr_mom_pct": source_card_payload(preferred).get("gr_mom_pct") if preferred else None,
             "gr_qoq_pct": safe_float(recent.get("qoq")),
             "gr_yoy_pct": safe_float(recent.get("yoy")),
+            "gr_yoy_mat_pct": safe_float(recent.get("yoy_mat")),
+            "gr_yoy_ym_pct": safe_float(recent.get("yoy_ym")),
             "ms_change_yoy_pct": safe_float(recent.get("ms_change_yoy")),
+            "sources_data": sources_data,
+            "default_source": default_source,
         },
         "back": {
             "cagr_5y_pct": safe_float(ext_recent.get("cagr_5y")),
@@ -105,22 +133,45 @@ def build_brand_card(brand_row: dict, market: dict, sales_rows: list[dict], mark
     }
 
 
+def history_period_totals(rows: list[dict]) -> dict[str, float]:
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        for period, item in (decode_json(row.get("metric_history")) or {}).items():
+            value = _history_number(item)
+            if value is not None:
+                totals[str(period)] += value
+    return totals
+
+
+def cagr_from_source_rows(source: str, rows: list[dict]) -> float:
+    totals = history_period_totals(rows)
+    if len(totals) < 2:
+        return 0.0
+    periods = sorted(totals.keys(), key=period_key)
+    first = totals[periods[0]]
+    last = totals[periods[-1]]
+    if first <= 0 or last <= 0:
+        return 0.0
+    periods_per_year = 12.0 if source == "UBIST" else 4.0
+    years = (len(periods) - 1) / periods_per_year
+    if years <= 0:
+        return 0.0
+    return round(((last / first) ** (1 / years) - 1) * 100, 4)
+
+
 def build_kpi(source: str, rows: list[dict]) -> dict:
     source_rows = [r for r in rows if r["source"] == API_TO_SOURCE[source] and r["measure"] == "sales"]
     latest_values = []
     ms_values = []
     movement_values = []
-    cagr_values = []
     for row in source_rows:
         history = decode_json(row["metric_history"])
         recent = metric_recent(history)
-        ext_recent = metric_recent(decode_json(row["extended_metric_history"]))
         latest_values.append(safe_float(recent.get("raw_value")))
         ms_values.append(safe_float(recent.get("ms")))
         movement = movement_pct_from_history(history)
         if movement is not None:
             movement_values.append(movement)
-        cagr_values.append(safe_float(ext_recent.get("cagr_5y")))
     total = sum(latest_values)
     rising = sum(1 for value in movement_values if value >= 0)
     declining = sum(1 for value in movement_values if value < 0)
@@ -130,7 +181,7 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
         "avg_market_share_pct": numeric_mean(ms_values),
         "rising_brand_count": rising,
         "declining_brand_count": declining,
-        "cagr_5y_pct": numeric_mean(cagr_values),
+        "cagr_5y_pct": cagr_from_source_rows(source, source_rows),
         "brand_count": rising + declining,
     }
 
