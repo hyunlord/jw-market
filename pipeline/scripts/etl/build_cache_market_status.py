@@ -190,12 +190,10 @@ def build_brand_card(
     return {
         "rank": int(meta.rank) if meta else safe_float(recent.get("rank")),
         "brand": brand_name,
-        "brand_key": brand_row["brand_key"],
         "company": company,
         "market_id": brand_row["market_id"],
         "market_name": market_name,
         "market_name_short": market_name_short,
-        "market_label_kor": market_label_kor,
         "mkt_team": mkt_team,
         "atc_codes": atc_codes,
         "atc_desc": atc_desc,
@@ -235,16 +233,6 @@ def build_brand_card(
             "direct_competition_count": direct_competition_count,
             "market_label_kor": market_label_kor,
         },
-        "source_cards": [
-            {
-                "source": "UBIST" if row["source"] == "ubist" else "IQVIA",
-                "measure": row["measure"],
-                "unit_label": row["unit_label"],
-                "value_recent": safe_float(metric_recent(decode_json(row["metric_history"])).get("raw_value")),
-                "ms_recent_pct": safe_float(metric_recent(decode_json(row["metric_history"])).get("ms")),
-            }
-            for row in sales_rows
-        ],
     }
 
 
