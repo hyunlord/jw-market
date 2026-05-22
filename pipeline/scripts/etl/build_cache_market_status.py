@@ -159,6 +159,15 @@ def cagr_from_source_rows(source: str, rows: list[dict]) -> float:
     return round(((last / first) ** (1 / years) - 1) * 100, 4)
 
 
+def period_recent_from_rows(rows: list[dict]) -> str | None:
+    periods = set()
+    for row in rows:
+        periods.update(str(period) for period in (decode_json(row.get("metric_history")) or {}).keys())
+    if not periods:
+        return None
+    return sorted(periods, key=period_key)[-1]
+
+
 def build_kpi(source: str, rows: list[dict]) -> dict:
     source_rows = [r for r in rows if r["source"] == API_TO_SOURCE[source] and r["measure"] == "sales"]
     latest_values = []
@@ -176,12 +185,12 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
     rising = sum(1 for value in movement_values if value >= 0)
     declining = sum(1 for value in movement_values if value < 0)
     return {
-        "total_revenue": total,
-        "total_revenue_display": display_ukrw(total),
-        "avg_market_share_pct": numeric_mean(ms_values),
-        "rising_brand_count": rising,
-        "declining_brand_count": declining,
-        "cagr_5y_pct": cagr_from_source_rows(source, source_rows),
+        "total_sales_recent_krw": total,
+        "avg_ms_per_brand_pct": numeric_mean(ms_values),
+        "sales_up_count": rising,
+        "sales_down_count": declining,
+        "avg_cagr_5y_pct": cagr_from_source_rows(source, source_rows),
+        "period_recent": period_recent_from_rows(source_rows),
         "brand_count": rising + declining,
     }
 
@@ -234,9 +243,9 @@ def main() -> None:
         )
 
     payload = {
-        "kpi": {
-            "ubist": build_kpi("UBIST", mart_rows),
-            "iqvia": build_kpi("IQVIA", mart_rows),
+        "kpi_summary": {
+            "UBIST": build_kpi("UBIST", mart_rows),
+            "IQVIA": build_kpi("IQVIA", mart_rows),
         },
         "brand_cards": cards,
     }

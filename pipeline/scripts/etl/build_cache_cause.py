@@ -135,28 +135,97 @@ def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
     levels = list((level_top5 or {}).keys())
     data = {}
     for level, period_map in (level_top5 or {}).items():
+        latest_period = None
         latest = []
         if isinstance(period_map, dict):
-            for _, rows in sorted(period_map.items(), reverse=True):
+            for period, rows in sorted(period_map.items(), reverse=True):
                 if isinstance(rows, list) and rows:
+                    latest_period = period
                     latest = rows
                     break
+        total = sum(_row_value(row) for row in latest)
         segments = [
             {
                 "name": row.get("label") or row.get("level") or row.get("name") or row.get(level),
                 "rank": row.get("rank") or idx,
                 "recent_share_pct": row.get("ms") or row.get("share_pct"),
-                "value_recent": row.get("raw_value") or row.get("value"),
+                "series_pct": [(_row_share(row) if latest_period else 0.0)],
+                "value_series": [_row_value(row)],
             }
             for idx, row in enumerate(latest, start=1)
         ]
-        data[level] = {"segments": segments, "by_channel": {}}
+        if total and not any(segment.get("recent_share_pct") for segment in segments):
+            for segment in segments:
+                segment["recent_share_pct"] = round((segment["value_series"][-1] / total) * 100, 4)
+                segment["series_pct"] = [segment["recent_share_pct"]]
+        data[level] = {"segments": segments, "by_channel": {"전체": segments}}
     return {
         "levels": levels,
-        "channels": [],
+        "channels": ["전체"] if levels else [],
         "period_unit": "monthly" if source == "UBIST" else "quarterly",
         "data": data,
     }
+
+
+def _series_from_period_map(period_map: dict[str, Any]) -> tuple[list[float], list[float]]:
+    values: list[float] = []
+    shares: list[float] = []
+    for _, item in sorted((period_map or {}).items()):
+        if isinstance(item, dict):
+            values.append(_row_value(item))
+            shares.append(_row_share(item))
+        else:
+            values.append(safe_float(item) or 0.0)
+            shares.append(0.0)
+    if values and not any(shares):
+        total = sum(values)
+        shares = [round(value / total * 100, 4) if total else 0.0 for value in values]
+    return values, shares
+
+
+def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], source: str) -> dict[str, Any]:
+    if not isinstance(raw, dict) or "levels" in raw:
+        normalized = raw if isinstance(raw, dict) and "levels" in raw else _analysis_levels(fallback_level_top5, source)
+    else:
+        levels = list(raw.keys())
+        data = {}
+        for level, segment_map in raw.items():
+            segments = []
+            if isinstance(segment_map, dict):
+                ranked = []
+                for name, period_map in segment_map.items():
+                    if not isinstance(period_map, dict):
+                        continue
+                    values, shares = _series_from_period_map(period_map)
+                    recent_value = values[-1] if values else 0.0
+                    recent_share = shares[-1] if shares else 0.0
+                    ranked.append((recent_value, name, values, shares, recent_share))
+                for idx, (_, name, values, shares, recent_share) in enumerate(sorted(ranked, reverse=True)[:8], start=1):
+                    segments.append(
+                        {
+                            "name": name,
+                            "rank": idx,
+                            "recent_share_pct": recent_share,
+                            "series_pct": shares,
+                            "value_series": values,
+                        }
+                    )
+            data[level] = {"segments": segments, "by_channel": {"전체": segments}}
+        normalized = {
+            "levels": levels,
+            "channels": ["전체"] if levels else [],
+            "period_unit": "monthly" if source == "UBIST" else "quarterly",
+            "data": data,
+        }
+
+    for level in normalized.get("levels", []):
+        level_data = normalized.setdefault("data", {}).setdefault(level, {})
+        segments = level_data.get("segments") or []
+        if not level_data.get("by_channel"):
+            level_data["by_channel"] = {"전체": segments}
+    if not normalized.get("channels") and normalized.get("levels"):
+        normalized["channels"] = ["전체"]
+    return normalized
 
 
 def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
@@ -307,7 +376,11 @@ def build_response(
             "brand_ranking_stacked": brand_ranking_stacked,
             "company_ranking_stacked": company_ranking_stacked,
             "company_concentration_trend": decode_json(market_row.get("company_concentration_trend")),
-            "analysis_levels": decode_json(market_row.get("analysis_levels")) or _analysis_levels(level_top5, source_api),
+            "analysis_levels": _normalize_analysis_levels(
+                decode_json(market_row.get("analysis_levels")),
+                level_top5,
+                source_api,
+            ),
         },
         "market_meta": {
             "market_name": market_name,

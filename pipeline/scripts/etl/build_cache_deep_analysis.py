@@ -46,6 +46,42 @@ MOCK_EVENTS = [
         "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
         "source": "mock",
     },
+    {
+        "id": "event-003",
+        "category": "policy",
+        "category_label": "정책/급여",
+        "date": "2025-06-01",
+        "period_map": {"UBIST": "2025-06", "IQVIA": "2Q2025"},
+        "impact_score": 3.4,
+        "title": "급여 기준 검토",
+        "summary": "급여 기준 변화 가능성이 처방 흐름에 영향을 줄 수 있습니다.",
+        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
+        "source": "mock",
+    },
+    {
+        "id": "event-004",
+        "category": "supply",
+        "category_label": "공급/수급",
+        "date": "2025-03-15",
+        "period_map": {"UBIST": "2025-03", "IQVIA": "1Q2025"},
+        "impact_score": 2.9,
+        "title": "공급 안정성 이슈",
+        "summary": "일부 제품 수급 변동으로 단기 처방 대체 가능성이 있습니다.",
+        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
+        "source": "mock",
+    },
+    {
+        "id": "event-005",
+        "category": "competition",
+        "category_label": "경쟁 변화",
+        "date": "2024-12-01",
+        "period_map": {"UBIST": "2024-12", "IQVIA": "4Q2024"},
+        "impact_score": 3.6,
+        "title": "상위 경쟁군 프로모션 강화",
+        "summary": "상위 경쟁군의 영업 활동 강화가 시장 점유율 변화와 함께 관찰됩니다.",
+        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
+        "source": "mock",
+    },
 ]
 
 
@@ -71,6 +107,26 @@ MOCK_AI_ANALYSIS = {
         "body": "실제 예측 모델 적용 전까지는 source별 history와 원인분석 지표를 우선 사용합니다.",
         "bullets": ["후속 phase에서 forecast/simulation 모델을 연결합니다."],
     },
+}
+
+
+ALL_COMBOS = [
+    ("UBIST", "sales"),
+    ("UBIST", "volume"),
+    ("IQVIA", "sales"),
+    ("IQVIA", "unit"),
+    ("IQVIA", "dosage_unit"),
+    ("IQVIA", "counting_unit"),
+]
+
+
+SOURCE_TO_INTERNAL = {"UBIST": "ubist", "IQVIA": "iqvia_nsa"}
+UNIT_LABELS = {
+    "sales": "KRW",
+    "volume": "Rx",
+    "unit": "unit",
+    "dosage_unit": "dosage unit",
+    "counting_unit": "counting unit",
 }
 
 
@@ -115,7 +171,59 @@ def combo_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def simulation_payload(row: dict[str, Any]) -> dict[str, Any]:
+def empty_combo_payload(source: str, measure: str, brand: str, base_row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "period_unit": "monthly" if source == "UBIST" else "quarterly",
+        "unit_label": UNIT_LABELS.get(measure),
+        "history_periods": [],
+        "forecast_periods": [],
+        "target_brand": brand,
+        "brands": [
+            {
+                "brand": brand,
+                "company": base_row.get("company_name"),
+                "is_target": bool(base_row.get("is_target")),
+                "is_jw": bool(base_row.get("is_jw")),
+                "rank": None,
+                "history_values": [],
+                "forecast_values": [],
+            }
+        ],
+        "baseline": {"value_recent": None, "ms_recent_pct": None},
+    }
+
+
+def simulation_payload(row: dict[str, Any] | None, *, source: str | None = None, measure: str | None = None, brand: str | None = None, base_row: dict[str, Any] | None = None) -> dict[str, Any]:
+    if row is None:
+        base_row = base_row or {}
+        period_unit = "monthly" if source == "UBIST" else "quarterly"
+        brand_name = brand or base_row.get("brand_name")
+        return {
+            "period_unit": period_unit,
+            "unit_label": UNIT_LABELS.get(measure or ""),
+            "source_granularity": period_unit,
+            "available_brands": [brand_name],
+            "by_brand": {
+                brand_name: {
+                    "target_period": None,
+                    "history_periods": [],
+                    "forecast_periods": [],
+                    "history_values": [],
+                    "model": {"name": "pending", "variant": "history_only"},
+                    "scenarios": {
+                        "base": {"values": [], "final_value": None, "method": "pending"},
+                        "upper": {"values": [], "final_value": None, "method": "pending"},
+                        "lower": {"values": [], "final_value": None, "method": "pending"},
+                    },
+                    "confidence": {"score": None, "label": "forecast pending"},
+                    "market_comparison": {},
+                    "momentum": {},
+                    "anomaly_signals": [],
+                    "warnings": ["forecast not implemented yet - only history is available"],
+                }
+            },
+        }
+
     history = decode_json(row.get("metric_history"))
     recent = metric_recent(history)
     periods, values = sorted_history_values(history)
@@ -132,8 +240,15 @@ def simulation_payload(row: dict[str, Any]) -> dict[str, Any]:
                 "forecast_periods": [],
                 "history_values": values,
                 "model": {"name": "mock", "variant": "history_only"},
-                "scenarios": {},
+                "scenarios": {
+                    "base": {"values": [], "final_value": None, "method": "pending"},
+                    "upper": {"values": [], "final_value": None, "method": "pending"},
+                    "lower": {"values": [], "final_value": None, "method": "pending"},
+                },
                 "confidence": {"score": None, "label": "pending forecast"},
+                "market_comparison": {},
+                "momentum": {},
+                "anomaly_signals": [],
                 "warnings": ["forecast not implemented yet - only history is available"],
                 "baseline": {
                     "value_recent": safe_float(recent.get("raw_value")),
@@ -164,14 +279,19 @@ def main() -> None:
         market = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
         by_combo = {}
         sim_by_combo = {}
-        seen_combo = set()
+        rows_by_combo = {}
         for row in sorted(brand_rows, key=lambda r: (str(r["source"]), str(r["measure"]), str(r["ml_id"]))):
             combo = f"{api_source(row['source'])}.{row['measure']}"
-            if combo in seen_combo:
-                continue
-            seen_combo.add(combo)
-            by_combo[combo] = combo_payload(row)
-            sim_by_combo[combo] = simulation_payload(row)
+            rows_by_combo.setdefault(combo, row)
+        for source, measure in ALL_COMBOS:
+            combo = f"{source}.{measure}"
+            row = rows_by_combo.get(combo)
+            if row is None:
+                by_combo[combo] = empty_combo_payload(source, measure, brand, base)
+                sim_by_combo[combo] = simulation_payload(None, source=source, measure=measure, brand=brand, base_row=base)
+            else:
+                by_combo[combo] = combo_payload(row)
+                sim_by_combo[combo] = simulation_payload(row)
 
         payload = {
             "brand": brand,

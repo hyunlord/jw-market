@@ -59,7 +59,7 @@ def cause(
         }
 
     primary, markets = choose_primary_market(rows)
-    payload = compose_cached_json(primary["response_json"])
+    payload = compose_cached_json(primary["response_json"], measure=measure)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_cause"})
     payload["markets"] = markets
