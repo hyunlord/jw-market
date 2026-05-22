@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 from typing import Any
 
 from cache_build_common import (
@@ -18,11 +19,28 @@ from cache_build_common import (
     mariadb_connect,
     parser,
     payload_size,
+    period_key,
     safe_float,
     series_cagr,
     series_latest_number,
     source_list,
 )
+
+
+CHANNELS_5 = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
+LEVEL_FIELD_BY_LABEL = {
+    "Class": "class",
+    "Class 1": "class",
+    "Class 2": "class_2",
+    "Molecule": "molecule",
+    "Brand": "__brand__",
+    "제형/투여경로": "dosage_form",
+    "용량": "strength_pack",
+    "비/급여": "nhi_type",
+    "Ox/Gx": "ox_gx",
+    "fish_oil": "fish_oil",
+}
+ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
 
 
 def _period_year(period: str) -> int | None:
@@ -163,6 +181,8 @@ def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
         "levels": levels,
         "channels": ["전체"] if levels else [],
         "period_unit": "monthly" if source == "UBIST" else "quarterly",
+        "periods_monthly": [],
+        "periods_quarterly": [],
         "data": data,
     }
 
@@ -215,6 +235,8 @@ def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], so
             "levels": levels,
             "channels": ["전체"] if levels else [],
             "period_unit": "monthly" if source == "UBIST" else "quarterly",
+            "periods_monthly": [],
+            "periods_quarterly": [],
             "data": data,
         }
 
@@ -226,6 +248,202 @@ def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], so
     if not normalized.get("channels") and normalized.get("levels"):
         normalized["channels"] = ["전체"]
     return normalized
+
+
+def _history_periods(rows: list[dict[str, Any]], source: str) -> list[str]:
+    periods: set[str] = set()
+    for row in rows:
+        history = decode_json(row.get("metric_history"))
+        if isinstance(history, dict):
+            periods.update(str(period) for period in history.keys())
+    ordered = sorted(periods, key=period_key)
+    return ordered[-60:] if source == "UBIST" else ordered[-20:]
+
+
+def _period_unit_ko(source: str) -> str:
+    return "월" if source == "UBIST" else "분기"
+
+
+def _market_levels(market: dict[str, Any] | None) -> list[str]:
+    market = market or {}
+    levels: list[str] = []
+    if bool(market.get("analyze_class")):
+        levels.append("Class")
+    if bool(market.get("analyze_molecule")):
+        levels.append("Molecule")
+    levels.append("Brand")
+    if bool(market.get("analyze_dosage_form")):
+        levels.append("제형/투여경로")
+    if bool(market.get("analyze_strength_pack")):
+        levels.append("용량")
+    if bool(market.get("analyze_nhi_type")):
+        levels.append("비/급여")
+    if bool(market.get("analyze_ox_gx")):
+        levels.append("Ox/Gx")
+    if bool(market.get("analyze_fish_oil")):
+        levels.append("fish_oil")
+    return levels
+
+
+def _strategic_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
+    levels = _market_levels(market)
+    if view_source_id == "ml_011" and "Class" in levels:
+        index = levels.index("Class")
+        levels[index : index + 1] = ["Class 1", "Class 2"]
+    return levels
+
+
+def _dimension_value(row: dict[str, Any], level: str) -> str | None:
+    if level == "Brand":
+        return row.get("brand_name") or row.get("brand_key")
+    by_dimension = decode_json(row.get("by_dimension"))
+    if not isinstance(by_dimension, dict):
+        by_dimension = {}
+    field = LEVEL_FIELD_BY_LABEL.get(level)
+    candidates = [field] if field else []
+    if level == "Class 2":
+        candidates.extend(["class2", "class_2", "class_secondary", "class_sub", "class"])
+    if level == "Class 1":
+        candidates.extend(["class1", "class_1", "class_primary", "class"])
+    for candidate in candidates:
+        if not candidate:
+            continue
+        value = by_dimension.get(candidate)
+        if value not in (None, "", [], {}):
+            return str(value)
+    return None
+
+
+def _channel_bucket(raw: Any, source: str) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if source == "UBIST":
+        if "상급" in text:
+            return "상급종병"
+        if "종합" in text:
+            return "종병"
+        if text == "병원" or ("병원" in text and "치과" not in text):
+            return "병원"
+        if "의원" in text or "보건소" in text or "보건" in text:
+            return "의원/보건소"
+        return None
+    if text.upper() == "KHPA":
+        return "병원"
+    if text.upper() == "KPA":
+        return "의원/보건소"
+    return None
+
+
+def _value_from_period_item(item: Any) -> float:
+    if isinstance(item, dict):
+        return _row_value(item)
+    return safe_float(item) or 0.0
+
+
+def _add_series(target: dict[str, list[float]], series: dict[str, Any], periods: list[str]) -> None:
+    for period in periods:
+        target[period][0] += _value_from_period_item(series.get(period))
+
+
+def _segment_rows_for_level(
+    *,
+    rows: list[dict[str, Any]],
+    level: str,
+    periods: list[str],
+    source: str,
+    channel: str,
+    target_name: str | None,
+    top_n: int = 5,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, list[float]]] = {}
+    totals: dict[str, list[float]] = {period: [0.0] for period in periods}
+
+    for row in rows:
+        name = _dimension_value(row, level)
+        if not name:
+            continue
+        grouped.setdefault(name, {period: [0.0] for period in periods})
+        if channel == "전체":
+            history = decode_json(row.get("metric_history"))
+            if isinstance(history, dict):
+                _add_series(grouped[name], history, periods)
+                _add_series(totals, history, periods)
+            continue
+
+        channel_data = decode_json(row.get("channel_data"))
+        if not isinstance(channel_data, dict):
+            continue
+        for raw_channel, series in channel_data.items():
+            if _channel_bucket(raw_channel, source) != channel:
+                continue
+            if isinstance(series, dict):
+                _add_series(grouped[name], series, periods)
+                _add_series(totals, series, periods)
+
+    ranked = sorted(
+        grouped.items(),
+        key=lambda item: item[1][periods[-1]][0] if periods else 0.0,
+        reverse=True,
+    )
+    if target_name:
+        ranked = sorted(ranked, key=lambda item: (item[0] != target_name, -(item[1][periods[-1]][0] if periods else 0.0)))
+    selected = ranked[:top_n]
+
+    segments: list[dict[str, Any]] = []
+    for rank, (name, series_map) in enumerate(selected, start=1):
+        value_series = [round(series_map[period][0], 4) for period in periods]
+        series_pct = []
+        for period, value in zip(periods, value_series):
+            total = totals[period][0]
+            series_pct.append(round(value / total * 100, 4) if total else 0.0)
+        segments.append(
+            {
+                "name": name,
+                "rank": rank,
+                "recent_share_pct": series_pct[-1] if series_pct else 0.0,
+                "series_pct": series_pct,
+                "value_series": value_series,
+            }
+        )
+    return segments
+
+
+def _build_analysis_levels_from_mart(
+    *,
+    rows: list[dict[str, Any]],
+    source: str,
+    market: dict[str, Any] | None,
+    view_source_id: str | None,
+    target_name: str | None,
+    fallback_level_top5: dict[str, Any],
+) -> dict[str, Any]:
+    levels = _strategic_levels(market, view_source_id)
+    if not levels:
+        return _normalize_analysis_levels({}, fallback_level_top5, source)
+    periods = _history_periods(rows, source)
+    data: dict[str, Any] = {}
+    for level in levels:
+        by_channel = {
+            channel: _segment_rows_for_level(
+                rows=rows,
+                level=level,
+                periods=periods,
+                source=source,
+                channel=channel,
+                target_name=target_name if level == "Brand" else None,
+            )
+            for channel in CHANNELS_5
+        }
+        data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
+    return {
+        "levels": levels,
+        "channels": CHANNELS_5,
+        "period_unit": _period_unit_ko(source),
+        "periods_monthly": periods if source == "UBIST" else [],
+        "periods_quarterly": periods if source == "IQVIA" else [],
+        "data": data,
+    }
 
 
 def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
@@ -306,6 +524,7 @@ def build_response(
     view_source_id: str,
     market_name: str | None,
     market_sources: list[str],
+    market_catalog_row: dict[str, Any] | None = None,
     strategic_brand: Any = None,
 ) -> dict[str, Any]:
     metric_history = decode_json(brand_row.get("metric_history"))
@@ -325,6 +544,18 @@ def build_response(
     level_top5 = decode_json(market_row.get("level_top5_trend"))
     ei_ms = decode_json(market_row.get("ei_ms_matrix"))
     catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
+    analysis_view_id = view_source_id if str(view_source_id).startswith("ml_") else market_catalog_row.get("ml_id") if market_catalog_row else None
+    analysis_cache_key = (analysis_view_id, source_api, measure)
+    if analysis_cache_key not in ANALYSIS_LEVELS_CACHE:
+        ANALYSIS_LEVELS_CACHE[analysis_cache_key] = _build_analysis_levels_from_mart(
+            rows=sibling_rows,
+            source=source_api,
+            market=market_catalog_row,
+            view_source_id=analysis_view_id,
+            target_name=None,
+            fallback_level_top5=level_top5,
+        )
+    analysis_levels = deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key])
     brand_ranking_stacked = _stacked_ranking(
         brand_ranking,
         label_key="brand",
@@ -376,11 +607,7 @@ def build_response(
             "brand_ranking_stacked": brand_ranking_stacked,
             "company_ranking_stacked": company_ranking_stacked,
             "company_concentration_trend": decode_json(market_row.get("company_concentration_trend")),
-            "analysis_levels": _normalize_analysis_levels(
-                decode_json(market_row.get("analysis_levels")),
-                level_top5,
-                source_api,
-            ),
+            "analysis_levels": analysis_levels,
         },
         "market_meta": {
             "market_name": market_name,
@@ -428,6 +655,15 @@ def main() -> None:
     inserted = 0
     conn = mariadb_connect()
     cur = conn.cursor()
+    batch: list[tuple[Any, ...]] = []
+
+    def flush_batch() -> None:
+        nonlocal batch
+        if not batch:
+            return
+        cur.executemany(sql, batch)
+        batch = []
+
     for row in ml_brand_rows:
         market = ml_market.loc[row["ml_id"]].to_dict() if row["ml_id"] in ml_market.index else {}
         market_id = ml_to_strategy(row["ml_id"])
@@ -443,6 +679,7 @@ def main() -> None:
             view_source_id=row["ml_id"],
             market_name=market.get("name"),
             market_sources=source_list(market.get("data_source")),
+            market_catalog_row=market,
             strategic_brand=strategic_brand,
         )
         out = {
@@ -454,8 +691,10 @@ def main() -> None:
             "response_json": dump_payload(response),
             "payload_size": payload_size(response),
         }
-        cur.execute(sql, tuple(out[col] for col in columns))
+        batch.append(tuple(out[col] for col in columns))
         inserted += 1
+        if len(batch) >= 20:
+            flush_batch()
         if args.verbose and inserted % 1000 == 0:
             print(f"inserted cache_cause rows={inserted}", flush=True)
 
@@ -476,6 +715,7 @@ def main() -> None:
             view_source_id=row["cd_market_id"],
             market_name=cd.get("name") or ml.get("name"),
             market_sources=source_list(cd.get("data_source") or ml.get("data_source")),
+            market_catalog_row=ml,
             strategic_brand=strategic_brand,
         )
         out = {
@@ -487,10 +727,13 @@ def main() -> None:
             "response_json": dump_payload(response),
             "payload_size": payload_size(response),
         }
-        cur.execute(sql, tuple(out[col] for col in columns))
+        batch.append(tuple(out[col] for col in columns))
         inserted += 1
+        if len(batch) >= 20:
+            flush_batch()
         if args.verbose and inserted % 1000 == 0:
             print(f"inserted cache_cause rows={inserted}", flush=True)
+    flush_batch()
     cur.close()
     conn.close()
     if args.verbose:
