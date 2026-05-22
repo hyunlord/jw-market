@@ -74,19 +74,51 @@ ML_MARKET_COLUMNS = [
     "target_customer_competition",
     "payload",
 ]
+UBIST_MEASURES = ("sales", "volume")
+IQVIA_MEASURES = ("sales", "unit", "dosage_unit", "counting_unit")
+
+
+def _notna(value: Any) -> bool:
+    try:
+        return not bool(pd.isna(value))
+    except Exception:
+        return value is not None
+
+
+def _truthy(value: Any) -> bool:
+    if not _notna(value):
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "t", "yes", "y"}
+    return bool(value)
+
+
+def expected_measure_pairs(data_source: Any) -> set[tuple[str, str]]:
+    value = str(data_source or "").strip().lower()
+    expected: set[tuple[str, str]] = set()
+    if value in {"ubist", "both", "dual"}:
+        expected.update(("ubist", measure) for measure in UBIST_MEASURES)
+    if value in {"iqvia", "iqvia_nsa", "both", "dual"}:
+        expected.update(("iqvia_nsa", measure) for measure in IQVIA_MEASURES)
+    if not expected:
+        raise RuntimeError(f"Unsupported strategic data_source={data_source!r}")
+    return expected
 
 
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame]:
     ml_market = pd.read_parquet(CATALOG_DIR / "ml_market" / "ml_market.parquet")
     strategic_brand = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
-    strategic_brand["brand_key"] = strategic_brand["name"].map(normalize_brand_name)
+    if "general_brand_key" in strategic_brand.columns:
+        strategic_brand["brand_key"] = strategic_brand["general_brand_key"].fillna(strategic_brand["name"]).map(normalize_brand_name)
+    else:
+        strategic_brand["brand_key"] = strategic_brand["name"].map(normalize_brand_name)
     return ml_market, strategic_brand
 
 
 def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]]:
     where = "WHERE source=%s" if source else ""
     params = (source,) if source else ()
-    sql = "SELECT * FROM mart_general_brand_metric " + where
+    sql = "SELECT " + ",".join(GENERAL_BRAND_INSERT_COLUMNS) + " FROM mart_general_brand_metric " + where
     conn = mariadb_connect()
     try:
         with conn.cursor() as cur:
@@ -103,8 +135,12 @@ def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]
 
 
 def load_general_rows(output_dir: Path, source: str) -> list[dict[str, Any]]:
-    rows = read_jsonl(general_brand_jsonl_path(source, output_dir))
-    return rows if rows else fetch_general_rows_from_db(source)
+    rows = fetch_general_rows_from_db(source)
+    if not rows:
+        jsonl_rows = read_jsonl(general_brand_jsonl_path(source, output_dir))
+        if jsonl_rows:
+            raise RuntimeError(f"DB returned no {source} general rows while stale JSONL rows exist")
+    return rows
 
 
 def is_jw_name(name: Any) -> bool:
@@ -114,6 +150,11 @@ def is_jw_name(name: Any) -> bool:
 
 def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
+    brands = brands.copy()
+    if "is_jw" not in brands.columns:
+        brands["is_jw"] = False
+    brands["_jw_sort"] = brands["is_jw"].map(_truthy).astype(int)
+    brands = brands.sort_values(["_jw_sort", "brand_id"], ascending=[False, True])
     for key, part in brands.groupby("brand_key", dropna=False):
         if not key:
             continue
@@ -124,14 +165,61 @@ def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
     return grouped
 
 
+def _display_brand_name(row: dict[str, Any], overlay: dict[str, Any]) -> str:
+    if _truthy(overlay.get("is_jw")):
+        canonical_name = overlay.get("canonical_name")
+        if _notna(canonical_name) and str(canonical_name).strip():
+            return str(canonical_name)
+        return str(overlay.get("name") or row.get("brand_name") or row.get("brand_key") or "")
+    return str(row.get("brand_name") or row.get("brand_key") or overlay.get("name") or "")
+
+
+def _output_brand_key(row: dict[str, Any], overlay: dict[str, Any], display_name: str) -> str:
+    if _truthy(overlay.get("is_jw")):
+        return display_name
+    return str(row.get("brand_key") or normalize_brand_name(display_name))
+
+
+def validate_market_completeness(ml_row: pd.Series, catalog_rows: pd.DataFrame, selected: list[dict[str, Any]]) -> None:
+    expected_pairs = expected_measure_pairs(ml_row.get("data_source"))
+    actual_pairs = {(str(row.get("source")), str(row.get("measure"))) for row in selected}
+    missing_market_pairs = expected_pairs - actual_pairs
+
+    jw_catalog = catalog_rows.loc[catalog_rows.get("is_jw", False).map(_truthy)] if "is_jw" in catalog_rows.columns else pd.DataFrame()
+    missing_jw: list[str] = []
+    for _, catalog_row in jw_catalog.iterrows():
+        join_key = str(catalog_row.get("brand_key") or "")
+        display = str(catalog_row.get("canonical_name") or catalog_row.get("name") or join_key)
+        present = {
+            (str(row.get("source")), str(row.get("measure")))
+            for row in selected
+            if row.get("_catalog_join_key") == join_key
+        }
+        missing_pairs = expected_pairs - present
+        if missing_pairs:
+            missing_jw.append(f"{display}:{sorted(missing_pairs)}")
+
+    if missing_market_pairs or missing_jw:
+        raise RuntimeError(
+            f"Strategic ML completeness failed for {ml_row.get('ml_id')} "
+            f"market_missing={sorted(missing_market_pairs)} jw_missing={missing_jw}"
+        )
+
+
 def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     by_key = catalog_by_key(catalog_rows)
+    expected_pairs = expected_measure_pairs(ml_row.get("data_source"))
     selected: list[dict[str, Any]] = []
     for row in general_rows:
+        source_measure = (str(row.get("source")), str(row.get("measure")))
+        if source_measure not in expected_pairs:
+            continue
         overlay = by_key.get(str(row.get("brand_key")))
         if not overlay:
             continue
         copied = dict(row)
+        display_name = _display_brand_name(copied, overlay)
+        output_key = _output_brand_key(copied, overlay, display_name)
         dim = dict(copied.get("by_dimension") or {})
         for key in ("class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
             dim[key] = overlay.get(key)
@@ -139,11 +227,17 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
             {
                 "ml_id": ml_row["ml_id"],
                 "brand_id": overlay.get("brand_id"),
-                "is_jw": is_jw_name(overlay.get("name")),
+                "brand_key": output_key,
+                "brand_name": display_name,
+                "is_jw": _truthy(overlay.get("is_jw")) if "is_jw" in overlay else is_jw_name(overlay.get("name")),
                 "by_dimension": dim,
+                "_catalog_join_key": str(overlay.get("brand_key") or row.get("brand_key") or ""),
                 "overlay_data": {
                     "catalog_source": "strategic_brand",
                     "ml_id": ml_row["ml_id"],
+                    "canonical_name": overlay.get("canonical_name"),
+                    "general_brand_key": overlay.get("general_brand_key"),
+                    "is_target": overlay.get("is_target"),
                     "catalog_brand_ids": overlay.get("catalog_brand_ids"),
                     "catalog_names": overlay.get("catalog_names"),
                     "class": overlay.get("class"),
@@ -157,6 +251,8 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
             }
         )
         selected.append(copied)
+
+    validate_market_completeness(ml_row, catalog_rows, selected)
 
     market_rows: list[dict[str, Any]] = []
     for (source, measure), rows in _group_by_source_measure(selected).items():
@@ -232,6 +328,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--insert", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=DRY_RUN_DIR)
+    parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 

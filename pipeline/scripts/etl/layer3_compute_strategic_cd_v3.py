@@ -18,7 +18,15 @@ import pandas as pd
 from brand_key_normalize import normalize_brand_name
 from layer3_compute_general_v3 import ALLOWED_SOURCES, dumps, general_brand_jsonl_path, json_ready, mariadb_connect, read_jsonl, write_jsonl
 from layer3_compute_market_metric import compute_market_mart_payload
-from layer3_compute_strategic_ml_v3 import fetch_general_rows_from_db, is_jw_name, insert_rows
+from layer3_compute_strategic_ml_v3 import (
+    _display_brand_name,
+    _output_brand_key,
+    _truthy,
+    expected_measure_pairs,
+    fetch_general_rows_from_db,
+    is_jw_name,
+    insert_rows,
+)
 from ops_utils import configure_logging, find_project_root
 
 
@@ -73,17 +81,29 @@ def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     cd_market = pd.read_parquet(CATALOG_DIR / "cd_market" / "cd_market.parquet")
     cd_brand = pd.read_parquet(CATALOG_DIR / "cd_brand" / "cd_brand.parquet")
     cd_filter = pd.read_parquet(CATALOG_DIR / "cd_filter" / "cd_filter.parquet")
-    cd_brand["brand_key"] = cd_brand["name"].map(normalize_brand_name)
+    if "general_brand_key" in cd_brand.columns:
+        cd_brand["brand_key"] = cd_brand["general_brand_key"].fillna(cd_brand["name"]).map(normalize_brand_name)
+    else:
+        cd_brand["brand_key"] = cd_brand["name"].map(normalize_brand_name)
     return cd_market, cd_brand, cd_filter
 
 
 def load_general_rows(output_dir: Path, source: str) -> list[dict[str, Any]]:
-    rows = read_jsonl(general_brand_jsonl_path(source, output_dir))
-    return rows if rows else fetch_general_rows_from_db(source)
+    rows = fetch_general_rows_from_db(source)
+    if not rows:
+        jsonl_rows = read_jsonl(general_brand_jsonl_path(source, output_dir))
+        if jsonl_rows:
+            raise RuntimeError(f"DB returned no {source} general rows while stale JSONL rows exist")
+    return rows
 
 
 def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
+    brands = brands.copy()
+    if "is_jw" not in brands.columns:
+        brands["is_jw"] = False
+    brands["_jw_sort"] = brands["is_jw"].map(_truthy).astype(int)
+    brands = brands.sort_values(["_jw_sort", "brand_id"], ascending=[False, True])
     for key, part in brands.groupby("brand_key", dropna=False):
         if not key:
             continue
@@ -92,6 +112,32 @@ def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
         first["catalog_names"] = part["name"].astype(str).tolist()
         grouped[str(key)] = first
     return grouped
+
+
+def validate_market_completeness(cd_row: pd.Series, catalog_rows: pd.DataFrame, selected: list[dict[str, Any]]) -> None:
+    expected_pairs = expected_measure_pairs(cd_row.get("data_source"))
+    actual_pairs = {(str(row.get("source")), str(row.get("measure"))) for row in selected}
+    missing_market_pairs = expected_pairs - actual_pairs
+
+    jw_catalog = catalog_rows.loc[catalog_rows.get("is_jw", False).map(_truthy)] if "is_jw" in catalog_rows.columns else pd.DataFrame()
+    missing_jw: list[str] = []
+    for _, catalog_row in jw_catalog.iterrows():
+        join_key = str(catalog_row.get("brand_key") or "")
+        display = str(catalog_row.get("canonical_name") or catalog_row.get("name") or join_key)
+        present = {
+            (str(row.get("source")), str(row.get("measure")))
+            for row in selected
+            if row.get("_catalog_join_key") == join_key
+        }
+        missing_pairs = expected_pairs - present
+        if missing_pairs:
+            missing_jw.append(f"{display}:{sorted(missing_pairs)}")
+
+    if missing_market_pairs or missing_jw:
+        raise RuntimeError(
+            f"Strategic CD completeness failed for {cd_row.get('cd_id')} "
+            f"market_missing={sorted(missing_market_pairs)} jw_missing={missing_jw}"
+        )
 
 
 def filter_payload(cd_row: pd.Series, cd_filter: pd.DataFrame) -> dict[str, Any]:
@@ -113,21 +159,30 @@ def _group_by_source_measure(rows: list[dict[str, Any]]) -> dict[tuple[str, str]
 def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.DataFrame, general_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     cd_filter_info = filter_payload(cd_row, cd_filter)
     by_key = catalog_by_key(catalog_rows)
+    expected_pairs = expected_measure_pairs(cd_row.get("data_source"))
     selected: list[dict[str, Any]] = []
     for row in general_rows:
+        source_measure = (str(row.get("source")), str(row.get("measure")))
+        if source_measure not in expected_pairs:
+            continue
         overlay = by_key.get(str(row.get("brand_key")))
         if not overlay:
             continue
         override_columns = {col: overlay.get(col) for col in OVERRIDE_COLS if pd.notna(overlay.get(col))}
         copied = dict(row)
+        display_name = _display_brand_name(copied, overlay)
+        output_key = _output_brand_key(copied, overlay, display_name)
         dim = dict(copied.get("by_dimension") or {})
         dim.update({k: v for k, v in override_columns.items() if k not in {"판매사", "제조사"}})
         copied.update(
             {
                 "cd_market_id": cd_row["cd_id"],
                 "cd_brand_id": overlay.get("brand_id"),
-                "is_jw": is_jw_name(overlay.get("name")),
+                "brand_key": output_key,
+                "brand_name": display_name,
+                "is_jw": _truthy(overlay.get("is_jw")) if "is_jw" in overlay else is_jw_name(overlay.get("name")),
                 "by_dimension": dim,
+                "_catalog_join_key": str(overlay.get("brand_key") or row.get("brand_key") or ""),
                 "cd_overlay": {
                     "filter": cd_filter_info,
                     "override_columns": override_columns,
@@ -137,6 +192,9 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
                     "catalog_source": "cd_brand",
                     "ml_id": overlay.get("ml_id"),
                     "cd_id": overlay.get("cd_id"),
+                    "canonical_name": overlay.get("canonical_name"),
+                    "general_brand_key": overlay.get("general_brand_key"),
+                    "is_target": overlay.get("is_target"),
                     "catalog_brand_ids": overlay.get("catalog_brand_ids"),
                     "catalog_names": overlay.get("catalog_names"),
                     **override_columns,
@@ -144,6 +202,7 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
             }
         )
         selected.append(copied)
+    validate_market_completeness(cd_row, catalog_rows, selected)
     market_rows: list[dict[str, Any]] = []
     for (source, measure), rows in _group_by_source_measure(selected).items():
         payload = compute_market_mart_payload(rows, source=source, measure=measure, view_type="strategic_cd", catalog_market_row=cd_row.to_dict())
@@ -192,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--insert", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=DRY_RUN_DIR)
+    parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 
