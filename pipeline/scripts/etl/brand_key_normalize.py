@@ -45,7 +45,39 @@ DOSAGE_TOKENS = [
     "syrup",
 ]
 
+BASE_DOSAGE_TOKENS = [
+    "에스알 캡슐",
+    "연질캡슐",
+    "서방정",
+    "캡슐",
+    "캅셀",
+    "정제",
+    "정",
+    "시럽",
+    "주사제",
+    "주사",
+    "주",
+    "패취",
+    "패치",
+    "연고",
+    "액제",
+    "액상",
+    "액",
+    "과립",
+    "산제",
+    "점안",
+    "XR",
+]
+
 UNIT_RE = re.compile(r"(\d+(\.\d+)?)\s*(mg|mcg|g|kg|ml|l|iu|%)", re.IGNORECASE)
+COMBO_STRENGTH_RE = re.compile(
+    r"\s*\d+(\.\d+)?\s*/\s*\d+(\.\d+)?\s*(mg|mcg|μg|g|mL|ml|L|l|IU|U)?\b",
+    re.IGNORECASE,
+)
+SINGLE_STRENGTH_RE = re.compile(
+    r"\s*\d+(\.\d+)?\s*(mg|mcg|μg|g|mL|ml|L|l|IU|U|%|개|정|회분)\b",
+    re.IGNORECASE,
+)
 BRACKET_RE = re.compile(r"\[[^\]]+\]|\([^)]*\)")
 PUNCT_RE = re.compile(r"[^\w가-힣]+", re.UNICODE)
 
@@ -83,6 +115,34 @@ def normalize_brand_name(raw_name: Any) -> str:
         text = re.sub(rf"(?<![가-힣a-z0-9]){re.escape(token)}(?![가-힣a-z0-9])", " ", text)
     text = PUNCT_RE.sub("", text)
     return text.strip("_")
+
+
+def extract_brand_base_name(raw_name: Any) -> str:
+    """Return display-level brand name by removing SKU dosage/strength noise.
+
+    Strategic views operate at true brand grain.  Raw/catalog product names can
+    include strength variants such as ``리바로젯 정 2/10mg``; those variants must
+    join to the single base brand ``리바로젯`` while strength remains available as
+    an analysis dimension.
+    """
+
+    if _is_missing(raw_name):
+        return ""
+
+    text = unicodedata.normalize("NFKC", str(raw_name)).strip()
+    if text.lower() in {"", "nan", "none", "null"}:
+        return ""
+
+    text = BRACKET_RE.sub(" ", text)
+    text = COMBO_STRENGTH_RE.sub(" ", text)
+    text = SINGLE_STRENGTH_RE.sub(" ", text)
+    for token in sorted(BASE_DOSAGE_TOKENS, key=len, reverse=True):
+        escaped = re.escape(token)
+        text = re.sub(rf"\s*{escaped}\s*$", " ", text, flags=re.IGNORECASE)
+        text = re.sub(rf"\s*{escaped}\s+", " ", text, flags=re.IGNORECASE)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def add_normalized_name_column(df, source_col: str = "name", target_col: str = "brand_key"):

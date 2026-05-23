@@ -20,6 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from brand_key_normalize import extract_brand_base_name, normalize_brand_name
 from ops_utils import find_project_root
 
 
@@ -35,9 +36,79 @@ def _has_korean(value: Any) -> bool:
 def clean_strategic_brand(catalog: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     names = catalog["name"].fillna("").astype(str)
     remove_mask = ~names.map(_has_korean)
-    cleaned = catalog.loc[~remove_mask].copy().reset_index(drop=True)
+    cleaned = aggregate_to_brand_grain(catalog.loc[~remove_mask].copy()).reset_index(drop=True)
     removed = catalog.loc[remove_mask].copy()
     return cleaned[catalog.columns], removed
+
+
+def _first_present(values: pd.Series) -> Any:
+    for value in values:
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if text and text.lower() not in {"nan", "none", "null"}:
+            return value
+    return None
+
+
+def _join_unique(values: pd.Series) -> str | None:
+    seen: list[str] = []
+    for value in values:
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if not text or text.lower() in {"nan", "none", "null"}:
+            continue
+        if text not in seen:
+            seen.append(text)
+    if not seen:
+        return None
+    return " | ".join(seen)
+
+
+def _join_key_for_base_name(value: Any) -> str:
+    text = str(value or "").replace("A+", "에이플러스").replace("a+", "에이플러스")
+    return normalize_brand_name(text)
+
+
+def aggregate_to_brand_grain(catalog: pd.DataFrame) -> pd.DataFrame:
+    """Collapse product/SKU catalog rows to true brand rows per ML market."""
+
+    if catalog.empty:
+        return catalog
+
+    working = catalog.copy()
+    working["_base_name"] = working["name"].map(extract_brand_base_name)
+    working.loc[working["_base_name"] == "", "_base_name"] = working.loc[working["_base_name"] == "", "name"]
+    working["_base_key"] = working["_base_name"].map(_join_key_for_base_name)
+    working["_is_jw_sort"] = working.get("is_jw", False).astype(bool).astype(int)
+    working["_is_target_sort"] = working.get("is_target", False).astype(bool).astype(int)
+    working = working.sort_values(["ml_id", "_base_key", "_is_jw_sort", "_is_target_sort", "brand_id"], ascending=[True, True, False, False, True])
+
+    merged_rows: list[dict[str, Any]] = []
+    for (_, _), part in working.groupby(["ml_id", "_base_key"], dropna=False, sort=False):
+        first = part.iloc[0].to_dict()
+        base_name = str(first["_base_name"] or first["name"])
+        base_key = _join_key_for_base_name(base_name)
+        row = {col: first.get(col) for col in catalog.columns}
+        row["name"] = base_name
+        row["merge_name"] = base_name
+        row["canonical_name"] = base_name
+        row["general_brand_key"] = base_key
+        row["is_jw"] = bool(part["is_jw"].astype(bool).any()) if "is_jw" in part else False
+        row["is_target"] = bool(part["is_target"].astype(bool).any()) if "is_target" in part else False
+        for col in ("cd_id", "class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"):
+            if col in catalog.columns:
+                row[col] = _join_unique(part[col]) if col in {"molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"} else _first_present(part[col])
+        merged_rows.append(row)
+
+    return pd.DataFrame(merged_rows, columns=catalog.columns)
 
 
 def validate_strategic_brand(catalog: pd.DataFrame) -> dict[str, Any]:

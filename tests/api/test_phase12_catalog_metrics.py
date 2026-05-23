@@ -28,7 +28,10 @@ def test_cd_brand_catalog_is_korean_subset_of_strategic_brand() -> None:
     molecule_like = cd_brand["name"].astype(str).str.fullmatch(r"[A-Z0-9][A-Z0-9 /().+-]*", na=False)
     assert not molecule_like.any(), "cd_brand still contains molecule-like English brand rows"
     assert cd_brand[cd_brand["ml_id"] == "ml_003"]["name"].astype(str).str.contains(r"[가-힣]", regex=True).all()
-    assert cd_brand[cd_brand["ml_id"] == "ml_003"]["brand_id"].nunique() >= 260
+    # Phase 13 collapses product/SKU rows to brand grain, so the ml_003 direct
+    # competition set is intentionally smaller than the product-level Phase 12
+    # count while still broad enough to prove molecule-driven auto loading.
+    assert cd_brand[cd_brand["ml_id"] == "ml_003"]["brand_id"].nunique() >= 100
 
 
 def test_hhi_formula_uses_percent_scale() -> None:

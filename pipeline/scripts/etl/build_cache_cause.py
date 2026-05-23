@@ -85,6 +85,10 @@ def _row_company(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _company_name(row: dict[str, Any]) -> str:
+    return _row_company(row) or "Unknown"
+
+
 def _latest_history_item(row: dict[str, Any]) -> dict[str, Any]:
     cached = row.get("__latest_history_item")
     if cached is not None:
@@ -187,6 +191,8 @@ def _stacked_ranking(
         selected_ids = {row_identity(row, label_key) for row in selected}
         others = [row for row in normalized if row_identity(row, label_key) not in selected_ids]
         if others:
+            displayed_ms = sum(float(row.get("ms_pct") or 0.0) for row in selected)
+            others_ms = max(0.0, 100.0 - displayed_ms)
             selected.append(
                 {
                     label_key: "기타",
@@ -197,7 +203,11 @@ def _stacked_ranking(
                     "is_others": True,
                     "value": sum(row["value"] for row in others),
                     "rank": None,
-                    "ms_pct": sum(row["ms_pct"] for row in others),
+                    # `brand_ranking_stacked` is intentionally top-N at the mart
+                    # layer, so the cache must close the displayed market-share
+                    # remainder against the full market instead of only summing
+                    # the truncated rows it can see.
+                    "ms_pct": round(others_ms, 4),
                 }
             )
         for index, row in enumerate(selected, start=1):
@@ -558,11 +568,10 @@ def _series_for_row(row: dict[str, Any], periods: list[str], *, scaled_sales: bo
         row["__metric_history"] = history
     if not isinstance(history, dict):
         history = {}
-    scale = 100_000_000 if scaled_sales and row.get("measure") == "sales" else 1
     values = []
     for period in periods:
         value = _value_from_period_item(history.get(period))
-        values.append(round(value / scale, 4))
+        values.append(round(value, 4))
     series_cache[cache_key] = values
     return values
 
@@ -626,6 +635,8 @@ def _display_brand_rows(
     selected_ids = {row_identity(row, "brand") for row in selected}
     others = [row for row in normalized if row_identity(row, "brand") not in selected_ids]
     if include_others and others:
+        selected_ms = sum(row["ms_pct"] for row in selected)
+        selected_contribution = sum(row["contribution_pct"] for row in selected)
         selected.append(
             {
                 "brand": "기타",
@@ -637,17 +648,17 @@ def _display_brand_rows(
                 "rank": None,
                 "value_recent": sum(row["value_recent"] for row in others),
                 "raw_value": sum(row["raw_value"] for row in others),
-                "share_pct": sum(row["share_pct"] for row in others),
-                "ms_pct": sum(row["ms_pct"] for row in others),
-                "ms_recent_pct": sum(row["ms_recent_pct"] for row in others),
+                "share_pct": round(max(0.0, 100.0 - selected_ms), 4),
+                "ms_pct": round(max(0.0, 100.0 - selected_ms), 4),
+                "ms_recent_pct": round(max(0.0, 100.0 - selected_ms), 4),
                 "ei": 0.0,
                 "ei_5y": 0.0,
                 "cagr_5y_pct": 0.0,
                 "momentum_score": 0.0,
                 "growth_contribution": sum(row["growth_contribution"] for row in others),
-                "growth_contribution_pct": sum(row["growth_contribution_pct"] for row in others),
+                "growth_contribution_pct": round(100.0 - selected_contribution, 4),
                 "contribution": sum(row["contribution"] for row in others),
-                "contribution_pct": sum(row["contribution_pct"] for row in others),
+                "contribution_pct": round(100.0 - selected_contribution, 4),
             }
         )
     return [{key: value for key, value in row.items() if key != "_source_row"} for row in selected]
@@ -743,33 +754,135 @@ def _company_waterfall(entries: list[dict[str, Any]], *, target_company: str | N
     return {"top_contributors": selected, "others_total": 0.0}
 
 
-def _growth_contribution_payload(entries_with_others: list[dict[str, Any]], periods: list[str]) -> dict[str, Any]:
-    by_brand = {
-        "top_contributors": [
+def _history_value_at(row: dict[str, Any], period: str | None) -> float:
+    if not period:
+        return 0.0
+    history = row.get("__metric_history")
+    if history is None:
+        history = decode_json(row.get("metric_history"))
+        row["__metric_history"] = history
+    return _value_from_period_item((history or {}).get(period)) if isinstance(history, dict) else 0.0
+
+
+def _top_contribution_rows(rows: list[dict[str, Any]], target_name: str | None, periods: list[str], top_n: int = 5) -> tuple[list[dict[str, Any]], float, float, float]:
+    period_start = periods[0] if periods else None
+    period_end = periods[-1] if periods else None
+    market_start = sum(_history_value_at(row, period_start) for row in rows)
+    market_end = sum(_history_value_at(row, period_end) for row in rows)
+    market_growth = market_end - market_start
+    contribution_rows: list[dict[str, Any]] = []
+    for row in rows:
+        brand = _row_brand(row)
+        if not brand:
+            continue
+        start_value = _history_value_at(row, period_start)
+        end_value = _history_value_at(row, period_end)
+        value = end_value - start_value
+        pct = round(value / market_growth * 100, 4) if market_growth else None
+        contribution_rows.append(
             {
-                "brand": row.get("brand"),
-                "company": row.get("company"),
-                "is_target": bool(row.get("is_target")),
-                "is_jw": bool(row.get("is_jw")),
-                "is_others": bool(row.get("is_others")),
-                "contribution": safe_float(row.get("growth_contribution")) or 0.0,
-                "contribution_pct": safe_float(row.get("growth_contribution_pct")) or 0.0,
-                "value_recent": safe_float(row.get("value_recent")) or 0.0,
+                "brand": brand,
+                "company": _company_name(row),
+                "is_target": bool(target_name and brand == target_name),
+                "is_jw": bool(row.get("is_jw")) or bool(target_name and brand == target_name),
+                "is_others": False,
+                "contribution": value,
+                "contribution_value": value,
+                "contribution_pct": pct,
+                "value_start": start_value,
+                "value_end": end_value,
+                "value_recent": end_value,
             }
-            for row in entries_with_others
-        ],
+        )
+
+    target = next((row for row in contribution_rows if row["is_target"]), None)
+    competitors = [row for row in sorted(contribution_rows, key=lambda item: abs(item["contribution_value"]), reverse=True) if row is not target]
+    selected = ([target] if target else []) + competitors[:top_n]
+    rest = [row for row in contribution_rows if row not in selected]
+    if rest:
+        displayed_pct = sum((row.get("contribution_pct") or 0.0) for row in selected)
+        selected.append(
+            {
+                "brand": "기타",
+                "company": f"{len(rest)}개 brand",
+                "is_target": False,
+                "is_jw": False,
+                "is_others": True,
+                "contribution": sum(row["contribution_value"] for row in rest),
+                "contribution_value": sum(row["contribution_value"] for row in rest),
+                "contribution_pct": round(100.0 - displayed_pct, 4) if market_growth else None,
+                "value_start": sum(row["value_start"] for row in rest),
+                "value_end": sum(row["value_end"] for row in rest),
+                "value_recent": sum(row["value_recent"] for row in rest),
+            }
+        )
+    return selected, market_start, market_end, market_growth
+
+
+def _company_contribution_payload(rows: list[dict[str, Any]], target_company: str | None, periods: list[str], market_growth: float, top_n: int = 5) -> dict[str, Any]:
+    period_start = periods[0] if periods else None
+    period_end = periods[-1] if periods else None
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        company = _company_name(row)
+        bucket = grouped.setdefault(company, {"company": company, "brands": [], "value_start": 0.0, "value_end": 0.0, "is_target": bool(target_company and company == target_company), "is_jw": False})
+        bucket["brands"].append(_row_brand(row))
+        bucket["value_start"] += _history_value_at(row, period_start)
+        bucket["value_end"] += _history_value_at(row, period_end)
+        bucket["is_jw"] = bucket["is_jw"] or bool(row.get("is_jw"))
+    company_rows = []
+    for bucket in grouped.values():
+        value = bucket["value_end"] - bucket["value_start"]
+        company_rows.append(
+            {
+                "company": bucket["company"],
+                "brands": bucket["brands"],
+                "is_target": bucket["is_target"],
+                "is_jw": bucket["is_jw"],
+                "is_others": False,
+                "contribution": value,
+                "contribution_value": value,
+                "contribution_pct": round(value / market_growth * 100, 4) if market_growth else None,
+                "value_recent": bucket["value_end"],
+            }
+        )
+    target = next((row for row in company_rows if row["is_target"]), None)
+    competitors = [row for row in sorted(company_rows, key=lambda item: abs(item["contribution_value"]), reverse=True) if row is not target]
+    selected = ([target] if target else []) + competitors[:top_n]
+    rest = [row for row in company_rows if row not in selected]
+    if rest:
+        displayed_pct = sum((row.get("contribution_pct") or 0.0) for row in selected)
+        selected.append(
+            {
+                "company": "기타",
+                "brands": [brand for row in rest for brand in row.get("brands", [])],
+                "is_target": False,
+                "is_jw": False,
+                "is_others": True,
+                "contribution": sum(row["contribution_value"] for row in rest),
+                "contribution_value": sum(row["contribution_value"] for row in rest),
+                "contribution_pct": round(100.0 - displayed_pct, 4) if market_growth else None,
+                "value_recent": sum(row["value_recent"] for row in rest),
+            }
+        )
+    return {"top_contributors": selected, "others_total": 0.0}
+
+
+def _growth_contribution_payload(rows: list[dict[str, Any]], target_name: str | None, periods: list[str]) -> dict[str, Any]:
+    top_rows, market_start, market_end, market_growth = _top_contribution_rows(rows, target_name, periods)
+    by_brand = {
+        "top_contributors": top_rows,
         "others_total": 0.0,
     }
-    target_company = next((row.get("company") for row in entries_with_others if row.get("is_target")), None)
-    market_growth = sum(row["contribution"] for row in by_brand["top_contributors"])
+    target_company = next((row.get("company") for row in top_rows if row.get("is_target")), None)
     return {
         "period_start": periods[0] if periods else None,
         "period_end": periods[-1] if periods else None,
-        "market_start": None,
-        "market_end": None,
+        "market_start": market_start,
+        "market_end": market_end,
         "market_growth": market_growth,
         "by_brand": by_brand,
-        "by_company": _company_waterfall(entries_with_others, target_company=target_company),
+        "by_company": _company_contribution_payload(rows, target_company=target_company, periods=periods, market_growth=market_growth),
     }
 
 
@@ -839,6 +952,7 @@ def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]
     row_by_brand = {_row_brand(row): row for row in rows if _row_brand(row)}
     for level in levels:
         level_segments = (analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or [])[:5]
+        all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or []
         values = []
         for index, segment in enumerate(level_segments, start=1):
             brands_in_value = []
@@ -872,6 +986,8 @@ def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]
         by_level[level] = {
             "level_label": level,
             "periods_10pt": periods,
+            "all_options": [segment.get("name") for segment in all_level_segments if segment.get("name")],
+            "default_option": values[0]["value"] if values else None,
             "values": values,
         }
     return {
@@ -900,11 +1016,30 @@ def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> li
 
 
 def latest_market_series_payload(series: dict[str, Any]) -> dict[str, Any]:
+    yoy_series = market_yoy_series(series)
     return {
         "periods_unit": "월간",
         "periods_count": len(series or {}),
         "market_size_series": series or {},
+        "market_yoy_series": yoy_series,
+        "market_yoy_recent_pct": series_latest_number(yoy_series),
     }
+
+
+def market_yoy_series(series: dict[str, Any]) -> dict[str, float | None]:
+    if not isinstance(series, dict):
+        return {}
+    periods = sorted(series.keys(), key=period_key)
+    step = 12 if any("-Q" not in str(period) for period in periods) else 4
+    result: dict[str, float | None] = {}
+    for index, period in enumerate(periods):
+        current = safe_float(series.get(period))
+        previous = safe_float(series.get(periods[index - step])) if index >= step else None
+        if current is None or previous in (None, 0):
+            result[str(period)] = None
+        else:
+            result[str(period)] = round((current - previous) / previous * 100, 4)
+    return result
 
 
 def top3_share(rows: list[dict[str, Any]]) -> float | None:
@@ -992,7 +1127,7 @@ def build_response(
     periods = _history_periods(sibling_rows, source_api)
     hhi_points = _annual_latest_points(hhi_series, value_key="hhi")
     company_concentration = _company_hhi_from_ranking(company_ranking)
-    growth_contribution = _growth_contribution_payload(display_entries_with_others, periods)
+    growth_contribution = _growth_contribution_payload(sibling_rows, brand_row.get("brand_name"), periods)
     target_customer_competition = _target_customer_competition(
         rows=sibling_rows,
         source=source_api,

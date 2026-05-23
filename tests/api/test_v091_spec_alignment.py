@@ -42,7 +42,9 @@ def test_market_status_kpi_fields_v091() -> None:
     }
 
     for source in ("UBIST", "IQVIA"):
-        assert set(payload["kpi_summary"][source].keys()) == required
+        keys = set(payload["kpi_summary"][source].keys())
+        assert required <= keys
+        assert payload["kpi_summary"][source]["avg_yoy_pct"] is not None
         assert payload["kpi_summary"][source]["period_recent"]
 
 

@@ -69,6 +69,19 @@ def movement_pct_from_history(metric_history: dict | None) -> float | None:
     return (recent - previous) / previous * 100
 
 
+def yoy_pct_from_history(metric_history: dict | None, source: str) -> float | None:
+    data = metric_history or {}
+    step = 12 if source == "ubist" else 4
+    if len(data) <= step:
+        return None
+    keys = sorted(data.keys(), key=period_key)
+    previous = _history_number(data.get(keys[-1 - step]))
+    recent = _history_number(data.get(keys[-1]))
+    if previous is None or recent is None or previous == 0:
+        return None
+    return (recent - previous) / previous * 100
+
+
 def source_card_payload(row: dict) -> dict:
     history = decode_json(row.get("metric_history"))
     recent = metric_recent(history)
@@ -133,6 +146,13 @@ def _direct_competition_count(strategic_brand: Any, cd_id: Any) -> int:
     return int((strategic_brand["cd_id"].astype(str) == cd).sum())
 
 
+def _market_brand_count(strategic_brand: Any, ml_id: Any) -> int:
+    market = _valid_text(ml_id)
+    if not market or strategic_brand is None or "ml_id" not in strategic_brand:
+        return 0
+    return int((strategic_brand["ml_id"].astype(str) == market).sum())
+
+
 def _first_existing(*values: Any) -> Any:
     for value in values:
         if isinstance(value, list):
@@ -186,9 +206,11 @@ def build_brand_card(
     mkt_team = _valid_text(meta.mkt_team if meta else None)
     nhi_type = _valid_text(brand_row.get("catalog_row", {}).get("nhi_type")) or "NHI"
     direct_competition_count = _direct_competition_count(strategic_brand, brand_row.get("catalog_row", {}).get("cd_id"))
+    total_brands_in_market = _market_brand_count(strategic_brand, brand_row.get("catalog_row", {}).get("ml_id"))
 
     return {
         "rank": int(meta.rank) if meta else safe_float(recent.get("rank")),
+        "total_brands_in_market": total_brands_in_market,
         "brand": brand_name,
         "company": company,
         "market_id": brand_row["market_id"],
@@ -276,6 +298,7 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
     latest_values = []
     ms_values = []
     movement_values = []
+    yoy_values = []
     for row in source_rows:
         history = decode_json(row["metric_history"])
         recent = metric_recent(history)
@@ -284,6 +307,9 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
         movement = movement_pct_from_history(history)
         if movement is not None:
             movement_values.append(movement)
+        yoy = yoy_pct_from_history(history, row["source"])
+        if yoy is not None:
+            yoy_values.append(yoy)
     total = sum(latest_values)
     rising = sum(1 for value in movement_values if value >= 0)
     declining = sum(1 for value in movement_values if value < 0)
@@ -293,6 +319,7 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
         "sales_up_count": rising,
         "sales_down_count": declining,
         "avg_cagr_5y_pct": cagr_from_source_rows(source, source_rows),
+        "avg_yoy_pct": numeric_mean(yoy_values),
         "period_recent": period_recent_from_rows(source_rows),
         "brand_count": rising + declining,
     }
