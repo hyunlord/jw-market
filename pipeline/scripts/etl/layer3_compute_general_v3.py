@@ -462,7 +462,6 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
         "product_name",
         "product_code",
         "pack_desc",
-        "strength",
         "molecule_desc",
         "nhi_type",
         "manufacturer",
