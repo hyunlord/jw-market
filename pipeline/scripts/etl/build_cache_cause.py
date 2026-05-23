@@ -1015,12 +1015,26 @@ def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> li
     return members
 
 
+def market_size_series_with_yoy(series: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    yoy_series = market_yoy_series(series)
+    output: dict[str, dict[str, float | None]] = {}
+    if not isinstance(series, dict):
+        return output
+    for period in sorted(series.keys(), key=period_key):
+        value = safe_float(series.get(period))
+        output[str(period)] = {
+            "value": value,
+            "yoy_growth_pct": yoy_series.get(str(period)),
+        }
+    return output
+
+
 def latest_market_series_payload(series: dict[str, Any]) -> dict[str, Any]:
     yoy_series = market_yoy_series(series)
     return {
         "periods_unit": "월간",
         "periods_count": len(series or {}),
-        "market_size_series": series or {},
+        "market_size_series": market_size_series_with_yoy(series),
         "market_yoy_series": yoy_series,
         "market_yoy_recent_pct": series_latest_number(yoy_series),
     }

@@ -244,6 +244,20 @@ def normalize_period_label(value: Any) -> str | None:
     return text
 
 
+def iqvia_source_priority(source_file: Any) -> int:
+    """Prefer the newest overlapping NSA extract for duplicated period rows."""
+    text = str(source_file or "")
+    match = re.search(r"(20\d{2})\s*(?:_| )?([1-4])Q", text, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"([1-4])Q\s*(20\d{2})", text, flags=re.IGNORECASE)
+        if match:
+            quarter, year = int(match.group(1)), int(match.group(2))
+            return year * 10 + quarter
+        return 0
+    year, quarter = int(match.group(1)), int(match.group(2))
+    return year * 10 + quarter
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -386,7 +400,7 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, audit_code, mfr_name, period_label, payload "
+                "SELECT id, source_file, source_row_no, audit_code, mfr_name, period_label, payload "
                 f"FROM iqvia_nsa_quarterly_raw{limit}"
             )
             rows = cur.fetchall()
@@ -407,11 +421,19 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
             continue
         parsed.append(
             {
+                "raw_id": row.get("id"),
+                "source_file": row.get("source_file"),
+                "source_priority": iqvia_source_priority(row.get("source_file")),
+                "source_row_no": row.get("source_row_no"),
                 "source": "iqvia_nsa",
                 "brand_name": product_name,
                 "brand_key": normalize_brand_name(product_name),
                 "product_name": product_name,
                 "product_code": static.get("PRODUCT NAME") or product_name,
+                "pack_desc": static.get("PACK DESC") or static.get("PACK DESCRIPTION"),
+                "strength": static.get("STRENGTH"),
+                "molecule_desc": static.get("MOLECULE DESC"),
+                "nhi_type": static.get("NHI TYPE"),
                 "manufacturer": static.get("MFR NAME KOR") or row.get("mfr_name"),
                 "company": static.get("MFR NAME KOR") or row.get("mfr_name"),
                 "payload_static": static,
@@ -429,7 +451,30 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
         if idx % 500_000 == 0:
             LOGGER.info("[iqvia_nsa] parsed %s/%s raw rows", f"{idx:,}", f"{len(rows):,}")
     LOGGER.info("[iqvia_nsa] parsed %s usable channel rows", f"{len(parsed):,}")
-    return pd.DataFrame(parsed)
+    frame = pd.DataFrame(parsed)
+    if frame.empty:
+        return frame
+    before = len(frame)
+    dedupe_cols = [
+        "period_yyyymm",
+        "channel",
+        "brand_key",
+        "product_name",
+        "product_code",
+        "pack_desc",
+        "strength",
+        "molecule_desc",
+        "nhi_type",
+        "manufacturer",
+        "atc4_code",
+    ]
+    frame = (
+        frame.sort_values(["source_priority", "raw_id"], ascending=[False, False])
+        .drop_duplicates(subset=dedupe_cols, keep="first")
+        .copy()
+    )
+    LOGGER.info("[iqvia_nsa] de-duplicated overlapping extracts rows=%s -> %s", f"{before:,}", f"{len(frame):,}")
+    return frame
 
 
 def iqvia_measure_frame(base: pd.DataFrame, measure: str) -> pd.DataFrame:
