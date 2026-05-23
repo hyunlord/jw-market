@@ -82,19 +82,62 @@ def yoy_pct_from_history(metric_history: dict | None, source: str) -> float | No
     return (recent - previous) / previous * 100
 
 
+def mat_yoy_pct_from_history(metric_history: dict | None, source: str) -> float | None:
+    """Moving annual total YoY over 12 monthly or 4 quarterly periods."""
+    data = metric_history or {}
+    step = 12 if source == "ubist" else 4
+    if len(data) < step * 2:
+        return None
+    keys = sorted(data.keys(), key=period_key)
+    recent_values = [_history_number(data.get(key)) for key in keys[-step:]]
+    previous_values = [_history_number(data.get(key)) for key in keys[-2 * step : -step]]
+    if any(value is None for value in recent_values + previous_values):
+        return None
+    recent_total = sum(value for value in recent_values if value is not None)
+    previous_total = sum(value for value in previous_values if value is not None)
+    if previous_total == 0:
+        return None
+    return (recent_total - previous_total) / previous_total * 100
+
+
+def ms_change_yoy_from_history(metric_history: dict | None, source: str) -> float | None:
+    """Market-share YoY as percentage-point delta, not relative percent."""
+    data = metric_history or {}
+    step = 12 if source == "ubist" else 4
+    if len(data) <= step:
+        return None
+    keys = sorted(data.keys(), key=period_key)
+    recent = metric_recent(data).get("ms")
+    previous_item = data.get(keys[-1 - step])
+    previous = previous_item.get("ms") if isinstance(previous_item, dict) else None
+    if recent is None or previous is None:
+        return None
+    return safe_float(recent) - safe_float(previous)
+
+
 def source_card_payload(row: dict) -> dict:
     history = decode_json(row.get("metric_history"))
     recent = metric_recent(history)
     movement = movement_pct_from_history(history)
+    source = row.get("source")
+    ym_yoy = yoy_pct_from_history(history, source)
+    mat_yoy = safe_float(recent.get("yoy_mat"))
+    if mat_yoy in (None, 0.0):
+        mat_yoy = safe_float(recent.get("mat"))
+    if mat_yoy in (None, 0.0):
+        mat_yoy = mat_yoy_pct_from_history(history, source)
+    ms_change_yoy = safe_float(recent.get("ms_change_yoy"))
+    if ms_change_yoy in (None, 0.0):
+        ms_change_yoy = ms_change_yoy_from_history(history, source)
     return {
         "value_recent": safe_float(recent.get("raw_value")),
         "ms_recent_pct": safe_float(recent.get("ms")),
         "gr_mom_pct": movement if row.get("source") == "ubist" else safe_float(recent.get("mom")),
         "gr_qoq_pct": movement if row.get("source") == "iqvia_nsa" else safe_float(recent.get("qoq")),
-        "gr_yoy_pct": safe_float(recent.get("yoy")),
-        "gr_yoy_mat_pct": safe_float(recent.get("yoy_mat")),
-        "gr_yoy_ym_pct": safe_float(recent.get("yoy_ym")),
-        "ms_change_yoy_pct": safe_float(recent.get("ms_change_yoy")),
+        "gr_yoy_pct": safe_float(recent.get("yoy")) if safe_float(recent.get("yoy")) is not None else ym_yoy,
+        "gr_yoy_mat_pct": mat_yoy,
+        "gr_yoy_ym_pct": safe_float(recent.get("yoy_ym")) if safe_float(recent.get("yoy_ym")) not in (None, 0.0) else ym_yoy,
+        "ms_change_yoy_pct": ms_change_yoy,
         "unit_label": row.get("unit_label"),
         "measure": row.get("measure"),
     }
@@ -227,11 +270,11 @@ def build_brand_card(
             "value_recent": safe_float(recent.get("raw_value")),
             "ms_recent_pct": safe_float(recent.get("ms")),
             "gr_mom_pct": source_card_payload(preferred).get("gr_mom_pct") if preferred else None,
-            "gr_qoq_pct": safe_float(recent.get("qoq")),
-            "gr_yoy_pct": safe_float(recent.get("yoy")),
-            "gr_yoy_mat_pct": safe_float(recent.get("yoy_mat")),
-            "gr_yoy_ym_pct": safe_float(recent.get("yoy_ym")),
-            "ms_change_yoy_pct": safe_float(recent.get("ms_change_yoy")),
+            "gr_qoq_pct": source_card_payload(preferred).get("gr_qoq_pct") if preferred else safe_float(recent.get("qoq")),
+            "gr_yoy_pct": source_card_payload(preferred).get("gr_yoy_pct") if preferred else safe_float(recent.get("yoy")),
+            "gr_yoy_mat_pct": source_card_payload(preferred).get("gr_yoy_mat_pct") if preferred else None,
+            "gr_yoy_ym_pct": source_card_payload(preferred).get("gr_yoy_ym_pct") if preferred else None,
+            "ms_change_yoy_pct": source_card_payload(preferred).get("ms_change_yoy_pct") if preferred else None,
             "sources_data": sources_data,
             "default_source": default_source,
         },
@@ -299,6 +342,9 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
     ms_values = []
     movement_values = []
     yoy_values = []
+    mat_yoy_values = []
+    ym_yoy_values = []
+    ms_change_yoy_values = []
     for row in source_rows:
         history = decode_json(row["metric_history"])
         recent = metric_recent(history)
@@ -310,6 +356,23 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
         yoy = yoy_pct_from_history(history, row["source"])
         if yoy is not None:
             yoy_values.append(yoy)
+        mat_yoy = safe_float(recent.get("yoy_mat"))
+        if mat_yoy in (None, 0.0):
+            mat_yoy = safe_float(recent.get("mat"))
+        if mat_yoy in (None, 0.0):
+            mat_yoy = mat_yoy_pct_from_history(history, row["source"])
+        if mat_yoy is not None:
+            mat_yoy_values.append(mat_yoy)
+        ym_yoy = safe_float(recent.get("yoy_ym"))
+        if ym_yoy in (None, 0.0):
+            ym_yoy = yoy
+        if ym_yoy is not None:
+            ym_yoy_values.append(ym_yoy)
+        ms_change_yoy = safe_float(recent.get("ms_change_yoy"))
+        if ms_change_yoy in (None, 0.0):
+            ms_change_yoy = ms_change_yoy_from_history(history, row["source"])
+        if ms_change_yoy is not None:
+            ms_change_yoy_values.append(ms_change_yoy)
     total = sum(latest_values)
     rising = sum(1 for value in movement_values if value >= 0)
     declining = sum(1 for value in movement_values if value < 0)
@@ -320,6 +383,10 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
         "sales_down_count": declining,
         "avg_cagr_5y_pct": cagr_from_source_rows(source, source_rows),
         "avg_yoy_pct": numeric_mean(yoy_values),
+        "gr_yoy_pct": numeric_mean(yoy_values),
+        "gr_yoy_mat_pct": numeric_mean(mat_yoy_values),
+        "gr_yoy_ym_pct": numeric_mean(ym_yoy_values),
+        "ms_change_yoy_pct": numeric_mean(ms_change_yoy_values),
         "period_recent": period_recent_from_rows(source_rows),
         "brand_count": rising + declining,
     }
