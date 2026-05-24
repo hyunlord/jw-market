@@ -46,6 +46,7 @@ LEVEL_FIELD_BY_LABEL = {
     "fish_oil": "fish_oil",
 }
 ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
+LEVEL_ROW_GROUPS_CACHE: dict[tuple[str | None, str, str], dict[str, dict[str, list[dict[str, Any]]]]] = {}
 EI_META_CACHE: dict[tuple[Any, Any], dict[str, Any]] = {}
 TARGET_RANK_STATS_CACHE: dict[Any, dict[int, dict[str, dict[str, Any]]]] = {}
 
@@ -475,9 +476,30 @@ def _strategic_levels(market: dict[str, Any] | None, view_source_id: str | None)
     return levels
 
 
+def _split_atomic_dimension(level: str, value: Any) -> list[str]:
+    """Return display/selection atoms for a dimension value.
+
+    Strength packs arrive from the mart as brand-level composites such as
+    ``10mg | 20mg``. D.3 dropdowns must expose the individual strengths rather
+    than the composite label, while other dimensions keep their catalog value.
+    """
+    if value in (None, "", [], {}):
+        return []
+    text = str(value)
+    if level == "용량":
+        return [part.strip() for part in text.split("|") if part.strip()]
+    return [text]
+
+
 def _dimension_value(row: dict[str, Any], level: str) -> str | None:
+    values = _dimension_values(row, level)
+    return values[0] if values else None
+
+
+def _dimension_values(row: dict[str, Any], level: str) -> list[str]:
     if level == "Brand":
-        return row.get("brand_name") or row.get("brand_key")
+        value = row.get("brand_name") or row.get("brand_key")
+        return _split_atomic_dimension(level, value)
     by_dimension = row.get("__by_dimension")
     if by_dimension is None:
         by_dimension = decode_json(row.get("by_dimension"))
@@ -495,8 +517,8 @@ def _dimension_value(row: dict[str, Any], level: str) -> str | None:
             continue
         value = by_dimension.get(candidate)
         if value not in (None, "", [], {}):
-            return str(value)
-    return None
+            return _split_atomic_dimension(level, value)
+    return []
 
 
 def _channel_bucket(raw: Any, source: str) -> str | None:
@@ -542,21 +564,23 @@ def _segment_rows_for_level(
     source: str,
     channel: str,
     target_name: str | None,
-    top_n: int = 5,
+    top_n: int | None = 5,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, list[float]]] = {}
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
 
     for row in rows:
-        name = _dimension_value(row, level)
-        if not name:
+        names = _dimension_values(row, level)
+        if not names:
             continue
-        grouped.setdefault(name, {period: [0.0] for period in periods})
+        for name in names:
+            grouped.setdefault(name, {period: [0.0] for period in periods})
         if channel == "전체":
             history = _metric_history(row)
             if history:
-                _add_series(grouped[name], history, periods)
                 _add_series(totals, history, periods)
+                for name in names:
+                    _add_series(grouped[name], history, periods)
             continue
 
         channel_data = row.get("__channel_data")
@@ -569,8 +593,9 @@ def _segment_rows_for_level(
             if _channel_bucket(raw_channel, source) != channel:
                 continue
             if isinstance(series, dict):
-                _add_series(grouped[name], series, periods)
                 _add_series(totals, series, periods)
+                for name in names:
+                    _add_series(grouped[name], series, periods)
 
     ranked = sorted(
         grouped.items(),
@@ -579,7 +604,7 @@ def _segment_rows_for_level(
     )
     if target_name:
         ranked = sorted(ranked, key=lambda item: (item[0] != target_name, -(item[1][periods[-1]][0] if periods else 0.0)))
-    selected = ranked[:top_n]
+    selected = ranked if top_n is None else ranked[:top_n]
 
     segments: list[dict[str, Any]] = []
     for rank, (name, series_map) in enumerate(selected, start=1):
@@ -661,6 +686,7 @@ def _build_analysis_levels_from_mart(
                 source=source,
                 channel=channel,
                 target_name=target_name if level == "Brand" else None,
+                top_n=None if channel == "전체" else 5,
             )
             for channel in channels
         }
@@ -673,6 +699,20 @@ def _build_analysis_levels_from_mart(
         "periods_quarterly": periods if source == "IQVIA" else [],
         "data": data,
     }
+
+
+def _trim_analysis_levels(analysis_levels: dict[str, Any], limit: int = 5) -> dict[str, Any]:
+    """Keep analysis-level payload compact for non-target competitor cache rows."""
+    trimmed = deepcopy(analysis_levels)
+    for level_data in (trimmed.get("data") or {}).values():
+        if isinstance(level_data.get("segments"), list):
+            level_data["segments"] = level_data["segments"][:limit]
+        by_channel = level_data.get("by_channel")
+        if isinstance(by_channel, dict):
+            for channel, segments in list(by_channel.items()):
+                if isinstance(segments, list):
+                    by_channel[channel] = segments[:limit]
+    return trimmed
 
 
 def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
@@ -1069,6 +1109,26 @@ def _growth_contribution_payload(rows: list[dict[str, Any]], target_name: str | 
     }
 
 
+def _channel_data_quality(channel: str, periods: list[str], total_series: list[float]) -> dict[str, Any]:
+    """Summarize channel history completeness without imputing missing source data."""
+    nonzero_indexes = [idx for idx, value in enumerate(total_series) if value and value > 0]
+    first_nonzero = periods[nonzero_indexes[0]] if nonzero_indexes else None
+    note = None
+    if periods and len(nonzero_indexes) < len(periods):
+        note = (
+            f"{channel} channel has source data from {first_nonzero} only; "
+            "earlier periods are preserved as 0 and were not imputed."
+            if first_nonzero
+            else f"{channel} channel has no non-zero source data in the displayed window."
+        )
+    return {
+        "period_count": len(periods),
+        "nonzero_period_count": len(nonzero_indexes),
+        "first_nonzero_period": first_nonzero,
+        "note": note,
+    }
+
+
 def _target_customer_competition(
     *,
     rows: list[dict[str, Any]],
@@ -1131,6 +1191,7 @@ def _target_customer_competition(
                 "trend_brands": trend_brands,
                 "composition": composition,
                 "composition_volume": composition,
+                "data_quality": _channel_data_quality(target, period_tail, total_series),
             }
         )
     return {
@@ -1142,22 +1203,34 @@ def _target_customer_competition(
     }
 
 
-def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]], source: str, target_name: str | None) -> dict[str, Any]:
-    levels = analysis_levels.get("levels") or []
-    periods = (analysis_levels.get("periods_monthly") or analysis_levels.get("periods_quarterly") or [])[-10:]
-    available_levels = [{"key": level, "label": level} for level in levels]
-    by_level = {}
+def _level_rows_by_segment(rows: list[dict[str, Any]], levels: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
     rows_by_level: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for level in levels:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            segment_name = _dimension_value(row, level)
-            if segment_name:
+            for segment_name in _dimension_values(row, level):
                 grouped.setdefault(segment_name, []).append(row)
         rows_by_level[level] = grouped
+    return rows_by_level
+
+
+def _level_top5_trend(
+    analysis_levels: dict[str, Any],
+    rows: list[dict[str, Any]],
+    source: str,
+    target_name: str | None,
+    *,
+    rows_by_level: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
+    include_all_options: bool = False,
+) -> dict[str, Any]:
+    levels = analysis_levels.get("levels") or []
+    periods = (analysis_levels.get("periods_monthly") or analysis_levels.get("periods_quarterly") or [])[-10:]
+    available_levels = [{"key": level, "label": level} for level in levels]
+    by_level = {}
+    rows_by_level = rows_by_level or _level_rows_by_segment(rows, levels)
     for level in levels:
-        level_segments = (analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or [])[:5]
         all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or []
+        level_segments = all_level_segments if include_all_options else all_level_segments[:5]
         values = []
         for index, segment in enumerate(level_segments, start=1):
             segment_name = segment.get("name") or f"{level} {index}"
@@ -1217,7 +1290,7 @@ def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]
         by_level[level] = {
             "level_label": level,
             "periods_10pt": periods,
-            "all_options": [segment.get("name") for segment in all_level_segments if segment.get("name")],
+            "all_options": [segment.get("name") for segment in level_segments if segment.get("name")],
             "default_option": values[0]["value"] if values else None,
             "values": values,
         }
@@ -1350,6 +1423,14 @@ def build_response(
             fallback_level_top5=level_top5,
         )
     analysis_levels = deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key])
+    if analysis_cache_key not in LEVEL_ROW_GROUPS_CACHE:
+        LEVEL_ROW_GROUPS_CACHE[analysis_cache_key] = _level_rows_by_segment(
+            sibling_rows,
+            ANALYSIS_LEVELS_CACHE[analysis_cache_key].get("levels") or [],
+        )
+    include_all_d3_options = bool(brand_row.get("is_jw") or brand_row.get("is_target"))
+    if not include_all_d3_options:
+        analysis_levels = _trim_analysis_levels(analysis_levels)
     brand_ranking_stacked = _stacked_ranking(
         brand_ranking,
         label_key="brand",
@@ -1395,6 +1476,8 @@ def build_response(
         sibling_rows,
         source_api,
         brand_row.get("brand_name"),
+        rows_by_level=LEVEL_ROW_GROUPS_CACHE[analysis_cache_key],
+        include_all_options=include_all_d3_options,
     )
     direct_competition_count = max(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),

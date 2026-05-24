@@ -103,13 +103,13 @@ MOCK_AI_ANALYSIS = {
     },
     "prediction": {
         "title": "미래 예측",
-        "body": "예측 모델은 본 phase에서 보류되었으며 history만 제공합니다.",
-        "bullets": ["forecast_values는 의도적으로 빈 list입니다."],
+        "body": "최근 history의 추세와 계절성을 결합한 deterministic forecast를 제공합니다.",
+        "bullets": ["forecast_values는 source granularity에 맞춰 월간/분기별로 생성됩니다."],
     },
     "recommendation": {
         "title": "전략 제안",
-        "body": "실제 예측 모델 적용 전까지는 source별 history와 원인분석 지표를 우선 사용합니다.",
-        "bullets": ["후속 phase에서 forecast/simulation 모델을 연결합니다."],
+        "body": "forecast는 의사결정 보조용이며 원인분석 지표와 함께 검토합니다.",
+        "bullets": ["향후 phase에서 통계 backtest 모델로 교체 가능한 구조입니다."],
     },
 }
 
@@ -268,44 +268,92 @@ def anomaly_payload(periods: list[str], values: list[float | None], source: str)
     return {"method": "yoy_threshold", "threshold_yoy_pct": threshold, "window": window, "fallback_top_n": 5, "items": items[-10:]}
 
 
+def deterministic_forecast_values(values: list[float | None], source: str, steps: int) -> tuple[list[float], dict[str, Any]]:
+    """Create a deterministic, dependency-free forecast from existing history.
+
+    This is intentionally simple and auditable: the next values blend a recent
+    average level, same-season carry-forward, and trailing trend. It avoids
+    model dependencies while making the forecast tab operational with real
+    non-empty forecast_values.
+    """
+    clean = [safe_float(value) for value in values]
+    clean = [0.0 if value is None else value for value in clean]
+    if not clean or steps <= 0:
+        return [], {"name": "deterministic_trend", "confidence_score": 0}
+
+    season = 12 if source == "UBIST" else 4
+    window = min(season, len(clean))
+    recent = clean[-window:] if window else clean[-1:]
+    last = clean[-1]
+
+    deltas = [clean[idx] - clean[idx - 1] for idx in range(max(1, len(clean) - window), len(clean))]
+    avg_delta = sum(deltas) / len(deltas) if deltas else 0.0
+    recent_mean = sum(recent) / len(recent) if recent else last
+
+    forecasts: list[float] = []
+    for step in range(steps):
+        seasonal = clean[-season + (step % season)] if len(clean) >= season else recent_mean
+        trend = last + avg_delta * (step + 1)
+        blended = (0.5 * seasonal) + (0.3 * trend) + (0.2 * recent_mean)
+        forecasts.append(round(max(0.0, blended), 4))
+
+    nonzero_history = sum(1 for value in clean if value > 0)
+    confidence = min(85, max(35, int(nonzero_history / max(1, len(clean)) * 70) + 15))
+    return forecasts, {
+        "name": "deterministic_trend",
+        "variant": "seasonal_trend_blend",
+        "selection_reason": "history-only deterministic forecast for v0.9.1 operational display",
+        "confidence_score": confidence,
+        "fit_quality": {"backtest_available": False},
+    }
+
+
 def combo_payload(row: dict[str, Any], *, market_rows: list[dict[str, Any]], target_brand: str, combo_source: str) -> dict[str, Any]:
     history = decode_json(row.get("metric_history"))
     recent = metric_recent(history)
     periods, values = sorted_history_values(history)
     period_unit = "월" if row.get("source") == "ubist" else "분기"
     selected = top6_rows(market_rows, target_brand)
+    forecast_periods = forecast_periods_from_history(periods, combo_source)
     return {
         "period_unit": period_unit,
         "unit_label": row.get("unit_label"),
         "history_periods": periods,
-        "forecast_periods": forecast_periods_from_history(periods, combo_source),
+        "forecast_periods": forecast_periods,
         "target_brand": row.get("brand_name"),
         "brands": [
-            {
-                "brand": brand_row.get("brand_name"),
-                "company": brand_row.get("company_name"),
-                "is_target": brand_row.get("brand_name") == target_brand,
-                "is_jw": bool(brand_row.get("is_jw")),
-                "rank": metric_recent(decode_json(brand_row.get("metric_history"))).get("rank"),
-                "history_values": sorted_history_values(decode_json(brand_row.get("metric_history")))[1],
-                "forecast_values": [],
-            }
+            _forecast_brand_entry(brand_row, target_brand=target_brand, source=combo_source, forecast_steps=len(forecast_periods))
             for brand_row in selected
         ] or [
-            {
-                "brand": row.get("brand_name"),
-                "company": row.get("company_name"),
-                "is_target": True,
-                "is_jw": bool(row.get("is_jw")),
-                "rank": recent.get("rank"),
-                "history_values": values,
-                "forecast_values": [],
-            }
+            _forecast_brand_entry(row, target_brand=str(row.get("brand_name")), source=combo_source, forecast_steps=len(forecast_periods))
         ],
         "baseline": {
             "value_recent": safe_float(recent.get("raw_value")),
             "ms_recent_pct": safe_float(recent.get("ms")),
         },
+    }
+
+
+def _forecast_brand_entry(
+    brand_row: dict[str, Any],
+    *,
+    target_brand: str,
+    source: str,
+    forecast_steps: int,
+) -> dict[str, Any]:
+    periods, values = sorted_history_values(decode_json(brand_row.get("metric_history")))
+    forecast_values, model = deterministic_forecast_values(values, source, forecast_steps)
+    return {
+        "brand": brand_row.get("brand_name"),
+        "company": brand_row.get("company_name"),
+        "is_target": brand_row.get("brand_name") == target_brand,
+        "is_jw": bool(brand_row.get("is_jw")),
+        "rank": metric_recent(decode_json(brand_row.get("metric_history"))).get("rank"),
+        "history_values": values,
+        "forecast_values": forecast_values,
+        "forecast_method": model["name"],
+        "forecast_model": model,
+        "confidence_score": model["confidence_score"],
     }
 
 
@@ -339,25 +387,28 @@ def brand_simulation_entry(row: dict[str, Any], *, source: str, measure: str, ma
     brand_cagr = cagr_from_values(values, source)
     market_cagr = cagr_from_values(market_values, source)
     forecast_periods = forecast_periods_from_history(periods, source)
+    forecast_values, forecast_model = deterministic_forecast_values(values, source, len(forecast_periods))
+    upper_values = [round(value * 1.12, 4) for value in forecast_values]
+    lower_values = [round(value * 0.88, 4) for value in forecast_values]
     return {
         "target_period": periods[-1] if periods else None,
         "history_periods": periods,
         "forecast_periods": forecast_periods,
         "history_values": values,
         "model": {
-            "name": "pending",
-            "variant": "history_only",
-            "selection_reason": "forecast model is intentionally deferred",
+            "name": forecast_model["name"],
+            "variant": forecast_model["variant"],
+            "selection_reason": forecast_model["selection_reason"],
             "fit_quality": {"backtest_available": False},
         },
         "horizon_ci_levels": HORIZON_CI_LEVELS,
         "scenarios": {
-            "base": {"label": "Base", "method": "pending", "values": [], "final_value": None},
-            "upper": {"label": "Upper", "method": "pending", "values": [], "final_value": None},
-            "lower": {"label": "Lower", "method": "pending", "values": [], "final_value": None},
+            "base": {"label": "Base", "method": forecast_model["name"], "values": forecast_values, "final_value": forecast_values[-1] if forecast_values else None},
+            "upper": {"label": "Upper", "method": "base_plus_12pct", "values": upper_values, "final_value": upper_values[-1] if upper_values else None},
+            "lower": {"label": "Lower", "method": "base_minus_12pct", "values": lower_values, "final_value": lower_values[-1] if lower_values else None},
         },
-        "stress": {"method": "history_anomaly", "note": "forecast model deferred; history-only stress placeholder"},
-        "confidence": {"score": None, "label": "forecast pending", "method": "pending"},
+        "stress": {"method": "history_anomaly", "note": "deterministic forecast; inspect anomaly signals before use"},
+        "confidence": {"score": forecast_model["confidence_score"], "label": "deterministic", "method": forecast_model["name"]},
         "market_comparison": {
             "delta_pp": round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None,
             "brand_cagr_pct": round(brand_cagr, 4) if brand_cagr is not None else None,
@@ -368,7 +419,7 @@ def brand_simulation_entry(row: dict[str, Any], *, source: str, measure: str, ma
         },
         "momentum": momentum_payload(values, source),
         "anomaly_signals": anomaly_payload(periods, values, source),
-        "warnings": ["forecast_values intentionally empty; forecast model is deferred"],
+        "warnings": ["deterministic history-only forecast; no external causal model applied"],
         "baseline": {"value_recent": safe_float(recent.get("raw_value")), "ms_recent_pct": safe_float(recent.get("ms"))},
     }
 
