@@ -103,12 +103,12 @@ MOCK_AI_ANALYSIS = {
     },
     "prediction": {
         "title": "미래 예측",
-        "body": "최근 history의 추세와 계절성을 결합한 deterministic forecast를 제공합니다.",
-        "bullets": ["forecast_values는 source granularity에 맞춰 월간/분기별로 생성됩니다."],
+        "body": "현재 예측값은 과거 history만 사용한 deterministic seasonal/trend blend입니다.",
+        "bullets": ["하드코딩 값은 아니지만 통계 backtest 모델도 아닙니다.", "v0.9.1 운영 표시용이며 실제 forecast model은 후속 범위입니다."],
     },
     "recommendation": {
         "title": "전략 제안",
-        "body": "forecast는 의사결정 보조용이며 원인분석 지표와 함께 검토합니다.",
+        "body": "forecast는 의사결정 보조용으로만 사용하고 원인분석 지표와 함께 검토합니다.",
         "bullets": ["향후 phase에서 통계 backtest 모델로 교체 가능한 구조입니다."],
     },
 }
@@ -133,6 +133,11 @@ UNIT_LABELS = {
     "counting_unit": "counting unit",
 }
 HORIZON_CI_LEVELS = {"1y": 0.95, "3y": 0.90, "5y": 0.80, "10y": 0.50}
+FORECAST_METHOD = "deterministic_history_only_v0.9.1"
+FORECAST_DISCLOSURE = (
+    "각 brand의 과거 history만 사용한 deterministic seasonal/trend blend입니다. "
+    "하드코딩 값이나 통계 backtest 모델이 아니며 v0.9.1 운영 표시용입니다."
+)
 
 
 def sorted_history_values(history: dict[str, Any]) -> tuple[list[str], list[float | None]]:
@@ -279,7 +284,16 @@ def deterministic_forecast_values(values: list[float | None], source: str, steps
     clean = [safe_float(value) for value in values]
     clean = [0.0 if value is None else value for value in clean]
     if not clean or steps <= 0:
-        return [], {"name": "deterministic_trend", "confidence_score": 0}
+        return [], {
+            "name": FORECAST_METHOD,
+            "variant": "seasonal_trend_blend",
+            "selection_reason": FORECAST_DISCLOSURE,
+            "is_statistical_model": False,
+            "backtest_available": False,
+            "disclaimer": FORECAST_DISCLOSURE,
+            "confidence_score": 0,
+            "fit_quality": {"backtest_available": False},
+        }
 
     season = 12 if source == "UBIST" else 4
     window = min(season, len(clean))
@@ -300,9 +314,12 @@ def deterministic_forecast_values(values: list[float | None], source: str, steps
     nonzero_history = sum(1 for value in clean if value > 0)
     confidence = min(85, max(35, int(nonzero_history / max(1, len(clean)) * 70) + 15))
     return forecasts, {
-        "name": "deterministic_trend",
+        "name": FORECAST_METHOD,
         "variant": "seasonal_trend_blend",
-        "selection_reason": "history-only deterministic forecast for v0.9.1 operational display",
+        "selection_reason": FORECAST_DISCLOSURE,
+        "is_statistical_model": False,
+        "backtest_available": False,
+        "disclaimer": FORECAST_DISCLOSURE,
         "confidence_score": confidence,
         "fit_quality": {"backtest_available": False},
     }
@@ -353,6 +370,7 @@ def _forecast_brand_entry(
         "forecast_values": forecast_values,
         "forecast_method": model["name"],
         "forecast_model": model,
+        "forecast_disclaimer": model.get("disclaimer"),
         "confidence_score": model["confidence_score"],
     }
 
@@ -407,7 +425,7 @@ def brand_simulation_entry(row: dict[str, Any], *, source: str, measure: str, ma
             "upper": {"label": "Upper", "method": "base_plus_12pct", "values": upper_values, "final_value": upper_values[-1] if upper_values else None},
             "lower": {"label": "Lower", "method": "base_minus_12pct", "values": lower_values, "final_value": lower_values[-1] if lower_values else None},
         },
-        "stress": {"method": "history_anomaly", "note": "deterministic forecast; inspect anomaly signals before use"},
+        "stress": {"method": "history_range", "note": "deterministic forecast; anomaly detection removed by PL direction"},
         "confidence": {"score": forecast_model["confidence_score"], "label": "deterministic", "method": forecast_model["name"]},
         "market_comparison": {
             "delta_pp": round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None,
@@ -418,8 +436,7 @@ def brand_simulation_entry(row: dict[str, Any], *, source: str, measure: str, ma
             "method": "history_only",
         },
         "momentum": momentum_payload(values, source),
-        "anomaly_signals": anomaly_payload(periods, values, source),
-        "warnings": ["deterministic history-only forecast; no external causal model applied"],
+        "warnings": [FORECAST_DISCLOSURE],
         "baseline": {"value_recent": safe_float(recent.get("raw_value")), "ms_recent_pct": safe_float(recent.get("ms"))},
     }
 
@@ -458,8 +475,7 @@ def simulation_payload(
                     "confidence": {"score": None, "label": "forecast pending"},
                     "market_comparison": {"delta_pp": None, "brand_cagr_pct": None, "market_cagr_pct": None, "basis": "5y", "horizon": "5y", "method": "history_only"},
                     "momentum": {"value_pct_per_period": None, "label": "insufficient_data", "basis": "12m" if source == "UBIST" else "4q", "n_periods": 12 if source == "UBIST" else 4, "method": "trailing_mean"},
-                    "anomaly_signals": {"method": "yoy_threshold", "threshold_yoy_pct": 30.0, "window": 12 if source == "UBIST" else 4, "fallback_top_n": 5, "items": []},
-                    "warnings": ["forecast not implemented yet - only history is available"],
+                    "warnings": [FORECAST_DISCLOSURE],
                 }
             },
         }
@@ -554,7 +570,13 @@ def main() -> None:
             "market_name": market.get("name"),
             "available_combos": available_combos,
             "data": {
-                "forecast": {"by_combo": by_combo},
+                "forecast": {
+                    "method": FORECAST_METHOD,
+                    "disclaimer": FORECAST_DISCLOSURE,
+                    "is_statistical_model": False,
+                    "backtest_available": False,
+                    "by_combo": by_combo,
+                },
                 "simulation": {"by_combo": sim_by_combo},
                 "events": MOCK_EVENTS,
                 "ai_analysis": MOCK_AI_ANALYSIS,

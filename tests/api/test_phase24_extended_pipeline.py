@@ -41,9 +41,11 @@ def test_d3_options_include_all_values_and_atomic_doses() -> None:
     data = cause_payload("리바로", view="market_landscape", source="UBIST", measure="sales")
     by_level = data["level_top5_trend"]["by_level"]
 
-    brand_payload = by_level["Brand"]
-    assert len(brand_payload["all_options"]) > len(brand_payload["values"]) or len(brand_payload["values"]) > 20
-    assert len(brand_payload["values"]) == len(brand_payload["all_options"])
+    assert "Brand" not in by_level
+    assert by_level
+    for level, payload in by_level.items():
+        assert len(payload["values"]) == len(payload["all_options"]), level
+        assert len(payload["all_options"]) > 1, level
 
     dose_options = by_level["용량"]["all_options"]
     assert dose_options

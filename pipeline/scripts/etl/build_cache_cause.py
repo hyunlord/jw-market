@@ -38,7 +38,6 @@ LEVEL_FIELD_BY_LABEL = {
     "Class 1": "class",
     "Class 2": "class_2",
     "Molecule": "molecule",
-    "Brand": "__brand__",
     "제형/투여경로": "dosage_form",
     "용량": "strength_pack",
     "비/급여": "nhi_type",
@@ -430,7 +429,38 @@ def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], so
             level_data["by_channel"] = {"전체": segments}
     if not normalized.get("channels") and normalized.get("levels"):
         normalized["channels"] = ["전체"]
-    return normalized
+    return _filter_d3_levels(normalized)
+
+
+def _filter_d3_levels(analysis_levels: dict[str, Any]) -> dict[str, Any]:
+    """Apply PL D.3 level rules.
+
+    D.3 is segment-level analysis, so Brand is removed because A.2 already owns
+    brand ranking. Levels with one or zero options are also hidden because they
+    do not create a meaningful dropdown comparison, even if the catalog flag is
+    enabled for the market.
+    """
+    if not isinstance(analysis_levels, dict):
+        return analysis_levels
+    data = analysis_levels.get("data") if isinstance(analysis_levels.get("data"), dict) else {}
+    kept_levels: list[str] = []
+    kept_data: dict[str, Any] = {}
+    for level in analysis_levels.get("levels") or []:
+        if level == "Brand":
+            continue
+        level_data = data.get(level) or {}
+        all_segments = level_data.get("by_channel", {}).get("전체") or level_data.get("segments") or []
+        option_names = {segment.get("name") for segment in all_segments if isinstance(segment, dict) and segment.get("name")}
+        if len(option_names) <= 1:
+            continue
+        kept_levels.append(level)
+        kept_data[level] = level_data
+    filtered = deepcopy(analysis_levels)
+    filtered["levels"] = kept_levels
+    filtered["data"] = kept_data
+    if not kept_levels:
+        filtered["channels"] = []
+    return filtered
 
 
 def _history_periods(rows: list[dict[str, Any]], source: str) -> list[str]:
@@ -454,7 +484,6 @@ def _market_levels(market: dict[str, Any] | None) -> list[str]:
         levels.append("Class")
     if bool(market.get("analyze_molecule")):
         levels.append("Molecule")
-    levels.append("Brand")
     if bool(market.get("analyze_dosage_form")):
         levels.append("제형/투여경로")
     if bool(market.get("analyze_strength_pack")):
@@ -691,14 +720,14 @@ def _build_analysis_levels_from_mart(
             for channel in channels
         }
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
-    return {
+    return _filter_d3_levels({
         "levels": levels,
         "channels": channels,
         "period_unit": _period_unit_ko(source),
         "periods_monthly": periods if source == "UBIST" else [],
         "periods_quarterly": periods if source == "IQVIA" else [],
         "data": data,
-    }
+    })
 
 
 def _trim_analysis_levels(analysis_levels: dict[str, Any], limit: int = 5) -> dict[str, Any]:
