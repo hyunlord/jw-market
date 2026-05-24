@@ -22,6 +22,7 @@ from cache_build_common import (
     parser,
     payload_size,
     period_key,
+    optional_float,
     replace_rows,
     series_latest_number,
     source_list,
@@ -169,9 +170,8 @@ def _ordered_sources(sources: list[str]) -> list[str]:
 
 
 def _ratio_to_pct(value: Any) -> float | None:
-    if value is None:
-        return None
-    return round(safe_float(value) * 100, 4)
+    number = optional_float(value)
+    return round(number * 100, 4) if number is not None else None
 
 
 def _market_definition_label(atc_codes: list[str]) -> str:
@@ -233,8 +233,6 @@ def build_brand_card(
     sources = _ordered_sources(meta_sources or brand_row["sources"])
     atc_codes = list(meta.atc_codes) if meta else []
     brand_cagr = _ratio_to_pct(ext_recent.get("cagr_5y"))
-    if brand_cagr is None:
-        brand_cagr = 0.0
     market_cagr = series_cagr(market_series)
     excess_growth = round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None
     company = (
@@ -311,19 +309,19 @@ def history_period_totals(rows: list[dict]) -> dict[str, float]:
     return totals
 
 
-def cagr_from_source_rows(source: str, rows: list[dict]) -> float:
+def cagr_from_source_rows(source: str, rows: list[dict]) -> float | None:
     totals = history_period_totals(rows)
     if len(totals) < 2:
-        return 0.0
+        return None
     periods = sorted(totals.keys(), key=period_key)
     first = totals[periods[0]]
     last = totals[periods[-1]]
     if first <= 0 or last <= 0:
-        return 0.0
+        return None
     periods_per_year = 12.0 if source == "UBIST" else 4.0
     years = (len(periods) - 1) / periods_per_year
     if years <= 0:
-        return 0.0
+        return None
     return round(((last / first) ** (1 / years) - 1) * 100, 4)
 
 

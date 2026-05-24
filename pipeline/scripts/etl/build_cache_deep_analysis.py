@@ -19,6 +19,7 @@ from cache_build_common import (
     parser,
     payload_size,
     period_key,
+    optional_float,
     safe_float,
     source_list,
 )
@@ -203,11 +204,11 @@ def top6_rows(rows: list[dict[str, Any]], target_brand: str) -> list[dict[str, A
     return [row for row in selected if row is not None]
 
 
-def cagr_from_values(values: list[float | None], source: str) -> float:
-    clean = [safe_float(value) for value in values]
+def cagr_from_values(values: list[float | None], source: str) -> float | None:
+    clean = [optional_float(value) for value in values]
     clean = [value for value in clean if value is not None]
     if len(clean) < 2 or clean[0] <= 0 or clean[-1] <= 0:
-        return 0.0
+        return None
     years = max((len(clean) - 1) / (12 if source == "UBIST" else 4), 1)
     return ((clean[-1] / clean[0]) ** (1 / years) - 1) * 100
 
@@ -232,11 +233,13 @@ def momentum_payload(values: list[float | None], source: str) -> dict[str, Any]:
     clean = [safe_float(value) or 0.0 for value in values]
     basis = "12m" if source == "UBIST" else "4q"
     if len(clean) < n + 1:
-        return {"value_pct_per_period": 0.0, "label": "insufficient_data", "basis": basis, "n_periods": n, "method": "trailing_mean"}
+        return {"value_pct_per_period": None, "label": "insufficient_data", "basis": basis, "n_periods": n, "method": "trailing_mean"}
     recent = clean[-n:]
     previous = clean[-2 * n : -n] if len(clean) >= 2 * n else clean[:n]
     previous_total = sum(previous)
-    pct = ((sum(recent) - previous_total) / previous_total) * 100 if previous_total else 0.0
+    if previous_total <= 0:
+        return {"value_pct_per_period": None, "label": "not_computable", "basis": basis, "n_periods": n, "method": "trailing_mean"}
+    pct = ((sum(recent) - previous_total) / previous_total) * 100
     label = "rising" if pct > 5 else "declining" if pct < -5 else "stable"
     return {"value_pct_per_period": round(pct, 4), "label": label, "basis": basis, "n_periods": n, "method": "trailing_mean"}
 
@@ -356,9 +359,9 @@ def brand_simulation_entry(row: dict[str, Any], *, source: str, measure: str, ma
         "stress": {"method": "history_anomaly", "note": "forecast model deferred; history-only stress placeholder"},
         "confidence": {"score": None, "label": "forecast pending", "method": "pending"},
         "market_comparison": {
-            "delta_pp": round(brand_cagr - market_cagr, 4),
-            "brand_cagr_pct": round(brand_cagr, 4),
-            "market_cagr_pct": round(market_cagr, 4),
+            "delta_pp": round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None,
+            "brand_cagr_pct": round(brand_cagr, 4) if brand_cagr is not None else None,
+            "market_cagr_pct": round(market_cagr, 4) if market_cagr is not None else None,
             "basis": "5y",
             "horizon": "5y",
             "method": "history_only",
@@ -402,8 +405,8 @@ def simulation_payload(
                         "lower": {"values": [], "final_value": None, "method": "pending"},
                     },
                     "confidence": {"score": None, "label": "forecast pending"},
-                    "market_comparison": {"delta_pp": 0.0, "brand_cagr_pct": 0.0, "market_cagr_pct": 0.0, "basis": "5y", "horizon": "5y", "method": "history_only"},
-                    "momentum": {"value_pct_per_period": 0.0, "label": "insufficient_data", "basis": "12m" if source == "UBIST" else "4q", "n_periods": 12 if source == "UBIST" else 4, "method": "trailing_mean"},
+                    "market_comparison": {"delta_pp": None, "brand_cagr_pct": None, "market_cagr_pct": None, "basis": "5y", "horizon": "5y", "method": "history_only"},
+                    "momentum": {"value_pct_per_period": None, "label": "insufficient_data", "basis": "12m" if source == "UBIST" else "4q", "n_periods": 12 if source == "UBIST" else 4, "method": "trailing_mean"},
                     "anomaly_signals": {"method": "yoy_threshold", "threshold_yoy_pct": 30.0, "window": 12 if source == "UBIST" else 4, "fallback_top_n": 5, "items": []},
                     "warnings": ["forecast not implemented yet - only history is available"],
                 }

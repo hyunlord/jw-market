@@ -20,6 +20,7 @@ from cache_build_common import (
     parser,
     payload_size,
     period_key,
+    optional_float,
     safe_float,
     series_cagr,
     series_latest_number,
@@ -589,6 +590,13 @@ def _display_brand_rows(
     top_n: int = 5,
     include_others: bool,
 ) -> list[dict[str, Any]]:
+    def first_float(*values: Any) -> float | None:
+        for value in values:
+            parsed = optional_float(value)
+            if parsed is not None:
+                return parsed
+        return None
+
     normalized: list[dict[str, Any]] = []
     for row in rows:
         brand = _row_brand(row)
@@ -599,6 +607,10 @@ def _display_brand_rows(
         is_target = bool(target_name and brand == target_name)
         value_recent = safe_float(recent.get("raw_value") or recent.get("value")) or 0.0
         share = safe_float(recent.get("ms")) or 0.0
+        cagr_5y = first_float(extended.get("cagr_5y"))
+        cagr_5y_pct = round(cagr_5y * 100, 4) if cagr_5y is not None else None
+        ei_5y = first_float(extended.get("ei_5y"), extended.get("ei"))
+        momentum_score = first_float(extended.get("momentum_score"))
         growth_contribution = safe_float(
             extended.get("growth_contribution")
             or extended.get("growth_contribution_pct")
@@ -618,10 +630,10 @@ def _display_brand_rows(
                 "share_pct": share,
                 "ms_pct": share,
                 "ms_recent_pct": share,
-                "ei": safe_float(extended.get("ei_5y") or extended.get("ei")) or 0.0,
-                "ei_5y": safe_float(extended.get("ei_5y") or extended.get("ei")) or 0.0,
-                "cagr_5y_pct": (safe_float(extended.get("cagr_5y")) or 0.0) * 100,
-                "momentum_score": safe_float(extended.get("momentum_score")) or 0.0,
+                "ei": ei_5y,
+                "ei_5y": ei_5y,
+                "cagr_5y_pct": cagr_5y_pct,
+                "momentum_score": momentum_score,
                 "growth_contribution": growth_contribution,
                 "growth_contribution_pct": growth_contribution,
                 "contribution": growth_contribution,
@@ -657,10 +669,10 @@ def _display_brand_rows(
                 "share_pct": round(max(0.0, 100.0 - selected_ms), 4),
                 "ms_pct": round(max(0.0, 100.0 - selected_ms), 4),
                 "ms_recent_pct": round(max(0.0, 100.0 - selected_ms), 4),
-                "ei": 0.0,
-                "ei_5y": 0.0,
-                "cagr_5y_pct": 0.0,
-                "momentum_score": 0.0,
+                "ei": None,
+                "ei_5y": None,
+                "cagr_5y_pct": None,
+                "momentum_score": None,
                 "growth_contribution": sum(row["growth_contribution"] for row in others),
                 "growth_contribution_pct": round(100.0 - selected_contribution, 4),
                 "contribution": sum(row["contribution"] for row in others),
@@ -1144,6 +1156,7 @@ def build_response(
         top_n=5,
         include_others=True,
     )
+    target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
     periods = _history_periods(sibling_rows, source_api)
     hhi_points = _annual_latest_points(hhi_series, value_key="hhi")
     company_concentration = _company_hhi_from_ranking(company_ranking)
@@ -1182,8 +1195,8 @@ def build_response(
                 "direct_competition_count": direct_competition_count,
                 "target_brand": target.get("brand_name"),
                 "target_company": target.get("company_name") or ("JW중외제약" if target.get("is_jw") else None),
-                "target_ei": safe_float(target_ext.get("ei")),
-                "target_momentum": safe_float(target_ext.get("momentum") or target_recent.get("mom")),
+                "target_ei": optional_float(target_display.get("ei")),
+                "target_momentum": optional_float(target_display.get("momentum_score")),
                 "target_rank": target_recent.get("rank"),
                 "target_share_pct": safe_float(target_recent.get("ms")),
                 "brand_value_recent": safe_float(recent.get("raw_value")),

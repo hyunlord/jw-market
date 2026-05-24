@@ -26,6 +26,21 @@ MEASURES_BY_SOURCE = {
     "ubist": ("sales", "volume"),
     "iqvia_nsa": ("sales", "unit", "dosage_unit", "counting_unit"),
 }
+
+
+def optional_float(value: Any) -> float | None:
+    """Parse a numeric value while preserving missing/uncomputable values as None."""
+    try:
+        if value is None or pd.isna(value):
+            return None
+        number = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
 UNIT_LABELS = {
     ("ubist", "sales"): "KRW",
     ("ubist", "volume"): "Rx",

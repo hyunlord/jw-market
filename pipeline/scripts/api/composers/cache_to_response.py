@@ -76,13 +76,11 @@ def _frontend_entry_aliases(obj: dict[str, Any]) -> dict[str, Any]:
     if "ms" in obj and "share_pct" not in obj:
         obj["share_pct"] = obj.get("ms")
     if "ei_5y" in obj and "ei" not in obj:
-        obj["ei"] = obj.get("ei_5y") if obj.get("ei_5y") is not None else 0.0
-    if obj.get("ei") is None and ("ei_5y" in obj or "ms_recent_pct" in obj):
-        obj["ei"] = 0.0
+        obj["ei"] = obj.get("ei_5y")
     if "target_ei" in obj and "ei" not in obj:
-        obj["ei"] = obj.get("target_ei") if obj.get("target_ei") is not None else 0.0
+        obj["ei"] = obj.get("target_ei")
     if "target_momentum" in obj and "momentum_score" not in obj:
-        obj["momentum_score"] = obj.get("target_momentum") or 0.0
+        obj["momentum_score"] = obj.get("target_momentum")
     return obj
 
 
