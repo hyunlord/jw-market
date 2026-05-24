@@ -105,7 +105,13 @@ def calculate_ei_with_fallback(
     market_series: dict[str, Any] | None,
     target_years: int = 5,
 ) -> dict[str, Any]:
-    """Calculate EI with PL's 1-year fallback for pre-launch brands."""
+    """Calculate EI on the 5-year basis, preserving pre-launch as uncomputable.
+
+    PL originally considered a one-year fallback for pre-launch brands, then
+    reversed that decision: if the 5-year brand CAGR cannot be calculated
+    because the start value is zero and the end value is positive, EI should
+    remain N/A rather than switching bases.
+    """
     brand_annual = annual_totals(brand_series)
     market_annual = annual_totals(market_series)
     if len(brand_annual) < 2 or len(market_annual) < 2:
@@ -138,25 +144,7 @@ def calculate_ei_with_fallback(
             "market_cagr_pct": round(market_cagr, 4),
         }
 
-    if brand_cagr is None and market_cagr is not None:
-        previous_brand = next(((year, value) for year, value in reversed(brand_annual[:-1]) if year < end_year), None)
-        previous_market = next(((year, value) for year, value in reversed(market_annual[:-1]) if year < end_year), None)
-        if previous_brand and previous_market:
-            prev_brand_year, prev_brand = previous_brand
-            prev_market_year, prev_market = previous_market
-            brand_1y = calculate_cagr_v2(prev_brand, brand_end, max(end_year - prev_brand_year, 1))
-            market_1y = calculate_cagr_v2(prev_market, market_end, max(end_year - prev_market_year, 1))
-            if brand_1y is not None and market_1y is not None and market_1y != 0:
-                return {
-                    "ei": round((brand_1y / market_1y) * 100, 4),
-                    "basis": "fallback_1y",
-                    "period_years": 1,
-                    "brand_cagr_pct": round(brand_1y, 4),
-                    "market_cagr_pct": round(market_1y, 4),
-                    "note": "5년 전 매출 0 으로 1년 기준 계산",
-                }
-
-    return {"ei": None, "basis": "unable", "note": "5년 / 1년 모두 fallback 불가"}
+    return {"ei": None, "basis": "unable", "note": "5년 전 매출 0 — N/A"}
 
 
 UNIT_LABELS = {

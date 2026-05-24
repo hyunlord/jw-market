@@ -44,6 +44,7 @@ LEVEL_FIELD_BY_LABEL = {
 }
 ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
 EI_META_CACHE: dict[tuple[Any, Any], dict[str, Any]] = {}
+TARGET_RANK_STATS_CACHE: dict[Any, dict[int, dict[str, dict[str, Any]]]] = {}
 
 
 def _period_year(period: str) -> int | None:
@@ -150,6 +151,7 @@ def _stacked_ranking(
     label_key: str,
     target_name: str | None,
     catalog_members: list[dict[str, Any]] | None = None,
+    target_overrides: dict[int, dict[str, Any]] | None = None,
     top_n: int = 5,
 ) -> dict[str, Any]:
     by_year: dict[int, tuple[str, list[dict[str, Any]]]] = {}
@@ -164,6 +166,16 @@ def _stacked_ranking(
     for year in years:
         _, rows = by_year[year]
         normalized = [_normalize_rank_row(row, label_key=label_key, target_name=target_name) for row in rows]
+        override = (target_overrides or {}).get(year)
+        if override:
+            target_index = next(
+                (index for index, row in enumerate(normalized) if row_identity(row, label_key) == target_name),
+                None,
+            )
+            if target_index is None:
+                normalized.append(override)
+            else:
+                normalized[target_index] = {**normalized[target_index], **override}
         existing = {row.get(label_key) for row in normalized}
         if catalog_members:
             for member in catalog_members:
@@ -229,6 +241,94 @@ def row_identity(row: dict[str, Any] | None, label_key: str) -> str | None:
     if not row:
         return None
     return str(row.get(label_key) or row.get("brand") or row.get("company") or row.get("name"))
+
+
+def _period_value_for_row(row: dict[str, Any], period: str) -> float:
+    history = row.get("__metric_history")
+    if history is None:
+        history = decode_json(row.get("metric_history"))
+        row["__metric_history"] = history
+    if not isinstance(history, dict):
+        return 0.0
+    return _value_from_period_item(history.get(period))
+
+
+def _target_rank_overrides(
+    rows: list[dict[str, Any]],
+    *,
+    label_key: str,
+    target_name: str | None,
+    cache_key: Any = None,
+) -> dict[int, dict[str, Any]]:
+    """Build target rows from full sibling mart history when market ranking is top-N.
+
+    The mart-level `brand_ranking_stacked` payload is intentionally trimmed to
+    target + top 5 when the target is available. For broad ML views a target can
+    fall outside that trimmed payload and later be reintroduced from catalog as a
+    synthetic zero row. This helper restores the real target value/rank from the
+    full sibling brand metric rows without changing mart or catalog definitions.
+    """
+    if not target_name:
+        return {}
+    stats_key = cache_key if cache_key is not None else id(rows)
+    if stats_key not in TARGET_RANK_STATS_CACHE:
+        periods_by_year: dict[int, str] = {}
+        for row in rows:
+            history = row.get("__metric_history")
+            if history is None:
+                history = decode_json(row.get("metric_history"))
+                row["__metric_history"] = history
+            if not isinstance(history, dict):
+                continue
+            for period in history:
+                year = _period_year(str(period))
+                if year is None:
+                    continue
+                current = periods_by_year.get(year)
+                if current is None or period_key(str(period)) > period_key(current):
+                    periods_by_year[year] = str(period)
+
+        by_year: dict[int, dict[str, dict[str, Any]]] = {}
+        for year, period in periods_by_year.items():
+            ranked = [
+                {"row": row, "brand": _row_brand(row), "value": _period_value_for_row(row, period)}
+                for row in rows
+                if _row_brand(row)
+            ]
+            total = sum(item["value"] for item in ranked)
+            year_stats: dict[str, dict[str, Any]] = {}
+            for index, item in enumerate(sorted(ranked, key=lambda item: item["value"], reverse=True), start=1):
+                brand = item["brand"]
+                if not brand:
+                    continue
+                value = item["value"]
+                year_stats[brand] = {
+                    "row": item["row"],
+                    "value": value,
+                    "rank": index if value > 0 else None,
+                    "ms_pct": round(value / total * 100, 4) if total > 0 else 0.0,
+                }
+            by_year[year] = year_stats
+        TARGET_RANK_STATS_CACHE[stats_key] = by_year
+
+    overrides: dict[int, dict[str, Any]] = {}
+    for year, year_stats in TARGET_RANK_STATS_CACHE[stats_key].items():
+        stat = year_stats.get(target_name)
+        if not stat:
+            continue
+        source_row = stat["row"]
+        overrides[year] = {
+            label_key: target_name,
+            "brand": target_name if label_key == "brand" else None,
+            "company": _row_company(source_row),
+            "is_target": True,
+            "is_jw": bool(source_row.get("is_jw")) or True,
+            "is_others": False,
+            "value": stat["value"],
+            "rank": stat["rank"],
+            "ms_pct": stat["ms_pct"],
+        }
+    return overrides
 
 
 def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
@@ -1162,6 +1262,12 @@ def build_response(
         label_key="brand",
         target_name=brand_row.get("brand_name"),
         catalog_members=catalog_members,
+        target_overrides=_target_rank_overrides(
+            sibling_rows,
+            label_key="brand",
+            target_name=brand_row.get("brand_name"),
+            cache_key=(view_source_id, source_api, measure),
+        ),
     )
     company_ranking_stacked = _stacked_ranking(company_ranking, label_key="company", target_name=target.get("company_name"))
     display_entries_no_others = _display_brand_rows(

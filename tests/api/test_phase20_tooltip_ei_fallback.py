@@ -17,22 +17,22 @@ def get_api(path: str) -> dict[str, Any]:
         return json.load(response)
 
 
-def test_winnerf_a_plus_uses_1y_fallback_ei() -> None:
-    """Pre-launch 5y CAGR should fall back to a 1y EI basis per PL definition."""
+def test_winnerf_a_plus_prelaunch_ei_stays_na() -> None:
+    """Pre-launch 5y CAGR should keep EI uncomputed after PL removed 1y fallback."""
     brand = urllib.parse.quote("위너프A+")
     payload = get_api(f"/api/cause/{brand}?view=competitive_dynamics&source=IQVIA&measure=sales")
 
     kpi = payload["data"]["kpi"]
     target = next(row for row in payload["data"]["ei_ms_matrix"]["data"] if row.get("is_target"))
 
-    assert kpi["target_ei"] is not None
-    assert kpi["ei_basis"] == "fallback_1y"
-    assert kpi["ei_period_years"] == 1
-    assert kpi["ei_note"] == "5년 전 매출 0 으로 1년 기준 계산"
+    assert kpi["target_ei"] is None
+    assert kpi["ei_basis"] == "unable"
+    assert kpi["ei_period_years"] is None
+    assert kpi["ei_note"] == "5년 전 매출 0 — N/A"
     assert target["ei"] == kpi["target_ei"]
-    assert target["ei_basis"] == "fallback_1y"
+    assert target["ei_basis"] == "unable"
     assert target["cagr_5y_pct"] is None
-    assert target["cagr_basis"] == "fallback_1y"
+    assert target["cagr_basis"] == "unable"
 
 
 def test_standard_brand_keeps_5y_ei_basis() -> None:

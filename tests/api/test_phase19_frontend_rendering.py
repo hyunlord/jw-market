@@ -67,14 +67,14 @@ def test_winnerf_a_plus_2024_frontend_chart_uses_backend_target_row() -> None:
         browser.close()
 
 
-def test_prelaunch_cagr_is_null_and_ei_uses_explicit_fallback() -> None:
-    """Pre-launch brands keep 5y CAGR null while EI uses the explicit Phase 20 fallback."""
+def test_prelaunch_cagr_and_ei_stay_null_without_1y_fallback() -> None:
+    """Pre-launch brands keep 5y CAGR and EI null after PL removed 1y fallback."""
     brand = urllib.parse.quote("위너프A+")
     payload = get_api(f"/api/cause/{brand}?view=competitive_dynamics&source=IQVIA&measure=sales")
 
     target = next(row for row in payload["data"]["ei_ms_matrix"]["data"] if row.get("is_target"))
 
     assert target["cagr_5y_pct"] is None
-    assert target["ei"] is not None
-    assert target["ei_5y"] is not None
-    assert target["ei_basis"] == "fallback_1y"
+    assert target["ei"] is None
+    assert target["ei_5y"] is None
+    assert target["ei_basis"] == "unable"
