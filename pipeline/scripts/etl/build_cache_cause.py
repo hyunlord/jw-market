@@ -211,7 +211,13 @@ def _stacked_ranking(
                 }
             )
         for index, row in enumerate(selected, start=1):
-            row["rank"] = row["rank"] or index
+            if row.get("rank"):
+                continue
+            # Catalog-only target rows can be present before launch with zero
+            # value. They should remain visible for continuity, but they are
+            # not ranked market participants for that year.
+            if row.get("is_others") or (safe_float(row.get("value")) or 0.0) > 0:
+                row["rank"] = index
         yearly.append({"year": year, "rankings": selected})
     return {"years": years, "yearly": yearly}
 
