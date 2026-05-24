@@ -116,11 +116,16 @@ def ms_change_yoy_from_history(metric_history: dict | None, source: str) -> floa
     return safe_float(recent) - safe_float(previous)
 
 
-def source_card_payload(row: dict) -> dict:
+def source_card_payload(row: dict, market_recent: float | None = None) -> dict:
     history = decode_json(row.get("metric_history"))
     recent = metric_recent(history)
     movement = movement_pct_from_history(history)
     source = row.get("source")
+    value_recent = safe_float(recent.get("raw_value"))
+    if market_recent and market_recent > 0 and value_recent is not None:
+        ms_recent = round(value_recent / market_recent * 100, 4)
+    else:
+        ms_recent = safe_float(recent.get("ms"))
     ym_yoy = yoy_pct_from_history(history, source)
     mat_yoy = safe_float(recent.get("yoy_mat"))
     if mat_yoy in (None, 0.0):
@@ -131,8 +136,8 @@ def source_card_payload(row: dict) -> dict:
     if ms_change_yoy in (None, 0.0):
         ms_change_yoy = ms_change_yoy_from_history(history, source)
     return {
-        "value_recent": safe_float(recent.get("raw_value")),
-        "ms_recent_pct": safe_float(recent.get("ms")),
+        "value_recent": value_recent,
+        "ms_recent_pct": ms_recent,
         "gr_mom_pct": movement if row.get("source") == "ubist" else safe_float(recent.get("mom")),
         "gr_qoq_pct": movement if row.get("source") == "iqvia_nsa" else safe_float(recent.get("qoq")),
         "gr_yoy_pct": safe_float(recent.get("yoy")) if safe_float(recent.get("yoy")) is not None else ym_yoy,
@@ -222,11 +227,15 @@ def build_brand_card(
     market_metric = market_rows.get((preferred.get("ml_id"), preferred.get("source"), "sales"), {})
     market_series = decode_json(market_metric.get("market_size_series"))
     market_recent = series_latest_number(market_series)
-    sources_data = {
-        "UBIST" if row["source"] == "ubist" else "IQVIA": source_card_payload(row)
-        for row in sales_rows
-    }
+    source_payloads: dict[str, dict] = {}
+    for row in sales_rows:
+        row_market_metric = market_rows.get((row.get("ml_id"), row.get("source"), "sales"), {})
+        row_market_series = decode_json(row_market_metric.get("market_size_series"))
+        row_market_recent = series_latest_number(row_market_series)
+        source_payloads["UBIST" if row["source"] == "ubist" else "IQVIA"] = source_card_payload(row, row_market_recent)
+    sources_data = source_payloads
     default_source = "UBIST" if "UBIST" in sources_data else (next(iter(sources_data.keys()), None))
+    preferred_payload = source_card_payload(preferred, market_recent) if preferred else {}
     brand_name = brand_row["brand"]
     meta = BRAND_META_BY_NAME.get(brand_name)
     meta_sources = list(meta.sources) if meta else []
@@ -266,13 +275,13 @@ def build_brand_card(
         "sources": sources,
         "front": {
             "value_recent": safe_float(recent.get("raw_value")),
-            "ms_recent_pct": safe_float(recent.get("ms")),
-            "gr_mom_pct": source_card_payload(preferred).get("gr_mom_pct") if preferred else None,
-            "gr_qoq_pct": source_card_payload(preferred).get("gr_qoq_pct") if preferred else safe_float(recent.get("qoq")),
-            "gr_yoy_pct": source_card_payload(preferred).get("gr_yoy_pct") if preferred else safe_float(recent.get("yoy")),
-            "gr_yoy_mat_pct": source_card_payload(preferred).get("gr_yoy_mat_pct") if preferred else None,
-            "gr_yoy_ym_pct": source_card_payload(preferred).get("gr_yoy_ym_pct") if preferred else None,
-            "ms_change_yoy_pct": source_card_payload(preferred).get("ms_change_yoy_pct") if preferred else None,
+            "ms_recent_pct": preferred_payload.get("ms_recent_pct"),
+            "gr_mom_pct": preferred_payload.get("gr_mom_pct") if preferred else None,
+            "gr_qoq_pct": preferred_payload.get("gr_qoq_pct") if preferred else safe_float(recent.get("qoq")),
+            "gr_yoy_pct": preferred_payload.get("gr_yoy_pct") if preferred else safe_float(recent.get("yoy")),
+            "gr_yoy_mat_pct": preferred_payload.get("gr_yoy_mat_pct") if preferred else None,
+            "gr_yoy_ym_pct": preferred_payload.get("gr_yoy_ym_pct") if preferred else None,
+            "ms_change_yoy_pct": preferred_payload.get("ms_change_yoy_pct") if preferred else None,
             "sources_data": sources_data,
             "default_source": default_source,
         },

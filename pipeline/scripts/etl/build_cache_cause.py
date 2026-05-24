@@ -756,6 +756,24 @@ def _display_brand_rows(
             }
         )
 
+    market_total = optional_float(series_latest_number(market_series)) if market_series else None
+    if market_total is None or market_total <= 0:
+        market_total = sum(row["value_recent"] for row in normalized)
+    if market_total and market_total > 0:
+        for row in normalized:
+            share = round(row["value_recent"] / market_total * 100, 4)
+            row["share_pct"] = share
+            row["ms_pct"] = share
+            row["ms_recent_pct"] = share
+
+    ranked = [
+        row
+        for row in sorted(normalized, key=lambda item: item["value_recent"], reverse=True)
+        if row["value_recent"] > 0
+    ]
+    for index, row in enumerate(ranked, start=1):
+        row["rank"] = index
+
     target = next((row for row in normalized if row["is_target"]), None)
     target_id = row_identity(target, "brand")
     competitors = [
@@ -1333,10 +1351,10 @@ def build_response(
                 "brand_cagr_pct": optional_float(target_display.get("brand_cagr_pct")),
                 "market_cagr_pct": optional_float(target_display.get("market_cagr_pct")),
                 "target_momentum": optional_float(target_display.get("momentum_score")),
-                "target_rank": target_recent.get("rank"),
-                "target_share_pct": safe_float(target_recent.get("ms")),
+                "target_rank": target_display.get("rank"),
+                "target_share_pct": safe_float(target_display.get("share_pct")),
                 "brand_value_recent": safe_float(recent.get("raw_value")),
-                "brand_share_pct": safe_float(recent.get("ms")),
+                "brand_share_pct": safe_float(target_display.get("share_pct")),
             },
             "sources_data": {
                 **latest_market_series_payload(market_series),
