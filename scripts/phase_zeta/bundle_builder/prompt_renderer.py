@@ -20,13 +20,22 @@ def _number(value, decimals=2):
         return "-"
 
 
-def _percent(value):
+def format_percent(value, kind="change"):
     if value is None:
-        return "-"
+        return "N/A"
     try:
-        return f"{float(value):+.2f}%"
+        number = float(value)
     except Exception:
-        return "-"
+        return "N/A"
+    if kind == "ratio":
+        return f"{number:.2f}%"
+    sign = "+" if number >= 0 else ""
+    return f"{sign}{number:.2f}%"
+
+
+def _percent(value, kind="change"):
+    formatted = format_percent(value, kind=kind)
+    return "-" if formatted == "N/A" else formatted
 
 
 def _clean_article_text(text):
@@ -76,9 +85,9 @@ def _render_v1_1(bundle: dict) -> str:
         for month, point in target_history.items():
             lines.append(
                 "| "
-                f"{month} | {_number(point.get('raw_value'))} | {_percent(point.get('ms_pct'))} | "
-                f"{point.get('rank') or '-'} | {_percent(point.get('mom_pct'))} | "
-                f"{_percent(point.get('yoy_pct'))} | {_percent(point.get('mat_yoy_pct'))} |"
+                f"{month} | {_number(point.get('raw_value'))} | {_percent(point.get('ms_pct'), kind='ratio')} | "
+                f"{point.get('rank') or '-'} | {_percent(point.get('mom_pct'), kind='change')} | "
+                f"{_percent(point.get('yoy_pct'), kind='change')} | {_percent(point.get('mat_yoy_pct'), kind='change')} |"
             )
         mat = view["target_brand_metric"].get("mat_12m_absolute") or {}
         if mat.get("latest_period"):
@@ -91,7 +100,7 @@ def _render_v1_1(bundle: dict) -> str:
                 "",
                 "KPI 부가:",
                 f"- EI: {_number(extras.get('ei'))} (basis: {extras.get('ei_basis') or '-'})",
-                f"- Brand CAGR 5y: {_percent(extras.get('brand_cagr_5y_pct'))} / Market CAGR 5y: {_percent(extras.get('market_cagr_5y_pct'))}",
+                f"- Brand CAGR 5y: {_percent(extras.get('brand_cagr_5y_pct'), kind='change')} / Market CAGR 5y: {_percent(extras.get('market_cagr_5y_pct'), kind='change')}",
                 f"- Momentum: {_number(extras.get('momentum_score'), 4)}",
                 "",
                 "#### 시장 상위 5 (선택 brand 제외)",
@@ -105,8 +114,8 @@ def _render_v1_1(bundle: dict) -> str:
             lines.append(
                 "| "
                 f"{comp.get('rank_in_market') or '-'} | {comp['brand_name']} | {_number(latest_point.get('raw_value'))} | "
-                f"{_percent(latest_point.get('ms_pct'))} | {_number(comp_extra.get('ei'))} | "
-                f"{_percent(comp_extra.get('brand_cagr_5y_pct'))} | {_number(comp_extra.get('momentum_score'), 4)} |"
+                f"{_percent(latest_point.get('ms_pct'), kind='ratio')} | {_number(comp_extra.get('ei'))} | "
+                f"{_percent(comp_extra.get('brand_cagr_5y_pct'), kind='change')} | {_number(comp_extra.get('momentum_score'), 4)} |"
             )
 
         rows = view.get("channel_breakdown", {}).get("top5_in_channel") or []
@@ -117,7 +126,7 @@ def _render_v1_1(bundle: dict) -> str:
             for row in rows:
                 suffix = " (target)" if row.get("is_target") else ""
                 lines.append(
-                    f"| {row.get('rank') or '-'} | {row.get('brand')}{suffix} | {_number(row.get('raw_value'))} | {_percent(row.get('ms_pct'))} |"
+                    f"| {row.get('rank') or '-'} | {row.get('brand')}{suffix} | {_number(row.get('raw_value'))} | {_percent(row.get('ms_pct'), kind='ratio')} |"
                 )
         else:
             lines.append("- 전체 채널 top5 정보 없음")
