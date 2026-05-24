@@ -69,3 +69,27 @@ def test_cli_narrative(tmp_path, config_path):
     )
     assert result.returncode == 0, result.stderr
     assert out.with_suffix(".narrative.md").exists()
+
+
+def test_cli_v1_1_version_defaults(tmp_path):
+    out = tmp_path / "out_v1_1.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/phase_zeta/build_brand_bundle.py",
+            "--brand",
+            "리바로",
+            "--snapshot-at",
+            "2026-05-25T08:00:00+09:00",
+            "--version",
+            "v1_1",
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    bundle = json.loads(out.read_text(encoding="utf-8"))
+    assert bundle["bundle_meta"]["config_version"] == "phase_zeta_v1_1"
+    assert "market_views" in bundle

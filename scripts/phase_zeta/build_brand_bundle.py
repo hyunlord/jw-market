@@ -32,7 +32,8 @@ def main():
     parser.add_argument("--brand", help="Single brand name")
     parser.add_argument("--brands-from", help="File with brand names (one per line)")
     parser.add_argument("--snapshot-at", required=True, help="ISO 8601 datetime with tz")
-    parser.add_argument("--config", required=True, help="YAML config path")
+    parser.add_argument("--config", help="YAML config path")
+    parser.add_argument("--version", choices=["v1", "v1_1"], default="v1", help="Config version shortcut")
     parser.add_argument("--catalog", default="docs/crawl/_catalog.json")
     parser.add_argument("--out", help="Single output file")
     parser.add_argument("--out-dir", help="Output dir for --brands-from")
@@ -46,7 +47,11 @@ def main():
     if args.brands_from and not args.out_dir:
         parser.error("--out-dir required for --brands-from")
 
-    config = BundleConfig.from_yaml(args.config)
+    config_path = args.config
+    if not config_path:
+        base = Path(__file__).resolve().parent / "configs"
+        config_path = str(base / ("phase_zeta_v1_1.yaml" if args.version == "v1_1" else "phase_zeta_v1.yaml"))
+    config = BundleConfig.from_yaml(config_path)
     snapshot_at = datetime.fromisoformat(args.snapshot_at)
     brands = [args.brand] if args.brand else [
         b.strip() for b in Path(args.brands_from).read_text(encoding="utf-8").splitlines() if b.strip()
@@ -76,9 +81,14 @@ def main():
                     narrative_path.write_text(render_narrative(bundle, stage="all"), encoding="utf-8")
                     result["narrative"] = str(narrative_path)
                 results.append(result)
+                event_count = bundle["bundle_meta"]["stats"].get(
+                    "event_count_direct",
+                    bundle["bundle_meta"]["stats"].get("event_count_brand_centric", 0)
+                    + bundle["bundle_meta"]["stats"].get("event_count_market_trend", 0),
+                )
                 print(
                     f"[OK] {brand}: hash={bundle['bundle_meta']['bundle_hash'][:16]}... "
-                    f"events={bundle['bundle_meta']['stats']['event_count_direct']}",
+                    f"events={event_count}",
                     file=sys.stderr,
                 )
             except Exception as exc:

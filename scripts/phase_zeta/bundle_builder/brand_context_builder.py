@@ -5,6 +5,13 @@ import re
 from pathlib import Path
 from typing import Dict
 
+from .catalog_db_loader import (
+    detect_available_sources,
+    load_brand_from_catalog,
+    load_cd_id_for_brand,
+    load_market_from_catalog,
+)
+
 
 def _as_sql_datetime(snapshot_at) -> str:
     return snapshot_at.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
@@ -35,8 +42,37 @@ def _parse_description(description: str) -> dict:
 
 def build_brand_context(
     brand: str,
+    db_conn=None,
     catalog_path: str = "docs/crawl/_catalog.json",
 ) -> Dict:
+    if isinstance(db_conn, str):
+        catalog_path = db_conn
+        db_conn = None
+
+    if db_conn is not None:
+        brand_row = load_brand_from_catalog(brand, db_conn)
+        ml_id = brand_row.get("ml_id")
+        market = load_market_from_catalog(ml_id, db_conn) if ml_id else {}
+        cd_id = load_cd_id_for_brand(brand, db_conn)
+        return {
+            "name": brand_row.get("name") or brand,
+            "english_name": brand_row.get("english_name"),
+            "company": brand_row.get("manufacturer"),
+            "description": brand_row.get("notes"),
+            "search_keywords": brand_row.get("search_keywords") or {},
+            "is_jw": bool(brand_row.get("is_jw")),
+            "is_target": bool(brand_row.get("is_target")),
+            "ml_id": ml_id,
+            "cd_id": cd_id,
+            "mkt_team": brand_row.get("mkt_team"),
+            "atc4_code": brand_row.get("atc4_code") or market.get("atc4_code"),
+            "ml_name": market.get("ml_name"),
+            "available_sources": detect_available_sources(brand, db_conn),
+            "molecule": brand_row.get("molecule"),
+            "class": brand_row.get("class"),
+            "catalog_competitors": brand_row.get("catalog_competitors") or [],
+        }
+
     catalog = json.loads(Path(catalog_path).read_text(encoding="utf-8"))
     if brand not in catalog:
         raise ValueError(f"brand not found in catalog: {brand}")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 from .config import EventConfig
 
@@ -34,7 +34,7 @@ def _event_row(row, include_reason=True, include_mirror=False):
     return base
 
 
-def build_event_bundle(
+def _build_event_bundle_v1(
     brand: str,
     db_conn,
     snapshot_at,
@@ -106,3 +106,105 @@ def build_event_bundle(
         "cross_match_events": cross_events,
         "tag_distribution": tag_distribution,
     }
+
+
+def is_brand_centric(
+    event: dict,
+    brand_korean: str,
+    brand_english: Optional[str],
+) -> Tuple[bool, str]:
+    fields = (("title", event.get("title") or ""), ("summary", event.get("summary") or ""))
+    for field, text in fields:
+        if brand_korean and brand_korean in text:
+            return True, f"{brand_korean} in {field}"
+        if brand_english and brand_english.upper() in text.upper():
+            return True, f"{brand_english} in {field}"
+    return False, ""
+
+
+def _dedup_by_date(events: list[dict]) -> list[dict]:
+    by_date = {}
+    for event in events:
+        key = event["published_date"]
+        existing = by_date.get(key)
+        if existing is None or (event["score"], event["news_id"]) > (existing["score"], existing["news_id"]):
+            by_date[key] = event
+    return sorted(by_date.values(), key=lambda item: (-item["score"], item["published_date"] or "", item["news_id"]))
+
+
+def _build_event_bundle_v1_1(
+    brand_context: dict,
+    snapshot_at,
+    config,
+    db_conn,
+) -> Dict:
+    event_config = config.event
+    brand = brand_context["name"]
+    snapshot_date = snapshot_at.date().isoformat()
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
+                   s.summary, s.reason, n.source_name
+            FROM event_brand_scores s
+            JOIN news_raw n ON s.news_id = n.news_id
+            WHERE (s.brand_canonical = %s OR s.brand_name = %s)
+              AND s.derivation = 'llm_direct'
+              AND s.source_processor = 'workflow_196_optionB'
+              AND s.score >= %s
+              AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
+              AND n.published_date <= %s
+            ORDER BY s.score DESC, n.published_date DESC, s.news_id ASC
+            LIMIT %s
+            """,
+            (
+                brand,
+                brand,
+                event_config.min_score_direct,
+                snapshot_date,
+                event_config.lookback_months,
+                snapshot_date,
+                event_config.max_count_direct * 3,
+            ),
+        )
+        direct_rows = cur.fetchall()
+
+    direct_events = [_event_row(row) for row in direct_rows]
+    if (event_config.deduplication or {}).get("enabled", False):
+        direct_events = _dedup_by_date(direct_events)
+    direct_events = direct_events[: event_config.max_count_direct]
+
+    brand_english = None
+    keywords = brand_context.get("search_keywords") or {}
+    english_values = keywords.get("약 영문명") or []
+    if english_values:
+        brand_english = english_values[0]
+    brand_centric = []
+    market_trend = []
+    for event in direct_events:
+        is_centric, signal = is_brand_centric(event, brand, brand_english)
+        enriched = {**event, "is_brand_centric": is_centric, "matching_signal": signal}
+        if is_centric:
+            brand_centric.append(enriched)
+        else:
+            market_trend.append(enriched)
+
+    cross = _build_event_bundle_v1(brand, db_conn, snapshot_at, event_config)["cross_match_events"]
+    counts = Counter(event["tag"] for event in brand_centric + market_trend)
+    return {
+        "events_brand_centric": brand_centric[: event_config.brand_centric_max_count],
+        "events_market_trend": market_trend[: event_config.market_trend_max_count],
+        "cross_match_events": cross,
+        "tag_distribution": {tag: int(counts.get(tag, 0)) for tag in TAGS},
+    }
+
+
+def build_event_bundle(
+    brand_or_context,
+    db_conn_or_snapshot,
+    snapshot_or_config,
+    config_or_db=None,
+) -> Dict:
+    if isinstance(brand_or_context, dict):
+        return _build_event_bundle_v1_1(brand_or_context, db_conn_or_snapshot, snapshot_or_config, config_or_db)
+    return _build_event_bundle_v1(brand_or_context, db_conn_or_snapshot, snapshot_or_config, config_or_db)

@@ -1,0 +1,90 @@
+config_version: phase_zeta_v1_1
+builder_version: "1.1.0"
+
+event:
+  lookback_months: 6
+  min_score_direct: 50
+  max_count_direct: 30
+  min_score_cross: 50
+  max_count_cross: 5
+  sort_order:
+    - field: score
+      direction: desc
+    - field: published_date
+      direction: desc
+    - field: news_id
+      direction: asc
+  deduplication:
+    enabled: true
+    by: [brand, published_date]
+    keep: top_score
+  brand_centric_classification:
+    enabled: true
+    method: title_or_summary_contains_brand_name
+  brand_centric_max_count: 15
+  market_trend_max_count: 15
+
+market:
+  lookback_months: 6
+  include_mat_12m_absolute: true
+  views_matrix:
+    - view: market_landscape
+      sources:
+        - source: UBIST
+          measures: [sales, volume, unit]
+        - source: IQVIA
+          measures: [sales, unit, dosage_unit, counting_unit]
+    - view: competitive_dynamics
+      sources:
+        - source: UBIST
+          measures: [sales, volume, unit]
+        - source: IQVIA
+          measures: [sales, unit, dosage_unit, counting_unit]
+  ms_computation:
+    primary: cache_cause
+    fallback: raw_recompute
+    forbidden: mart_metric_history_ms
+  atc4_source: catalog_strategic_ml_market
+  include_market_size: true
+  include_hhi: true
+  include_channel_breakdown: true
+  channel_filter: "전체"
+
+competitor:
+  selection_method: market_sales_top_n
+  top_n: 5
+  per_source: true
+  events:
+    enabled: true
+    lookback_months: 6
+    min_score: 60
+    max_count_per_competitor: 5
+    sort_order:
+      - field: score
+        direction: desc
+      - field: published_date
+        direction: desc
+
+forecast_simulation:
+  enabled: false
+  source: cache_deep_analysis
+  fields:
+    - forecast.brands
+    - simulation.horizon_ci_levels
+    - simulation.momentum
+    - simulation.anomaly_signals
+
+pilot_brands_file: pilot_brands.txt
+
+number_format:
+  raw_value_display: comma_separated
+  forbid_unit_conversion: true
+  decimal_places: 2
+  percent_decimal_places: 2
+
+db:
+  host: localhost
+  port: 3308
+  user_env: DB_USER
+  password_env: DB_ROOT_PASSWORD
+  database: jw_mart

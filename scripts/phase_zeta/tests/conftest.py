@@ -20,10 +20,22 @@ def config_path():
 
 
 @pytest.fixture(scope="session")
+def config_v1_1_path():
+    return PHASE_ZETA_ROOT / "configs" / "phase_zeta_v1_1.yaml"
+
+
+@pytest.fixture(scope="session")
 def config(config_path):
     from bundle_builder import BundleConfig
 
     return BundleConfig.from_yaml(str(config_path))
+
+
+@pytest.fixture(scope="session")
+def config_v1_1(config_v1_1_path):
+    from bundle_builder import BundleConfig
+
+    return BundleConfig.from_yaml(str(config_v1_1_path))
 
 
 @pytest.fixture(scope="session")
