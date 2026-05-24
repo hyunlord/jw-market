@@ -8,6 +8,7 @@ import json
 import math
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -234,6 +235,7 @@ def decode_json(value: Any) -> Any:
         return {}
 
 
+@lru_cache(maxsize=None)
 def period_key(value: str) -> tuple[int, int, int, str]:
     text = str(value)
     match = re.match(r"^(\d{4})-(\d{2})$", text)

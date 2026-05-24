@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+from functools import lru_cache
 from typing import Any
 
 from cache_build_common import (
@@ -19,7 +20,6 @@ from cache_build_common import (
     ml_to_strategy,
     mariadb_connect,
     parser,
-    payload_size,
     period_key,
     optional_float,
     safe_float,
@@ -28,8 +28,11 @@ from cache_build_common import (
     source_list,
 )
 
+period_key = lru_cache(maxsize=None)(period_key)
+
 
 CHANNELS_5 = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
+IQVIA_CHANNELS = ["전체", "KHPA", "KCPA", "KPA"]
 LEVEL_FIELD_BY_LABEL = {
     "Class": "class",
     "Class 1": "class",
@@ -93,15 +96,20 @@ def _company_name(row: dict[str, Any]) -> str:
     return _row_company(row) or "Unknown"
 
 
-def _latest_history_item(row: dict[str, Any]) -> dict[str, Any]:
-    cached = row.get("__latest_history_item")
-    if cached is not None:
-        return cached
+def _metric_history(row: dict[str, Any]) -> dict[str, Any]:
     history = row.get("__metric_history")
     if history is None:
         history = decode_json(row.get("metric_history"))
         row["__metric_history"] = history
-    if not isinstance(history, dict) or not history:
+    return history if isinstance(history, dict) else {}
+
+
+def _latest_history_item(row: dict[str, Any]) -> dict[str, Any]:
+    cached = row.get("__latest_history_item")
+    if cached is not None:
+        return cached
+    history = _metric_history(row)
+    if not history:
         row["__latest_history_item"] = {}
         return {}
     latest_period = sorted(history.keys(), key=period_key)[-1]
@@ -244,12 +252,7 @@ def row_identity(row: dict[str, Any] | None, label_key: str) -> str | None:
 
 
 def _period_value_for_row(row: dict[str, Any], period: str) -> float:
-    history = row.get("__metric_history")
-    if history is None:
-        history = decode_json(row.get("metric_history"))
-        row["__metric_history"] = history
-    if not isinstance(history, dict):
-        return 0.0
+    history = _metric_history(row)
     return _value_from_period_item(history.get(period))
 
 
@@ -274,11 +277,8 @@ def _target_rank_overrides(
     if stats_key not in TARGET_RANK_STATS_CACHE:
         periods_by_year: dict[int, str] = {}
         for row in rows:
-            history = row.get("__metric_history")
-            if history is None:
-                history = decode_json(row.get("metric_history"))
-                row["__metric_history"] = history
-            if not isinstance(history, dict):
+            history = _metric_history(row)
+            if not history:
                 continue
             for period in history:
                 year = _period_year(str(period))
@@ -435,11 +435,8 @@ def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], so
 def _history_periods(rows: list[dict[str, Any]], source: str) -> list[str]:
     periods: set[str] = set()
     for row in rows:
-        history = row.get("__metric_history")
-        if history is None:
-            history = decode_json(row.get("metric_history"))
-            row["__metric_history"] = history
-        if isinstance(history, dict):
+        history = _metric_history(row)
+        if history:
             periods.update(str(period) for period in history.keys())
     ordered = sorted(periods, key=period_key)
     return ordered[-60:] if source == "UBIST" else ordered[-20:]
@@ -516,11 +513,14 @@ def _channel_bucket(raw: Any, source: str) -> str | None:
         if "의원" in text or "보건소" in text or "보건" in text:
             return "의원/보건소"
         return None
-    if text.upper() == "KHPA":
-        return "병원"
-    if text.upper() == "KPA":
-        return "의원/보건소"
+    upper = text.upper()
+    if upper in {"KHPA", "KCPA", "KPA"}:
+        return upper
     return None
+
+
+def _channels_for_source(source: str) -> list[str]:
+    return CHANNELS_5 if source == "UBIST" else IQVIA_CHANNELS
 
 
 def _value_from_period_item(item: Any) -> float:
@@ -553,11 +553,8 @@ def _segment_rows_for_level(
             continue
         grouped.setdefault(name, {period: [0.0] for period in periods})
         if channel == "전체":
-            history = row.get("__metric_history")
-            if history is None:
-                history = decode_json(row.get("metric_history"))
-                row["__metric_history"] = history
-            if isinstance(history, dict):
+            history = _metric_history(row)
+            if history:
                 _add_series(grouped[name], history, periods)
                 _add_series(totals, history, periods)
             continue
@@ -603,6 +600,43 @@ def _segment_rows_for_level(
     return segments
 
 
+def _rows_for_channel(rows: list[dict[str, Any]], source: str, channel: str, periods: list[str]) -> list[dict[str, Any]]:
+    if channel == "전체":
+        return rows
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        channel_data = row.get("__channel_data")
+        if channel_data is None:
+            channel_data = decode_json(row.get("channel_data"))
+            row["__channel_data"] = channel_data
+
+        history = {period: 0.0 for period in periods}
+        if isinstance(channel_data, dict):
+            for raw_channel, series in channel_data.items():
+                if _channel_bucket(raw_channel, source) != channel or not isinstance(series, dict):
+                    continue
+                for period in periods:
+                    history[period] += _value_from_period_item(series.get(period))
+
+        clone = dict(row)
+        clone["metric_history"] = history
+        clone["__metric_history"] = history
+        clone.pop("__latest_history_item", None)
+        clone.pop("__series_cache", None)
+        filtered.append(clone)
+    return filtered
+
+
+def _total_series_for_rows(rows: list[dict[str, Any]], periods: list[str]) -> list[float]:
+    totals = [0.0 for _ in periods]
+    for row in rows:
+        series = _series_for_row(row, periods, scaled_sales=True)
+        for idx, value in enumerate(series):
+            totals[idx] += value
+    return [round(value, 4) for value in totals]
+
+
 def _build_analysis_levels_from_mart(
     *,
     rows: list[dict[str, Any]],
@@ -617,6 +651,7 @@ def _build_analysis_levels_from_mart(
         return _normalize_analysis_levels({}, fallback_level_top5, source)
     periods = _history_periods(rows, source)
     data: dict[str, Any] = {}
+    channels = _channels_for_source(source)
     for level in levels:
         by_channel = {
             channel: _segment_rows_for_level(
@@ -627,12 +662,12 @@ def _build_analysis_levels_from_mart(
                 channel=channel,
                 target_name=target_name if level == "Brand" else None,
             )
-            for channel in CHANNELS_5
+            for channel in channels
         }
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
     return {
         "levels": levels,
-        "channels": CHANNELS_5,
+        "channels": channels,
         "period_unit": _period_unit_ko(source),
         "periods_monthly": periods if source == "UBIST" else [],
         "periods_quarterly": periods if source == "IQVIA" else [],
@@ -671,12 +706,7 @@ def _series_for_row(row: dict[str, Any], periods: list[str], *, scaled_sales: bo
     series_cache = row.setdefault("__series_cache", {})
     if cache_key in series_cache:
         return series_cache[cache_key]
-    history = row.get("__metric_history")
-    if history is None:
-        history = decode_json(row.get("metric_history"))
-        row["__metric_history"] = history
-    if not isinstance(history, dict):
-        history = {}
+    history = _metric_history(row)
     values = []
     for period in periods:
         value = _value_from_period_item(history.get(period))
@@ -713,7 +743,7 @@ def _display_brand_rows(
         share = safe_float(recent.get("ms")) or 0.0
         cache_key = (ei_market_key if ei_market_key is not None else id(market_series), row.get("id") or row.get("brand_key") or brand)
         if cache_key not in EI_META_CACHE:
-            EI_META_CACHE[cache_key] = calculate_ei_with_fallback(decode_json(row.get("metric_history")), market_series)
+            EI_META_CACHE[cache_key] = calculate_ei_with_fallback(_metric_history(row), market_series)
         ei_meta = EI_META_CACHE[cache_key]
         cagr_5y = first_float(extended.get("cagr_5y"))
         cagr_5y_pct = round(cagr_5y * 100, 4) if cagr_5y is not None else None
@@ -913,10 +943,7 @@ def _company_waterfall(entries: list[dict[str, Any]], *, target_company: str | N
 def _history_value_at(row: dict[str, Any], period: str | None) -> float:
     if not period:
         return 0.0
-    history = row.get("__metric_history")
-    if history is None:
-        history = decode_json(row.get("metric_history"))
-        row["__metric_history"] = history
+    history = _metric_history(row)
     return _value_from_period_item((history or {}).get(period)) if isinstance(history, dict) else 0.0
 
 
@@ -1049,18 +1076,34 @@ def _target_customer_competition(
     target_name: str | None,
     periods: list[str],
 ) -> dict[str, Any]:
-    targets = ["전체", "상급종병", "종병", "병원", "의원/보건소"] if source == "UBIST" else ["전체", "KHPA", "KCPA", "KPA"]
-    target_type = "진료과" if source == "UBIST" else "채널"
+    targets = _channels_for_source(source)
+    target_type = "채널"
     period_tail = periods[-10:]
-    row_by_brand = {_row_brand(row): row for row in rows if _row_brand(row)}
     views = []
     for target in targets:
-        selected = _display_brand_rows(rows, target_name=target_name, top_n=5, include_others=True)
+        channel_rows = _rows_for_channel(rows, source, target, periods)
+        selected = _display_brand_rows(channel_rows, target_name=target_name, top_n=5, include_others=True)
+        row_by_brand = {_row_brand(row): row for row in channel_rows if _row_brand(row)}
+        total_series = _total_series_for_rows(channel_rows, period_tail)
+        selected_series: list[list[float]] = []
         trend_brands = []
         composition = []
         for item in selected:
             source_row = row_by_brand.get(item.get("brand"))
-            value_series = _series_for_row(source_row or {}, period_tail, scaled_sales=True) if source_row else [0.0] * len(period_tail)
+            if item.get("is_others"):
+                value_series = [
+                    round(
+                        max(
+                            0.0,
+                            total - sum(series[idx] if idx < len(series) else 0.0 for series in selected_series),
+                        ),
+                        4,
+                    )
+                    for idx, total in enumerate(total_series)
+                ]
+            else:
+                value_series = _series_for_row(source_row or {}, period_tail, scaled_sales=True) if source_row else [0.0] * len(period_tail)
+                selected_series.append(value_series)
             trend_brands.append(
                 {
                     "brand": item.get("brand"),
@@ -1104,17 +1147,47 @@ def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]
     periods = (analysis_levels.get("periods_monthly") or analysis_levels.get("periods_quarterly") or [])[-10:]
     available_levels = [{"key": level, "label": level} for level in levels]
     by_level = {}
-    brand_entries = _display_brand_rows(rows, target_name=target_name, top_n=5, include_others=True)
-    row_by_brand = {_row_brand(row): row for row in rows if _row_brand(row)}
+    rows_by_level: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for level in levels:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            segment_name = _dimension_value(row, level)
+            if segment_name:
+                grouped.setdefault(segment_name, []).append(row)
+        rows_by_level[level] = grouped
     for level in levels:
         level_segments = (analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or [])[:5]
         all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or []
         values = []
         for index, segment in enumerate(level_segments, start=1):
+            segment_name = segment.get("name") or f"{level} {index}"
+            segment_rows = rows_by_level.get(level, {}).get(segment_name, [])
+            segment_brand_entries = _display_brand_rows(
+                segment_rows,
+                target_name=target_name,
+                top_n=5,
+                include_others=True,
+            ) if segment_rows else []
+            segment_row_by_brand = {_row_brand(row): row for row in segment_rows if _row_brand(row)}
+            segment_total_series = segment.get("value_series") or _total_series_for_rows(segment_rows, periods)
+            selected_series: list[list[float]] = []
             brands_in_value = []
-            for entry in brand_entries:
-                source_row = row_by_brand.get(entry.get("brand"))
-                series = _series_for_row(source_row or {}, periods, scaled_sales=True) if source_row else [0.0] * len(periods)
+            for entry in segment_brand_entries:
+                source_row = segment_row_by_brand.get(entry.get("brand"))
+                if entry.get("is_others"):
+                    series = [
+                        round(
+                            max(
+                                0.0,
+                                total - sum(item[idx] if idx < len(item) else 0.0 for item in selected_series),
+                            ),
+                            4,
+                        )
+                        for idx, total in enumerate(segment_total_series)
+                    ]
+                else:
+                    series = _series_for_row(source_row or {}, periods, scaled_sales=True) if source_row else [0.0] * len(periods)
+                    selected_series.append(series)
                 brands_in_value.append(
                     {
                         "brand": entry.get("brand"),
@@ -1122,16 +1195,18 @@ def _level_top5_trend(analysis_levels: dict[str, Any], rows: list[dict[str, Any]
                         "is_jw": entry.get("is_jw"),
                         "is_others": entry.get("is_others"),
                         "ms_recent_pct": safe_float(entry.get("share_pct")) or 0.0,
+                        "value_recent": safe_float(entry.get("value_recent")) or 0.0,
+                        "raw_value": safe_float(entry.get("raw_value")) or safe_float(entry.get("value_recent")) or 0.0,
                         "value_recent_100m": round((safe_float(entry.get("value_recent")) or 0.0) / 100_000_000, 4),
                         "volume_recent": safe_float(entry.get("value_recent")) or 0.0,
                         "value_series_10pt": series,
                         "volume_series_10pt": series,
                     }
                 )
-            total_value = sum(item.get("value_recent_100m", 0.0) for item in brands_in_value) * 100_000_000
+            total_value = safe_float(segment_total_series[-1] if segment_total_series else None) or 0.0
             values.append(
                 {
-                    "value": segment.get("name") or f"{level} {index}",
+                    "value": segment_name,
                     "is_default": index == 1,
                     "total_value": total_value,
                     "total_volume": total_value,
@@ -1215,7 +1290,7 @@ def market_yoy_series(series: dict[str, Any]) -> dict[str, float | None]:
 def top3_share(rows: list[dict[str, Any]]) -> float | None:
     shares = []
     for row in rows:
-        recent = metric_recent(decode_json(row.get("metric_history")))
+        recent = metric_recent(_metric_history(row))
         shares.append(safe_float(recent.get("ms")))
     if not shares:
         return None
@@ -1263,7 +1338,7 @@ def build_response(
     company_ranking = decode_json(market_row.get("company_ranking_stacked"))
     level_top5 = decode_json(market_row.get("level_top5_trend"))
     catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
-    analysis_view_id = view_source_id if str(view_source_id).startswith("ml_") else market_catalog_row.get("ml_id") if market_catalog_row else None
+    analysis_view_id = view_source_id
     analysis_cache_key = (analysis_view_id, source_api, measure)
     if analysis_cache_key not in ANALYSIS_LEVELS_CACHE:
         ANALYSIS_LEVELS_CACHE[analysis_cache_key] = _build_analysis_levels_from_mart(
@@ -1447,14 +1522,15 @@ def main() -> None:
             market_catalog_row=market,
             strategic_brand=strategic_brand,
         )
+        response_json = dump_payload(response)
         out = {
             "brand": row["brand_name"],
             "view_type": "market_landscape",
             "source": source,
             "measure": row["measure"],
             "market_id": market_id,
-            "response_json": dump_payload(response),
-            "payload_size": payload_size(response),
+            "response_json": response_json,
+            "payload_size": len(response_json.encode("utf-8")),
         }
         batch.append(tuple(out[col] for col in columns))
         inserted += 1
@@ -1483,14 +1559,15 @@ def main() -> None:
             market_catalog_row=ml,
             strategic_brand=strategic_brand,
         )
+        response_json = dump_payload(response)
         out = {
             "brand": row["brand_name"],
             "view_type": "competitive_dynamics",
             "source": source,
             "measure": row["measure"],
             "market_id": market_id,
-            "response_json": dump_payload(response),
-            "payload_size": payload_size(response),
+            "response_json": response_json,
+            "payload_size": len(response_json.encode("utf-8")),
         }
         batch.append(tuple(out[col] for col in columns))
         inserted += 1
