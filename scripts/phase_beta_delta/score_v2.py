@@ -29,6 +29,9 @@ DEFAULT_WORKFLOW_ID = 196
 DEFAULT_TIMEOUT_SEC = 60
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_WORKERS = 4
+ASSUMED_MODEL_FOR_COST = "gpt-4o-mini"
+ASSUMED_INPUT_USD_PER_1M = 0.150
+ASSUMED_OUTPUT_USD_PER_1M = 0.600
 VALID_TAGS = {"신약/R&D", "정책/규제", "공급/생산", "자본/경영", "외부/트렌드", "기타"}
 
 
@@ -202,6 +205,52 @@ def build_payload(news: dict[str, Any], catalog: dict[str, str], workflow_id: in
     }
 
 
+def estimate_tokens(text: str) -> int:
+    """Conservative token estimate for mixed Korean and English text."""
+
+    return max(1, len(text) // 3)
+
+
+def first_present_number(mapping: dict[str, Any], keys: tuple[str, ...]) -> int | float | None:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, (int, float)):
+            return value
+    return None
+
+
+def build_llm_meta(payload: dict[str, Any], result: dict[str, Any], usage: dict[str, Any], duration: float) -> dict[str, Any]:
+    tokens_in_actual = first_present_number(usage, ("input_tokens", "prompt_tokens", "tokens_in"))
+    tokens_out_actual = first_present_number(usage, ("output_tokens", "completion_tokens", "tokens_out"))
+    cost_actual = first_present_number(usage, ("cost_usd", "total_cost_usd"))
+
+    question = payload.get("question")
+    if not isinstance(question, str):
+        question = json.dumps(payload, ensure_ascii=False)
+    tokens_in_estimated = estimate_tokens(question)
+    tokens_out_estimated = estimate_tokens(json.dumps(result, ensure_ascii=False))
+    cost_estimated = (
+        tokens_in_estimated * ASSUMED_INPUT_USD_PER_1M / 1_000_000
+        + tokens_out_estimated * ASSUMED_OUTPUT_USD_PER_1M / 1_000_000
+    )
+
+    return {
+        "model": usage.get("model") or ASSUMED_MODEL_FOR_COST,
+        "duration_sec": duration,
+        "tokens_in_actual": tokens_in_actual,
+        "tokens_out_actual": tokens_out_actual,
+        "tokens_in_estimated": tokens_in_estimated,
+        "tokens_out_estimated": tokens_out_estimated,
+        "cost_usd_actual": cost_actual,
+        "cost_usd_estimated": cost_estimated,
+        "model_assumed": ASSUMED_MODEL_FOR_COST,
+        # Backward-compatible aliases for existing summary scripts.
+        "tokens_in": tokens_in_actual if tokens_in_actual is not None else tokens_in_estimated,
+        "tokens_out": tokens_out_actual if tokens_out_actual is not None else tokens_out_estimated,
+        "cost_usd": cost_actual if cost_actual is not None else cost_estimated,
+    }
+
+
 def call_workflow(
     session: requests.Session,
     config: RuntimeConfig,
@@ -269,6 +318,7 @@ def score_one(
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     if config.dry_run and not config.genos_token:
+        payload = build_payload(source_news, catalog, config.workflow_id)
         fake = {
             "matches": [],
             "summary": "DRY RUN ONLY: no GENOS_TOKEN provided, workflow not called.",
@@ -291,13 +341,7 @@ def score_one(
         "matches": fake["matches"],
         "summary": fake["summary"],
         "tag": fake["tag"],
-        "llm_meta": {
-            "model": usage.get("model"),
-            "tokens_in": usage.get("input_tokens") or usage.get("prompt_tokens"),
-            "tokens_out": usage.get("output_tokens") or usage.get("completion_tokens"),
-            "duration_sec": duration,
-            "cost_usd": usage.get("cost_usd"),
-        },
+        "llm_meta": build_llm_meta(payload, fake, usage, duration),
     }
     atomic_write_json(scored_path, scored_obj)
 
