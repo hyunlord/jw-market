@@ -10,6 +10,7 @@ from typing import Any
 from cache_build_common import (
     MEASURES_BY_SOURCE,
     api_source,
+    calculate_ei_with_fallback,
     decode_json,
     dump_payload,
     fetch_all,
@@ -42,6 +43,7 @@ LEVEL_FIELD_BY_LABEL = {
     "fish_oil": "fish_oil",
 }
 ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
+EI_META_CACHE: dict[tuple[Any, Any], dict[str, Any]] = {}
 
 
 def _period_year(period: str) -> int | None:
@@ -589,6 +591,8 @@ def _display_brand_rows(
     target_name: str | None,
     top_n: int = 5,
     include_others: bool,
+    market_series: dict[str, Any] | None = None,
+    ei_market_key: Any = None,
 ) -> list[dict[str, Any]]:
     def first_float(*values: Any) -> float | None:
         for value in values:
@@ -607,9 +611,13 @@ def _display_brand_rows(
         is_target = bool(target_name and brand == target_name)
         value_recent = safe_float(recent.get("raw_value") or recent.get("value")) or 0.0
         share = safe_float(recent.get("ms")) or 0.0
+        cache_key = (ei_market_key if ei_market_key is not None else id(market_series), row.get("id") or row.get("brand_key") or brand)
+        if cache_key not in EI_META_CACHE:
+            EI_META_CACHE[cache_key] = calculate_ei_with_fallback(decode_json(row.get("metric_history")), market_series)
+        ei_meta = EI_META_CACHE[cache_key]
         cagr_5y = first_float(extended.get("cagr_5y"))
         cagr_5y_pct = round(cagr_5y * 100, 4) if cagr_5y is not None else None
-        ei_5y = first_float(extended.get("ei_5y"), extended.get("ei"))
+        ei_5y = optional_float(ei_meta.get("ei"))
         momentum_score = first_float(extended.get("momentum_score"))
         growth_contribution = safe_float(
             extended.get("growth_contribution")
@@ -633,6 +641,12 @@ def _display_brand_rows(
                 "ei": ei_5y,
                 "ei_5y": ei_5y,
                 "cagr_5y_pct": cagr_5y_pct,
+                "brand_cagr_pct": optional_float(ei_meta.get("brand_cagr_pct")),
+                "market_cagr_pct": optional_float(ei_meta.get("market_cagr_pct")),
+                "ei_basis": ei_meta.get("basis"),
+                "ei_period_years": ei_meta.get("period_years"),
+                "ei_note": ei_meta.get("note"),
+                "cagr_basis": ei_meta.get("basis"),
                 "momentum_score": momentum_score,
                 "growth_contribution": growth_contribution,
                 "growth_contribution_pct": growth_contribution,
@@ -672,6 +686,12 @@ def _display_brand_rows(
                 "ei": None,
                 "ei_5y": None,
                 "cagr_5y_pct": None,
+                "brand_cagr_pct": None,
+                "market_cagr_pct": None,
+                "ei_basis": None,
+                "ei_period_years": None,
+                "ei_note": None,
+                "cagr_basis": None,
                 "momentum_score": None,
                 "growth_contribution": sum(row["growth_contribution"] for row in others),
                 "growth_contribution_pct": round(100.0 - selected_contribution, 4),
@@ -1149,12 +1169,16 @@ def build_response(
         target_name=brand_row.get("brand_name"),
         top_n=5,
         include_others=False,
+        market_series=market_series,
+        ei_market_key=market_row.get("id"),
     )
     display_entries_with_others = _display_brand_rows(
         sibling_rows,
         target_name=brand_row.get("brand_name"),
         top_n=5,
         include_others=True,
+        market_series=market_series,
+        ei_market_key=market_row.get("id"),
     )
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
     periods = _history_periods(sibling_rows, source_api)
@@ -1196,6 +1220,12 @@ def build_response(
                 "target_brand": target.get("brand_name"),
                 "target_company": target.get("company_name") or ("JW중외제약" if target.get("is_jw") else None),
                 "target_ei": optional_float(target_display.get("ei")),
+                "ei": optional_float(target_display.get("ei")),
+                "ei_basis": target_display.get("ei_basis"),
+                "ei_period_years": target_display.get("ei_period_years"),
+                "ei_note": target_display.get("ei_note"),
+                "brand_cagr_pct": optional_float(target_display.get("brand_cagr_pct")),
+                "market_cagr_pct": optional_float(target_display.get("market_cagr_pct")),
                 "target_momentum": optional_float(target_display.get("momentum_score")),
                 "target_rank": target_recent.get("rank"),
                 "target_share_pct": safe_float(target_recent.get("ms")),

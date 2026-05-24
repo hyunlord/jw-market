@@ -41,6 +41,124 @@ def optional_float(value: Any) -> float | None:
     return number
 
 
+def period_value(item: Any) -> float | None:
+    """Extract the numeric value from a period payload without inventing zero."""
+    if isinstance(item, dict):
+        for key in ("raw_value", "value", "market_size", "sales"):
+            if key in item:
+                return optional_float(item[key])
+        return None
+    return optional_float(item)
+
+
+def annual_totals(series: dict[str, Any] | None) -> list[tuple[int, float]]:
+    """Aggregate monthly or quarterly period series into sorted yearly totals."""
+    totals: dict[int, float] = {}
+    for period, item in (series or {}).items():
+        key = period_key(str(period))
+        year = key[0]
+        if year <= 0:
+            continue
+        value = period_value(item)
+        if value is None:
+            continue
+        totals[year] = totals.get(year, 0.0) + value
+    return sorted(totals.items())
+
+
+def calculate_cagr_v2(start_value: Any, end_value: Any, years: float | int | None) -> float | None:
+    """CAGR using PL-defined zero handling.
+
+    Cases:
+    - start > 0, end > 0: standard CAGR
+    - start > 0, end = 0: -100%
+    - start = 0, end > 0: not computable from this basis
+    - start = 0, end = 0: 0%
+    """
+    start = optional_float(start_value)
+    end = optional_float(end_value)
+    span = optional_float(years)
+    if start is None or end is None or span is None or span <= 0:
+        return None
+    if start == 0 and end == 0:
+        return 0.0
+    if start == 0 and end > 0:
+        return None
+    if start > 0 and end == 0:
+        return -100.0
+    if start < 0 or end < 0:
+        return None
+    return ((end / start) ** (1 / span) - 1) * 100
+
+
+def _window_start(annual: list[tuple[int, float]], end_year: int, target_years: int) -> tuple[int, float] | None:
+    by_year = dict(annual)
+    wanted_year = end_year - target_years
+    if wanted_year in by_year:
+        return wanted_year, by_year[wanted_year]
+    earlier = [(year, value) for year, value in annual if year < end_year]
+    return earlier[0] if earlier else None
+
+
+def calculate_ei_with_fallback(
+    brand_series: dict[str, Any] | None,
+    market_series: dict[str, Any] | None,
+    target_years: int = 5,
+) -> dict[str, Any]:
+    """Calculate EI with PL's 1-year fallback for pre-launch brands."""
+    brand_annual = annual_totals(brand_series)
+    market_annual = annual_totals(market_series)
+    if len(brand_annual) < 2 or len(market_annual) < 2:
+        return {"ei": None, "basis": "no_data", "note": "insufficient history"}
+
+    end_year, brand_end = brand_annual[-1]
+    market_by_year = dict(market_annual)
+    if end_year not in market_by_year:
+        return {"ei": None, "basis": "no_data", "note": "missing market end period"}
+    market_end = market_by_year[end_year]
+
+    brand_start_pair = _window_start(brand_annual, end_year, target_years)
+    market_start_pair = _window_start(market_annual, end_year, target_years)
+    if not brand_start_pair or not market_start_pair:
+        return {"ei": None, "basis": "no_data", "note": "insufficient history"}
+
+    brand_start_year, brand_start = brand_start_pair
+    market_start_year, market_start = market_start_pair
+    standard_years = max(end_year - brand_start_year, 1)
+    market_years = max(end_year - market_start_year, 1)
+    brand_cagr = calculate_cagr_v2(brand_start, brand_end, standard_years)
+    market_cagr = calculate_cagr_v2(market_start, market_end, market_years)
+
+    if brand_cagr is not None and market_cagr is not None and market_cagr != 0:
+        return {
+            "ei": round((brand_cagr / market_cagr) * 100, 4),
+            "basis": "standard_5y",
+            "period_years": target_years,
+            "brand_cagr_pct": round(brand_cagr, 4),
+            "market_cagr_pct": round(market_cagr, 4),
+        }
+
+    if brand_cagr is None and market_cagr is not None:
+        previous_brand = next(((year, value) for year, value in reversed(brand_annual[:-1]) if year < end_year), None)
+        previous_market = next(((year, value) for year, value in reversed(market_annual[:-1]) if year < end_year), None)
+        if previous_brand and previous_market:
+            prev_brand_year, prev_brand = previous_brand
+            prev_market_year, prev_market = previous_market
+            brand_1y = calculate_cagr_v2(prev_brand, brand_end, max(end_year - prev_brand_year, 1))
+            market_1y = calculate_cagr_v2(prev_market, market_end, max(end_year - prev_market_year, 1))
+            if brand_1y is not None and market_1y is not None and market_1y != 0:
+                return {
+                    "ei": round((brand_1y / market_1y) * 100, 4),
+                    "basis": "fallback_1y",
+                    "period_years": 1,
+                    "brand_cagr_pct": round(brand_1y, 4),
+                    "market_cagr_pct": round(market_1y, 4),
+                    "note": "5년 전 매출 0 으로 1년 기준 계산",
+                }
+
+    return {"ei": None, "basis": "unable", "note": "5년 / 1년 모두 fallback 불가"}
+
+
 UNIT_LABELS = {
     ("ubist", "sales"): "KRW",
     ("ubist", "volume"): "Rx",
@@ -173,12 +291,13 @@ def series_cagr(series: dict[str, Any] | None) -> float | None:
         return None
     first_key, first_value = first_pair(data)
     last_key, last_value = latest_pair(data)
-    first = safe_float(first_value.get("raw_value") if isinstance(first_value, dict) else first_value)
-    last = safe_float(last_value.get("raw_value") if isinstance(last_value, dict) else last_value)
-    if first <= 0 or last <= 0 or first_key is None or last_key is None:
+    first = period_value(first_value)
+    last = period_value(last_value)
+    if first is None or last is None or first_key is None or last_key is None:
         return None
     years = max((period_key(last_key)[0] - period_key(first_key)[0]), 1)
-    return round(((last / first) ** (1 / years) - 1) * 100, 2)
+    cagr = calculate_cagr_v2(first, last, years)
+    return round(cagr, 2) if cagr is not None else None
 
 
 def fetch_all(sql: str, params: Iterable[Any] | None = None) -> list[dict[str, Any]]:
