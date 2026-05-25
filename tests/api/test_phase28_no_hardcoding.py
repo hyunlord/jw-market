@@ -27,10 +27,14 @@ def _deep_data(brand: str = "리바로") -> dict:
     return payload["data"]
 
 
-def test_ai_analysis_is_empty_until_real_analysis_exists() -> None:
+def test_ai_analysis_is_empty_or_real_phase_zeta_analysis() -> None:
     data = _deep_data("리바로")
     assert validate_ai_analysis("리바로", data) == []
-    assert data.get("ai_analysis") in ({}, None)
+    ai = data.get("ai_analysis") or {}
+    if ai:
+        assert ai.get("phase_zeta_stage")
+        for section in ("phenomenon", "cause", "prediction", "recommendation"):
+            assert ai.get(section)
 
 
 def test_events_do_not_use_legacy_mock_payloads() -> None:

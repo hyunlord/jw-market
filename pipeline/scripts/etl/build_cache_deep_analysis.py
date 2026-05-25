@@ -465,7 +465,6 @@ def main() -> None:
                 },
                 "simulation": {"by_combo": simulation_by_combo},
                 "events": events_payload,
-                "ai_analysis": {},
             },
             "market_meta": {
                 "available_combos": available_combos,

@@ -107,7 +107,7 @@ def test_phase30_iqvia_quarterly_horizon_lengths() -> None:
 def test_phase30_all_canonical_brands_have_forecast_and_simulation_payloads() -> None:
     for brand in CANONICAL_25:
         payload = _deep_payload(brand)
-        assert payload["data"]["ai_analysis"] == {}
+        assert "ai_analysis" not in payload["data"]
         available = payload["available_combos"]
         assert available, brand
         for combo in available:

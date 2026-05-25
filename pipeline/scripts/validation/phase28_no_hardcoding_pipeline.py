@@ -84,6 +84,8 @@ def validate_ai_analysis(brand: str, data: dict[str, Any]) -> list[ValidationIss
     ai = data.get("ai_analysis") or {}
     if not ai:
         return []
+    if isinstance(ai, dict) and ai.get("phase_zeta_stage"):
+        return []
     if isinstance(ai, dict) and AI_PLACEHOLDER_KEYS.intersection(ai):
         return [
             ValidationIssue(

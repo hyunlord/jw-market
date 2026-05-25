@@ -60,4 +60,4 @@ def test_deep_analysis_combines_dual_source_measure_combos():
         "IQVIA.dosage_unit",
         "IQVIA.counting_unit",
     }
-    assert set(payload["data"]) == {"forecast", "simulation", "events", "ai_analysis"}
+    assert set(payload["data"]) == {"forecast", "simulation", "events"}

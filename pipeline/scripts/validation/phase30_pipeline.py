@@ -134,8 +134,8 @@ def validate() -> dict[str, Any]:
             issues.append(Issue("deep_payload_missing", brand))
             continue
         data = payload.get("data") or {}
-        if data.get("ai_analysis") != {}:
-            issues.append(Issue("ai_analysis_not_empty", brand, detail={"ai_analysis": data.get("ai_analysis")}))
+        if "ai_analysis" in data:
+            issues.append(Issue("ai_analysis_still_embedded_in_cache", brand, detail={"ai_analysis": data.get("ai_analysis")}))
         available = payload.get("available_combos") or []
         forecast = data.get("forecast") or {}
         simulation = data.get("simulation") or {}
