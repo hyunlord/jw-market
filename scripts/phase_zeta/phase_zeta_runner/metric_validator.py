@@ -108,6 +108,14 @@ def _nearby_context(raw_text: str, full_context: str, before: int = 30, after: i
     return full_context[max(0, pos - before) : pos + len(raw_text) + after]
 
 
+def _is_qualified_threshold(raw_text: str, full_context: str) -> bool:
+    """Return true for approximate threshold phrases like "20% 이상"."""
+
+    nearby = _nearby_context(raw_text, full_context, before=8, after=12)
+    after = nearby.split(raw_text, 1)[1] if raw_text in nearby else ""
+    return bool(re.match(r"^\s*(이상|이하|초과|미만|내외|대)", after))
+
+
 def classify_number_context(raw_text: str, full_context: str, value: float | int) -> str:
     """Classify a rendered number so matching can use the right tolerance."""
 
@@ -182,7 +190,8 @@ def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[di
                     "pattern": spec["name"],
                     "number_type": number_type,
                     "tolerance": _tolerance_for_type(number_type, config),
-                    "low_priority": bool(spec.get("low_priority", False)),
+                    "low_priority": bool(spec.get("low_priority", False))
+                    or _is_qualified_threshold(raw_text, text or ""),
                 }
             )
     return extracted
@@ -204,6 +213,9 @@ def build_bundle_path_index(bundle: dict) -> dict[float, list[str]]:
         elif isinstance(obj, (int, float)):
             numeric = float(obj)
             index.setdefault(numeric, []).append(path)
+        elif isinstance(obj, str):
+            for item in extract_numbers(obj):
+                index.setdefault(float(item["value"]), []).append(f"{path}::{item['raw_text']}")
 
     traverse(bundle)
     return index

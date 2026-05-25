@@ -37,6 +37,56 @@ def test_bundle_path_matching():
     assert "raw_value" in find_match(14450706270.69, index, tolerance=0.01)
 
 
+def test_bundle_path_index_includes_numbers_from_source_text():
+    bundle = {
+        "event_bundle": {
+            "events_brand_centric": [
+                {
+                    "title": "임상 3상에서 장 정결률 97% 확인",
+                    "summary": "3분기 연속 20% 이상의 성장률을 유지",
+                }
+            ]
+        }
+    }
+
+    index = build_bundle_path_index(bundle)
+
+    assert 97.0 in index
+    assert 20.0 in index
+
+
+def test_threshold_percent_without_exact_source_is_warning_only():
+    bundle = {
+        "market_views": [
+            {
+                "target_brand_metric": {
+                    "history": {
+                        "2025-Q2": {"yoy_pct": 24.83},
+                        "2025-Q3": {"yoy_pct": 27.74},
+                        "2025-Q4": {"yoy_pct": 26.48},
+                    }
+                }
+            }
+        ]
+    }
+    parsed_output = {
+        "phenomenon": {
+            "title": "뉴트로진 성장세",
+            "body": "",
+            "bullets": ["3분기 연속 20% 이상의 높은 성장률을 유지했습니다."],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert any(item["raw_text"] == "20%" for item in result.warnings)
+    assert not result.unmatched_numbers
+
+
 def test_validation_full_flow():
     bundle = {
         "market_views": [

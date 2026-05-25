@@ -61,6 +61,29 @@ def test_valid_subset_with_target_below_top5_does_not_require_compact_rank():
     assert result["valid"]
 
 
+def test_null_rank_rows_are_ignored_instead_of_crashing():
+    bundle = {
+        "brand_context": {"name": "순위없는브랜드"},
+        "market_views": [
+            {
+                "view_id": "ML.UBIST.sales",
+                "market_size": {"history": {"2026-04": 1000.0}},
+                "target_brand_metric": {
+                    "history": {"2026-04": {"raw_value": 10.0, "rank": None, "ms_pct": 1.0}}
+                },
+                "competitors_top5": [
+                    {"brand_name": "A", "history": {"2026-04": {"raw_value": 300.0, "rank": 1, "ms_pct": 30.0}}},
+                    {"brand_name": "B", "history": {"2026-04": {"raw_value": 200.0, "rank": None, "ms_pct": 20.0}}},
+                ],
+            }
+        ],
+    }
+
+    result = validate_bundle_invariants(bundle, _config())
+
+    assert result["valid"]
+
+
 def test_ms_sum_exceeds_100_detected():
     bundle = {
         "brand_context": {"name": "타겟"},

@@ -27,12 +27,13 @@ def _brand_rows_for_period(bundle: dict[str, Any], view: dict[str, Any], period:
     rows: list[dict[str, Any]] = []
     target_history = (view.get("target_brand_metric", {}) or {}).get("history", {}) or {}
     target_period = target_history.get(period, {}) or {}
-    if "raw_value" in target_period and "rank" in target_period:
+    target_rank = _numeric(target_period.get("rank"))
+    if "raw_value" in target_period and target_rank is not None:
         rows.append(
             {
                 "brand": (bundle.get("brand_context", {}) or {}).get("name") or bundle.get("bundle_meta", {}).get("brand"),
                 "raw": _numeric(target_period.get("raw_value")),
-                "rank": int(target_period["rank"]),
+                "rank": int(target_rank),
                 "ms": _numeric(target_period.get("ms_pct", target_period.get("ms"))),
                 "is_target": True,
             }
@@ -40,12 +41,13 @@ def _brand_rows_for_period(bundle: dict[str, Any], view: dict[str, Any], period:
 
     for comp in view.get("competitors_top5", []) or []:
         comp_period = ((comp.get("history", {}) or {}).get(period, {}) or {})
-        if "raw_value" in comp_period and "rank" in comp_period:
+        comp_rank = _numeric(comp_period.get("rank"))
+        if "raw_value" in comp_period and comp_rank is not None:
             rows.append(
                 {
                     "brand": comp.get("brand_name"),
                     "raw": _numeric(comp_period.get("raw_value")),
-                    "rank": int(comp_period["rank"]),
+                    "rank": int(comp_rank),
                     "ms": _numeric(comp_period.get("ms_pct", comp_period.get("ms"))),
                     "is_target": False,
                 }
