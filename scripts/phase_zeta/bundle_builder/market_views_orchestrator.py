@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .competitor_resolver import resolve_market_top5_competitors
+from .competitor_resolver import resolve_view_top5_competitors
 from .market_view_builder import build_market_view
 
 VIEW_ORDER = {
@@ -27,11 +27,6 @@ def build_market_views(
     cd_id = brand_context.get("cd_id")
     available_sources = set(brand_context.get("available_sources") or [])
     competitors_top5_cache = {}
-    for source in available_sources:
-        if source not in competitors_top5_cache:
-            competitors_top5_cache[source] = resolve_market_top5_competitors(
-                brand_context["name"], ml_id, cd_id, source, db_conn
-            )
 
     views = []
     for matrix in config.market.views_matrix:
@@ -40,6 +35,11 @@ def build_market_views(
             if source not in available_sources:
                 continue
             for measure in source_cfg.measures:
+                cache_key = (matrix.view, source, measure)
+                if cache_key not in competitors_top5_cache:
+                    competitors_top5_cache[cache_key] = resolve_view_top5_competitors(
+                        brand_context["name"], ml_id, cd_id, matrix.view, source, measure, db_conn
+                    )
                 item = build_market_view(
                     brand_context["name"],
                     ml_id,

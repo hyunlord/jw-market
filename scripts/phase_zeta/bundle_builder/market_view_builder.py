@@ -213,7 +213,7 @@ def build_market_view(
         "missing_months": [],
     }
     market = load_market_from_catalog(ml_id, db_conn)
-    top5 = competitors_top5_cache.get(source.upper()) or {}
+    top5 = competitors_top5_cache.get((view, source.upper(), measure)) or {}
     competitors = []
     for item in top5.get("top_competitors", []):
         competitor_metric = get_competitor_history_for_view(

@@ -107,6 +107,17 @@ def find_market_ids_for_brand(
             (brand, snapshot_sql),
         )
         ml_ids = [row["ml_id"] for row in cur.fetchall()]
+        if not ml_ids:
+            cur.execute(
+                """
+                SELECT DISTINCT ml_id
+                FROM mart_strategic_ml_brand_metric
+                WHERE brand_name = %s
+                ORDER BY ml_id ASC
+                """,
+                (brand,),
+            )
+            ml_ids = [row["ml_id"] for row in cur.fetchall()]
 
         cur.execute(
             """
@@ -118,5 +129,16 @@ def find_market_ids_for_brand(
             (brand, snapshot_sql),
         )
         cd_ids = [row["cd_market_id"] for row in cur.fetchall()]
+        if not cd_ids:
+            cur.execute(
+                """
+                SELECT DISTINCT cd_market_id
+                FROM mart_strategic_cd_brand_metric
+                WHERE brand_name = %s
+                ORDER BY cd_market_id ASC
+                """,
+                (brand,),
+            )
+            cd_ids = [row["cd_market_id"] for row in cur.fetchall()]
 
     return {"ml_ids": ml_ids, "cd_ids": cd_ids}

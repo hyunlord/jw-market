@@ -25,18 +25,30 @@ def _latest_metric_point(metric_history: dict) -> tuple[str | None, dict]:
     return latest, metric_history.get(latest) or {}
 
 
-def _market_size_for(db_conn, ml_id: str, source: str, measure: str, period: str | None) -> float | None:
+def _market_size_for(
+    db_conn,
+    market_id: str,
+    source: str,
+    measure: str,
+    period: str | None,
+    view: str = "market_landscape",
+) -> float | None:
     if not period:
         return None
+    table, id_col = (
+        ("mart_strategic_cd_market_metric", "cd_market_id")
+        if view == "competitive_dynamics"
+        else ("mart_strategic_ml_market_metric", "ml_id")
+    )
     with db_conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT market_size_series
-            FROM mart_strategic_ml_market_metric
-            WHERE ml_id = %s AND source = %s AND measure = %s
+            FROM {table}
+            WHERE {id_col} = %s AND source = %s AND measure = %s
             LIMIT 1
             """,
-            (ml_id, source_public_to_db(source), measure),
+            (market_id, source_public_to_db(source), measure),
         )
         row = cur.fetchone()
     series = _json_load(row.get("market_size_series") if row else None)
@@ -99,6 +111,73 @@ def resolve_market_top5_competitors(
     }
 
 
+def resolve_view_top5_competitors(
+    brand_name: str,
+    ml_id: str,
+    cd_id: str | None,
+    view: str,
+    source: str,
+    measure: str,
+    db_conn,
+) -> dict:
+    table, id_col = _metric_table(view)
+    market_id = cd_id if view == "competitive_dynamics" else ml_id
+    if not market_id:
+        return {
+            "source": source.upper(),
+            "market_id_for_ranking": None,
+            "ranking_basis": measure,
+            "top_competitors": [],
+        }
+
+    db_source = source_public_to_db(source)
+    with db_conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT brand_name, is_jw, metric_history
+            FROM {table}
+            WHERE {id_col} = %s
+              AND source = %s
+              AND measure = %s
+            """,
+            (market_id, db_source, measure),
+        )
+        rows = cur.fetchall()
+
+    candidates = []
+    for row in rows:
+        if row["brand_name"] == brand_name:
+            continue
+        history = _json_load(row["metric_history"])
+        period, point = _latest_metric_point(history)
+        raw_value = point.get("raw_value")
+        if raw_value is None:
+            continue
+        market_total = _market_size_for(db_conn, market_id, source, measure, period, view)
+        candidates.append(
+            {
+                "rank_in_market": int(point.get("rank") or 0),
+                "brand_name": row["brand_name"],
+                "is_jw": bool(row.get("is_jw")),
+                "latest_period": period,
+                "raw_value": float(raw_value),
+                "ms_pct": recompute_ms_pct(float(raw_value), market_total),
+            }
+        )
+
+    candidates.sort(key=lambda item: (-item["raw_value"], item["brand_name"]))
+    top = candidates[:5]
+    for idx, item in enumerate(top, start=1):
+        if not item.get("rank_in_market"):
+            item["rank_in_market"] = idx
+    return {
+        "source": source.upper(),
+        "market_id_for_ranking": market_id,
+        "ranking_basis": measure,
+        "top_competitors": top,
+    }
+
+
 def _metric_table(view: str) -> tuple[str, str]:
     if view == "competitive_dynamics":
         return "mart_strategic_cd_brand_metric", "cd_market_id"
@@ -142,7 +221,7 @@ def get_competitor_history_for_view(
     history = {}
     if latest_period and point:
         raw_value = point.get("raw_value")
-        market_total = _market_size_for(db_conn, ml_id, source, measure, latest_period)
+        market_total = _market_size_for(db_conn, market_id, source, measure, latest_period, view)
         history[latest_period] = {
             "raw_value": raw_value,
             "ms_pct": recompute_ms_pct(raw_value, market_total) if raw_value is not None else None,
