@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from difflib import SequenceMatcher
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from cache_build_common import (
     api_source,
@@ -73,6 +75,107 @@ FORECAST_DISCLOSURE = (
     "Prophet/SARIMAX/Holt-Winters/Linear/Mean 중 선택하며, LLM event regressor는 "
     "Phase 31 이후로 보류되어 enabled=false입니다."
 )
+EVENT_DEDUP_SIMILARITY_THRESHOLD = 0.80
+
+
+def _normalize_event_title(title: str | None) -> str:
+    text = (title or "").lower()
+    text = re.sub(r"[^\w\s가-힣]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _source_label(event: dict[str, Any]) -> str | None:
+    source = event.get("source")
+    if source:
+        return str(source)
+    url = event.get("source_url") or event.get("url")
+    if not url:
+        return None
+    host = urlparse(str(url)).netloc
+    return host.replace("www.", "") if host else str(url)
+
+
+def _cluster_events(events: list[dict[str, Any]], similarity_threshold: float = EVENT_DEDUP_SIMILARITY_THRESHOLD) -> list[dict[str, Any]]:
+    """Deduplicate cut_a cards by date/category/title while preserving coverage context."""
+    groups: dict[tuple[Any, Any, Any], list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        key = (
+            event.get("brand_name") or event.get("brand"),
+            event.get("date") or event.get("published_date"),
+            event.get("category"),
+        )
+        groups[key].append(event)
+
+    deduped: list[dict[str, Any]] = []
+    for group_events in groups.values():
+        clusters: list[list[dict[str, Any]]] = []
+        for event in group_events:
+            title_norm = _normalize_event_title(event.get("title"))
+            matched_cluster = None
+            for cluster in clusters:
+                if title_norm and any(
+                    SequenceMatcher(None, title_norm, _normalize_event_title(clustered.get("title"))).ratio() >= similarity_threshold
+                    for clustered in cluster
+                    if _normalize_event_title(clustered.get("title"))
+                ):
+                    matched_cluster = cluster
+                    break
+            if matched_cluster is None:
+                clusters.append([event])
+            else:
+                matched_cluster.append(event)
+
+        for cluster in clusters:
+            if len(cluster) == 1:
+                deduped.append(cluster[0])
+                continue
+
+            ordered = sorted(
+                cluster,
+                key=lambda event: (
+                    safe_float(event.get("impact_score") or event.get("score")) or 0.0,
+                    str(event.get("date") or event.get("published_date") or ""),
+                    str(event.get("id") or event.get("event_id") or event.get("news_id") or ""),
+                ),
+                reverse=True,
+            )
+            rep = dict(ordered[0])
+            hidden = ordered[1:]
+            rep["related_coverage_count"] = len(ordered)
+            rep["related_sources"] = sorted({label for label in (_source_label(event) for event in ordered) if label})
+            rep["related_titles"] = [event.get("title") for event in hidden if event.get("title")]
+            rep["related_urls"] = [event.get("url") for event in hidden if event.get("url")]
+            deduped.append(rep)
+
+    return sorted(
+        deduped,
+        key=lambda event: (
+            safe_float(event.get("impact_score") or event.get("score")) or 0.0,
+            str(event.get("date") or event.get("published_date") or ""),
+            str(event.get("id") or event.get("event_id") or event.get("news_id") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def _dedup_cut_a_events(events_payload: dict[str, Any]) -> dict[str, Any]:
+    cut_a = events_payload.get("cut_a") or []
+    if not cut_a:
+        return events_payload
+    deduped = _cluster_events(cut_a)
+    payload = dict(events_payload)
+    payload["cut_a"] = deduped
+    meta = dict(payload.get("meta") or {})
+    meta.update(
+        {
+            "cut_a_dedup_enabled": True,
+            "cut_a_dedup_similarity_threshold": EVENT_DEDUP_SIMILARITY_THRESHOLD,
+            "cut_a_before_dedup": len(cut_a),
+            "cut_a_after_dedup": len(deduped),
+        }
+    )
+    payload["meta"] = meta
+    return payload
 
 
 def _load_phase29_poc_report() -> dict[str, Any]:
@@ -428,6 +531,7 @@ def main() -> None:
                 by_combo[combo] = combo_payload(row, market_rows=market_rows, target_brand=brand, combo_source=source, phase30=phase30_enabled)
 
         events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
+        events_payload = _dedup_cut_a_events(events_payload)
         simulation_by_combo = {}
         for combo, combo_data in by_combo.items():
             if phase30_enabled and build_phase30_simulation_combo is not None:

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import date, datetime
+from difflib import SequenceMatcher
 from typing import Any
 
 import pymysql
@@ -151,12 +153,45 @@ def format_event(row: dict[str, Any], *, cut_threshold: int) -> dict[str, Any]:
         "summary": summary,
         "body_full": row.get("body") or summary,
         "source": row.get("source_name"),
+        "url": row.get("news_url"),
+        "source_url": row.get("event_source_url") or row.get("news_url"),
         "date": str(event_date) if event_date is not None else None,
         "published_date": str(event_date) if event_date is not None else None,
         "reason": row.get("reason"),
         "mirrored_from_jw_brands": _decode_json(row.get("mirrored_from_jw_brands")),
         "period_map": period_map_for_date(event_date),
     }
+
+
+def _normalize_title(title: str | None) -> str:
+    text = (title or "").lower()
+    text = re.sub(r"[^\w\s가-힣]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _cut_a_unique_cluster_count(events: list[dict[str, Any]], similarity_threshold: float = 0.80) -> int:
+    clusters_by_key: dict[tuple[Any, Any, Any], list[list[dict[str, Any]]]] = {}
+    for event in events:
+        key = (
+            event.get("brand_name") or event.get("brand"),
+            event.get("date") or event.get("published_date"),
+            event.get("category"),
+        )
+        clusters = clusters_by_key.setdefault(key, [])
+        title_norm = _normalize_title(event.get("title"))
+        matched = False
+        for cluster in clusters:
+            if title_norm and any(
+                SequenceMatcher(None, title_norm, _normalize_title(clustered.get("title"))).ratio() >= similarity_threshold
+                for clustered in cluster
+                if _normalize_title(clustered.get("title"))
+            ):
+                cluster.append(event)
+                matched = True
+                break
+        if not matched:
+            clusters.append([event])
+    return sum(len(clusters) for clusters in clusters_by_key.values())
 
 
 def _query_events(
@@ -199,9 +234,12 @@ def _query_events(
             n.summary,
             n.body,
             n.source_name,
-            n.published_date
+            n.published_date,
+            n.url AS news_url,
+            e.source_url AS event_source_url
         FROM event_brand_scores s
         JOIN events_raw n ON s.news_id = n.news_id
+        LEFT JOIN events e ON s.event_id = e.event_id
         WHERE {" AND ".join(where)}
         ORDER BY s.score DESC, n.published_date DESC, s.id DESC
         {limit_sql}
@@ -222,12 +260,14 @@ def get_brand_events_cut_a(
     """Cut A: lower the threshold one point at a time until 5~50 rows exist."""
     threshold = 50
     rows: list[dict[str, Any]] = []
+    formatted: list[dict[str, Any]] = []
     while threshold >= 0:
         rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=target_max)
-        if len(rows) >= target_min or threshold == 0:
+        formatted = [format_event(row, cut_threshold=threshold) for row in rows[:target_max]]
+        if (len(formatted) >= target_min and _cut_a_unique_cluster_count(formatted) >= target_min) or threshold == 0:
             break
         threshold -= 1
-    return [format_event(row, cut_threshold=threshold) for row in rows[:target_max]]
+    return formatted
 
 
 def get_brand_events_cut_b(
