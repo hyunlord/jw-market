@@ -111,12 +111,7 @@ def validate_forecast_disclosure(brand: str, *, base_url: str) -> list[Validatio
             issues.append(ValidationIssue("forecast_backtest_flag_wrong", brand, detail={"value": forecast.get("backtest_available")}))
     if method == PHASE30_FORECAST_METHOD and forecast.get("event_regressor_enabled") is not False:
         issues.append(ValidationIssue("forecast_event_regressor_flag_wrong", brand, detail={"value": forecast.get("event_regressor_enabled")}))
-    simulation = payload["data"].get("simulation") or {}
-    phase30_simulation = bool(simulation.get("by_combo")) and all(
-        isinstance(sim_payload, dict) and sim_payload.get("phase30_baseline") is True
-        for sim_payload in (simulation.get("by_combo") or {}).values()
-    )
-    if contains_key(payload.get("data"), "anomaly_signals") and not phase30_simulation:
+    if contains_key(payload.get("data"), "anomaly_signals"):
         issues.append(ValidationIssue("anomaly_signals_present", brand))
     return issues
 

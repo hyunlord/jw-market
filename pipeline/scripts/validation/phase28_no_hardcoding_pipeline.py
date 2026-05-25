@@ -42,7 +42,6 @@ SIMULATION_GENERATED_KEYS = {
     "model",
     "horizon_ci_levels",
     "scenarios",
-    "stress",
     "confidence",
     "market_comparison",
     "momentum",
@@ -184,10 +183,6 @@ def validate_simulation(brand: str, data: dict[str, Any]) -> list[ValidationIssu
 
 
 def validate_no_anomaly(brand: str, data: dict[str, Any]) -> list[ValidationIssue]:
-    simulation = data.get("simulation") or {}
-    by_combo = simulation.get("by_combo") or {}
-    if by_combo and all(isinstance(payload, dict) and payload.get("phase30_baseline") is True for payload in by_combo.values()):
-        return []
     marker = _contains_marker(data, ("anomaly_signals", "최근 이상 변동", "자동 탐지"))
     if marker:
         return [ValidationIssue("anomaly_output_present", brand, {"marker": marker})]

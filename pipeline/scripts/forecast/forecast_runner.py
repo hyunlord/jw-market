@@ -38,6 +38,7 @@ from pipeline.scripts.etl.cache_build_common import (
 
 HORIZON_CI_LEVELS = {"1y": 0.95, "3y": 0.90, "5y": 0.80, "10y": 0.50}
 Z_BY_LEVEL = {0.95: 1.96, 0.90: 1.645, 0.80: 1.282, 0.50: 0.674}
+CI_RELATIVE_WIDTH_CAP = {0.95: 0.45, 0.90: 0.50, 0.80: 0.60, 0.50: 0.30}
 SOURCE_TO_INTERNAL = {"UBIST": "ubist", "IQVIA": "iqvia_nsa", "ubist": "ubist", "iqvia_nsa": "iqvia_nsa"}
 UNIT_LABELS = {
     "sales": "KRW",
@@ -187,16 +188,31 @@ def _residual_std(actual: np.ndarray, fitted: np.ndarray) -> float:
     return max(std, level * 0.03, 1.0)
 
 
-def _ci_arrays(point: list[float], residual_std: float, source: str) -> dict[str, list[float]]:
+def _history_floor(values: list[float] | None) -> float:
+    positives = [float(value) for value in (values or []) if value and value > 0]
+    return min(positives) * 0.3 if positives else 0.0
+
+
+def _ci_arrays(point: list[float], residual_std: float, source: str, history_values: list[float] | None = None) -> dict[str, Any]:
     season = steps_per_year(source)
     point_arr = np.asarray(point, dtype=float)
     growth = np.sqrt(1.0 + (np.arange(len(point_arr), dtype=float) / max(season, 1)))
-    out: dict[str, list[float]] = {}
+    floor = _history_floor(history_values)
+    out: dict[str, Any] = {"lower_floor_applied": False}
     for level, z in Z_BY_LEVEL.items():
-        width = z * residual_std * growth
+        raw_width = z * residual_std * growth
+        relative_cap = np.maximum(np.abs(point_arr) * CI_RELATIVE_WIDTH_CAP[level], 1.0)
+        width = np.minimum(raw_width, relative_cap)
         suffix = str(int(level * 100))
+        lower_arr = point_arr - width
+        if floor > 0:
+            effective_floor = np.minimum(floor, np.maximum(point_arr * 0.7, 0.0))
+            floored = lower_arr < effective_floor
+            if np.any(floored):
+                out["lower_floor_applied"] = True
+                lower_arr = np.where(floored, effective_floor, lower_arr)
         out[f"ci_upper_{suffix}"] = _clip(point_arr + width)
-        out[f"ci_lower_{suffix}"] = _clip(point_arr - width)
+        out[f"ci_lower_{suffix}"] = _clip(lower_arr)
     return out
 
 
@@ -335,7 +351,7 @@ def _fit_values(periods: list[str], values: list[float], source: str, steps: int
                 warnings_list.append(f"fallback_fit_failed_mean:{type(fallback_exc).__name__}")
                 point, residual_std, actual_model = _fit_mean(values or [0.0], steps)
 
-    ci = _ci_arrays(point, residual_std, source)
+    ci = _ci_arrays(point, residual_std, source, values)
     fit_quality = _fit_quality(values, source)
     return {
         "point_forecast": point,
@@ -480,70 +496,6 @@ def calculate_market_comparison(
     }
 
 
-def detect_anomalies(history_values: list[float], history_periods: list[str], source: str, cut_b_events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    window = 6 if SOURCE_TO_INTERNAL[source] == "ubist" else 4
-    season = steps_per_year(source)
-    threshold_z = 3.0
-    threshold_yoy = 50.0
-    cut_b_events = cut_b_events or []
-    items: list[dict[str, Any]] = []
-    scored: list[tuple[float, dict[str, Any]]] = []
-    for idx in range(window, len(history_values)):
-        rolling = np.asarray(history_values[idx - window : idx], dtype=float)
-        expected = float(np.mean(rolling)) if len(rolling) else 0.0
-        std = float(np.std(rolling)) or 0.0
-        value = float(history_values[idx])
-        z = (value - expected) / std if std else 0.0
-        yoy = None
-        if idx >= season and history_values[idx - season]:
-            yoy = (value - history_values[idx - season]) / history_values[idx - season] * 100
-        delta_pct = (value - expected) / expected * 100 if expected else 0.0
-        threshold_pass = abs(z) >= threshold_z or (yoy is not None and abs(yoy) >= threshold_yoy)
-        item = {
-            "period": history_periods[idx],
-            "value": value,
-            "expected_value": expected,
-            "delta_pct": delta_pct,
-            "yoy_pct": yoy,
-            "z_score": z,
-            "direction": "up" if z >= 0 else "down",
-            "threshold_pass": threshold_pass,
-            "fallback_rank": None,
-            "matched_event_id": _match_event_id(history_periods[idx], source, cut_b_events),
-        }
-        scored.append((abs(z) + (abs(yoy) / 100 if yoy is not None else 0.0), item))
-        if threshold_pass:
-            items.append(item)
-    if len(items) < 3:
-        existing = {item["period"] for item in items}
-        for rank, (_, item) in enumerate(sorted(scored, key=lambda pair: pair[0], reverse=True), 1):
-            if item["period"] in existing:
-                continue
-            item = dict(item)
-            item["fallback_rank"] = rank
-            item["threshold_pass"] = False
-            items.append(item)
-            existing.add(item["period"])
-            if len(items) >= 3:
-                break
-    return {
-        "method": "rolling_z_score_with_yoy_check",
-        "threshold_z": threshold_z,
-        "threshold_yoy_pct": threshold_yoy,
-        "window": window,
-        "fallback_top_n": 3,
-        "items": items[:8],
-    }
-
-
-def _match_event_id(period: str, source: str, cut_b_events: list[dict[str, Any]]) -> str | None:
-    key = "UBIST" if SOURCE_TO_INTERNAL[source] == "ubist" else "IQVIA"
-    for event in cut_b_events:
-        if (event.get("period_map") or {}).get(key) == period:
-            return event.get("id") or event.get("event_id") or event.get("news_id")
-    return None
-
-
 def build_forecast_result(periods: list[str], values: list[float], source: str, steps: int | None = None) -> dict[str, Any]:
     steps = steps if steps is not None else forecast_steps(source)
     result = _fit_values(periods, values, source, steps)
@@ -599,6 +551,7 @@ def build_forecast_brand_entry(
         "forecast_intervals": {
             "upper_horizon_adaptive": forecast_result["adaptive_ci"]["upper_values"],
             "lower_horizon_adaptive": forecast_result["adaptive_ci"]["lower_values"],
+            "lower_floor_applied": bool(forecast_result["ci"].get("lower_floor_applied")),
             **forecast_result["ci"],
         },
         "forecast_warnings": forecast_result["warnings"],
@@ -645,7 +598,7 @@ def build_simulation_combo(
         final_base = base_values[-1] if base_values else None
         final_upper = upper_values[-1] if upper_values else None
         final_lower = lower_values[-1] if lower_values else None
-        floor_lower = any(float(v) <= 0 for v in lower_values)
+        floor_lower = bool(intervals.get("lower_floor_applied"))
         market_comparison = calculate_market_comparison(
             entry.get("history_values") or [],
             base_values,
@@ -653,7 +606,6 @@ def build_simulation_combo(
             market_forecast.get("forecast_values") or [],
             source,
         )
-        anomaly = detect_anomalies(entry.get("history_values") or [], entry.get("history_periods") or [], source, cut_b_events)
         warnings_list = list(entry.get("forecast_warnings") or [])
         warnings_list.extend(["event_regressor_disabled_phase_30", "forecast_horizon_10y_is_extrapolation_heavy"])
         if floor_lower:
@@ -689,11 +641,9 @@ def build_simulation_combo(
                     "floor_applied": floor_lower,
                 },
             },
-            "stress": _build_stress(anomaly),
             "confidence": entry.get("confidence"),
             "market_comparison": market_comparison,
             "momentum": calculate_momentum(base_values, source),
-            "anomaly_signals": anomaly,
             "warnings": sorted(set(warnings_list)),
             "baseline": entry.get("baseline") or {"value_recent": None, "ms_recent_pct": None},
         }
@@ -705,21 +655,6 @@ def build_simulation_combo(
         "target_brand": forecast_combo.get("target_brand"),
         "available_brands": available_brands,
         "by_brand": by_brand,
-    }
-
-
-def _build_stress(anomaly: dict[str, Any]) -> dict[str, Any]:
-    deltas = [safe_float(item.get("delta_pct")) or 0.0 for item in anomaly.get("items", [])]
-    upper = max([delta for delta in deltas if delta > 0], default=0.0)
-    lower = min([delta for delta in deltas if delta < 0], default=0.0)
-    return {
-        "method": "anomaly_mean_shock_reference",
-        "upper_delta_pct": upper,
-        "lower_delta_pct": lower,
-        "upper_used_fallback": upper == 0.0,
-        "lower_used_fallback": lower == 0.0,
-        "shown_as_primary_ci": False,
-        "note": "Stress 참고값은 rolling anomaly delta 기반이며 primary CI는 horizon adaptive interval입니다.",
     }
 
 

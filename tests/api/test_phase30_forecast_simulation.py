@@ -83,7 +83,8 @@ def test_phase30_simulation_schema_for_livalo_sales() -> None:
     assert 0 <= target["confidence"]["score"] <= 100
     assert target["market_comparison"]["method"] == "brand_cagr_minus_market_cagr_same_source"
     assert target["momentum"]["method"] == "forecast_slope_avg"
-    assert target["anomaly_signals"]["method"] == "rolling_z_score_with_yoy_check"
+    assert "anomaly_signals" not in target
+    assert "stress" not in target
     assert isinstance(target["warnings"], list)
     assert target["baseline"]["value_recent"] is not None
 

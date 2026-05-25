@@ -6,17 +6,30 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
-from pipeline.scripts.etl.cache_build_common import CANONICAL_25
-from pipeline.scripts.etl.phase29_events import (
-    connect,
-    ensure_events_raw_table,
-    get_brand_events_cut_a,
-    get_brand_events_cut_b,
-    table_counts,
-)
-from pipeline.scripts.forecast.backtest import run_phase29_poc
+try:
+    from pipeline.scripts.etl.cache_build_common import CANONICAL_25
+    from pipeline.scripts.etl.phase29_events import (
+        connect,
+        ensure_events_raw_table,
+        get_brand_events_cut_a,
+        get_brand_events_cut_b,
+        table_counts,
+    )
+    from pipeline.scripts.forecast.backtest import run_phase29_poc
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from pipeline.scripts.etl.cache_build_common import CANONICAL_25
+    from pipeline.scripts.etl.phase29_events import (
+        connect,
+        ensure_events_raw_table,
+        get_brand_events_cut_a,
+        get_brand_events_cut_b,
+        table_counts,
+    )
+    from pipeline.scripts.forecast.backtest import run_phase29_poc
 
 
 @dataclass

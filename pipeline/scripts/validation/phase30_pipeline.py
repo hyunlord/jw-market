@@ -6,11 +6,16 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import pymysql
 
-from pipeline.scripts.etl.cache_build_common import CANONICAL_25
+try:
+    from pipeline.scripts.etl.cache_build_common import CANONICAL_25
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from pipeline.scripts.etl.cache_build_common import CANONICAL_25
 
 
 HORIZON_CI_LEVELS = {"1y": 0.95, "3y": 0.90, "5y": 0.80, "10y": 0.50}
@@ -74,11 +79,9 @@ def _validate_sim_brand(brand: str, combo: str, sim_brand: str, payload: dict[st
         "model",
         "horizon_ci_levels",
         "scenarios",
-        "stress",
         "confidence",
         "market_comparison",
         "momentum",
-        "anomaly_signals",
         "warnings",
         "baseline",
     ]
@@ -107,8 +110,9 @@ def _validate_sim_brand(brand: str, combo: str, sim_brand: str, payload: dict[st
         issues.append(Issue("market_comparison_invalid", brand, combo, {"sim_brand": sim_brand, "market_comparison": payload.get("market_comparison")}))
     if (payload.get("momentum") or {}).get("method") != "forecast_slope_avg":
         issues.append(Issue("momentum_invalid", brand, combo, {"sim_brand": sim_brand, "momentum": payload.get("momentum")}))
-    if (payload.get("anomaly_signals") or {}).get("method") != "rolling_z_score_with_yoy_check":
-        issues.append(Issue("anomaly_invalid", brand, combo, {"sim_brand": sim_brand, "anomaly_signals": payload.get("anomaly_signals")}))
+    for forbidden_key in ("anomaly_signals", "stress"):
+        if forbidden_key in payload:
+            issues.append(Issue("simulation_forbidden_key_present", brand, combo, {"sim_brand": sim_brand, "key": forbidden_key}))
 
 
 def validate() -> dict[str, Any]:
