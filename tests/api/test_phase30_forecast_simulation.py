@@ -80,10 +80,10 @@ def test_phase30_simulation_schema_for_livalo_sales() -> None:
 
     target = by_brand["리바로"]
     assert target["horizon_ci_levels"] == HORIZON_CI_LEVELS
-    assert len(target["forecast_periods"]) == 120
-    assert len(target["scenarios"]["base"]["values"]) == 120
-    assert len(target["scenarios"]["upper"]["values"]) == 120
-    assert len(target["scenarios"]["lower"]["values"]) == 120
+    assert len(target["forecast_periods"]) == 121
+    assert len(target["scenarios"]["base"]["values"]) == 121
+    assert len(target["scenarios"]["upper"]["values"]) == 121
+    assert len(target["scenarios"]["lower"]["values"]) == 121
     assert target["model"]["selection_policy"] == "data_size_dispatch_v1"
     assert target["model"]["event_regressor"]["enabled"] is False
     assert target["confidence"]["method"] == "ci_width_normalized"
@@ -100,8 +100,8 @@ def test_phase30_iqvia_quarterly_horizon_lengths() -> None:
     payload = _deep_payload("헴리브라")
     target = payload["data"]["simulation"]["by_combo"]["IQVIA.sales"]["by_brand"]["헴리브라"]
     assert payload["data"]["simulation"]["by_combo"]["IQVIA.sales"]["period_unit"] == "분기"
-    assert len(target["forecast_periods"]) == 40
-    assert len(target["scenarios"]["base"]["values"]) == 40
+    assert len(target["forecast_periods"]) == 41
+    assert len(target["scenarios"]["base"]["values"]) == 41
 
 
 def test_phase30_all_canonical_brands_have_forecast_and_simulation_payloads() -> None:

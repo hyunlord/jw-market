@@ -49,7 +49,7 @@ def _conn():
 
 
 def _expected_steps(combo: str) -> int:
-    return 120 if combo.startswith("UBIST.") else 40
+    return 121 if combo.startswith("UBIST.") else 41
 
 
 def _payloads() -> dict[str, dict[str, Any]]:

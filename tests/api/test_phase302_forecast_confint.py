@@ -49,8 +49,8 @@ def test_phase302_prophet_uses_native_uncertainty_interval(monkeypatch) -> None:
 
     assert calls["init_kwargs"]["uncertainty_samples"] == 1000
     assert calls["init_kwargs"]["interval_width"] == 0.95
-    assert result["ci"]["ci_lower_95"] == [70.0, 71.0, 72.0, 73.0, 74.0, 75.0]
-    assert result["ci"]["ci_upper_95"] == [130.0, 132.0, 134.0, 136.0, 138.0, 140.0]
+    assert result["ci"]["ci_lower_95"] == [100.0, 70.0, 71.0, 72.0, 73.0, 74.0, 75.0]
+    assert result["ci"]["ci_upper_95"] == [100.0, 130.0, 132.0, 134.0, 136.0, 138.0, 140.0]
     assert result["actual_model"]["params"]["uncertainty_samples"] == 1000
 
 
@@ -95,5 +95,5 @@ def test_phase302_sarimax_uses_get_forecast_conf_int(monkeypatch) -> None:
     result = forecast_runner.build_forecast_result(periods, values, "UBIST", steps=4)
 
     assert calls["get_forecast"] is True
-    assert result["ci"]["ci_lower_95"] == [80.0, 83.33333333333333, 86.66666666666667, 90.0]
-    assert result["ci"]["ci_upper_95"] == [130.0, 136.66666666666666, 143.33333333333334, 150.0]
+    assert result["ci"]["ci_lower_95"] == [100.0, 80.0, 83.33333333333333, 86.66666666666667, 90.0]
+    assert result["ci"]["ci_upper_95"] == [100.0, 130.0, 136.66666666666666, 143.33333333333334, 150.0]

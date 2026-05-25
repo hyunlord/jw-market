@@ -150,6 +150,46 @@ def forecast_periods_from_history(periods: list[str], source: str, steps: int | 
     total = steps if steps is not None else forecast_steps(source)
     if not periods:
         current = "2026-05" if SOURCE_TO_INTERNAL[source] == "ubist" else "2026-Q1"
+        out = []
+        for _ in range(total):
+            out.append(current)
+            current = _next_month(current) if SOURCE_TO_INTERNAL[source] == "ubist" else _next_quarter(current)
+        return out
+    anchor_period = periods[-1]
+    current = _next_month(anchor_period) if SOURCE_TO_INTERNAL[source] == "ubist" else _next_quarter(anchor_period)
+    out = [anchor_period]
+    for _ in range(total):
+        out.append(current)
+        current = _next_month(current) if SOURCE_TO_INTERNAL[source] == "ubist" else _next_quarter(current)
+    return out
+
+
+def _anchor_forecast_to_history(history_values: list[float], forecast_result: dict[str, Any]) -> dict[str, Any]:
+    """Anchor forecast and CI arrays to the last observed history value.
+
+    Model-native intervals start at the first out-of-sample forecast and already
+    include residual uncertainty. The chart needs a t=0 bridge point where the
+    history line, base scenario, and CI upper/lower all share the same value.
+    """
+    if not history_values:
+        return forecast_result
+    anchor_value = float(history_values[-1])
+    anchored = copy.deepcopy(forecast_result)
+    anchored["point_forecast"] = [anchor_value] + list(forecast_result.get("point_forecast") or [])
+    ci = dict(forecast_result.get("ci") or {})
+    for upper_key in ("ci_upper_95",):
+        ci[upper_key] = [anchor_value] + list(ci.get(upper_key) or [])
+    for lower_key in ("ci_lower_95",):
+        ci[lower_key] = [anchor_value] + list(ci.get(lower_key) or [])
+    anchored["ci"] = ci
+    _enforce_accumulating_ci_width(anchored)
+    return anchored
+
+
+def future_periods_from_history(periods: list[str], source: str, steps: int | None = None) -> list[str]:
+    total = steps if steps is not None else forecast_steps(source)
+    if not periods:
+        current = "2026-05" if SOURCE_TO_INTERNAL[source] == "ubist" else "2026-Q1"
     else:
         current = _next_month(periods[-1]) if SOURCE_TO_INTERNAL[source] == "ubist" else _next_quarter(periods[-1])
     out = []
@@ -157,6 +197,54 @@ def forecast_periods_from_history(periods: list[str], source: str, steps: int | 
         out.append(current)
         current = _next_month(current) if SOURCE_TO_INTERNAL[source] == "ubist" else _next_quarter(current)
     return out
+
+
+def _enforce_accumulating_ci_width(forecast_result: dict[str, Any]) -> None:
+    """Keep anchored CI width from collapsing at later horizons.
+
+    Native model intervals can occasionally narrow after clipping negative lower
+    bounds or when a fallback model emits a nearly constant interval. The visual
+    contract for Phase 30.4 is simpler: the anchor has zero width, then the CI
+    envelope never shrinks as the horizon moves away from the last actual point.
+    """
+    ci = forecast_result.get("ci") or {}
+    point = np.asarray(forecast_result.get("point_forecast") or [], dtype=float)
+    upper = np.asarray(ci.get("ci_upper_95") or [], dtype=float)
+    lower = np.asarray(ci.get("ci_lower_95") or [], dtype=float)
+    n = min(len(point), len(upper), len(lower))
+    if n == 0:
+        return
+
+    applied = False
+    upper[0] = point[0]
+    lower[0] = point[0]
+    previous_width = 0.0
+    for i in range(1, n):
+        lower[i] = min(max(0.0, lower[i]), point[i])
+        upper[i] = max(point[i], upper[i])
+        width = max(0.0, upper[i] - lower[i])
+        if width <= previous_width:
+            target_width = previous_width + max(previous_width * 1e-9, 1e-6)
+            if width > 0:
+                upper_ratio = max(0.0, upper[i] - point[i]) / width
+                lower_ratio = max(0.0, point[i] - lower[i]) / width
+            else:
+                upper_ratio = lower_ratio = 0.5
+            new_lower = point[i] - (target_width * lower_ratio)
+            if new_lower < 0:
+                new_lower = 0.0
+            new_upper = max(point[i], new_lower + target_width)
+            lower[i] = new_lower
+            upper[i] = new_upper
+            width = upper[i] - lower[i]
+            applied = True
+        previous_width = width
+
+    ci["ci_upper_95"] = _clip(upper)
+    ci["ci_lower_95"] = _clip(lower)
+    ci["ci_accumulation_guard_applied"] = bool(ci.get("ci_accumulation_guard_applied")) or applied
+    ci["lower_floor_applied"] = bool(ci.get("lower_floor_applied")) or bool(np.any(lower[:n] <= 0))
+    forecast_result["ci"] = ci
 
 
 def history_from_row(row: dict[str, Any]) -> tuple[list[str], list[float]]:
@@ -447,7 +535,7 @@ def build_horizon_adaptive_ci(forecast_result: dict[str, Any], source: str) -> d
 
 def calculate_confidence(forecast_result: dict[str, Any], baseline_value: float | None, source: str) -> dict[str, Any]:
     steps_year = steps_per_year(source)
-    idx = min(steps_year - 1, len(forecast_result["point_forecast"]) - 1)
+    idx = min(steps_year, len(forecast_result["point_forecast"]) - 1)
     upper = forecast_result["ci"]["ci_upper_95"][idx] if idx >= 0 else 0.0
     lower = forecast_result["ci"]["ci_lower_95"][idx] if idx >= 0 else 0.0
     ci_width_absolute = max(0.0, upper - lower)
@@ -522,6 +610,8 @@ def calculate_market_comparison(
     market_start = market_history[-1] if market_history else None
     market_end = market_forecast[-1] if market_forecast else None
     n = min(len(brand_forecast), len(market_forecast))
+    if brand_forecast and market_forecast and brand_start == brand_forecast[0] and market_start == market_forecast[0]:
+        n = max(0, n - 1)
     brand_cagr = _cagr(brand_start, brand_end, n, source)
     market_cagr = _cagr(market_start, market_end, n, source)
     delta = (brand_cagr - market_cagr) if brand_cagr is not None and market_cagr is not None else None
@@ -537,7 +627,7 @@ def calculate_market_comparison(
 
 def build_forecast_result(periods: list[str], values: list[float], source: str, steps: int | None = None) -> dict[str, Any]:
     steps = steps if steps is not None else forecast_steps(source)
-    result = _fit_values(periods, values, source, steps)
+    result = _anchor_forecast_to_history(values, _fit_values(periods, values, source, steps))
     adaptive = build_horizon_adaptive_ci(result, source)
     result["adaptive_ci"] = adaptive
     return result
@@ -656,6 +746,7 @@ def build_simulation_combo(
             "history_periods": entry.get("history_periods") or [],
             "forecast_periods": forecast_combo.get("forecast_periods") or [],
             "history_values": entry.get("history_values") or [],
+            "forecast_values": base_values,
             "model": entry.get("forecast_model"),
             "horizon_ci_levels": HORIZON_CI_LEVELS,
             "scenarios": {
