@@ -33,6 +33,21 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - script execution with partial path
     run_phase29_poc = None
 
+try:
+    from pipeline.scripts.forecast.forecast_runner import (
+        build_forecast_brand_entry as build_phase30_forecast_brand_entry,
+        build_market_forecast as build_phase30_market_forecast,
+        build_simulation_combo as build_phase30_simulation_combo,
+        forecast_periods_from_history as phase30_forecast_periods_from_history,
+        forecast_steps as phase30_forecast_steps,
+    )
+except ModuleNotFoundError:  # pragma: no cover - package import path under pytest
+    build_phase30_forecast_brand_entry = None
+    build_phase30_market_forecast = None
+    build_phase30_simulation_combo = None
+    phase30_forecast_periods_from_history = None
+    phase30_forecast_steps = None
+
 
 ALL_COMBOS = [
     ("UBIST", "sales"),
@@ -52,10 +67,11 @@ UNIT_LABELS = {
     "dosage_unit": "dosage unit",
     "counting_unit": "counting unit",
 }
-FORECAST_METHOD = "deterministic_history_only_v0.9.1"
+FORECAST_METHOD = "data_size_dispatch_v1_phase30_baseline"
 FORECAST_DISCLOSURE = (
-    "각 brand의 과거 history만 사용한 deterministic seasonal/trend blend입니다. "
-    "하드코딩 값이나 통계 backtest 모델이 아니며 v0.9.1 운영 표시용입니다."
+    "Phase 30 baseline forecast입니다. 명세서 v0.9.1 data_size_dispatch_v1에 따라 "
+    "Prophet/SARIMAX/Holt-Winters/Linear/Mean 중 선택하며, LLM event regressor는 "
+    "Phase 31 이후로 보류되어 enabled=false입니다."
 )
 
 
@@ -237,13 +253,57 @@ def deterministic_forecast_values(values: list[float | None], source: str, steps
     }
 
 
-def combo_payload(row: dict[str, Any], *, market_rows: list[dict[str, Any]], target_brand: str, combo_source: str) -> dict[str, Any]:
+def combo_payload(
+    row: dict[str, Any],
+    *,
+    market_rows: list[dict[str, Any]],
+    target_brand: str,
+    combo_source: str,
+    phase30: bool = False,
+) -> dict[str, Any]:
     history = decode_json(row.get("metric_history"))
     recent = metric_recent(history)
     periods, values = sorted_history_values(history)
     period_unit = "월" if row.get("source") == "ubist" else "분기"
     selected = top6_rows(market_rows, target_brand)
-    forecast_periods = forecast_periods_from_history(periods, combo_source)
+    forecast_periods = (
+        phase30_forecast_periods_from_history(periods, combo_source)
+        if phase30 and phase30_forecast_periods_from_history is not None
+        else forecast_periods_from_history(periods, combo_source)
+    )
+    if phase30 and build_phase30_forecast_brand_entry is not None and build_phase30_market_forecast is not None and phase30_forecast_steps is not None:
+        steps = phase30_forecast_steps(combo_source)
+        brand_entries = [
+            build_phase30_forecast_brand_entry(
+                brand_row,
+                target_brand=target_brand,
+                source=combo_source,
+                measure=str(row.get("measure")),
+                forecast_steps_count=steps,
+            )
+            for brand_row in selected
+        ] or [
+            build_phase30_forecast_brand_entry(
+                row,
+                target_brand=str(row.get("brand_name")),
+                source=combo_source,
+                measure=str(row.get("measure")),
+                forecast_steps_count=steps,
+            )
+        ]
+        return {
+            "period_unit": period_unit,
+            "unit_label": row.get("unit_label"),
+            "history_periods": periods,
+            "forecast_periods": forecast_periods,
+            "target_brand": row.get("brand_name"),
+            "brands": brand_entries,
+            "baseline": {
+                "value_recent": safe_float(recent.get("raw_value")),
+                "ms_recent_pct": safe_float(recent.get("ms")),
+            },
+            "_phase30_market_forecast": build_phase30_market_forecast(market_rows, combo_source, steps),
+        }
     return {
         "period_unit": period_unit,
         "unit_label": row.get("unit_label"),
@@ -331,7 +391,7 @@ def main() -> None:
     conn = mariadb_connect()
     cur = conn.cursor()
     ensure_events_raw_table(conn)
-    poc_report = _load_phase29_poc_report()
+    poc_report = {"brands": {}}
     cur.execute("DELETE FROM `cache_deep_analysis`")
     batch: list[tuple[Any, ...]] = []
     inserted = 0
@@ -349,6 +409,7 @@ def main() -> None:
         market_id = ml_to_strategy(ml_id)
         market = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
         available_combos = available_combos_for_market(market)
+        phase30_enabled = brand in CANONICAL_25
         by_combo = {}
         rows_by_combo = {}
         for row in sorted(brand_rows, key=lambda r: (str(r["source"]), str(r["measure"]), str(r["ml_id"]))):
@@ -364,11 +425,25 @@ def main() -> None:
             if row is None:
                 by_combo[combo] = empty_combo_payload(source, measure, brand, base)
             else:
-                by_combo[combo] = combo_payload(row, market_rows=market_rows, target_brand=brand, combo_source=source)
+                by_combo[combo] = combo_payload(row, market_rows=market_rows, target_brand=brand, combo_source=source, phase30=phase30_enabled)
 
         events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
         simulation_by_combo = {}
         for combo, combo_data in by_combo.items():
+            if phase30_enabled and build_phase30_simulation_combo is not None:
+                market_forecast = combo_data.pop("_phase30_market_forecast", None)
+                if market_forecast is not None:
+                    source, measure = combo.split(".", 1)
+                    simulation_by_combo[combo] = build_phase30_simulation_combo(
+                        combo=combo,
+                        source=source,
+                        measure=measure,
+                        unit_label=combo_data.get("unit_label"),
+                        forecast_combo=combo_data,
+                        market_forecast=market_forecast,
+                        cut_b_events=events_payload.get("cut_b") or [],
+                    )
+                    continue
             sim_payload = _simulation_from_poc(brand, combo, poc_report, combo_data.get("unit_label"))
             if sim_payload:
                 simulation_by_combo[combo] = sim_payload
@@ -382,8 +457,9 @@ def main() -> None:
                 "forecast": {
                     "method": FORECAST_METHOD,
                     "disclaimer": FORECAST_DISCLOSURE,
-                    "is_statistical_model": False,
-                    "backtest_available": False,
+                    "is_statistical_model": True,
+                    "backtest_available": True,
+                    "event_regressor_enabled": False,
                     "phase29_poc": (poc_report.get("brands") or {}).get(brand),
                     "by_combo": by_combo,
                 },

@@ -5,9 +5,10 @@ The gate keeps the deep-analysis tab honest:
 
 * AI analysis may be empty until a real analysis producer writes it.
 * Events may be present only when they are real, not the legacy mock list.
-* Forecast may remain the Phase 24 deterministic history-only output, with
-  explicit disclosure that it is not a statistical model.
-* Simulation must stay empty until a real simulation producer exists.
+* Forecast may be the Phase 24 deterministic history-only output or the
+  Phase 30 data-size dispatch baseline, both with explicit disclosure.
+* Simulation may be present only when it is produced by an auditable producer
+  (Phase 29 POC or Phase 30 baseline), not by static placeholders.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import path under pyte
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_HTML = PROJECT_ROOT / "docs" / "reference" / "jw_market_hardcoded_mockup_v3_4.html"
 FORECAST_METHOD = "deterministic_history_only_v0.9.1"
+PHASE30_FORECAST_METHOD = "data_size_dispatch_v1_phase30_baseline"
 
 AI_PLACEHOLDER_KEYS = {"generated_at", "phenomenon", "cause", "prediction", "recommendation"}
 MOCK_EVENT_MARKERS = ("mock", "고정 mock", "화면 검증", "주요 경쟁 제품 출시")
@@ -126,18 +128,23 @@ def validate_forecast(brand: str, data: dict[str, Any]) -> list[ValidationIssue]
     if not forecast:
         return []
     issues: list[ValidationIssue] = []
-    if forecast.get("method") != FORECAST_METHOD:
+    method = forecast.get("method")
+    if method not in {FORECAST_METHOD, PHASE30_FORECAST_METHOD}:
         issues.append(
             ValidationIssue(
                 "forecast_method_changed",
                 brand,
-                {"actual": forecast.get("method"), "expected": FORECAST_METHOD},
+                {"actual": method, "expected": [FORECAST_METHOD, PHASE30_FORECAST_METHOD]},
             )
         )
-    if forecast.get("is_statistical_model") is not False:
-        issues.append(ValidationIssue("forecast_statistical_flag_wrong", brand, {"actual": forecast.get("is_statistical_model")}))
-    if forecast.get("backtest_available") is not False:
-        issues.append(ValidationIssue("forecast_backtest_flag_wrong", brand, {"actual": forecast.get("backtest_available")}))
+    if method == FORECAST_METHOD:
+        if forecast.get("is_statistical_model") is not False:
+            issues.append(ValidationIssue("forecast_statistical_flag_wrong", brand, {"actual": forecast.get("is_statistical_model")}))
+        if forecast.get("backtest_available") is not False:
+            issues.append(ValidationIssue("forecast_backtest_flag_wrong", brand, {"actual": forecast.get("backtest_available")}))
+    if method == PHASE30_FORECAST_METHOD:
+        if forecast.get("event_regressor_enabled") is not False:
+            issues.append(ValidationIssue("forecast_event_regressor_flag_wrong", brand, {"actual": forecast.get("event_regressor_enabled")}))
     if not forecast.get("disclaimer"):
         issues.append(ValidationIssue("forecast_disclaimer_missing", brand))
     return issues
@@ -154,6 +161,18 @@ def validate_simulation(brand: str, data: dict[str, Any]) -> list[ValidationIssu
     for combo, payload in by_combo.items():
         if isinstance(payload, dict) and payload.get("poc") is True and payload.get("backtest"):
             continue
+        if isinstance(payload, dict) and payload.get("phase30_baseline") is True:
+            for sim_brand, brand_payload in (payload.get("by_brand") or {}).items():
+                event_regressor = ((brand_payload.get("model") or {}).get("event_regressor") or {})
+                if event_regressor.get("enabled") is not False:
+                    issues.append(
+                        ValidationIssue(
+                            "phase30_event_regressor_enabled",
+                            brand,
+                            {"combo": combo, "sim_brand": sim_brand, "event_regressor": event_regressor},
+                        )
+                    )
+            continue
         issues.append(
             ValidationIssue(
                 "simulation_unverified_payload_present",
@@ -165,6 +184,10 @@ def validate_simulation(brand: str, data: dict[str, Any]) -> list[ValidationIssu
 
 
 def validate_no_anomaly(brand: str, data: dict[str, Any]) -> list[ValidationIssue]:
+    simulation = data.get("simulation") or {}
+    by_combo = simulation.get("by_combo") or {}
+    if by_combo and all(isinstance(payload, dict) and payload.get("phase30_baseline") is True for payload in by_combo.values()):
+        return []
     marker = _contains_marker(data, ("anomaly_signals", "최근 이상 변동", "자동 탐지"))
     if marker:
         return [ValidationIssue("anomaly_output_present", brand, {"marker": marker})]

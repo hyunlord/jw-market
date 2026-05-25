@@ -14,6 +14,8 @@ from typing import Any
 
 
 BASE_URL = "http://127.0.0.1:8013"
+PHASE25_FORECAST_METHOD = "deterministic_history_only_v0.9.1"
+PHASE30_FORECAST_METHOD = "data_size_dispatch_v1_phase30_baseline"
 VIEWS = ("market_landscape", "competitive_dynamics")
 SOURCE_MEASURES = {
     "UBIST": ("sales", "volume"),
@@ -97,15 +99,24 @@ def validate_forecast_disclosure(brand: str, *, base_url: str) -> list[Validatio
         return [ValidationIssue("deep_analysis_missing", brand)]
     forecast = payload["data"].get("forecast") or {}
     issues: list[ValidationIssue] = []
-    if forecast.get("method") != "deterministic_history_only_v0.9.1":
-        issues.append(ValidationIssue("forecast_method_missing", brand, detail={"method": forecast.get("method")}))
+    method = forecast.get("method")
+    if method not in {PHASE25_FORECAST_METHOD, PHASE30_FORECAST_METHOD}:
+        issues.append(ValidationIssue("forecast_method_missing", brand, detail={"method": method}))
     if not forecast.get("disclaimer"):
         issues.append(ValidationIssue("forecast_disclaimer_missing", brand))
-    if forecast.get("is_statistical_model") is not False:
-        issues.append(ValidationIssue("forecast_statistical_flag_wrong", brand, detail={"value": forecast.get("is_statistical_model")}))
-    if forecast.get("backtest_available") is not False:
-        issues.append(ValidationIssue("forecast_backtest_flag_wrong", brand, detail={"value": forecast.get("backtest_available")}))
-    if contains_key(payload.get("data"), "anomaly_signals"):
+    if method == PHASE25_FORECAST_METHOD:
+        if forecast.get("is_statistical_model") is not False:
+            issues.append(ValidationIssue("forecast_statistical_flag_wrong", brand, detail={"value": forecast.get("is_statistical_model")}))
+        if forecast.get("backtest_available") is not False:
+            issues.append(ValidationIssue("forecast_backtest_flag_wrong", brand, detail={"value": forecast.get("backtest_available")}))
+    if method == PHASE30_FORECAST_METHOD and forecast.get("event_regressor_enabled") is not False:
+        issues.append(ValidationIssue("forecast_event_regressor_flag_wrong", brand, detail={"value": forecast.get("event_regressor_enabled")}))
+    simulation = payload["data"].get("simulation") or {}
+    phase30_simulation = bool(simulation.get("by_combo")) and all(
+        isinstance(sim_payload, dict) and sim_payload.get("phase30_baseline") is True
+        for sim_payload in (simulation.get("by_combo") or {}).values()
+    )
+    if contains_key(payload.get("data"), "anomaly_signals") and not phase30_simulation:
         issues.append(ValidationIssue("anomaly_signals_present", brand))
     return issues
 

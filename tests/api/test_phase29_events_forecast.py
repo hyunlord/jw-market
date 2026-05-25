@@ -80,7 +80,7 @@ def test_phase29_sarimax_poc_backtest_outputs_metrics() -> None:
             assert 0 <= metrics["direction_acc"] <= 1
 
 
-def test_phase29_cache_contains_cut_a_b_and_poc_for_livalo() -> None:
+def test_phase29_cache_contains_cut_a_b_and_phase30_simulation_for_livalo() -> None:
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -97,10 +97,11 @@ def test_phase29_cache_contains_cut_a_b_and_poc_for_livalo() -> None:
     assert all(event["score"] >= 80 and event["derivation"] == "llm_direct" for event in events["cut_b"])
 
     simulation = payload["data"]["simulation"]["by_combo"]["UBIST.sales"]
-    assert simulation["poc"] is True
-    assert simulation["backtest"]["brand"] == "리바로"
-    assert simulation["backtest"]["cut_b_event_count_all_history"] >= 1
-    assert simulation["backtest"]["baseline"]["metrics"]["rmse"] >= 0
+    assert simulation["phase30_baseline"] is True
+    assert "리바로" in simulation["by_brand"]
+    target = simulation["by_brand"]["리바로"]
+    assert target["model"]["selection_policy"] == "data_size_dispatch_v1"
+    assert target["model"]["event_regressor"]["enabled"] is False
 
 
 def test_phase29_validation_pipeline_passes() -> None:
