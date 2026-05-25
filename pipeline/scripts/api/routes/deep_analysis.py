@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 from urllib.parse import unquote
 
@@ -10,6 +11,8 @@ from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 
 
 router = APIRouter()
+
+KST = timezone(timedelta(hours=9))
 
 
 def _load_ai_analysis(brand: str) -> dict:
@@ -31,12 +34,27 @@ def _load_ai_analysis(brand: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _format_generated_at(value: object) -> str:
+    if isinstance(value, datetime):
+        generated_at = value
+    else:
+        try:
+            generated_at = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            generated_at = datetime.now(KST)
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=KST)
+    else:
+        generated_at = generated_at.astimezone(KST)
+    return generated_at.isoformat(timespec="seconds")
+
+
 @router.get("/api/deep-analysis/{brand_name}")
 def deep_analysis(brand_name: str) -> dict:
     brand = unquote(brand_name)
     row = db.fetch_one(
         """
-        SELECT response_json
+        SELECT response_json, updated_at
         FROM cache_deep_analysis
         WHERE brand = %s
         LIMIT 1
@@ -48,6 +66,7 @@ def deep_analysis(brand_name: str) -> dict:
     payload = compose_cached_json(row["response_json"])
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_deep_analysis"})
+    payload["generated_at"] = _format_generated_at(row.get("updated_at"))
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
         data["ai_analysis"] = _load_ai_analysis(brand)
