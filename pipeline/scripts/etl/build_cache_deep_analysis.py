@@ -9,6 +9,7 @@ from typing import Any
 
 from cache_build_common import (
     api_source,
+    CANONICAL_25,
     decode_json,
     dump_payload,
     fetch_all,
@@ -22,6 +23,15 @@ from cache_build_common import (
     safe_float,
     source_list,
 )
+try:
+    from phase29_events import build_events_for_cache, ensure_events_raw_table
+except ModuleNotFoundError:  # pragma: no cover - package import path under pytest
+    from pipeline.scripts.etl.phase29_events import build_events_for_cache, ensure_events_raw_table
+
+try:
+    from pipeline.scripts.forecast.backtest import run_phase29_poc
+except ModuleNotFoundError:  # pragma: no cover - script execution with partial path
+    run_phase29_poc = None
 
 
 ALL_COMBOS = [
@@ -47,6 +57,63 @@ FORECAST_DISCLOSURE = (
     "각 brand의 과거 history만 사용한 deterministic seasonal/trend blend입니다. "
     "하드코딩 값이나 통계 backtest 모델이 아니며 v0.9.1 운영 표시용입니다."
 )
+
+
+def _load_phase29_poc_report() -> dict[str, Any]:
+    if run_phase29_poc is None:
+        return {"brands": {}}
+    try:
+        return run_phase29_poc(use_llm=False, persist=True)
+    except Exception as exc:  # keep cache build resilient and auditable
+        return {"brands": {}, "error": str(exc)}
+
+
+def _simulation_from_poc(brand: str, combo: str, poc_report: dict[str, Any], unit_label: str | None) -> dict[str, Any] | None:
+    brand_report = (poc_report.get("brands") or {}).get(brand)
+    if not brand_report or brand_report.get("combo") != combo:
+        return None
+    forecast = brand_report.get("with_llm", {}).get("forecast") or []
+    baseline = brand_report.get("baseline", {}).get("forecast") or []
+    periods = brand_report.get("test_periods") or []
+    if not forecast:
+        forecast = baseline
+    if not forecast:
+        return None
+    upper = [float(value) * 1.1 for value in forecast]
+    lower = [max(0.0, float(value) * 0.9) for value in forecast]
+    first = float(forecast[0]) if forecast else 0.0
+    last = float(forecast[-1]) if forecast else first
+    momentum = ((last - first) / first * 100 / max(len(forecast) - 1, 1)) if first else 0.0
+    period_unit = "분기" if combo.startswith("IQVIA") else "월"
+    return {
+        "poc": True,
+        "period_unit": period_unit,
+        "unit_label": unit_label,
+        "available_brands": [{"brand": brand, "is_target": True, "is_jw": True}],
+        "backtest": brand_report,
+        "by_brand": {
+            brand: {
+                "forecast_periods": periods,
+                "target_period": periods[-1] if periods else None,
+                "scenarios": {
+                    "base": {"values": [float(value) for value in forecast], "final_value": float(forecast[-1])},
+                    "upper": {"values": upper, "final_value": upper[-1]},
+                    "lower": {"values": lower, "final_value": lower[-1]},
+                },
+                "horizon_ci_levels": {"1y": 0.8, "3y": 0.65, "5y": 0.5, "10y": 0.35},
+                "market_comparison": {
+                    "delta_pp": 0.0,
+                    "market_cagr_pct": None,
+                    "brand_cagr_pct": None,
+                },
+                "momentum": {
+                    "value_pct_per_period": round(momentum, 4),
+                    "interpretation": "Phase 29 SARIMAX POC hold-out forecast slope",
+                },
+                "sentiments": brand_report.get("sentiments") or [],
+            }
+        },
+    }
 
 
 def sorted_history_values(history: dict[str, Any]) -> tuple[list[str], list[float | None]]:
@@ -263,6 +330,8 @@ def main() -> None:
     sql = f"REPLACE INTO `cache_deep_analysis` ({names}) VALUES ({placeholders})"
     conn = mariadb_connect()
     cur = conn.cursor()
+    ensure_events_raw_table(conn)
+    poc_report = _load_phase29_poc_report()
     cur.execute("DELETE FROM `cache_deep_analysis`")
     batch: list[tuple[Any, ...]] = []
     inserted = 0
@@ -297,6 +366,13 @@ def main() -> None:
             else:
                 by_combo[combo] = combo_payload(row, market_rows=market_rows, target_brand=brand, combo_source=source)
 
+        events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
+        simulation_by_combo = {}
+        for combo, combo_data in by_combo.items():
+            sim_payload = _simulation_from_poc(brand, combo, poc_report, combo_data.get("unit_label"))
+            if sim_payload:
+                simulation_by_combo[combo] = sim_payload
+
         payload = {
             "brand": brand,
             "market_id": market_id,
@@ -308,10 +384,11 @@ def main() -> None:
                     "disclaimer": FORECAST_DISCLOSURE,
                     "is_statistical_model": False,
                     "backtest_available": False,
+                    "phase29_poc": (poc_report.get("brands") or {}).get(brand),
                     "by_combo": by_combo,
                 },
-                "simulation": {"by_combo": {}},
-                "events": [],
+                "simulation": {"by_combo": simulation_by_combo},
+                "events": events_payload,
                 "ai_analysis": {},
             },
             "market_meta": {

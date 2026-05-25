@@ -99,9 +99,13 @@ def validate_ai_analysis(brand: str, data: dict[str, Any]) -> list[ValidationIss
 
 def validate_events(brand: str, data: dict[str, Any]) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    events = data.get("events") or []
-    if not isinstance(events, list):
-        return [ValidationIssue("events_not_list", brand, {"type": type(events).__name__})]
+    raw_events = data.get("events") or []
+    if isinstance(raw_events, dict):
+        events = list(raw_events.get("cut_a") or []) + list(raw_events.get("cut_b") or [])
+    elif isinstance(raw_events, list):
+        events = raw_events
+    else:
+        return [ValidationIssue("events_invalid_shape", brand, {"type": type(raw_events).__name__})]
     for event in events:
         if str(event.get("source", "")).strip().lower() == "mock":
             issues.append(ValidationIssue("mock_event_source", brand, {"event_id": event.get("id")}))
@@ -146,13 +150,18 @@ def validate_simulation(brand: str, data: dict[str, Any]) -> list[ValidationIssu
     by_combo = simulation.get("by_combo") or {}
     if not by_combo:
         return []
-    return [
-        ValidationIssue(
-            "simulation_generated_payload_present",
-            brand,
-            {"combos": sorted(by_combo.keys())[:10], "combo_count": len(by_combo)},
+    issues: list[ValidationIssue] = []
+    for combo, payload in by_combo.items():
+        if isinstance(payload, dict) and payload.get("poc") is True and payload.get("backtest"):
+            continue
+        issues.append(
+            ValidationIssue(
+                "simulation_unverified_payload_present",
+                brand,
+                {"combo": combo, "keys": sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__},
+            )
         )
-    ]
+    return issues
 
 
 def validate_no_anomaly(brand: str, data: dict[str, Any]) -> list[ValidationIssue]:

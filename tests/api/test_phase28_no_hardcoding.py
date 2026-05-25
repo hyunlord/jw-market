@@ -47,11 +47,13 @@ def test_forecast_keeps_phase24_deterministic_disclosure() -> None:
     assert forecast.get("disclaimer")
 
 
-def test_simulation_is_empty_until_generated_simulation_exists() -> None:
+def test_simulation_contains_no_unverified_generated_payloads() -> None:
     data = _deep_data("리바로")
     assert validate_simulation("리바로", data) == []
     simulation = data.get("simulation") or {}
-    assert (simulation.get("by_combo") or {}) == {}
+    for payload in (simulation.get("by_combo") or {}).values():
+        assert payload.get("poc") is True
+        assert payload.get("backtest")
 
 
 def test_anomaly_signals_remain_removed_from_deep_analysis() -> None:
