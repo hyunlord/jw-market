@@ -26,8 +26,8 @@ def test_phase304_guardmet_ci_starts_at_history_endpoint() -> None:
     assert scenarios["base"]["values"][0] == history_last_value
     assert scenarios["upper"]["values"][0] == history_last_value
     assert scenarios["lower"]["values"][0] == history_last_value
-    assert scenarios["upper"]["method"] == "selected_model_ci_upper_95_natural"
-    assert scenarios["lower"]["method"] == "selected_model_ci_lower_95_natural"
+    assert scenarios["upper"]["method"] == "selected_model_ci_upper_95_natural_with_funnel_floor"
+    assert scenarios["lower"]["method"] == "selected_model_ci_lower_95_natural_with_funnel_floor"
 
 
 def test_phase304_ci_width_is_zero_at_anchor_then_expands() -> None:

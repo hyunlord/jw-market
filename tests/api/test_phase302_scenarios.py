@@ -37,11 +37,11 @@ def test_phase302_simulation_uses_95_ci_natural_methods() -> None:
         "3y": 0.95,
         "5y": 0.95,
         "10y": 0.95,
-        "method": "natural_accumulation_95_only",
-        "note": "Phase 30.2: horizon 차등 제거, 모든 horizon 95% CI 자연 누적",
+        "method": "selected_model_natural_with_funnel_floor",
+        "note": "Phase 30.7: native 95% CI with horizon-scaled funnel floor",
     }
-    assert sim["scenarios"]["upper"]["method"] == "selected_model_ci_upper_95_natural"
-    assert sim["scenarios"]["lower"]["method"] == "selected_model_ci_lower_95_natural"
+    assert sim["scenarios"]["upper"]["method"] == "selected_model_ci_upper_95_natural_with_funnel_floor"
+    assert sim["scenarios"]["lower"]["method"] == "selected_model_ci_lower_95_natural_with_funnel_floor"
     assert "anomaly_signals" not in sim
     assert "stress" not in sim
 

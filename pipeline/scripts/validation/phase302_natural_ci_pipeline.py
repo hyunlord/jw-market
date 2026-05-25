@@ -25,8 +25,8 @@ HORIZON_CI_LEVELS = {
     "3y": 0.95,
     "5y": 0.95,
     "10y": 0.95,
-    "method": "natural_accumulation_95_only",
-    "note": "Phase 30.2: horizon 차등 제거, 모든 horizon 95% CI 자연 누적",
+    "method": "selected_model_natural_with_funnel_floor",
+    "note": "Phase 30.7: native 95% CI with horizon-scaled funnel floor",
 }
 
 
@@ -82,9 +82,9 @@ def _validate_sim_brand(brand: str, combo: str, sim_brand: str, payload: dict[st
     scenarios = payload.get("scenarios") or {}
     upper = scenarios.get("upper") or {}
     lower = scenarios.get("lower") or {}
-    if upper.get("method") != "selected_model_ci_upper_95_natural":
+    if upper.get("method") != "selected_model_ci_upper_95_natural_with_funnel_floor":
         issues.append(Issue("upper_method_not_natural_95", brand, combo, sim_brand, {"method": upper.get("method")}))
-    if lower.get("method") != "selected_model_ci_lower_95_natural":
+    if lower.get("method") != "selected_model_ci_lower_95_natural_with_funnel_floor":
         issues.append(Issue("lower_method_not_natural_95", brand, combo, sim_brand, {"method": lower.get("method")}))
     for forbidden in ("anomaly_signals", "stress"):
         if forbidden in payload:

@@ -119,9 +119,9 @@ def validate() -> dict[str, Any]:
                         issues.append(Issue("ci_width_t1_not_positive", brand, combo_key, sim_brand, {"width_t1": width_t1}))
                     if width_last <= width_t1:
                         issues.append(Issue("ci_width_not_accumulating", brand, combo_key, sim_brand, {"width_t1": width_t1, "width_last": width_last}))
-                if (scenarios.get("upper") or {}).get("method") != "selected_model_ci_upper_95_natural":
+                if (scenarios.get("upper") or {}).get("method") != "selected_model_ci_upper_95_natural_with_funnel_floor":
                     issues.append(Issue("upper_method_not_ci_direct", brand, combo_key, sim_brand, {"method": (scenarios.get("upper") or {}).get("method")}))
-                if (scenarios.get("lower") or {}).get("method") != "selected_model_ci_lower_95_natural":
+                if (scenarios.get("lower") or {}).get("method") != "selected_model_ci_lower_95_natural_with_funnel_floor":
                     issues.append(Issue("lower_method_not_ci_direct", brand, combo_key, sim_brand, {"method": (scenarios.get("lower") or {}).get("method")}))
 
     return {

@@ -41,8 +41,8 @@ HORIZON_CI_LEVELS = {
     "3y": 0.95,
     "5y": 0.95,
     "10y": 0.95,
-    "method": "natural_accumulation_95_only",
-    "note": "Phase 30.2: horizon 차등 제거, 모든 horizon 95% CI 자연 누적",
+    "method": "selected_model_natural_with_funnel_floor",
+    "note": "Phase 30.7: native 95% CI with horizon-scaled funnel floor",
 }
 SOURCE_TO_INTERNAL = {"UBIST": "ubist", "IQVIA": "iqvia_nsa", "ubist": "ubist", "iqvia_nsa": "iqvia_nsa"}
 UNIT_LABELS = {
@@ -182,6 +182,26 @@ def _anchor_forecast_to_history(history_values: list[float], forecast_result: di
     for lower_key in ("ci_lower_95",):
         ci[lower_key] = [anchor_value] + list(ci.get(lower_key) or [])
     anchored["ci"] = ci
+
+    residual_std = float(forecast_result.get("residual_std") or 0.0)
+    source = str(forecast_result.get("source") or "")
+    if residual_std > 0 and source:
+        point_arr = np.asarray(anchored.get("point_forecast") or [], dtype=float)
+        upper_arr = np.asarray(ci.get("ci_upper_95") or [], dtype=float)
+        lower_arr = np.asarray(ci.get("ci_lower_95") or [], dtype=float)
+        upper_new, lower_new, funnel_meta = _apply_horizon_funnel_floor(
+            point_arr,
+            upper_arr,
+            lower_arr,
+            residual_std,
+            source,
+        )
+        ci["ci_upper_95"] = _clip(upper_new)
+        ci["ci_lower_95"] = _clip(lower_new)
+        ci["funnel_floor_applied"] = funnel_meta["funnel_applied_steps"] > 0
+        ci["funnel_meta"] = funnel_meta
+        anchored["ci"] = ci
+
     _enforce_accumulating_ci_width(anchored)
     return anchored
 
@@ -197,6 +217,50 @@ def future_periods_from_history(periods: list[str], source: str, steps: int | No
         out.append(current)
         current = _next_month(current) if SOURCE_TO_INTERNAL[source] == "ubist" else _next_quarter(current)
     return out
+
+
+def _apply_horizon_funnel_floor(
+    point: np.ndarray,
+    upper: np.ndarray,
+    lower: np.ndarray,
+    residual_std: float,
+    source: str,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Apply Direction B: max(native CI width, horizon-scaled funnel width)."""
+    n = min(len(point), len(upper), len(lower))
+    if n == 0:
+        return upper, lower, {"funnel_applied_steps": 0, "funnel_total_steps": 0}
+
+    seasonality = 12 if SOURCE_TO_INTERNAL.get(source) == "ubist" else 4
+    z_95 = 1.96
+    upper_new = np.array(upper, dtype=float, copy=True)
+    lower_new = np.array(lower, dtype=float, copy=True)
+    funnel_applied_count = 0
+
+    for t in range(1, n):
+        funnel_width = 2.0 * z_95 * residual_std * float(np.sqrt(t / seasonality))
+        native_width = max(0.0, float(upper[t]) - float(lower[t]))
+        if funnel_width <= native_width:
+            continue
+
+        half = funnel_width / 2.0
+        new_upper = float(point[t]) + half
+        new_lower = float(point[t]) - half
+        if new_lower < 0.0:
+            new_lower = 0.0
+            new_upper = funnel_width
+
+        upper_new[t] = max(float(point[t]), new_upper)
+        lower_new[t] = min(float(point[t]), max(0.0, new_lower))
+        funnel_applied_count += 1
+
+    return upper_new, lower_new, {
+        "funnel_applied_steps": funnel_applied_count,
+        "funnel_total_steps": n - 1,
+        "funnel_floor_coefficient": "2 * 1.96 * residual_std * sqrt(t / seasonality)",
+        "seasonality": seasonality,
+        "residual_std": float(residual_std),
+    }
 
 
 def _enforce_accumulating_ci_width(forecast_result: dict[str, Any]) -> None:
@@ -495,6 +559,7 @@ def _fit_values(periods: list[str], values: list[float], source: str, steps: int
     return {
         "point_forecast": point,
         "residual_std": residual_std,
+        "source": source,
         "dispatch_spec": spec,
         "actual_model": actual_model,
         "ci": ci,
@@ -759,14 +824,14 @@ def build_simulation_combo(
                 },
                 "upper": {
                     "label": "상위 (Best)",
-                    "method": "selected_model_ci_upper_95_natural",
+                    "method": "selected_model_ci_upper_95_natural_with_funnel_floor",
                     "values": upper_values,
                     "final_value": final_upper,
                     "delta_pct_vs_base": ((final_upper - final_base) / final_base * 100) if final_base and final_upper is not None else None,
                 },
                 "lower": {
                     "label": "하위 (Worst)",
-                    "method": "selected_model_ci_lower_95_natural",
+                    "method": "selected_model_ci_lower_95_natural_with_funnel_floor",
                     "values": lower_values,
                     "final_value": final_lower,
                     "delta_pct_vs_base": ((final_lower - final_base) / final_base * 100) if final_base and final_lower is not None else None,
