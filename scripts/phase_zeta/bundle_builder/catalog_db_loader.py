@@ -13,10 +13,24 @@ ATC4_FALLBACK = {
 }
 
 MKT_TEAM_FALLBACK = {
+    # MI Master 2026-05-18 기준. Long-term source는 catalog ETL로
+    # 통합해야 하지만, Phase ζ bundle 생성은 이 fallback을 사용한다.
     "ml_001": "MKT 1팀",
-    "ml_003": "MKT 2팀",
+    "ml_002": "MKT 1팀",
+    "ml_003": "MKT 1팀",
+    "ml_004": "MKT 1팀",
+    "ml_005": "MKT 1팀",
     "ml_006": "MKT 1팀",
-    "ml_013": "MKT 3팀",
+    "ml_007": "MKT 1팀",
+    "ml_008": "MKT 1팀",
+    "ml_009": "MKT 1팀",
+    "ml_010": "MKT 1팀",
+    "ml_011": "MKT 1팀",
+    "ml_012": "MKT 2팀",
+    "ml_013": "MKT 2팀",
+    "ml_014": "MKT 3팀",
+    "ml_015": "MKT 2팀",
+    "ml_016": "MKT 3팀",
 }
 
 
