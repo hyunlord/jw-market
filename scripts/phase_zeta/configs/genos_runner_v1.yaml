@@ -12,6 +12,15 @@ phase_zeta_runner:
     timeout_sec: 240
 
   validator:
+    tolerance_by_type:
+      currency_krw: 0.01
+      volume_rx: 0.5
+      unit_pack: 0.5
+      percent: 0.05
+      percent_signed: 0.05
+      kpi: 0.05
+      rank: 0
+    relative_tolerance: 0.001
     tolerance_default: 0.01
     tolerance_percent: 0.05
     tolerance_kpi: 0.05

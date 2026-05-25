@@ -12,38 +12,44 @@ NUMBER_PATTERNS = [
         "name": "comma_raw_value",
         "pattern": re.compile(r"(?<![.\d])(\d{1,3}(?:,\d{3})+(?:\.\d+)?)(?!\d)"),
         "type": "float",
-        "tolerance_key": "tolerance_default",
         "low_priority": False,
     },
     {
         "name": "percent",
         "pattern": re.compile(r"([+-]?\d+(?:\.\d+)?)\s*%"),
         "type": "float",
-        "tolerance_key": "tolerance_percent",
         "low_priority": False,
     },
     {
         "name": "rank",
         "pattern": re.compile(r"(?:rank|순위)\s*[:=]?\s*(\d+)\s*(?:위)?|(?<!\d)(\d+)\s*위"),
         "type": "int",
-        "tolerance_key": "zero",
         "low_priority": False,
     },
     {
         "name": "kpi_value",
         "pattern": re.compile(r"(?:EI|Momentum|CAGR|HHI)\s*[:=]?\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE),
         "type": "float",
-        "tolerance_key": "tolerance_kpi",
         "low_priority": False,
     },
     {
         "name": "plain_int",
         "pattern": re.compile(r"(?<![\d,.])(\d{1,6})(?![\d,.])"),
         "type": "int",
-        "tolerance_key": "zero",
         "low_priority": True,
     },
 ]
+
+
+DEFAULT_TOLERANCE_BY_TYPE = {
+    "currency_krw": 0.01,
+    "volume_rx": 0.5,
+    "unit_pack": 0.5,
+    "percent": 0.05,
+    "percent_signed": 0.05,
+    "kpi": 0.05,
+    "rank": 0.0,
+}
 
 
 @dataclass
@@ -91,16 +97,74 @@ def _match_group(match: re.Match[str]) -> str:
     return match.group(0)
 
 
-def _tolerance(spec: dict[str, Any], config: ValidatorConfig | None = None) -> float:
-    key = spec["tolerance_key"]
-    if key == "zero":
-        return 0.0
+def _default_config() -> ValidatorConfig:
+    return ValidatorConfig(tolerance_default=0.01, tolerance_percent=0.05, tolerance_kpi=0.05)
+
+
+def _nearby_context(raw_text: str, full_context: str, before: int = 30, after: int = 40) -> str:
+    pos = (full_context or "").find(raw_text)
+    if pos < 0:
+        return full_context or ""
+    return full_context[max(0, pos - before) : pos + len(raw_text) + after]
+
+
+def classify_number_context(raw_text: str, full_context: str, value: float | int) -> str:
+    """Classify a rendered number so matching can use the right tolerance."""
+
+    text = full_context or ""
+    nearby = _nearby_context(raw_text, text)
+    after = nearby.split(raw_text, 1)[1] if raw_text in nearby else nearby
+    before = nearby.split(raw_text, 1)[0] if raw_text in nearby else nearby
+
+    if "%" in raw_text:
+        return "percent_signed" if raw_text.strip().startswith(("+", "-")) else "percent"
+
+    if "위" in raw_text or re.search(r"(rank|순위)\s*[:=]?\s*$", before, flags=re.IGNORECASE):
+        return "rank"
+    if re.match(r"^\s*위", after):
+        return "rank"
+
+    if re.search(r"(EI|Momentum|CAGR|HHI)\s*[:=]?\s*$", before, flags=re.IGNORECASE):
+        return "kpi"
+
+    if re.match(r"^\s*(Rx|처방량|처방건수|건)", after):
+        return "volume_rx"
+
+    if re.match(r"^\s*(정|캡슐|바이알|포|병|개)", after):
+        return "unit_pack"
+
+    if re.match(r"^\s*(KRW|원|₩)", after):
+        return "currency_krw"
+
+    if any(ind in nearby for ind in ("Rx", "처방량", "처방 ", "처방건수")) and not any(
+        ind in after[:20] for ind in ("KRW", "₩")
+    ):
+        return "volume_rx"
+
+    if any(ind in nearby for ind in ("KRW", "₩")):
+        return "currency_krw"
+
+    if re.search(r"(EI|Momentum|CAGR|HHI)", nearby, flags=re.IGNORECASE):
+        return "kpi"
+
+    if "," in raw_text and float(value) >= 1000:
+        return "currency_krw"
+
+    return "currency_krw"
+
+
+def _tolerance_for_type(number_type: str, config: ValidatorConfig | None = None) -> float:
     if config is None:
-        config = ValidatorConfig(tolerance_default=0.01, tolerance_percent=0.05, tolerance_kpi=0.05)
-    return float(getattr(config, key))
+        config = _default_config()
+    table = getattr(config, "tolerance_by_type", None) or DEFAULT_TOLERANCE_BY_TYPE
+    if number_type in table:
+        return float(table[number_type])
+    return float(getattr(config, "tolerance_default", DEFAULT_TOLERANCE_BY_TYPE["currency_krw"]))
 
 
 def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[dict[str, Any]]:
+    if config is None:
+        config = _default_config()
     extracted: list[dict[str, Any]] = []
     for spec in NUMBER_PATTERNS:
         for match in spec["pattern"].finditer(text or ""):
@@ -109,12 +173,15 @@ def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[di
                 value = _coerce_number(value_text, spec["type"])
             except ValueError:
                 continue
+            raw_text = match.group(0)
+            number_type = classify_number_context(raw_text, text or "", value)
             extracted.append(
                 {
                     "value": value,
-                    "raw_text": match.group(0),
+                    "raw_text": raw_text,
                     "pattern": spec["name"],
-                    "tolerance": _tolerance(spec, config),
+                    "number_type": number_type,
+                    "tolerance": _tolerance_for_type(number_type, config),
                     "low_priority": bool(spec.get("low_priority", False)),
                 }
             )
@@ -154,6 +221,31 @@ def find_match(value: float | int, bundle_index: dict[float, list[str]], toleran
     return best_path
 
 
+def find_match_unit_aware(
+    value: float | int,
+    bundle_index: dict[float, list[str]],
+    number_type: str,
+    config: ValidatorConfig | None = None,
+) -> str | None:
+    if config is None:
+        config = _default_config()
+
+    numeric = float(value)
+    tolerance = _tolerance_for_type(number_type, config)
+    relative_tolerance = float(getattr(config, "relative_tolerance", 0.001))
+    best_path: str | None = None
+    best_delta: float | None = None
+
+    for bundle_value, paths in bundle_index.items():
+        delta = abs(bundle_value - numeric)
+        matches_absolute = delta <= tolerance
+        matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= relative_tolerance
+        if (matches_absolute or matches_relative) and (best_delta is None or delta < best_delta):
+            best_delta = delta
+            best_path = paths[0]
+    return best_path
+
+
 def _stage_contexts(stage_dict: dict[str, Any]) -> dict[str, str]:
     contexts = {
         "title": str(stage_dict.get("title", "")),
@@ -176,13 +268,15 @@ def validate_stage_output(
 
     for context_name, text in _stage_contexts(stage_dict).items():
         for item in extract_numbers(text, config):
-            matched_path = find_match(item["value"], bundle_index, item["tolerance"])
+            matched_path = find_match_unit_aware(item["value"], bundle_index, item["number_type"], config)
             record = {
                 "stage": stage,
                 "context": context_name,
                 "value": item["value"],
                 "raw_text": item["raw_text"],
                 "pattern": item["pattern"],
+                "number_type": item["number_type"],
+                "tolerance": item["tolerance"],
                 "matched_path": matched_path,
                 "low_priority": item["low_priority"],
             }

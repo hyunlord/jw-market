@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -22,6 +22,18 @@ class ValidatorConfig:
     tolerance_default: float
     tolerance_percent: float
     tolerance_kpi: float
+    tolerance_by_type: dict[str, float] = field(
+        default_factory=lambda: {
+            "currency_krw": 0.01,
+            "volume_rx": 0.5,
+            "unit_pack": 0.5,
+            "percent": 0.05,
+            "percent_signed": 0.05,
+            "kpi": 0.05,
+            "rank": 0.0,
+        }
+    )
+    relative_tolerance: float = 0.001
     cascade_skip_on_fail: bool = False
     bundle_mart_check_enabled: bool = True
     bundle_invariant_check_enabled: bool = True
@@ -78,6 +90,22 @@ class RunnerConfig:
                 tolerance_default=float(validator_raw["tolerance_default"]),
                 tolerance_percent=float(validator_raw["tolerance_percent"]),
                 tolerance_kpi=float(validator_raw["tolerance_kpi"]),
+                tolerance_by_type={
+                    str(key): float(value)
+                    for key, value in validator_raw.get(
+                        "tolerance_by_type",
+                        {
+                            "currency_krw": validator_raw["tolerance_default"],
+                            "volume_rx": 0.5,
+                            "unit_pack": 0.5,
+                            "percent": validator_raw["tolerance_percent"],
+                            "percent_signed": validator_raw["tolerance_percent"],
+                            "kpi": validator_raw["tolerance_kpi"],
+                            "rank": 0.0,
+                        },
+                    ).items()
+                },
+                relative_tolerance=float(validator_raw.get("relative_tolerance", 0.001)),
                 cascade_skip_on_fail=bool(validator_raw.get("cascade_skip_on_fail", False)),
                 bundle_mart_check_enabled=bool(validator_raw.get("bundle_mart_check_enabled", True)),
                 bundle_invariant_check_enabled=bool(validator_raw.get("bundle_invariant_check_enabled", True)),
