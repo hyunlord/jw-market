@@ -16,10 +16,10 @@ if str(PHASE_ZETA_ROOT) not in sys.path:
     sys.path.insert(0, str(PHASE_ZETA_ROOT))
 
 from phase_zeta_runner.config import RunnerConfig
-from phase_zeta_runner.llm_runner import call_gemini
+from phase_zeta_runner.llm_runner import call_llm
 from phase_zeta_runner.metric_validator import validate_output
 from phase_zeta_runner.output_composer import compose_and_persist
-from phase_zeta_runner.prompt_builder import build_unified_prompt
+from phase_zeta_runner.prompt_builder import build_question_string
 
 
 def _json_dumps(obj: Any, indent: int | None = 2) -> str:
@@ -101,17 +101,10 @@ def main() -> int:
     audit_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_at = datetime.now()
-    prompt = build_unified_prompt(bundle, config)
-    _write_json(
-        audit_dir / f"{args.brand}_prompt_full.json",
-        {
-            "system_instruction": prompt.system_instruction,
-            "user_message": prompt.user_message,
-            "response_schema": prompt.response_schema,
-        },
-    )
+    question = build_question_string(bundle, config)
+    _write_text(audit_dir / f"{args.brand}_question.txt", question)
 
-    gemini_result = call_gemini(prompt, config)
+    gemini_result = call_llm(bundle, config)
     validation_result = validate_output(gemini_result.parsed_output, bundle, config.validator)
 
     composition = None
@@ -132,6 +125,7 @@ def main() -> int:
         composition_error = composition.error if composition else None
 
     run_id = composition.run_id if composition else None
+    _write_json(audit_dir / f"{args.brand}_genos_response.json", {"text": gemini_result.raw_response})
     _write_json(audit_dir / f"{args.brand}_gemini_raw_response.json", {"text": gemini_result.raw_response})
     _write_json(audit_dir / f"{args.brand}_parsed_output.json", gemini_result.parsed_output)
     _write_json(audit_dir / f"{args.brand}_validation_result.json", validation_result.to_dict())

@@ -7,27 +7,14 @@ import yaml
 
 
 @dataclass(frozen=True)
-class LlmConfig:
-    provider: str
-    project_id: str
-    region: str
-    model_id: str
-    temperature: float
-    top_p: float
-    top_k: int
-    max_output_tokens: int
-    response_mime_type: str
-
-
-@dataclass(frozen=True)
-class AuthConfig:
-    method: str = "workload_identity"
-
-
-@dataclass(frozen=True)
-class PricingConfig:
-    input_per_million_usd: float
-    output_per_million_usd: float
+class GenOSConfig:
+    workflow_id: int
+    admin_api_url: str
+    workflow_api_url: str
+    endpoint_path: str
+    request_payload_mode: str
+    response_output_path: str
+    timeout_sec: int
 
 
 @dataclass(frozen=True)
@@ -57,9 +44,7 @@ class RetryConfig:
 class RunnerConfig:
     config_version: str
     builder_version: str
-    llm: LlmConfig
-    auth: AuthConfig
-    pricing: PricingConfig
+    genos: GenOSConfig
     validator: ValidatorConfig
     composer: ComposerConfig
     retry: RetryConfig
@@ -68,32 +53,21 @@ class RunnerConfig:
     def from_yaml(cls, path: str | Path) -> "RunnerConfig":
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         root = raw.get("phase_zeta_runner", raw)
-        llm_raw = root["llm"]
-        auth_raw = root.get("auth", {})
-        pricing_raw = root["pricing"]
+        genos_raw = root["genos"]
         validator_raw = root["validator"]
         composer_raw = root["composer"]
         retry_raw = root["retry"]
         return cls(
             config_version=str(root["config_version"]),
             builder_version=str(root["builder_version"]),
-            llm=LlmConfig(
-                provider=str(llm_raw["provider"]),
-                project_id=str(llm_raw["project_id"]),
-                region=str(llm_raw["region"]),
-                model_id=str(llm_raw["model_id"]),
-                temperature=float(llm_raw["temperature"]),
-                top_p=float(llm_raw["top_p"]),
-                top_k=int(llm_raw["top_k"]),
-                max_output_tokens=int(llm_raw["max_output_tokens"]),
-                response_mime_type=str(llm_raw["response_mime_type"]),
-            ),
-            auth=AuthConfig(
-                method=str(auth_raw.get("method", "workload_identity")),
-            ),
-            pricing=PricingConfig(
-                input_per_million_usd=float(pricing_raw["input_per_million_usd"]),
-                output_per_million_usd=float(pricing_raw["output_per_million_usd"]),
+            genos=GenOSConfig(
+                workflow_id=int(genos_raw["workflow_id"]),
+                admin_api_url=str(genos_raw["admin_api_url"]).rstrip("/"),
+                workflow_api_url=str(genos_raw["workflow_api_url"]).rstrip("/"),
+                endpoint_path=str(genos_raw["endpoint_path"]),
+                request_payload_mode=str(genos_raw.get("request_payload_mode", "root_question")),
+                response_output_path=str(genos_raw.get("response_output_path", "auto")),
+                timeout_sec=int(genos_raw.get("timeout_sec", 120)),
             ),
             validator=ValidatorConfig(
                 tolerance_default=float(validator_raw["tolerance_default"]),
@@ -117,21 +91,17 @@ class RunnerConfig:
     @classmethod
     def default_for_tests(cls) -> "RunnerConfig":
         return cls(
-            config_version="phase_zeta_runner_test",
+            config_version="phase_zeta_runner_genos_test",
             builder_version="test",
-            llm=LlmConfig(
-                provider="vertex_ai",
-                project_id="test-project",
-                region="asia-northeast3",
-                model_id="gemini-2.0-flash-001",
-                temperature=0.1,
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=4096,
-                response_mime_type="application/json",
+            genos=GenOSConfig(
+                workflow_id=217,
+                admin_api_url="http://llmops-admin-api-service.llmops.svc.cluster.local:8080",
+                workflow_api_url="http://workflow-217.llmops.svc.cluster.local:8080",
+                endpoint_path="/run/v2",
+                request_payload_mode="root_question",
+                response_output_path="auto",
+                timeout_sec=120,
             ),
-            auth=AuthConfig(method="workload_identity"),
-            pricing=PricingConfig(input_per_million_usd=0.075, output_per_million_usd=0.30),
             validator=ValidatorConfig(tolerance_default=0.01, tolerance_percent=0.05, tolerance_kpi=0.05),
             composer=ComposerConfig(
                 update_cache_deep_analysis=False,

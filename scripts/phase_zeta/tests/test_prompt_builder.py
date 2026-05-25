@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from phase_zeta_runner.config import RunnerConfig
-from phase_zeta_runner.prompt_builder import build_unified_prompt
+from phase_zeta_runner.prompt_builder import build_question_string
 
 
 def sample_bundle() -> dict:
@@ -47,26 +47,19 @@ def sample_bundle() -> dict:
 
 
 def test_prompt_structure():
-    prompt = build_unified_prompt(sample_bundle(), RunnerConfig.default_for_tests())
+    question = build_question_string(sample_bundle(), RunnerConfig.default_for_tests())
 
-    assert "JW중외제약" in prompt.system_instruction
-    assert "리바로" in prompt.user_message
-    assert "forecast/simulation" in prompt.user_message
-    assert set(prompt.response_schema["required"]) == {
-        "phenomenon",
-        "cause",
-        "prediction",
-        "recommendation",
-    }
+    assert "[분석 대상]" in question
+    assert "리바로" in question
+    assert "forecast/simulation" in question
+    assert "phenomenon, cause, prediction, recommendation" in question
 
 
 def test_prompt_determinism():
     bundle = sample_bundle()
     config = RunnerConfig.default_for_tests()
 
-    p1 = build_unified_prompt(bundle, config)
-    p2 = build_unified_prompt(bundle, config)
+    p1 = build_question_string(bundle, config)
+    p2 = build_question_string(bundle, config)
 
-    assert p1.system_instruction == p2.system_instruction
-    assert p1.user_message == p2.user_message
-    assert p1.response_schema == p2.response_schema
+    assert p1 == p2
