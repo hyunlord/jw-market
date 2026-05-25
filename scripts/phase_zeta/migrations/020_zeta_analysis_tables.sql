@@ -1,4 +1,4 @@
--- Phase ζ trace tables. Apply is intentionally deferred to Stage 3-C.
+-- Phase ζ trace tables. Stage 3-C applies this migration before the Gemini dry-test.
 
 CREATE TABLE IF NOT EXISTS zeta_analysis_runs (
   run_id          BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -11,14 +11,15 @@ CREATE TABLE IF NOT EXISTS zeta_analysis_runs (
   status          VARCHAR(32) NOT NULL,
   total_tokens_in INT,
   total_tokens_out INT,
-  cost_usd        DECIMAL(10, 4),
+  cost_usd        DECIMAL(10, 6),
   duration_sec    DECIMAL(8, 2),
   input_bundle    LONGTEXT,
   error_log       TEXT,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_brand_snapshot (brand, snapshot_at),
   KEY idx_bundle_hash (bundle_hash),
-  KEY idx_status (status)
+  KEY idx_status (status),
+  KEY idx_brand (brand)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS zeta_analysis_outputs (
@@ -31,7 +32,6 @@ CREATE TABLE IF NOT EXISTS zeta_analysis_outputs (
   raw_response    LONGTEXT,
   validated       TINYINT(1) DEFAULT 0,
   validation_log  TEXT,
-  retry_count     INT DEFAULT 0,
   tokens_in       INT,
   tokens_out      INT,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
