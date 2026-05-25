@@ -23,6 +23,11 @@ class ValidatorConfig:
     tolerance_percent: float
     tolerance_kpi: float
     cascade_skip_on_fail: bool = False
+    bundle_mart_check_enabled: bool = True
+    bundle_invariant_check_enabled: bool = True
+    narrative_event_check_enabled: bool = True
+    narrative_event_warning_only: bool = True
+    bundle_invariant_fail_action: str = "fail"
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,11 @@ class RunnerConfig:
                 tolerance_percent=float(validator_raw["tolerance_percent"]),
                 tolerance_kpi=float(validator_raw["tolerance_kpi"]),
                 cascade_skip_on_fail=bool(validator_raw.get("cascade_skip_on_fail", False)),
+                bundle_mart_check_enabled=bool(validator_raw.get("bundle_mart_check_enabled", True)),
+                bundle_invariant_check_enabled=bool(validator_raw.get("bundle_invariant_check_enabled", True)),
+                narrative_event_check_enabled=bool(validator_raw.get("narrative_event_check_enabled", True)),
+                narrative_event_warning_only=bool(validator_raw.get("narrative_event_warning_only", True)),
+                bundle_invariant_fail_action=str(validator_raw.get("bundle_invariant_fail_action", "fail")),
             ),
             composer=ComposerConfig(
                 update_cache_deep_analysis=bool(composer_raw.get("update_cache_deep_analysis", False)),

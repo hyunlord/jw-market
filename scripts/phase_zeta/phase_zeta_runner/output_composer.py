@@ -92,9 +92,15 @@ def _insert_outputs(
     )
     """
     cursor = db_conn.cursor()
+    full_validation = validation_result.to_dict() if hasattr(validation_result, "to_dict") else {}
     for stage in STAGES:
         stage_data = gemini_result.parsed_output.get(stage, {}) or {}
         stage_validation = validation_result.stage_results.get(stage)
+        validation_log = {
+            "stage_validation": stage_validation.to_dict() if stage_validation else {},
+            "full_validation_summary": full_validation.get("summary", {}),
+            "full_validation_layers": full_validation.get("layers", {}),
+        }
         cursor.execute(
             sql,
             (
@@ -105,7 +111,7 @@ def _insert_outputs(
                 _json_dumps(stage_data.get("bullets", [])),
                 _json_dumps(stage_data),
                 1 if stage_validation and stage_validation.valid else 0,
-                _json_dumps(stage_validation.to_dict() if stage_validation else {}),
+                _json_dumps(validation_log),
                 None,
                 None,
             ),

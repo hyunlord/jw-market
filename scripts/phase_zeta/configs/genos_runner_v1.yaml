@@ -16,6 +16,11 @@ phase_zeta_runner:
     tolerance_percent: 0.05
     tolerance_kpi: 0.05
     cascade_skip_on_fail: false
+    bundle_mart_check_enabled: true
+    bundle_invariant_check_enabled: true
+    narrative_event_check_enabled: true
+    narrative_event_warning_only: true
+    bundle_invariant_fail_action: "fail"
 
   composer:
     update_cache_deep_analysis: false

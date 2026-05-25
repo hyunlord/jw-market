@@ -16,10 +16,10 @@ if str(PHASE_ZETA_ROOT) not in sys.path:
     sys.path.insert(0, str(PHASE_ZETA_ROOT))
 
 from phase_zeta_runner.config import RunnerConfig
-from phase_zeta_runner.llm_runner import call_llm
-from phase_zeta_runner.metric_validator import validate_output
+from phase_zeta_runner.llm_runner import LLMResult, call_llm
 from phase_zeta_runner.output_composer import compose_and_persist
 from phase_zeta_runner.prompt_builder import build_question_string
+from phase_zeta_runner.run_pipeline import run_full_validation
 
 
 def _json_dumps(obj: Any, indent: int | None = 2) -> str:
@@ -89,7 +89,56 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bundle-path", required=True)
     parser.add_argument("--update-cache", action="store_true", default=False)
     parser.add_argument("--audit-dir", default=None)
+    parser.add_argument("--use-cached-run-id", type=int, default=None)
     return parser.parse_args()
+
+
+def _load_cached_result(db_conn, run_id: int) -> LLMResult:
+    cursor = db_conn.cursor()
+    cursor.execute(
+        """
+        SELECT model_version, total_tokens_in, total_tokens_out, cost_usd, duration_sec, status
+        FROM zeta_analysis_runs
+        WHERE run_id = %s
+        """,
+        (run_id,),
+    )
+    run_row = cursor.fetchone()
+    if not run_row:
+        raise ValueError(f"zeta_analysis_runs.run_id={run_id} not found")
+    if not isinstance(run_row, dict):
+        columns = [desc[0] for desc in cursor.description]
+        run_row = dict(zip(columns, run_row))
+
+    cursor.execute(
+        """
+        SELECT stage, raw_response
+        FROM zeta_analysis_outputs
+        WHERE run_id = %s
+        """,
+        (run_id,),
+    )
+    output_rows = cursor.fetchall()
+    parsed: dict[str, Any] = {}
+    for row in output_rows:
+        if not isinstance(row, dict):
+            columns = [desc[0] for desc in cursor.description]
+            row = dict(zip(columns, row))
+        raw_stage = row.get("raw_response") or "{}"
+        parsed[str(row["stage"])] = json.loads(raw_stage) if isinstance(raw_stage, str) else raw_stage
+
+    return LLMResult(
+        success=bool(parsed),
+        parsed_output=parsed,
+        raw_response=_json_dumps({"cached_run_id": run_id, "parsed_output": parsed}, indent=None),
+        tokens_in=int(run_row.get("total_tokens_in") or 0),
+        tokens_out=int(run_row.get("total_tokens_out") or 0),
+        cost_usd=float(run_row.get("cost_usd") or 0.0),
+        duration_sec=float(run_row.get("duration_sec") or 0.0),
+        model_version=str(run_row.get("model_version") or f"cached_run_{run_id}"),
+        retry_count=0,
+        error=None if parsed else f"cached run {run_id} has no outputs",
+    )
 
 
 def main() -> int:
@@ -104,27 +153,49 @@ def main() -> int:
     question = build_question_string(bundle, config)
     _write_text(audit_dir / f"{args.brand}_question.txt", question)
 
-    gemini_result = call_llm(bundle, config)
-    validation_result = validate_output(gemini_result.parsed_output, bundle, config.validator)
+    cached_run_id = args.use_cached_run_id
+    gemini_result: LLMResult
 
     composition = None
     try:
         with _connect_db(config) as db_conn:
-            composition = compose_and_persist(
-                args.brand,
-                snapshot_at,
-                bundle,
-                gemini_result,
-                validation_result,
-                config,
-                db_conn,
-            )
+            if cached_run_id is not None:
+                gemini_result = _load_cached_result(db_conn, cached_run_id)
+            else:
+                gemini_result = call_llm(bundle, config)
+            validation_result = run_full_validation(gemini_result.parsed_output, bundle, db_conn, config)
+            if cached_run_id is None:
+                composition = compose_and_persist(
+                    args.brand,
+                    snapshot_at,
+                    bundle,
+                    gemini_result,
+                    validation_result,
+                    config,
+                    db_conn,
+                )
     except Exception as exc:
         composition_error = f"{type(exc).__name__}: {exc}"
+        if "gemini_result" not in locals():
+            gemini_result = LLMResult(
+                success=False,
+                parsed_output={},
+                raw_response="",
+                tokens_in=0,
+                tokens_out=0,
+                cost_usd=0.0,
+                duration_sec=0.0,
+                model_version=f"genos_workflow_{config.genos.workflow_id}",
+                retry_count=0,
+                error=composition_error,
+            )
+        from phase_zeta_runner.metric_validator import validate_output
+
+        validation_result = validate_output(gemini_result.parsed_output, bundle, config.validator)
     else:
         composition_error = composition.error if composition else None
 
-    run_id = composition.run_id if composition else None
+    run_id = cached_run_id if cached_run_id is not None else (composition.run_id if composition else None)
     _write_json(audit_dir / f"{args.brand}_genos_response.json", {"text": gemini_result.raw_response})
     _write_json(audit_dir / f"{args.brand}_gemini_raw_response.json", {"text": gemini_result.raw_response})
     _write_json(audit_dir / f"{args.brand}_parsed_output.json", gemini_result.parsed_output)
@@ -136,7 +207,8 @@ def main() -> int:
         "bundle_path": str(bundle_path),
         "bundle_hash": bundle.get("bundle_meta", {}).get("bundle_hash"),
         "run_id": run_id,
-        "status": composition.status if composition else "failed",
+        "status": composition.status if composition else ("ok" if cached_run_id is not None and validation_result.valid else "failed"),
+        "validation_verdict": getattr(validation_result, "summary", {}).get("verdict", "PASS" if validation_result.valid else "FAIL"),
         "composition_error": composition_error,
         "gemini_success": gemini_result.success,
         "gemini_error": gemini_result.error,
@@ -154,7 +226,7 @@ def main() -> int:
     )
     _write_json(audit_dir / f"{args.brand}_run_summary.json", summary)
     print(_json_dumps(summary))
-    return 0 if gemini_result.success and composition is not None else 1
+    return 0 if gemini_result.success and (composition is not None or cached_run_id is not None) else 1
 
 
 if __name__ == "__main__":
