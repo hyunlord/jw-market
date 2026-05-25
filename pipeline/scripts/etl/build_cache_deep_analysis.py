@@ -19,99 +19,9 @@ from cache_build_common import (
     parser,
     payload_size,
     period_key,
-    optional_float,
     safe_float,
     source_list,
 )
-
-
-MOCK_EVENTS = [
-    {
-        "id": "event-001",
-        "category": "product_launch",
-        "category_label": "신제품 출시",
-        "date": "2025-12-15",
-        "period_map": {"UBIST": "2025-12", "IQVIA": "4Q2025"},
-        "impact_score": 4.5,
-        "title": "시장 내 주요 경쟁 제품 출시",
-        "summary": "주요 경쟁 제품 출시로 시장 내 포지셔닝 변화 가능성이 관찰됩니다.",
-        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
-        "source": "mock",
-    },
-    {
-        "id": "event-002",
-        "category": "guideline",
-        "category_label": "진료지침",
-        "date": "2025-09-01",
-        "period_map": {"UBIST": "2025-09", "IQVIA": "3Q2025"},
-        "impact_score": 3.8,
-        "title": "치료 가이드라인 개정",
-        "summary": "치료 옵션 우선순위 조정이 시장 수요에 영향을 줄 수 있습니다.",
-        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
-        "source": "mock",
-    },
-    {
-        "id": "event-003",
-        "category": "policy",
-        "category_label": "정책/급여",
-        "date": "2025-06-01",
-        "period_map": {"UBIST": "2025-06", "IQVIA": "2Q2025"},
-        "impact_score": 3.4,
-        "title": "급여 기준 검토",
-        "summary": "급여 기준 변화 가능성이 처방 흐름에 영향을 줄 수 있습니다.",
-        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
-        "source": "mock",
-    },
-    {
-        "id": "event-004",
-        "category": "supply",
-        "category_label": "공급/수급",
-        "date": "2025-03-15",
-        "period_map": {"UBIST": "2025-03", "IQVIA": "1Q2025"},
-        "impact_score": 2.9,
-        "title": "공급 안정성 이슈",
-        "summary": "일부 제품 수급 변동으로 단기 처방 대체 가능성이 있습니다.",
-        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
-        "source": "mock",
-    },
-    {
-        "id": "event-005",
-        "category": "competition",
-        "category_label": "경쟁 변화",
-        "date": "2024-12-01",
-        "period_map": {"UBIST": "2024-12", "IQVIA": "4Q2024"},
-        "impact_score": 3.6,
-        "title": "상위 경쟁군 프로모션 강화",
-        "summary": "상위 경쟁군의 영업 활동 강화가 시장 점유율 변화와 함께 관찰됩니다.",
-        "body_full": "본 이벤트는 심층분석 화면 검증을 위한 고정 mock 이벤트입니다.",
-        "source": "mock",
-    },
-]
-
-
-MOCK_AI_ANALYSIS = {
-    "generated_at": "2026-05-22T12:00:00Z",
-    "phenomenon": {
-        "title": "시장 현황",
-        "body": "최근 시장 데이터에서 source와 measure별 이력 추세를 확인할 수 있습니다.",
-        "bullets": ["시장 규모와 점유율은 cache에 적재된 실제 history 값을 기준으로 표시됩니다."],
-    },
-    "cause": {
-        "title": "원인 분석",
-        "body": "세부 원인은 원인분석 카드의 ranking, matrix, contribution 지표와 함께 해석합니다.",
-        "bullets": ["경쟁 intensity와 상위 brand concentration을 함께 검토합니다."],
-    },
-    "prediction": {
-        "title": "미래 예측",
-        "body": "현재 예측값은 과거 history만 사용한 deterministic seasonal/trend blend입니다.",
-        "bullets": ["하드코딩 값은 아니지만 통계 backtest 모델도 아닙니다.", "v0.9.1 운영 표시용이며 실제 forecast model은 후속 범위입니다."],
-    },
-    "recommendation": {
-        "title": "전략 제안",
-        "body": "forecast는 의사결정 보조용으로만 사용하고 원인분석 지표와 함께 검토합니다.",
-        "bullets": ["향후 phase에서 통계 backtest 모델로 교체 가능한 구조입니다."],
-    },
-}
 
 
 ALL_COMBOS = [
@@ -132,7 +42,6 @@ UNIT_LABELS = {
     "dosage_unit": "dosage unit",
     "counting_unit": "counting unit",
 }
-HORIZON_CI_LEVELS = {"1y": 0.95, "3y": 0.90, "5y": 0.80, "10y": 0.50}
 FORECAST_METHOD = "deterministic_history_only_v0.9.1"
 FORECAST_DISCLOSURE = (
     "각 brand의 과거 history만 사용한 deterministic seasonal/trend blend입니다. "
@@ -207,70 +116,6 @@ def top6_rows(rows: list[dict[str, Any]], target_brand: str) -> list[dict[str, A
     competitors.sort(key=_recent_value, reverse=True)
     selected = ([target] if target else []) + competitors[:5]
     return [row for row in selected if row is not None]
-
-
-def cagr_from_values(values: list[float | None], source: str) -> float | None:
-    clean = [optional_float(value) for value in values]
-    clean = [value for value in clean if value is not None]
-    if len(clean) < 2 or clean[0] <= 0 or clean[-1] <= 0:
-        return None
-    years = max((len(clean) - 1) / (12 if source == "UBIST" else 4), 1)
-    return ((clean[-1] / clean[0]) ** (1 / years) - 1) * 100
-
-
-def build_market_history(rows: list[dict[str, Any]]) -> tuple[list[str], list[float]]:
-    totals: dict[str, float] = defaultdict(float)
-    for row in rows:
-        history = decode_json(row.get("metric_history"))
-        if not isinstance(history, dict):
-            continue
-        for period, item in history.items():
-            if isinstance(item, dict):
-                totals[str(period)] += safe_float(item.get("raw_value")) or 0.0
-            else:
-                totals[str(period)] += safe_float(item) or 0.0
-    periods = sorted(totals.keys(), key=period_key)
-    return periods, [totals[period] for period in periods]
-
-
-def momentum_payload(values: list[float | None], source: str) -> dict[str, Any]:
-    n = 12 if source == "UBIST" else 4
-    clean = [safe_float(value) or 0.0 for value in values]
-    basis = "12m" if source == "UBIST" else "4q"
-    if len(clean) < n + 1:
-        return {"value_pct_per_period": None, "label": "insufficient_data", "basis": basis, "n_periods": n, "method": "trailing_mean"}
-    recent = clean[-n:]
-    previous = clean[-2 * n : -n] if len(clean) >= 2 * n else clean[:n]
-    previous_total = sum(previous)
-    if previous_total <= 0:
-        return {"value_pct_per_period": None, "label": "not_computable", "basis": basis, "n_periods": n, "method": "trailing_mean"}
-    pct = ((sum(recent) - previous_total) / previous_total) * 100
-    label = "rising" if pct > 5 else "declining" if pct < -5 else "stable"
-    return {"value_pct_per_period": round(pct, 4), "label": label, "basis": basis, "n_periods": n, "method": "trailing_mean"}
-
-
-def anomaly_payload(periods: list[str], values: list[float | None], source: str) -> dict[str, Any]:
-    window = 12 if source == "UBIST" else 4
-    threshold = 30.0
-    clean = [safe_float(value) or 0.0 for value in values]
-    items = []
-    for index in range(window, len(clean)):
-        previous = clean[index - window]
-        if previous <= 0:
-            continue
-        yoy = ((clean[index] - previous) / previous) * 100
-        if abs(yoy) >= threshold:
-            items.append(
-                {
-                    "period": periods[index],
-                    "value": clean[index],
-                    "expected_value": previous,
-                    "yoy_pct": round(yoy, 4),
-                    "direction": "up" if yoy > 0 else "down",
-                    "threshold_pass": True,
-                }
-            )
-    return {"method": "yoy_threshold", "threshold_yoy_pct": threshold, "window": window, "fallback_top_n": 5, "items": items[-10:]}
 
 
 def deterministic_forecast_values(values: list[float | None], source: str, steps: int) -> tuple[list[float], dict[str, Any]]:
@@ -398,115 +243,6 @@ def empty_combo_payload(source: str, measure: str, brand: str, base_row: dict[st
     }
 
 
-def brand_simulation_entry(row: dict[str, Any], *, source: str, measure: str, market_periods: list[str], market_values: list[float]) -> dict[str, Any]:
-    history = decode_json(row.get("metric_history"))
-    recent = metric_recent(history)
-    periods, values = sorted_history_values(history)
-    brand_cagr = cagr_from_values(values, source)
-    market_cagr = cagr_from_values(market_values, source)
-    forecast_periods = forecast_periods_from_history(periods, source)
-    forecast_values, forecast_model = deterministic_forecast_values(values, source, len(forecast_periods))
-    upper_values = [round(value * 1.12, 4) for value in forecast_values]
-    lower_values = [round(value * 0.88, 4) for value in forecast_values]
-    return {
-        "target_period": periods[-1] if periods else None,
-        "history_periods": periods,
-        "forecast_periods": forecast_periods,
-        "history_values": values,
-        "model": {
-            "name": forecast_model["name"],
-            "variant": forecast_model["variant"],
-            "selection_reason": forecast_model["selection_reason"],
-            "fit_quality": {"backtest_available": False},
-        },
-        "horizon_ci_levels": HORIZON_CI_LEVELS,
-        "scenarios": {
-            "base": {"label": "Base", "method": forecast_model["name"], "values": forecast_values, "final_value": forecast_values[-1] if forecast_values else None},
-            "upper": {"label": "Upper", "method": "base_plus_12pct", "values": upper_values, "final_value": upper_values[-1] if upper_values else None},
-            "lower": {"label": "Lower", "method": "base_minus_12pct", "values": lower_values, "final_value": lower_values[-1] if lower_values else None},
-        },
-        "stress": {"method": "history_range", "note": "deterministic forecast; anomaly detection removed by PL direction"},
-        "confidence": {"score": forecast_model["confidence_score"], "label": "deterministic", "method": forecast_model["name"]},
-        "market_comparison": {
-            "delta_pp": round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None,
-            "brand_cagr_pct": round(brand_cagr, 4) if brand_cagr is not None else None,
-            "market_cagr_pct": round(market_cagr, 4) if market_cagr is not None else None,
-            "basis": "5y",
-            "horizon": "5y",
-            "method": "history_only",
-        },
-        "momentum": momentum_payload(values, source),
-        "warnings": [FORECAST_DISCLOSURE],
-        "baseline": {"value_recent": safe_float(recent.get("raw_value")), "ms_recent_pct": safe_float(recent.get("ms"))},
-    }
-
-
-def simulation_payload(
-    row: dict[str, Any] | None,
-    *,
-    source: str | None = None,
-    measure: str | None = None,
-    brand: str | None = None,
-    base_row: dict[str, Any] | None = None,
-    market_rows: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    if row is None:
-        base_row = base_row or {}
-        period_unit = "월" if source == "UBIST" else "분기"
-        brand_name = brand or base_row.get("brand_name")
-        return {
-            "period_unit": period_unit,
-            "unit_label": UNIT_LABELS.get(measure or ""),
-            "source_granularity": period_unit,
-            "available_brands": [brand_name],
-            "by_brand": {
-                brand_name: {
-                    "target_period": None,
-                    "history_periods": [],
-                    "forecast_periods": forecast_periods_from_history([], source or "UBIST"),
-                    "history_values": [],
-                    "model": {"name": "pending", "variant": "history_only"},
-                    "horizon_ci_levels": HORIZON_CI_LEVELS,
-                    "scenarios": {
-                        "base": {"values": [], "final_value": None, "method": "pending"},
-                        "upper": {"values": [], "final_value": None, "method": "pending"},
-                        "lower": {"values": [], "final_value": None, "method": "pending"},
-                    },
-                    "confidence": {"score": None, "label": "forecast pending"},
-                    "market_comparison": {"delta_pp": None, "brand_cagr_pct": None, "market_cagr_pct": None, "basis": "5y", "horizon": "5y", "method": "history_only"},
-                    "momentum": {"value_pct_per_period": None, "label": "insufficient_data", "basis": "12m" if source == "UBIST" else "4q", "n_periods": 12 if source == "UBIST" else 4, "method": "trailing_mean"},
-                    "warnings": [FORECAST_DISCLOSURE],
-                }
-            },
-        }
-
-    history = decode_json(row.get("metric_history"))
-    periods, values = sorted_history_values(history)
-    combo_source = source or api_source(row.get("source"))
-    period_unit = "월" if row.get("source") == "ubist" else "분기"
-    selected = top6_rows(market_rows or [row], brand or row.get("brand_name"))
-    market_periods, market_values = build_market_history(market_rows or [row])
-    return {
-        "period_unit": period_unit,
-        "unit_label": row.get("unit_label"),
-        "source_granularity": period_unit,
-        "available_brands": [
-            {"brand": selected_row.get("brand_name"), "is_target": selected_row.get("brand_name") == (brand or row.get("brand_name")), "is_jw": bool(selected_row.get("is_jw")), "rank": metric_recent(decode_json(selected_row.get("metric_history"))).get("rank")}
-            for selected_row in selected
-        ],
-        "by_brand": {
-            selected_row.get("brand_name"): brand_simulation_entry(
-                selected_row,
-                source=combo_source,
-                measure=measure or row.get("measure"),
-                market_periods=market_periods,
-                market_values=market_values,
-            )
-            for selected_row in selected
-        },
-    }
-
-
 def choose_base(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return sorted(rows, key=lambda r: (not bool(r.get("is_jw")), str(r.get("ml_id")), str(r.get("source")), str(r.get("measure"))))[0]
 
@@ -545,7 +281,6 @@ def main() -> None:
         market = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
         available_combos = available_combos_for_market(market)
         by_combo = {}
-        sim_by_combo = {}
         rows_by_combo = {}
         for row in sorted(brand_rows, key=lambda r: (str(r["source"]), str(r["measure"]), str(r["ml_id"]))):
             combo = f"{api_source(row['source'])}.{row['measure']}"
@@ -559,10 +294,8 @@ def main() -> None:
             market_rows = by_market_combo.get((ml_id, internal_source, measure), [])
             if row is None:
                 by_combo[combo] = empty_combo_payload(source, measure, brand, base)
-                sim_by_combo[combo] = simulation_payload(None, source=source, measure=measure, brand=brand, base_row=base)
             else:
                 by_combo[combo] = combo_payload(row, market_rows=market_rows, target_brand=brand, combo_source=source)
-                sim_by_combo[combo] = simulation_payload(row, source=source, measure=measure, brand=brand, market_rows=market_rows)
 
         payload = {
             "brand": brand,
@@ -577,9 +310,9 @@ def main() -> None:
                     "backtest_available": False,
                     "by_combo": by_combo,
                 },
-                "simulation": {"by_combo": sim_by_combo},
-                "events": MOCK_EVENTS,
-                "ai_analysis": MOCK_AI_ANALYSIS,
+                "simulation": {"by_combo": {}},
+                "events": [],
+                "ai_analysis": {},
             },
             "market_meta": {
                 "available_combos": available_combos,

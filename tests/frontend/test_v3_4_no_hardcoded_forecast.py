@@ -38,7 +38,8 @@ def test_v3_4_forecast_chart_requires_backend_forecast_values() -> None:
 
     assert "hasForecastValues" in source
     assert "예측 데이터 없음" in source
-    assert "예측 데이터가 아직 구현되지 않았습니다" in source
+    assert "시뮬레이션 데이터 없음" in source
+    assert "setSimulationEmptyState" in source
     assert "if (!hasForecastValues)" in source
 
 
