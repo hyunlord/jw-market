@@ -15,6 +15,7 @@ EXPECTED_DUAL_COMBOS = {
     "IQVIA.counting_unit",
 }
 EXPECTED_CHANNELS = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
+EXPECTED_CAUSE_LEVELS = ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
 
 
 def get_api(path: str) -> dict:
@@ -32,10 +33,10 @@ def deep(brand: str) -> dict:
 
 
 def test_cause_analysis_levels_follow_market_ground_truth_for_ml003() -> None:
-    payload = cause("가드메트")
+    payload = cause("가드메트", source="UBIST", measure="sales")
     analysis_levels = payload["data"]["analysis_levels"]
 
-    assert analysis_levels["levels"] == ["Class", "Molecule", "Brand", "제형/투여경로"]
+    assert analysis_levels["levels"] == EXPECTED_CAUSE_LEVELS
     assert analysis_levels["channels"] == EXPECTED_CHANNELS
 
 
@@ -53,7 +54,7 @@ def test_cause_analysis_levels_have_korean_period_units_and_period_lists() -> No
 
 
 def test_cause_analysis_level_segments_are_populated_for_all_channels() -> None:
-    analysis_levels = cause("가드메트")["data"]["analysis_levels"]
+    analysis_levels = cause("가드메트", source="UBIST", measure="sales")["data"]["analysis_levels"]
     level = analysis_levels["levels"][0]
 
     for channel in EXPECTED_CHANNELS:
@@ -61,8 +62,8 @@ def test_cause_analysis_level_segments_are_populated_for_all_channels() -> None:
         assert segments, f"{level}/{channel} should have segments"
         segment = segments[0]
         assert set(segment.keys()) == {"name", "rank", "recent_share_pct", "series_pct", "value_series"}
-        assert len(segment["series_pct"]) == len(analysis_levels["periods_quarterly"])
-        assert len(segment["value_series"]) == len(analysis_levels["periods_quarterly"])
+        assert len(segment["series_pct"]) == len(analysis_levels["periods_monthly"])
+        assert len(segment["value_series"]) == len(analysis_levels["periods_monthly"])
 
 
 def test_cause_ml011_splits_class_into_class_1_and_class_2() -> None:

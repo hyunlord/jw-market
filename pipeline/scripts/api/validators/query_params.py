@@ -13,22 +13,16 @@ UNIT_LABELS = {
     ("UBIST", "sales"): "KRW",
     ("UBIST", "volume"): "Rx",
     ("IQVIA", "sales"): "KRW",
-    ("IQVIA", "unit"): "unit",
-    ("IQVIA", "dosage_unit"): "dosage unit",
-    ("IQVIA", "counting_unit"): "counting unit",
+    ("IQVIA", "unit"): "Unit",
+    ("IQVIA", "dosage_unit"): "Dosage Unit",
+    ("IQVIA", "counting_unit"): "Counting Unit",
 }
 
 
 def validate_cause_query(view: str | None, source: str | None, measure: str | None) -> tuple[str, str, str]:
-    missing = []
-    if view is None or view == "":
-        missing.append("view")
-    if source is None or source == "":
-        missing.append("source")
-    if measure is None or measure == "":
-        missing.append("measure")
-    if missing:
-        raise HTTPException(status_code=400, detail={"error": "missing_required_query", "missing": missing})
+    view = view or "market_landscape"
+    source = (source or "UBIST").upper()
+    measure = measure or "sales"
 
     if view not in VALID_VIEWS:
         raise HTTPException(

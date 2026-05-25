@@ -35,9 +35,9 @@ def _fetch_cause_rows(brand: str, view: str, source: str, measure: str) -> list[
 @router.get("/api/cause/{brand_name}")
 def cause(
     brand_name: str,
-    view: str | None = Query(None),
-    source: str | None = Query(None),
-    measure: str | None = Query(None),
+    view: str | None = Query("market_landscape"),
+    source: str | None = Query("UBIST"),
+    measure: str | None = Query("sales"),
 ) -> dict:
     view, source, measure = validate_cause_query(view, source, measure)
     brand = unquote(brand_name)

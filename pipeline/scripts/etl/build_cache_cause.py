@@ -33,6 +33,8 @@ period_key = lru_cache(maxsize=None)(period_key)
 
 CHANNELS_5 = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
 IQVIA_CHANNELS = ["전체", "KHPA", "KCPA", "KPA"]
+CAUSE_LEVELS_V091 = ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
+CAUSE_LEVELS_ML011 = ["Class 1", "Class 2", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
 LEVEL_FIELD_BY_LABEL = {
     "Class": "class",
     "Class 1": "class",
@@ -505,6 +507,18 @@ def _strategic_levels(market: dict[str, Any] | None, view_source_id: str | None)
     return levels
 
 
+def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
+    """Return the v0.9.1 level keys that must always be visible in cause.
+
+    Most markets expose the seven canonical levels. The existing ml_011
+    Aktemra split is kept as-is because downstream Phase 30/31 checks already
+    depend on Class 1/Class 2 being distinct instead of a single Class bucket.
+    """
+    if view_source_id == "ml_011" and bool((market or {}).get("analyze_class")):
+        return CAUSE_LEVELS_ML011
+    return CAUSE_LEVELS_V091
+
+
 def _split_atomic_dimension(level: str, value: Any) -> list[str]:
     """Return display/selection atoms for a dimension value.
 
@@ -700,34 +714,37 @@ def _build_analysis_levels_from_mart(
     target_name: str | None,
     fallback_level_top5: dict[str, Any],
 ) -> dict[str, Any]:
-    levels = _strategic_levels(market, view_source_id)
-    if not levels:
-        return _normalize_analysis_levels({}, fallback_level_top5, source)
+    levels = _response_levels(market, view_source_id)
+    enabled_levels = set(_strategic_levels(market, view_source_id))
+    enabled_levels.add("Brand")
     periods = _history_periods(rows, source)
     data: dict[str, Any] = {}
     channels = _channels_for_source(source)
     for level in levels:
-        by_channel = {
-            channel: _segment_rows_for_level(
-                rows=rows,
-                level=level,
-                periods=periods,
-                source=source,
-                channel=channel,
-                target_name=target_name if level == "Brand" else None,
-                top_n=None if channel == "전체" else 5,
-            )
-            for channel in channels
-        }
+        if level in enabled_levels:
+            by_channel = {
+                channel: _segment_rows_for_level(
+                    rows=rows,
+                    level=level,
+                    periods=periods,
+                    source=source,
+                    channel=channel,
+                    target_name=target_name if level == "Brand" else None,
+                    top_n=None if channel == "전체" and level != "Brand" else 5,
+                )
+                for channel in channels
+            }
+        else:
+            by_channel = {channel: [] for channel in channels}
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
-    return _filter_d3_levels({
+    return {
         "levels": levels,
         "channels": channels,
         "period_unit": _period_unit_ko(source),
         "periods_monthly": periods if source == "UBIST" else [],
         "periods_quarterly": periods if source == "IQVIA" else [],
         "data": data,
-    })
+    }
 
 
 def _trim_analysis_levels(analysis_levels: dict[str, Any], limit: int = 5) -> dict[str, Any]:
@@ -1550,6 +1567,11 @@ def build_response(
                 "hhi_recent": hhi_recent,
                 "cagr_5y_pct": series_cagr(market_series),
             },
+            "market_size_series": market_size_series_with_yoy(market_series),
+            "hhi_series_5y": hhi_series,
+            "hhi_recent": hhi_recent,
+            "brand_ranking": brand_ranking_stacked,
+            "company_ranking": company_ranking_stacked,
             "ei_ms_matrix": _matrix_payload(display_entries_no_others),
             "growth_contribution_ms_matrix": _matrix_payload(display_entries_no_others),
             "growth_contribution": growth_contribution,

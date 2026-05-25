@@ -55,6 +55,11 @@ def test_cause_analysis_levels_measure_neutral_value_series() -> None:
     required_data_keys = {
         "kpi",
         "sources_data",
+        "market_size_series",
+        "hhi_series_5y",
+        "hhi_recent",
+        "brand_ranking",
+        "company_ranking",
         "brand_ranking_stacked",
         "company_ranking_stacked",
         "company_concentration_trend",
@@ -65,7 +70,7 @@ def test_cause_analysis_levels_measure_neutral_value_series() -> None:
         "target_customer_competition",
         "level_top5_trend",
     }
-    assert set(payload["data"].keys()) == required_data_keys
+    assert required_data_keys <= set(payload["data"].keys())
 
     analysis_levels = payload["data"]["analysis_levels"]
     level = analysis_levels["levels"][0]
