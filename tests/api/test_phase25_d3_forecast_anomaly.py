@@ -30,12 +30,12 @@ def _contains_key(obj: Any, key_name: str) -> bool:
     return False
 
 
-def test_d3_removes_brand_and_single_option_ox_gx_for_livalo() -> None:
+def test_d3_removes_brand_and_exposes_phase27_source_ox_gx_for_livalo() -> None:
     data = cause_payload("리바로", view="market_landscape", source="UBIST", measure="sales")
     by_level = data["level_top5_trend"]["by_level"]
 
     assert "Brand" not in by_level
-    assert "Ox/Gx" not in by_level
+    assert set(by_level["Ox/Gx"].get("all_options") or []) == {"Ox", "Gx"}
     assert by_level
     assert all(len(payload.get("all_options") or []) > 1 for payload in by_level.values())
 

@@ -27,6 +27,7 @@ from layer3_compute_strategic_ml_v3 import (
     fetch_general_rows_from_db,
     is_jw_name,
     insert_rows,
+    recompute_market_scoped_metric_history,
 )
 from ops_utils import configure_logging, find_project_root
 
@@ -204,6 +205,8 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
         )
         selected.append(copied)
     validate_market_completeness(cd_row, catalog_rows, selected)
+    for rows in _group_by_source_measure(selected).values():
+        recompute_market_scoped_metric_history(rows)
     market_rows: list[dict[str, Any]] = []
     for (source, measure), rows in _group_by_source_measure(selected).items():
         payload = compute_market_mart_payload(rows, source=source, measure=measure, view_type="strategic_cd", catalog_market_row=cd_row.to_dict())

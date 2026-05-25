@@ -16,7 +16,7 @@ import re
 import shutil
 import sys
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +79,13 @@ PATENT_ALIASES = {
     "물질특허 만료일": "물질특허만료일",
     "마지막특허 만료일": "마지막특허만료일",
     "마지막특허 특성": "마지막특허특성",
+}
+
+GENERIC_VALUES = {
+    "Original",
+    "First Generic",
+    "Generic",
+    "개량신약(Super Generic)",
 }
 
 COLUMNS = (
@@ -191,6 +198,34 @@ def canonical_header(value: object) -> str | None:
     return None
 
 
+def lookup_text(value: object) -> str | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    return re.sub(r"\s+", "", text).casefold()
+
+
+def generic_lookup_keys(base: dict[str, object]) -> list[str]:
+    keys: list[str] = []
+    code = lookup_text(base.get("약품코드"))
+    product = lookup_text(base.get("제품"))
+    brand = lookup_text(base.get("브랜드"))
+    if code:
+        keys.append(f"code:{code}")
+    if product:
+        keys.append(f"product:{product}")
+    if brand:
+        keys.append(f"brand:{brand}")
+    return keys
+
+
+def normalize_generic_value(value: object) -> str | None:
+    text = normalize_text(value)
+    if text in GENERIC_VALUES:
+        return text
+    return None
+
+
 def resolve_path(raw_path: str) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
@@ -273,7 +308,57 @@ def row_has_identifier(base: dict[str, object]) -> bool:
     return any(base.get(col) for col in ("약품코드", "제품", "성분", "브랜드"))
 
 
-def iter_xlsx_rows(xlsx_path: Path):
+def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
+    """Build a source-derived Generic lookup from workbooks that include it.
+
+    The 2026.03/04 UBIST workbooks do not carry the patent block, while the
+    ingredient workbooks do.  We therefore derive Generic by stable identifiers
+    before the row streaming pass and backfill rows that only have the core
+    dimensions.
+    """
+
+    counts: dict[str, Counter[str]] = defaultdict(Counter)
+    rows_seen = 0
+    for xlsx_path in xlsx_paths:
+        workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        for sheet_name in workbook.sheetnames:
+            worksheet = workbook[sheet_name]
+            rows_iter = worksheet.iter_rows(values_only=True)
+            try:
+                header1 = next(rows_iter)
+                header2 = next(rows_iter)
+            except StopIteration:
+                continue
+            mapping = classify_sheet(sheet_name, header1, header2)
+            if not any(canonical == "Generic" for _, _, canonical in mapping.dim_cols):
+                continue
+            for row in rows_iter:
+                base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
+                generic = normalize_generic_value(base.get("Generic"))
+                if not generic or not row_has_identifier(base):
+                    continue
+                rows_seen += 1
+                for key in generic_lookup_keys(base):
+                    counts[key][generic] += 1
+
+    lookup = {key: counter.most_common(1)[0][0] for key, counter in counts.items() if counter}
+    LOGGER.info("generic lookup built rows=%s keys=%s", f"{rows_seen:,}", f"{len(lookup):,}")
+    return lookup
+
+
+def fill_generic_from_lookup(base: dict[str, object], generic_lookup: dict[str, str] | None) -> None:
+    if normalize_generic_value(base.get("Generic")):
+        return
+    if not generic_lookup:
+        return
+    for key in generic_lookup_keys(base):
+        generic = generic_lookup.get(key)
+        if generic:
+            base["Generic"] = generic
+            return
+
+
+def iter_xlsx_rows(xlsx_path: Path, generic_lookup: dict[str, str] | None = None):
     workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
     for sheet_name in workbook.sheetnames:
         worksheet = workbook[sheet_name]
@@ -291,6 +376,7 @@ def iter_xlsx_rows(xlsx_path: Path):
             base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
             if not row_has_identifier(base):
                 continue
+            fill_generic_from_lookup(base, generic_lookup)
             base.update(
                 {
                     "source_file": xlsx_path.name,
@@ -397,10 +483,11 @@ def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate
     buffers: dict[str, list[dict[str, object]]] = defaultdict(list)
     writer = PartitionWriter(tmp_target)
     total_rows = 0
+    generic_lookup = build_generic_lookup(xlsx_paths)
     try:
         for idx, xlsx_path in enumerate(xlsx_paths, start=1):
             LOGGER.info("[%s/%s] reading %s", idx, len(xlsx_paths), xlsx_path)
-            for period, row in iter_xlsx_rows(xlsx_path):
+            for period, row in iter_xlsx_rows(xlsx_path, generic_lookup):
                 buffers[period].append(row)
                 total_rows += 1
                 if total_rows % 250_000 == 0:
