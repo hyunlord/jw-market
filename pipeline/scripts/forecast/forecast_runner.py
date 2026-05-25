@@ -36,9 +36,14 @@ from pipeline.scripts.etl.cache_build_common import (
 )
 
 
-HORIZON_CI_LEVELS = {"1y": 0.95, "3y": 0.90, "5y": 0.80, "10y": 0.50}
-Z_BY_LEVEL = {0.95: 1.96, 0.90: 1.645, 0.80: 1.282, 0.50: 0.674}
-CI_RELATIVE_WIDTH_CAP = {0.95: 0.45, 0.90: 0.50, 0.80: 0.60, 0.50: 0.30}
+HORIZON_CI_LEVELS = {
+    "1y": 0.95,
+    "3y": 0.95,
+    "5y": 0.95,
+    "10y": 0.95,
+    "method": "natural_accumulation_95_only",
+    "note": "Phase 30.2: horizon 차등 제거, 모든 horizon 95% CI 자연 누적",
+}
 SOURCE_TO_INTERNAL = {"UBIST": "ubist", "IQVIA": "iqvia_nsa", "ubist": "ubist", "iqvia_nsa": "iqvia_nsa"}
 UNIT_LABELS = {
     "sales": "KRW",
@@ -188,35 +193,24 @@ def _residual_std(actual: np.ndarray, fitted: np.ndarray) -> float:
     return max(std, level * 0.03, 1.0)
 
 
-def _history_floor(values: list[float] | None) -> float:
-    positives = [float(value) for value in (values or []) if value and value > 0]
-    return min(positives) * 0.3 if positives else 0.0
-
-
-def _ci_arrays(point: list[float], residual_std: float, source: str, history_values: list[float] | None = None) -> dict[str, Any]:
-    season = steps_per_year(source)
+def _native_95_ci(point: np.ndarray | list[float], lower: np.ndarray | list[float], upper: np.ndarray | list[float]) -> dict[str, Any]:
     point_arr = np.asarray(point, dtype=float)
-    growth = np.sqrt(1.0 + (np.arange(len(point_arr), dtype=float) / max(season, 1)))
-    floor = _history_floor(history_values)
-    out: dict[str, Any] = {"lower_floor_applied": False}
-    for level, z in Z_BY_LEVEL.items():
-        raw_width = z * residual_std * growth
-        relative_cap = np.maximum(np.abs(point_arr) * CI_RELATIVE_WIDTH_CAP[level], 1.0)
-        width = np.minimum(raw_width, relative_cap)
-        suffix = str(int(level * 100))
-        lower_arr = point_arr - width
-        if floor > 0:
-            effective_floor = np.minimum(floor, np.maximum(point_arr * 0.7, 0.0))
-            floored = lower_arr < effective_floor
-            if np.any(floored):
-                out["lower_floor_applied"] = True
-                lower_arr = np.where(floored, effective_floor, lower_arr)
-        out[f"ci_upper_{suffix}"] = _clip(point_arr + width)
-        out[f"ci_lower_{suffix}"] = _clip(lower_arr)
-    return out
+    lower_arr = np.asarray(lower, dtype=float)
+    upper_arr = np.asarray(upper, dtype=float)
+    lower_floor_applied = bool(np.any(lower_arr < 0))
+    point_arr = np.maximum(point_arr, 0.0)
+    lower_arr = np.maximum(lower_arr, 0.0)
+    upper_arr = np.maximum(upper_arr, 0.0)
+    lower_arr = np.minimum(lower_arr, point_arr)
+    upper_arr = np.maximum(upper_arr, point_arr)
+    return {
+        "ci_upper_95": _clip(upper_arr),
+        "ci_lower_95": _clip(lower_arr),
+        "lower_floor_applied": lower_floor_applied,
+    }
 
 
-def _fit_prophet(periods: list[str], values: list[float], source: str, steps: int) -> tuple[list[float], float, dict[str, Any]]:
+def _fit_prophet(periods: list[str], values: list[float], source: str, steps: int) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     if SOURCE_TO_INTERNAL[source] != "ubist":
         raise RuntimeError("Prophet path is monthly-only in Phase 30")
     from prophet import Prophet
@@ -232,20 +226,34 @@ def _fit_prophet(periods: list[str], values: list[float], source: str, steps: in
             yearly_seasonality=True,
             weekly_seasonality=False,
             daily_seasonality=False,
-            uncertainty_samples=0,
+            uncertainty_samples=1000,
+            interval_width=0.95,
         )
         model.fit(df)
         in_sample = model.predict(df)["yhat"].to_numpy(dtype=float)
         future = model.make_future_dataframe(periods=steps, freq="MS", include_history=False)
-        forecast = model.predict(future)["yhat"].to_numpy(dtype=float)
-    return _clip(forecast), _residual_std(np.asarray(values, dtype=float), in_sample), {
+        forecast = model.predict(future)
+    point = forecast["yhat"].to_numpy(dtype=float)
+    ci = _native_95_ci(
+        point,
+        forecast["yhat_lower"].to_numpy(dtype=float),
+        forecast["yhat_upper"].to_numpy(dtype=float),
+    )
+    return _clip(point), ci, _residual_std(np.asarray(values, dtype=float), in_sample), {
         "name": "Prophet",
         "variant": "basic_with_light_proxy_events",
-        "params": {"seasonality_mode": "additive", "yearly_seasonality": True, "weekly_seasonality": False, "daily_seasonality": False},
+        "params": {
+            "seasonality_mode": "additive",
+            "yearly_seasonality": True,
+            "weekly_seasonality": False,
+            "daily_seasonality": False,
+            "uncertainty_samples": 1000,
+            "interval_width": 0.95,
+        },
     }
 
 
-def _fit_sarimax(values: list[float], source: str, steps: int, spec: ModelSpec) -> tuple[list[float], float, dict[str, Any]]:
+def _fit_sarimax(values: list[float], source: str, steps: int, spec: ModelSpec) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     season = steps_per_year(source)
     seasonal_order = (1, 1, 1, season) if len(values) >= season * 3 else (0, 1, 0, season)
     order = (1, 1, 1) if len(values) >= 18 else (0, 1, 1)
@@ -259,16 +267,23 @@ def _fit_sarimax(values: list[float], source: str, steps: int, spec: ModelSpec) 
             enforce_stationarity=False,
             enforce_invertibility=False,
         ).fit(disp=False, maxiter=120)
-    forecast = result.forecast(steps=steps)
+    forecast_obj = result.get_forecast(steps=steps)
+    forecast = forecast_obj.predicted_mean
+    ci_95 = forecast_obj.conf_int(alpha=0.05)
     fitted = np.asarray(result.fittedvalues, dtype=float)
-    return _clip(forecast), _residual_std(np.asarray(values, dtype=float), fitted), {
+    ci = _native_95_ci(
+        np.asarray(forecast, dtype=float),
+        ci_95.iloc[:, 0].to_numpy(dtype=float),
+        ci_95.iloc[:, 1].to_numpy(dtype=float),
+    )
+    return _clip(forecast), ci, _residual_std(np.asarray(values, dtype=float), fitted), {
         "name": "SARIMAX",
         "variant": spec.variant if spec.name == "SARIMAX" else "prophet_fallback",
         "params": {"order": list(order), "seasonal_order": list(seasonal_order)},
     }
 
 
-def _fit_holtwinters(values: list[float], source: str, steps: int, spec: ModelSpec) -> tuple[list[float], float, dict[str, Any]]:
+def _fit_holtwinters(values: list[float], source: str, steps: int, spec: ModelSpec) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     season = steps_per_year(source)
     seasonal = "add" if len(values) >= season * 2 else None
     seasonal_periods = season if seasonal else None
@@ -285,35 +300,72 @@ def _fit_holtwinters(values: list[float], source: str, steps: int, spec: ModelSp
         result = model.fit(optimized=True)
     forecast = result.forecast(steps)
     fitted = np.asarray(result.fittedvalues, dtype=float)
-    return _clip(forecast), _residual_std(np.asarray(values, dtype=float), fitted), {
+    residual_std = _residual_std(np.asarray(values, dtype=float), fitted)
+    try:
+        simulations = result.simulate(
+            steps,
+            anchor="end",
+            repetitions=1000,
+            random_errors="bootstrap",
+        )
+        sim_arr = np.asarray(simulations, dtype=float)
+        if sim_arr.ndim == 1:
+            sim_arr = sim_arr.reshape(steps, 1)
+        if sim_arr.shape[0] != steps and sim_arr.shape[-1] == steps:
+            sim_arr = sim_arr.T
+        lower = np.nanpercentile(sim_arr, 2.5, axis=1)
+        upper = np.nanpercentile(sim_arr, 97.5, axis=1)
+    except Exception:
+        point_arr = np.asarray(forecast, dtype=float)
+        growth = np.sqrt(1.0 + np.arange(steps, dtype=float) / max(season, 1))
+        lower = point_arr - 1.96 * residual_std * growth
+        upper = point_arr + 1.96 * residual_std * growth
+    ci = _native_95_ci(np.asarray(forecast, dtype=float), lower, upper)
+    return _clip(forecast), ci, residual_std, {
         "name": "HoltWinters",
         "variant": spec.variant,
         "params": {"trend": "add" if len(values) >= 4 else None, "seasonal": seasonal, "damped_trend": len(values) >= 4, "seasonal_periods": seasonal_periods},
     }
 
 
-def _fit_linear(values: list[float], steps: int) -> tuple[list[float], float, dict[str, Any]]:
+def _fit_linear(values: list[float], steps: int) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     x = np.arange(len(values), dtype=float)
     y = np.asarray(values, dtype=float)
-    if len(values) >= 2:
-        slope, intercept = np.polyfit(x, y, 1)
-    else:
-        slope, intercept = 0.0, y[-1] if len(y) else 0.0
     future_x = np.arange(len(values), len(values) + steps, dtype=float)
-    forecast = intercept + slope * future_x
-    fitted = intercept + slope * x
-    return _clip(forecast), _residual_std(y, fitted), {
+    if len(values) >= 2:
+        X = sm.add_constant(x, has_constant="add")
+        model = sm.OLS(y, X).fit()
+        X_future = sm.add_constant(future_x, has_constant="add")
+        pred = model.get_prediction(X_future)
+        summary = pred.summary_frame(alpha=0.05)
+        forecast = summary["mean"].to_numpy(dtype=float)
+        lower = summary["obs_ci_lower"].to_numpy(dtype=float)
+        upper = summary["obs_ci_upper"].to_numpy(dtype=float)
+        fitted = np.asarray(model.fittedvalues, dtype=float)
+        slope = float(model.params[1]) if len(model.params) > 1 else 0.0
+        intercept = float(model.params[0]) if len(model.params) else (float(y[-1]) if len(y) else 0.0)
+    else:
+        slope, intercept = 0.0, float(y[-1]) if len(y) else 0.0
+        forecast = np.full(steps, intercept)
+        fitted = np.full(len(y), intercept)
+        lower = forecast
+        upper = forecast
+    ci = _native_95_ci(forecast, lower, upper)
+    return _clip(forecast), ci, _residual_std(y, fitted), {
         "name": "Linear",
         "variant": "base",
         "params": {"degree": 1, "slope": float(slope), "intercept": float(intercept)},
     }
 
 
-def _fit_mean(values: list[float], steps: int) -> tuple[list[float], float, dict[str, Any]]:
+def _fit_mean(values: list[float], steps: int) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     y = np.asarray(values, dtype=float)
     mean_value = float(np.nanmean(y)) if len(y) else 0.0
     fitted = np.full(len(y), mean_value)
-    return [max(0.0, mean_value)] * steps, _residual_std(y, fitted), {
+    std = float(np.nanstd(y)) if len(y) else 0.0
+    point = np.full(steps, max(0.0, mean_value))
+    ci = _native_95_ci(point, point - (1.96 * std), point + (1.96 * std))
+    return _clip(point), ci, _residual_std(y, fitted), {
         "name": "Mean",
         "variant": "base",
         "params": {"window": "all"},
@@ -324,34 +376,33 @@ def _fit_values(periods: list[str], values: list[float], source: str, steps: int
     spec = select_model(len(values), source)
     warnings_list: list[str] = []
     if not values:
-        point, residual_std, actual_model = _fit_mean([0.0], steps)
+        point, ci, residual_std, actual_model = _fit_mean([0.0], steps)
         warnings_list.append("no_history_mean_fallback")
     else:
         try:
             if spec.name == "Prophet":
-                point, residual_std, actual_model = _fit_prophet(periods, values, source, steps)
+                point, ci, residual_std, actual_model = _fit_prophet(periods, values, source, steps)
             elif spec.name == "SARIMAX":
-                point, residual_std, actual_model = _fit_sarimax(values, source, steps, spec)
+                point, ci, residual_std, actual_model = _fit_sarimax(values, source, steps, spec)
             elif spec.name == "HoltWinters":
-                point, residual_std, actual_model = _fit_holtwinters(values, source, steps, spec)
+                point, ci, residual_std, actual_model = _fit_holtwinters(values, source, steps, spec)
             elif spec.name == "Linear":
-                point, residual_std, actual_model = _fit_linear(values, steps)
+                point, ci, residual_std, actual_model = _fit_linear(values, steps)
             else:
-                point, residual_std, actual_model = _fit_mean(values, steps)
+                point, ci, residual_std, actual_model = _fit_mean(values, steps)
         except Exception as exc:
             warnings_list.append(f"{spec.name.lower()}_fit_failed_fallback:{type(exc).__name__}")
             try:
                 if len(values) >= 20:
-                    point, residual_std, actual_model = _fit_holtwinters(values, source, steps, select_model(20, source))
+                    point, ci, residual_std, actual_model = _fit_holtwinters(values, source, steps, select_model(20, source))
                 elif len(values) >= 12:
-                    point, residual_std, actual_model = _fit_linear(values, steps)
+                    point, ci, residual_std, actual_model = _fit_linear(values, steps)
                 else:
-                    point, residual_std, actual_model = _fit_mean(values, steps)
+                    point, ci, residual_std, actual_model = _fit_mean(values, steps)
             except Exception as fallback_exc:
                 warnings_list.append(f"fallback_fit_failed_mean:{type(fallback_exc).__name__}")
-                point, residual_std, actual_model = _fit_mean(values or [0.0], steps)
+                point, ci, residual_std, actual_model = _fit_mean(values or [0.0], steps)
 
-    ci = _ci_arrays(point, residual_std, source, values)
     fit_quality = _fit_quality(values, source)
     return {
         "point_forecast": point,
@@ -388,22 +439,10 @@ def _fit_quality(values: list[float], source: str) -> dict[str, Any]:
 
 
 def build_horizon_adaptive_ci(forecast_result: dict[str, Any], source: str) -> dict[str, list[float]]:
-    steps_year = steps_per_year(source)
-    total = len(forecast_result["point_forecast"])
-    upper: list[float] = []
-    lower: list[float] = []
-    for idx in range(total):
-        if idx < steps_year:
-            suffix = "95"
-        elif idx < steps_year * 3:
-            suffix = "90"
-        elif idx < steps_year * 5:
-            suffix = "80"
-        else:
-            suffix = "50"
-        upper.append(forecast_result["ci"][f"ci_upper_{suffix}"][idx])
-        lower.append(forecast_result["ci"][f"ci_lower_{suffix}"][idx])
-    return {"upper_values": upper, "lower_values": lower}
+    return {
+        "upper_values": list(forecast_result["ci"]["ci_upper_95"]),
+        "lower_values": list(forecast_result["ci"]["ci_lower_95"]),
+    }
 
 
 def calculate_confidence(forecast_result: dict[str, Any], baseline_value: float | None, source: str) -> dict[str, Any]:
@@ -551,6 +590,8 @@ def build_forecast_brand_entry(
         "forecast_intervals": {
             "upper_horizon_adaptive": forecast_result["adaptive_ci"]["upper_values"],
             "lower_horizon_adaptive": forecast_result["adaptive_ci"]["lower_values"],
+            "upper_95_natural": forecast_result["adaptive_ci"]["upper_values"],
+            "lower_95_natural": forecast_result["adaptive_ci"]["lower_values"],
             "lower_floor_applied": bool(forecast_result["ci"].get("lower_floor_applied")),
             **forecast_result["ci"],
         },
@@ -593,8 +634,8 @@ def build_simulation_combo(
         brand_name = entry["brand"]
         base_values = entry.get("forecast_values") or []
         intervals = entry.get("forecast_intervals") or {}
-        upper_values = intervals.get("upper_horizon_adaptive") or base_values
-        lower_values = intervals.get("lower_horizon_adaptive") or base_values
+        upper_values = intervals.get("upper_95_natural") or intervals.get("upper_horizon_adaptive") or base_values
+        lower_values = intervals.get("lower_95_natural") or intervals.get("lower_horizon_adaptive") or base_values
         final_base = base_values[-1] if base_values else None
         final_upper = upper_values[-1] if upper_values else None
         final_lower = lower_values[-1] if lower_values else None
@@ -627,14 +668,14 @@ def build_simulation_combo(
                 },
                 "upper": {
                     "label": "상위 (Best)",
-                    "method": "selected_model_ci_upper_horizon_adaptive",
+                    "method": "selected_model_ci_upper_95_natural",
                     "values": upper_values,
                     "final_value": final_upper,
                     "delta_pct_vs_base": ((final_upper - final_base) / final_base * 100) if final_base and final_upper is not None else None,
                 },
                 "lower": {
                     "label": "하위 (Worst)",
-                    "method": "selected_model_ci_lower_horizon_adaptive",
+                    "method": "selected_model_ci_lower_95_natural",
                     "values": lower_values,
                     "final_value": final_lower,
                     "delta_pct_vs_base": ((final_lower - final_base) / final_base * 100) if final_base and final_lower is not None else None,

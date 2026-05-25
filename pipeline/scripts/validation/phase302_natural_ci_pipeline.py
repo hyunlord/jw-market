@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 30.1 simulation visualization guardrail.
-
-Checks the PL-requested simulation visualization corrections:
-
-* no anomaly/stress payload or frontend UI
-* scenarios lower/base/upper stay ordered across horizons
-* event regressors remain disabled
-* simulation chart follows the KPI horizon instead of a fixed one-year slice
-"""
+"""Phase 30.2 validation for native 95% CI forecast/simulation payloads."""
 
 from __future__ import annotations
 
@@ -28,8 +20,14 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_HTML = PROJECT_ROOT / "docs" / "reference" / "jw_market_hardcoded_mockup_v3_4.html"
-HORIZONS = {"1y": 11, "3y": 35, "5y": 59, "10y": 119}
-IQVIA_HORIZONS = {"1y": 3, "3y": 11, "5y": 19, "10y": 39}
+HORIZON_CI_LEVELS = {
+    "1y": 0.95,
+    "3y": 0.95,
+    "5y": 0.95,
+    "10y": 0.95,
+    "method": "natural_accumulation_95_only",
+    "note": "Phase 30.2: horizon 차등 제거, 모든 horizon 95% CI 자연 누적",
+}
 
 
 @dataclass
@@ -62,57 +60,56 @@ def _payloads() -> dict[str, dict[str, Any]]:
         conn.close()
 
 
-def _positive_floor(values: list[float]) -> float:
-    positives = [float(value) for value in values if value and value > 0]
-    return min(positives) * 0.3 if positives else 0.0
-
-
 def _validate_frontend(issues: list[Issue]) -> None:
     html = FRONTEND_HTML.read_text(encoding="utf-8")
-    for marker in ("simulation-anomaly-box", "renderSimulationAnomaliesFromData", ".stress", "stress."):
-        if marker in html:
-            issues.append(Issue("frontend_forbidden_marker", detail={"marker": marker}))
-    if "const historySteps = Math.min(Math.max(forecastSteps, stepsPerYear)" not in html:
-        issues.append(Issue("frontend_history_not_horizon_synced"))
+    expected_markers = [
+        "const forecastSteps = Math.min(horizonIdx + 1, (simBrand.forecast_periods || []).length);",
+        "const historySteps = Math.min(Math.max(forecastSteps, stepsPerYear)",
+        "if (_deepState.data) renderSimulationCardsFromData(_deepState.data);",
+        "simulation 카드 + 차트 동시 갱신",
+    ]
+    for marker in expected_markers:
+        if marker not in html:
+            issues.append(Issue("frontend_horizon_sync_marker_missing", detail={"marker": marker}))
+    for forbidden in ("simulation-anomaly-box", "renderSimulationAnomaliesFromData", ".stress", "stress."):
+        if forbidden in html:
+            issues.append(Issue("frontend_forbidden_marker", detail={"marker": forbidden}))
 
 
 def _validate_sim_brand(brand: str, combo: str, sim_brand: str, payload: dict[str, Any], issues: list[Issue]) -> None:
-    for key in ("anomaly_signals", "stress"):
-        if key in payload:
-            issues.append(Issue("simulation_forbidden_key_present", brand, combo, sim_brand, {"key": key}))
-
+    if payload.get("horizon_ci_levels") != HORIZON_CI_LEVELS:
+        issues.append(Issue("horizon_ci_levels_not_phase302", brand, combo, sim_brand, {"actual": payload.get("horizon_ci_levels")}))
+    scenarios = payload.get("scenarios") or {}
+    upper = scenarios.get("upper") or {}
+    lower = scenarios.get("lower") or {}
+    if upper.get("method") != "selected_model_ci_upper_95_natural":
+        issues.append(Issue("upper_method_not_natural_95", brand, combo, sim_brand, {"method": upper.get("method")}))
+    if lower.get("method") != "selected_model_ci_lower_95_natural":
+        issues.append(Issue("lower_method_not_natural_95", brand, combo, sim_brand, {"method": lower.get("method")}))
+    for forbidden in ("anomaly_signals", "stress"):
+        if forbidden in payload:
+            issues.append(Issue("simulation_forbidden_key_present", brand, combo, sim_brand, {"key": forbidden}))
     event_regressor = ((payload.get("model") or {}).get("event_regressor") or {})
     if event_regressor.get("enabled") is not False:
         issues.append(Issue("event_regressor_enabled", brand, combo, sim_brand, {"event_regressor": event_regressor}))
-
-    scenarios = payload.get("scenarios") or {}
-    base = (scenarios.get("base") or {}).get("values") or []
-    upper = (scenarios.get("upper") or {}).get("values") or []
-    lower = (scenarios.get("lower") or {}).get("values") or []
-    if not (base and upper and lower):
-        issues.append(Issue("scenario_values_missing", brand, combo, sim_brand))
-        return
-
-    horizons = HORIZONS if combo.startswith("UBIST.") else IQVIA_HORIZONS
-    for label, idx in horizons.items():
-        if idx >= min(len(base), len(upper), len(lower)):
-            issues.append(Issue("scenario_horizon_missing", brand, combo, sim_brand, {"horizon": label, "idx": idx}))
+    base_values = (scenarios.get("base") or {}).get("values") or []
+    upper_values = upper.get("values") or []
+    lower_values = lower.get("values") or []
+    for idx in (0, min(11, len(base_values) - 1), len(base_values) - 1):
+        if idx < 0:
             continue
-        b, u, l = float(base[idx]), float(upper[idx]), float(lower[idx])
-        if b <= 0:
-            if l != 0 or u < b:
-                issues.append(Issue("scenario_order_invalid", brand, combo, sim_brand, {"horizon": label, "lower": l, "base": b, "upper": u}))
-            continue
+        b = float(base_values[idx])
+        u = float(upper_values[idx])
+        l = float(lower_values[idx])
         if not (l <= b <= u):
-            issues.append(Issue("scenario_order_invalid", brand, combo, sim_brand, {"horizon": label, "lower": l, "base": b, "upper": u}))
+            issues.append(Issue("scenario_order_invalid", brand, combo, sim_brand, {"idx": idx, "lower": l, "base": b, "upper": u}))
 
 
 def validate() -> dict[str, Any]:
     issues: list[Issue] = []
     payloads = _payloads()
-    checked_payloads = 0
+    checked = 0
     _validate_frontend(issues)
-
     for brand in CANONICAL_25:
         payload = payloads.get(brand)
         if not payload:
@@ -121,14 +118,13 @@ def validate() -> dict[str, Any]:
         simulation = ((payload.get("data") or {}).get("simulation") or {}).get("by_combo") or {}
         for combo, sim in simulation.items():
             for sim_brand, sim_payload in (sim.get("by_brand") or {}).items():
-                checked_payloads += 1
+                checked += 1
                 _validate_sim_brand(brand, combo, sim_brand, sim_payload, issues)
-
     return {
-        "phase": "30.1",
-        "validator": "simulation_visualization_guardrail",
+        "phase": "30.2",
+        "validator": "native_95_ci_natural_accumulation",
         "brands": len(CANONICAL_25),
-        "checked_sim_brand_payloads": checked_payloads,
+        "checked_sim_brand_payloads": checked,
         "issues_count": len(issues),
         "issues": [asdict(issue) for issue in issues],
     }

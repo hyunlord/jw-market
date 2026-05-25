@@ -8,7 +8,14 @@ import pymysql
 from pipeline.scripts.etl.cache_build_common import CANONICAL_25
 
 
-HORIZON_CI_LEVELS = {"1y": 0.95, "3y": 0.90, "5y": 0.80, "10y": 0.50}
+HORIZON_CI_LEVELS = {
+    "1y": 0.95,
+    "3y": 0.95,
+    "5y": 0.95,
+    "10y": 0.95,
+    "method": "natural_accumulation_95_only",
+    "note": "Phase 30.2: horizon 차등 제거, 모든 horizon 95% CI 자연 누적",
+}
 
 
 def _conn():
