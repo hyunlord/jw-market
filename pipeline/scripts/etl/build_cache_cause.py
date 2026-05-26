@@ -176,6 +176,7 @@ def _stacked_ranking(
 
     years = sorted(by_year.keys())[-5:]
     yearly = []
+    normalized_by_year: dict[int, list[dict[str, Any]]] = {}
     for year in years:
         _, rows = by_year[year]
         normalized = [_normalize_rank_row(row, label_key=label_key, target_name=target_name) for row in rows]
@@ -208,6 +209,7 @@ def _stacked_ranking(
                         }
                     )
                     existing.add(name)
+        normalized_by_year[year] = deepcopy(normalized)
 
         target = next((row for row in normalized if row["is_target"]), None)
         target_id = row_identity(target, label_key)
@@ -247,7 +249,73 @@ def _stacked_ranking(
             if row.get("is_others") or (safe_float(row.get("value")) or 0.0) > 0:
                 row["rank"] = index
         yearly.append({"year": year, "rankings": selected})
-    return {"years": years, "yearly": yearly}
+    trend_key = "brands" if label_key == "brand" else "companies"
+    return {
+        "years": years,
+        "yearly": yearly,
+        trend_key: _latest_top_trends(
+            years=years,
+            normalized_by_year=normalized_by_year,
+            label_key=label_key,
+            top_n=top_n,
+        ),
+    }
+
+
+def _latest_top_trends(
+    *,
+    years: list[int],
+    normalized_by_year: dict[int, list[dict[str, Any]]],
+    label_key: str,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    if not years:
+        return []
+    latest_year = years[-1]
+
+    def identity(row: dict[str, Any]) -> str | None:
+        return row_identity(row, label_key)
+
+    def ranked_rows(year: int) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in normalized_by_year.get(year, [])
+            if identity(row) and not row.get("is_others") and (safe_float(row.get("value")) or 0.0) > 0
+        ]
+        ranked = sorted(rows, key=lambda item: safe_float(item.get("value")) or 0.0, reverse=True)
+        for index, row in enumerate(ranked, start=1):
+            row.setdefault("rank", index)
+        return ranked
+
+    latest_top = ranked_rows(latest_year)[:top_n]
+    trends = []
+    for latest in latest_top:
+        item_id = identity(latest)
+        if not item_id:
+            continue
+        yearly_values = []
+        for year in years:
+            rows = ranked_rows(year)
+            row = next((candidate for candidate in rows if identity(candidate) == item_id), None)
+            yearly_values.append(
+                {
+                    "year": year,
+                    "value": safe_float(row.get("value")) if row else 0.0,
+                    "ms_pct": safe_float(row.get("ms_pct")) if row else 0.0,
+                    "rank": row.get("rank") if row else None,
+                }
+            )
+        trends.append(
+            {
+                label_key: item_id,
+                "brand": latest.get("brand"),
+                "company": latest.get("company"),
+                "is_target": bool(latest.get("is_target")),
+                "is_jw": bool(latest.get("is_jw")),
+                "yearly_values": yearly_values,
+            }
+        )
+    return trends
 
 
 def row_identity(row: dict[str, Any] | None, label_key: str) -> str | None:
@@ -1008,62 +1076,6 @@ def _matrix_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
     return {"data": entries, "ms_avg_pct": avg, "share_avg_pct": avg}
 
 
-def _target_rank(entries: list[dict[str, Any]]) -> int | None:
-    target = next((row for row in entries if row.get("is_target")), None)
-    return target.get("rank") if target else None
-
-
-def _apply_rank_cd(entries: list[dict[str, Any]], rank_cd: int | None) -> None:
-    if rank_cd is None:
-        return
-    for row in entries:
-        if row.get("is_target"):
-            row["rank_cd"] = rank_cd
-
-
-def _apply_latest_rank_cd(ranking: dict[str, Any], rank_cd: int | None) -> None:
-    if rank_cd is None or not isinstance(ranking, dict):
-        return
-    yearly = ranking.get("yearly")
-    if not isinstance(yearly, list) or not yearly:
-        return
-    rankings = yearly[-1].get("rankings") if isinstance(yearly[-1], dict) else None
-    if not isinstance(rankings, list):
-        return
-    for row in rankings:
-        if isinstance(row, dict) and row.get("is_target"):
-            row["rank_cd"] = rank_cd
-
-
-def _rank_context(
-    *,
-    rows: list[dict[str, Any]],
-    market_row: dict[str, Any],
-    target_name: str | None,
-    strategic_brand: Any,
-    view_source_id: str,
-) -> dict[str, Any]:
-    ranked = []
-    for row in rows:
-        brand = _row_brand(row)
-        if not brand:
-            continue
-        recent = _latest_history_item(row)
-        value_recent = safe_float(recent.get("raw_value") or recent.get("value")) or 0.0
-        if value_recent > 0:
-            ranked.append((value_recent, brand))
-    rank_by_brand = {
-        brand: index
-        for index, (_, brand) in enumerate(sorted(ranked, key=lambda item: item[0], reverse=True), start=1)
-    }
-    catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
-    competition_count = max(
-        len({row.get("brand_key") for row in rows if row.get("brand_key")}),
-        len({member["name"] for member in catalog_members if member.get("name")}),
-    )
-    return {"rank_cd": rank_by_brand.get(target_name or ""), "cd_competition_count": competition_count}
-
-
 def _annual_latest_points(period_map: Any, *, value_key: str) -> list[dict[str, Any]]:
     if isinstance(period_map, list):
         points = [point for point in period_map if isinstance(point, dict)]
@@ -1574,7 +1586,6 @@ def build_response(
     market_sources: list[str],
     market_catalog_row: dict[str, Any] | None = None,
     strategic_brand: Any = None,
-    rank_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metric_history = decode_json(brand_row.get("metric_history"))
     extended = decode_json(brand_row.get("extended_metric_history"))
@@ -1653,10 +1664,6 @@ def build_response(
         ei_market_key=market_row.get("id"),
     )
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
-    rank_cd = (rank_context or {}).get("rank_cd")
-    cd_competition_count = (rank_context or {}).get("cd_competition_count")
-    _apply_rank_cd(display_entries_no_others, rank_cd)
-    _apply_rank_cd(display_entries_with_others, rank_cd)
     periods = _history_periods(sibling_rows, source_api)
     hhi_points = _annual_latest_points(hhi_series, value_key="hhi")
     company_concentration = _company_hhi_from_ranking(company_ranking)
@@ -1680,9 +1687,6 @@ def build_response(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
         len({member["name"] for member in catalog_members if member.get("name")}),
     )
-    if cd_competition_count is None and view_type == "competitive_dynamics":
-        cd_competition_count = direct_competition_count
-    _apply_latest_rank_cd(brand_ranking_stacked, rank_cd)
 
     return {
         "brand": brand_row["brand_name"],
@@ -1700,7 +1704,6 @@ def build_response(
                 "top3_share_pct": top3_share(sibling_rows),
                 "hhi_recent": hhi_recent,
                 "direct_competition_count": direct_competition_count,
-                "cd_competition_count": cd_competition_count,
                 "target_brand": target.get("brand_name"),
                 "target_company": target.get("company_name") or ("JW중외제약" if target.get("is_jw") else None),
                 "target_ei": optional_float(target_display.get("ei")),
@@ -1712,7 +1715,6 @@ def build_response(
                 "market_cagr_pct": optional_float(target_display.get("market_cagr_pct")),
                 "target_momentum": optional_float(target_display.get("momentum_score")),
                 "target_rank": target_display.get("rank"),
-                "target_rank_cd": rank_cd,
                 "target_share_pct": safe_float(target_display.get("share_pct")),
                 "brand_value_recent": safe_float(recent.get("raw_value")),
                 "brand_share_pct": safe_float(target_display.get("share_pct")),
@@ -1764,7 +1766,6 @@ def build_response(
             "measures_label": _measure_labels(source),
             "available_levels": analysis_levels.get("levels") or [],
             "direct_competition_count": direct_competition_count,
-            "cd_competition_count": cd_competition_count,
             "market_size_recent": series_latest_number(market_series),
             "market_cagr_5y_pct": series_cagr(market_series),
             "is_jw": bool(brand_row.get("is_jw")),
@@ -1796,11 +1797,6 @@ def main() -> None:
     cd_brand_rows = fetch_all("SELECT * FROM mart_strategic_cd_brand_metric")
     ml_siblings = make_sibling_map(ml_brand_rows, "ml_id")
     cd_siblings = make_sibling_map(cd_brand_rows, "cd_market_id")
-    cd_id_by_ml = {
-        row.get("ml_id"): row.get("cd_market_id")
-        for row in cd_market.to_dict(orient="records")
-        if row.get("ml_id") and row.get("cd_market_id")
-    }
 
     columns = ["brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"]
     placeholders = ", ".join(["%s"] * len(columns))
@@ -1823,18 +1819,6 @@ def main() -> None:
         market = ml_market.loc[row["ml_id"]].to_dict() if row["ml_id"] in ml_market.index else {}
         market_id = ml_to_strategy(row["ml_id"])
         source = api_source(row["source"])
-        cd_id = cd_id_by_ml.get(row["ml_id"])
-        cd_rank_context = (
-            _rank_context(
-                rows=cd_siblings[(cd_id, row["source"], row["measure"])],
-                market_row=cd_market_rows.get((cd_id, row["source"], row["measure"]), {}),
-                target_name=row.get("brand_name"),
-                strategic_brand=strategic_brand,
-                view_source_id=cd_id,
-            )
-            if cd_id
-            else None
-        )
         response = build_response(
             brand_row=row,
             market_row=ml_market_rows.get((row["ml_id"], row["source"], row["measure"]), {}),
@@ -1848,7 +1832,6 @@ def main() -> None:
             market_sources=source_list(market.get("data_source")),
             market_catalog_row=market,
             strategic_brand=strategic_brand,
-            rank_context=cd_rank_context,
         )
         response_json = dump_payload(response)
         out = {
@@ -1873,13 +1856,6 @@ def main() -> None:
         ml = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
         market_id = ml_to_strategy(ml_id)
         source = api_source(row["source"])
-        cd_rank_context = _rank_context(
-            rows=cd_siblings[(row["cd_market_id"], row["source"], row["measure"])],
-            market_row=cd_market_rows.get((row["cd_market_id"], row["source"], row["measure"]), {}),
-            target_name=row.get("brand_name"),
-            strategic_brand=strategic_brand,
-            view_source_id=row["cd_market_id"],
-        )
         response = build_response(
             brand_row=row,
             market_row=cd_market_rows.get((row["cd_market_id"], row["source"], row["measure"]), {}),
@@ -1893,7 +1869,6 @@ def main() -> None:
             market_sources=source_list(cd.get("data_source") or ml.get("data_source")),
             market_catalog_row=ml,
             strategic_brand=strategic_brand,
-            rank_context=cd_rank_context,
         )
         response_json = dump_payload(response)
         out = {
