@@ -37,6 +37,7 @@ CHANNELS_5 = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
 IQVIA_CHANNELS = ["전체", "KHPA", "KCPA", "KPA"]
 CAUSE_LEVELS_V091 = ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
 CAUSE_LEVELS_ML011 = ["Class 1", "Class 2", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
+FISH_OIL_LEVEL = "Fish Oil"
 LEVEL_FIELD_BY_LABEL = {
     "Class": "class",
     "Class 1": "class",
@@ -46,6 +47,7 @@ LEVEL_FIELD_BY_LABEL = {
     "용량": "strength_pack",
     "비/급여": "nhi_type",
     "Ox/Gx": "ox_gx",
+    FISH_OIL_LEVEL: "fish_oil",
     "fish_oil": "fish_oil",
 }
 ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
@@ -598,7 +600,7 @@ def _market_levels(market: dict[str, Any] | None) -> list[str]:
     if bool(market.get("analyze_ox_gx")):
         levels.append("Ox/Gx")
     if bool(market.get("analyze_fish_oil")):
-        levels.append("fish_oil")
+        levels.append(FISH_OIL_LEVEL)
     return levels
 
 
@@ -618,8 +620,12 @@ def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) 
     depend on Class 1/Class 2 being distinct instead of a single Class bucket.
     """
     if view_source_id == "ml_011" and bool((market or {}).get("analyze_class")):
-        return CAUSE_LEVELS_ML011
-    return CAUSE_LEVELS_V091
+        levels = list(CAUSE_LEVELS_ML011)
+    else:
+        levels = list(CAUSE_LEVELS_V091)
+    if bool((market or {}).get("analyze_fish_oil")) and FISH_OIL_LEVEL not in levels:
+        levels.append(FISH_OIL_LEVEL)
+    return levels
 
 
 def _split_atomic_dimension(level: str, value: Any) -> list[str]:

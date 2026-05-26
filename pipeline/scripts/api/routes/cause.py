@@ -5,8 +5,10 @@ from urllib.parse import unquote
 from fastapi import APIRouter, HTTPException, Query
 
 from pipeline.scripts.api import db
+from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.handlers.multi_market import choose_primary_market
+from pipeline.scripts.api.market_id import to_strategy_id
 from pipeline.scripts.api.validators.query_params import UNIT_LABELS, validate_cause_query
 
 
@@ -17,18 +19,30 @@ def _brand_exists(brand: str) -> bool:
     return bool(db.fetch_one("SELECT 1 FROM cache_cause WHERE brand = %s LIMIT 1", [brand]))
 
 
-def _fetch_cause_rows(brand: str, view: str, source: str, measure: str) -> list[dict]:
+def _fetch_cause_rows(
+    brand: str,
+    view: str,
+    source: str,
+    measure: str,
+    market_id: str | None = None,
+) -> list[dict]:
+    params = [brand, view, source, measure]
+    market_filter = ""
+    if market_id:
+        market_filter = " AND market_id = %s"
+        params.append(market_id)
     return db.fetch_all(
-        """
+        f"""
         SELECT market_id, response_json
         FROM cache_cause
         WHERE brand = %s
           AND view_type = %s
           AND source = %s
           AND measure = %s
+          {market_filter}
         ORDER BY market_id
         """,
-        [brand, view, source, measure],
+        params,
     )
 
 
@@ -38,16 +52,18 @@ def cause(
     view: str | None = Query("market_landscape"),
     source: str | None = Query("UBIST"),
     measure: str | None = Query("sales"),
+    market_id: str | None = Query(None),
 ) -> dict:
     view, source, measure = validate_cause_query(view, source, measure)
     brand = unquote(brand_name)
-    rows = _fetch_cause_rows(brand, view, source, measure)
+    requested_market_id = to_strategy_id(market_id) if market_id else None
+    rows = _fetch_cause_rows(brand, view, source, measure, requested_market_id)
     if not rows:
         if not _brand_exists(brand):
             raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
         return {
             "brand": brand,
-            "market_id": None,
+            "market_id": requested_market_id,
             "view": view,
             "source": source,
             "measure": measure,
@@ -58,7 +74,9 @@ def cause(
             "markets": [],
         }
 
-    primary, markets = choose_primary_market(rows)
+    display_brand = get_display_brand(brand)
+    preferred_market_id = requested_market_id or (display_brand.market_id if display_brand else None)
+    primary, markets = choose_primary_market(rows, preferred_market_id=preferred_market_id)
     payload = compose_cached_json(primary["response_json"], measure=measure)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_cause"})
