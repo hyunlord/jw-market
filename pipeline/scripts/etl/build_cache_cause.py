@@ -1270,7 +1270,7 @@ def _company_contribution_payload(rows: list[dict[str, Any]], target_company: st
     return {"top_contributors": selected, "others_total": 0.0}
 
 
-def _growth_contribution_payload(rows: list[dict[str, Any]], target_name: str | None, periods: list[str]) -> dict[str, Any]:
+def _growth_contribution_base_payload(rows: list[dict[str, Any]], target_name: str | None, periods: list[str]) -> dict[str, Any]:
     top_rows, market_start, market_end, market_growth = _top_contribution_rows(rows, target_name, periods)
     by_brand = {
         "top_contributors": top_rows,
@@ -1286,6 +1286,28 @@ def _growth_contribution_payload(rows: list[dict[str, Any]], target_name: str | 
         "by_brand": by_brand,
         "by_company": _company_contribution_payload(rows, target_company=target_company, periods=periods, market_growth=market_growth),
     }
+
+
+def _growth_window_periods(periods: list[str], source: str | None, n_years: int) -> list[str]:
+    if not periods:
+        return []
+    stride = 12 if source == "UBIST" else 4
+    start_idx = len(periods) - (stride * n_years)
+    if start_idx < 0:
+        return []
+    return [periods[start_idx], periods[-1]]
+
+
+def _growth_contribution_payload(rows: list[dict[str, Any]], target_name: str | None, periods: list[str], source: str | None = None) -> dict[str, Any]:
+    payload = _growth_contribution_base_payload(rows, target_name, periods)
+    windows: dict[str, dict[str, Any]] = {}
+    for n_years in range(1, 5):
+        window_periods = _growth_window_periods(periods, source, n_years)
+        if window_periods:
+            windows[f"{n_years}y"] = _growth_contribution_base_payload(rows, target_name, window_periods)
+    windows["5y"] = deepcopy(payload)
+    payload["windows"] = windows
+    return payload
 
 
 def _channel_data_quality(channel: str, periods: list[str], total_series: list[float]) -> dict[str, Any]:
@@ -1667,7 +1689,7 @@ def build_response(
     periods = _history_periods(sibling_rows, source_api)
     hhi_points = _annual_latest_points(hhi_series, value_key="hhi")
     company_concentration = _company_hhi_from_ranking(company_ranking)
-    growth_contribution = _growth_contribution_payload(sibling_rows, brand_row.get("brand_name"), periods)
+    growth_contribution = _growth_contribution_payload(sibling_rows, brand_row.get("brand_name"), periods, source=source_api)
     target_customer_competition = _target_customer_competition(
         rows=sibling_rows,
         source=source_api,
