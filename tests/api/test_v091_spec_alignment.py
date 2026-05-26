@@ -111,10 +111,20 @@ def test_deep_analysis_mock_sections_v091() -> None:
     payload = get_api(f"/api/deep-analysis/{brand}")
 
     events = payload["data"]["events"]
-    assert set(events.keys()) >= {"cut_a", "cut_b", "meta"}
-    assert isinstance(events["cut_a"], list)
-    assert isinstance(events["cut_b"], list)
-    assert isinstance(events["meta"], dict)
+    assert isinstance(events, list)
+    assert events
+    assert {
+        "id",
+        "category",
+        "category_label",
+        "date",
+        "period_map",
+        "impact_score",
+        "title",
+        "summary",
+        "body_full",
+        "source",
+    } <= set(events[0])
     assert set(payload["data"]["ai_analysis"].keys()) >= {
         "phenomenon",
         "cause",

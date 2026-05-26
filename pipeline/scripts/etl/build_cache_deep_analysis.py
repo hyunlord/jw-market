@@ -25,6 +25,7 @@ from cache_build_common import (
     safe_float,
     source_list,
 )
+from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 try:
     from phase29_events import build_events_for_cache, ensure_events_raw_table
 except ModuleNotFoundError:  # pragma: no cover - package import path under pytest
@@ -76,6 +77,7 @@ FORECAST_DISCLOSURE = (
     "Phase 31 이후로 보류되어 enabled=false입니다."
 )
 EVENT_DEDUP_SIMILARITY_THRESHOLD = 0.80
+BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
 
 
 def _normalize_event_title(title: str | None) -> str:
@@ -176,6 +178,44 @@ def _dedup_cut_a_events(events_payload: dict[str, Any]) -> dict[str, Any]:
     )
     payload["meta"] = meta
     return payload
+
+
+def _events_spec_list(events_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Project Phase 33 cut_a events to the v0.9.1 spec list shape."""
+    events = events_payload.get("cut_a") or []
+    projected: list[dict[str, Any]] = []
+    for event in events:
+        category = event.get("category")
+        category_label = event.get("category_label")
+        if not category_label:
+            category_label = {
+                "rd": "신약/R&D",
+                "policy": "정책/규제",
+                "supply": "공급/생산",
+                "capital": "자본/경영",
+                "external": "외부/트렌드",
+            }.get(str(category), str(category) if category else None)
+        projected.append(
+            {
+                "id": event.get("id") or event.get("event_id") or event.get("news_id"),
+                "category": category,
+                "category_label": category_label,
+                "date": event.get("date") or event.get("published_date"),
+                "period_map": event.get("period_map") or {},
+                "impact_score": event.get("impact_score") or event.get("score"),
+                "title": event.get("title"),
+                "summary": event.get("summary"),
+                "body_full": event.get("body_full"),
+                "source": event.get("source"),
+                "url": event.get("url"),
+                "source_url": event.get("source_url"),
+                "related_coverage_count": event.get("related_coverage_count"),
+                "related_sources": event.get("related_sources"),
+                "related_titles": event.get("related_titles"),
+                "related_urls": event.get("related_urls"),
+            }
+        )
+    return projected
 
 
 def _load_phase29_poc_report() -> dict[str, Any]:
@@ -532,6 +572,7 @@ def main() -> None:
 
         events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
         events_payload = _dedup_cut_a_events(events_payload)
+        events_spec = _events_spec_list(events_payload)
         simulation_by_combo = {}
         for combo, combo_data in by_combo.items():
             if phase30_enabled and build_phase30_simulation_combo is not None:
@@ -554,6 +595,7 @@ def main() -> None:
 
         payload = {
             "brand": brand,
+            "brand_name": brand,
             "market_id": market_id,
             "market_name": market.get("name"),
             "available_combos": available_combos,
@@ -568,9 +610,14 @@ def main() -> None:
                     "by_combo": by_combo,
                 },
                 "simulation": {"by_combo": simulation_by_combo},
-                "events": events_payload,
+                "events": events_spec,
             },
             "market_meta": {
+                "market_name": market.get("name"),
+                "atc4_code": (BRAND_METADATA_BY_NAME.get(brand).atc_codes[0] if BRAND_METADATA_BY_NAME.get(brand) and BRAND_METADATA_BY_NAME.get(brand).atc_codes else None),
+                "atc4_name": (BRAND_METADATA_BY_NAME.get(brand).atc_desc if BRAND_METADATA_BY_NAME.get(brand) else None),
+                "sources": source_list(market.get("data_source")),
+                "default_source": source_list(market.get("data_source"))[0] if source_list(market.get("data_source")) else None,
                 "available_combos": available_combos,
                 "source_count": len({api_source(r["source"]) for r in brand_rows}),
                 "measure_count": len({r["measure"] for r in brand_rows}),

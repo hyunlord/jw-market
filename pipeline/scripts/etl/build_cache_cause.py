@@ -27,6 +27,7 @@ from cache_build_common import (
     series_latest_number,
     source_list,
 )
+from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 
 period_key = lru_cache(maxsize=None)(period_key)
 
@@ -50,6 +51,7 @@ ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
 LEVEL_ROW_GROUPS_CACHE: dict[tuple[str | None, str, str], dict[str, dict[str, list[dict[str, Any]]]]] = {}
 EI_META_CACHE: dict[tuple[Any, Any], dict[str, Any]] = {}
 TARGET_RANK_STATS_CACHE: dict[Any, dict[int, dict[str, dict[str, Any]]]] = {}
+BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
 
 
 def _period_year(period: str) -> int | None:
@@ -588,6 +590,12 @@ def _channels_for_source(source: str) -> list[str]:
     return CHANNELS_5 if source == "UBIST" else IQVIA_CHANNELS
 
 
+def _measure_labels(source: str) -> dict[str, str | None]:
+    if source == "UBIST":
+        return {"primary": "처방조제액", "secondary": "처방량"}
+    return {"primary": "Sales", "secondary": "Units"}
+
+
 def _value_from_period_item(item: Any) -> float:
     if isinstance(item, dict):
         return _row_value(item)
@@ -849,6 +857,7 @@ def _display_brand_rows(
                 "is_jw": bool(row.get("is_jw")) or is_target,
                 "is_others": False,
                 "rank": recent.get("rank"),
+                "rank_overall": recent.get("rank"),
                 "value_recent": value_recent,
                 "raw_value": value_recent,
                 "share_pct": share,
@@ -912,6 +921,7 @@ def _display_brand_rows(
                 "is_jw": False,
                 "is_others": True,
                 "rank": None,
+                "rank_overall": None,
                 "value_recent": sum(row["value_recent"] for row in others),
                 "raw_value": sum(row["raw_value"] for row in others),
                 "share_pct": round(max(0.0, 100.0 - selected_ms), 4),
@@ -961,7 +971,7 @@ def _annual_latest_points(period_map: Any, *, value_key: str) -> list[dict[str, 
             value = safe_float(item.get(value_key) or item.get("hhi") or item.get("company_hhi") or item.get("cr4"))
         else:
             value = safe_float(item)
-        points.append({"period": period, "year": year, value_key: value or 0.0})
+        points.append({"period": period, "period_full": period, "year": year, value_key: value or 0.0})
     return points
 
 
@@ -1217,6 +1227,7 @@ def _target_customer_competition(
                     "is_target": item.get("is_target"),
                     "is_jw": item.get("is_jw"),
                     "is_others": item.get("is_others"),
+                    "rank": item.get("rank"),
                     "value_series": value_series,
                     "volume_series": value_series,
                 }
@@ -1225,6 +1236,7 @@ def _target_customer_competition(
                 {
                     "brand": item.get("brand"),
                     "is_target": item.get("is_target"),
+                    "is_jw": item.get("is_jw"),
                     "is_others": item.get("is_others"),
                     "pct": safe_float(item.get("share_pct")) or 0.0,
                 }
@@ -1310,15 +1322,21 @@ def _level_top5_trend(
                 brands_in_value.append(
                     {
                         "brand": entry.get("brand"),
+                        "company": entry.get("company"),
                         "is_target": entry.get("is_target"),
                         "is_jw": entry.get("is_jw"),
                         "is_others": entry.get("is_others"),
+                        "rank": entry.get("rank"),
                         "ms_recent_pct": safe_float(entry.get("share_pct")) or 0.0,
                         "value_recent": safe_float(entry.get("value_recent")) or 0.0,
                         "raw_value": safe_float(entry.get("raw_value")) or safe_float(entry.get("value_recent")) or 0.0,
                         "value_recent_100m": round((safe_float(entry.get("value_recent")) or 0.0) / 100_000_000, 4),
                         "volume_recent": safe_float(entry.get("value_recent")) or 0.0,
                         "value_series_10pt": series,
+                        "ms_series_10pt": [
+                            round(value / total * 100, 4) if total else 0.0
+                            for value, total in zip(series, segment_total_series)
+                        ],
                         "volume_series_10pt": series,
                     }
                 )
@@ -1335,6 +1353,10 @@ def _level_top5_trend(
             )
         by_level[level] = {
             "level_label": level,
+            "level_value": values[0]["value"] if values else None,
+            "default_value": values[0]["value"] if values else None,
+            "total_market_value": sum((safe_float(item.get("total_value")) or 0.0) for item in values),
+            "empty": not bool(values),
             "periods_10pt": periods,
             "all_options": [segment.get("name") for segment in level_segments if segment.get("name")],
             "default_option": values[0]["value"] if values else None,
@@ -1532,6 +1554,7 @@ def build_response(
 
     return {
         "brand": brand_row["brand_name"],
+        "brand_name": brand_row["brand_name"],
         "brand_key": brand_row["brand_key"],
         "market_id": market_id,
         "view": view_type,
@@ -1583,7 +1606,20 @@ def build_response(
             "analysis_levels": analysis_levels,
         },
         "market_meta": {
+            "strategic_market_id": market_id,
             "market_name": market_name,
+            "market_name_short": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).market_name_short if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else market_name),
+            "market_label_kor": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).market_label_kor if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else None),
+            "market_definition_label": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).market_label_kor if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else market_name),
+            "market_definition_full": f"{market_name} 시장 정의" if market_name else None,
+            "mkt_team": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).mkt_team if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else None),
+            "brand_list": [
+                member["name"]
+                for member in catalog_members
+                if member.get("name") and member.get("is_jw")
+            ],
+            "atc_codes": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).atc_codes if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else []),
+            "atc_desc": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).atc_desc if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else None),
             "view_source_id": view_source_id,
             "atc_count": None,
             "nhi_type": None,
@@ -1591,6 +1627,11 @@ def build_response(
             "source_label": source,
             "is_dual_source": len(market_sources) == 2,
             "measures": list(MEASURES_BY_SOURCE.get(brand_row["source"], ())),
+            "measures_label": _measure_labels(source),
+            "available_levels": analysis_levels.get("levels") or [],
+            "direct_competition_count": direct_competition_count,
+            "market_size_recent": series_latest_number(market_series),
+            "market_cagr_5y_pct": series_cagr(market_series),
             "is_jw": bool(brand_row.get("is_jw")),
             "is_target": bool(brand_row.get("is_target")),
         },

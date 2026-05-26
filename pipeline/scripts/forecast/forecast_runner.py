@@ -781,7 +781,12 @@ def build_simulation_combo(
     cut_b_events: list[dict[str, Any]],
 ) -> dict[str, Any]:
     available_brands = [
-        {"brand": entry["brand"], "is_target": bool(entry.get("is_target")), "is_jw": bool(entry.get("is_jw"))}
+        {
+            "brand": entry["brand"],
+            "is_target": bool(entry.get("is_target")),
+            "is_jw": bool(entry.get("is_jw")),
+            "rank": entry.get("rank"),
+        }
         for entry in forecast_combo.get("brands", [])
     ]
     by_brand: dict[str, Any] = {}
@@ -806,6 +811,8 @@ def build_simulation_combo(
         warnings_list.extend(["event_regressor_disabled_phase_30", "forecast_horizon_10y_is_extrapolation_heavy"])
         if floor_lower:
             warnings_list.append("floor_applied_declining_trend")
+        upper_delta_pct = ((final_upper - final_base) / final_base * 100) if final_base and final_upper is not None else None
+        lower_delta_pct = ((final_lower - final_base) / final_base * 100) if final_base and final_lower is not None else None
         by_brand[brand_name] = {
             "target_period": forecast_combo.get("forecast_periods", [None])[-1] if forecast_combo.get("forecast_periods") else None,
             "history_periods": entry.get("history_periods") or [],
@@ -827,14 +834,14 @@ def build_simulation_combo(
                     "method": "selected_model_ci_upper_95_natural_with_funnel_floor",
                     "values": upper_values,
                     "final_value": final_upper,
-                    "delta_pct_vs_base": ((final_upper - final_base) / final_base * 100) if final_base and final_upper is not None else None,
+                    "delta_pct_vs_base": upper_delta_pct,
                 },
                 "lower": {
                     "label": "하위 (Worst)",
                     "method": "selected_model_ci_lower_95_natural_with_funnel_floor",
                     "values": lower_values,
                     "final_value": final_lower,
-                    "delta_pct_vs_base": ((final_lower - final_base) / final_base * 100) if final_base and final_lower is not None else None,
+                    "delta_pct_vs_base": lower_delta_pct,
                     "floor_applied": floor_lower,
                 },
             },
@@ -848,6 +855,7 @@ def build_simulation_combo(
         "phase30_baseline": True,
         "combo": combo,
         "period_unit": period_unit(source),
+        "source_granularity": "monthly" if source == "UBIST" else "quarterly",
         "unit_label": unit_label or UNIT_LABELS.get(measure),
         "target_brand": forecast_combo.get("target_brand"),
         "available_brands": available_brands,

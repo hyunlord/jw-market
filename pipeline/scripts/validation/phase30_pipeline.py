@@ -63,18 +63,16 @@ def _payloads() -> dict[str, dict[str, Any]]:
 
 
 def _validate_events(brand: str, events: Any, issues: list[Issue]) -> None:
-    if not isinstance(events, dict):
+    if not isinstance(events, list):
         issues.append(Issue("events_invalid_shape", brand, detail={"type": type(events).__name__}))
         return
-    cut_a = events.get("cut_a") or []
-    cut_b = events.get("cut_b") or []
-    if len(cut_a) > 50:
-        issues.append(Issue("cut_a_over_50", brand, detail={"count": len(cut_a)}))
-    if brand != "플라주오피" and len(cut_a) < 5:
-        issues.append(Issue("cut_a_under_5", brand, detail={"count": len(cut_a)}))
-    for event in cut_b:
-        if event.get("derivation") != "llm_direct" or int(event.get("score") or 0) < 80:
-            issues.append(Issue("cut_b_contract_violation", brand, detail={"event": event}))
+    if len(events) > 50:
+        issues.append(Issue("events_over_50", brand, detail={"count": len(events)}))
+    if brand != "플라주오피" and len(events) < 5:
+        issues.append(Issue("events_under_5", brand, detail={"count": len(events)}))
+    for event in events:
+        if not event.get("id") or not event.get("title") or not event.get("date"):
+            issues.append(Issue("event_contract_violation", brand, detail={"event": event}))
 
 
 def _validate_sim_brand(brand: str, combo: str, sim_brand: str, payload: dict[str, Any], expected_steps: int, issues: list[Issue]) -> None:

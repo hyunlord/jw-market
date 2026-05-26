@@ -311,7 +311,7 @@ class _FakeSplitCacheCursor:
                 }
             ]
             return
-        if "where brand_key = %s or brand_name = %s" in normalized:
+        if "where `brand_key` = %s or `brand_name` = %s" in normalized:
             full_payload = '{"brand_key":"리바로","data":{"payload":"' + ("x" * 6000) + '"}}'
             self.result = [
                 {

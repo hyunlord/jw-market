@@ -25,6 +25,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY pipeline/scripts/api /app/pipeline/scripts/api
 COPY pipeline/scripts/api_response_builder /app/pipeline/scripts/api_response_builder
+COPY docs/reference /app/static
 
 RUN chown -R app:app /app
 

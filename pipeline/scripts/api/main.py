@@ -7,6 +7,8 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 
 if __package__ in {None, ""}:
@@ -19,6 +21,18 @@ from pipeline.scripts.api.routes import brands, cause, deep_analysis, health, ma
 
 logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
+
+
+FRONTEND_FILENAME = "jw_market_hardcoded_mockup_v3_4.html"
+FRONTEND_DIR = Path("/app/static")
+if not FRONTEND_DIR.exists():
+    FRONTEND_DIR = Path(__file__).resolve().parents[3] / "docs" / "reference"
+FRONTEND_FILE = FRONTEND_DIR / FRONTEND_FILENAME
+
+
+def _prefix_path(path: str) -> str:
+    prefix = config.external_path_prefix.rstrip("/")
+    return f"{prefix}{path}" if prefix else path
 
 
 @asynccontextmanager
@@ -61,3 +75,17 @@ app.include_router(brands.router)
 app.include_router(market_status.router)
 app.include_router(cause.router)
 app.include_router(deep_analysis.router)
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR), check_dir=False), name="static")
+if config.external_path_prefix:
+    app.mount(_prefix_path("/static"), StaticFiles(directory=str(FRONTEND_DIR), check_dir=False), name="prefixed-static")
+
+
+@app.get("/", include_in_schema=False)
+def serve_frontend() -> FileResponse:
+    return FileResponse(FRONTEND_FILE)
+
+
+if config.external_path_prefix:
+    app.add_api_route(_prefix_path("/"), serve_frontend, methods=["GET"], include_in_schema=False)
+    app.add_api_route(config.external_path_prefix.rstrip("/"), serve_frontend, methods=["GET"], include_in_schema=False)

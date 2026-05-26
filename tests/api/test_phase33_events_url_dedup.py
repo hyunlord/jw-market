@@ -62,16 +62,17 @@ def test_phase33_deep_events_include_urls_and_deduped_clusters(client) -> None:
     for brand in SAMPLE_BRANDS:
         response = client.get(f"/api/deep-analysis/{brand}")
         assert response.status_code == 200
-        cut_a = response.json()["data"]["events"]["cut_a"]
-        assert cut_a, brand
+        events = response.json()["data"]["events"]
+        assert isinstance(events, list), brand
+        assert events, brand
 
-        url_events = [event for event in cut_a if event.get("url")]
-        assert len(url_events) == len(cut_a), brand
-        assert all("source_url" in event for event in cut_a), brand
+        url_events = [event for event in events if event.get("url")]
+        assert len(url_events) == len(events), brand
+        assert all("source_url" in event for event in events), brand
 
-        duplicate_pairs = _remaining_duplicate_pairs(cut_a)
+        duplicate_pairs = _remaining_duplicate_pairs(events)
         assert duplicate_pairs == 0, f"{brand} has {duplicate_pairs} remaining duplicate title pairs"
 
-        total_related_cards += sum(1 for event in cut_a if event.get("related_coverage_count", 1) > 1)
+        total_related_cards += sum(1 for event in events if (event.get("related_coverage_count") or 0) > 1)
 
     assert total_related_cards > 0

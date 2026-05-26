@@ -53,10 +53,10 @@ CACHE_TABLES = [
 ]
 CACHE_PREVIEW_CHARS = 5_000
 CACHE_PRIMARY_KEYS = {
-    "cache_brands": ["view_type", "source"],
-    "cache_market_status": ["view_type", "market_id", "source", "measure"],
-    "cache_cause": ["view_type", "brand_key", "market_id", "source", "measure"],
-    "cache_deep_analysis": ["view_type", "brand_key", "market_id", "source", "measure"],
+    "cache_brands": ["query_key"],
+    "cache_market_status": ["query_key"],
+    "cache_cause": ["view_type", "brand", "brand_key", "market_id", "source", "measure"],
+    "cache_deep_analysis": ["brand", "brand_key", "market_id"],
 }
 IQVIA_RAW_CANDIDATES = ["staging_iqvia_nsa", "iqvia_nsa_quarterly_raw"]
 JW_BRANDS = [
@@ -761,18 +761,19 @@ def _cache_breakdown(
 ) -> list[dict[str, Any]]:
     table = quote_identifier(table_name)
     select_cols = ", ".join(quote_identifier(col) for col in group_columns)
-    group_cols = select_cols
-    order_cols = select_cols
+    select_prefix = f"{select_cols}," if select_cols else ""
+    group_clause = f"GROUP BY {select_cols}" if select_cols else ""
+    order_clause = f"ORDER BY {select_cols}" if select_cols else ""
     cur.execute(
         f"""
-        SELECT {select_cols},
+        SELECT {select_prefix}
                COUNT(*) AS row_count,
                COUNT(*) AS `rows`,
                ROUND(SUM({payload_size_expr}) / 1024 / 1024, 2) AS size_mb,
                ROUND(AVG({payload_size_expr}) / 1024, 1) AS avg_kb
         FROM {table}
-        GROUP BY {group_cols}
-        ORDER BY {order_cols}
+        {group_clause}
+        {order_clause}
         """
     )
     return rows_json_safe(cur.fetchall())
@@ -821,6 +822,7 @@ def _cache_sample_rows(
             ]
         )
     where_clause = " AND ".join(f"{quote_identifier(col)} <=> %s" for col in group_columns)
+    where_sql = f"WHERE {where_clause}" if where_clause else ""
     sample_rows: list[dict[str, Any]] = []
     for group in breakdown:
         params: list[Any] = []
@@ -841,7 +843,7 @@ def _cache_sample_rows(
             f"""
             SELECT {select_sql}
             FROM {table}
-            WHERE {where_clause}
+            {where_sql}
             ORDER BY {payload_size_expr} DESC
             LIMIT %s
             """,
@@ -867,7 +869,8 @@ def _cache_jw_rows(
     *,
     jw_limit_per_brand: int,
 ) -> list[dict[str, Any]]:
-    if "brand_key" not in column_names and "brand_name" not in column_names:
+    brand_columns = [col for col in ("brand_key", "brand_name", "brand") if col in column_names]
+    if not brand_columns:
         return []
 
     table = quote_identifier(table_name)
@@ -886,10 +889,10 @@ def _cache_jw_rows(
         ]
     )
     brand_match_clauses = []
-    if "brand_key" in column_names:
-        brand_match_clauses.append("brand_key = %s")
-    if "brand_name" in column_names:
-        brand_match_clauses.append("brand_name = %s")
+    for brand_column in brand_columns:
+        brand_match_clauses.append(f"{quote_identifier(brand_column)} = %s")
+    order_columns = [col for col in ("view_type", "source", "measure", "market_id", "brand") if col in column_names]
+    order_clause = ", ".join(quote_identifier(col) for col in order_columns) or payload_size_expr
 
     jw_rows: list[dict[str, Any]] = []
     for brand in JW_BRANDS:
@@ -901,7 +904,7 @@ def _cache_jw_rows(
             SELECT {select_sql}
             FROM {table}
             WHERE {" OR ".join(brand_match_clauses)}
-            ORDER BY view_type, source, measure
+            ORDER BY {order_clause}
             LIMIT %s
             """,
             params,
@@ -939,15 +942,21 @@ def _collect_cache_table(
             total_rows = int(cur.fetchone()["cnt"])
             schema = get_db_schema(cur, table_name)
             column_names = {col["name"] for col in schema}
+            actual_group_columns = [col for col in group_columns if col in column_names]
+            if not actual_group_columns:
+                for fallback in ("query_key", "view_type", "market_id", "brand", "source", "measure"):
+                    if fallback in column_names:
+                        actual_group_columns = [fallback]
+                        break
             payload_size_expr = _cache_payload_size_expr(column_names)
-            breakdown = _cache_breakdown(cur, table_name, group_columns, payload_size_expr)
+            breakdown = _cache_breakdown(cur, table_name, actual_group_columns, payload_size_expr)
             total_size_mb = round(sum(float(row.get("size_mb") or 0.0) for row in breakdown), 2)
             schema = enrich_db_column_stats(cur, table_name, schema, total_rows, sample_limit=5_000)
             sample_rows = _cache_sample_rows(
                 cur,
                 table_name,
                 breakdown,
-                group_columns,
+                actual_group_columns,
                 sample_columns,
                 column_names,
                 payload_size_expr,
@@ -981,6 +990,7 @@ def _collect_cache_table(
                         if include_jw_sample
                         else "not_applicable"
                     ),
+                    "group_columns": actual_group_columns,
                 }
             )
 
@@ -1013,7 +1023,7 @@ def collect_cache_brands(
     jw_limit_per_brand: int = 8,
 ) -> dict[str, Any]:
     """Collect read-only Layer 4 brands cache metadata and bounded JSON previews."""
-    # cache_brands has only 6 rows, but the current payloads are multi-MB.
+    # cache_brands can be a compact singleton after Phase 2, but the payload can be multi-MB.
     # Keep regular prefix+query samples so the self-contained viewer stays usable;
     # JW deep samples are the only cache payloads intentionally embedded in full.
     return _collect_cache_table(
@@ -1056,6 +1066,7 @@ def collect_cache_cause(
         group_columns=["view_type", "source", "measure"],
         sample_columns=[
             "view_type",
+            "brand",
             "brand_key",
             "market_id",
             "source",
@@ -1080,9 +1091,10 @@ def collect_cache_deep_analysis(
     return _collect_cache_table(
         "cache_deep_analysis",
         conn=conn,
-        group_columns=["view_type", "source", "measure"],
+        group_columns=["market_id"],
         sample_columns=[
             "view_type",
+            "brand",
             "brand_key",
             "market_id",
             "source",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from pipeline.scripts.api.config import config
 from pipeline.scripts.api import db
 
 
@@ -18,5 +19,5 @@ def health() -> dict:
         "status": "ok",
         "markets_loaded": int(market_status["c"]) if market_status else 0,
         "brands_loaded": int(brands["c"]) if brands else 0,
-        "version": "v0.9.1",
+        "version": config.app_version,
     }
