@@ -364,14 +364,14 @@ def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
                 segment["recent_share_pct"] = round((segment["value_series"][-1] / total) * 100, 4)
                 segment["series_pct"] = [segment["recent_share_pct"]]
         data[level] = {"segments": segments, "by_channel": {"전체": segments}}
-    return {
+    return _normalize_segment_name_lists({
         "levels": levels,
         "channels": ["전체"] if levels else [],
         "period_unit": "monthly" if source == "UBIST" else "quarterly",
         "periods_monthly": [],
         "periods_quarterly": [],
         "data": data,
-    }
+    })
 
 
 def _series_from_period_map(period_map: dict[str, Any]) -> tuple[list[float], list[float]]:
@@ -434,7 +434,7 @@ def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], so
             level_data["by_channel"] = {"전체": segments}
     if not normalized.get("channels") and normalized.get("levels"):
         normalized["channels"] = ["전체"]
-    return _filter_d3_levels(normalized)
+    return _normalize_segment_name_lists(_filter_d3_levels(normalized))
 
 
 def _filter_d3_levels(analysis_levels: dict[str, Any]) -> dict[str, Any]:
@@ -466,6 +466,38 @@ def _filter_d3_levels(analysis_levels: dict[str, Any]) -> dict[str, Any]:
     if not kept_levels:
         filtered["channels"] = []
     return filtered
+
+
+def _segment_names(segments: Any) -> list[str]:
+    names: list[str] = []
+    if not isinstance(segments, list):
+        return names
+    for segment in segments:
+        if isinstance(segment, dict):
+            name = segment.get("name")
+        else:
+            name = segment
+        if name is not None:
+            names.append(str(name))
+    return names
+
+
+def _normalize_segment_name_lists(analysis_levels: dict[str, Any]) -> dict[str, Any]:
+    """Expose spec-facing segments as string[] while preserving by_channel rows."""
+    if not isinstance(analysis_levels, dict):
+        return analysis_levels
+    data = analysis_levels.get("data")
+    if not isinstance(data, dict):
+        return analysis_levels
+    for level_data in data.values():
+        if not isinstance(level_data, dict):
+            continue
+        by_channel = level_data.get("by_channel")
+        if isinstance(by_channel, dict) and isinstance(by_channel.get("전체"), list):
+            level_data["segments"] = _segment_names(by_channel["전체"])
+        else:
+            level_data["segments"] = _segment_names(level_data.get("segments"))
+    return analysis_levels
 
 
 def _history_periods(rows: list[dict[str, Any]], source: str) -> list[str]:
@@ -768,14 +800,14 @@ def _build_analysis_levels_from_mart(
         else:
             by_channel = {channel: [] for channel in channels}
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
-    return {
+    return _normalize_segment_name_lists({
         "levels": levels,
         "channels": channels,
         "period_unit": _period_unit_ko(source),
         "periods_monthly": periods if source == "UBIST" else [],
         "periods_quarterly": periods if source == "IQVIA" else [],
         "data": data,
-    }
+    })
 
 
 def _trim_analysis_levels(analysis_levels: dict[str, Any], limit: int = 5) -> dict[str, Any]:
@@ -974,6 +1006,62 @@ def _matrix_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
     shares = [safe_float(row.get("share_pct")) or 0.0 for row in visible]
     avg = round(sum(shares) / len(shares), 4) if shares else 0.0
     return {"data": entries, "ms_avg_pct": avg, "share_avg_pct": avg}
+
+
+def _target_rank(entries: list[dict[str, Any]]) -> int | None:
+    target = next((row for row in entries if row.get("is_target")), None)
+    return target.get("rank") if target else None
+
+
+def _apply_rank_cd(entries: list[dict[str, Any]], rank_cd: int | None) -> None:
+    if rank_cd is None:
+        return
+    for row in entries:
+        if row.get("is_target"):
+            row["rank_cd"] = rank_cd
+
+
+def _apply_latest_rank_cd(ranking: dict[str, Any], rank_cd: int | None) -> None:
+    if rank_cd is None or not isinstance(ranking, dict):
+        return
+    yearly = ranking.get("yearly")
+    if not isinstance(yearly, list) or not yearly:
+        return
+    rankings = yearly[-1].get("rankings") if isinstance(yearly[-1], dict) else None
+    if not isinstance(rankings, list):
+        return
+    for row in rankings:
+        if isinstance(row, dict) and row.get("is_target"):
+            row["rank_cd"] = rank_cd
+
+
+def _rank_context(
+    *,
+    rows: list[dict[str, Any]],
+    market_row: dict[str, Any],
+    target_name: str | None,
+    strategic_brand: Any,
+    view_source_id: str,
+) -> dict[str, Any]:
+    ranked = []
+    for row in rows:
+        brand = _row_brand(row)
+        if not brand:
+            continue
+        recent = _latest_history_item(row)
+        value_recent = safe_float(recent.get("raw_value") or recent.get("value")) or 0.0
+        if value_recent > 0:
+            ranked.append((value_recent, brand))
+    rank_by_brand = {
+        brand: index
+        for index, (_, brand) in enumerate(sorted(ranked, key=lambda item: item[0], reverse=True), start=1)
+    }
+    catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
+    competition_count = max(
+        len({row.get("brand_key") for row in rows if row.get("brand_key")}),
+        len({member["name"] for member in catalog_members if member.get("name")}),
+    )
+    return {"rank_cd": rank_by_brand.get(target_name or ""), "cd_competition_count": competition_count}
 
 
 def _annual_latest_points(period_map: Any, *, value_key: str) -> list[dict[str, Any]]:
@@ -1486,6 +1574,7 @@ def build_response(
     market_sources: list[str],
     market_catalog_row: dict[str, Any] | None = None,
     strategic_brand: Any = None,
+    rank_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metric_history = decode_json(brand_row.get("metric_history"))
     extended = decode_json(brand_row.get("extended_metric_history"))
@@ -1564,6 +1653,10 @@ def build_response(
         ei_market_key=market_row.get("id"),
     )
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
+    rank_cd = (rank_context or {}).get("rank_cd")
+    cd_competition_count = (rank_context or {}).get("cd_competition_count")
+    _apply_rank_cd(display_entries_no_others, rank_cd)
+    _apply_rank_cd(display_entries_with_others, rank_cd)
     periods = _history_periods(sibling_rows, source_api)
     hhi_points = _annual_latest_points(hhi_series, value_key="hhi")
     company_concentration = _company_hhi_from_ranking(company_ranking)
@@ -1587,6 +1680,9 @@ def build_response(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
         len({member["name"] for member in catalog_members if member.get("name")}),
     )
+    if cd_competition_count is None and view_type == "competitive_dynamics":
+        cd_competition_count = direct_competition_count
+    _apply_latest_rank_cd(brand_ranking_stacked, rank_cd)
 
     return {
         "brand": brand_row["brand_name"],
@@ -1604,6 +1700,7 @@ def build_response(
                 "top3_share_pct": top3_share(sibling_rows),
                 "hhi_recent": hhi_recent,
                 "direct_competition_count": direct_competition_count,
+                "cd_competition_count": cd_competition_count,
                 "target_brand": target.get("brand_name"),
                 "target_company": target.get("company_name") or ("JW중외제약" if target.get("is_jw") else None),
                 "target_ei": optional_float(target_display.get("ei")),
@@ -1615,6 +1712,7 @@ def build_response(
                 "market_cagr_pct": optional_float(target_display.get("market_cagr_pct")),
                 "target_momentum": optional_float(target_display.get("momentum_score")),
                 "target_rank": target_display.get("rank"),
+                "target_rank_cd": rank_cd,
                 "target_share_pct": safe_float(target_display.get("share_pct")),
                 "brand_value_recent": safe_float(recent.get("raw_value")),
                 "brand_share_pct": safe_float(target_display.get("share_pct")),
@@ -1666,6 +1764,7 @@ def build_response(
             "measures_label": _measure_labels(source),
             "available_levels": analysis_levels.get("levels") or [],
             "direct_competition_count": direct_competition_count,
+            "cd_competition_count": cd_competition_count,
             "market_size_recent": series_latest_number(market_series),
             "market_cagr_5y_pct": series_cagr(market_series),
             "is_jw": bool(brand_row.get("is_jw")),
@@ -1697,6 +1796,11 @@ def main() -> None:
     cd_brand_rows = fetch_all("SELECT * FROM mart_strategic_cd_brand_metric")
     ml_siblings = make_sibling_map(ml_brand_rows, "ml_id")
     cd_siblings = make_sibling_map(cd_brand_rows, "cd_market_id")
+    cd_id_by_ml = {
+        row.get("ml_id"): row.get("cd_market_id")
+        for row in cd_market.to_dict(orient="records")
+        if row.get("ml_id") and row.get("cd_market_id")
+    }
 
     columns = ["brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"]
     placeholders = ", ".join(["%s"] * len(columns))
@@ -1719,6 +1823,18 @@ def main() -> None:
         market = ml_market.loc[row["ml_id"]].to_dict() if row["ml_id"] in ml_market.index else {}
         market_id = ml_to_strategy(row["ml_id"])
         source = api_source(row["source"])
+        cd_id = cd_id_by_ml.get(row["ml_id"])
+        cd_rank_context = (
+            _rank_context(
+                rows=cd_siblings[(cd_id, row["source"], row["measure"])],
+                market_row=cd_market_rows.get((cd_id, row["source"], row["measure"]), {}),
+                target_name=row.get("brand_name"),
+                strategic_brand=strategic_brand,
+                view_source_id=cd_id,
+            )
+            if cd_id
+            else None
+        )
         response = build_response(
             brand_row=row,
             market_row=ml_market_rows.get((row["ml_id"], row["source"], row["measure"]), {}),
@@ -1732,6 +1848,7 @@ def main() -> None:
             market_sources=source_list(market.get("data_source")),
             market_catalog_row=market,
             strategic_brand=strategic_brand,
+            rank_context=cd_rank_context,
         )
         response_json = dump_payload(response)
         out = {
@@ -1756,6 +1873,13 @@ def main() -> None:
         ml = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
         market_id = ml_to_strategy(ml_id)
         source = api_source(row["source"])
+        cd_rank_context = _rank_context(
+            rows=cd_siblings[(row["cd_market_id"], row["source"], row["measure"])],
+            market_row=cd_market_rows.get((row["cd_market_id"], row["source"], row["measure"]), {}),
+            target_name=row.get("brand_name"),
+            strategic_brand=strategic_brand,
+            view_source_id=row["cd_market_id"],
+        )
         response = build_response(
             brand_row=row,
             market_row=cd_market_rows.get((row["cd_market_id"], row["source"], row["measure"]), {}),
@@ -1769,6 +1893,7 @@ def main() -> None:
             market_sources=source_list(cd.get("data_source") or ml.get("data_source")),
             market_catalog_row=ml,
             strategic_brand=strategic_brand,
+            rank_context=cd_rank_context,
         )
         response_json = dump_payload(response)
         out = {
