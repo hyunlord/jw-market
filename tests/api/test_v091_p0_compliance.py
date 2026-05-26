@@ -88,11 +88,13 @@ def test_deep_forecast_has_target_plus_top5_and_future_periods_only() -> None:
     for combo_key, combo in payload["data"]["forecast"]["by_combo"].items():
         assert len(combo["brands"]) == 6, combo_key
         assert combo["brands"][0]["is_target"] is True
-        assert all(brand["forecast_values"] == [] for brand in combo["brands"])
+        assert all(isinstance(brand["forecast_values"], list) for brand in combo["brands"])
+        assert all(brand["forecast_values"] for brand in combo["brands"])
         if combo_key.startswith("UBIST."):
-            assert len(combo["forecast_periods"]) == 120
+            assert len(combo["forecast_periods"]) == 121
         else:
-            assert len(combo["forecast_periods"]) == 40
+            assert len(combo["forecast_periods"]) == 41
+        assert all(len(brand["forecast_values"]) == len(combo["forecast_periods"]) for brand in combo["brands"])
 
 
 def test_deep_simulation_policy_and_history_fields_are_populated() -> None:
@@ -101,12 +103,24 @@ def test_deep_simulation_policy_and_history_fields_are_populated() -> None:
     for combo_key, combo in payload["data"]["simulation"]["by_combo"].items():
         assert len(combo["available_brands"]) == 6, combo_key
         first_entry = next(iter(combo["by_brand"].values()))
-        assert first_entry["horizon_ci_levels"] == {"1y": 0.95, "3y": 0.9, "5y": 0.8, "10y": 0.5}
+        assert {key: first_entry["horizon_ci_levels"][key] for key in ("1y", "3y", "5y", "10y")} == {
+            "1y": 0.95,
+            "3y": 0.95,
+            "5y": 0.95,
+            "10y": 0.95,
+        }
+        assert first_entry["horizon_ci_levels"]["method"] == "selected_model_natural_with_funnel_floor"
+        assert first_entry["horizon_ci_levels"]["note"]
+        assert isinstance(first_entry["forecast_values"], list)
+        assert first_entry["forecast_values"]
+        assert len(first_entry["forecast_values"]) == len(first_entry["forecast_periods"])
         assert {"delta_pp", "brand_cagr_pct", "market_cagr_pct", "basis", "horizon", "method"} <= set(
             first_entry["market_comparison"]
         )
-        assert first_entry["market_comparison"]["method"] == "history_only"
-        assert first_entry["momentum"]["label"] in {"stable", "rising", "declining", "insufficient_data"}
-        assert first_entry["momentum"]["method"] == "trailing_mean"
-        assert first_entry["anomaly_signals"]["method"] == "yoy_threshold"
-        assert isinstance(first_entry["anomaly_signals"]["items"], list)
+        assert first_entry["market_comparison"]["method"] == "brand_cagr_minus_market_cagr_same_source"
+        assert first_entry["market_comparison"]["basis"] == "same_atc4_within_source"
+        assert first_entry["market_comparison"]["horizon"] == "forecast_period"
+        assert isinstance(first_entry["momentum"]["label"], str)
+        assert first_entry["momentum"]["label"]
+        assert first_entry["momentum"]["method"] == "forecast_slope_avg"
+        assert isinstance(first_entry["warnings"], list)

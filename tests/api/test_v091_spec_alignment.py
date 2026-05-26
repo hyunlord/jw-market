@@ -101,14 +101,20 @@ def test_deep_analysis_forecast_history_only() -> None:
             assert "history_values" in brand_entry
             assert isinstance(brand_entry["history_values"], list)
             assert brand_entry["history_values"], combo_key
-            assert brand_entry["forecast_values"] == []
+            assert isinstance(brand_entry["forecast_values"], list)
+            assert brand_entry["forecast_values"], combo_key
+            assert len(brand_entry["forecast_values"]) == len(combo["forecast_periods"])
 
 
 def test_deep_analysis_mock_sections_v091() -> None:
     brand = urllib.parse.quote("가드메트")
     payload = get_api(f"/api/deep-analysis/{brand}")
 
-    assert len(payload["data"]["events"]) == 5
+    events = payload["data"]["events"]
+    assert set(events.keys()) >= {"cut_a", "cut_b", "meta"}
+    assert isinstance(events["cut_a"], list)
+    assert isinstance(events["cut_b"], list)
+    assert isinstance(events["meta"], dict)
     assert set(payload["data"]["ai_analysis"].keys()) >= {
         "phenomenon",
         "cause",
