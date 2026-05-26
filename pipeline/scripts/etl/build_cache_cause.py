@@ -28,6 +28,7 @@ from cache_build_common import (
     source_list,
 )
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
+from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels
 
 period_key = lru_cache(maxsize=None)(period_key)
 
@@ -590,6 +591,16 @@ def _channels_for_source(source: str) -> list[str]:
     return CHANNELS_5 if source == "UBIST" else IQVIA_CHANNELS
 
 
+def _dual_channel_data(row: dict[str, Any], source: str, channel: str) -> dict[str, Any] | None:
+    if source != "UBIST" or channel == "전체":
+        return None
+    channel_data = row.get("__ubist_dual_channel_data")
+    if isinstance(channel_data, dict) and channel in channel_data:
+        data = channel_data.get(channel)
+        return data if isinstance(data, dict) else None
+    return None
+
+
 def _measure_labels(source: str) -> dict[str, str | None]:
     if source == "UBIST":
         return {"primary": "처방조제액", "secondary": "처방량"}
@@ -632,6 +643,13 @@ def _segment_rows_for_level(
                 _add_series(totals, history, periods)
                 for name in names:
                     _add_series(grouped[name], history, periods)
+            continue
+
+        dual_channel_data = _dual_channel_data(row, source, channel)
+        if isinstance(dual_channel_data, dict):
+            _add_series(totals, dual_channel_data, periods)
+            for name in names:
+                _add_series(grouped[name], dual_channel_data, periods)
             continue
 
         channel_data = row.get("__channel_data")
@@ -682,18 +700,22 @@ def _rows_for_channel(rows: list[dict[str, Any]], source: str, channel: str, per
 
     filtered: list[dict[str, Any]] = []
     for row in rows:
-        channel_data = row.get("__channel_data")
-        if channel_data is None:
-            channel_data = decode_json(row.get("channel_data"))
-            row["__channel_data"] = channel_data
-
         history = {period: 0.0 for period in periods}
-        if isinstance(channel_data, dict):
-            for raw_channel, series in channel_data.items():
-                if _channel_bucket(raw_channel, source) != channel or not isinstance(series, dict):
-                    continue
-                for period in periods:
-                    history[period] += _value_from_period_item(series.get(period))
+        dual_channel_data = _dual_channel_data(row, source, channel)
+        if isinstance(dual_channel_data, dict):
+            for period in periods:
+                history[period] += _value_from_period_item(dual_channel_data.get(period))
+        else:
+            channel_data = row.get("__channel_data")
+            if channel_data is None:
+                channel_data = decode_json(row.get("channel_data"))
+                row["__channel_data"] = channel_data
+            if isinstance(channel_data, dict):
+                for raw_channel, series in channel_data.items():
+                    if _channel_bucket(raw_channel, source) != channel or not isinstance(series, dict):
+                        continue
+                    for period in periods:
+                        history[period] += _value_from_period_item(series.get(period))
 
         clone = dict(row)
         clone["metric_history"] = history
@@ -721,13 +743,14 @@ def _build_analysis_levels_from_mart(
     view_source_id: str | None,
     target_name: str | None,
     fallback_level_top5: dict[str, Any],
+    channels_override: list[str] | None = None,
 ) -> dict[str, Any]:
     levels = _response_levels(market, view_source_id)
     enabled_levels = set(_strategic_levels(market, view_source_id))
     enabled_levels.add("Brand")
     periods = _history_periods(rows, source)
     data: dict[str, Any] = {}
-    channels = _channels_for_source(source)
+    channels = channels_override or _channels_for_source(source)
     for level in levels:
         if level in enabled_levels:
             by_channel = {
@@ -1191,8 +1214,9 @@ def _target_customer_competition(
     source: str,
     target_name: str | None,
     periods: list[str],
+    channels: list[str] | None = None,
 ) -> dict[str, Any]:
-    targets = _channels_for_source(source)
+    targets = channels or _channels_for_source(source)
     target_type = "채널"
     period_tail = periods[-10:]
     views = []
@@ -1481,6 +1505,16 @@ def build_response(
     catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
     analysis_view_id = view_source_id
     analysis_cache_key = (analysis_view_id, source_api, measure)
+    ubist_channel_context = (
+        resolve_market_channels(rows=sibling_rows, market=market_catalog_row, measure=measure)
+        if source_api == "UBIST"
+        else None
+    )
+    channels_override = (
+        ubist_channel_context.get("channels")
+        if isinstance(ubist_channel_context, dict) and ubist_channel_context.get("channels")
+        else None
+    )
     if analysis_cache_key not in ANALYSIS_LEVELS_CACHE:
         ANALYSIS_LEVELS_CACHE[analysis_cache_key] = _build_analysis_levels_from_mart(
             rows=sibling_rows,
@@ -1489,6 +1523,7 @@ def build_response(
             view_source_id=analysis_view_id,
             target_name=None,
             fallback_level_top5=level_top5,
+            channels_override=channels_override,
         )
     analysis_levels = deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key])
     if analysis_cache_key not in LEVEL_ROW_GROUPS_CACHE:
@@ -1538,6 +1573,7 @@ def build_response(
         source=source_api,
         target_name=brand_row.get("brand_name"),
         periods=periods,
+        channels=analysis_levels.get("channels"),
     )
     level_top5_trend = _level_top5_trend(
         analysis_levels,
