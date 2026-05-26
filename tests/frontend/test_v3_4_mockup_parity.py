@@ -27,7 +27,8 @@ def test_v3_4_preserves_original_mockup_structure() -> None:
 def test_v3_4_diff_is_adapter_only() -> None:
     v34 = V34.read_text()
 
-    assert "const API_BASE = 'http://127.0.0.1:8013';" in v34
+    assert "const API_BASE = (() => {" in v34
+    assert "return origin + pathname;" in v34
     assert "→ FETCH" in v34
     assert "adaptV091BrandCards" in v34
     assert "window.__KPI_SUMMARY__" in v34

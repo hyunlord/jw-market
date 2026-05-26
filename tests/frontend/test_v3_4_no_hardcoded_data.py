@@ -56,7 +56,9 @@ def test_v3_4_html_structure_preserved() -> None:
 def test_v3_4_adapter_and_error_handler_preserved() -> None:
     source = html()
 
-    assert "API_BASE = 'http://127.0.0.1:8013'" in source
+    assert "const API_BASE = (() => {" in source
+    assert "return origin + pathname;" in source
+    assert "window.location.port === '8888'" in source
     assert "adaptV091BrandCards" in source
     assert "__KPI_SUMMARY__" in source
     assert "showApiError" in source
