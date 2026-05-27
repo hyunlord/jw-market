@@ -19,6 +19,11 @@ docker/data/
 data/
 !data/.gitkeep
 
+# Documentation and audit artifacts moved out of source git
+docs/
+audit_*.json
+audit_F5_*
+
 # Generated ETL and analysis outputs
 output/
 !output/.gitkeep
