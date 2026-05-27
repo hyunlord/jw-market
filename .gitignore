@@ -20,7 +20,9 @@ data/
 !data/.gitkeep
 
 # Documentation and audit artifacts moved out of source git
-docs/
+docs/*
+!docs/reference/
+!docs/reference/**
 audit_*.json
 audit_F5_*
 
@@ -78,6 +80,11 @@ Thumbs.db
 
 # Runtime metadata
 .omx/
+
+# Phase B-5 - removed source-history-only areas; keep local copies untracked.
+archive/
+pipeline_restructure/
+db/
 .codex_metadata/
 
 # Secrets
