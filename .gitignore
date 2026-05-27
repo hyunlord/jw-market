@@ -1,66 +1,84 @@
-# Raw input
+# Phase B git hygiene: keep source in git, keep generated/raw/binary data out.
+
+# Archives and packaged artifacts
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+*.image.tar
+jw-market-backend-api-*.tar
+jw-market-*.tar
+
+# Local database state
+pipeline/docker/data/
+docker/data/
+
+# Raw data moved to object storage
 data/
 !data/.gitkeep
 
-# Generated reports / ad-hoc bundles
+# Generated ETL and analysis outputs
+output/
+!output/.gitkeep
 outputs/
-*.zip
+parquet/
+deprecated/
+viewer/
+reports/
+exports/
+audits/
+phase_*/
+phase_*_audit_*/
+phase_*_audit_*.zip
+*_audit_*.zip
+audit_*.zip
 
-# Output data
-# Catalog parquet dimensions stay trackable under output/catalog/.
-output/ubist/year=*/
-output/ubist/*.parquet
-output/ubist.__tmp_*/
-output/ubist.__backup_*/
-output/enriched/ml_id=*/
-output/enriched/
-output/**/*.tmp.parquet
-
-# Transitional pre-R2 output paths. Keep until PL executes restructure.
-parquet/ubist/*.parquet
-parquet/ubist/year=*/
-parquet/ubist.__tmp_*/
-parquet/ubist.__backup_*/
-parquet/enriched/
-
-# Audit zip bundles
-audit/**/*.zip
-audits/**/*.zip
-
-# Docker local state
-docker/.env
-docker/.env.*
-!docker/.env.example
-docker/data/
-pipeline/docker/.env
-pipeline/docker/.env.*
-!pipeline/docker/.env.example
-pipeline/docker/data/
+# Large data formats
+*.parquet
+*.sqlite
+*.db
+*.csv.gz
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .venv/
+venv/
+env/
+*.egg-info/
 .pytest_cache/
 
-# Editor / OS
+# Logs and temporary files
+*.log
+*.bak
+*.tmp
+/tmp/
+
+# Mac / editor
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/
 *.swp
 *.swo
 *~
+.vscode/
+.idea/
+*.iml
 
-# Misc
-*.bak
-*.tmp
-
-# Excel temp lock files
-*.omx
+# Excel temporary lock files
 ~$*
 
-# Codex / agent runtime metadata
+# Runtime metadata
 .omx/
 .codex_metadata/
+
+# Secrets
+.env
+.env.*
+!.env.example
+!pipeline/docker/.env.example
+!docker/.env.example
+secrets/
