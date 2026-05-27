@@ -670,6 +670,26 @@ def write_loading_csv(results: list[EnrichResult], audit_dir: Path) -> None:
             )
 
 
+def upload_enriched_to_minio(local_dir: Path) -> None:
+    """Upload enriched parquet output when the MinIO backend is enabled."""
+    if not is_minio_backend():
+        return
+
+    bucket = os.environ.get("MINIO_BUCKET_ENRICHED", "jw-market-enriched")
+    LOGGER.info("MinIO upload: %s -> %s", local_dir, bucket)
+    try:
+        count = upload_local_to_minio(
+            local_dir=local_dir,
+            bucket=bucket,
+            prefix="",
+        )
+    except Exception as exc:
+        LOGGER.warning("MinIO upload failed (local output preserved): %s", exc)
+        return
+
+    LOGGER.info("MinIO upload done: %s files", count)
+
+
 def dataframe_to_markdown(df: pd.DataFrame, max_rows: int | None = None) -> str:
     if df.empty:
         return "(none)"
@@ -724,6 +744,8 @@ def main() -> int:
             )
 
         write_loading_csv(results, audit_dir)
+        if not args.dry_run:
+            upload_enriched_to_minio(output_dir)
         return 0
     except Exception:
         LOGGER.exception("Layer 2 enrichment failed")
