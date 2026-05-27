@@ -555,7 +555,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     parquet_paths: list[Path] = []
     if not args.no_local_parquet_enrich:
         parquet_paths.extend(default_parquet_paths(repo_root))

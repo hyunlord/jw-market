@@ -94,3 +94,6 @@ db/
 !pipeline/docker/.env.example
 !docker/.env.example
 secrets/
+
+# Phase B-6 - root scripts were folded into pipeline/scripts.
+/scripts/

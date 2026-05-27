@@ -426,7 +426,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     audit_dir = Path(args.audit_dir) if args.audit_dir else root / "outputs" / "phase_zeta_stage3a7" / f"audit_phase_zeta_stage3a7_{timestamp}"
     audit_dir.mkdir(parents=True, exist_ok=True)

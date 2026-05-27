@@ -8,7 +8,7 @@ def test_cli_single_brand(tmp_path, config_path):
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/phase_zeta/build_brand_bundle.py",
+            "pipeline/scripts/ai_analysis/build_brand_bundle.py",
             "--brand",
             "리바로",
             "--snapshot-at",
@@ -31,9 +31,9 @@ def test_cli_batch_brands(tmp_path, config_path):
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/phase_zeta/build_brand_bundle.py",
+            "pipeline/scripts/ai_analysis/build_brand_bundle.py",
             "--brands-from",
-            "scripts/phase_zeta/configs/pilot_brands.txt",
+            "pipeline/scripts/ai_analysis/configs/pilot_brands.txt",
             "--snapshot-at",
             "2026-05-24T08:00:00+09:00",
             "--config",
@@ -53,7 +53,7 @@ def test_cli_narrative(tmp_path, config_path):
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/phase_zeta/build_brand_bundle.py",
+            "pipeline/scripts/ai_analysis/build_brand_bundle.py",
             "--brand",
             "리바로",
             "--snapshot-at",
@@ -76,7 +76,7 @@ def test_cli_v1_1_version_defaults(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/phase_zeta/build_brand_bundle.py",
+            "pipeline/scripts/ai_analysis/build_brand_bundle.py",
             "--brand",
             "리바로",
             "--snapshot-at",

@@ -21,7 +21,7 @@ def load_module(name: str, path: Path):
 def test_loader_builds_rows_from_option_b_scored_json(tmp_path: Path) -> None:
     loader = load_module(
         "corpus_loader_v2",
-        ROOT / "scripts" / "phase_epsilon_2" / "corpus_loader_v2.py",
+        ROOT / "pipeline" / "scripts" / "agent_2" / "corpus_loader_v2.py",
     )
     batch_dir = tmp_path / "news_2026-05"
     raw_path = batch_dir / "dgx" / "news_5years_test" / "article.json"
@@ -75,7 +75,7 @@ def test_loader_builds_rows_from_option_b_scored_json(tmp_path: Path) -> None:
 def test_cross_match_derives_non_jw_keyword_average_rows() -> None:
     adapter = load_module(
         "cross_match_adapter",
-        ROOT / "scripts" / "phase_epsilon_2" / "cross_match_adapter.py",
+        ROOT / "pipeline" / "scripts" / "agent_2" / "cross_match_adapter.py",
     )
     contexts = [
         {"jw_brand": "가드메트", "matched_keywords": ["가드메트", "제미메트", "가드렛"]},

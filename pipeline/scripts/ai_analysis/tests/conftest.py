@@ -7,7 +7,7 @@ import pymysql
 import pytest
 
 PHASE_ZETA_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = PHASE_ZETA_ROOT.parents[1]
+REPO_ROOT = PHASE_ZETA_ROOT.parents[2]
 if str(PHASE_ZETA_ROOT) not in sys.path:
     sys.path.insert(0, str(PHASE_ZETA_ROOT))
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     args = [
         sys.executable,
         str(root / "pipeline" / "scripts" / "etl" / "migrate_ai_analysis_table.py"),
