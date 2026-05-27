@@ -101,9 +101,9 @@ def test_deep_forecast_has_target_plus_top5_and_future_periods_only() -> None:
         assert all(isinstance(brand["forecast_values"], list) for brand in combo["brands"])
         assert all(brand["forecast_values"] for brand in combo["brands"])
         if combo_key.startswith("UBIST."):
-            assert len(combo["forecast_periods"]) == 121
+            assert len(combo["forecast_periods"]) == 12
         else:
-            assert len(combo["forecast_periods"]) == 41
+            assert len(combo["forecast_periods"]) == 4
         assert all(len(brand["forecast_values"]) == len(combo["forecast_periods"]) for brand in combo["brands"])
 
 
