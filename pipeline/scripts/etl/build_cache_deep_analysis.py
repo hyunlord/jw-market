@@ -444,6 +444,88 @@ def deterministic_forecast_values(values: list[float | None], source: str, steps
     }
 
 
+def _share_series(values: list[Any], totals: list[Any]) -> list[float]:
+    shares: list[float] = []
+    for idx, value in enumerate(values):
+        total = safe_float(totals[idx]) if idx < len(totals) else 0.0
+        numerator = safe_float(value) or 0.0
+        share = (numerator / total * 100) if total and total > 0 else 0.0
+        shares.append(round(share, 4))
+    return shares
+
+
+def _history_totals_for_periods(market_rows: list[dict[str, Any]], periods: list[str]) -> list[float]:
+    totals: list[float] = []
+    histories = [decode_json(row.get("metric_history")) for row in market_rows]
+    for period in periods:
+        total = 0.0
+        for history in histories:
+            item = history.get(period) if isinstance(history, dict) else None
+            if isinstance(item, dict):
+                total += safe_float(item.get("raw_value")) or 0.0
+            else:
+                total += safe_float(item) or 0.0
+        totals.append(total)
+    return totals
+
+
+def _forecast_totals_for_market_rows(
+    market_rows: list[dict[str, Any]],
+    *,
+    source: str,
+    forecast_steps: int,
+) -> list[float]:
+    totals = [0.0 for _ in range(forecast_steps)]
+    for row in market_rows:
+        _, values = sorted_history_values(decode_json(row.get("metric_history")))
+        forecast_values, _ = deterministic_forecast_values(values, source, forecast_steps)
+        for idx, value in enumerate(forecast_values[:forecast_steps]):
+            totals[idx] += safe_float(value) or 0.0
+    return totals
+
+
+def _attach_forecast_ms_series(
+    combo: dict[str, Any],
+    *,
+    market_rows: list[dict[str, Any]] | None = None,
+    source: str | None = None,
+    market_forecast: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    brands = combo.get("brands")
+    if not isinstance(brands, list) or not brands:
+        return combo
+
+    history_periods = [str(period) for period in (combo.get("history_periods") or [])]
+    forecast_periods = [str(period) for period in (combo.get("forecast_periods") or [])]
+
+    if market_forecast:
+        history_totals = [safe_float(value) or 0.0 for value in market_forecast.get("history_values") or []]
+        forecast_totals = [safe_float(value) or 0.0 for value in market_forecast.get("forecast_values") or []]
+    elif market_rows:
+        history_totals = _history_totals_for_periods(market_rows, history_periods)
+        forecast_totals = _forecast_totals_for_market_rows(
+            market_rows,
+            source=source or "",
+            forecast_steps=len(forecast_periods),
+        )
+    else:
+        history_totals = [
+            sum(safe_float((brand.get("history_values") or [None] * len(history_periods))[idx]) or 0.0 for brand in brands)
+            for idx in range(len(history_periods))
+        ]
+        forecast_totals = [
+            sum(safe_float((brand.get("forecast_values") or [None] * len(forecast_periods))[idx]) or 0.0 for brand in brands)
+            for idx in range(len(forecast_periods))
+        ]
+
+    for brand in brands:
+        if not isinstance(brand, dict):
+            continue
+        brand["history_ms_pct"] = _share_series(brand.get("history_values") or [], history_totals)
+        brand["forecast_ms_pct"] = _share_series(brand.get("forecast_values") or [], forecast_totals)
+    return combo
+
+
 def combo_payload(
     row: dict[str, Any],
     *,
@@ -482,7 +564,8 @@ def combo_payload(
                 forecast_steps_count=steps,
             )
         ]
-        return {
+        market_forecast = build_phase30_market_forecast(market_rows, combo_source, steps)
+        payload = {
             "period_unit": period_unit,
             "unit_label": row.get("unit_label"),
             "history_periods": periods,
@@ -493,9 +576,10 @@ def combo_payload(
                 "value_recent": safe_float(recent.get("raw_value")),
                 "ms_recent_pct": safe_float(recent.get("ms")),
             },
-            "_phase30_market_forecast": build_phase30_market_forecast(market_rows, combo_source, steps),
+            "_phase30_market_forecast": market_forecast,
         }
-    return {
+        return _attach_forecast_ms_series(payload, market_forecast=market_forecast)
+    payload = {
         "period_unit": period_unit,
         "unit_label": row.get("unit_label"),
         "history_periods": periods,
@@ -512,6 +596,7 @@ def combo_payload(
             "ms_recent_pct": safe_float(recent.get("ms")),
         },
     }
+    return _attach_forecast_ms_series(payload, market_rows=market_rows, source=combo_source)
 
 
 def _forecast_brand_entry(

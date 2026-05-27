@@ -259,6 +259,7 @@ def _stacked_ranking(
             years=years,
             normalized_by_year=normalized_by_year,
             label_key=label_key,
+            target_name=target_name,
             top_n=top_n,
         ),
     }
@@ -269,6 +270,7 @@ def _latest_top_trends(
     years: list[int],
     normalized_by_year: dict[int, list[dict[str, Any]]],
     label_key: str,
+    target_name: str | None,
     top_n: int,
 ) -> list[dict[str, Any]]:
     if not years:
@@ -289,7 +291,13 @@ def _latest_top_trends(
             row.setdefault("rank", index)
         return ranked
 
-    latest_top = ranked_rows(latest_year)[:top_n]
+    latest_ranked = ranked_rows(latest_year)
+    target = next((row for row in latest_ranked if target_name and identity(row) == target_name), None)
+    target_id = identity(target)
+    competitors = [row for row in latest_ranked if identity(row) and identity(row) != target_id]
+    latest_top = ([target] if target else []) + competitors[:top_n]
+    selected_ids = {identity(row) for row in latest_top if identity(row)}
+    others_ids = [identity(row) for row in competitors[top_n:] if identity(row)]
     trends = []
     for latest in latest_top:
         item_id = identity(latest)
@@ -314,6 +322,31 @@ def _latest_top_trends(
                 "company": latest.get("company"),
                 "is_target": bool(latest.get("is_target")),
                 "is_jw": bool(latest.get("is_jw")),
+                "yearly_values": yearly_values,
+            }
+        )
+    if others_ids:
+        yearly_values = []
+        for year in years:
+            rows = ranked_rows(year)
+            others = [row for row in rows if identity(row) not in selected_ids]
+            displayed_ms = sum(safe_float(row.get("ms_pct")) or 0.0 for row in rows if identity(row) in selected_ids)
+            yearly_values.append(
+                {
+                    "year": year,
+                    "value": sum(safe_float(row.get("value")) or 0.0 for row in others),
+                    "ms_pct": round(max(0.0, 100.0 - displayed_ms), 4),
+                    "rank": None,
+                }
+            )
+        trends.append(
+            {
+                label_key: "기타",
+                "brand": "기타" if label_key == "brand" else None,
+                "company": "기타" if label_key == "company" else None,
+                "is_target": False,
+                "is_jw": False,
+                "is_others": True,
                 "yearly_values": yearly_values,
             }
         )
@@ -365,23 +398,43 @@ def _target_rank_overrides(
 
         by_year: dict[int, dict[str, dict[str, Any]]] = {}
         for year, period in periods_by_year.items():
-            ranked = [
-                {"row": row, "brand": _row_brand(row), "value": _period_value_for_row(row, period)}
-                for row in rows
-                if _row_brand(row)
-            ]
+            if label_key == "company":
+                grouped: dict[str, dict[str, Any]] = {}
+                for row in rows:
+                    company = _row_company(row)
+                    if not company:
+                        continue
+                    bucket = grouped.setdefault(
+                        company,
+                        {
+                            "row": row,
+                            "brand": None,
+                            "value": 0.0,
+                            "is_jw": False,
+                        },
+                    )
+                    bucket["value"] += _period_value_for_row(row, period)
+                    bucket["is_jw"] = bool(bucket["is_jw"] or row.get("is_jw"))
+                ranked = list(grouped.values())
+            else:
+                ranked = [
+                    {"row": row, "brand": _row_brand(row), "value": _period_value_for_row(row, period)}
+                    for row in rows
+                    if _row_brand(row)
+                ]
             total = sum(item["value"] for item in ranked)
             year_stats: dict[str, dict[str, Any]] = {}
             for index, item in enumerate(sorted(ranked, key=lambda item: item["value"], reverse=True), start=1):
-                brand = item["brand"]
-                if not brand:
+                name = _row_company(item["row"]) if label_key == "company" else item["brand"]
+                if not name:
                     continue
                 value = item["value"]
-                year_stats[brand] = {
+                year_stats[name] = {
                     "row": item["row"],
                     "value": value,
                     "rank": index if value > 0 else None,
                     "ms_pct": round(value / total * 100, 4) if total > 0 else 0.0,
+                    "is_jw": bool(item.get("is_jw")),
                 }
             by_year[year] = year_stats
         TARGET_RANK_STATS_CACHE[stats_key] = by_year
@@ -397,7 +450,7 @@ def _target_rank_overrides(
             "brand": target_name if label_key == "brand" else None,
             "company": _row_company(source_row),
             "is_target": True,
-            "is_jw": bool(source_row.get("is_jw")) or True,
+            "is_jw": bool(source_row.get("is_jw") or stat.get("is_jw")) or True,
             "is_others": False,
             "value": stat["value"],
             "rank": stat["rank"],
@@ -1626,6 +1679,7 @@ def build_response(
     hhi_recent = series_latest_number(hhi_series)
     source_api = source
     target = choose_target(sibling_rows, brand_row)
+    target_company_name = target.get("company_name") or _row_company(target)
     target_recent = metric_recent(decode_json(target.get("metric_history")))
     target_ext = metric_recent(decode_json(target.get("extended_metric_history")))
 
@@ -1676,7 +1730,17 @@ def build_response(
             cache_key=(view_source_id, source_api, measure),
         ),
     )
-    company_ranking_stacked = _stacked_ranking(company_ranking, label_key="company", target_name=target.get("company_name"))
+    company_ranking_stacked = _stacked_ranking(
+        company_ranking,
+        label_key="company",
+        target_name=target_company_name,
+        target_overrides=_target_rank_overrides(
+            sibling_rows,
+            label_key="company",
+            target_name=target_company_name,
+            cache_key=("company", view_source_id, source_api, measure),
+        ),
+    )
     display_entries_no_others = _display_brand_rows(
         sibling_rows,
         target_name=brand_row.get("brand_name"),
@@ -1735,7 +1799,7 @@ def build_response(
                 "hhi_recent": hhi_recent,
                 "direct_competition_count": direct_competition_count,
                 "target_brand": target.get("brand_name"),
-                "target_company": target.get("company_name") or ("JW중외제약" if target.get("is_jw") else None),
+                "target_company": target_company_name or ("JW중외제약" if target.get("is_jw") else None),
                 "target_ei": optional_float(target_display.get("ei")),
                 "ei": optional_float(target_display.get("ei")),
                 "ei_basis": target_display.get("ei_basis"),

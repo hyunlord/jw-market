@@ -11,6 +11,7 @@ def _brand(name: str, forecast_len: int) -> dict:
         "brand": name,
         "history_values": list(range(22)),
         "forecast_values": list(range(forecast_len)),
+        "forecast_ms_pct": list(range(forecast_len)),
         "forecast_intervals": {
             "ci_upper_95": list(range(forecast_len)),
             "ci_lower_95": list(range(forecast_len)),
@@ -61,6 +62,7 @@ def test_deep_analysis_serves_one_year_forecast_without_slicing_history(monkeypa
     assert len(iqvia["forecast_periods"]) == 4
     brand = iqvia["brands"][0]
     assert len(brand["forecast_values"]) == 4
+    assert len(brand["forecast_ms_pct"]) == 4
     assert brand["forecast_intervals"]["scalar_metadata"] == "kept"
     for key in (
         "ci_upper_95",
@@ -77,6 +79,7 @@ def test_deep_analysis_serves_one_year_forecast_without_slicing_history(monkeypa
     assert len(ubist["forecast_periods"]) == 12
     brand = ubist["brands"][0]
     assert len(brand["forecast_values"]) == 12
+    assert len(brand["forecast_ms_pct"]) == 12
     for key in (
         "ci_upper_95",
         "ci_lower_95",

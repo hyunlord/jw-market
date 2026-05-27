@@ -91,6 +91,9 @@ def _slice_forecast_combo(combo: object) -> None:
     forecast_values = combo.get("forecast_values")
     if isinstance(forecast_values, list):
         combo["forecast_values"] = forecast_values[:horizon]
+    forecast_ms_pct = combo.get("forecast_ms_pct")
+    if isinstance(forecast_ms_pct, list):
+        combo["forecast_ms_pct"] = forecast_ms_pct[:horizon]
     _slice_forecast_intervals(combo.get("forecast_intervals"), horizon)
 
     brands = combo.get("brands")
@@ -102,6 +105,9 @@ def _slice_forecast_combo(combo: object) -> None:
         forecast_values = brand.get("forecast_values")
         if isinstance(forecast_values, list):
             brand["forecast_values"] = forecast_values[:horizon]
+        forecast_ms_pct = brand.get("forecast_ms_pct")
+        if isinstance(forecast_ms_pct, list):
+            brand["forecast_ms_pct"] = forecast_ms_pct[:horizon]
         _slice_forecast_intervals(brand.get("forecast_intervals"), horizon)
 
 
