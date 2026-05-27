@@ -185,6 +185,11 @@ def safe_float(value: Any) -> float:
     try:
         if value is None or pd.isna(value):
             return 0.0
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            number = float(value)
+            if math.isnan(number) or math.isinf(number):
+                return 0.0
+            return number
         number = float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return 0.0

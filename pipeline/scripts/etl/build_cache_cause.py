@@ -1453,6 +1453,8 @@ def _level_top5_trend(
             ) if segment_rows else []
             segment_row_by_brand = {_row_brand(row): row for row in segment_rows if _row_brand(row)}
             segment_total_series = segment.get("value_series") or _total_series_for_rows(segment_rows, periods)
+            if len(segment_total_series) != len(periods):
+                segment_total_series = list(segment_total_series)[-len(periods):] if periods else []
             selected_series: list[list[float]] = []
             brands_in_value = []
             for entry in segment_brand_entries:
