@@ -30,11 +30,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ops_utils import configure_logging, find_project_root
+from storage import get_data_path
 
 
 LOGGER = configure_logging(__name__)
 ROOT = find_project_root(Path(__file__).resolve())
-UBIST_ROOT = ROOT / "data" / "UBIST"
+UBIST_ROOT = get_data_path(
+    bucket_env="MINIO_BUCKET_RAW_UBIST",
+    bucket_default="jw-market-raw-ubist",
+    local_default=ROOT / "data" / "UBIST",
+)
 TARGET_DIR = ROOT / "output" / "ubist"
 KST = ZoneInfo("Asia/Seoul")
 

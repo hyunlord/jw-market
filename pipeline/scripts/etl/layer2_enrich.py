@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ops_utils import configure_logging, find_project_root, first_existing, retry  # noqa: E402
+from storage import is_minio_backend, upload_local_to_minio  # noqa: E402,F401
 from layer2_normalize import (  # noqa: E402
     canonical_iqvia_channel,
     clean_scalar,

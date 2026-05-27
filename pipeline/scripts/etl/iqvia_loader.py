@@ -23,11 +23,16 @@ import pandas as pd
 import pymysql
 
 from ops_utils import configure_logging, find_project_root, first_existing, retry
+from storage import get_data_path
 
 
 LOGGER = configure_logging(__name__)
 REPO_ROOT = find_project_root(Path(__file__).resolve())
-IQVIA_ROOT = REPO_ROOT / "data" / "IQVIA"
+IQVIA_ROOT = get_data_path(
+    bucket_env="MINIO_BUCKET_RAW_IQVIA",
+    bucket_default="jw-market-raw-iqvia",
+    local_default=REPO_ROOT / "data" / "IQVIA",
+)
 AUDIT_DIR = REPO_ROOT / "audit" / "phase16c3_iqvia_mariadb"
 
 NSA_TABLE = "iqvia_nsa_quarterly_raw"
