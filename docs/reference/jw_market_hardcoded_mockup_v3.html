@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JW Market Analysis Agent v3</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172026;
+      --muted: #65717b;
+      --faint: #8d98a3;
+      --line: #dfe5ea;
+      --line-strong: #c7d0d8;
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --surface-soft: #f1f5f8;
+      --accent: #0f766e;
+      --accent-weak: #d9f0ec;
+      --blue: #2563eb;
+      --blue-weak: #dce8ff;
+      --red: #c2410c;
+      --red-weak: #ffe5d5;
+      --green: #15803d;
+      --green-weak: #dcfce7;
+      --shadow: 0 10px 32px rgba(23, 32, 38, 0.08);
+      --radius: 8px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--ink);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+      letter-spacing: 0;
+    }
+
+    button {
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      cursor: pointer;
+      min-height: 34px;
+    }
+
+    button:hover { border-color: var(--accent); }
+    button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: #fbfcfd;
+      padding: 18px 14px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+    }
+
+    .brand-mark {
+      display: grid;
+      gap: 4px;
+      padding: 0 4px 16px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 14px;
+    }
+
+    .brand-mark h1 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 740;
+    }
+
+    .brand-mark span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .status-chip {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 9px;
+    }
+
+    .status-chip strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
+    .status-chip span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 7px;
+      margin: 14px 0;
+    }
+
+    .nav button {
+      text-align: left;
+      padding: 9px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .filter-block {
+      display: grid;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .filter-block label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .filter-block input,
+    .filter-block select {
+      width: 100%;
+      min-height: 35px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 9px;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: rgba(246, 248, 250, 0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line);
+      padding: 14px 22px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .topbar h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 740;
+    }
+
+    .topbar small {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .top-actions a,
+    .top-actions button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    .page {
+      display: none;
+      padding: 20px 22px 36px;
+    }
+
+    .page.active { display: block; }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+
+    .section-head h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .section-head p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .kpi-panel,
+    .detail-panel,
+    .empty-state,
+    .error-state {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .kpi-panel {
+      padding: 14px;
+    }
+
+    .kpi-panel h4 {
+      margin: 0 0 11px;
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      padding: 7px 0;
+      border-top: 1px solid var(--line);
+      align-items: baseline;
+    }
+
+    .metric-row:first-of-type { border-top: 0; }
+    .metric-row span { color: var(--muted); font-size: 12px; }
+    .metric-row strong { font-size: 16px; text-align: right; }
+
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px;
+    }
+
+    .brand-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      min-height: 210px;
+    }
+
+    .brand-card.selected {
+      border-color: var(--accent);
+      outline: 2px solid var(--accent-weak);
+    }
+
+    .brand-card header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .brand-card h4 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .brand-card small {
+      color: var(--muted);
+      display: block;
+      margin-top: 2px;
+    }
+
+    .pill-row {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 23px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 11px;
+      border: 1px solid var(--line);
+    }
+
+    .pill.target {
+      background: var(--green-weak);
+      color: var(--green);
+      border-color: #bbf7d0;
+    }
+
+    .card-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .mini-metric {
+      background: var(--surface-soft);
+      border-radius: 7px;
+      padding: 8px;
+      min-height: 58px;
+    }
+
+    .mini-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 5px;
+    }
+
+    .mini-metric strong {
+      font-size: 15px;
+      overflow-wrap: anywhere;
+    }
+
+    .card-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: auto;
+    }
+
+    .controls {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 12px;
+      display: grid;
+      grid-template-columns: minmax(180px, 1.2fr) repeat(3, minmax(150px, 1fr)) auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .controls label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .controls select {
+      min-height: 35px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 8px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .detail-panel {
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .detail-panel h4 {
+      margin: 0 0 11px;
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .series-bars {
+      display: grid;
+      gap: 7px;
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 72px 1fr 112px;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .bar-track {
+      height: 9px;
+      background: var(--surface-soft);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: inherit;
+      min-width: 2px;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      background: var(--surface);
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 650;
+      background: var(--surface-soft);
+    }
+
+    .empty-state,
+    .error-state {
+      padding: 18px;
+      color: var(--muted);
+    }
+
+    .error-state {
+      border-color: var(--red-weak);
+      color: var(--red);
+      background: #fff7ed;
+    }
+
+    .deep-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .combo-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .combo-item {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 10px;
+      background: var(--surface-soft);
+    }
+
+    .combo-item strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .combo-item span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 1040px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .controls,
+      .detail-grid,
+      .deep-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .topbar,
+      .section-head {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .kpi-grid,
+      .card-metrics {
+        grid-template-columns: 1fr;
+      }
+      .bar-row {
+        grid-template-columns: 64px 1fr;
+      }
+      .bar-row .bar-value {
+        grid-column: 2;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand-mark">
+        <h1>JW Market Analysis</h1>
+        <span>Phase 4 Frontend v3</span>
+      </div>
+
+      <div class="status-strip">
+        <div class="status-chip">
+          <strong id="loaded-brand-count">--</strong>
+          <span>loaded brands</span>
+        </div>
+        <div class="status-chip">
+          <strong id="loaded-card-count">--</strong>
+          <span>status cards</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Primary views">
+        <button class="active" data-page-target="status">Market status <span id="status-nav-count">--</span></button>
+        <button data-page-target="cause">Cause analysis <span id="cause-nav-brand">--</span></button>
+        <button data-page-target="deep">Deep analysis <span id="deep-nav-brand">--</span></button>
+      </nav>
+
+      <div class="filter-block">
+        <label>
+          Search brand
+          <input id="brand-search" type="search" autocomplete="off" placeholder="Type to filter">
+        </label>
+        <label>
+          Market
+          <select id="market-filter"></select>
+        </label>
+        <label>
+          Selected brand
+          <select id="brand-select"></select>
+        </label>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="page-title">Market status</h2>
+          <small id="backend-status">Connecting to backend</small>
+        </div>
+        <div class="top-actions">
+          <a id="swagger-link" href="/docs" target="_blank" rel="noreferrer">Swagger</a>
+          <a id="openapi-link" href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI</a>
+          <button type="button" id="refresh-button">Refresh</button>
+        </div>
+      </header>
+
+      <section id="page-status" class="page active">
+        <div class="section-head">
+          <div>
+            <h3>Brand performance</h3>
+            <p id="status-subtitle">Loading</p>
+          </div>
+        </div>
+        <div class="kpi-grid" id="kpi-grid"></div>
+        <div class="cards-grid" id="status-brand-cards"></div>
+      </section>
+
+      <section id="page-cause" class="page">
+        <div class="section-head">
+          <div>
+            <h3 id="cause-heading">Cause analysis</h3>
+            <p id="cause-subtitle">Loading</p>
+          </div>
+        </div>
+        <div class="controls">
+          <label>
+            Brand
+            <select id="cause-brand-select"></select>
+          </label>
+          <label>
+            View
+            <select id="cause-view-select">
+              <option value="market_landscape">Market landscape</option>
+              <option value="competitive_dynamics">Competitive dynamics</option>
+            </select>
+          </label>
+          <label>
+            Source
+            <select id="cause-source-select">
+              <option value="UBIST">UBIST</option>
+              <option value="IQVIA">IQVIA</option>
+            </select>
+          </label>
+          <label>
+            Measure
+            <select id="cause-measure-select"></select>
+          </label>
+          <button type="button" id="cause-load-button">Load</button>
+        </div>
+        <div id="cause-content"></div>
+      </section>
+
+      <section id="page-deep" class="page">
+        <div class="section-head">
+          <div>
+            <h3 id="deep-heading">Deep analysis</h3>
+            <p id="deep-subtitle">Loading</p>
+          </div>
+          <button type="button" id="deep-load-button">Reload deep analysis</button>
+        </div>
+        <div id="deep-content"></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const CONTRACT = Object.freeze({
+      views: ["market_landscape", "competitive_dynamics"],
+      sources: ["UBIST", "IQVIA"],
+      measuresBySource: {
+        UBIST: ["sales", "volume"],
+        IQVIA: ["sales", "unit", "dosage_unit", "counting_unit"]
+      }
+    });
+
+    const state = {
+      brands: [],
+      marketStatus: null,
+      selectedBrand: null,
+      activePage: "status",
+      cause: {
+        view: CONTRACT.views[0],
+        source: CONTRACT.sources[0],
+        measure: CONTRACT.measuresBySource[CONTRACT.sources[0]][0]
+      }
+    };
+
+    function apiBase() {
+      const params = new URLSearchParams(window.location.search);
+      const override = params.get("api");
+      if (override) return override.replace(/\/$/, "");
+      if (window.location.protocol === "file:") return "http://127.0.0.1:8013";
+      return "";
+    }
+
+    function apiUrl(path) {
+      return `${apiBase()}${path}`;
+    }
+
+    function fmtCompactKRW(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+      const n = Number(value);
+      const abs = Math.abs(n);
+      if (abs >= 1000000000000) return `${(n / 1000000000000).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}조`;
+      if (abs >= 100000000) return `${(n / 100000000).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}억`;
+      if (abs >= 10000) return `${(n / 10000).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}만`;
+      return `${Math.trunc(n).toLocaleString("ko-KR")}원`;
+    }
+
+    function fmtPercent(value, digits = 2) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+      return `${Number(value).toLocaleString("ko-KR", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+      })}%`;
+    }
+
+    function fmtGrowth(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+      const n = Number(value);
+      const sign = n > 0 ? "+" : "";
+      return `${sign}${n.toLocaleString("ko-KR", {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1
+      })}%`;
+    }
+
+    function fmtNumber(value, digits = 0) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+      return Number(value).toLocaleString("ko-KR", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+      });
+    }
+
+    function escapeHTML(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function latestEntries(series, limit = 10) {
+      if (!series || typeof series !== "object") return [];
+      return Object.entries(series)
+        .filter(([, value]) => value !== null && value !== undefined && !Number.isNaN(Number(value)))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .slice(-limit);
+    }
+
+    async function fetchJSON(path) {
+      const response = await fetch(apiUrl(path), { headers: { Accept: "application/json" } });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(`${response.status} ${response.statusText}: ${JSON.stringify(detail)}`);
+      }
+      return response.json();
+    }
+
+    function setBackendStatus(message) {
+      document.getElementById("backend-status").textContent = message;
+    }
+
+    function showError(containerId, error) {
+      document.getElementById(containerId).innerHTML = `
+        <div class="error-state">
+          <strong>Request failed</strong>
+          <div>${escapeHTML(error.message || error)}</div>
+        </div>`;
+    }
+
+    function showPage(page) {
+      state.activePage = page;
+      document.querySelectorAll(".page").forEach((el) => el.classList.toggle("active", el.id === `page-${page}`));
+      document.querySelectorAll("[data-page-target]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.pageTarget === page);
+      });
+      const title = page === "status" ? "Market status" : page === "cause" ? "Cause analysis" : "Deep analysis";
+      document.getElementById("page-title").textContent = title;
+    }
+
+    function sourceLabel(key) {
+      return key.toUpperCase();
+    }
+
+    function renderKPI(kpi) {
+      const entries = Object.entries(kpi || {});
+      document.getElementById("kpi-grid").innerHTML = entries.map(([source, data]) => `
+        <article class="kpi-panel">
+          <h4>${escapeHTML(sourceLabel(source))}</h4>
+          <div class="metric-row"><span>Total revenue</span><strong>${fmtCompactKRW(data.total_revenue)}</strong></div>
+          <div class="metric-row"><span>Average M/S</span><strong>${fmtPercent(data.avg_market_share_pct)}</strong></div>
+          <div class="metric-row"><span>Rising brands</span><strong>${fmtNumber(data.rising_brand_count)}</strong></div>
+          <div class="metric-row"><span>Declining brands</span><strong>${fmtNumber(data.declining_brand_count)}</strong></div>
+          <div class="metric-row"><span>CAGR 5y</span><strong>${fmtGrowth(data.cagr_5y_pct)}</strong></div>
+        </article>
+      `).join("");
+    }
+
+    function filteredCards() {
+      const cards = state.marketStatus?.brand_cards || [];
+      const query = document.getElementById("brand-search").value.trim().toLowerCase();
+      const market = document.getElementById("market-filter").value;
+      return cards.filter((card) => {
+        const queryOk = !query || String(card.brand || "").toLowerCase().includes(query);
+        const marketOk = !market || card.market_id === market;
+        return queryOk && marketOk;
+      });
+    }
+
+    function renderBrandCards() {
+      const cards = filteredCards();
+      document.getElementById("loaded-card-count").textContent = String(cards.length);
+      document.getElementById("status-nav-count").textContent = String(cards.length);
+      document.getElementById("status-subtitle").textContent = `Showing ${cards.length} cards from the backend response.`;
+      document.getElementById("status-brand-cards").innerHTML = cards.map((card) => {
+        const selected = state.selectedBrand === card.brand ? " selected" : "";
+        const sources = (card.sources || []).map((source) => `<span class="pill">${escapeHTML(source)}</span>`).join("");
+        const target = card.is_target ? `<span class="pill target">target</span>` : "";
+        return `
+          <article class="brand-card${selected}" data-brand="${escapeHTML(card.brand)}">
+            <header>
+              <div>
+                <h4>${escapeHTML(card.brand)}</h4>
+                <small>${escapeHTML(card.market_name || card.market_id)}</small>
+              </div>
+              <span class="pill">${escapeHTML(card.market_id)}</span>
+            </header>
+            <div class="pill-row">${sources}${target}</div>
+            <div class="card-metrics">
+              <div class="mini-metric"><span>Recent value</span><strong>${fmtCompactKRW(card.front?.value_recent)}</strong></div>
+              <div class="mini-metric"><span>M/S</span><strong>${fmtPercent(card.front?.ms_recent_pct)}</strong></div>
+              <div class="mini-metric"><span>QoQ</span><strong>${fmtGrowth(card.front?.gr_qoq_pct)}</strong></div>
+              <div class="mini-metric"><span>YoY</span><strong>${fmtGrowth(card.front?.gr_yoy_pct)}</strong></div>
+            </div>
+            <div class="card-actions">
+              <button type="button" data-action="cause" data-brand="${escapeHTML(card.brand)}">Cause</button>
+              <button type="button" data-action="deep" data-brand="${escapeHTML(card.brand)}">Deep</button>
+            </div>
+          </article>`;
+      }).join("");
+    }
+
+    function renderSelectors() {
+      const markets = Array.from(new Map(state.brands.map((brand) => [brand.market_id, brand])).values())
+        .sort((a, b) => String(a.market_id).localeCompare(String(b.market_id)));
+      const marketOptions = [`<option value="">All markets</option>`].concat(
+        markets.map((item) => `<option value="${escapeHTML(item.market_id)}">${escapeHTML(item.market_id)} · ${escapeHTML(item.market_name || "")}</option>`)
+      );
+      document.getElementById("market-filter").innerHTML = marketOptions.join("");
+
+      const brandOptions = state.brands.map((brand) => `<option value="${escapeHTML(brand.brand)}">${escapeHTML(brand.brand)} · ${escapeHTML(brand.market_id)}</option>`);
+      document.getElementById("brand-select").innerHTML = brandOptions.join("");
+      document.getElementById("cause-brand-select").innerHTML = brandOptions.join("");
+      if (state.selectedBrand) {
+        document.getElementById("brand-select").value = state.selectedBrand;
+        document.getElementById("cause-brand-select").value = state.selectedBrand;
+      }
+      renderMeasureOptions();
+    }
+
+    function renderMeasureOptions() {
+      const measures = CONTRACT.measuresBySource[state.cause.source] || [];
+      if (!measures.includes(state.cause.measure)) state.cause.measure = measures[0];
+      document.getElementById("cause-measure-select").innerHTML = measures.map((measure) => (
+        `<option value="${escapeHTML(measure)}">${escapeHTML(measure)}</option>`
+      )).join("");
+      document.getElementById("cause-measure-select").value = state.cause.measure;
+    }
+
+    function selectBrand(brand) {
+      state.selectedBrand = brand;
+      document.getElementById("cause-nav-brand").textContent = brand || "--";
+      document.getElementById("deep-nav-brand").textContent = brand || "--";
+      document.getElementById("brand-select").value = brand || "";
+      document.getElementById("cause-brand-select").value = brand || "";
+      renderBrandCards();
+    }
+
+    function renderSeries(series) {
+      const entries = latestEntries(series, 12);
+      if (!entries.length) return `<div class="empty-state">No series data in response.</div>`;
+      const max = Math.max(...entries.map(([, value]) => Math.abs(Number(value)))) || 1;
+      return `
+        <div class="series-bars">
+          ${entries.map(([period, value]) => {
+            const width = Math.max(2, Math.abs(Number(value)) / max * 100);
+            return `
+              <div class="bar-row">
+                <span>${escapeHTML(period)}</span>
+                <div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div>
+                <span class="bar-value">${fmtCompactKRW(value)}</span>
+              </div>`;
+          }).join("")}
+        </div>`;
+    }
+
+    function renderMatrixRows(rows) {
+      const sample = Array.isArray(rows) ? rows.slice(0, 12) : [];
+      if (!sample.length) return `<div class="empty-state">No matrix rows in response.</div>`;
+      const keys = Array.from(new Set(sample.flatMap((row) => Object.keys(row || {})))).slice(0, 7);
+      return `
+        <div class="table-wrap">
+          <table>
+            <thead><tr>${keys.map((key) => `<th>${escapeHTML(key)}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${sample.map((row) => `<tr>${keys.map((key) => `<td>${escapeHTML(row?.[key] ?? "")}</td>`).join("")}</tr>`).join("")}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    function renderMarkets(markets) {
+      if (!markets || !markets.length) return "";
+      return `
+        <div class="pill-row">
+          ${markets.map((market) => `<span class="pill${market.is_primary ? " target" : ""}">${escapeHTML(market.market_id)}</span>`).join("")}
+        </div>`;
+    }
+
+    function renderCause(response) {
+      if (response.data === null) {
+        document.getElementById("cause-content").innerHTML = `
+          <div class="empty-state">
+            <strong>${escapeHTML(response.reason || "No data")}</strong>
+            <div>${escapeHTML(response.brand)} · ${escapeHTML(response.source)} · ${escapeHTML(response.measure)}</div>
+          </div>`;
+        return;
+      }
+
+      const data = response.data || {};
+      const kpi = data.kpi || {};
+      const sourcesData = data.sources_data || {};
+      const matrixRows = data.ei_ms_matrix?.data || data.ei_ms_matrix?.rows || [];
+      document.getElementById("cause-heading").textContent = response.brand || "Cause analysis";
+      document.getElementById("cause-subtitle").textContent = `${response.view} · ${response.source} · ${response.measure} · ${response.market_id}`;
+      document.getElementById("cause-content").innerHTML = `
+        <div class="detail-grid">
+          <article class="detail-panel">
+            <h4>Market KPI</h4>
+            ${renderMarkets(response.markets)}
+            <div class="metric-row"><span>Market size recent</span><strong>${fmtCompactKRW(kpi.market_size_recent)}</strong></div>
+            <div class="metric-row"><span>Market CAGR 5y</span><strong>${fmtGrowth(kpi.market_cagr_5y_pct)}</strong></div>
+            <div class="metric-row"><span>Top share</span><strong>${fmtPercent(kpi.top3_share_pct)}</strong></div>
+            <div class="metric-row"><span>HHI recent</span><strong>${fmtNumber(kpi.hhi_recent)}</strong></div>
+            <div class="metric-row"><span>Target share</span><strong>${fmtPercent(kpi.target_share_pct ?? kpi.brand_share_pct)}</strong></div>
+          </article>
+          <article class="detail-panel">
+            <h4>Market size series</h4>
+            ${renderSeries(sourcesData.market_size_series)}
+          </article>
+          <article class="detail-panel">
+            <h4>EI/MS matrix</h4>
+            ${renderMatrixRows(matrixRows)}
+          </article>
+          <article class="detail-panel">
+            <h4>Available levels</h4>
+            ${renderMatrixRows((data.level_top5_trend?.available_levels || []).map((level) => ({ level })))}
+          </article>
+        </div>`;
+    }
+
+    async function loadCause() {
+      const brand = state.selectedBrand;
+      if (!brand) return;
+      const params = new URLSearchParams({
+        view: state.cause.view,
+        source: state.cause.source,
+        measure: state.cause.measure
+      });
+      try {
+        const response = await fetchJSON(`/api/cause/${encodeURIComponent(brand)}?${params.toString()}`);
+        renderCause(response);
+      } catch (error) {
+        showError("cause-content", error);
+      }
+    }
+
+    function comboSummary(combo) {
+      if (!combo || typeof combo !== "object") return "";
+      const keys = Object.keys(combo);
+      const history = combo.history || combo.actual || combo.series || {};
+      const forecast = combo.forecast || combo.prediction || {};
+      const historyCount = typeof history === "object" ? Object.keys(history).length : 0;
+      const forecastCount = typeof forecast === "object" ? Object.keys(forecast).length : 0;
+      return `${keys.length} fields · history ${historyCount} · forecast ${forecastCount}`;
+    }
+
+    function renderDeep(response) {
+      const data = response.data || {};
+      const forecastCombos = data.forecast?.by_combo || {};
+      const simulationCombos = data.simulation?.by_combo || {};
+      document.getElementById("deep-heading").textContent = response.brand || "Deep analysis";
+      document.getElementById("deep-subtitle").textContent = `${response.market_id || ""} · ${response.market_name || ""}`;
+      document.getElementById("deep-content").innerHTML = `
+        <div class="deep-grid">
+          <article class="detail-panel">
+            <h4>Forecast combos</h4>
+            <div class="combo-list">
+              ${Object.entries(forecastCombos).map(([name, combo]) => `
+                <div class="combo-item"><strong>${escapeHTML(name)}</strong><span>${escapeHTML(comboSummary(combo))}</span></div>
+              `).join("") || `<div class="empty-state">No forecast combo data.</div>`}
+            </div>
+          </article>
+          <article class="detail-panel">
+            <h4>Simulation combos</h4>
+            <div class="combo-list">
+              ${Object.entries(simulationCombos).map(([name, combo]) => `
+                <div class="combo-item"><strong>${escapeHTML(name)}</strong><span>${escapeHTML(comboSummary(combo))}</span></div>
+              `).join("") || `<div class="empty-state">No simulation combo data.</div>`}
+            </div>
+          </article>
+          <article class="detail-panel">
+            <h4>Events</h4>
+            ${renderMatrixRows(Array.isArray(data.events) ? data.events.slice(0, 10) : [])}
+          </article>
+          <article class="detail-panel">
+            <h4>AI analysis</h4>
+            ${renderMatrixRows(Object.entries(data.ai_analysis || {}).map(([section, value]) => ({
+              section,
+              value: typeof value === "object" ? JSON.stringify(value).slice(0, 120) : value
+            })))}
+          </article>
+        </div>`;
+    }
+
+    async function loadDeep() {
+      const brand = state.selectedBrand;
+      if (!brand) return;
+      try {
+        const response = await fetchJSON(`/api/deep-analysis/${encodeURIComponent(brand)}`);
+        renderDeep(response);
+      } catch (error) {
+        showError("deep-content", error);
+      }
+    }
+
+    async function boot() {
+      try {
+        setBackendStatus("Loading backend responses");
+        const [health, brands, marketStatus] = await Promise.all([
+          fetchJSON("/api/health"),
+          fetchJSON("/api/brands"),
+          fetchJSON("/api/market-status")
+        ]);
+        state.brands = brands;
+        state.marketStatus = marketStatus;
+        state.selectedBrand = brands[0]?.brand || null;
+        document.getElementById("loaded-brand-count").textContent = String(brands.length);
+        document.getElementById("loaded-card-count").textContent = String(marketStatus.brand_cards?.length || 0);
+        document.getElementById("swagger-link").href = apiUrl("/docs");
+        document.getElementById("openapi-link").href = apiUrl("/openapi.json");
+        setBackendStatus(`Backend ${health.version || ""} · brands ${health.brands_loaded}`);
+        renderSelectors();
+        renderKPI(marketStatus.kpi);
+        selectBrand(state.selectedBrand);
+        renderBrandCards();
+        await loadCause();
+        await loadDeep();
+      } catch (error) {
+        setBackendStatus("Backend connection failed");
+        showError("status-brand-cards", error);
+      }
+    }
+
+    document.querySelectorAll("[data-page-target]").forEach((button) => {
+      button.addEventListener("click", () => showPage(button.dataset.pageTarget));
+    });
+
+    document.getElementById("refresh-button").addEventListener("click", boot);
+    document.getElementById("brand-search").addEventListener("input", renderBrandCards);
+    document.getElementById("market-filter").addEventListener("change", renderBrandCards);
+    document.getElementById("brand-select").addEventListener("change", (event) => {
+      selectBrand(event.target.value);
+      loadCause();
+      loadDeep();
+    });
+    document.getElementById("cause-brand-select").addEventListener("change", (event) => {
+      selectBrand(event.target.value);
+      loadCause();
+      loadDeep();
+    });
+    document.getElementById("cause-view-select").addEventListener("change", (event) => {
+      state.cause.view = event.target.value;
+    });
+    document.getElementById("cause-source-select").addEventListener("change", (event) => {
+      state.cause.source = event.target.value;
+      renderMeasureOptions();
+    });
+    document.getElementById("cause-measure-select").addEventListener("change", (event) => {
+      state.cause.measure = event.target.value;
+    });
+    document.getElementById("cause-load-button").addEventListener("click", loadCause);
+    document.getElementById("deep-load-button").addEventListener("click", loadDeep);
+    document.getElementById("status-brand-cards").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      selectBrand(button.dataset.brand);
+      if (button.dataset.action === "cause") {
+        showPage("cause");
+        loadCause();
+      } else {
+        showPage("deep");
+        loadDeep();
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", boot);
+  </script>
+</body>
+</html>
