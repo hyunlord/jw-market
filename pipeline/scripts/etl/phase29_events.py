@@ -255,19 +255,31 @@ def get_brand_events_cut_a(
     *,
     target_min: int = 5,
     target_max: int = 50,
-    lookback_months: int = 6,
-) -> list[dict[str, Any]]:
-    """Cut A: lower the threshold one point at a time until 5~50 rows exist."""
-    threshold = 50
-    rows: list[dict[str, Any]] = []
+    lookback_candidates: list[int | None] | None = None,
+) -> tuple[list[dict[str, Any]], int | None, int | None]:
+    """Cut A: expand lookback and lower threshold until target coverage exists."""
+    if lookback_candidates is None:
+        lookback_candidates = [6, 12, 24, None]
+
     formatted: list[dict[str, Any]] = []
-    while threshold >= 0:
-        rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=target_max)
-        formatted = [format_event(row, cut_threshold=threshold) for row in rows[:target_max]]
-        if (len(formatted) >= target_min and _cut_a_unique_cluster_count(formatted) >= target_min) or threshold == 0:
+    final_lookback: int | None = None
+    final_threshold: int | None = None
+
+    for lookback_months in lookback_candidates:
+        threshold = 50
+        while threshold >= 0:
+            rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=target_max)
+            formatted = [format_event(row, cut_threshold=threshold) for row in rows[:target_max]]
+            if (len(formatted) >= target_min and _cut_a_unique_cluster_count(formatted) >= target_min) or threshold == 0:
+                break
+            threshold -= 1
+
+        final_lookback = lookback_months
+        final_threshold = threshold
+        if len(formatted) >= target_min and _cut_a_unique_cluster_count(formatted) >= target_min:
             break
-        threshold -= 1
-    return formatted
+
+    return formatted, final_lookback, final_threshold
 
 
 def get_brand_events_cut_b(
@@ -290,7 +302,7 @@ def get_brand_events_cut_b(
 
 
 def build_events_for_cache(conn: pymysql.connections.Connection, brand: str) -> dict[str, Any]:
-    cut_a = get_brand_events_cut_a(conn, brand)
+    cut_a, cut_a_final_lookback, cut_a_final_threshold = get_brand_events_cut_a(conn, brand)
     cut_b = get_brand_events_cut_b(conn, brand)
     return {
         "cut_a": cut_a,
@@ -299,7 +311,8 @@ def build_events_for_cache(conn: pymysql.connections.Connection, brand: str) -> 
             "lookback_months": 6,
             "cut_a_target_min": 5,
             "cut_a_target_max": 50,
-            "cut_a_threshold": cut_a[0]["cut_threshold"] if cut_a else None,
+            "cut_a_threshold": cut_a_final_threshold,
+            "cut_a_final_lookback_months": cut_a_final_lookback,
             "cut_b_threshold": 80,
             "cut_b_derivation": "llm_direct",
         },

@@ -54,7 +54,7 @@ def validate() -> dict[str, Any]:
         cut_a_counts: dict[str, int] = {}
         cut_b_counts: dict[str, int] = {}
         for brand in sorted(CANONICAL_25):
-            cut_a = get_brand_events_cut_a(conn, brand)
+            cut_a, _, _ = get_brand_events_cut_a(conn, brand)
             cut_b = get_brand_events_cut_b(conn, brand)
             cut_a_counts[brand] = len(cut_a)
             cut_b_counts[brand] = len(cut_b)

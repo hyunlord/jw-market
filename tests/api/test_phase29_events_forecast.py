@@ -43,10 +43,9 @@ def test_phase29_cut_a_and_cut_b_contracts() -> None:
     conn = _conn()
     try:
         for brand in CANONICAL_25:
-            cut_a = get_brand_events_cut_a(conn, brand)
+            cut_a, _, _ = get_brand_events_cut_a(conn, brand)
             assert len(cut_a) <= 50
-            if brand != "플라주오피":
-                assert len(cut_a) >= 5, brand
+            assert len(cut_a) >= 5, brand
             assert all(int(event["score"]) >= int(event["cut_threshold"]) for event in cut_a)
 
         # Cut B is intentionally strict and may be empty in the 6-month UI window.
