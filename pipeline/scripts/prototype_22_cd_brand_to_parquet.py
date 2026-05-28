@@ -14,6 +14,7 @@ Policy:
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 from collections import defaultdict
@@ -29,10 +30,10 @@ except ImportError as e:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_STRATEGIC_BRAND_FILE = Path("parquet/strategic_brand/strategic_brand.parquet")
-DEFAULT_CD_MARKET_FILE = Path("parquet/cd_market/cd_market.parquet")
-DEFAULT_CD_FILTER_FILE = Path("parquet/cd_filter/cd_filter.parquet")
-DEFAULT_OUTPUT_FILE = Path("parquet/cd_brand/cd_brand.parquet")
+DEFAULT_STRATEGIC_BRAND_FILE = Path("output/catalog/strategic_brand/strategic_brand.parquet")
+DEFAULT_CD_MARKET_FILE = Path("output/catalog/cd_market/cd_market.parquet")
+DEFAULT_CD_FILTER_FILE = Path("output/catalog/cd_filter/cd_filter.parquet")
+DEFAULT_OUTPUT_FILE = Path("output/catalog/cd_brand/cd_brand.parquet")
 STRATEGIC_BRAND_SCRIPT = Path("scripts/prototype_20_strategic_brand_to_parquet.py")
 STRATEGIC_PRODUCT_SCRIPT = Path("scripts/prototype_21_strategic_product_to_parquet.py")
 
@@ -205,16 +206,26 @@ def print_summary(records: list[dict[str, Any]], output_file: Path) -> None:
     print("validate_records: PASS")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Load Phase 14 cd_brand parquet.")
+    parser.add_argument("--strategic-brand", type=Path, default=DEFAULT_STRATEGIC_BRAND_FILE)
+    parser.add_argument("--cd-market", type=Path, default=DEFAULT_CD_MARKET_FILE)
+    parser.add_argument("--cd-filter", type=Path, default=DEFAULT_CD_FILTER_FILE)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_FILE)
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     brand_helpers = import_module(STRATEGIC_BRAND_SCRIPT, "prototype_20_helpers_for_cd_brand_write")
     records, _ = load_cd_brand_records(
-        DEFAULT_STRATEGIC_BRAND_FILE,
-        DEFAULT_CD_MARKET_FILE,
-        DEFAULT_CD_FILTER_FILE,
+        args.strategic_brand,
+        args.cd_market,
+        args.cd_filter,
     )
-    write_parquet(records, DEFAULT_OUTPUT_FILE, brand_helpers)
-    validate_written_parquet(DEFAULT_OUTPUT_FILE, brand_helpers)
-    print_summary(records, DEFAULT_OUTPUT_FILE)
+    write_parquet(records, args.output, brand_helpers)
+    validate_written_parquet(args.output, brand_helpers)
+    print_summary(records, args.output)
 
 
 if __name__ == "__main__":

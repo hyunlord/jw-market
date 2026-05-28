@@ -61,8 +61,8 @@ DEFAULT_DIM_COMPETITIVE_FILE = Path(
     "parquet/dim_market_competitive_dynamics/dim_market_competitive_dynamics.parquet"
 )
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
-DEFAULT_UBIST_FILE = Path("parquet/ubist/2026-02.parquet")
-DEFAULT_IQVIA_FILE = Path("parquet/iqvia_nsa/2025-Q4.parquet")
+DEFAULT_UBIST_BASE_DIR = Path("output/ubist")
+DEFAULT_IQVIA_DIR = Path("output/iqvia_nsa")
 DEFAULT_OUTPUT_FILE = Path(
     "parquet/dim_market_target_priority/dim_market_target_priority.parquet"
 )
@@ -110,8 +110,8 @@ AUTO_FILL_CACHE_COLUMNS = (
     "source_evidence",
 )
 
-UBIST_LATEST_PARTITION = "2026-02"
-IQVIA_LATEST_PARTITION = "2025-Q4"
+UBIST_LATEST_PARTITION = "latest"
+IQVIA_LATEST_PARTITION = "latest"
 
 # Q-34 / C-4b source-specific dictionary.
 UBIST_JOIN_VALUE_COLUMN_BY_SMID = {
@@ -175,6 +175,41 @@ def read_required_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"required CSV not found: {path}")
     return pd.read_csv(path)
+
+
+def resolve_ubist_latest(base_dir: Path = DEFAULT_UBIST_BASE_DIR) -> Path:
+    parts = sorted(base_dir.glob("year=*/month=*/data.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"no UBIST parquet partitions under {base_dir}")
+    return parts[-1]
+
+
+def resolve_iqvia_latest(base_dir: Path = DEFAULT_IQVIA_DIR) -> Path:
+    parts = sorted(base_dir.glob("*.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"no IQVIA NSA parquet partitions under {base_dir}")
+    return parts[-1]
+
+
+def partition_label_from_path(path: Path) -> str:
+    parts = path.parts
+    year = next((part.split("=", 1)[1] for part in parts if part.startswith("year=")), None)
+    month = next((part.split("=", 1)[1] for part in parts if part.startswith("month=")), None)
+    if year and month:
+        return f"{year}-{month}"
+    return path.stem
+
+
+def read_parquet_compat(path: Path, columns: list[str], aliases: dict[str, str]) -> pd.DataFrame:
+    schema_names = set(pq.read_schema(path).names)
+    if set(columns).issubset(schema_names):
+        return pd.read_parquet(path, columns=columns)
+    source_columns = [aliases.get(column, column) for column in columns]
+    missing = [column for column in source_columns if column not in schema_names]
+    if missing:
+        raise ValueError(f"{path} missing columns for compatibility read: {missing}")
+    frame = pd.read_parquet(path, columns=source_columns)
+    return frame.rename(columns={source: target for target, source in aliases.items()})
 
 
 def source_file_version_from_skeleton(skeleton: pd.DataFrame) -> str:
@@ -270,7 +305,18 @@ def load_ubist_sales(path: Path) -> pd.DataFrame:
         "brand",
         "val",
     ]
-    sales = pd.read_parquet(path, columns=columns)
+    sales = read_parquet_compat(
+        path,
+        columns,
+        {
+            "channel": "종별",
+            "specialty": "진료과",
+            "manufacturer": "제조사",
+            "product_name": "제품",
+            "brand": "브랜드",
+            "val": "rx_amt",
+        },
+    )
     sales["_brand_key"] = sales["brand"].map(normalize_text)
     sales["_product_key"] = sales["product_name"].map(normalize_text)
     sales["_manufacturer_key"] = sales["manufacturer"].map(normalize_manufacturer)
@@ -442,6 +488,8 @@ def build_rankings_by_cd_source(
     master_drug_rows: list[dict[str, Any]],
     ubist_sales: pd.DataFrame,
     iqvia_sales: pd.DataFrame,
+    ubist_partition: str,
+    iqvia_partition: str,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     rankings: dict[tuple[str, str], dict[str, Any]] = {}
     for cd_id, source_view in sorted(
@@ -451,13 +499,13 @@ def build_rankings_by_cd_source(
             ranked, join_key, matched_sales_rows = ubist_rankings(
                 str(cd_id), specs_by_cd, master_drug_rows, ubist_sales
             )
-            partition = UBIST_LATEST_PARTITION
+            partition = ubist_partition
             basis = "UBIST val sum by estimated channel x specialty customer"
         elif source_view == "IQVIA":
             ranked, join_key, matched_sales_rows = iqvia_rankings(
                 str(cd_id), specs_by_cd, master_drug_rows, iqvia_sales
             )
-            partition = IQVIA_LATEST_PARTITION
+            partition = iqvia_partition
             basis = "IQVIA values_lc sum by estimated audit_code customer"
         else:
             raise ValueError(f"unexpected source_view: {source_view}")
@@ -613,7 +661,13 @@ def load_dim_market_target_priority_records(
     ubist_sales = load_ubist_sales(ubist_path)
     iqvia_sales = load_iqvia_sales(iqvia_path)
     rankings_by_cd_source = build_rankings_by_cd_source(
-        auto_rows, specs_by_cd, master_drug_rows, ubist_sales, iqvia_sales
+        auto_rows,
+        specs_by_cd,
+        master_drug_rows,
+        ubist_sales,
+        iqvia_sales,
+        partition_label_from_path(ubist_path),
+        partition_label_from_path(iqvia_path),
     )
     auto_assignments = build_auto_assignments(skeleton, rankings_by_cd_source)
 
@@ -769,8 +823,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skeleton", type=Path, default=DEFAULT_SKELETON_FILE)
     parser.add_argument("--dim-competitive", type=Path, default=DEFAULT_DIM_COMPETITIVE_FILE)
     parser.add_argument("--master-drug", type=Path, default=DEFAULT_MASTER_DRUG_FILE)
-    parser.add_argument("--ubist", type=Path, default=DEFAULT_UBIST_FILE)
-    parser.add_argument("--iqvia", type=Path, default=DEFAULT_IQVIA_FILE)
+    parser.add_argument("--ubist", "--ubist-path", dest="ubist", type=Path, default=None)
+    parser.add_argument("--iqvia", "--iqvia-path", dest="iqvia", type=Path, default=None)
+    parser.add_argument("--ubist-base-dir", type=Path, default=DEFAULT_UBIST_BASE_DIR)
+    parser.add_argument("--iqvia-dir", type=Path, default=DEFAULT_IQVIA_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE_FILE)
     parser.add_argument("--ingested-at", default=None)
@@ -779,12 +835,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    ubist_path = args.ubist or resolve_ubist_latest(args.ubist_base_dir)
+    iqvia_path = args.iqvia or resolve_iqvia_latest(args.iqvia_dir)
     records = load_dim_market_target_priority_records(
         skeleton_path=args.skeleton,
         dim_competitive_path=args.dim_competitive,
         master_drug_path=args.master_drug,
-        ubist_path=args.ubist,
-        iqvia_path=args.iqvia,
+        ubist_path=ubist_path,
+        iqvia_path=iqvia_path,
         cache_path=args.cache,
         ingested_at=args.ingested_at,
     )

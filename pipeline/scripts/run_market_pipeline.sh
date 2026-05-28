@@ -2,6 +2,7 @@
 # JW Market ETL orchestrator.
 #
 # Layers:
+#   Layer0: MI Master/catalog YAML/raw snapshots -> catalog parquet
 #   Layer1: source files -> raw Layer1 stores
 #   Layer2: raw/catalog inputs -> enriched parquet
 #   Layer3: enriched/general inputs -> mart tables
@@ -12,6 +13,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ETL_DIR="$ROOT_DIR/pipeline/scripts/etl"
+SCRIPT_DIR="$ROOT_DIR/pipeline/scripts"
 
 usage() {
   cat <<'EOF'
@@ -19,6 +21,8 @@ Usage: pipeline/scripts/run_market_pipeline.sh <mode>
 
 Modes:
   --all               Run Layer1, Layer2, Layer3, Layer4
+  --layer0            Run MI Master/catalog YAML -> catalog parquet only
+  --layer0-catalog    Alias for --layer0
   --from-layer2       Run Layer2, Layer3, Layer4
   --from-layer3       Run Layer3, Layer4
   --layer1            Run source loaders only
@@ -41,6 +45,32 @@ Notes:
   - Layer4 runs build_cache_market_status.py, build_cache_cause.py, and
     build_cache_deep_analysis.py in that order.
 EOF
+}
+
+run_layer0_catalog() {
+  echo "=== Layer0: MI Master + catalog YAML -> catalog parquet ==="
+  "$PYTHON_BIN" "$ETL_DIR/iqvia_loader.py" --source nsa --materialize-parquet --skip-db
+
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_07_master_market_definition_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_08_master_qa_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_09_master_brand_consolidation_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_10_master_mapping_table_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_11_master_drug_to_parquet.py"
+
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_12_dim_jw_products_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_13_brand_group_split_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_14_dim_market_landscape_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_15_dim_market_competitive_dynamics_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_16_dim_market_target_priority_to_parquet.py"
+
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_17_ml_market_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_18_cd_filter_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_19_cd_market_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_20_strategic_brand_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_21_strategic_product_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_22_cd_brand_to_parquet.py"
+  "$PYTHON_BIN" "$SCRIPT_DIR/prototype_23_cd_product_to_parquet.py"
+  echo "=== Layer0 catalog build done ==="
 }
 
 run_layer1() {
@@ -134,6 +164,7 @@ case "$mode" in
     run_layer3
     run_layer4
     ;;
+  --layer0|--layer0-catalog) run_layer0_catalog ;;
   --layer1) run_layer1 ;;
   --layer2) run_layer2 ;;
   --layer3) run_layer3 ;;

@@ -39,11 +39,11 @@ except ImportError as e:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_FILE = Path("parquet/strategic_brand/strategic_brand.parquet")
+DEFAULT_OUTPUT_FILE = Path("output/catalog/strategic_brand/strategic_brand.parquet")
 DEFAULT_GADRELET_CACHE = Path("data/cache/prototype_14_step5_gadrelet_brand_mapping.csv")
-DEFAULT_ML_MARKET_FILE = Path("parquet/ml_market/ml_market.parquet")
-DEFAULT_CD_FILTER_FILE = Path("parquet/cd_filter/cd_filter.parquet")
-DEFAULT_CD_MARKET_FILE = Path("parquet/cd_market/cd_market.parquet")
+DEFAULT_ML_MARKET_FILE = Path("output/catalog/ml_market/ml_market.parquet")
+DEFAULT_CD_FILTER_FILE = Path("output/catalog/cd_filter/cd_filter.parquet")
+DEFAULT_CD_MARKET_FILE = Path("output/catalog/cd_market/cd_market.parquet")
 MASTER_DRUG_SCRIPT = Path("scripts/prototype_11_master_drug_to_parquet.py")
 
 EXPECTED_ROW_COUNT = 4495

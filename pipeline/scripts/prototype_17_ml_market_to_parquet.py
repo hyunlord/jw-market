@@ -49,7 +49,7 @@ DEFAULT_MARKET_DEFINITION_FILE = Path(
     "parquet/master_market_definition/master_market_definition.parquet"
 )
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
-DEFAULT_OUTPUT_FILE = Path("parquet/ml_market/ml_market.parquet")
+DEFAULT_OUTPUT_FILE = Path("output/catalog/ml_market/ml_market.parquet")
 
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
 EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))

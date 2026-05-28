@@ -42,12 +42,12 @@ except ImportError as e:
     sys.exit(f"ERROR: {e}\n  pip3 install pyarrow --break-system-packages")
 
 
-DEFAULT_ML_MARKET_FILE = Path("parquet/ml_market/ml_market.parquet")
-DEFAULT_CD_FILTER_FILE = Path("parquet/cd_filter/cd_filter.parquet")
+DEFAULT_ML_MARKET_FILE = Path("output/catalog/ml_market/ml_market.parquet")
+DEFAULT_CD_FILTER_FILE = Path("output/catalog/cd_filter/cd_filter.parquet")
 DEFAULT_MARKET_DEFINITION_FILE = Path(
     "parquet/master_market_definition/master_market_definition.parquet"
 )
-DEFAULT_OUTPUT_FILE = Path("parquet/cd_market/cd_market.parquet")
+DEFAULT_OUTPUT_FILE = Path("output/catalog/cd_market/cd_market.parquet")
 
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
 EXPECTED_CD_IDS = tuple(f"cd_{index:03d}" for index in range(1, 20))

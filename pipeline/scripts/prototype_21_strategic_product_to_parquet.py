@@ -37,12 +37,12 @@ except ImportError as e:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_STRATEGIC_BRAND_FILE = Path("parquet/strategic_brand/strategic_brand.parquet")
-DEFAULT_ML_MARKET_FILE = Path("parquet/ml_market/ml_market.parquet")
-DEFAULT_CD_MARKET_FILE = Path("parquet/cd_market/cd_market.parquet")
-DEFAULT_UBIST_FILE = Path("parquet/ubist/2026-02.parquet")
-DEFAULT_IQVIA_FILE = Path("parquet/iqvia_nsa/2025-Q4.parquet")
-DEFAULT_OUTPUT_FILE = Path("parquet/strategic_product/strategic_product.parquet")
+DEFAULT_STRATEGIC_BRAND_FILE = Path("output/catalog/strategic_brand/strategic_brand.parquet")
+DEFAULT_ML_MARKET_FILE = Path("output/catalog/ml_market/ml_market.parquet")
+DEFAULT_CD_MARKET_FILE = Path("output/catalog/cd_market/cd_market.parquet")
+DEFAULT_UBIST_BASE_DIR = Path("output/ubist")
+DEFAULT_IQVIA_DIR = Path("output/iqvia_nsa")
+DEFAULT_OUTPUT_FILE = Path("output/catalog/strategic_product/strategic_product.parquet")
 DEFAULT_COVERAGE_CACHE = Path("data/cache/prototype_14_step6_product_match_coverage.csv")
 MASTER_DRUG_SCRIPT = Path("scripts/prototype_11_master_drug_to_parquet.py")
 STRATEGIC_BRAND_SCRIPT = Path("scripts/prototype_20_strategic_brand_to_parquet.py")
@@ -165,6 +165,36 @@ def read_parquet_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"required parquet not found: {path}")
     return pq.read_table(path).to_pylist()
+
+
+def resolve_ubist_latest(base_dir: Path = DEFAULT_UBIST_BASE_DIR) -> Path:
+    parts = sorted(base_dir.glob("year=*/month=*/data.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"no UBIST parquet partitions under {base_dir}")
+    return parts[-1]
+
+
+def resolve_iqvia_latest(base_dir: Path = DEFAULT_IQVIA_DIR) -> Path:
+    parts = sorted(base_dir.glob("*.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"no IQVIA NSA parquet partitions under {base_dir}")
+    return parts[-1]
+
+
+def read_compat_rows(path: Path, columns: list[str], aliases: dict[str, str]) -> list[dict[str, Any]]:
+    schema_names = set(pq.read_schema(path).names)
+    if set(columns).issubset(schema_names):
+        return pq.read_table(path, columns=columns).to_pylist()
+    source_columns = [aliases.get(column, column) for column in columns]
+    missing = [column for column in source_columns if column not in schema_names]
+    if missing:
+        raise ValueError(f"{path} missing columns for compatibility read: {missing}")
+    rows = pq.read_table(path, columns=source_columns).to_pylist()
+    source_to_target = {source: target for target, source in aliases.items()}
+    return [
+        {source_to_target.get(column, column): value for column, value in row.items()}
+        for row in rows
+    ]
 
 
 def extract_atc_code(value: Any) -> str | None:
@@ -290,10 +320,23 @@ def load_ubist_indexes(path: Path) -> dict[str, dict[tuple[str, str], list[dict[
         "formulation",
         "insurance_type",
     ]
-    table = pq.read_table(path, columns=columns)
+    rows = read_compat_rows(
+        path,
+        columns,
+        {
+            "product_key": "약품코드",
+            "product_name": "제품",
+            "brand": "브랜드",
+            "manufacturer": "제조사",
+            "molecule_strength": "성분용량",
+            "molecule": "성분",
+            "formulation": "제형",
+            "insurance_type": "급여구분",
+        },
+    )
     brand_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     product_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in table.to_pylist():
+    for row in rows:
         candidate = {
             "source_view": "UBIST",
             "source_product_key": clean_text(row.get("product_key")),
@@ -736,8 +779,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strategic-brand", type=Path, default=DEFAULT_STRATEGIC_BRAND_FILE)
     parser.add_argument("--ml-market", type=Path, default=DEFAULT_ML_MARKET_FILE)
     parser.add_argument("--cd-market", type=Path, default=DEFAULT_CD_MARKET_FILE)
-    parser.add_argument("--ubist", type=Path, default=DEFAULT_UBIST_FILE)
-    parser.add_argument("--iqvia", type=Path, default=DEFAULT_IQVIA_FILE)
+    parser.add_argument("--ubist", "--ubist-path", dest="ubist", type=Path, default=None)
+    parser.add_argument("--iqvia", "--iqvia-path", dest="iqvia", type=Path, default=None)
+    parser.add_argument("--ubist-base-dir", type=Path, default=DEFAULT_UBIST_BASE_DIR)
+    parser.add_argument("--iqvia-dir", type=Path, default=DEFAULT_IQVIA_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--coverage-cache", type=Path, default=DEFAULT_COVERAGE_CACHE)
     return parser.parse_args()
@@ -745,12 +790,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    ubist_path = args.ubist or resolve_ubist_latest(args.ubist_base_dir)
+    iqvia_path = args.iqvia or resolve_iqvia_latest(args.iqvia_dir)
     records, coverage_rows = load_strategic_product_records(
         args.strategic_brand,
         args.ml_market,
         args.cd_market,
-        args.ubist,
-        args.iqvia,
+        ubist_path,
+        iqvia_path,
     )
     write_parquet(records, args.output)
     validate_written_parquet(args.output)

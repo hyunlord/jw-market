@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -38,6 +39,7 @@ AUDIT_DIR = REPO_ROOT / "audit" / "phase16c3_iqvia_mariadb"
 NSA_TABLE = "iqvia_nsa_quarterly_raw"
 CSD_TABLE = "iqvia_csd_monthly_raw"
 CHSO_TABLE = "iqvia_chso_monthly_raw"
+DEFAULT_NSA_PARQUET_DIR = REPO_ROOT / "output" / "iqvia_nsa"
 
 
 MONTH_NAME_TO_NUM = {
@@ -65,6 +67,51 @@ MONTH_NAME_TO_NUM = {
     "november": 11,
     "dec": 12,
     "december": 12,
+}
+
+NSA_PARQUET_META_COLUMNS = (
+    "audit_code",
+    "audit_desc",
+    "product_name",
+    "pack_desc",
+    "otc_ethical",
+    "mfr_code",
+    "mfr_name",
+    "mfr_name_kor",
+    "mft_type",
+    "mfr_type_group",
+    "atc1_code",
+    "atc1_desc",
+    "atc2_code",
+    "atc2_desc",
+    "atc3_code",
+    "atc3_desc",
+    "atc4_code",
+    "atc4_desc",
+    "nfc1_code",
+    "nfc1_desc",
+    "nfc2_code",
+    "nfc2_desc",
+    "nfc3_code",
+    "nfc3_desc",
+    "strength",
+    "molecule_desc",
+    "molecule_type",
+    "nhi_type",
+    "pack_launchdate",
+    "product_launch_date",
+    "herbal",
+    "product_age",
+    "pack_size",
+    "pack_age",
+)
+
+NSA_PARQUET_METRICS = {
+    "Values LC": "values_lc",
+    "Units": "units",
+    "Counting Units": "counting_units",
+    "Dosage Units": "dosage_units",
+    "Price": "price",
 }
 
 
@@ -182,6 +229,93 @@ def row_to_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 def dumps_payload(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def compute_product_key(audit_code: Any, product_name: Any, pack_desc: Any) -> str:
+    text = f"{audit_code or ''}|{product_name or ''}|{pack_desc or ''}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
+def period_label_to_quarter(period_label: Any) -> str:
+    text = str(period_label or "").strip()
+    match = re.match(r"^(\d{4})-?Q([1-4])$", text, flags=re.IGNORECASE)
+    if not match:
+        raise ValueError(f"invalid IQVIA NSA period_label: {period_label!r}")
+    return f"{match.group(1)}-Q{match.group(2)}"
+
+
+def payload_lookup(payload: dict[str, Any], key: str) -> Any:
+    normalized_key = key.lower()
+    for source_key, value in payload.items():
+        if str(source_key).lower() == normalized_key:
+            return value
+    return None
+
+
+def nsa_record_to_parquet_row(record: dict[str, Any]) -> dict[str, Any]:
+    payload = json.loads(str(record["payload"]))
+    static = payload.get("static", {})
+    period_values = payload.get("period_values", {})
+
+    product_name = payload_lookup(static, "PRODUCT NAME")
+    pack_desc = payload_lookup(static, "PACK DESC")
+    audit_code = record.get("audit_code")
+    row: dict[str, Any] = {
+        "product_key": compute_product_key(audit_code, product_name, pack_desc),
+        "source_file": record.get("source_file"),
+        "sheet_name": record.get("sheet_name"),
+        "source_row_no": record.get("source_row_no"),
+        "period_label": period_label_to_quarter(record.get("period_label")),
+    }
+
+    explicit_values = {
+        "audit_code": audit_code,
+        "audit_desc": record.get("audit_desc"),
+        "mfr_code": record.get("mfr_code"),
+        "mfr_name": record.get("mfr_name"),
+        "product_name": product_name,
+        "pack_desc": pack_desc,
+    }
+    static_keys = {
+        "otc_ethical": "OTC/ETHICAL",
+        "mfr_name_kor": "MFR NAME KOR",
+        "mft_type": "MFT TYPE",
+        "mfr_type_group": "MFR TYPE GROUP",
+        "atc1_code": "ATC 1 CODE",
+        "atc1_desc": "ATC 1 DESC",
+        "atc2_code": "ATC 2 CODE",
+        "atc2_desc": "ATC 2 DESC",
+        "atc3_code": "ATC 3 CODE",
+        "atc3_desc": "ATC 3 DESC",
+        "atc4_code": "ATC 4 CODE",
+        "atc4_desc": "ATC 4 DESC",
+        "nfc1_code": "NFC 1 CODE",
+        "nfc1_desc": "NFC 1 DESC",
+        "nfc2_code": "NFC 2 CODE",
+        "nfc2_desc": "NFC 2 DESC",
+        "nfc3_code": "NFC 3 CODE",
+        "nfc3_desc": "NFC 3 DESC",
+        "strength": "STRENGTH",
+        "molecule_desc": "MOLECULE DESC",
+        "molecule_type": "MOLECULE TYPE",
+        "nhi_type": "NHI TYPE",
+        "pack_launchdate": "PACK LAUNCHDATE",
+        "product_launch_date": "PRODUCT LAUNCH DATE",
+        "herbal": "HERBAL",
+        "product_age": "PRODUCT AGE",
+        "pack_size": "PACK SIZE",
+        "pack_age": "PACK AGE",
+    }
+    for column in NSA_PARQUET_META_COLUMNS:
+        if column in explicit_values:
+            row[column] = clean_value(explicit_values[column])
+        else:
+            row[column] = clean_value(payload_lookup(static, static_keys[column]))
+    for metric, column in NSA_PARQUET_METRICS.items():
+        row[column] = clean_value(period_values.get(metric))
+    row["sources"] = str(record.get("source_file") or "")
+    row["ingested_at"] = datetime.now(timezone.utc).isoformat()
+    return row
 
 
 def discover_files(source: str) -> list[Path]:
@@ -598,6 +732,27 @@ def iter_records(source: str, path: Path) -> Iterator[dict[str, Any]]:
         raise ValueError(source)
 
 
+def materialize_iqvia_nsa_parquet(files: list[Path], output_dir: Path) -> dict[str, int]:
+    """Write IQVIA NSA records as period parquet files for Layer0 prototypes."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_files = [path for path in files if path.suffix.lower() == ".csv"]
+    materialize_files = csv_files or files
+    rows_by_period: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for path in materialize_files:
+        LOGGER.info("materializing NSA parquet from %s", path)
+        for record in iter_records("nsa", path):
+            row = nsa_record_to_parquet_row(record)
+            rows_by_period[str(row["period_label"])].append(row)
+
+    written: dict[str, int] = {}
+    for period, rows in sorted(rows_by_period.items()):
+        out_path = output_dir / f"{period}.parquet"
+        pd.DataFrame(rows).to_parquet(out_path, index=False)
+        written[period] = len(rows)
+        LOGGER.info("wrote %s: %s rows", out_path, f"{len(rows):,}")
+    return written
+
+
 def table_for_source(source: str) -> str:
     return {"nsa": NSA_TABLE, "csd": CSD_TABLE, "chso": CHSO_TABLE}[source]
 
@@ -721,6 +876,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file", type=Path, help="load or dry-run one file")
     parser.add_argument("--dry-run", action="store_true", help="inspect schema without writing")
     parser.add_argument("--batch-size", type=int, default=10000)
+    parser.add_argument(
+        "--materialize-parquet",
+        action="store_true",
+        help="write IQVIA NSA period parquet files for Layer0 prototype consumers",
+    )
+    parser.add_argument(
+        "--parquet-output-dir",
+        type=Path,
+        default=DEFAULT_NSA_PARQUET_DIR,
+        help="IQVIA NSA parquet output directory",
+    )
+    parser.add_argument(
+        "--skip-db",
+        action="store_true",
+        help="skip MariaDB inserts; useful with --source nsa --materialize-parquet",
+    )
     return parser.parse_args()
 
 
@@ -740,6 +911,14 @@ def main() -> int:
             if args.dry_run:
                 out_path = AUDIT_DIR / f"dry_run_{source}.md"
                 dry_run(source, files, out_path)
+                continue
+            if args.materialize_parquet:
+                if source != "nsa":
+                    LOGGER.info("skip parquet materialization for %s; NSA only", source.upper())
+                else:
+                    written = materialize_iqvia_nsa_parquet(files, args.parquet_output_dir)
+                    LOGGER.info("NSA parquet materialized partitions=%s rows=%s", len(written), f"{sum(written.values()):,}")
+            if args.skip_db:
                 continue
             stats = load_source(source, files, args.batch_size)
             LOGGER.info(
