@@ -34,12 +34,6 @@ market:
           measures: [sales, volume, unit]
         - source: IQVIA
           measures: [sales, unit, dosage_unit, counting_unit]
-    - view: competitive_dynamics
-      sources:
-        - source: UBIST
-          measures: [sales, volume, unit]
-        - source: IQVIA
-          measures: [sales, unit, dosage_unit, counting_unit]
   ms_computation:
     primary: cache_cause
     fallback: raw_recompute

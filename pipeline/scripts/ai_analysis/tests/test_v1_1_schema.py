@@ -104,7 +104,11 @@ def test_no_unit_conversion_in_narrative(db_conn, config_v1_1):
 
 
 def test_expected_view_counts_from_cache(db_conn, config_v1_1):
+    # Phase 6 CD 제거 후: market_landscape view 만 생성 (competitive_dynamics 제거).
+    # 헴리브라(IQVIA-only) 4 ML, 라베칸(UBIST-only) 2 ML. CD view 는 0.
     hem = _bundle("헴리브라", db_conn, config_v1_1)
     rab = _bundle("라베칸", db_conn, config_v1_1)
-    assert hem["bundle_meta"]["available_view_count"] == 8
-    assert rab["bundle_meta"]["available_view_count"] == 4
+    assert hem["bundle_meta"]["available_view_count"] == 4
+    assert rab["bundle_meta"]["available_view_count"] == 2
+    assert all(v["view"] == "market_landscape" for v in hem["market_views"])
+    assert all(v["view"] == "market_landscape" for v in rab["market_views"])
