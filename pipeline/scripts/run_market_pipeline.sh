@@ -23,7 +23,7 @@ Modes:
   --all               Run Layer1, Layer2, Layer3, Layer4
   --layer0            Run MI Master/catalog YAML -> catalog parquet only
   --layer0-catalog    Alias for --layer0
-  --layer0-postfix    Run post-fix scripts on existing Layer0 catalog (4495 -> 3877)
+  --layer0-postfix    Run post-fix + Phase G molecule on existing Layer0 catalog (4495 -> 3874)
   --from-layer2       Run Layer2, Layer3, Layer4
   --from-layer3       Run Layer3, Layer4
   --layer1            Run source loaders only
@@ -75,13 +75,14 @@ run_layer0_catalog() {
 }
 
 run_layer0_postfix() {
-  echo "=== Layer0 post-fix: canonical -> fix_ml_003 -> rebuild_sb -> oxgx -> rebuild_cd ==="
+  echo "=== Layer0 post-fix: canonical -> fix_ml_003 -> rebuild_sb -> oxgx -> rebuild_cd -> phase_g_molecule ==="
   "$PYTHON_BIN" "$ETL_DIR/build_strategic_brand_canonical.py"
   "$PYTHON_BIN" "$ETL_DIR/fix_ml_003_catalog_brands.py" --apply
   "$PYTHON_BIN" "$ETL_DIR/rebuild_strategic_brand_catalog.py" --apply
   "$PYTHON_BIN" "$ETL_DIR/apply_phase27_oxgx_catalog.py" --apply
   "$PYTHON_BIN" "$ETL_DIR/rebuild_cd_brand_catalog.py" --apply
-  echo "=== Layer0 post-fix done ==="
+  "$PYTHON_BIN" "$ETL_DIR/apply_molecule_worklist.py" --apply
+  echo "=== Layer0 post-fix done (incl Phase G molecule) ==="
 }
 
 run_layer1() {
