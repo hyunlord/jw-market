@@ -38,7 +38,7 @@ CATALOG_DIR = PROJECT_ROOT / "output" / "catalog"
 DRY_RUN_DIR = Path("/tmp")
 CD_BRAND_JSONL = "strategic_cd_v3_brand_rows.jsonl"
 CD_MARKET_JSONL = "strategic_cd_v3_market_rows.jsonl"
-OVERRIDE_COLS = ["class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"]
+OVERRIDE_COLS = ["class", "class_1", "class_2", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"]
 CD_BRAND_COLUMNS = [
     "cd_market_id",
     "cd_brand_id",

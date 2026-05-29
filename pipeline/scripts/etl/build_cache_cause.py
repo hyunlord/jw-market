@@ -6,7 +6,13 @@ from __future__ import annotations
 from collections import defaultdict
 from copy import deepcopy
 from functools import lru_cache
+from pathlib import Path
+import sys
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from cache_build_common import (
     MEASURES_BY_SOURCE,
@@ -40,7 +46,7 @@ CAUSE_LEVELS_ML011 = ["Class 1", "Class 2", "Molecule", "Brand", "제형/투여�
 FISH_OIL_LEVEL = "Fish Oil"
 LEVEL_FIELD_BY_LABEL = {
     "Class": "class",
-    "Class 1": "class",
+    "Class 1": "class_1",
     "Class 2": "class_2",
     "Molecule": "molecule",
     "제형/투여경로": "dosage_form",
@@ -786,10 +792,18 @@ def _market_levels(market: dict[str, Any] | None) -> list[str]:
 
 def _strategic_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
     levels = _market_levels(market)
-    if view_source_id == "ml_011" and "Class" in levels:
+    if _is_ml011_view(market, view_source_id) and "Class" in levels:
         index = levels.index("Class")
         levels[index : index + 1] = ["Class 1", "Class 2"]
     return levels
+
+
+def _is_ml011_view(market: dict[str, Any] | None, view_source_id: str | None) -> bool:
+    source_id = str(view_source_id or "")
+    if source_id == "ml_011":
+        return True
+    market_id = str((market or {}).get("ml_id") or "")
+    return market_id == "ml_011"
 
 
 def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
@@ -799,7 +813,7 @@ def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) 
     Aktemra split is kept as-is because downstream Phase 30/31 checks already
     depend on Class 1/Class 2 being distinct instead of a single Class bucket.
     """
-    if view_source_id == "ml_011" and bool((market or {}).get("analyze_class")):
+    if _is_ml011_view(market, view_source_id) and bool((market or {}).get("analyze_class")):
         levels = list(CAUSE_LEVELS_ML011)
     else:
         levels = list(CAUSE_LEVELS_V091)
@@ -841,9 +855,9 @@ def _dimension_values(row: dict[str, Any], level: str) -> list[str]:
     field = LEVEL_FIELD_BY_LABEL.get(level)
     candidates = [field] if field else []
     if level == "Class 2":
-        candidates.extend(["class2", "class_2", "class_secondary", "class_sub", "class"])
+        candidates.extend(["class2", "class_2", "class_secondary", "class_sub"])
     if level == "Class 1":
-        candidates.extend(["class1", "class_1", "class_primary", "class"])
+        candidates.extend(["class1", "class_1", "class_primary"])
     for candidate in candidates:
         if not candidate:
             continue

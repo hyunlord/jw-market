@@ -336,7 +336,7 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
         display_name = _display_brand_name(copied, overlay)
         output_key = _output_brand_key(copied, overlay, display_name)
         dim = dict(copied.get("by_dimension") or {})
-        for key in ("class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
+        for key in ("class", "class_1", "class_2", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
             dim[key] = overlay.get(key)
         copied.update(
             {
@@ -356,6 +356,8 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
                     "catalog_brand_ids": overlay.get("catalog_brand_ids"),
                     "catalog_names": overlay.get("catalog_names"),
                     "class": overlay.get("class"),
+                    "class_1": overlay.get("class_1"),
+                    "class_2": overlay.get("class_2"),
                     "molecule": overlay.get("molecule"),
                     "dosage_form": overlay.get("dosage_form"),
                     "strength_pack": overlay.get("strength_pack"),

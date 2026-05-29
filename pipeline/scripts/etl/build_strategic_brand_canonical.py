@@ -28,6 +28,8 @@ PROJECT_ROOT = find_project_root(Path(__file__).resolve())
 CATALOG_DIR = PROJECT_ROOT / "output" / "catalog"
 DIMENSION_COLUMNS = [
     "class",
+    "class_1",
+    "class_2",
     "molecule",
     "dosage_form",
     "strength_pack",

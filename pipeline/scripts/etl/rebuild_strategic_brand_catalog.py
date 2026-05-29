@@ -103,7 +103,7 @@ def aggregate_to_brand_grain(catalog: pd.DataFrame) -> pd.DataFrame:
         row["general_brand_key"] = base_key
         row["is_jw"] = bool(part["is_jw"].astype(bool).any()) if "is_jw" in part else False
         row["is_target"] = bool(part["is_target"].astype(bool).any()) if "is_target" in part else False
-        for col in ("cd_id", "class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"):
+        for col in ("cd_id", "class", "class_1", "class_2", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"):
             if col in catalog.columns:
                 row[col] = _join_unique(part[col]) if col in {"molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"} else _first_present(part[col])
         merged_rows.append(row)

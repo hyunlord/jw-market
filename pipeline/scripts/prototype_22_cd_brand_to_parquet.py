@@ -191,13 +191,13 @@ def validate_written_parquet(output_file: Path, brand_helpers: Any) -> None:
         raise ValueError(f"written row count mismatch: {table.num_rows}")
 
 
-def print_summary(records: list[dict[str, Any]], output_file: Path) -> None:
+def print_summary(records: list[dict[str, Any]], output_file: Path, brand_helpers: Any) -> None:
     counts: dict[str, int] = defaultdict(int)
     for row in records:
         counts[str(row["cd_id"])] += 1
     print("prototype Phase 14 Step 14-12 cd_brand -> Parquet")
     print(f"rows={len(records)}")
-    print("columns=16")
+    print(f"columns={len(brand_helpers.EXPECTED_COLUMNS)}")
     print(f"output={output_file}")
     print("cd_brand_distribution:")
     for cd_id in sorted(counts):
@@ -225,7 +225,7 @@ def main() -> None:
     )
     write_parquet(records, args.output, brand_helpers)
     validate_written_parquet(args.output, brand_helpers)
-    print_summary(records, args.output)
+    print_summary(records, args.output, brand_helpers)
 
 
 if __name__ == "__main__":

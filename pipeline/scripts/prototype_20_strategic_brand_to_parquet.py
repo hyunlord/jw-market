@@ -11,9 +11,9 @@ Policy:
 - Q-50: brand_id is readable and stable: sb_{ml_index:03d}_{source_row_id:05d}.
 - Q-51: CD assignment is strict. 0 matches -> NULL, 1 match -> cd_id,
   2+ matches -> stop condition.
-- D-30: recode/redefine columns overwrite the analysis column. In this compact
-  Phase 14 schema, strategy_008 class_2 is promoted into class when present
-  because cd_filter stores the final CD class in the single class column.
+- D-30: recode/redefine columns overwrite the analysis column. strategy_008
+  and strategy_011 promote class_2 into class when present, while retaining
+  class_1/class_2 as explicit audit and downstream analysis axes.
 """
 
 from __future__ import annotations
@@ -56,6 +56,8 @@ EXPECTED_COLUMNS = (
     "ml_id",
     "cd_id",
     "class",
+    "class_1",
+    "class_2",
     "molecule",
     "dosage_form",
     "strength_pack",
@@ -124,6 +126,8 @@ STRATEGIC_BRAND_SCHEMA = pa.schema(
         pa.field("ml_id", pa.string(), nullable=False),
         pa.field("cd_id", pa.string(), nullable=True),
         pa.field("class", pa.string(), nullable=True),
+        pa.field("class_1", pa.string(), nullable=True),
+        pa.field("class_2", pa.string(), nullable=True),
         pa.field("molecule", pa.string(), nullable=True),
         pa.field("dosage_form", pa.string(), nullable=True),
         pa.field("strength_pack", pa.string(), nullable=True),
@@ -330,9 +334,14 @@ def strategic_fields(
     standard_values: dict[str, Any],
     extras: dict[str, Any],
 ) -> dict[str, str | None]:
-    class_value = first_present(standard_values.get("class_2"), standard_values.get("class"), extras.get("class_raw"))
+    class_2_value = first_present(standard_values.get("class_2"), standard_values.get("class"), extras.get("class_raw"))
+    class_1_value = first_present(standard_values.get("class_1"))
+    if class_1_value is None and first_present(standard_values.get("class_2")) is not None:
+        class_1_value = first_present(standard_values.get("class"))
     return {
-        "class": class_value,
+        "class": class_2_value,
+        "class_1": class_1_value,
+        "class_2": class_2_value if first_present(standard_values.get("class_2")) is not None else None,
         "molecule": first_present(standard_values.get("molecule")),
         "dosage_form": first_present(standard_values.get("dosage_form"), extras.get("administration_route")),
         "strength_pack": first_present(standard_values.get("strength"), standard_values.get("pack_desc"), extras.get("product_pack")),
@@ -444,6 +453,8 @@ def load_strategic_brand_records(
                     "ml_id": ml_id,
                     "cd_id": cd_id,
                     "class": fields["class"],
+                    "class_1": fields["class_1"],
+                    "class_2": fields["class_2"],
                     "molecule": fields["molecule"],
                     "dosage_form": fields["dosage_form"],
                     "strength_pack": fields["strength_pack"],
@@ -458,6 +469,8 @@ def load_strategic_brand_records(
 
                 for column, value in {
                     "class": standard_values.get("class_2") or standard_values.get("class"),
+                    "class_1": standard_values.get("class"),
+                    "class_2": standard_values.get("class_2"),
                     "molecule": standard_values.get("molecule"),
                     "dosage_form": standard_values.get("dosage_form"),
                     "strength_pack": standard_values.get("strength") or standard_values.get("pack_desc") or extras.get("product_pack"),
