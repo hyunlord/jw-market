@@ -83,9 +83,55 @@ def _load_search_keywords(path: str = "docs/crawl/search_keywords.json") -> dict
     return json.loads(keyword_path.read_text(encoding="utf-8"))
 
 
+def _catalog_lookup_keys(brand_name: str) -> List[str]:
+    """_catalog.json / search_keywords.json 조회 후보 키 (직접 키 우선, alias fallback).
+
+    canonical 표시명과 catalog/keyword 키 불일치(예: 위너프A+ ↔ 위너프에이플러스)를 흡수한다.
+    alias 는 직접 키가 없을 때만 fallback 으로 쓰므로, 직접 키가 존재하는 브랜드(예: 가드렛 —
+    layer3_aliases 가 molecule 명) 는 alias 를 타지 않아 회귀가 없다. DISPLAY_BRANDS.layer3_aliases
+    (api.catalog) 의 기존 매핑만 재사용하며 import 실패 시 brand_name 단독으로 안전 degrade 한다.
+    """
+    candidates = [brand_name]
+    try:
+        import sys
+
+        repo_root = Path(__file__).resolve().parents[4]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from pipeline.scripts.api.catalog import DISPLAY_BRAND_BY_NAME
+
+        display = DISPLAY_BRAND_BY_NAME.get(brand_name)
+        if display:
+            candidates.extend(alias for alias in display.layer3_aliases if alias not in candidates)
+    except Exception:
+        pass
+    return candidates
+
+
+def _english_name_from_parsed(parsed: dict) -> Optional[str]:
+    """search_keywords.약 영문명 의 첫 값, 없으면 catalog english_name 으로 안전 fallback.
+
+    line 226 IndexError 방어: 빈 list `[]` 도 안전 처리 (기존 .get default 는 key 누락만 처리).
+    """
+    sk_eng = (parsed.get("search_keywords") or {}).get("약 영문명") or []
+    if sk_eng:
+        return sk_eng[0]
+    return parsed.get("english_name")
+
+
 def _parse_catalog_description(brand_name: str) -> dict:
     catalog = _load_json_catalog()
-    description = catalog.get(brand_name, "")
+    keywords_map = _load_search_keywords()
+    candidates = _catalog_lookup_keys(brand_name)
+
+    description = ""
+    search_keywords = None
+    for key in candidates:
+        if not description:
+            description = catalog.get(key, "") or ""
+        if search_keywords is None and key in keywords_map:
+            search_keywords = keywords_map[key]
+
     parts = [part.strip() for part in description.split("|")]
     intro = parts[0] if parts else ""
     english = intro.split(",", 1)[0].strip() if intro else None
@@ -96,12 +142,14 @@ def _parse_catalog_description(brand_name: str) -> dict:
             company = part.split(":", 1)[1].strip()
         if part.startswith("경쟁:"):
             competitors = [item.strip() for item in re.split(r"[,，]", part.split(":", 1)[1]) if item.strip()]
+    if search_keywords is None:
+        search_keywords = {"약 영문명": [english] if english else []}
     return {
         "description": intro or description,
         "english_name": english,
         "company": company,
         "catalog_competitors": competitors,
-        "search_keywords": _load_search_keywords().get(brand_name, {"약 영문명": [english] if english else []}),
+        "search_keywords": search_keywords,
     }
 
 
@@ -223,7 +271,7 @@ def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
         "is_target": bool(overlay.get("is_target", row.get("is_jw"))),
         "atc4_code": overlay.get("atc4_code") or market.get("atc4_code"),
         "manufacturer": parsed.get("company"),
-        "english_name": (parsed.get("search_keywords") or {}).get("약 영문명", [parsed.get("english_name")])[0],
+        "english_name": _english_name_from_parsed(parsed),
         "molecule": overlay.get("molecule"),
         "class": overlay.get("class"),
         "mkt_team": MKT_TEAM_FALLBACK.get(row.get("ml_id")),
