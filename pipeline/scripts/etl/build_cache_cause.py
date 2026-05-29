@@ -516,74 +516,39 @@ def _target_rank_overrides(
         return {}
     stats_key = cache_key if cache_key is not None else id(rows)
     if stats_key not in TARGET_RANK_STATS_CACHE:
-        periods_by_year: dict[int, str] = {}
-        for row in rows:
-            history = _metric_history(row)
-            if not history:
-                continue
-            for period in history:
-                year = _period_year(str(period))
-                if year is None:
-                    continue
-                current = periods_by_year.get(year)
-                if current is None or period_key(str(period)) > period_key(current):
-                    periods_by_year[year] = str(period)
-
-        by_year: dict[int, dict[str, dict[str, Any]]] = {}
-        for year, period in periods_by_year.items():
-            if label_key == "company":
-                grouped: dict[str, dict[str, Any]] = {}
-                for row in rows:
-                    company = _row_company(row)
-                    if not company:
-                        continue
-                    bucket = grouped.setdefault(
-                        company,
-                        {
-                            "row": row,
-                            "brand": None,
-                            "value": 0.0,
-                            "is_jw": False,
-                        },
-                    )
-                    bucket["value"] += _period_value_for_row(row, period)
-                    bucket["is_jw"] = bool(bucket["is_jw"] or row.get("is_jw"))
-                ranked = list(grouped.values())
-            else:
-                ranked = [
-                    {"row": row, "brand": _row_brand(row), "value": _period_value_for_row(row, period)}
-                    for row in rows
-                    if _row_brand(row)
-                ]
-            total = sum(item["value"] for item in ranked)
-            year_stats: dict[str, dict[str, Any]] = {}
-            for index, item in enumerate(sorted(ranked, key=lambda item: item["value"], reverse=True), start=1):
-                name = _row_company(item["row"]) if label_key == "company" else item["brand"]
-                if not name:
-                    continue
-                value = item["value"]
-                year_stats[name] = {
-                    "row": item["row"],
-                    "value": value,
-                    "rank": index if value > 0 else None,
-                    "ms_pct": round(value / total * 100, 4) if total > 0 else 0.0,
-                    "is_jw": bool(item.get("is_jw")),
+        annual_by_year, _ = _annual_rank_rows_from_full_rows(
+            rows,
+            label_key=label_key,
+            target_name=target_name,
+        )
+        TARGET_RANK_STATS_CACHE[stats_key] = {
+            year: {
+                row_identity(row, label_key): {
+                    "row": row,
+                    "value": safe_float(row.get("value")) or 0.0,
+                    "rank": row.get("rank"),
+                    "ms_pct": safe_float(row.get("ms_pct")) or 0.0,
+                    "is_jw": bool(row.get("is_jw")),
+                    "company": row.get("company"),
+                    "brand": row.get("brand"),
                 }
-            by_year[year] = year_stats
-        TARGET_RANK_STATS_CACHE[stats_key] = by_year
+                for row in year_rows
+                if row_identity(row, label_key)
+            }
+            for year, year_rows in annual_by_year.items()
+        }
 
     overrides: dict[int, dict[str, Any]] = {}
     for year, year_stats in TARGET_RANK_STATS_CACHE[stats_key].items():
         stat = year_stats.get(target_name)
         if not stat:
             continue
-        source_row = stat["row"]
         overrides[year] = {
             label_key: target_name,
-            "brand": target_name if label_key == "brand" else None,
-            "company": _row_company(source_row),
+            "brand": stat.get("brand") or (target_name if label_key == "brand" else None),
+            "company": stat.get("company") or (target_name if label_key == "company" else None),
             "is_target": True,
-            "is_jw": bool(source_row.get("is_jw") or stat.get("is_jw")) or True,
+            "is_jw": bool(stat.get("is_jw")) or True,
             "is_others": False,
             "value": stat["value"],
             "rank": stat["rank"],

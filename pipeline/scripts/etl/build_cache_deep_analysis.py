@@ -5,9 +5,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from difflib import SequenceMatcher
+from pathlib import Path
 import re
+import sys
 from typing import Any
 from urllib.parse import urlparse
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from cache_build_common import (
     api_source,
