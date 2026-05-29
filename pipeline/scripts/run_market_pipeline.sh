@@ -23,6 +23,7 @@ Modes:
   --all               Run Layer1, Layer2, Layer3, Layer4
   --layer0            Run MI Master/catalog YAML -> catalog parquet only
   --layer0-catalog    Alias for --layer0
+  --layer0-postfix    Run post-fix scripts on existing Layer0 catalog (4495 -> 3877)
   --from-layer2       Run Layer2, Layer3, Layer4
   --from-layer3       Run Layer3, Layer4
   --layer1            Run source loaders only
@@ -71,6 +72,16 @@ run_layer0_catalog() {
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_22_cd_brand_to_parquet.py"
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_23_cd_product_to_parquet.py"
   echo "=== Layer0 catalog build done ==="
+}
+
+run_layer0_postfix() {
+  echo "=== Layer0 post-fix: canonical -> fix_ml_003 -> rebuild_sb -> oxgx -> rebuild_cd ==="
+  "$PYTHON_BIN" "$ETL_DIR/build_strategic_brand_canonical.py"
+  "$PYTHON_BIN" "$ETL_DIR/fix_ml_003_catalog_brands.py" --apply
+  "$PYTHON_BIN" "$ETL_DIR/rebuild_strategic_brand_catalog.py" --apply
+  "$PYTHON_BIN" "$ETL_DIR/apply_phase27_oxgx_catalog.py" --apply
+  "$PYTHON_BIN" "$ETL_DIR/rebuild_cd_brand_catalog.py" --apply
+  echo "=== Layer0 post-fix done ==="
 }
 
 run_layer1() {
@@ -165,6 +176,7 @@ case "$mode" in
     run_layer4
     ;;
   --layer0|--layer0-catalog) run_layer0_catalog ;;
+  --layer0-postfix) run_layer0_postfix ;;
   --layer1) run_layer1 ;;
   --layer2) run_layer2 ;;
   --layer3) run_layer3 ;;
