@@ -40,6 +40,7 @@ Environment:
   PYTHON_BIN          Python executable (default: python3)
 
 Notes:
+  - --all/--from-layer0/--layer0 first verify that source files are placed under data/.
   - IQVIA Layer1 loading is resumable by source_file/sheet_name.
   - For exact same-file replacement, reset the affected raw table intentionally
     before rerunning Layer1; do not rely on --all to overwrite loaded files.
@@ -49,8 +50,15 @@ Notes:
 EOF
 }
 
+run_verify_sources() {
+  echo "=== Source files: verify original Excel/CSV placement ==="
+  "$PYTHON_BIN" "$ETL_DIR/verify_source_files.py"
+}
+
 run_layer0_catalog() {
   echo "=== Layer0: MI Master + catalog YAML -> catalog parquet ==="
+  run_verify_sources
+
   "$PYTHON_BIN" "$ETL_DIR/iqvia_loader.py" --source nsa --materialize-parquet --skip-db
 
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_07_master_market_definition_to_parquet.py"

@@ -40,8 +40,13 @@ except ImportError as e:
     sys.exit(f"ERROR: {e}\n  pip3 install pyarrow openpyxl --break-system-packages")
 
 
-MASTER_ROOT = Path("data/JW 주요 약품 수동 매핑")
-DEFAULT_INPUT_FILE = MASTER_ROOT / "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+ETL_DIR = Path(__file__).resolve().parent / "etl"
+sys.path.insert(0, str(ETL_DIR))
+from storage import get_mi_master_path  # noqa: E402
+
+
+DEFAULT_INPUT_FILE = get_mi_master_path()
+MASTER_ROOT = DEFAULT_INPUT_FILE.parent
 DEFAULT_CATALOG_PATH = Path("docs/reference/master_column_mapping_catalog.md")
 DEFAULT_OUTPUT_FILE = Path("parquet/master_drug/master_drug.parquet")
 

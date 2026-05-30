@@ -18,6 +18,9 @@ BACKEND_LOCAL = "local"
 BACKEND_MINIO = "minio"
 VALID_BACKENDS = {BACKEND_LOCAL, BACKEND_MINIO}
 DEFAULT_WORK_DIR = Path("/tmp/jw-market-etl")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+MI_MASTER_DIR_NAME = "JW 주요 약품 수동 매핑"
+MI_MASTER_FILE_NAME = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
 
 
 def get_storage_backend() -> str:
@@ -212,3 +215,21 @@ def get_data_path(
         client=client,
     )
     return local_dir
+
+
+def get_mi_master_path() -> Path:
+    """Return the standard MI Master workbook path for local or MinIO ETL runs."""
+    path = get_data_path(
+        bucket_env="MINIO_BUCKET_RAW_MIMASTER",
+        bucket_default="jw-market-raw-mimaster",
+        local_default=PROJECT_ROOT / "data" / MI_MASTER_DIR_NAME / MI_MASTER_FILE_NAME,
+        work_subdir="mimaster",
+    )
+    if path.is_dir():
+        expected = path / MI_MASTER_FILE_NAME
+        if expected.exists():
+            return expected
+        candidates = sorted(file for file in path.rglob("*.xlsx") if not file.name.startswith("~$"))
+        if candidates:
+            return candidates[-1]
+    return path

@@ -33,9 +33,12 @@ except ImportError as e:
     sys.exit(f"ERROR: {e}\n  pip3 install pyarrow openpyxl --break-system-packages")
 
 
-DEFAULT_INPUT_FILE = Path(
-    "data/JW 주요 약품 수동 매핑/MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
-)
+ETL_DIR = Path(__file__).resolve().parent / "etl"
+sys.path.insert(0, str(ETL_DIR))
+from storage import get_mi_master_path  # noqa: E402
+
+
+DEFAULT_INPUT_FILE = get_mi_master_path()
 DEFAULT_OUTPUT_FILE = Path("parquet/master_qa/master_qa.parquet")
 SOURCE_SHEET = "Q&A"
 HEADER_ROW = 2
