@@ -20,10 +20,11 @@ usage() {
 Usage: pipeline/scripts/run_market_pipeline.sh <mode>
 
 Modes:
-  --all               Run Layer1, Layer2, Layer3, Layer4
+  --all               Run Layer0(catalog), Layer1, Layer2, Layer3, Layer4
   --layer0            Run MI Master/catalog YAML -> catalog parquet only
   --layer0-catalog    Alias for --layer0
   --layer0-postfix    Run post-fix + Phase G molecule on existing Layer0 catalog (4495 -> 3874)
+  --from-layer0       Run Layer0(catalog), Layer1, Layer2, Layer3, Layer4
   --from-layer2       Run Layer2, Layer3, Layer4
   --from-layer3       Run Layer3, Layer4
   --layer1            Run source loaders only
@@ -162,6 +163,16 @@ PY
 mode="${1:---help}"
 case "$mode" in
   --all)
+    run_layer0_catalog
+    run_layer0_postfix
+    run_layer1
+    run_layer2
+    run_layer3
+    run_layer4
+    ;;
+  --from-layer0)
+    run_layer0_catalog
+    run_layer0_postfix
     run_layer1
     run_layer2
     run_layer3

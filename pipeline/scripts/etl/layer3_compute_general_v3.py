@@ -26,7 +26,7 @@ import duckdb
 import pandas as pd
 import pymysql
 
-from brand_key_normalize import best_name, normalize_brand_name
+from brand_key_normalize import best_name, extract_brand_base_name, normalize_brand_name
 from dict_ubist_translation import CHANNEL_CODE_TO_RAW, SPECIALTY_CODE_TO_RAW
 from layer3_compute_extended import compute_cagr_value, compute_ei, compute_growth_contribution, compute_hhi, compute_momentum
 from layer3_compute_market_metric import compute_market_mart_payload
@@ -323,7 +323,14 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
         finally:
             con.close()
         frame["source"] = "ubist"
-        frame["brand_name"] = frame.apply(lambda r: best_name(r.get("brand_name"), r.get("product_name"), r.get("product_code")), axis=1)
+        frame["brand_name"] = frame.apply(
+            lambda r: best_name(
+                extract_brand_base_name(r.get("product_name")),
+                r.get("brand_name"),
+                r.get("product_code"),
+            ),
+            axis=1,
+        )
         frame["brand_key"] = frame["brand_name"].map(normalize_brand_name)
         atc = frame["atc_text"].map(extract_atc4)
         frame["atc4_code"] = atc.map(lambda pair: pair[0])
