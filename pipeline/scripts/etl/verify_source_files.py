@@ -9,6 +9,9 @@ from storage import get_data_path, get_mi_master_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+TARGET_PRIORITY_SKELETON = (
+    PROJECT_ROOT / "data" / "cache" / "prototype_11_step_c4_target_priority_precompute_sample.csv"
+)
 
 
 def _count_source_files(path: Path) -> int:
@@ -34,6 +37,7 @@ def main() -> int:
             bucket_default="jw-market-raw-iqvia",
             local_default=PROJECT_ROOT / "data" / "IQVIA",
         ),
+        "Target priority skeleton": TARGET_PRIORITY_SKELETON,
     }
 
     missing: list[str] = []
