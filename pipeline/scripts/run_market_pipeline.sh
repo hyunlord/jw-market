@@ -59,6 +59,7 @@ run_layer0_catalog() {
   echo "=== Layer0: MI Master + catalog YAML -> catalog parquet ==="
   run_verify_sources
 
+  "$PYTHON_BIN" "$ETL_DIR/ubist_parquet_loader.py" --all --truncate
   "$PYTHON_BIN" "$ETL_DIR/iqvia_loader.py" --source nsa --materialize-parquet --skip-db
 
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_07_master_market_definition_to_parquet.py"
@@ -96,7 +97,6 @@ run_layer0_postfix() {
 
 run_layer1() {
   echo "=== Layer1: source files -> raw stores ==="
-  "$PYTHON_BIN" "$ETL_DIR/ubist_parquet_loader.py" --all --truncate
   "$PYTHON_BIN" "$ETL_DIR/iqvia_loader.py" --all
 }
 
