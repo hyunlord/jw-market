@@ -224,7 +224,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     sub.add_parser("status", help="Show migration state")
     apply_parser = sub.add_parser("apply", help="Apply a migration")
-    apply_parser.add_argument("migration_id", help="Migration id, e.g. 001, or --all")
+    apply_parser.add_argument("migration_id", nargs="?", help="Migration id, e.g. 001")
+    apply_parser.add_argument("--all", action="store_true", help="Apply all migrations")
     return parser.parse_args(argv)
 
 
@@ -234,7 +235,10 @@ def main(argv: list[str]) -> int:
         if args.command == "status":
             return command_status()
         if args.command == "apply":
-            return command_apply(args.migration_id)
+            selection = "--all" if args.all else args.migration_id
+            if not selection:
+                raise RuntimeError("Provide a migration id or --all")
+            return command_apply(selection)
     except Exception as exc:
         LOGGER.error("ERROR: %s", exc)
         return 1

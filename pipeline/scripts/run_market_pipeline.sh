@@ -55,6 +55,88 @@ run_verify_sources() {
   "$PYTHON_BIN" "$ETL_DIR/verify_source_files.py"
 }
 
+run_schema_migrations() {
+  echo "=== Schema: ensure MariaDB migrations for clean reproduction ==="
+  local decision
+  decision=$("$PYTHON_BIN" - "$ROOT_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+import pymysql
+
+root = Path(sys.argv[1])
+env_path = root / "pipeline" / "docker" / ".env"
+env = {}
+for raw in env_path.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    env[key.strip()] = value.strip().strip('"').strip("'")
+
+database = env.get("MARIADB_DATABASE", "jw_mart")
+conn = pymysql.connect(
+    host="127.0.0.1",
+    port=int(env.get("HOST_PORT", "3307")),
+    user=env.get("MARIADB_USER", "jwapp"),
+    password=env["MARIADB_PASSWORD"],
+    database=database,
+    charset="utf8mb4",
+    cursorclass=pymysql.cursors.DictCursor,
+)
+with conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT TABLE_NAME
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = %s
+            """,
+            (database,),
+        )
+        tables = {row["TABLE_NAME"] for row in cur.fetchall()}
+
+required = {
+    "iqvia_nsa_quarterly_raw",
+    "iqvia_csd_monthly_raw",
+    "iqvia_chso_monthly_raw",
+    "mart_general_brand_metric",
+    "mart_strategic_ml_brand_metric",
+    "cache_cause",
+    "cache_deep_analysis",
+}
+
+missing = sorted(required - tables)
+non_state_tables = tables - {"_migration_state"}
+
+if not non_state_tables:
+    print("apply")
+elif not missing:
+    print("skip_existing")
+else:
+    print("unsafe_missing:" + ",".join(missing))
+PY
+  )
+
+  case "$decision" in
+    apply)
+      "$PYTHON_BIN" "$SCRIPT_DIR/run_migration.py" apply --all
+      ;;
+    skip_existing)
+      echo "Required schema tables already exist; skip migration replay."
+      ;;
+    unsafe_missing:*)
+      echo "ERROR: DB has existing tables but missing required schema: ${decision#unsafe_missing:}" >&2
+      echo "Refusing automatic migration replay because legacy migrations include DROP/RENAME steps." >&2
+      return 1
+      ;;
+    *)
+      echo "ERROR: unknown schema migration decision: $decision" >&2
+      return 1
+      ;;
+  esac
+}
+
 run_layer0_catalog() {
   echo "=== Layer0: MI Master + catalog YAML -> catalog parquet ==="
   run_verify_sources
@@ -171,6 +253,7 @@ PY
 mode="${1:---help}"
 case "$mode" in
   --all)
+    run_schema_migrations
     run_layer0_catalog
     run_layer0_postfix
     run_layer1
@@ -179,6 +262,7 @@ case "$mode" in
     run_layer4
     ;;
   --from-layer0)
+    run_schema_migrations
     run_layer0_catalog
     run_layer0_postfix
     run_layer1
@@ -197,7 +281,10 @@ case "$mode" in
     ;;
   --layer0|--layer0-catalog) run_layer0_catalog ;;
   --layer0-postfix) run_layer0_postfix ;;
-  --layer1) run_layer1 ;;
+  --layer1)
+    run_schema_migrations
+    run_layer1
+    ;;
   --layer2) run_layer2 ;;
   --layer3) run_layer3 ;;
   --layer3-general) run_layer3_general ;;
