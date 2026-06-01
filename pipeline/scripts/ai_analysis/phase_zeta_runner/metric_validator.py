@@ -41,6 +41,14 @@ NUMBER_PATTERNS = [
 ]
 
 
+SIMULATION_FORBIDDEN_SCENARIO_RE = re.compile(
+    r"(낙관\s*시나리오|비관\s*시나리오|낙관적\s*시나리오|비관적\s*시나리오|\bbest\b|\bworst\b)",
+    re.IGNORECASE,
+)
+SIMULATION_UNIT_CONVERSION_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*(?:억|만|천|k|K|m|M)(?![A-Za-z가-힣])")
+SIMULATION_CI_RE = re.compile(r"(95\s*%\s*(?:신뢰구간|CI)|(?:신뢰구간|CI)[^\n.]{0,20}95\s*%)", re.IGNORECASE)
+
+
 DEFAULT_TOLERANCE_BY_TYPE = {
     "currency_krw": 0.01,
     "volume_rx": 0.5,
@@ -114,6 +122,13 @@ def _is_qualified_threshold(raw_text: str, full_context: str) -> bool:
     nearby = _nearby_context(raw_text, full_context, before=8, after=12)
     after = nearby.split(raw_text, 1)[1] if raw_text in nearby else ""
     return bool(re.match(r"^\s*(이상|이하|초과|미만|내외|대)", after))
+
+
+def _is_ci_confidence_literal(raw_text: str, full_context: str, value: float | int) -> bool:
+    if float(value) != 95.0 or "%" not in raw_text:
+        return False
+    nearby = _nearby_context(raw_text, full_context, before=20, after=20)
+    return bool(re.search(r"(신뢰구간|CI)", nearby, flags=re.IGNORECASE))
 
 
 def classify_number_context(raw_text: str, full_context: str, value: float | int) -> str:
@@ -192,8 +207,11 @@ def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[di
                     "tolerance": _tolerance_for_type(number_type, config),
                     "low_priority": bool(spec.get("low_priority", False))
                     or _is_qualified_threshold(raw_text, text or ""),
+                    "ci_confidence_literal": _is_ci_confidence_literal(raw_text, text or "", value),
                 }
             )
+            if extracted[-1]["ci_confidence_literal"]:
+                extracted[-1]["low_priority"] = True
     return extracted
 
 
@@ -302,6 +320,110 @@ def validate_stage_output(
     return StageValidation(valid=not unmatched, extracted=extracted, unmatched=unmatched, warnings=warnings)
 
 
+def _prediction_policy_issue(pattern: str, raw_text: str, message: str) -> dict[str, Any]:
+    return {
+        "stage": "prediction",
+        "context": "simulation_policy",
+        "value": None,
+        "raw_text": raw_text,
+        "pattern": pattern,
+        "number_type": "policy",
+        "tolerance": 0.0,
+        "matched_path": None,
+        "low_priority": False,
+        "message": message,
+    }
+
+
+def _prediction_text(parsed_output: dict) -> str:
+    prediction = parsed_output.get("prediction", {}) or {}
+    parts = [str(prediction.get("title") or ""), str(prediction.get("body") or "")]
+    parts.extend(str(item) for item in prediction.get("bullets", []) or [])
+    return "\n".join(part for part in parts if part)
+
+
+def _forecast_simulation_available(bundle: dict) -> bool:
+    forecast = bundle.get("forecast_simulation") or {}
+    return bool(forecast.get("available") and forecast.get("by_view"))
+
+
+def validate_simulation_prediction_policy(
+    parsed_output: dict,
+    bundle: dict,
+    prediction_result: StageValidation,
+) -> list[dict[str, Any]]:
+    if not _forecast_simulation_available(bundle):
+        return []
+
+    text = _prediction_text(parsed_output)
+    issues: list[dict[str, Any]] = []
+    if not text.strip():
+        issues.append(
+            _prediction_policy_issue(
+                "simulation_prediction_missing",
+                "",
+                "forecast_simulation.available=true 이지만 prediction stage 본문이 비어 있습니다.",
+            )
+        )
+        return issues
+
+    forbidden = SIMULATION_FORBIDDEN_SCENARIO_RE.search(text)
+    if forbidden:
+        issues.append(
+            _prediction_policy_issue(
+                "simulation_forbidden_scenario_phrase",
+                forbidden.group(0),
+                "forecast_simulation의 upper/lower는 95% 신뢰구간입니다.",
+            )
+        )
+
+    conversion = SIMULATION_UNIT_CONVERSION_RE.search(text)
+    if conversion:
+        issues.append(
+            _prediction_policy_issue(
+                "simulation_unit_conversion",
+                conversion.group(0),
+                "forecast_simulation 값은 raw KRW 그대로 사용해야 하며 억/만/k/M 변환은 금지됩니다.",
+            )
+        )
+
+    simulation_matches = [
+        item
+        for item in prediction_result.extracted
+        if str(item.get("matched_path") or "").startswith("forecast_simulation.by_view.")
+    ]
+    if not simulation_matches:
+        issues.append(
+            _prediction_policy_issue(
+                "simulation_not_used",
+                "",
+                "forecast_simulation.available=true 이지만 prediction stage에서 simulation 수치를 사용하지 않았습니다.",
+            )
+        )
+        return issues
+
+    if not SIMULATION_CI_RE.search(text):
+        issues.append(
+            _prediction_policy_issue(
+                "simulation_missing_ci_wording",
+                "",
+                "simulation 수치를 사용할 때는 95% 신뢰구간임을 명시해야 합니다.",
+            )
+        )
+
+    matched_paths = [str(item.get("matched_path") or "") for item in simulation_matches]
+    for horizon in ["1y", "3y", "5y"]:
+        if not any(f"horizon_{horizon}" in path for path in matched_paths):
+            issues.append(
+                _prediction_policy_issue(
+                    f"simulation_missing_horizon_{horizon}",
+                    "",
+                    f"prediction stage에서 forecast_simulation horizon_{horizon} 수치를 사용해야 합니다.",
+                )
+            )
+    return issues
+
+
 def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> ValidationResult:
     bundle_index = build_bundle_path_index(bundle)
     stage_results: dict[str, StageValidation] = {}
@@ -317,6 +439,18 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
         all_warnings.extend(stage_result.warnings)
         total_extracted += len(stage_result.extracted)
         total_matched += sum(1 for item in stage_result.extracted if item.get("matched_path"))
+
+    simulation_issues = validate_simulation_prediction_policy(
+        parsed_output,
+        bundle,
+        stage_results.get("prediction") or StageValidation(False, [], [], []),
+    )
+    if simulation_issues:
+        prediction_result = stage_results.get("prediction")
+        if prediction_result:
+            prediction_result.unmatched.extend(simulation_issues)
+            prediction_result.valid = False
+        all_unmatched.extend(simulation_issues)
 
     return ValidationResult(
         valid=not all_unmatched,

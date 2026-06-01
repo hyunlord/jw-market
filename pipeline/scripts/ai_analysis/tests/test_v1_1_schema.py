@@ -69,9 +69,25 @@ def test_brand_centric_classification(db_conn, config_v1_1):
         assert "리바로" in haystack or "LIVALO" in haystack
 
 
-def test_forecast_simulation_placeholder(db_conn, config_v1_1):
+def test_forecast_simulation_filled_from_deep_analysis(db_conn, config_v1_1):
     bundle = _bundle("리바로", db_conn, config_v1_1)
-    assert bundle["forecast_simulation"]["available"] is False
+    forecast = bundle["forecast_simulation"]
+    view_ids = {view["view_id"] for view in bundle["market_views"]}
+
+    assert forecast["available"] is True
+    assert forecast["by_view"]
+    assert set(forecast["by_view"]).issubset(view_ids)
+    assert all(view_id.startswith("ML.") for view_id in forecast["by_view"])
+
+    sales = forecast["by_view"]["ML.UBIST.sales"]
+    assert sales["model"]["name"]
+    assert sales["raw_value_policy"] == "raw_krw_no_unit_conversion"
+    assert "95% 신뢰구간" in sales["ci_definition"]
+    for key in ["horizon_1y", "horizon_3y", "horizon_5y"]:
+        horizon = sales[key]
+        assert horizon["period"]
+        assert horizon["ci_lower_95"] <= horizon["base"] <= horizon["ci_upper_95"]
+        assert horizon["unit"] == "KRW"
 
 
 def test_dual_brand_has_both_source_competitors(db_conn, config_v1_1):

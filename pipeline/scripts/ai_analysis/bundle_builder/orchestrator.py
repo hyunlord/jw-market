@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 from .brand_context_builder import build_brand_context, find_market_ids_for_brand
 from .competitor_events_builder import build_competitor_events
@@ -10,6 +11,12 @@ from .event_bundle_builder import build_event_bundle
 from .hash_util import compute_bundle_hash, deterministic_json_dumps
 from .market_context_builder import build_market_context
 from .market_views_orchestrator import build_market_views
+
+
+FORECAST_HORIZON_INDICES = {
+    "UBIST": {"1y": 11, "3y": 35, "5y": 59},
+    "IQVIA": {"1y": 3, "3y": 11, "5y": 19},
+}
 
 
 def _compute_stats(bundle: dict) -> dict:
@@ -100,6 +107,127 @@ def _forecast_placeholder() -> dict:
     }
 
 
+def _json_load(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    return json.loads(value)
+
+
+def _load_deep_analysis_payload(brand: str, db_conn) -> dict:
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT response_json
+            FROM cache_deep_analysis
+            WHERE brand=%s
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (brand,),
+        )
+        row = cur.fetchone()
+    return _json_load(row.get("response_json")) if row else {}
+
+
+def _scenario_value(entry: dict, scenario: str, index: int) -> float | int | None:
+    values = ((entry.get("scenarios") or {}).get(scenario) or {}).get("values") or []
+    if index >= len(values):
+        return None
+    value = values[index]
+    return value if isinstance(value, (int, float)) else None
+
+
+def _summarize_simulation_entry(entry: dict, combo_payload: dict, source: str) -> dict | None:
+    periods = entry.get("forecast_periods") or []
+    horizon_indices = FORECAST_HORIZON_INDICES.get(source.upper())
+    if not horizon_indices:
+        return None
+
+    summary = {
+        "combo": combo_payload.get("combo"),
+        "source": source.upper(),
+        "measure": (combo_payload.get("combo") or ".").split(".", 1)[-1],
+        "unit": combo_payload.get("unit_label") or "KRW",
+        "period_unit": combo_payload.get("period_unit"),
+        "source_granularity": combo_payload.get("source_granularity"),
+        "target_brand": combo_payload.get("target_brand"),
+        "model": entry.get("model") or {},
+        "confidence": entry.get("confidence") or {},
+        "horizon_ci_levels": entry.get("horizon_ci_levels") or {},
+        "ci_definition": (
+            "base=selected model point forecast; ci_lower_95/ci_upper_95=95% 신뢰구간 하한/상한. "
+            "사업 시나리오가 아닌 통계 예측 범위입니다."
+        ),
+        "raw_value_policy": "raw_krw_no_unit_conversion",
+        "momentum": entry.get("momentum") or {},
+        "warnings": entry.get("warnings") or [],
+    }
+
+    for label, index in horizon_indices.items():
+        base = _scenario_value(entry, "base", index)
+        lower = _scenario_value(entry, "lower", index)
+        upper = _scenario_value(entry, "upper", index)
+        if base is None or lower is None or upper is None or index >= len(periods):
+            return None
+        summary[f"horizon_{label}"] = {
+            "period": periods[index],
+            "base": base,
+            "ci_lower_95": lower,
+            "ci_upper_95": upper,
+            "unit": combo_payload.get("unit_label") or "KRW",
+        }
+    return summary
+
+
+def _build_forecast_simulation(brand: str, market_views: list[dict], config: BundleConfig, db_conn) -> dict:
+    if not config.forecast_simulation.enabled:
+        return _forecast_placeholder()
+    if config.forecast_simulation.source != "cache_deep_analysis":
+        placeholder = _forecast_placeholder()
+        placeholder["note"] = f"Unsupported forecast_simulation source: {config.forecast_simulation.source}"
+        return placeholder
+
+    payload = _load_deep_analysis_payload(brand, db_conn)
+    by_combo = (((payload.get("data") or {}).get("simulation") or {}).get("by_combo") or {})
+    by_view: dict[str, dict] = {}
+    for view in market_views:
+        view_id = str(view.get("view_id") or "")
+        if not view_id.startswith("ML."):
+            continue
+        source = str(view.get("source") or "").upper()
+        measure = str(view.get("measure") or "")
+        combo_key = f"{source}.{measure}"
+        combo_payload = by_combo.get(combo_key) or {}
+        by_brand = combo_payload.get("by_brand") or {}
+        entry = by_brand.get(brand) or by_brand.get(combo_payload.get("target_brand"))
+        if not entry:
+            continue
+        summary = _summarize_simulation_entry(entry, combo_payload, source)
+        if summary:
+            by_view[view_id] = summary
+
+    if not by_view:
+        placeholder = _forecast_placeholder()
+        placeholder["note"] = "cache_deep_analysis.response_json.data.simulation.by_combo 에 매핑 가능한 ML view 예측 요약이 없습니다."
+        return placeholder
+    return {
+        "available": True,
+        "by_view": by_view,
+        "schema_version": "v1_2_simulation_summary",
+        "source": "cache_deep_analysis.response_json.data.simulation.by_combo",
+        "mapping": "by_combo {SOURCE}.{measure} → market_views[].view_id (ML.{SOURCE}.{measure}) allowlist",
+        "horizons": {
+            "UBIST": {"1y_index": 11, "3y_index": 35, "5y_index": 59},
+            "IQVIA": {"1y_index": 3, "3y_index": 11, "5y_index": 19},
+        },
+        "raw_value_policy": "raw_krw_no_unit_conversion",
+    }
+
+
 def _build_brand_bundle_v1_1(
     brand: str,
     snapshot_at: datetime,
@@ -123,6 +251,7 @@ def _build_brand_bundle_v1_1(
                 for comp in view.get("competitors_top5", [])
             ]
     competitor_events = build_competitor_events(competitors_by_source, snapshot_at, config, db_conn)
+    forecast_simulation = _build_forecast_simulation(brand, market_views, config, db_conn)
     bundle = {
         "bundle_meta": {
             "brand": brand,
@@ -137,6 +266,7 @@ def _build_brand_bundle_v1_1(
                 "atc4_code": "catalog_strategic_ml_market_fallback_to_mart",
                 "competitors": "market_sales_top_n",
                 "competitor_events": "event_brand_scores",
+                "forecast_simulation": "cache_deep_analysis.simulation.by_combo",
             },
             "available_view_count": len(market_views),
             "stats": {},
@@ -145,7 +275,7 @@ def _build_brand_bundle_v1_1(
         "market_views": market_views,
         "event_bundle": event_bundle,
         "competitor_events": competitor_events,
-        "forecast_simulation": _forecast_placeholder(),
+        "forecast_simulation": forecast_simulation,
     }
     bundle["bundle_meta"]["stats"] = _compute_stats_v1_1(bundle)
     bundle["bundle_meta"]["bundle_hash"] = compute_bundle_hash(bundle)

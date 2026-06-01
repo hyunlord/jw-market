@@ -120,3 +120,96 @@ def test_validation_full_flow():
     assert result.total_numbers_extracted >= 4
     assert result.total_numbers_matched >= 4
     assert result.valid
+
+
+def _simulation_bundle():
+    return {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.UBIST.sales": {
+                    "horizon_1y": {
+                        "period": "2027-03",
+                        "base": 1000,
+                        "ci_lower_95": 800,
+                        "ci_upper_95": 1200,
+                    },
+                    "horizon_3y": {
+                        "period": "2029-03",
+                        "base": 3000,
+                        "ci_lower_95": 2400,
+                        "ci_upper_95": 3600,
+                    },
+                    "horizon_5y": {
+                        "period": "2031-03",
+                        "base": 5000,
+                        "ci_lower_95": 4000,
+                        "ci_upper_95": 6000,
+                    },
+                }
+            },
+        }
+    }
+
+
+def _parsed_with_prediction(body: str):
+    return {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "예측", "body": body, "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+
+def test_simulation_prediction_accepts_raw_krw_with_ci_wording():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW), "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다."
+    )
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert any(
+        item.get("matched_path", "").startswith("forecast_simulation.by_view.ML.UBIST.sales.horizon_1y")
+        for item in result.stage_results["prediction"].extracted
+    )
+
+
+def test_simulation_prediction_rejects_optimistic_pessimistic_scenario_words():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW)이며 낙관 시나리오에서는 1,200 KRW입니다. "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)입니다."
+    )
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "simulation_forbidden_scenario_phrase" for item in result.unmatched_numbers)
+
+
+def test_simulation_prediction_rejects_unit_conversion():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 10억 (95% 신뢰구간 8억~12억), "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)입니다."
+    )
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "simulation_unit_conversion" for item in result.unmatched_numbers)
+
+
+def test_simulation_prediction_requires_ci_wording():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (800~1,200 KRW), 3년 후 3,000 KRW (2,400~3,600 KRW), "
+        "5년 후 5,000 KRW (4,000~6,000 KRW)로 예측됩니다."
+    )
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "simulation_missing_ci_wording" for item in result.unmatched_numbers)

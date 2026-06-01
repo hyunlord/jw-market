@@ -60,13 +60,13 @@ competitor:
         direction: desc
 
 forecast_simulation:
-  enabled: false
+  enabled: true
   source: cache_deep_analysis
   fields:
-    - forecast.brands
+    - simulation.by_combo
     - simulation.horizon_ci_levels
+    - simulation.scenarios
     - simulation.momentum
-    - simulation.anomaly_signals
 
 pilot_brands_file: pilot_brands.txt
 
