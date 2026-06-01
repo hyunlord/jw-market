@@ -745,6 +745,19 @@ def restrict_atc4(frame: pd.DataFrame, limit_atc4: int | None) -> pd.DataFrame:
     return frame.loc[frame["atc4_code"].isin(values)].copy()
 
 
+def iter_atc4_chunks(frame: pd.DataFrame, limit_atc4: int | None = None) -> Iterable[tuple[str, pd.DataFrame]]:
+    if frame.empty:
+        return
+    if limit_atc4:
+        values = sorted(v for v in frame["atc4_code"].dropna().unique().tolist() if v != "UNKNOWN")[:limit_atc4]
+        frame = frame.loc[frame["atc4_code"].isin(values)]
+    for atc4_code, chunk in frame.groupby("atc4_code", dropna=False, sort=True):
+        if chunk.empty:
+            continue
+        chunk_key = "nan" if pd.isna(atc4_code) else str(atc4_code)
+        yield chunk_key, chunk.copy()
+
+
 def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]], batch_size: int = 500) -> None:
     if not rows:
         return
@@ -798,27 +811,45 @@ def compute_general(
     measure_stats = {}
     ubist_base = load_ubist_base_frame(max_rows=max_rows, ml=ml) if source == "ubist" else None
     iqvia_base = load_iqvia_base_frame(max_rows=max_rows) if source == "iqvia_nsa" else None
-    for measure in MEASURES_BY_SOURCE[source]:
-        frame = ubist_measure_frame(ubist_base, measure) if source == "ubist" else iqvia_measure_frame(iqvia_base, measure)
-        frame = restrict_atc4(frame, limit_atc4)
-        brand_rows = build_brand_rows(source, measure, frame, catalog_map)
-        market_rows = build_market_rows(source, measure, brand_rows)
-        all_brand_rows.extend(brand_rows)
-        all_market_rows.extend(market_rows)
-        measure_stats[measure] = {"input_rows": int(len(frame)), "brand_rows": len(brand_rows), "market_rows": len(market_rows)}
-        LOGGER.info("[%s/%s] input=%s brand_rows=%s market_rows=%s", source, measure, f"{len(frame):,}", f"{len(brand_rows):,}", f"{len(market_rows):,}")
-    if dry_run:
-        write_jsonl(general_brand_jsonl_path(source, output_dir), all_brand_rows)
-        write_jsonl(general_market_jsonl_path(source, output_dir), all_market_rows)
     if insert:
         delete_source_rows("mart_general_brand_metric", source)
         delete_source_rows("mart_general_market_metric", source)
-        insert_rows("mart_general_brand_metric", GENERAL_BRAND_INSERT_COLUMNS, all_brand_rows)
-        insert_rows("mart_general_market_metric", GENERAL_MARKET_INSERT_COLUMNS, all_market_rows)
+    for measure in MEASURES_BY_SOURCE[source]:
+        frame = ubist_measure_frame(ubist_base, measure) if source == "ubist" else iqvia_measure_frame(iqvia_base, measure)
+        input_rows = 0
+        brand_count = 0
+        market_count = 0
+        for atc4_code, chunk in iter_atc4_chunks(frame, limit_atc4):
+            input_rows += int(len(chunk))
+            brand_rows = build_brand_rows(source, measure, chunk, catalog_map)
+            market_rows = build_market_rows(source, measure, brand_rows)
+            brand_count += len(brand_rows)
+            market_count += len(market_rows)
+            if dry_run:
+                all_brand_rows.extend(brand_rows)
+                all_market_rows.extend(market_rows)
+            if insert:
+                insert_rows("mart_general_brand_metric", GENERAL_BRAND_INSERT_COLUMNS, brand_rows)
+                insert_rows("mart_general_market_metric", GENERAL_MARKET_INSERT_COLUMNS, market_rows)
+            LOGGER.info(
+                "[%s/%s/%s] input=%s brand_rows=%s market_rows=%s",
+                source,
+                measure,
+                atc4_code,
+                f"{len(chunk):,}",
+                f"{len(brand_rows):,}",
+                f"{len(market_rows):,}",
+            )
+            del chunk, brand_rows, market_rows
+        measure_stats[measure] = {"input_rows": input_rows, "brand_rows": brand_count, "market_rows": market_count}
+        LOGGER.info("[%s/%s] input=%s brand_rows=%s market_rows=%s", source, measure, f"{input_rows:,}", f"{brand_count:,}", f"{market_count:,}")
+    if dry_run:
+        write_jsonl(general_brand_jsonl_path(source, output_dir), all_brand_rows)
+        write_jsonl(general_market_jsonl_path(source, output_dir), all_market_rows)
     stats = {
         "source": source,
-        "brand_rows": len(all_brand_rows),
-        "market_rows": len(all_market_rows),
+        "brand_rows": sum(item["brand_rows"] for item in measure_stats.values()),
+        "market_rows": sum(item["market_rows"] for item in measure_stats.values()),
         "measures": measure_stats,
     }
     return all_brand_rows, all_market_rows, stats
