@@ -23,6 +23,7 @@ from layer3_compute_strategic_ml_v3 import (
     _output_brand_key,
     _truthy,
     delete_existing_rows,
+    drop_strict_excluded_rows,
     expected_measure_pairs,
     fetch_general_rows_from_db,
     is_jw_name,
@@ -82,6 +83,7 @@ CD_MARKET_COLUMNS = [
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     cd_market = pd.read_parquet(CATALOG_DIR / "cd_market" / "cd_market.parquet")
     cd_brand = pd.read_parquet(CATALOG_DIR / "cd_brand" / "cd_brand.parquet")
+    cd_brand = drop_strict_excluded_rows(cd_brand, "cd_brand")
     cd_filter = pd.read_parquet(CATALOG_DIR / "cd_filter" / "cd_filter.parquet")
     if "general_brand_key" in cd_brand.columns:
         cd_brand["brand_key"] = cd_brand["general_brand_key"].fillna(cd_brand["name"]).map(normalize_brand_name)

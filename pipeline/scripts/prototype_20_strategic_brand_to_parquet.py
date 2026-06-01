@@ -6,8 +6,9 @@ Phase 14 Step 14-5 strategic_brand -> Parquet.
 Policy:
 - Q-42 / D-39: include every non-empty MI Master detail row, including rows
   that were previously excluded by the master_drug staging loader.
-- A cell that contains "제외" nulls only the materialized column sourced
-  from that cell. The row itself remains present.
+- A cell that contains "제외" marks the row as strict-excluded for downstream
+  strategic marts. Materialized columns still null only the sourced cell so
+  the catalog remains auditable.
 - Q-50: brand_id is readable and stable: sb_{ml_index:03d}_{source_row_id:05d}.
 - Q-51: CD assignment is strict. 0 matches -> NULL, 1 match -> cd_id,
   2+ matches -> stop condition.
@@ -55,6 +56,7 @@ EXPECTED_COLUMNS = (
     "merge_name",
     "ml_id",
     "cd_id",
+    "is_excluded",
     "class",
     "class_1",
     "class_2",
@@ -125,6 +127,7 @@ STRATEGIC_BRAND_SCHEMA = pa.schema(
         pa.field("merge_name", pa.string(), nullable=False),
         pa.field("ml_id", pa.string(), nullable=False),
         pa.field("cd_id", pa.string(), nullable=True),
+        pa.field("is_excluded", pa.bool_(), nullable=False),
         pa.field("class", pa.string(), nullable=True),
         pa.field("class_1", pa.string(), nullable=True),
         pa.field("class_2", pa.string(), nullable=True),
@@ -452,6 +455,7 @@ def load_strategic_brand_records(
                     "merge_name": MERGE_NAME_BY_NAME.get(name, name),
                     "ml_id": ml_id,
                     "cd_id": cd_id,
+                    "is_excluded": bool(excluded),
                     "class": fields["class"],
                     "class_1": fields["class_1"],
                     "class_2": fields["class_2"],
@@ -549,6 +553,9 @@ def validate_records(
         raise ValueError(
             f"excluded rows must be {EXPECTED_EXCLUDED_ROWS}, found={sum(stats['excluded_rows'].values())}"
         )
+    strict_excluded = sum(1 for record in records if record.get("is_excluded") is True)
+    if strict_excluded != EXPECTED_EXCLUDED_ROWS:
+        raise ValueError(f"is_excluded rows must be {EXPECTED_EXCLUDED_ROWS}, found={strict_excluded}")
     if sum(stats["included_rows"].values()) - sum(stats["excluded_rows"].values()) != EXPECTED_STAGING_ROWS:
         raise ValueError("included - excluded must equal Phase 12 master_drug 3,912 rows")
     if stats["overlap_rows"]:
@@ -632,6 +639,7 @@ def print_summary(records: list[dict[str, Any]], summary: dict[str, Any], output
     print(f"ingested_at={records[0]['ingested_at'].isoformat(sep=' ', timespec='seconds')}")
     print(f"phase12_staging_rows={len(records) - sum(stats['excluded_rows'].values())}")
     print(f"formerly_excluded_rows_included={sum(stats['excluded_rows'].values())}")
+    print(f"strict_excluded_flagged={sum(1 for record in records if record.get('is_excluded') is True)}")
     print("ml_distribution:")
     for ml_id, count in sorted(Counter(record["ml_id"] for record in records).items()):
         print(f"  {ml_id}: {count}")

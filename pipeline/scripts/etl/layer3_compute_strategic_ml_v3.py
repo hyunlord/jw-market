@@ -115,11 +115,22 @@ def expected_measure_pairs(data_source: Any) -> set[tuple[str, str]]:
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame]:
     ml_market = pd.read_parquet(CATALOG_DIR / "ml_market" / "ml_market.parquet")
     strategic_brand = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
+    strategic_brand = drop_strict_excluded_rows(strategic_brand, "strategic_brand")
     if "general_brand_key" in strategic_brand.columns:
         strategic_brand["brand_key"] = strategic_brand["general_brand_key"].fillna(strategic_brand["name"]).map(normalize_brand_name)
     else:
         strategic_brand["brand_key"] = strategic_brand["name"].map(normalize_brand_name)
     return ml_market, strategic_brand
+
+
+def drop_strict_excluded_rows(brands: pd.DataFrame, label: str) -> pd.DataFrame:
+    if "is_excluded" not in brands.columns:
+        return brands
+    excluded_mask = brands["is_excluded"].map(_truthy)
+    removed = int(excluded_mask.sum())
+    if removed:
+        print(f"[exclude] strict 제외 제거 ({label}): {len(brands)} -> {len(brands) - removed}")
+    return brands.loc[~excluded_mask].copy()
 
 
 def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]]:
