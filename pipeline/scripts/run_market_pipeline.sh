@@ -24,6 +24,7 @@ Modes:
   --layer0            Run MI Master/catalog YAML -> catalog parquet only
   --layer0-catalog    Alias for --layer0
   --layer0-postfix    Run post-fix + Phase G molecule on existing Layer0 catalog (4495 -> 3874)
+  --from-catalog      Run catalog prototypes without source materialize, then strategic Layer3, Layer4
   --from-layer0       Run Layer0(catalog), Layer1, Layer2, Layer3, Layer4
   --from-layer2       Run Layer2, Layer3, Layer4
   --from-layer3       Run Layer3, Layer4
@@ -145,6 +146,11 @@ run_layer0_catalog() {
   "$PYTHON_BIN" "$ETL_DIR/ubist_parquet_loader.py" --all --truncate
   "$PYTHON_BIN" "$ETL_DIR/iqvia_loader.py" --source nsa --materialize-parquet --skip-db
 
+  run_layer0_catalog_prototypes
+  echo "=== Layer0 catalog build done ==="
+}
+
+run_layer0_catalog_prototypes() {
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_07_master_market_definition_to_parquet.py"
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_08_master_qa_to_parquet.py"
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_09_master_brand_consolidation_to_parquet.py"
@@ -164,7 +170,23 @@ run_layer0_catalog() {
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_21_strategic_product_to_parquet.py"
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_22_cd_brand_to_parquet.py"
   "$PYTHON_BIN" "$SCRIPT_DIR/prototype_23_cd_product_to_parquet.py"
-  echo "=== Layer0 catalog build done ==="
+}
+
+run_layer0_catalog_no_materialize() {
+  echo "=== Layer0 catalog: prototype rebuild with existing materialized parquet ==="
+  run_verify_sources
+
+  if [[ ! -d "$ROOT_DIR/output/ubist" ]] || [[ -z "$(find "$ROOT_DIR/output/ubist" -name data.parquet -print -quit 2>/dev/null)" ]]; then
+    echo "ERROR: output/ubist parquet 없음. --from-layer0 또는 --all 먼저 필요" >&2
+    exit 3
+  fi
+  if [[ ! -d "$ROOT_DIR/output/iqvia_nsa" ]] || [[ -z "$(find "$ROOT_DIR/output/iqvia_nsa" -name '*.parquet' -print -quit 2>/dev/null)" ]]; then
+    echo "ERROR: output/iqvia_nsa parquet 없음. --from-layer0 또는 --all 먼저 필요" >&2
+    exit 3
+  fi
+
+  run_layer0_catalog_prototypes
+  echo "=== Layer0 catalog no-materialize build done ==="
 }
 
 run_layer0_postfix() {
@@ -309,6 +331,12 @@ case "$mode" in
     run_layer1
     run_layer2
     run_layer3
+    run_layer4
+    ;;
+  --from-catalog)
+    run_layer0_catalog_no_materialize
+    run_layer0_postfix
+    run_layer3_strategic
     run_layer4
     ;;
   --from-layer2)
