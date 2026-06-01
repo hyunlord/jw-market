@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
+import pyarrow.parquet as pq
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import (
@@ -22,6 +25,8 @@ from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
 FORM_BOUNDARY = re.compile(r"(?:$|\\s|정|캡슐|주|액|서방|시럽|현탁|구강|SR|CR|OD)", re.IGNORECASE)
 DEFAULT_MARKET_STATUS_TOP_N = 20
 MAX_MARKET_STATUS_TOP_N = 100
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ML_MARKET_CATALOG_PATH = PROJECT_ROOT / "output" / "catalog" / "ml_market" / "ml_market.parquet"
 
 
 MARKET_STATUS_COMPANY_BY_BRAND: dict[str, str] = {
@@ -359,6 +364,31 @@ def _market_definition_label(atc_codes: list[str]) -> str:
     return "1 ATC" if len(atc_codes) == 1 else f"{len(atc_codes)} ATC 통합"
 
 
+def _parse_atc_codes(raw_value: Any) -> list[str]:
+    raw_codes = loads_json_maybe(raw_value)
+    if not isinstance(raw_codes, list):
+        return []
+    return [str(code).strip() for code in raw_codes if str(code).strip()]
+
+
+@lru_cache(maxsize=1)
+def _ml_market_atc_codes() -> dict[str, list[str]]:
+    if not ML_MARKET_CATALOG_PATH.exists():
+        return {}
+    try:
+        table = pq.read_table(ML_MARKET_CATALOG_PATH, columns=["ml_id", "atc_codes_json"])
+    except Exception:
+        return {}
+    return {
+        str(row["ml_id"]): _parse_atc_codes(row.get("atc_codes_json"))
+        for row in table.to_pylist()
+    }
+
+
+def _catalog_atc_codes_for_ml(ml_id: str) -> list[str]:
+    return list(_ml_market_atc_codes().get(ml_id, []))
+
+
 def _build_market_status_card(
     meta: Any,
     *,
@@ -366,6 +396,7 @@ def _build_market_status_card(
 ) -> dict[str, Any]:
     ml_id = to_ml_id(meta.market_id)
     sources = list(meta.sources)
+    atc_codes = _catalog_atc_codes_for_ml(ml_id)
     try:
         resolved = resolve_brand(meta.brand)
         snapshot = resolved.snapshot
@@ -390,9 +421,9 @@ def _build_market_status_card(
         "source_label": _default_source(sources),
         "is_dual_source": bool(meta.is_dual_source),
         "sources": sources,
-        "market_definition_label": _market_definition_label(list(meta.atc_codes)),
-        "market_definition_full": f"{meta.market_name} 경쟁 시장 ({', '.join(meta.atc_codes)})",
-        "atc_count": len(meta.atc_codes),
+        "market_definition_label": _market_definition_label(atc_codes),
+        "market_definition_full": f"{meta.market_name} 경쟁 시장 ({', '.join(atc_codes)})",
+        "atc_count": len(atc_codes),
         "direct_competition_count": None,
         "market_label_kor": meta.market_label_kor,
     }
@@ -450,7 +481,7 @@ def _build_market_status_card(
         "market_name_short": meta.market_name_short,
         "market_label_kor": meta.market_label_kor,
         "mkt_team": meta.mkt_team,
-        "atc_codes": list(meta.atc_codes),
+        "atc_codes": atc_codes,
         "atc_desc": meta.atc_desc,
         "sources": sources,
         "nhi_type": "NHI",

@@ -183,6 +183,13 @@ def _market_definition_label(atc_codes: list[str]) -> str:
     return "1 ATC" if len(atc_codes) == 1 else f"{len(atc_codes)} ATCs"
 
 
+def _catalog_atc_codes(market: dict) -> list[str]:
+    raw_codes = decode_json(market.get("atc_codes_json"))
+    if not isinstance(raw_codes, list):
+        return []
+    return [str(code).strip() for code in raw_codes if str(code).strip()]
+
+
 def _catalog_company(catalog_row: dict) -> str | None:
     return _valid_text(catalog_row.get("판매사")) or _valid_text(catalog_row.get("제조사"))
 
@@ -240,7 +247,7 @@ def build_brand_card(
     meta = BRAND_META_BY_NAME.get(brand_name)
     meta_sources = list(meta.sources) if meta else []
     sources = _ordered_sources(meta_sources or brand_row["sources"])
-    atc_codes = list(meta.atc_codes) if meta else []
+    atc_codes = _catalog_atc_codes(market)
     brand_cagr = _ratio_to_pct(ext_recent.get("cagr_5y"))
     market_cagr = series_cagr(market_series)
     excess_growth = round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None

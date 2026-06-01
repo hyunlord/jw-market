@@ -1891,6 +1891,13 @@ def top3_share(rows: list[dict[str, Any]]) -> float | None:
     return round(sum(sorted(shares, reverse=True)[:3]), 2)
 
 
+def atc_codes_from_market_catalog(market_catalog_row: dict[str, Any] | None) -> list[str]:
+    raw_codes = decode_json((market_catalog_row or {}).get("atc_codes_json"))
+    if not isinstance(raw_codes, list):
+        return []
+    return [str(code).strip() for code in raw_codes if str(code).strip()]
+
+
 def choose_target(rows: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
     for row in rows:
         if bool(row.get("is_target")):
@@ -2101,7 +2108,7 @@ def build_response(
                 for member in catalog_members
                 if member.get("name") and member.get("is_jw")
             ],
-            "atc_codes": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).atc_codes if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else []),
+            "atc_codes": atc_codes_from_market_catalog(market_catalog_row),
             "atc_desc": (BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]).atc_desc if BRAND_METADATA_BY_NAME.get(brand_row["brand_name"]) else None),
             "view_source_id": view_source_id,
             "atc_count": None,

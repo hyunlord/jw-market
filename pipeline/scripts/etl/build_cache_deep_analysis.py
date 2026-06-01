@@ -92,6 +92,13 @@ EVENT_CHART_MAX = 15
 BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
 
 
+def atc_codes_from_market_catalog(market: dict[str, Any]) -> list[str]:
+    raw_codes = decode_json(market.get("atc_codes_json"))
+    if not isinstance(raw_codes, list):
+        return []
+    return [str(code).strip() for code in raw_codes if str(code).strip()]
+
+
 def _normalize_event_title(title: str | None) -> str:
     text = (title or "").lower()
     text = re.sub(r"[^\w\s가-힣]", "", text)
@@ -690,6 +697,7 @@ def main() -> None:
         ml_id = base["ml_id"]
         market_id = ml_to_strategy(ml_id)
         market = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
+        market_atc_codes = atc_codes_from_market_catalog(market)
         available_combos = available_combos_for_market(market)
         phase30_enabled = brand in CANONICAL_25
         by_combo = {}
@@ -753,7 +761,7 @@ def main() -> None:
             },
             "market_meta": {
                 "market_name": market.get("name"),
-                "atc4_code": (BRAND_METADATA_BY_NAME.get(brand).atc_codes[0] if BRAND_METADATA_BY_NAME.get(brand) and BRAND_METADATA_BY_NAME.get(brand).atc_codes else None),
+                "atc4_code": market_atc_codes[0] if market_atc_codes else None,
                 "atc4_name": (BRAND_METADATA_BY_NAME.get(brand).atc_desc if BRAND_METADATA_BY_NAME.get(brand) else None),
                 "sources": source_list(market.get("data_source")),
                 "default_source": source_list(market.get("data_source"))[0] if source_list(market.get("data_source")) else None,

@@ -224,6 +224,7 @@ ML_MARKET_COLUMNS = (
     "ml_id",
     "name",
     "data_source",
+    "atc_codes_json",
     "analyze_class",
     "analyze_molecule",
     "analyze_dosage_form",
@@ -247,6 +248,7 @@ ML_MARKET_SCHEMA = pa.schema(
         pa.field("ml_id", pa.string(), nullable=False),
         pa.field("name", pa.string(), nullable=False),
         pa.field("data_source", pa.string(), nullable=False),
+        pa.field("atc_codes_json", pa.string(), nullable=False),
         pa.field("analyze_class", pa.bool_(), nullable=False),
         pa.field("analyze_molecule", pa.bool_(), nullable=False),
         pa.field("analyze_dosage_form", pa.bool_(), nullable=False),
@@ -398,6 +400,7 @@ def make_record(
         "ml_id": ml_id,
         "name": normalize_market_name(market_definition_row.get("market_name")),
         "data_source": data_source,
+        "atc_codes_json": clean_text(market_definition_row.get("market_atc_codes_json")) or "[]",
         "source_file_version": clean_text(market_definition_row.get("source_file_version")),
         "ingested_at": ingested_at,
     }
@@ -431,6 +434,7 @@ def load_existing_ml_market_records(
     records: list[dict[str, Any]] = []
     for row in rows:
         record = {column: row.get(column) for column in ML_MARKET_COLUMNS}
+        record["atc_codes_json"] = clean_text(record.get("atc_codes_json")) or "[]"
         record["ingested_at"] = timestamp
         raw_targets = {row_id: [] for row_id in (54, 55, 56, 57)}
         # Existing Phase 14 rows already contain normalized UBIST target slots.
@@ -541,6 +545,9 @@ def validate_records(records: list[dict[str, Any]]) -> None:
                 )
 
     for record in records:
+        atc_codes = parse_json_text(record.get("atc_codes_json"), [])
+        if not isinstance(atc_codes, list) or any(clean_text(code) is None for code in atc_codes):
+            raise ValueError(f"{record['ml_id']} atc_codes_json must be a JSON string list")
         source = str(record["data_source"])
         iqvia_values = [record[f"target_iqvia_{i}"] for i in range(1, 4)]
         ubist_values = [record[f"target_ubist_{i}"] for i in range(1, 5)]
