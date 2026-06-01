@@ -1980,6 +1980,7 @@ def build_response(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
         len({member["name"] for member in catalog_members if member.get("name")}),
     )
+    market_series_payload = latest_market_series_payload(market_series)
 
     return {
         "brand": brand_row["brand_name"],
@@ -2013,13 +2014,15 @@ def build_response(
                 "brand_share_pct": safe_float(target_display.get("share_pct")),
             },
             "sources_data": {
-                **latest_market_series_payload(market_series),
+                **market_series_payload,
                 "periods_unit": "월간" if brand_row["source"] == "ubist" else "분기",
                 "hhi_series_5y": hhi_points,
                 "hhi_recent": hhi_recent,
                 "cagr_5y_pct": series_cagr(market_series),
             },
-            "market_size_series": market_size_series_with_yoy(market_series),
+            "market_size_series": market_series_payload["market_size_series"],
+            "market_yoy_series": market_series_payload["market_yoy_series"],
+            "market_yoy_recent_pct": market_series_payload["market_yoy_recent_pct"],
             "hhi_series_5y": hhi_series,
             "hhi_recent": hhi_recent,
             "brand_ranking": brand_ranking_stacked,
