@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -46,6 +47,7 @@ MASTER_MARKET_DEFINITION_COLUMNS = (
     "strategic_market_id",
     "market_name",
     "source_type",
+    "market_atc_codes_json",
     "full_market_atc4_codes_json",
     "direct_competition_brands_json",
     "description",
@@ -117,6 +119,10 @@ METRIC_ROWS = range(61, 65)
 
 EXPECTED_STRATEGIC_MARKET_IDS = tuple(MARKET_DEFINITION_COLUMNS.keys())
 
+ATC_CODE_PATTERN = r"[A-Z]\d{0,2}[A-Z](?:\d{0,2})?"
+ATC_BRACKET_RE = re.compile(rf"\[({ATC_CODE_PATTERN})\]")
+ATC_PLAIN_RE = re.compile(rf"^({ATC_CODE_PATTERN})\b")
+
 
 def utc_now_text() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
@@ -139,6 +145,51 @@ def cell_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def atc_code_from_text(value: object) -> str | None:
+    text = cell_text(value)
+    if not text:
+        return None
+    bracket_match = ATC_BRACKET_RE.search(text)
+    if bracket_match:
+        return bracket_match.group(1)
+    plain_match = ATC_PLAIN_RE.match(text)
+    if plain_match:
+        return plain_match.group(1)
+    return None
+
+
+def find_atc_column(ws) -> int | None:
+    for column_id in range(1, 12):
+        for row_id in range(3, 9):
+            value = ws.cell(row_id, column_id).value
+            if value and "ATC" in str(value).upper():
+                return column_id
+    return None
+
+
+def extract_atc_from_market_sheet(wb, sheet_name: str) -> list[str]:
+    """Extract normalized ATC codes from a market sheet's ATC column."""
+    if sheet_name not in wb.sheetnames:
+        return []
+    ws = wb[sheet_name]
+    atc_column = find_atc_column(ws)
+    if atc_column is None:
+        return []
+
+    codes: set[str] = set()
+    for (value,) in ws.iter_rows(
+        min_row=6,
+        max_row=ws.max_row,
+        min_col=atc_column,
+        max_col=atc_column,
+        values_only=True,
+    ):
+        code = atc_code_from_text(value)
+        if code:
+            codes.add(code)
+    return sorted(codes)
 
 
 def blank_record() -> dict[str, Any]:
@@ -237,6 +288,7 @@ def iter_market_definition_rows(xlsx_path: Path, ingested_at: str | None = None)
         for strategic_market_id, columns in MARKET_DEFINITION_COLUMNS.items():
             config = MARKET_BY_ID[strategic_market_id]
             source_values = [cell_text(ws.cell(10, column).value) for column in columns]
+            market_atc_codes = extract_atc_from_market_sheet(wb, config["sheet_name"])
             full_market_values = values_for_rows(ws, FULL_MARKET_ROWS, columns)
             direct_competition_values = values_for_rows(ws, DIRECT_COMPETITION_ROWS, columns)
             levels = analysis_levels(ws, columns)
@@ -249,6 +301,7 @@ def iter_market_definition_rows(xlsx_path: Path, ingested_at: str | None = None)
                     "strategic_market_id": strategic_market_id,
                     "market_name": config["sheet_name"],
                     "source_type": source_type_from_values(source_values, config["source_type"]),
+                    "market_atc_codes_json": dumps_json(market_atc_codes),
                     "full_market_atc4_codes_json": dumps_json(full_market_values),
                     "direct_competition_brands_json": dumps_json(direct_competition_values),
                     "description": MARKET_DESCRIPTIONS.get(strategic_market_id),
@@ -288,6 +341,7 @@ def validate_records(records: list[dict[str, Any]]) -> None:
                 f"row {index} schema mismatch: extra={extra_columns}, missing={missing_columns}"
             )
         for column in (
+            "market_atc_codes_json",
             "full_market_atc4_codes_json",
             "direct_competition_brands_json",
             "analysis_levels_json",
