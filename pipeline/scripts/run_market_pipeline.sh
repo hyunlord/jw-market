@@ -33,6 +33,7 @@ Modes:
   --layer3-general    Run general marts only
   --layer3-strategic  Run strategic ML/CD marts only
   --layer4            Run API cache builders only
+  --market <ml_id>    Regenerate one strategic ML market in mart/cache_cause
   --verify-only       Print current key row counts and Phase 15 IQVIA ratios
   --help              Show this help
 
@@ -210,6 +211,46 @@ run_layer4() {
   "$PYTHON_BIN" "$ETL_DIR/build_cache_deep_analysis.py" --output-db jw_mart
 }
 
+resolve_cd_ids_for_market() {
+  local market_id="$1"
+  "$PYTHON_BIN" - "$ROOT_DIR" "$market_id" <<'PY'
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+root = Path(sys.argv[1])
+market_id = sys.argv[2]
+path = root / "output" / "catalog" / "cd_market" / "cd_market.parquet"
+df = pd.read_parquet(path)
+if "ml_id" not in df.columns or "cd_id" not in df.columns:
+    raise SystemExit(f"cd_market catalog missing ml_id/cd_id columns: {path}")
+print(" ".join(df.loc[df["ml_id"].astype(str) == market_id, "cd_id"].astype(str).tolist()))
+PY
+}
+
+run_market_partial() {
+  local market_id="$1"
+  if [[ ! "$market_id" =~ ^ml_[0-9]{3}$ ]]; then
+    echo "ERROR: --market expects an ML id like ml_006, got: $market_id" >&2
+    return 2
+  fi
+
+  echo "=== B3 partial regeneration: $market_id ==="
+  "$PYTHON_BIN" "$ETL_DIR/layer3_compute_strategic_ml_v3.py" --ml "$market_id" --insert
+
+  local cd_ids
+  cd_ids="$(resolve_cd_ids_for_market "$market_id")"
+  echo "  CD markets: ${cd_ids:-none}"
+  local cd
+  for cd in $cd_ids; do
+    "$PYTHON_BIN" "$ETL_DIR/layer3_compute_strategic_cd_v3.py" --cd-market "$cd" --insert
+  done
+
+  "$PYTHON_BIN" "$ETL_DIR/build_cache_cause.py" --market "$market_id" --output-db jw_mart
+  echo "=== B3 partial regeneration done: $market_id ==="
+}
+
 run_verify_only() {
   echo "=== Verify current mart/cache state ==="
   "$PYTHON_BIN" - <<'PY'
@@ -290,6 +331,7 @@ case "$mode" in
   --layer3-general) run_layer3_general ;;
   --layer3-strategic) run_layer3_strategic ;;
   --layer4) run_layer4 ;;
+  --market) run_market_partial "${2:?--market requires an ml_id, for example ml_006}" ;;
   --verify-only) run_verify_only ;;
   --help|-h|help) usage ;;
   *)

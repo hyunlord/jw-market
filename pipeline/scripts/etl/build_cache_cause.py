@@ -63,6 +63,25 @@ TARGET_RANK_STATS_CACHE: dict[Any, dict[int, dict[str, dict[str, Any]]]] = {}
 BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
 
 
+def parse_args() -> Any:
+    cli = parser(__doc__)
+    cli.add_argument(
+        "--market",
+        default=None,
+        help="Regenerate only one ML market and its CD views, for example ml_006.",
+    )
+    return cli.parse_args()
+
+
+def selected_query(table: str, column: str, values: list[str] | None) -> tuple[str, list[str]]:
+    if values is None:
+        return f"SELECT * FROM {table}", []
+    if not values:
+        return f"SELECT * FROM {table} WHERE 1=0", []
+    placeholders = ",".join(["%s"] * len(values))
+    return f"SELECT * FROM {table} WHERE {column} IN ({placeholders})", values
+
+
 def _period_year(period: str) -> int | None:
     try:
         return int(str(period)[:4])
@@ -2057,19 +2076,39 @@ def make_sibling_map(rows: list[dict[str, Any]], market_key: str) -> dict[tuple[
 
 
 def main() -> None:
-    args = parser(__doc__).parse_args()
+    args = parse_args()
     strategic_brand = load_catalog("strategic_brand")
     ml_market = load_catalog("ml_market").set_index("ml_id", drop=False)
     cd_market = load_catalog("cd_market").rename(columns={"cd_id": "cd_market_id"}).set_index("cd_market_id", drop=False)
 
+    selected_ml_ids: list[str] | None = None
+    selected_cd_ids: list[str] | None = None
+    selected_market_ids: list[str] | None = None
+    if args.market:
+        selected_ml = str(args.market)
+        if selected_ml not in ml_market.index:
+            raise SystemExit(f"--market not found in ml_market catalog: {selected_ml}")
+        selected_ml_ids = [selected_ml]
+        selected_cd_ids = [
+            str(row["cd_market_id"])
+            for _, row in cd_market.loc[cd_market["ml_id"].astype(str) == selected_ml].iterrows()
+        ]
+        selected_market_ids = [ml_to_strategy(selected_ml)]
+        print(f"[B3] partial cache_cause regeneration: ml={selected_ml}, cd={selected_cd_ids}", flush=True)
+
+    ml_market_sql, ml_market_params = selected_query("mart_strategic_ml_market_metric", "ml_id", selected_ml_ids)
+    cd_market_sql, cd_market_params = selected_query("mart_strategic_cd_market_metric", "cd_market_id", selected_cd_ids)
+    ml_brand_sql, ml_brand_params = selected_query("mart_strategic_ml_brand_metric", "ml_id", selected_ml_ids)
+    cd_brand_sql, cd_brand_params = selected_query("mart_strategic_cd_brand_metric", "cd_market_id", selected_cd_ids)
+
     ml_market_rows = {
-        (r["ml_id"], r["source"], r["measure"]): r for r in fetch_all("SELECT * FROM mart_strategic_ml_market_metric")
+        (r["ml_id"], r["source"], r["measure"]): r for r in fetch_all(ml_market_sql, ml_market_params)
     }
     cd_market_rows = {
-        (r["cd_market_id"], r["source"], r["measure"]): r for r in fetch_all("SELECT * FROM mart_strategic_cd_market_metric")
+        (r["cd_market_id"], r["source"], r["measure"]): r for r in fetch_all(cd_market_sql, cd_market_params)
     }
-    ml_brand_rows = fetch_all("SELECT * FROM mart_strategic_ml_brand_metric")
-    cd_brand_rows = fetch_all("SELECT * FROM mart_strategic_cd_brand_metric")
+    ml_brand_rows = fetch_all(ml_brand_sql, ml_brand_params)
+    cd_brand_rows = fetch_all(cd_brand_sql, cd_brand_params)
     ml_siblings = make_sibling_map(ml_brand_rows, "ml_id")
     cd_siblings = make_sibling_map(cd_brand_rows, "cd_market_id")
 
@@ -2080,90 +2119,114 @@ def main() -> None:
     inserted = 0
     conn = mariadb_connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM `cache_cause`")
     batch: list[tuple[Any, ...]] = []
+    partial_mode = bool(args.market)
+    if partial_mode:
+        conn.autocommit(False)
+        conn.begin()
 
-    def flush_batch() -> None:
-        nonlocal batch
-        if not batch:
-            return
-        cur.executemany(sql, batch)
-        batch = []
+    try:
+        if selected_market_ids is not None:
+            placeholders = ",".join(["%s"] * len(selected_market_ids))
+            cur.execute(
+                "DELETE FROM `cache_cause` "
+                f"WHERE market_id IN ({placeholders}) "
+                "AND view_type IN ('market_landscape','competitive_dynamics')",
+                tuple(selected_market_ids),
+            )
+            print(f"[B3] partial DELETE cache_cause market_id={selected_market_ids}", flush=True)
+        else:
+            cur.execute("DELETE FROM `cache_cause`")
 
-    for row in ml_brand_rows:
-        market = ml_market.loc[row["ml_id"]].to_dict() if row["ml_id"] in ml_market.index else {}
-        market_id = ml_to_strategy(row["ml_id"])
-        source = api_source(row["source"])
-        response = build_response(
-            brand_row=row,
-            market_row=ml_market_rows.get((row["ml_id"], row["source"], row["measure"]), {}),
-            sibling_rows=ml_siblings[(row["ml_id"], row["source"], row["measure"])],
-            view_type="market_landscape",
-            market_id=market_id,
-            source=source,
-            measure=row["measure"],
-            view_source_id=row["ml_id"],
-            market_name=market.get("name"),
-            market_sources=source_list(market.get("data_source")),
-            market_catalog_row=market,
-            strategic_brand=strategic_brand,
-        )
-        response_json = dump_payload(response)
-        out = {
-            "brand": row["brand_name"],
-            "view_type": "market_landscape",
-            "source": source,
-            "measure": row["measure"],
-            "market_id": market_id,
-            "response_json": response_json,
-            "payload_size": len(response_json.encode("utf-8")),
-        }
-        batch.append(tuple(out[col] for col in columns))
-        inserted += 1
-        if len(batch) >= 20:
-            flush_batch()
-        if args.verbose and inserted % 1000 == 0:
-            print(f"inserted cache_cause rows={inserted}", flush=True)
+        def flush_batch() -> None:
+            nonlocal batch
+            if not batch:
+                return
+            cur.executemany(sql, batch)
+            batch = []
 
-    for row in cd_brand_rows:
-        cd = cd_market.loc[row["cd_market_id"]].to_dict() if row["cd_market_id"] in cd_market.index else {}
-        ml_id = cd.get("ml_id") or row.get("ml_id")
-        ml = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
-        market_id = ml_to_strategy(ml_id)
-        source = api_source(row["source"])
-        response = build_response(
-            brand_row=row,
-            market_row=cd_market_rows.get((row["cd_market_id"], row["source"], row["measure"]), {}),
-            sibling_rows=cd_siblings[(row["cd_market_id"], row["source"], row["measure"])],
-            view_type="competitive_dynamics",
-            market_id=market_id,
-            source=source,
-            measure=row["measure"],
-            view_source_id=row["cd_market_id"],
-            market_name=cd.get("name") or ml.get("name"),
-            market_sources=source_list(cd.get("data_source") or ml.get("data_source")),
-            market_catalog_row=ml,
-            strategic_brand=strategic_brand,
-        )
-        response_json = dump_payload(response)
-        out = {
-            "brand": row["brand_name"],
-            "view_type": "competitive_dynamics",
-            "source": source,
-            "measure": row["measure"],
-            "market_id": market_id,
-            "response_json": response_json,
-            "payload_size": len(response_json.encode("utf-8")),
-        }
-        batch.append(tuple(out[col] for col in columns))
-        inserted += 1
-        if len(batch) >= 20:
-            flush_batch()
-        if args.verbose and inserted % 1000 == 0:
-            print(f"inserted cache_cause rows={inserted}", flush=True)
-    flush_batch()
-    cur.close()
-    conn.close()
+        for row in ml_brand_rows:
+            market = ml_market.loc[row["ml_id"]].to_dict() if row["ml_id"] in ml_market.index else {}
+            market_id = ml_to_strategy(row["ml_id"])
+            source = api_source(row["source"])
+            response = build_response(
+                brand_row=row,
+                market_row=ml_market_rows.get((row["ml_id"], row["source"], row["measure"]), {}),
+                sibling_rows=ml_siblings[(row["ml_id"], row["source"], row["measure"])],
+                view_type="market_landscape",
+                market_id=market_id,
+                source=source,
+                measure=row["measure"],
+                view_source_id=row["ml_id"],
+                market_name=market.get("name"),
+                market_sources=source_list(market.get("data_source")),
+                market_catalog_row=market,
+                strategic_brand=strategic_brand,
+            )
+            response_json = dump_payload(response)
+            out = {
+                "brand": row["brand_name"],
+                "view_type": "market_landscape",
+                "source": source,
+                "measure": row["measure"],
+                "market_id": market_id,
+                "response_json": response_json,
+                "payload_size": len(response_json.encode("utf-8")),
+            }
+            batch.append(tuple(out[col] for col in columns))
+            inserted += 1
+            if len(batch) >= 20:
+                flush_batch()
+            if args.verbose and inserted % 1000 == 0:
+                print(f"inserted cache_cause rows={inserted}", flush=True)
+
+        for row in cd_brand_rows:
+            cd = cd_market.loc[row["cd_market_id"]].to_dict() if row["cd_market_id"] in cd_market.index else {}
+            ml_id = cd.get("ml_id") or row.get("ml_id")
+            ml = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
+            market_id = ml_to_strategy(ml_id)
+            source = api_source(row["source"])
+            response = build_response(
+                brand_row=row,
+                market_row=cd_market_rows.get((row["cd_market_id"], row["source"], row["measure"]), {}),
+                sibling_rows=cd_siblings[(row["cd_market_id"], row["source"], row["measure"])],
+                view_type="competitive_dynamics",
+                market_id=market_id,
+                source=source,
+                measure=row["measure"],
+                view_source_id=row["cd_market_id"],
+                market_name=cd.get("name") or ml.get("name"),
+                market_sources=source_list(cd.get("data_source") or ml.get("data_source")),
+                market_catalog_row=ml,
+                strategic_brand=strategic_brand,
+            )
+            response_json = dump_payload(response)
+            out = {
+                "brand": row["brand_name"],
+                "view_type": "competitive_dynamics",
+                "source": source,
+                "measure": row["measure"],
+                "market_id": market_id,
+                "response_json": response_json,
+                "payload_size": len(response_json.encode("utf-8")),
+            }
+            batch.append(tuple(out[col] for col in columns))
+            inserted += 1
+            if len(batch) >= 20:
+                flush_batch()
+            if args.verbose and inserted % 1000 == 0:
+                print(f"inserted cache_cause rows={inserted}", flush=True)
+        flush_batch()
+        if partial_mode:
+            conn.commit()
+            print(f"[B3] partial commit cache_cause rows={inserted}", flush=True)
+    except Exception:
+        if partial_mode:
+            conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
     if args.verbose:
         print(f"cache_cause rows={inserted} ml_rows={len(ml_brand_rows)} cd_rows={len(cd_brand_rows)}")
 
