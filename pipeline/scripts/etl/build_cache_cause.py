@@ -1019,6 +1019,44 @@ def _total_series_for_rows(rows: list[dict[str, Any]], periods: list[str]) -> li
     return [round(value, 4) for value in totals]
 
 
+def _with_overall_level_options(
+    *,
+    data: dict[str, Any],
+    rows: list[dict[str, Any]],
+    source: str,
+    channels: list[str],
+    periods: list[str],
+) -> dict[str, Any]:
+    for level, level_data in data.items():
+        if level == "Brand" or not isinstance(level_data, dict):
+            continue
+        by_channel = level_data.get("by_channel")
+        if not isinstance(by_channel, dict):
+            continue
+        for channel in channels:
+            segments = by_channel.get(channel)
+            if not isinstance(segments, list) or not segments:
+                continue
+            if any(isinstance(segment, dict) and segment.get("name") == "전체" for segment in segments):
+                continue
+            channel_rows = _rows_for_channel(rows, source, channel, periods)
+            value_series = _total_series_for_rows(channel_rows, periods)
+            by_channel[channel] = [
+                {
+                    "name": "전체",
+                    "rank": 0,
+                    "recent_share_pct": 100.0 if value_series else 0.0,
+                    "series_pct": [100.0 if value else 0.0 for value in value_series],
+                    "value_series": value_series,
+                    "is_overall": True,
+                },
+                *segments,
+            ]
+        if isinstance(by_channel.get("전체"), list):
+            level_data["segments"] = by_channel["전체"]
+    return data
+
+
 def _build_analysis_levels_from_mart(
     *,
     rows: list[dict[str, Any]],
@@ -1052,6 +1090,13 @@ def _build_analysis_levels_from_mart(
         else:
             by_channel = {channel: [] for channel in channels}
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
+    data = _with_overall_level_options(
+        data=data,
+        rows=rows,
+        source=source,
+        channels=channels,
+        periods=periods,
+    )
     return _normalize_segment_name_lists({
         "levels": levels,
         "channels": channels,
@@ -1693,10 +1738,11 @@ def _level_top5_trend(
         values = []
         for index, segment in enumerate(level_segments, start=1):
             segment_name = segment.get("name") or f"{level} {index}"
-            segment_rows = rows_by_level.get(level, {}).get(segment_name, [])
+            is_overall_segment = bool(segment.get("is_overall"))
+            segment_rows = rows if is_overall_segment else rows_by_level.get(level, {}).get(segment_name, [])
             segment_brand_entries = _display_brand_rows(
                 segment_rows,
-                target_name=target_name,
+                target_name=None if is_overall_segment else target_name,
                 top_n=5,
                 include_others=True,
             ) if segment_rows else []
@@ -1754,11 +1800,15 @@ def _level_top5_trend(
                     "brands_in_value": brands_in_value,
                 }
             )
+        overall_total = next(
+            (safe_float(item.get("total_value")) or 0.0 for item in values if item.get("value") == "전체"),
+            None,
+        )
         by_level[level] = {
             "level_label": level,
             "level_value": values[0]["value"] if values else None,
             "default_value": values[0]["value"] if values else None,
-            "total_market_value": sum((safe_float(item.get("total_value")) or 0.0) for item in values),
+            "total_market_value": overall_total if overall_total is not None else sum((safe_float(item.get("total_value")) or 0.0) for item in values),
             "empty": not bool(values),
             "periods_10pt": periods,
             "all_options": [segment.get("name") for segment in level_segments if segment.get("name")],
