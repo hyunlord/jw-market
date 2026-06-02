@@ -22,6 +22,7 @@ from layer3_compute_general_v3 import (
     JSON_INSERT_COLUMNS,
     cagr_from_history,
     dumps,
+    ensure_json_columns,
     fill_periods,
     general_brand_jsonl_path,
     json_ready,
@@ -57,6 +58,8 @@ ML_BRAND_COLUMNS = [
     "extended_metric_history",
     "channel_data",
     "specialty_data",
+    "dimension_data",
+    "dimension_channel_data",
     "by_dimension",
     "raw_value_history",
     "overlay_data",
@@ -134,6 +137,7 @@ def drop_strict_excluded_rows(brands: pd.DataFrame, label: str) -> pd.DataFrame:
 
 
 def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]]:
+    ensure_json_columns("mart_general_brand_metric", ("dimension_data", "dimension_channel_data"))
     where = "WHERE source=%s" if source else ""
     params = (source,) if source else ()
     sql = "SELECT " + ",".join(GENERAL_BRAND_INSERT_COLUMNS) + " FROM mart_general_brand_metric " + where
@@ -146,7 +150,17 @@ def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]
         conn.close()
     for row in rows:
         for col in GENERAL_BRAND_INSERT_COLUMNS:
-            if col in {"metric_history", "extended_metric_history", "channel_data", "specialty_data", "by_dimension", "raw_value_history", "payload"}:
+            if col in {
+                "metric_history",
+                "extended_metric_history",
+                "channel_data",
+                "specialty_data",
+                "dimension_data",
+                "dimension_channel_data",
+                "by_dimension",
+                "raw_value_history",
+                "payload",
+            }:
                 row[col] = json.loads(row[col]) if row.get(col) else {}
         row["channel_specialty_matrix"] = {}
     return rows
@@ -347,7 +361,7 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
         display_name = _display_brand_name(copied, overlay)
         output_key = _output_brand_key(copied, overlay, display_name)
         dim = dict(copied.get("by_dimension") or {})
-        for key in ("class", "class_1", "class_2", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
+        for key in ("class", "class_1", "class_2"):
             dim[key] = overlay.get(key)
         copied.update(
             {
@@ -357,6 +371,8 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
                 "brand_name": display_name,
                 "is_jw": _truthy(overlay.get("is_jw")) if "is_jw" in overlay else is_jw_name(overlay.get("name")),
                 "by_dimension": dim,
+                "dimension_data": copied.get("dimension_data") or {},
+                "dimension_channel_data": copied.get("dimension_channel_data") or {},
                 "_catalog_join_key": str(overlay.get("brand_key") or row.get("brand_key") or ""),
                 "overlay_data": {
                     "catalog_source": "strategic_brand",
@@ -460,6 +476,7 @@ def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str 
         write_jsonl(output_dir / ML_MARKET_JSONL, market_rows)
     if insert:
         market_ids = {str(row["ml_id"]) for _, row in ml_market.iterrows()}
+        ensure_json_columns("mart_strategic_ml_brand_metric", ("dimension_data", "dimension_channel_data"))
         delete_existing_rows("mart_strategic_ml_brand_metric", "ml_id", market_ids)
         delete_existing_rows("mart_strategic_ml_market_metric", "ml_id", market_ids)
         insert_rows("mart_strategic_ml_brand_metric", ML_BRAND_COLUMNS, brand_rows, {"ml_id", "brand_id", "source", "measure"})

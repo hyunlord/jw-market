@@ -67,6 +67,8 @@ GENERAL_BRAND_INSERT_COLUMNS = [
     "extended_metric_history",
     "channel_data",
     "specialty_data",
+    "dimension_data",
+    "dimension_channel_data",
     "by_dimension",
     "raw_value_history",
     "payload",
@@ -95,6 +97,8 @@ JSON_INSERT_COLUMNS = {
     "extended_metric_history",
     "channel_data",
     "specialty_data",
+    "dimension_data",
+    "dimension_channel_data",
     "by_dimension",
     "raw_value_history",
     "market_size_series",
@@ -114,6 +118,7 @@ JSON_INSERT_COLUMNS = {
     "cd_overlay",
     "payload",
 }
+SKU_DIMENSION_COLUMNS = ("nhi_type", "molecule", "dosage_form", "strength_pack", "ox_gx", "fish_oil")
 
 
 def general_brand_jsonl_path(source: str, output_dir: Path | None = None) -> Path:
@@ -179,6 +184,20 @@ def json_ready(value: Any) -> Any:
 
 def dumps(value: Any) -> str:
     return json.dumps(json_ready(value), ensure_ascii=False, separators=(",", ":"))
+
+
+def ensure_json_columns(table: str, columns: Iterable[str]) -> None:
+    """Add JSON columns required by newer mart writers when an existing DB is reused."""
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SHOW COLUMNS FROM {table}")
+            existing = {row["Field"] for row in cur.fetchall()}
+            for column in columns:
+                if column not in existing:
+                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} JSON NULL")
+    finally:
+        conn.close()
 
 
 def safe_float(value: Any) -> float:
@@ -444,8 +463,13 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
                 "product_code": static.get("PRODUCT NAME") or product_name,
                 "pack_desc": static.get("PACK DESC") or static.get("PACK DESCRIPTION"),
                 "strength": static.get("STRENGTH"),
+                "strength_pack": static.get("STRENGTH") or static.get("PACK DESC") or static.get("PACK DESCRIPTION"),
                 "molecule_desc": static.get("MOLECULE DESC"),
+                "molecule": static.get("MOLECULE DESC"),
+                "dosage_form": static.get("NFC 3 DESC") or static.get("NFC 2 DESC") or static.get("NFC 1 DESC"),
                 "nhi_type": static.get("NHI TYPE"),
+                "ox_gx": None,
+                "fish_oil": None,
                 "manufacturer": static.get("MFR NAME KOR") or row.get("mfr_name"),
                 "company": static.get("MFR NAME KOR") or row.get("mfr_name"),
                 "payload_static": static,
@@ -561,6 +585,42 @@ def build_dimensional_history(group: pd.DataFrame, dim_col: str, periods: list[s
         values = period_value_map(part, periods)
         result[str(label)] = {period: {"raw_value": value} for period, value in values.items()}
     return result
+
+
+def build_dimension_channel_history(
+    group: pd.DataFrame,
+    dim_col: str,
+    periods: list[str],
+) -> dict[str, dict[str, dict[str, dict[str, float]]]]:
+    if dim_col not in group.columns or "channel" not in group.columns:
+        return {}
+    result: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    for (label, channel), part in group.groupby([dim_col, "channel"], dropna=False):
+        if label is None or pd.isna(label) or not str(label).strip():
+            continue
+        if channel is None or pd.isna(channel) or not str(channel).strip():
+            continue
+        values = period_value_map(part, periods)
+        result.setdefault(str(label), {})[str(channel)] = {
+            period: {"raw_value": value} for period, value in values.items()
+        }
+    return result
+
+
+def build_sku_dimension_data(group: pd.DataFrame, periods: list[str]) -> dict[str, dict[str, dict[str, dict[str, float]]]]:
+    return {
+        dim_col: build_dimensional_history(group, dim_col, periods)
+        for dim_col in SKU_DIMENSION_COLUMNS
+        if dim_col in group.columns
+    }
+
+
+def build_sku_dimension_channel_data(group: pd.DataFrame, periods: list[str]) -> dict[str, dict[str, dict[str, dict[str, dict[str, float]]]]]:
+    return {
+        dim_col: build_dimension_channel_history(group, dim_col, periods)
+        for dim_col in SKU_DIMENSION_COLUMNS
+        if dim_col in group.columns
+    }
 
 
 def build_channel_specialty_matrix(group: pd.DataFrame, periods: list[str]) -> dict[str, dict[str, dict[str, float]]]:
@@ -688,6 +748,8 @@ def build_brand_rows(source: str, measure: str, frame: pd.DataFrame, catalog_map
                 "channel_data": build_dimensional_history(group, "channel", periods),
                 "specialty_data": build_dimensional_history(group, "specialty", periods) if source == "ubist" else {},
                 "channel_specialty_matrix": build_channel_specialty_matrix(group, periods) if source == "ubist" else {},
+                "dimension_data": build_sku_dimension_data(group, periods),
+                "dimension_channel_data": build_sku_dimension_channel_data(group, periods),
                 "by_dimension": by_dimension,
                 "raw_value_history": history,
                 "payload": {
@@ -812,6 +874,7 @@ def compute_general(
     ubist_base = load_ubist_base_frame(max_rows=max_rows, ml=ml) if source == "ubist" else None
     iqvia_base = load_iqvia_base_frame(max_rows=max_rows) if source == "iqvia_nsa" else None
     if insert:
+        ensure_json_columns("mart_general_brand_metric", ("dimension_data", "dimension_channel_data"))
         delete_source_rows("mart_general_brand_metric", source)
         delete_source_rows("mart_general_market_metric", source)
     for measure in MEASURES_BY_SOURCE[source]:

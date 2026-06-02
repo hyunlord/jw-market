@@ -851,6 +851,80 @@ def _dimension_values(row: dict[str, Any], level: str) -> list[str]:
     return []
 
 
+def _dimension_series_map(row: dict[str, Any], field: str | None) -> dict[str, Any]:
+    if not field:
+        return {}
+    dimension_data = row.get("__dimension_data")
+    if dimension_data is None:
+        dimension_data = decode_json(row.get("dimension_data"))
+        row["__dimension_data"] = dimension_data
+    if not isinstance(dimension_data, dict):
+        return {}
+    series_map = dimension_data.get(field)
+    if not isinstance(series_map, dict):
+        return {}
+    return {str(label): series for label, series in series_map.items() if str(label).strip() and isinstance(series, dict)}
+
+
+def _has_dimension_field(row: dict[str, Any], field: str | None) -> bool:
+    if not field:
+        return False
+    dimension_data = row.get("__dimension_data")
+    if dimension_data is None:
+        dimension_data = decode_json(row.get("dimension_data"))
+        row["__dimension_data"] = dimension_data
+    return isinstance(dimension_data, dict) and isinstance(dimension_data.get(field), dict)
+
+
+def _dimension_channel_series_map(row: dict[str, Any], field: str | None, source: str, channel: str) -> dict[str, dict[str, Any]]:
+    if not field or channel == "전체":
+        return {}
+    dimension_channel_data = row.get("__dimension_channel_data")
+    if dimension_channel_data is None:
+        dimension_channel_data = decode_json(row.get("dimension_channel_data"))
+        row["__dimension_channel_data"] = dimension_channel_data
+    if not isinstance(dimension_channel_data, dict):
+        return {}
+    field_data = dimension_channel_data.get(field)
+    if not isinstance(field_data, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for label, channel_map in field_data.items():
+        label_text = str(label).strip()
+        if not label_text or not isinstance(channel_map, dict):
+            continue
+        merged = {period: {"raw_value": 0.0} for period in _series_periods_from_channel_map(channel_map)}
+        matched = False
+        for raw_channel, series in channel_map.items():
+            if _channel_bucket(raw_channel, source) != channel or not isinstance(series, dict):
+                continue
+            matched = True
+            for period, item in series.items():
+                merged.setdefault(period, {"raw_value": 0.0})
+                merged[period]["raw_value"] += _value_from_period_item(item)
+        if matched:
+            result[label_text] = merged
+    return result
+
+
+def _has_dimension_channel_field(row: dict[str, Any], field: str | None) -> bool:
+    if not field:
+        return False
+    dimension_channel_data = row.get("__dimension_channel_data")
+    if dimension_channel_data is None:
+        dimension_channel_data = decode_json(row.get("dimension_channel_data"))
+        row["__dimension_channel_data"] = dimension_channel_data
+    return isinstance(dimension_channel_data, dict) and isinstance(dimension_channel_data.get(field), dict)
+
+
+def _series_periods_from_channel_map(channel_map: dict[str, Any]) -> list[str]:
+    periods: set[str] = set()
+    for series in channel_map.values():
+        if isinstance(series, dict):
+            periods.update(str(period) for period in series.keys())
+    return sorted(periods, key=period_key)
+
+
 def _channel_bucket(raw: Any, source: str) -> str | None:
     text = str(raw or "").strip()
     if not text:
@@ -916,6 +990,23 @@ def _segment_rows_for_level(
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
 
     for row in rows:
+        field = LEVEL_FIELD_BY_LABEL.get(level)
+        dimension_field_present = _has_dimension_field(row, field) if channel == "전체" else False
+        dimension_series = _dimension_series_map(row, field) if channel == "전체" else {}
+        dimension_channel_present = _has_dimension_channel_field(row, field) if channel != "전체" else False
+        dimension_channel_series = _dimension_channel_series_map(row, field, source, channel) if channel != "전체" else {}
+        active_dimension_series = dimension_series if channel == "전체" else dimension_channel_series
+        if active_dimension_series:
+            for name, series in active_dimension_series.items():
+                grouped.setdefault(name, {period: [0.0] for period in periods})
+                _add_series(grouped[name], series, periods)
+                _add_series(totals, series, periods)
+            continue
+        if dimension_field_present:
+            continue
+        if dimension_channel_present:
+            continue
+
         names = _dimension_values(row, level)
         if not names:
             continue

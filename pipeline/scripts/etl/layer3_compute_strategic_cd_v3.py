@@ -24,6 +24,7 @@ from layer3_compute_strategic_ml_v3 import (
     _truthy,
     delete_existing_rows,
     drop_strict_excluded_rows,
+    ensure_json_columns,
     expected_measure_pairs,
     fetch_general_rows_from_db,
     is_jw_name,
@@ -53,6 +54,8 @@ CD_BRAND_COLUMNS = [
     "extended_metric_history",
     "channel_data",
     "specialty_data",
+    "dimension_data",
+    "dimension_channel_data",
     "by_dimension",
     "raw_value_history",
     "cd_overlay",
@@ -177,7 +180,7 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
         display_name = _display_brand_name(copied, overlay)
         output_key = _output_brand_key(copied, overlay, display_name)
         dim = dict(copied.get("by_dimension") or {})
-        dim.update({k: v for k, v in override_columns.items() if k not in {"판매사", "제조사"}})
+        dim.update({k: v for k, v in override_columns.items() if k in {"class", "class_1", "class_2"}})
         copied.update(
             {
                 "cd_market_id": cd_row["cd_id"],
@@ -186,6 +189,8 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
                 "brand_name": display_name,
                 "is_jw": _truthy(overlay.get("is_jw")) if "is_jw" in overlay else is_jw_name(overlay.get("name")),
                 "by_dimension": dim,
+                "dimension_data": copied.get("dimension_data") or {},
+                "dimension_channel_data": copied.get("dimension_channel_data") or {},
                 "_catalog_join_key": str(overlay.get("brand_key") or row.get("brand_key") or ""),
                 "cd_overlay": {
                     "filter": cd_filter_info,
@@ -246,6 +251,7 @@ def compute_strategic_cd(dry_run: bool, insert: bool, output_dir: Path, cd_marke
         write_jsonl(output_dir / CD_MARKET_JSONL, market_rows)
     if insert:
         market_ids = {str(row["cd_id"]) for _, row in cd_markets.iterrows()}
+        ensure_json_columns("mart_strategic_cd_brand_metric", ("dimension_data", "dimension_channel_data"))
         delete_existing_rows("mart_strategic_cd_brand_metric", "cd_market_id", market_ids)
         delete_existing_rows("mart_strategic_cd_market_metric", "cd_market_id", market_ids)
         insert_rows("mart_strategic_cd_brand_metric", CD_BRAND_COLUMNS, brand_rows, {"cd_market_id", "cd_brand_id", "source", "measure"})
