@@ -165,7 +165,8 @@ def test_simulation_prediction_accepts_raw_krw_with_ci_wording():
     parsed_output = _parsed_with_prediction(
         "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW), "
         "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
-        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다."
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다 "
+        "(Market Landscape · UBIST 기준)."
     )
 
     result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
@@ -213,3 +214,101 @@ def test_simulation_prediction_requires_ci_wording():
 
     assert not result.valid
     assert any(item["pattern"] == "simulation_missing_ci_wording" for item in result.unmatched_numbers)
+
+
+def _cd_metric_bundle():
+    return {
+        "market_views": [
+            {
+                "view_id": "CD.IQVIA.sales",
+                "source": "IQVIA",
+                "target_brand_metric": {"history": {"2025-Q4": {"ms_pct": 58.82}}},
+            },
+            {
+                "view_id": "ML.IQVIA.sales",
+                "source": "IQVIA",
+                "target_brand_metric": {"history": {"2025-Q4": {"ms_pct": 25.36}}},
+            },
+        ],
+        "event_bundle": {
+            "events_brand_centric": [
+                {"news_id": "n1", "title": "페린젝트 급여 확대", "published_date": "2026-05-01"}
+            ],
+            "events_market_trend": [],
+            "cross_match_events": [],
+        },
+        "competitor_events": {"by_source": {}, "by_view": {}},
+    }
+
+
+def test_cd_metric_is_valid_when_competitive_dynamics_label_is_present():
+    parsed_output = {
+        "phenomenon": {
+            "title": "페린젝트 M/S 58.82% (Competitive Dynamics · IQVIA 기준)",
+            "body": "전체 시장 M/S는 25.36% (Market Landscape · IQVIA 기준)입니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_market_metric_without_view_label_is_rejected():
+    parsed_output = {
+        "phenomenon": {
+            "title": "페린젝트 M/S 58.82%",
+            "body": "전체 시장 M/S는 25.36%입니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
+
+
+def test_prediction_news_claim_requires_evidence_when_source_exists():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "급여 확대 뉴스로 성장 전망",
+            "body": "급여 확대 보도에 따라 향후 처방 증가가 예상됩니다.",
+            "bullets": [],
+            "evidence": [],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "prediction_evidence_required" for item in result.unmatched_numbers)
+
+
+def test_prediction_news_evidence_must_come_from_bundle():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "급여 확대 뉴스로 성장 전망",
+            "body": "급여 확대 보도에 따라 향후 처방 증가가 예상됩니다.",
+            "bullets": [],
+            "evidence": [{"news_id": "not-in-bundle", "title": "없는 기사"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)

@@ -47,6 +47,18 @@ SIMULATION_FORBIDDEN_SCENARIO_RE = re.compile(
 )
 SIMULATION_UNIT_CONVERSION_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*(?:억|만|천|k|K|m|M)(?![A-Za-z가-힣])")
 SIMULATION_CI_RE = re.compile(r"(95\s*%\s*(?:신뢰구간|CI)|(?:신뢰구간|CI)[^\n.]{0,20}95\s*%)", re.IGNORECASE)
+FORECAST_VIEW_PATH_RE = re.compile(r"forecast_simulation\.by_view\.([A-Z]+)\.([A-Z]+)\.([^.]+)")
+MARKET_VIEW_PATH_RE = re.compile(r"market_views\[(\d+)\]")
+PREDICTION_NEWS_TRIGGER_RE = re.compile(
+    r"(뉴스|보도|급여|허가|출시|신약|경쟁사|진입|임상|학회|약가|정책|규제|공세|시장\s*변화)",
+    re.IGNORECASE,
+)
+VIEW_DISPLAY = {
+    "ML": "Market Landscape",
+    "CD": "Competitive Dynamics",
+    "market_landscape": "Market Landscape",
+    "competitive_dynamics": "Competitive Dynamics",
+}
 
 
 DEFAULT_TOLERANCE_BY_TYPE = {
@@ -302,6 +314,7 @@ def validate_stage_output(
             record = {
                 "stage": stage,
                 "context": context_name,
+                "context_text": text,
                 "value": item["value"],
                 "raw_text": item["raw_text"],
                 "pattern": item["pattern"],
@@ -320,10 +333,10 @@ def validate_stage_output(
     return StageValidation(valid=not unmatched, extracted=extracted, unmatched=unmatched, warnings=warnings)
 
 
-def _prediction_policy_issue(pattern: str, raw_text: str, message: str) -> dict[str, Any]:
+def _policy_issue(stage: str, context: str, pattern: str, raw_text: str, message: str) -> dict[str, Any]:
     return {
-        "stage": "prediction",
-        "context": "simulation_policy",
+        "stage": stage,
+        "context": context,
         "value": None,
         "raw_text": raw_text,
         "pattern": pattern,
@@ -333,6 +346,10 @@ def _prediction_policy_issue(pattern: str, raw_text: str, message: str) -> dict[
         "low_priority": False,
         "message": message,
     }
+
+
+def _prediction_policy_issue(pattern: str, raw_text: str, message: str) -> dict[str, Any]:
+    return _policy_issue("prediction", "simulation_policy", pattern, raw_text, message)
 
 
 def _prediction_text(parsed_output: dict) -> str:
@@ -345,6 +362,111 @@ def _prediction_text(parsed_output: dict) -> str:
 def _forecast_simulation_available(bundle: dict) -> bool:
     forecast = bundle.get("forecast_simulation") or {}
     return bool(forecast.get("available") and forecast.get("by_view"))
+
+
+def _view_label_parts_from_path(bundle: dict, matched_path: str | None) -> tuple[str, str] | None:
+    path = str(matched_path or "")
+    market_match = MARKET_VIEW_PATH_RE.search(path)
+    if market_match:
+        views = bundle.get("market_views") or []
+        idx = int(market_match.group(1))
+        if idx >= len(views):
+            return None
+        view = views[idx] or {}
+        view_id = str(view.get("view_id") or "")
+        if view_id:
+            parts = view_id.split(".")
+            if len(parts) >= 2:
+                return VIEW_DISPLAY.get(parts[0], parts[0]), parts[1].upper()
+        view_name = str(view.get("view") or "")
+        source = str(view.get("source") or "")
+        if view_name and source:
+            return VIEW_DISPLAY.get(view_name, view_name), source.upper()
+        return None
+
+    forecast_match = FORECAST_VIEW_PATH_RE.search(path)
+    if forecast_match:
+        view_short, source, _measure = forecast_match.groups()
+        return VIEW_DISPLAY.get(view_short, view_short), source.upper()
+    return None
+
+
+def _has_view_label(text: str, display: str, source: str) -> bool:
+    return bool(re.search(rf"{re.escape(display)}\s*·\s*{re.escape(source.upper())}\s*기준", text or "", re.I))
+
+
+def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValidation]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for stage, result in stage_results.items():
+        for item in result.extracted:
+            parts = _view_label_parts_from_path(bundle, item.get("matched_path"))
+            if not parts:
+                continue
+            display, source = parts
+            if _has_view_label(str(item.get("context_text") or ""), display, source):
+                continue
+            issues.append(
+                _policy_issue(
+                    stage,
+                    item.get("context") or "view_label_policy",
+                    "market_metric_missing_view_label",
+                    str(item.get("raw_text") or ""),
+                    f"market metric 수치에는 '{display} · {source} 기준' View/source 표기가 필요합니다.",
+                )
+            )
+    return issues
+
+
+def _iter_bundle_events(bundle: dict) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    event_bundle = bundle.get("event_bundle") or {}
+    for key in ["events_brand_centric", "events_market_trend", "cross_match_events"]:
+        events.extend(item for item in event_bundle.get(key, []) or [] if isinstance(item, dict))
+
+    competitor_events = bundle.get("competitor_events") or {}
+    for group_key in ["by_source", "by_view"]:
+        for payload in (competitor_events.get(group_key) or {}).values():
+            for comp in payload.get("competitors", []) or []:
+                events.extend(item for item in comp.get("events", []) or [] if isinstance(item, dict))
+    return events
+
+
+def _prediction_evidence(parsed_output: dict) -> list[dict[str, Any]]:
+    prediction = parsed_output.get("prediction", {}) or {}
+    return [item for item in prediction.get("evidence", []) or [] if isinstance(item, dict)]
+
+
+def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict) -> list[dict[str, Any]]:
+    text = _prediction_text(parsed_output)
+    bundle_events = _iter_bundle_events(bundle)
+    evidence = _prediction_evidence(parsed_output)
+    issues: list[dict[str, Any]] = []
+
+    if PREDICTION_NEWS_TRIGGER_RE.search(text) and bundle_events and not evidence:
+        issues.append(
+            _prediction_policy_issue(
+                "prediction_evidence_required",
+                "",
+                "prediction stage에서 뉴스/급여/허가 등 사건성 근거를 언급하면 bundle evidence를 함께 제시해야 합니다.",
+            )
+        )
+
+    if evidence:
+        source_ids = {str(item.get("news_id")) for item in bundle_events if item.get("news_id")}
+        source_titles = {str(item.get("title")) for item in bundle_events if item.get("title")}
+        for item in evidence:
+            news_id = str(item.get("news_id") or "")
+            title = str(item.get("title") or "")
+            if (news_id and news_id in source_ids) or (title and title in source_titles):
+                continue
+            issues.append(
+                _prediction_policy_issue(
+                    "prediction_evidence_not_in_bundle",
+                    news_id or title,
+                    "prediction evidence는 bundle에 포함된 source event에서만 인용할 수 있습니다.",
+                )
+            )
+    return issues
 
 
 def validate_simulation_prediction_policy(
@@ -440,17 +562,26 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
         total_extracted += len(stage_result.extracted)
         total_matched += sum(1 for item in stage_result.extracted if item.get("matched_path"))
 
-    simulation_issues = validate_simulation_prediction_policy(
-        parsed_output,
-        bundle,
-        stage_results.get("prediction") or StageValidation(False, [], [], []),
+    policy_issues: list[dict[str, Any]] = []
+    policy_issues.extend(
+        validate_simulation_prediction_policy(
+            parsed_output,
+            bundle,
+            stage_results.get("prediction") or StageValidation(False, [], [], []),
+        )
     )
-    if simulation_issues:
+    policy_issues.extend(validate_view_label_policy(bundle, stage_results))
+    policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle))
+
+    if policy_issues:
         prediction_result = stage_results.get("prediction")
-        if prediction_result:
-            prediction_result.unmatched.extend(simulation_issues)
-            prediction_result.valid = False
-        all_unmatched.extend(simulation_issues)
+        for issue in policy_issues:
+            target_stage = str(issue.get("stage") or "prediction")
+            target_result = stage_results.get(target_stage) or prediction_result
+            if target_result:
+                target_result.unmatched.append(issue)
+                target_result.valid = False
+        all_unmatched.extend(policy_issues)
 
     return ValidationResult(
         valid=not all_unmatched,

@@ -11,6 +11,13 @@ def _dump(obj: Any) -> str:
 
 
 def _competitor_event_count(competitor_events: dict[str, Any]) -> int:
+    by_view = competitor_events.get("by_view") or {}
+    if by_view:
+        return sum(
+            len(comp.get("events", []) or [])
+            for view_payload in by_view.values()
+            for comp in view_payload.get("competitors", []) or []
+        )
     return sum(
         len(comp.get("events", []) or [])
         for source_payload in (competitor_events.get("by_source") or {}).values()
@@ -54,7 +61,7 @@ runner_config: {runner_config}
 [cross_match events — {len(cross_match_events)} 건]
 {_dump(cross_match_events)}
 
-[경쟁사 events (source 별) — {_competitor_event_count(competitor_events)} 건]
+[경쟁사 events (view/source 별) — {_competitor_event_count(competitor_events)} 건]
 {_dump(competitor_events)}
 
 [forecast/simulation]

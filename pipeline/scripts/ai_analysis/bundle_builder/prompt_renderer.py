@@ -161,9 +161,12 @@ def _render_v1_1(bundle: dict) -> str:
     lines.extend(["", "### 3.4 Tag 분포", f"- {', '.join(tag_parts) if tag_parts else '태그 없음'}"])
 
     lines.extend(["", "## 4. 시장 상위 경쟁사의 이슈"])
-    for source, payload in bundle["competitor_events"]["by_source"].items():
+    competitor_events = bundle["competitor_events"]
+    event_groups = competitor_events.get("by_view") or competitor_events.get("by_source") or {}
+    for group_key, payload in event_groups.items():
         lines.append("")
-        lines.append(f"### {source} 시장 top5 의 events")
+        label = payload.get("view_id") or group_key
+        lines.append(f"### {label} 시장 top5 의 events")
         for comp in payload.get("competitors", []):
             lines.append("")
             lines.append(f"#### {comp['brand_name']} (rank {comp.get('rank_in_market') or '-'})")

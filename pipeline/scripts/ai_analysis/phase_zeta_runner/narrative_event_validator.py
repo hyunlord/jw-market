@@ -28,6 +28,13 @@ def _event_dates(bundle: dict[str, Any]) -> set[str]:
                 date = event.get("published_date")
                 if date:
                     dates.add(str(date)[:10])
+    by_view = ((bundle.get("competitor_events", {}) or {}).get("by_view", {}) or {})
+    for view_payload in by_view.values():
+        for comp in view_payload.get("competitors", []) or []:
+            for event in comp.get("events", []) or []:
+                date = event.get("published_date")
+                if date:
+                    dates.add(str(date)[:10])
     return dates
 
 

@@ -1,6 +1,8 @@
 import re
 from datetime import datetime
 
+import pytest
+
 from bundle_builder import build_brand_bundle, render_narrative
 
 from .conftest import KST
@@ -93,11 +95,15 @@ def test_forecast_simulation_filled_from_deep_analysis(db_conn, config_v1_1):
 def test_dual_brand_has_both_source_competitors(db_conn, config_v1_1):
     bundle = _bundle("가드메트", db_conn, config_v1_1)
     assert {"UBIST", "IQVIA"} <= set(bundle["competitor_events"]["by_source"])
+    assert {"ML.UBIST.sales", "CD.UBIST.sales", "ML.IQVIA.sales", "CD.IQVIA.sales"} <= set(
+        bundle["competitor_events"]["by_view"]
+    )
 
 
 def test_single_source_brand_only_one(db_conn, config_v1_1):
     bundle = _bundle("헴리브라", db_conn, config_v1_1)
     assert set(bundle["competitor_events"]["by_source"]) == {"IQVIA"}
+    assert {"ML.IQVIA.sales", "CD.IQVIA.sales"} <= set(bundle["competitor_events"]["by_view"])
 
 
 def test_atc4_code_populated(db_conn, config_v1_1):
@@ -120,11 +126,22 @@ def test_no_unit_conversion_in_narrative(db_conn, config_v1_1):
 
 
 def test_expected_view_counts_from_cache(db_conn, config_v1_1):
-    # Phase 6 CD 제거 후: market_landscape view 만 생성 (competitive_dynamics 제거).
-    # 헴리브라(IQVIA-only) 4 ML, 라베칸(UBIST-only) 2 ML. CD view 는 0.
+    # v6.3: Market Landscape + Competitive Dynamics 를 모두 bundle 에 싣는다.
+    # 헴리브라(IQVIA-only) 4 ML + 4 CD, 라베칸(UBIST-only) 2 ML + 2 CD.
     hem = _bundle("헴리브라", db_conn, config_v1_1)
     rab = _bundle("라베칸", db_conn, config_v1_1)
-    assert hem["bundle_meta"]["available_view_count"] == 4
-    assert rab["bundle_meta"]["available_view_count"] == 2
-    assert all(v["view"] == "market_landscape" for v in hem["market_views"])
-    assert all(v["view"] == "market_landscape" for v in rab["market_views"])
+    assert hem["bundle_meta"]["available_view_count"] == 8
+    assert rab["bundle_meta"]["available_view_count"] == 4
+    assert {v["view"] for v in hem["market_views"]} == {"market_landscape", "competitive_dynamics"}
+    assert {v["view"] for v in rab["market_views"]} == {"market_landscape", "competitive_dynamics"}
+
+
+def test_perinject_ml_and_cd_sales_views_are_distinct(db_conn, config_v1_1):
+    bundle = _bundle("페린젝트", db_conn, config_v1_1)
+    by_id = {view["view_id"]: view for view in bundle["market_views"]}
+
+    ml_point = by_id["ML.IQVIA.sales"]["target_brand_metric"]["history"]["2025-Q4"]
+    cd_point = by_id["CD.IQVIA.sales"]["target_brand_metric"]["history"]["2025-Q4"]
+
+    assert ml_point["ms_pct"] == pytest.approx(25.36, abs=0.01)
+    assert cd_point["ms_pct"] == pytest.approx(58.82, abs=0.01)

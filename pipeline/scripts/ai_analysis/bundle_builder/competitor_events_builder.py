@@ -40,22 +40,49 @@ def _fetch_events(brand_name: str, snapshot_at, config, db_conn) -> list[dict]:
 
 
 def build_competitor_events(
-    competitors_by_source: dict,
+    competitors_by_view: dict,
     snapshot_at,
     config,
     db_conn,
 ) -> dict:
-    result = {"by_source": {}}
-    for source in sorted(competitors_by_source, key=lambda value: {"UBIST": 0, "IQVIA": 1}.get(value, 99)):
+    result = {"by_source": {}, "by_view": {}}
+    event_cache: dict[str, list[dict]] = {}
+
+    def sort_key(view_id: str) -> tuple:
+        view_order = {"ML": 0, "CD": 1}
+        source_order = {"UBIST": 0, "IQVIA": 1}
+        measure_order = {"sales": 0, "volume": 1, "unit": 2, "dosage_unit": 3, "counting_unit": 4}
+        short, source, measure = (view_id.split(".", 2) + ["", "", ""])[:3]
+        return (view_order.get(short, 99), source_order.get(source, 99), measure_order.get(measure, 99), measure)
+
+    for view_id in sorted(competitors_by_view, key=sort_key):
+        view_payload = competitors_by_view[view_id] or {}
+        source = str(view_payload.get("source") or view_id.split(".")[1]).upper()
+        view = view_payload.get("view")
         competitors = []
-        for item in competitors_by_source[source]:
+        for item in view_payload.get("competitors", []) or []:
+            brand_name = item["brand_name"]
+            if brand_name not in event_cache:
+                event_cache[brand_name] = _fetch_events(brand_name, snapshot_at, config, db_conn)
             competitors.append(
                 {
-                    "brand_name": item["brand_name"],
+                    "brand_name": brand_name,
                     "rank_in_market": item.get("rank_in_market"),
                     "is_jw": bool(item.get("is_jw")),
-                    "events": _fetch_events(item["brand_name"], snapshot_at, config, db_conn),
+                    "events": event_cache[brand_name],
                 }
             )
-        result["by_source"][source] = {"competitors": competitors}
+        result["by_view"][view_id] = {
+            "view_id": view_id,
+            "view": view,
+            "source": source,
+            "competitors": competitors,
+        }
+        if source not in result["by_source"]:
+            result["by_source"][source] = {
+                "source": source,
+                "view_id": view_id,
+                "view": view,
+                "competitors": competitors,
+            }
     return result

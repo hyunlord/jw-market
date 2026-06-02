@@ -238,19 +238,22 @@ def _build_brand_bundle_v1_1(
     market_views = build_market_views(brand_context, snapshot_at.isoformat(), config, db_conn)
     event_bundle = build_event_bundle(brand_context, snapshot_at, config, db_conn)
 
-    competitors_by_source = {}
+    competitors_by_view = {}
     for view in market_views:
-        source = view["source"]
-        if source not in competitors_by_source:
-            competitors_by_source[source] = [
+        competitors_by_view[view["view_id"]] = {
+            "view_id": view["view_id"],
+            "view": view["view"],
+            "source": view["source"],
+            "competitors": [
                 {
                     "brand_name": comp["brand_name"],
                     "rank_in_market": comp.get("rank_in_market"),
                     "is_jw": comp.get("is_jw"),
                 }
                 for comp in view.get("competitors_top5", [])
-            ]
-    competitor_events = build_competitor_events(competitors_by_source, snapshot_at, config, db_conn)
+            ],
+        }
+    competitor_events = build_competitor_events(competitors_by_view, snapshot_at, config, db_conn)
     forecast_simulation = _build_forecast_simulation(brand, market_views, config, db_conn)
     bundle = {
         "bundle_meta": {
