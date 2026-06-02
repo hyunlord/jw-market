@@ -90,6 +90,9 @@ def ensure_events_raw_table(conn: pymysql.connections.Connection) -> None:
 
 
 def _ensure_index(cur: Any, table: str, index_name: str, columns: list[str]) -> None:
+    existing_columns = _table_columns(cur, table)
+    if not set(columns).issubset(existing_columns):
+        return
     cur.execute(
         """
         SELECT COUNT(*) AS cnt
@@ -104,6 +107,19 @@ def _ensure_index(cur: Any, table: str, index_name: str, columns: list[str]) -> 
         return
     cols = ", ".join(f"`{column}`" for column in columns)
     cur.execute(f"CREATE INDEX `{index_name}` ON `{table}` ({cols})")
+
+
+def _table_columns(cur: Any, table: str) -> set[str]:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+        """,
+        [table],
+    )
+    return {str(row["column_name"]) for row in cur.fetchall()}
 
 
 def period_map_for_date(value: Any) -> dict[str, str | None]:
@@ -203,6 +219,11 @@ def _query_events(
     limit: int | None,
     derivation: str | None = None,
 ) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS cnt FROM event_brand_scores")
+        if int(cur.fetchone()["cnt"] or 0) == 0:
+            return []
+
     where = [
         "COALESCE(s.brand_canonical, s.brand_name) = %s",
         "s.score >= %s",

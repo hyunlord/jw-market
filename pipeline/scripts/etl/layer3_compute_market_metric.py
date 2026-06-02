@@ -29,6 +29,14 @@ def _present(value: Any) -> bool:
     return text != "" and text.lower() not in {"nan", "none", "null"}
 
 
+def _truthy(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "t", "yes", "y"}
+    return bool(value)
+
+
 def _metric(row: dict[str, Any], period: str) -> dict[str, Any]:
     return (row.get("metric_history") or {}).get(period, {}) or {}
 
@@ -177,6 +185,8 @@ def compute_analysis_levels(rows: list[dict[str, Any]], catalog_market_row: dict
             continue
         values: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for row in rows:
+            if key == "class" and _truthy((row.get("overlay_data") or {}).get("is_class_excluded")):
+                continue
             dim = row.get("by_dimension") or {}
             label = dim.get(key) or (row.get("overlay_data") or {}).get(key)
             if not label:

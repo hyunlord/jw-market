@@ -10,6 +10,7 @@ brand facts.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -72,6 +73,27 @@ def _join_unique(values: pd.Series) -> str | None:
     return " | ".join(seen)
 
 
+def _json_array_union(values: pd.Series) -> str | None:
+    merged: set[str] = set()
+    for value in values:
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, list):
+            merged.update(str(item).strip().upper() for item in value if str(item).strip())
+            continue
+        text = str(value or "").strip()
+        if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+            continue
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            raise ValueError(f"allowed_atc4_codes_json must be a JSON array: {text!r}")
+        merged.update(str(item).strip().upper() for item in parsed if str(item).strip())
+    return json.dumps(sorted(merged), ensure_ascii=False) if merged else None
+
+
 def _join_key_for_base_name(value: Any) -> str:
     text = str(value or "").replace("A+", "에이플러스").replace("a+", "에이플러스")
     return normalize_brand_name(text)
@@ -106,6 +128,10 @@ def aggregate_to_brand_grain(catalog: pd.DataFrame) -> pd.DataFrame:
         for col in ("cd_id", "class", "class_1", "class_2", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"):
             if col in catalog.columns:
                 row[col] = _join_unique(part[col]) if col in {"molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"} else _first_present(part[col])
+        if "allowed_atc4_codes_json" in catalog.columns:
+            row["allowed_atc4_codes_json"] = _json_array_union(part["allowed_atc4_codes_json"])
+        if "is_class_excluded" in catalog.columns:
+            row["is_class_excluded"] = bool(part["is_class_excluded"].astype(bool).any())
         merged_rows.append(row)
 
     return pd.DataFrame(merged_rows, columns=catalog.columns)

@@ -51,9 +51,9 @@ DEFAULT_CATALOG_PATH = Path("docs/reference/master_column_mapping_catalog.md")
 DEFAULT_OUTPUT_FILE = Path("parquet/master_drug/master_drug.parquet")
 
 STANDARD_PREFIX = "drug_extra_json."
-EXPECTED_ROW_COUNT = 3912
-EXPECTED_EXCLUDED_ROWS = 583
-EXPECTED_SOURCE_TYPE_DISTRIBUTION = {"IQVIA": 610, "UBIST": 3302}
+EXPECTED_ROW_COUNT = 4446
+EXPECTED_EXCLUDED_ROWS = 49
+EXPECTED_SOURCE_TYPE_DISTRIBUTION = {"IQVIA": 650, "UBIST": 3796}
 
 MASTER_DRUG_COLUMNS = (
     "strategic_market_id",
@@ -139,16 +139,16 @@ EXPECTED_MARKET_STATS = {
     "strategy_004": {"sheet_name": "타발리스", "header_row": 5, "raw_rows_scanned": 10, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 10},
     "strategy_005": {"sheet_name": "시그마트", "header_row": 5, "raw_rows_scanned": 294, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 294},
     "strategy_006": {"sheet_name": "리바로 리바로젯", "header_row": 4, "raw_rows_scanned": 1295, "empty_rows": 200, "excluded_rows": 48, "staging_rows": 1047},
-    "strategy_007": {"sheet_name": "리바로페노", "header_row": 4, "raw_rows_scanned": 996, "empty_rows": 385, "excluded_rows": 494, "staging_rows": 117},
+    "strategy_007": {"sheet_name": "리바로페노", "header_row": 4, "raw_rows_scanned": 996, "empty_rows": 385, "excluded_rows": 0, "staging_rows": 611},
     "strategy_008": {"sheet_name": "리바로하이 리바로브이", "header_row": 5, "raw_rows_scanned": 1096, "empty_rows": 15, "excluded_rows": 0, "staging_rows": 1081},
     "strategy_009": {"sheet_name": "트루패스 피나스타 제이다트", "header_row": 5, "raw_rows_scanned": 418, "empty_rows": 12, "excluded_rows": 1, "staging_rows": 405},
     "strategy_010": {"sheet_name": "뉴트로진 모빌리아", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 985, "excluded_rows": 0, "staging_rows": 10},
     "strategy_011": {"sheet_name": "악템라", "header_row": 5, "raw_rows_scanned": 26, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 26},
     "strategy_012": {"sheet_name": "페린젝트 베노훼럼", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 919, "excluded_rows": 0, "staging_rows": 76},
-    "strategy_013": {"sheet_name": "헴리브라", "header_row": 5, "raw_rows_scanned": 14, "empty_rows": 0, "excluded_rows": 1, "staging_rows": 13},
-    "strategy_014": {"sheet_name": "위너프 위너프A+", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 664, "excluded_rows": 8, "staging_rows": 323},
+    "strategy_013": {"sheet_name": "헴리브라", "header_row": 5, "raw_rows_scanned": 14, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 14},
+    "strategy_014": {"sheet_name": "위너프 위너프A+", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 664, "excluded_rows": 0, "staging_rows": 331},
     "strategy_015": {"sheet_name": "엔커버", "header_row": 7, "raw_rows_scanned": 4, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 4},
-    "strategy_016": {"sheet_name": "플라주오피", "header_row": 5, "raw_rows_scanned": 54, "empty_rows": 2, "excluded_rows": 31, "staging_rows": 21},
+    "strategy_016": {"sheet_name": "플라주오피", "header_row": 5, "raw_rows_scanned": 54, "empty_rows": 2, "excluded_rows": 0, "staging_rows": 52},
 }
 
 
@@ -198,12 +198,46 @@ def is_empty_row(values: list[Any] | tuple[Any, ...]) -> bool:
     return all(value is None or str(value).strip() == "" for value in values)
 
 
-def is_excluded_row(values: list[Any] | tuple[Any, ...]) -> bool:
-    for value in values:
+def _is_class_header(header: Any) -> bool:
+    text = normalize_header(header)
+    if not text:
+        return False
+    normalized = re.sub(r"[\s_-]+", "", text).lower()
+    return normalized in {"class", "class1", "class2"} or normalized.startswith("class")
+
+
+def _class_source_indexes(headers: list[Any] | tuple[Any, ...], metadata: dict[str, dict[str, Any]]) -> set[int]:
+    indexes: set[int] = {idx for idx, header in enumerate(headers) if _is_class_header(header)}
+    for target in ("class", "class_1", "class_2"):
+        spec = metadata.get(target) or {}
+        if spec.get("position") is not None:
+            try:
+                indexes.add(int(spec["position"]))
+            except (TypeError, ValueError):
+                pass
+            continue
+        source_column = normalize_header(spec.get("source_column"))
+        if not source_column:
+            continue
+        for idx, header in enumerate(headers):
+            text = normalize_header(header)
+            if text and (text == source_column or text.startswith(source_column)):
+                indexes.add(idx)
+    return indexes
+
+
+def is_excluded_row(
+    values: list[Any] | tuple[Any, ...],
+    class_indexes: set[int] | None = None,
+) -> bool:
+    class_indexes = set(class_indexes or ())
+    for idx, value in enumerate(values):
         if value is None:
             continue
         text = str(value).strip()
         if "제외" in text and not text.startswith("비제외"):
+            if idx in class_indexes:
+                continue
             return True
     return False
 
@@ -430,6 +464,7 @@ def load_drug_records(
             explicit_overrides = (
                 explicit_lookup_join(row_items) if config.strategic_market_id == "strategy_008" else {}
             )
+            class_indexes = _class_source_indexes(headers, metadata)
 
             for source_row_id, values in row_items:
                 market_stats.raw_rows_scanned += 1
@@ -437,7 +472,7 @@ def load_drug_records(
                     market_stats.empty_rows += 1
                     continue
                 raw_payload = build_raw_row_payload(headers, values, source_row_id)
-                if is_excluded_row(values):
+                if is_excluded_row(values, class_indexes):
                     market_stats.excluded_rows += 1
                     continue
 

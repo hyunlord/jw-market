@@ -100,12 +100,24 @@ def is_empty_row(values: list[Any] | tuple[Any, ...]) -> bool:
     return all(value is None or str(value).strip() == "" for value in values)
 
 
-def is_excluded_row(values: list[Any] | tuple[Any, ...]) -> bool:
-    for value in values:
+def _is_class_header(header: Any) -> bool:
+    text = str(header or "").strip().lower()
+    normalized = "".join(ch for ch in text if ch.isalnum())
+    return normalized in {"class", "class1", "class2"} or normalized.startswith("class")
+
+
+def is_excluded_row(
+    values: list[Any] | tuple[Any, ...],
+    headers: list[Any] | tuple[Any, ...] | None = None,
+) -> bool:
+    class_indexes = {idx for idx, header in enumerate(headers or []) if _is_class_header(header)}
+    for idx, value in enumerate(values):
         if value is None:
             continue
         text = str(value).strip()
         if "제외" in text and not text.startswith("비제외"):
+            if idx in class_indexes:
+                continue
             return True
     return False
 
@@ -172,7 +184,7 @@ def load_brand_consolidation_records(
             if is_empty_row(values):
                 stats.empty_rows += 1
                 continue
-            if is_excluded_row(values):
+            if is_excluded_row(values, headers=headers):
                 stats.excluded_rows += 1
                 continue
 

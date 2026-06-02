@@ -318,6 +318,14 @@ def nsa_record_to_parquet_row(record: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def is_iqvia_source_file(path: Path, suffixes: set[str]) -> bool:
+    """Return true for real IQVIA source files, excluding Office/macOS temp files."""
+    name = path.name
+    if name.startswith(("~$", "._")):
+        return False
+    return path.suffix.lower() in suffixes
+
+
 def discover_files(source: str) -> list[Path]:
     if source == "nsa":
         root = IQVIA_ROOT / "NSA"
@@ -326,7 +334,7 @@ def discover_files(source: str) -> list[Path]:
         return sorted(
             p
             for p in root.iterdir()
-            if p.suffix.lower() in {".csv", ".xlsx", ".xls"}
+            if is_iqvia_source_file(p, {".csv", ".xlsx", ".xls"})
         )
     if source == "csd":
         root = IQVIA_ROOT / "CSD"
@@ -335,7 +343,7 @@ def discover_files(source: str) -> list[Path]:
         return sorted(
             p
             for p in root.rglob("*")
-            if p.suffix.lower() in {".xlsx", ".xls"}
+            if is_iqvia_source_file(p, {".xlsx", ".xls"})
         )
     if source == "chso":
         root = IQVIA_ROOT / "CHSO"
@@ -344,7 +352,7 @@ def discover_files(source: str) -> list[Path]:
         return sorted(
             p
             for p in root.iterdir()
-            if p.suffix.lower() in {".xlsx", ".xls"}
+            if is_iqvia_source_file(p, {".xlsx", ".xls"})
         )
     raise ValueError(f"unknown source: {source}")
 

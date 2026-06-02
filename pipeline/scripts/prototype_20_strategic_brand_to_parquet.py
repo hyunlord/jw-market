@@ -6,9 +6,9 @@ Phase 14 Step 14-5 strategic_brand -> Parquet.
 Policy:
 - Q-42 / D-39: include every non-empty MI Master detail row, including rows
   that were previously excluded by the master_drug staging loader.
-- A cell that contains "제외" marks the row as strict-excluded for downstream
-  strategic marts. Materialized columns still null only the sourced cell so
-  the catalog remains auditable.
+- A non-Class cell that contains "제외" marks the row as strict-excluded for
+  downstream strategic marts. A Class-only "제외" keeps the row in market
+  totals and sets ``is_class_excluded`` so Class analysis can skip it.
 - Q-50: brand_id is readable and stable: sb_{ml_index:03d}_{source_row_id:05d}.
 - Q-51: CD assignment is strict. 0 matches -> NULL, 1 match -> cd_id,
   2+ matches -> stop condition.
@@ -48,8 +48,8 @@ DEFAULT_CD_MARKET_FILE = Path("output/catalog/cd_market/cd_market.parquet")
 MASTER_DRUG_SCRIPT = Path("scripts/prototype_11_master_drug_to_parquet.py")
 
 EXPECTED_ROW_COUNT = 4495
-EXPECTED_STAGING_ROWS = 3912
-EXPECTED_EXCLUDED_ROWS = 583
+EXPECTED_STAGING_ROWS = 4446
+EXPECTED_EXCLUDED_ROWS = 49
 EXPECTED_COLUMNS = (
     "brand_id",
     "name",
@@ -57,6 +57,8 @@ EXPECTED_COLUMNS = (
     "ml_id",
     "cd_id",
     "is_excluded",
+    "is_class_excluded",
+    "allowed_atc4_codes_json",
     "class",
     "class_1",
     "class_2",
@@ -128,6 +130,8 @@ STRATEGIC_BRAND_SCHEMA = pa.schema(
         pa.field("ml_id", pa.string(), nullable=False),
         pa.field("cd_id", pa.string(), nullable=True),
         pa.field("is_excluded", pa.bool_(), nullable=False),
+        pa.field("is_class_excluded", pa.bool_(), nullable=False),
+        pa.field("allowed_atc4_codes_json", pa.string(), nullable=True),
         pa.field("class", pa.string(), nullable=True),
         pa.field("class_1", pa.string(), nullable=True),
         pa.field("class_2", pa.string(), nullable=True),
@@ -170,6 +174,54 @@ def contains_excluded(value: Any) -> bool:
     return bool(text and "제외" in text and not text.startswith("비제외"))
 
 
+def _is_class_header(header: Any) -> bool:
+    text = clean_text(header)
+    if not text:
+        return False
+    normalized = re.sub(r"[\s_-]+", "", text).lower()
+    return normalized in {"class", "class1", "class2"} or normalized.startswith("class")
+
+
+def _class_source_indexes(headers: list[Any] | tuple[Any, ...], metadata: dict[str, dict[str, Any]]) -> set[int]:
+    indexes: set[int] = {idx for idx, header in enumerate(headers) if _is_class_header(header)}
+    for target in ("class", "class_1", "class_2"):
+        spec = metadata.get(target) or {}
+        if spec.get("position") is not None:
+            try:
+                indexes.add(int(spec["position"]))
+            except (TypeError, ValueError):
+                pass
+            continue
+        source_column = clean_text(spec.get("source_column"))
+        if not source_column:
+            continue
+        for idx, header in enumerate(headers):
+            text = clean_text(header)
+            if text and (text == source_column or text.startswith(source_column)):
+                indexes.add(idx)
+    return indexes
+
+
+def classify_exclusion_cells(
+    headers: list[Any] | tuple[Any, ...],
+    values: list[Any] | tuple[Any, ...],
+    class_indexes: set[int] | None = None,
+) -> tuple[bool, bool]:
+    class_indexes = set(class_indexes or ())
+    if not class_indexes:
+        class_indexes = {idx for idx, header in enumerate(headers) if _is_class_header(header)}
+    row_excluded = False
+    class_excluded = False
+    for idx, value in enumerate(values):
+        if not contains_excluded(value):
+            continue
+        if idx in class_indexes:
+            class_excluded = True
+        else:
+            row_excluded = True
+    return row_excluded, class_excluded
+
+
 def null_if_excluded(value: Any) -> str | None:
     return None if contains_excluded(value) else clean_text(value)
 
@@ -210,6 +262,11 @@ def extract_atc_code(value: Any) -> str | None:
         return bracket.group(1)
     plain = re.search(r"\b([A-Z][0-9][A-Z0-9]{2,3})\b", text.upper())
     return plain.group(1) if plain else text
+
+
+def dumps_json_array(values: list[str]) -> str | None:
+    cleaned = sorted({str(value).strip().upper() for value in values if str(value).strip()})
+    return json.dumps(cleaned, ensure_ascii=False) if cleaned else None
 
 
 def canonical_nhi(value: Any) -> str | None:
@@ -409,9 +466,26 @@ def load_strategic_brand_records(
                 if config.strategic_market_id == "strategy_008"
                 else {}
             )
+            class_indexes = _class_source_indexes(headers, metadata)
             ml_id = f"ml_{ml_index:03d}"
             if ml_id not in ml_ids:
                 raise ValueError(f"{config.strategic_market_id} missing ml_market FK: {ml_id}")
+
+            allowed_atc4_by_name: dict[str, set[str]] = defaultdict(set)
+            for source_row_id, values in row_items:
+                if helpers.is_empty_row(values):
+                    continue
+                row_excluded, _class_excluded = classify_exclusion_cells(headers, values, class_indexes)
+                if row_excluded:
+                    continue
+                standard_values, extras = helpers.apply_column_mapping(headers, values, metadata)
+                if source_row_id in explicit_overrides:
+                    standard_values.update(explicit_overrides[source_row_id])
+                name = make_name(standard_values, config.strategic_market_id, source_row_id)
+                fields = strategic_fields(standard_values, extras)
+                atc4_code = extract_atc_code(fields.get("atc4_code"))
+                if atc4_code:
+                    allowed_atc4_by_name[normalize_for_match(name)].add(atc4_code)
 
             for source_row_id, values in row_items:
                 stats["raw_rows_scanned"][config.strategic_market_id] += 1
@@ -419,7 +493,7 @@ def load_strategic_brand_records(
                     stats["empty_rows"][config.strategic_market_id] += 1
                     continue
 
-                excluded = helpers.is_excluded_row(values)
+                excluded, class_excluded = classify_exclusion_cells(headers, values, class_indexes)
                 if excluded:
                     stats["excluded_rows"][config.strategic_market_id] += 1
 
@@ -456,6 +530,8 @@ def load_strategic_brand_records(
                     "ml_id": ml_id,
                     "cd_id": cd_id,
                     "is_excluded": bool(excluded),
+                    "is_class_excluded": bool(class_excluded),
+                    "allowed_atc4_codes_json": dumps_json_array(list(allowed_atc4_by_name.get(normalize_for_match(name), set()))),
                     "class": fields["class"],
                     "class_1": fields["class_1"],
                     "class_2": fields["class_2"],
@@ -557,7 +633,7 @@ def validate_records(
     if strict_excluded != EXPECTED_EXCLUDED_ROWS:
         raise ValueError(f"is_excluded rows must be {EXPECTED_EXCLUDED_ROWS}, found={strict_excluded}")
     if sum(stats["included_rows"].values()) - sum(stats["excluded_rows"].values()) != EXPECTED_STAGING_ROWS:
-        raise ValueError("included - excluded must equal Phase 12 master_drug 3,912 rows")
+        raise ValueError(f"included - strict_excluded must equal Phase 12 master_drug {EXPECTED_STAGING_ROWS} rows")
     if stats["overlap_rows"]:
         raise ValueError(f"Q-51 overlap rows found: {stats['overlap_rows'][:5]}")
     if stats["unknown_name_rows"]:

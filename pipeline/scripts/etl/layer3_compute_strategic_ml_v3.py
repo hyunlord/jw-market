@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import sys
 from collections import defaultdict
@@ -36,6 +37,7 @@ from layer3_compute_general_v3 import (
 from layer3_compute_extended import compute_ei, compute_growth_contribution, compute_momentum
 from layer3_compute_market_metric import compute_market_mart_payload
 from layer3_normalize import prev_month, prev_quarter_month, same_month_prev_year
+from layer2_normalize import normalize_atc
 from ops_utils import configure_logging, find_project_root
 
 
@@ -101,6 +103,135 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "t", "yes", "y"}
     return bool(value)
+
+
+def _parse_json_list(value: Any) -> list[str]:
+    if not _notna(value):
+        return []
+    if isinstance(value, list):
+        return [str(item).strip().upper() for item in value if str(item).strip()]
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+        return []
+    parsed = json.loads(text)
+    if not isinstance(parsed, list):
+        raise ValueError(f"expected JSON list, found={text!r}")
+    return [str(item).strip().upper() for item in parsed if str(item).strip()]
+
+
+def _allowed_atc4_codes(overlay: dict[str, Any], ml_row: pd.Series) -> set[str]:
+    """Return MI Master allowed ATC4 codes for this market-member row.
+
+    Row-level catalog definitions are the first authority.  If an older
+    catalog lacks them, fall back to the market-level ATC4 set so legacy data
+    remains loadable while clean regenerations use precise sheet rows.
+    """
+
+    allowed = set(_parse_json_list(overlay.get("allowed_atc4_codes_json")))
+    if allowed:
+        return allowed
+    return set(_parse_json_list(ml_row.get("atc_codes_json")))
+
+
+def _atc4_aliases(value: Any) -> set[str]:
+    """Return equivalent MI/IQVIA and UBIST ATC4 spellings for matching only."""
+
+    text = str(value or "").strip().upper()
+    if not text:
+        return set()
+
+    aliases = {text}
+    normalized = normalize_atc(text).upper()
+    if normalized:
+        aliases.add(normalized)
+
+    for code in list(aliases):
+        if len(code) >= 4 and code[0].isalpha() and code[1] == "0" and code[2].isdigit():
+            aliases.add(code[0] + code[2:])
+
+    for code in list(aliases):
+        if len(code) == 4 and code[-1] == "0" and code[0].isalpha() and code[1].isdigit() and code[2].isalpha():
+            aliases.add(code[:-1])
+
+    return aliases
+
+
+def _allowed_atc4_aliases(allowed_atc4_codes: Iterable[str]) -> set[str]:
+    aliases: set[str] = set()
+    for code in allowed_atc4_codes:
+        aliases.update(_atc4_aliases(code))
+    return aliases
+
+
+def _row_atc4_code(row: dict[str, Any]) -> str:
+    return str(row.get("atc4_code") or "").strip().upper()
+
+
+def _is_numeric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _merge_numeric_json_values(left: Any, right: Any) -> Any:
+    if isinstance(left, dict) and isinstance(right, dict):
+        merged = dict(left)
+        for key, value in right.items():
+            merged[key] = _merge_numeric_json_values(merged[key], value) if key in merged else deepcopy(value)
+        return merged
+    if _is_numeric(left) and _is_numeric(right):
+        return float(left) + float(right)
+    return deepcopy(left) if left not in (None, {}, []) else deepcopy(right)
+
+
+def _sum_raw_histories(rows: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        for period, value in (row.get("raw_value_history") or {}).items():
+            try:
+                totals[str(period)] += float(value or 0)
+            except (TypeError, ValueError):
+                continue
+    return dict(sorted(totals.items()))
+
+
+def _collapse_same_brand_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse selected ATC4 sibling rows after MI Master filtering.
+
+    The DB uniqueness grain is ``ml_id × brand_id × source × measure``.  When a
+    single MI Master brand intentionally spans multiple ATC4 rows, those rows
+    must be summed before insertion so the brand mart and market mart use the
+    same totals.
+    """
+
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[
+            (
+                str(row.get("ml_id")),
+                str(row.get("brand_id")),
+                str(row.get("source")),
+                str(row.get("measure")),
+            )
+        ].append(row)
+
+    collapsed: list[dict[str, Any]] = []
+    for members in grouped.values():
+        if len(members) == 1:
+            collapsed.append(members[0])
+            continue
+        base = deepcopy(members[0])
+        base["raw_value_history"] = _sum_raw_histories(members)
+        for column in ("channel_data", "specialty_data", "dimension_data", "dimension_channel_data", "channel_specialty_matrix"):
+            merged: Any = {}
+            for member in members:
+                merged = _merge_numeric_json_values(merged, member.get(column) or {})
+            base[column] = merged
+        atc4_codes = sorted({_row_atc4_code(member) for member in members if _row_atc4_code(member)})
+        overlay = dict(base.get("overlay_data") or {})
+        overlay["collapsed_from_atc4_codes"] = atc4_codes
+        overlay["collapsed_row_count"] = len(members)
+        base["overlay_data"] = overlay
+        collapsed.append(base)
+    return collapsed
 
 
 def expected_measure_pairs(data_source: Any) -> set[tuple[str, str]]:
@@ -193,6 +324,13 @@ def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
         first = part.iloc[0].to_dict()
         first["catalog_brand_ids"] = part["brand_id"].astype(str).tolist()
         first["catalog_names"] = part["name"].astype(str).tolist()
+        if "allowed_atc4_codes_json" in part.columns:
+            allowed: set[str] = set()
+            for value in part["allowed_atc4_codes_json"]:
+                allowed.update(_parse_json_list(value))
+            first["allowed_atc4_codes_json"] = json.dumps(sorted(allowed), ensure_ascii=False) if allowed else None
+        if "is_class_excluded" in part.columns:
+            first["is_class_excluded"] = bool(part["is_class_excluded"].map(_truthy).any())
         grouped[str(key)] = first
     return grouped
 
@@ -357,6 +495,11 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
         overlay = by_key.get(str(row.get("brand_key")))
         if not overlay:
             continue
+        allowed_atc4 = _allowed_atc4_codes(overlay, ml_row)
+        allowed_atc4_aliases = _allowed_atc4_aliases(allowed_atc4)
+        row_atc4 = _row_atc4_code(row)
+        if allowed_atc4_aliases and row_atc4 and not (_atc4_aliases(row_atc4) & allowed_atc4_aliases):
+            continue
         copied = dict(row)
         display_name = _display_brand_name(copied, overlay)
         output_key = _output_brand_key(copied, overlay, display_name)
@@ -382,6 +525,9 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
                     "is_target": overlay.get("is_target"),
                     "catalog_brand_ids": overlay.get("catalog_brand_ids"),
                     "catalog_names": overlay.get("catalog_names"),
+                    "allowed_atc4_codes": sorted(allowed_atc4),
+                    "allowed_atc4_aliases": sorted(allowed_atc4_aliases),
+                    "is_class_excluded": _truthy(overlay.get("is_class_excluded")),
                     "class": overlay.get("class"),
                     "class_1": overlay.get("class_1"),
                     "class_2": overlay.get("class_2"),
@@ -396,6 +542,7 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
         )
         selected.append(copied)
 
+    selected = _collapse_same_brand_rows(selected)
     validate_market_completeness(ml_row, catalog_rows, selected)
     for rows in _group_by_source_measure(selected).values():
         recompute_market_scoped_metric_history(rows)
