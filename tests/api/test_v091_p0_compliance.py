@@ -32,17 +32,17 @@ def deep(brand: str) -> dict:
 
 
 def test_cause_analysis_levels_follow_market_ground_truth_for_ml003() -> None:
-    """ml_003 UBIST channels follow Phase 39.5 dual grouping."""
+    """ml_003 UBIST screen channels use facility buckets; specialty stays separate."""
     payload = cause("가드메트", source="UBIST", measure="sales")
     analysis_levels = payload["data"]["analysis_levels"]
 
     assert analysis_levels["levels"] == EXPECTED_CAUSE_LEVELS
     assert analysis_levels["channels"] == [
         "전체",
-        "종합병원 내분비",
-        "종합병원 순환기",
-        "종합병원 신장",
-        "의원 IGF",
+        "상급종병",
+        "종병",
+        "병원",
+        "의원/보건소",
     ]
 
 
@@ -71,7 +71,7 @@ def test_cause_analysis_level_segments_are_populated_for_all_channels() -> None:
         segments = analysis_levels["data"][level]["by_channel"][channel]
         assert segments, f"segments empty for channel '{channel}'"
         segment = segments[0]
-        assert set(segment.keys()) == {"name", "rank", "recent_share_pct", "series_pct", "value_series"}
+        assert {"name", "rank", "recent_share_pct", "series_pct", "value_series"}.issubset(segment.keys())
         assert len(segment["series_pct"]) == len(analysis_levels["periods_monthly"])
         assert len(segment["value_series"]) == len(analysis_levels["periods_monthly"])
 

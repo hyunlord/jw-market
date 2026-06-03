@@ -41,13 +41,19 @@ def test_d3_options_include_all_values_and_atomic_doses() -> None:
     data = cause_payload("리바로", view="market_landscape", source="UBIST", measure="sales")
     by_level = data["level_top5_trend"]["by_level"]
 
-    assert "Brand" not in by_level
+    assert "Brand" in by_level
     assert by_level
     for level, payload in by_level.items():
+        if payload.get("empty"):
+            assert payload["values"] == []
+            assert payload["all_options"] == []
+            assert payload["total_market_value"] == 0
+            continue
         assert len(payload["values"]) == len(payload["all_options"]), level
         assert len(payload["all_options"]) > 1, level
 
-    dose_options = by_level["용량"]["all_options"]
+    dose_data = cause_payload("타발리스", view="market_landscape", source="IQVIA", measure="sales")
+    dose_options = dose_data["level_top5_trend"]["by_level"]["용량"]["all_options"]
     assert dose_options
     assert not any("|" in str(option) for option in dose_options), dose_options[:10]
 
@@ -65,7 +71,7 @@ def test_frontend_d2_d3_measure_controls_are_source_specific() -> None:
 def test_target_customer_periods_remain_ten_points_with_sparse_note() -> None:
     """Sparse channels may have zero values, but must expose 10 points and an explicit note."""
     data = cause_payload("리바로", view="competitive_dynamics", source="UBIST", measure="sales")
-    d2 = data["target_customer_competition"]
+    d2 = data["target_customer_competition_by_channel"]
     jong = next(view for view in d2["views"] if view["target_name"] == "종병")
 
     assert len(jong["periods"]) == 10

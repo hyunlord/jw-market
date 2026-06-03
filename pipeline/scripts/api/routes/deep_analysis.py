@@ -5,6 +5,7 @@ import json
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException
+import pymysql
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
@@ -26,15 +27,20 @@ FORECAST_INTERVAL_KEYS = (
 
 
 def _load_ai_analysis(brand: str) -> dict:
-    row = db.fetch_one(
-        """
-        SELECT ai_analysis_json
-        FROM cache_deep_analysis_ai_analysis
-        WHERE brand = %s
-        LIMIT 1
-        """,
-        [brand],
-    )
+    try:
+        row = db.fetch_one(
+            """
+            SELECT ai_analysis_json
+            FROM cache_deep_analysis_ai_analysis
+            WHERE brand = %s
+            LIMIT 1
+            """,
+            [brand],
+        )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] == 1146:
+            return {}
+        raise
     if not row or not row.get("ai_analysis_json"):
         return {}
     try:

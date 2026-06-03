@@ -34,6 +34,11 @@ try:
 except ImportError as e:
     sys.exit(f"ERROR: {e}\n  pip3 install pyarrow openpyxl --break-system-packages")
 
+try:
+    from strategic_exclusion_policy import classify_exclusion_cells as classify_exclusion_cells_by_policy
+except ModuleNotFoundError:
+    from pipeline.scripts.strategic_exclusion_policy import classify_exclusion_cells as classify_exclusion_cells_by_policy
+
 
 ETL_DIR = Path(__file__).resolve().parent / "etl"
 sys.path.insert(0, str(ETL_DIR))
@@ -109,17 +114,18 @@ def _is_class_header(header: Any) -> bool:
 def is_excluded_row(
     values: list[Any] | tuple[Any, ...],
     headers: list[Any] | tuple[Any, ...] | None = None,
+    *,
+    strategic_market_id: str | None = STRATEGIC_MARKET_ID,
+    sheet_name: str | None = SOURCE_SHEET,
 ) -> bool:
     class_indexes = {idx for idx, header in enumerate(headers or []) if _is_class_header(header)}
-    for idx, value in enumerate(values):
-        if value is None:
-            continue
-        text = str(value).strip()
-        if "제외" in text and not text.startswith("비제외"):
-            if idx in class_indexes:
-                continue
-            return True
-    return False
+    row_excluded, _class_excluded = classify_exclusion_cells_by_policy(
+        values,
+        class_indexes=class_indexes,
+        strategic_market_id=strategic_market_id,
+        sheet_name=sheet_name,
+    )
+    return row_excluded
 
 
 def header_index(headers: list[Any], source_column: str) -> int:

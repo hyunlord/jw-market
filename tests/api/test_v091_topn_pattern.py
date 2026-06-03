@@ -93,10 +93,9 @@ def test_target_customer_competition_filled_for_d2() -> None:
     payload = gardmet_cause()
     competition = payload["data"]["target_customer_competition"]
 
-    assert "competitive_dynamics" in competition["available_in_view"]
-    assert competition["views"]
-    assert all(view["trend_brands"] for view in competition["views"])
-    assert all(view["composition"] for view in competition["views"])
+    assert competition == payload["data"]["level_top5_trend"]
+    assert competition["available_levels"]
+    assert competition["by_level"]
 
 
 def test_level_top5_trend_filled_for_d3() -> None:
@@ -108,6 +107,10 @@ def test_level_top5_trend_filled_for_d3() -> None:
     for level in trend["available_levels"]:
         level_data = trend["by_level"][level["key"]]
         assert level_data["periods_10pt"]
+        if level_data.get("empty"):
+            assert level_data["values"] == []
+            assert level_data["total_market_value"] == 0
+            continue
         assert level_data["values"]
 
 

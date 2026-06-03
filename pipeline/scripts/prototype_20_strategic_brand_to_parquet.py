@@ -38,6 +38,17 @@ try:
 except ImportError as e:
     sys.exit(f"ERROR: {e}\n  pip3 install pyarrow openpyxl --break-system-packages")
 
+try:
+    from strategic_exclusion_policy import (
+        classify_exclusion_cells as classify_exclusion_cells_by_policy,
+        contains_exclusion_marker,
+    )
+except ModuleNotFoundError:
+    from pipeline.scripts.strategic_exclusion_policy import (
+        classify_exclusion_cells as classify_exclusion_cells_by_policy,
+        contains_exclusion_marker,
+    )
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_FILE = Path("output/catalog/strategic_brand/strategic_brand.parquet")
@@ -48,8 +59,8 @@ DEFAULT_CD_MARKET_FILE = Path("output/catalog/cd_market/cd_market.parquet")
 MASTER_DRUG_SCRIPT = Path("scripts/prototype_11_master_drug_to_parquet.py")
 
 EXPECTED_ROW_COUNT = 4495
-EXPECTED_STAGING_ROWS = 4446
-EXPECTED_EXCLUDED_ROWS = 49
+EXPECTED_STAGING_ROWS = 3952
+EXPECTED_EXCLUDED_ROWS = 543
 EXPECTED_COLUMNS = (
     "brand_id",
     "name",
@@ -170,8 +181,7 @@ def normalize_for_match(value: Any) -> str:
 
 
 def contains_excluded(value: Any) -> bool:
-    text = clean_text(value)
-    return bool(text and "제외" in text and not text.startswith("비제외"))
+    return contains_exclusion_marker(value)
 
 
 def _is_class_header(header: Any) -> bool:
@@ -206,20 +216,19 @@ def classify_exclusion_cells(
     headers: list[Any] | tuple[Any, ...],
     values: list[Any] | tuple[Any, ...],
     class_indexes: set[int] | None = None,
+    *,
+    strategic_market_id: str | None = None,
+    sheet_name: str | None = None,
 ) -> tuple[bool, bool]:
     class_indexes = set(class_indexes or ())
     if not class_indexes:
         class_indexes = {idx for idx, header in enumerate(headers) if _is_class_header(header)}
-    row_excluded = False
-    class_excluded = False
-    for idx, value in enumerate(values):
-        if not contains_excluded(value):
-            continue
-        if idx in class_indexes:
-            class_excluded = True
-        else:
-            row_excluded = True
-    return row_excluded, class_excluded
+    return classify_exclusion_cells_by_policy(
+        values,
+        class_indexes=class_indexes,
+        strategic_market_id=strategic_market_id,
+        sheet_name=sheet_name,
+    )
 
 
 def null_if_excluded(value: Any) -> str | None:
@@ -475,7 +484,13 @@ def load_strategic_brand_records(
             for source_row_id, values in row_items:
                 if helpers.is_empty_row(values):
                     continue
-                row_excluded, _class_excluded = classify_exclusion_cells(headers, values, class_indexes)
+                row_excluded, _class_excluded = classify_exclusion_cells(
+                    headers,
+                    values,
+                    class_indexes,
+                    strategic_market_id=config.strategic_market_id,
+                    sheet_name=config.sheet_name,
+                )
                 if row_excluded:
                     continue
                 standard_values, extras = helpers.apply_column_mapping(headers, values, metadata)
@@ -493,7 +508,13 @@ def load_strategic_brand_records(
                     stats["empty_rows"][config.strategic_market_id] += 1
                     continue
 
-                excluded, class_excluded = classify_exclusion_cells(headers, values, class_indexes)
+                excluded, class_excluded = classify_exclusion_cells(
+                    headers,
+                    values,
+                    class_indexes,
+                    strategic_market_id=config.strategic_market_id,
+                    sheet_name=config.sheet_name,
+                )
                 if excluded:
                     stats["excluded_rows"][config.strategic_market_id] += 1
 

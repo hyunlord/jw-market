@@ -12,6 +12,7 @@ from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 UBIST_PARQUET_GLOB = PROJECT_ROOT / "output" / "ubist" / "year=*" / "month=*" / "data.parquet"
+SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
 
 
 def _clean_target(value: Any) -> str | None:
@@ -140,10 +141,13 @@ def resolve_market_channels(
     for row in rows:
         brand = str(row.get("brand_name") or row.get("brand_key") or "").strip()
         row["__ubist_dual_channel_data"] = series_by_brand.get(brand, {})
+        row["__ubist_specialty_channel_data"] = series_by_brand.get(brand, {})
 
     return {
-        "channels": ["전체", *display_names] if display_names else ["전체"],
+        "channels": list(SCREEN_FACILITY_CHANNELS),
+        "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
         "target_channels": [channel.as_dict() for channel in channels],
+        "specialty_target_channels": [channel.as_dict() for channel in channels],
         "fallback_codes": [channel.code for channel in channels if channel.code not in set(_targets_from_market(market))],
         "series_brand_count": len(series_by_brand),
         "raw_brand_count": len(brand_names),

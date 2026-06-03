@@ -79,7 +79,7 @@ EXPECTED_CD_COUNTS = {
     "cd_004": 10,
     "cd_005": 11,
     "cd_006": 1047,
-    "cd_007": 611,
+    "cd_007": 117,
     "cd_008": 20,
     "cd_009": 26,
     "cd_010": 160,
@@ -93,7 +93,7 @@ EXPECTED_CD_COUNTS = {
     "cd_018": 64,
     "cd_019": 8,
 }
-EXPECTED_TOTAL_CD_BRAND_COUNT = 2325
+EXPECTED_TOTAL_CD_BRAND_COUNT = 1831
 EXPECTED_DEFINITION_TYPE_COUNTS = {
     "filter_explicit": 12,
     "ml_equals_cd_exact": 5,

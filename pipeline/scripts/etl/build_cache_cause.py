@@ -327,32 +327,39 @@ def _annual_rank_rows(
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
     if full_rows:
         return _annual_rank_rows_from_full_rows(full_rows, label_key=label_key, target_name=target_name)
-    grouped: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
+    latest_rows_by_year: dict[int, list[dict[str, Any]]] = {}
+    latest_period_by_year: dict[int, str] = {}
     period_count_by_year: dict[int, int] = defaultdict(int)
     for period, rows in sorted((period_map or {}).items(), key=lambda pair: period_key(str(pair[0]))):
         year = _period_year(str(period))
         if year is None or not isinstance(rows, list):
             continue
         period_count_by_year[year] += 1
+        period_str = str(period)
+        current = latest_period_by_year.get(year)
+        if current is not None and period_key(period_str) <= period_key(current):
+            continue
+        latest_period_by_year[year] = period_str
+        latest_rows_by_year[year] = rows
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for year, rows in latest_rows_by_year.items():
+        normalized_rows = []
         for row in rows:
             normalized = _normalize_rank_row(row, label_key=label_key, target_name=target_name)
             name = row_identity(normalized, label_key)
             if not name:
                 continue
-            bucket = grouped[year].setdefault(
-                name,
-                {**normalized, "value": 0.0, "ms_pct": 0.0, "rank": None},
-            )
-            bucket["value"] = (safe_float(bucket.get("value")) or 0.0) + (safe_float(normalized.get("value")) or 0.0)
-            bucket["is_target"] = bool(bucket.get("is_target") or normalized.get("is_target"))
-            bucket["is_jw"] = bool(bucket.get("is_jw") or normalized.get("is_jw"))
-    return {year: _rank_normalized_rows(list(rows.values()), label_key=label_key) for year, rows in grouped.items()}, dict(period_count_by_year)
+            normalized_rows.append(normalized)
+        grouped[year] = normalized_rows
+    return {year: _rank_normalized_rows(rows, label_key=label_key) for year, rows in grouped.items()}, dict(period_count_by_year)
 
 
 def _annual_rank_rows_from_full_rows(
     rows: list[dict[str, Any]], *, label_key: str, target_name: str | None
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
     periods_by_year: dict[int, set[str]] = defaultdict(set)
+    latest_period_by_year_name: dict[int, dict[str, str]] = defaultdict(dict)
     grouped: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         history = _metric_history(row)
@@ -368,7 +375,17 @@ def _annual_rank_rows_from_full_rows(
             year = _period_year(str(period))
             if year is None:
                 continue
-            periods_by_year[year].add(str(period))
+            period_str = str(period)
+            periods_by_year[year].add(period_str)
+            current = latest_period_by_year_name[year].get(name)
+            if current is not None:
+                current_key = period_key(current)
+                next_key = period_key(period_str)
+                if next_key < current_key:
+                    continue
+                if next_key > current_key:
+                    grouped[year].pop(name, None)
+            latest_period_by_year_name[year][name] = period_str
             bucket = grouped[year].setdefault(
                 name,
                 {
@@ -817,8 +834,32 @@ def _split_atomic_dimension(level: str, value: Any) -> list[str]:
         return []
     text = str(value)
     if level == "용량":
-        return [part.strip() for part in text.split("|") if part.strip()]
-    return [text]
+        return [part.strip() for part in text.split("|") if part.strip() and not _is_excluded_dimension_label(part)]
+    return [] if _is_excluded_dimension_label(text) else [text]
+
+
+def _is_excluded_dimension_label(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    upper = text.upper()
+    if upper in {"N/A", "NA", "#N/A", "NONE", "NULL", "NAN"}:
+        return True
+    return "제외" in text and not text.startswith("비제외")
+
+
+def _is_class_level(level: str) -> bool:
+    return str(level or "").strip().lower().replace("_", " ").startswith("class")
+
+
+def _row_is_class_excluded(row: dict[str, Any]) -> bool:
+    if bool(row.get("is_class_excluded")):
+        return True
+    overlay = row.get("__overlay_data")
+    if overlay is None:
+        overlay = decode_json(row.get("overlay_data"))
+        row["__overlay_data"] = overlay
+    return isinstance(overlay, dict) and bool(overlay.get("is_class_excluded"))
 
 
 def _dimension_value(row: dict[str, Any], level: str) -> str | None:
@@ -863,7 +904,11 @@ def _dimension_series_map(row: dict[str, Any], field: str | None) -> dict[str, A
     series_map = dimension_data.get(field)
     if not isinstance(series_map, dict):
         return {}
-    return {str(label): series for label, series in series_map.items() if str(label).strip() and isinstance(series, dict)}
+    return {
+        str(label): series
+        for label, series in series_map.items()
+        if not _is_excluded_dimension_label(label) and isinstance(series, dict)
+    }
 
 
 def _has_dimension_field(row: dict[str, Any], field: str | None) -> bool:
@@ -891,7 +936,7 @@ def _dimension_channel_series_map(row: dict[str, Any], field: str | None, source
     result: dict[str, dict[str, Any]] = {}
     for label, channel_map in field_data.items():
         label_text = str(label).strip()
-        if not label_text or not isinstance(channel_map, dict):
+        if _is_excluded_dimension_label(label_text) or not isinstance(channel_map, dict):
             continue
         merged = {period: {"raw_value": 0.0} for period in _series_periods_from_channel_map(channel_map)}
         matched = False
@@ -990,6 +1035,8 @@ def _segment_rows_for_level(
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
 
     for row in rows:
+        if _is_class_level(level) and _row_is_class_excluded(row):
+            continue
         field = LEVEL_FIELD_BY_LABEL.get(level)
         dimension_field_present = _has_dimension_field(row, field) if channel == "전체" else False
         dimension_series = _dimension_series_map(row, field) if channel == "전체" else {}
@@ -1101,6 +1148,70 @@ def _rows_for_channel(rows: list[dict[str, Any]], source: str, channel: str, per
     return filtered
 
 
+def _history_from_period_series(series: dict[str, Any], periods: list[str]) -> dict[str, dict[str, float]]:
+    return {period: {"raw_value": _value_from_period_item(series.get(period))} for period in periods}
+
+
+def _clone_with_metric_history(row: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
+    clone = dict(row)
+    clone["metric_history"] = history
+    clone["__metric_history"] = history
+    clone.pop("__latest_history_item", None)
+    clone.pop("__series_cache", None)
+    return clone
+
+
+def _rows_for_dimension(
+    rows: list[dict[str, Any]],
+    level: str,
+    segment_name: str | None,
+    periods: list[str],
+    *,
+    source: str | None = None,
+    channel: str = "전체",
+) -> list[dict[str, Any]]:
+    if segment_name in (None, "", "전체"):
+        return rows
+    if _is_excluded_dimension_label(segment_name):
+        return []
+
+    field = LEVEL_FIELD_BY_LABEL.get(level)
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if _is_class_level(level) and _row_is_class_excluded(row):
+            continue
+
+        dimension_present = _has_dimension_field(row, field) if channel == "전체" else False
+        dimension_series = _dimension_series_map(row, field) if channel == "전체" else {}
+        dimension_channel_present = _has_dimension_channel_field(row, field) if channel != "전체" else False
+        dimension_channel_series = (
+            _dimension_channel_series_map(row, field, source or str(row.get("source") or ""), channel)
+            if channel != "전체"
+            else {}
+        )
+        active_dimension_series = dimension_series if channel == "전체" else dimension_channel_series
+        if active_dimension_series:
+            series = active_dimension_series.get(str(segment_name))
+            if isinstance(series, dict):
+                filtered.append(_clone_with_metric_history(row, _history_from_period_series(series, periods)))
+            continue
+        if dimension_present or dimension_channel_present:
+            continue
+
+        if str(segment_name) not in _dimension_values(row, level):
+            continue
+        if channel == "전체":
+            filtered.append(row)
+            continue
+        if not source:
+            continue
+        for channel_row in _rows_for_channel([row], source, channel, periods):
+            history = _metric_history(channel_row)
+            if any(_value_from_period_item(history.get(period)) for period in periods):
+                filtered.append(channel_row)
+    return filtered
+
+
 def _total_series_for_rows(rows: list[dict[str, Any]], periods: list[str]) -> list[float]:
     totals = [0.0 for _ in periods]
     for row in rows:
@@ -1119,7 +1230,7 @@ def _with_overall_level_options(
     periods: list[str],
 ) -> dict[str, Any]:
     for level, level_data in data.items():
-        if level == "Brand" or not isinstance(level_data, dict):
+        if not isinstance(level_data, dict):
             continue
         by_channel = level_data.get("by_channel")
         if not isinstance(by_channel, dict):
@@ -1798,6 +1909,10 @@ def _target_customer_competition(
     }
 
 
+def _copy_level_top5_to_target_customer(level_top5_trend: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(level_top5_trend)
+
+
 def _level_rows_by_segment(rows: list[dict[str, Any]], levels: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
     rows_by_level: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for level in levels:
@@ -1822,18 +1937,32 @@ def _level_top5_trend(
     periods = (analysis_levels.get("periods_monthly") or analysis_levels.get("periods_quarterly") or [])[-10:]
     available_levels = [{"key": level, "label": level} for level in levels]
     by_level = {}
-    rows_by_level = rows_by_level or _level_rows_by_segment(rows, levels)
     for level in levels:
         all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get("전체") or []
-        level_segments = all_level_segments if include_all_options else all_level_segments[:5]
+        overall_segment = next(
+            (segment for segment in all_level_segments if isinstance(segment, dict) and segment.get("is_overall")),
+            None,
+        )
+        candidate_segments = [
+            segment
+            for segment in all_level_segments
+            if isinstance(segment, dict) and not segment.get("is_overall") and not _is_excluded_dimension_label(segment.get("name"))
+        ]
+        level_segments = candidate_segments if include_all_options else candidate_segments[:5]
         values = []
         for index, segment in enumerate(level_segments, start=1):
             segment_name = segment.get("name") or f"{level} {index}"
-            is_overall_segment = bool(segment.get("is_overall"))
-            segment_rows = rows if is_overall_segment else rows_by_level.get(level, {}).get(segment_name, [])
+            segment_rows = _rows_for_dimension(
+                rows,
+                level,
+                segment_name,
+                periods,
+                source=source,
+                channel="전체",
+            )
             segment_brand_entries = _display_brand_rows(
                 segment_rows,
-                target_name=None if is_overall_segment else target_name,
+                target_name=target_name,
                 top_n=5,
                 include_others=True,
             ) if segment_rows else []
@@ -1891,9 +2020,15 @@ def _level_top5_trend(
                     "brands_in_value": brands_in_value,
                 }
             )
-        overall_total = next(
-            (safe_float(item.get("total_value")) or 0.0 for item in values if item.get("value") == "전체"),
-            None,
+        overall_value_series = (
+            list(overall_segment.get("value_series") or [])
+            if isinstance(overall_segment, dict)
+            else []
+        )
+        overall_total = (
+            safe_float(overall_value_series[-1]) or 0.0
+            if overall_value_series
+            else None
         )
         by_level[level] = {
             "level_label": level,
@@ -2109,7 +2244,7 @@ def build_response(
     company_concentration = _company_hhi_from_rows(sibling_rows)
     data_period_coverage = _data_period_coverage(market_series, source=source_api)
     growth_contribution = _growth_contribution_payload(sibling_rows, brand_row.get("brand_name"), periods, source=source_api)
-    target_customer_competition = _target_customer_competition(
+    target_customer_competition_by_channel = _target_customer_competition(
         rows=sibling_rows,
         source=source_api,
         target_name=brand_row.get("brand_name"),
@@ -2124,6 +2259,7 @@ def build_response(
         rows_by_level=LEVEL_ROW_GROUPS_CACHE[analysis_cache_key],
         include_all_options=include_all_d3_options,
     )
+    target_customer_competition = _copy_level_top5_to_target_customer(level_top5_trend)
     direct_competition_count = max(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
         len({member["name"] for member in catalog_members if member.get("name")}),
@@ -2180,6 +2316,17 @@ def build_response(
             "growth_contribution": growth_contribution,
             "level_top5_trend": level_top5_trend,
             "target_customer_competition": target_customer_competition,
+            "target_customer_competition_by_channel": target_customer_competition_by_channel,
+            "ubist_specialty_channels": (
+                ubist_channel_context.get("specialty_channels")
+                if isinstance(ubist_channel_context, dict)
+                else None
+            ),
+            "ubist_specialty_target_channels": (
+                ubist_channel_context.get("specialty_target_channels")
+                if isinstance(ubist_channel_context, dict)
+                else None
+            ),
             "brand_ranking_stacked": brand_ranking_stacked,
             "company_ranking_stacked": company_ranking_stacked,
             "company_concentration_trend": company_concentration,

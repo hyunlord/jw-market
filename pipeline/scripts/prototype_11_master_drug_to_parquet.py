@@ -43,6 +43,10 @@ except ImportError as e:
 ETL_DIR = Path(__file__).resolve().parent / "etl"
 sys.path.insert(0, str(ETL_DIR))
 from storage import get_mi_master_path  # noqa: E402
+try:  # noqa: E402
+    from strategic_exclusion_policy import classify_exclusion_cells as classify_exclusion_cells_by_policy
+except ModuleNotFoundError:  # noqa: E402
+    from pipeline.scripts.strategic_exclusion_policy import classify_exclusion_cells as classify_exclusion_cells_by_policy
 
 
 DEFAULT_INPUT_FILE = get_mi_master_path()
@@ -51,9 +55,9 @@ DEFAULT_CATALOG_PATH = Path("docs/reference/master_column_mapping_catalog.md")
 DEFAULT_OUTPUT_FILE = Path("parquet/master_drug/master_drug.parquet")
 
 STANDARD_PREFIX = "drug_extra_json."
-EXPECTED_ROW_COUNT = 4446
-EXPECTED_EXCLUDED_ROWS = 49
-EXPECTED_SOURCE_TYPE_DISTRIBUTION = {"IQVIA": 650, "UBIST": 3796}
+EXPECTED_ROW_COUNT = 3952
+EXPECTED_EXCLUDED_ROWS = 543
+EXPECTED_SOURCE_TYPE_DISTRIBUTION = {"IQVIA": 650, "UBIST": 3302}
 
 MASTER_DRUG_COLUMNS = (
     "strategic_market_id",
@@ -139,7 +143,7 @@ EXPECTED_MARKET_STATS = {
     "strategy_004": {"sheet_name": "타발리스", "header_row": 5, "raw_rows_scanned": 10, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 10},
     "strategy_005": {"sheet_name": "시그마트", "header_row": 5, "raw_rows_scanned": 294, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 294},
     "strategy_006": {"sheet_name": "리바로 리바로젯", "header_row": 4, "raw_rows_scanned": 1295, "empty_rows": 200, "excluded_rows": 48, "staging_rows": 1047},
-    "strategy_007": {"sheet_name": "리바로페노", "header_row": 4, "raw_rows_scanned": 996, "empty_rows": 385, "excluded_rows": 0, "staging_rows": 611},
+    "strategy_007": {"sheet_name": "리바로페노", "header_row": 4, "raw_rows_scanned": 996, "empty_rows": 385, "excluded_rows": 494, "staging_rows": 117},
     "strategy_008": {"sheet_name": "리바로하이 리바로브이", "header_row": 5, "raw_rows_scanned": 1096, "empty_rows": 15, "excluded_rows": 0, "staging_rows": 1081},
     "strategy_009": {"sheet_name": "트루패스 피나스타 제이다트", "header_row": 5, "raw_rows_scanned": 418, "empty_rows": 12, "excluded_rows": 1, "staging_rows": 405},
     "strategy_010": {"sheet_name": "뉴트로진 모빌리아", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 985, "excluded_rows": 0, "staging_rows": 10},
@@ -229,17 +233,18 @@ def _class_source_indexes(headers: list[Any] | tuple[Any, ...], metadata: dict[s
 def is_excluded_row(
     values: list[Any] | tuple[Any, ...],
     class_indexes: set[int] | None = None,
+    *,
+    strategic_market_id: str | None = None,
+    sheet_name: str | None = None,
 ) -> bool:
     class_indexes = set(class_indexes or ())
-    for idx, value in enumerate(values):
-        if value is None:
-            continue
-        text = str(value).strip()
-        if "제외" in text and not text.startswith("비제외"):
-            if idx in class_indexes:
-                continue
-            return True
-    return False
+    row_excluded, _class_excluded = classify_exclusion_cells_by_policy(
+        values,
+        class_indexes=class_indexes,
+        strategic_market_id=strategic_market_id,
+        sheet_name=sheet_name,
+    )
+    return row_excluded
 
 
 def make_header_keys(headers: list[Any] | tuple[Any, ...]) -> list[str]:
@@ -472,7 +477,12 @@ def load_drug_records(
                     market_stats.empty_rows += 1
                     continue
                 raw_payload = build_raw_row_payload(headers, values, source_row_id)
-                if is_excluded_row(values, class_indexes):
+                if is_excluded_row(
+                    values,
+                    class_indexes,
+                    strategic_market_id=config.strategic_market_id,
+                    sheet_name=config.sheet_name,
+                ):
                     market_stats.excluded_rows += 1
                     continue
 

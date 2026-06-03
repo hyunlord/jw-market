@@ -43,7 +43,7 @@ def test_hemlibra_iqvia_sales_cross_chart_share_is_not_counting_unit() -> None:
 def test_hemlibra_d2_iqvia_channel_tabs_are_distinct() -> None:
     """D.2 channel tabs must be channel-filtered, not copies of 전체."""
     payload = cause_payload("헴리브라", view="competitive_dynamics", source="IQVIA", measure="sales")
-    views = payload["data"]["target_customer_competition"]["views"]
+    views = payload["data"]["target_customer_competition_by_channel"]["views"]
     signatures = {
         view["target_name"]: tuple((row["brand"], round(float(row["pct"]), 4)) for row in view["composition"])
         for view in views
@@ -68,6 +68,13 @@ def test_hemlibra_d3_class_totals_are_real_segment_totals() -> None:
     non_factor = next(row for row in class_values if row["value"] == "Non-Factor")
     hemlibra = next(row for row in non_factor["brands_in_value"] if row["brand"] == "헴리브라")
     assert hemlibra["ms_recent_pct"] > 90
+
+
+def test_target_customer_competition_copies_level_top5_trend() -> None:
+    payload = cause_payload("헴리브라", view="competitive_dynamics", source="IQVIA", measure="sales")
+    data = payload["data"]
+
+    assert data["target_customer_competition"] == data["level_top5_trend"]
 
 
 def test_frontend_sales_b1_is_not_overwritten_by_counting_unit_merge() -> None:

@@ -19,8 +19,14 @@ from brand_key_normalize import normalize_brand_name
 from layer3_compute_general_v3 import ALLOWED_SOURCES, dumps, general_brand_jsonl_path, json_ready, mariadb_connect, read_jsonl, write_jsonl
 from layer3_compute_market_metric import compute_market_mart_payload
 from layer3_compute_strategic_ml_v3 import (
+    _allowed_atc4_aliases,
+    _atc4_aliases,
     _display_brand_name,
+    _merge_numeric_json_values,
     _output_brand_key,
+    _parse_json_list,
+    _row_atc4_code,
+    _sum_raw_histories,
     _truthy,
     delete_existing_rows,
     drop_strict_excluded_rows,
@@ -117,6 +123,11 @@ def catalog_by_key(brands: pd.DataFrame) -> dict[str, dict[str, Any]]:
         first = part.iloc[0].to_dict()
         first["catalog_brand_ids"] = part["brand_id"].astype(str).tolist()
         first["catalog_names"] = part["name"].astype(str).tolist()
+        if "allowed_atc4_codes_json" in part.columns:
+            allowed: set[str] = set()
+            for value in part["allowed_atc4_codes_json"]:
+                allowed.update(_parse_json_list(value))
+            first["allowed_atc4_codes_json"] = json.dumps(sorted(allowed), ensure_ascii=False) if allowed else None
         grouped[str(key)] = first
     return grouped
 
@@ -156,6 +167,50 @@ def filter_payload(cd_row: pd.Series, cd_filter: pd.DataFrame) -> dict[str, Any]
     return {key: row.get(key) for key in ["cd_filter_id", "name", "atc3", "atc4", "molecule", "class", "nhi", "dosage_form"]}
 
 
+def _allowed_cd_atc4_codes(overlay: dict[str, Any], cd_filter_info: dict[str, Any]) -> set[str]:
+    """Return MI Master/CD filter allowed ATC4 codes for one CD market member."""
+
+    allowed = set(_parse_json_list(overlay.get("allowed_atc4_codes_json")))
+    if allowed:
+        return allowed
+    return set(_parse_json_list(cd_filter_info.get("atc4")))
+
+
+def _collapse_same_cd_brand_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse selected CD ATC4 sibling rows after market-definition filtering."""
+
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[
+            (
+                str(row.get("cd_market_id")),
+                str(row.get("cd_brand_id")),
+                str(row.get("source")),
+                str(row.get("measure")),
+            )
+        ].append(row)
+
+    collapsed: list[dict[str, Any]] = []
+    for members in grouped.values():
+        if len(members) == 1:
+            collapsed.append(members[0])
+            continue
+        base = dict(members[0])
+        base["raw_value_history"] = _sum_raw_histories(members)
+        for column in ("channel_data", "specialty_data", "dimension_data", "dimension_channel_data"):
+            merged: Any = {}
+            for member in members:
+                merged = _merge_numeric_json_values(merged, member.get(column) or {})
+            base[column] = merged
+        atc4_codes = sorted({_row_atc4_code(member) for member in members if _row_atc4_code(member)})
+        overlay = dict(base.get("overlay_data") or {})
+        overlay["collapsed_from_atc4_codes"] = atc4_codes
+        overlay["collapsed_row_count"] = len(members)
+        base["overlay_data"] = overlay
+        collapsed.append(base)
+    return collapsed
+
+
 def _group_by_source_measure(rows: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -174,6 +229,11 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
             continue
         overlay = by_key.get(str(row.get("brand_key")))
         if not overlay:
+            continue
+        allowed_atc4 = _allowed_cd_atc4_codes(overlay, cd_filter_info)
+        allowed_atc4_aliases = _allowed_atc4_aliases(allowed_atc4)
+        row_atc4 = _row_atc4_code(row)
+        if allowed_atc4_aliases and row_atc4 and not (_atc4_aliases(row_atc4) & allowed_atc4_aliases):
             continue
         override_columns = {col: overlay.get(col) for col in OVERRIDE_COLS if pd.notna(overlay.get(col))}
         copied = dict(row)
@@ -206,11 +266,14 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
                     "is_target": overlay.get("is_target"),
                     "catalog_brand_ids": overlay.get("catalog_brand_ids"),
                     "catalog_names": overlay.get("catalog_names"),
+                    "allowed_atc4_codes": sorted(allowed_atc4),
+                    "allowed_atc4_aliases": sorted(allowed_atc4_aliases),
                     **override_columns,
                 },
             }
         )
         selected.append(copied)
+    selected = _collapse_same_cd_brand_rows(selected)
     validate_market_completeness(cd_row, catalog_rows, selected)
     for rows in _group_by_source_measure(selected).values():
         recompute_market_scoped_metric_history(rows)

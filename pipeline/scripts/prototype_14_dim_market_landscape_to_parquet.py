@@ -52,7 +52,7 @@ EXPECTED_MARKET_COUNTS = {
     "strategy_004": 10,
     "strategy_005": 294,
     "strategy_006": 1047,
-    "strategy_007": 611,
+    "strategy_007": 117,
     "strategy_008": 1081,
     "strategy_009": 405,
     "strategy_010": 10,
@@ -64,7 +64,7 @@ EXPECTED_MARKET_COUNTS = {
     "strategy_016": 52,
 }
 DEFAULT_SHEET_ALL_MARKETS = {"strategy_005", "strategy_011"}
-EXPECTED_TOTAL_MASTER_DRUG_ROWS = 4446
+EXPECTED_TOTAL_MASTER_DRUG_ROWS = 3952
 
 DIM_MARKET_LANDSCAPE_COLUMNS = (
     "market_landscape_id",

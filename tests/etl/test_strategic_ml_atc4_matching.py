@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT / "pipeline" / "scripts" / "etl"))
 sys.path.insert(0, str(ROOT / "pipeline" / "scripts"))
 
 from pipeline.scripts import prototype_09_master_brand_consolidation_to_parquet as p09
+from pipeline.scripts import prototype_11_master_drug_to_parquet as p11
 from pipeline.scripts import prototype_20_strategic_brand_to_parquet as p20
+from pipeline.scripts.etl.layer3_compute_strategic_cd_v3 import build_cd_rows
 from pipeline.scripts.etl.layer3_compute_strategic_ml_v3 import build_ml_rows
 
 
@@ -35,6 +37,38 @@ def _ml_row(ml_id: str, *, atc4_codes: list[str] | None = None, data_source: str
             "analyze_fish_oil": False,
         }
     )
+
+
+def _cd_row(cd_id: str, ml_id: str, *, cd_filter_id: str, data_source: str = "iqvia") -> pd.Series:
+    return pd.Series(
+        {
+            "cd_id": cd_id,
+            "name": f"{cd_id} competitive market",
+            "ml_id": ml_id,
+            "cd_filter_id": cd_filter_id,
+            "data_source": data_source,
+            "analyze_class": True,
+            "analyze_molecule": True,
+            "analyze_dosage_form": True,
+            "analyze_strength_pack": False,
+            "analyze_nhi_type": True,
+            "analyze_ox_gx": False,
+            "analyze_fish_oil": False,
+        }
+    )
+
+
+def _cd_filter_row(cd_filter_id: str, name: str, atc4_codes: list[str]) -> dict[str, object]:
+    return {
+        "cd_filter_id": cd_filter_id,
+        "name": name,
+        "atc3": None,
+        "atc4": json.dumps(atc4_codes, ensure_ascii=False),
+        "molecule": None,
+        "class": None,
+        "nhi": None,
+        "dosage_form": None,
+    }
 
 
 def _catalog_row(
@@ -69,6 +103,28 @@ def _catalog_row(
         "allowed_atc4_codes_json": json.dumps(allowed_atc4, ensure_ascii=False) if allowed_atc4 is not None else None,
         "is_class_excluded": is_class_excluded,
     }
+
+
+def _cd_catalog_row(
+    *,
+    brand_id: str,
+    name: str,
+    ml_id: str,
+    cd_id: str,
+    allowed_atc4: list[str] | None,
+    class_label: str = "Class A",
+    nhi_type: str = "NHI",
+) -> dict[str, object]:
+    row = _catalog_row(
+        brand_id=brand_id,
+        name=name,
+        ml_id=ml_id,
+        allowed_atc4=allowed_atc4,
+        class_label=class_label,
+        nhi_type=nhi_type,
+    )
+    row["cd_id"] = cd_id
+    return row
 
 
 def _general_row(
@@ -202,6 +258,75 @@ def test_build_ml_rows_collapses_allowed_multi_atc4_rows_by_brand_id_and_merges_
     assert row["dimension_data"]["nhi_type"]["NON-NHI"]["2025-Q4"]["raw_value"] == 197_874_000
 
 
+def test_build_cd_rows_filters_multi_atc4_brand_to_cd_allowed_codes():
+    """젤잔즈 in 악템라 competitive view should keep L04D0 and exclude A07E9."""
+
+    catalog = pd.DataFrame(
+        [
+            _cd_catalog_row(
+                brand_id="sb_011_00027",
+                name="젤잔즈",
+                ml_id="ml_011",
+                cd_id="cd_014",
+                allowed_atc4=["L04D0"],
+            )
+        ]
+    )
+    cd_filter = pd.DataFrame([_cd_filter_row("cdf_014", "악템라", ["L04D0"])])
+    general_rows = _with_required_iqvia_measures([
+        _general_row(brand_key="젤잔즈", atc4_code="A07E9", raw_value=590_947_536),
+        _general_row(brand_key="젤잔즈", atc4_code="L04D0", raw_value=2_034_020_862),
+    ])
+
+    brand_rows, market_rows = build_cd_rows(
+        _cd_row("cd_014", "ml_011", cd_filter_id="cdf_014"),
+        catalog,
+        cd_filter,
+        general_rows,
+    )
+    sales_rows = [row for row in brand_rows if row["measure"] == "sales"]
+    sales_market = _market_for(market_rows, "sales")
+
+    assert len(sales_rows) == 1
+    assert sales_rows[0]["raw_value_history"]["2025-Q4"] == 2_034_020_862
+    assert sales_market["market_size_series"]["2025-Q4"] == 2_034_020_862
+
+
+def test_build_cd_rows_collapses_allowed_multi_atc4_rows_by_cd_brand_id():
+    """수프렙미니 competitive view should sum A06B1 + A06B2 once."""
+
+    catalog = pd.DataFrame(
+        [
+            _cd_catalog_row(
+                brand_id="sb_002_00020",
+                name="수프렙미니",
+                ml_id="ml_002",
+                cd_id="cd_002",
+                allowed_atc4=["A06B1", "A06B2"],
+                nhi_type="NON-NHI",
+            )
+        ]
+    )
+    cd_filter = pd.DataFrame([_cd_filter_row("cdf_002", "제이클", ["A06B1", "A06B2"])])
+    general_rows = _with_required_iqvia_measures([
+        _general_row(brand_key="수프렙미니", atc4_code="A06B1", raw_value=100_000_000, nhi_type="NHI"),
+        _general_row(brand_key="수프렙미니", atc4_code="A06B2", raw_value=197_874_000, nhi_type="NON-NHI"),
+    ])
+
+    brand_rows, market_rows = build_cd_rows(
+        _cd_row("cd_002", "ml_002", cd_filter_id="cdf_002"),
+        catalog,
+        cd_filter,
+        general_rows,
+    )
+    sales_rows = [row for row in brand_rows if row["measure"] == "sales"]
+    sales_market = _market_for(market_rows, "sales")
+
+    assert len(sales_rows) == 1
+    assert sales_rows[0]["raw_value_history"]["2025-Q4"] == 297_874_000
+    assert sales_market["market_size_series"]["2025-Q4"] == 297_874_000
+
+
 def test_build_ml_rows_matches_catalog_atc4_to_ubist_bracket_code_alias():
     """엔커버 should match MI Master V06D0 to UBIST general V6D."""
 
@@ -263,12 +388,50 @@ def test_class_only_excluded_rows_remain_in_market_total_but_not_class_level():
     assert class_level == {"Class A": {"2025-Q4": 10_000_000.0}}
 
 
-def test_class_exclusion_cells_are_not_strict_row_exclusions():
+def test_exclusion_cells_follow_sheet_level_modes():
     headers = ["PRODUCT NAME KOR", "Class", "Remark"]
 
-    row_excluded, class_excluded = p20.classify_exclusion_cells(headers, ["젤잔즈", "기타(제외)", None])
+    row_excluded, class_excluded = p20.classify_exclusion_cells(
+        headers,
+        ["리바로페노", "기타(제외)", None],
+        strategic_market_id="strategy_007",
+        sheet_name="리바로페노",
+    )
+    assert row_excluded is True
+    assert class_excluded is False
+    assert p11.is_excluded_row(
+        ["리바로페노", "기타(제외)", None],
+        {1},
+        strategic_market_id="strategy_007",
+        sheet_name="리바로페노",
+    ) is True
+
+    row_excluded, class_excluded = p20.classify_exclusion_cells(
+        headers,
+        ["염화칼륨 중외", "기타(제외)", None],
+        strategic_market_id="strategy_016",
+        sheet_name="플라주오피",
+    )
     assert row_excluded is False
     assert class_excluded is True
 
+    row_excluded, class_excluded = p20.classify_exclusion_cells(
+        headers,
+        ["위너프", "N/A(제외)", None],
+        strategic_market_id="strategy_014",
+        sheet_name="위너프 위너프A+",
+    )
+    assert row_excluded is False
+    assert class_excluded is False
+
+    row_excluded, class_excluded = p20.classify_exclusion_cells(
+        headers,
+        ["젤잔즈", "JAK", "제외"],
+        strategic_market_id="strategy_011",
+        sheet_name="악템라",
+    )
+    assert row_excluded is False
+    assert class_excluded is False
+
     assert p09.is_excluded_row(["젤잔즈", "기타(제외)", None], headers=headers) is False
-    assert p09.is_excluded_row(["젤잔즈", "JAK", "제외"], headers=headers) is True
+    assert p09.is_excluded_row(["젤잔즈", "JAK", "제외"], headers=headers) is False

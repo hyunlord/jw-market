@@ -47,8 +47,8 @@ Notes:
   - For exact same-file replacement, reset the affected raw table intentionally
     before rerunning Layer1; do not rely on --all to overwrite loaded files.
   - Phase 15 IQVIA de-duplication lives in layer3_compute_general_v3.py.
-  - Layer4 runs build_cache_market_status.py, build_cache_cause.py, and
-    build_cache_deep_analysis.py in that order.
+  - Layer4 runs build_cache_brands.py, build_cache_market_status.py,
+    build_cache_cause.py, and build_cache_deep_analysis.py in that order.
 EOF
 }
 
@@ -228,6 +228,7 @@ run_layer3() {
 
 run_layer4() {
   echo "=== Layer4 API caches ==="
+  "$PYTHON_BIN" "$ETL_DIR/build_cache_brands.py" --output-db jw_mart
   "$PYTHON_BIN" "$ETL_DIR/build_cache_market_status.py" --output-db jw_mart
   "$PYTHON_BIN" "$ETL_DIR/build_cache_cause.py" --output-db jw_mart
   "$PYTHON_BIN" "$ETL_DIR/build_cache_deep_analysis.py" --output-db jw_mart
