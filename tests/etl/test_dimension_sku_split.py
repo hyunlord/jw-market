@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT / "pipeline" / "scripts" / "etl"))
 from pipeline.scripts.etl import build_cache_cause as cause
 from pipeline.scripts.etl import layer3_compute_general_v3 as general
 from pipeline.scripts.etl import ubist_channel_resolver
+from pipeline.scripts import prototype_21_strategic_product_to_parquet as strategic_product
 
 
 def test_analysis_level_uses_dimension_data_series_instead_of_joined_brand_value():
@@ -127,7 +129,7 @@ def test_channel_level_segments_use_dimension_channel_data_without_duplication()
     ]
 
 
-def test_level_top5_uses_dimension_rows_for_brand_values_and_hides_overall_share_option():
+def test_level_top5_uses_dimension_rows_for_brand_values_and_keeps_overall_option():
     row = {
         "brand_name": "훼렉스",
         "brand_key": "훼렉스",
@@ -189,15 +191,16 @@ def test_level_top5_uses_dimension_rows_for_brand_values_and_hides_overall_share
 
     level_data = trend["by_level"]["비/급여"]
     assert level_data["total_market_value"] == 200.0
-    assert level_data["all_options"] == ["NHI", "NON-NHI"]
-    assert [item["value"] for item in level_data["values"]] == ["NHI", "NON-NHI"]
-    nhi_brand = level_data["values"][0]["brands_in_value"][0]
+    assert level_data["all_options"] == ["전체", "NHI", "NON-NHI"]
+    assert [item["value"] for item in level_data["values"]] == ["전체", "NHI", "NON-NHI"]
+    assert level_data["values"][0]["is_overall"] is True
+    nhi_brand = level_data["values"][1]["brands_in_value"][0]
     assert nhi_brand["brand"] == "훼렉스"
     assert nhi_brand["value_recent"] == 120.0
     assert nhi_brand["value_series_10pt"] == [60.0, 120.0]
 
 
-def test_brand_level_top5_keeps_overall_market_total_while_hiding_overall_option():
+def test_brand_level_top5_keeps_overall_market_total_and_overall_option():
     rows = [
         {
             "brand_name": f"브랜드{i}",
@@ -228,25 +231,134 @@ def test_brand_level_top5_keeps_overall_market_total_while_hiding_overall_option
     brand_level = trend["by_level"]["Brand"]
     assert brand_level["total_market_value"] == 210.0
     assert [item["value"] for item in brand_level["values"]] == [
+        "전체",
         "브랜드1",
         "브랜드2",
         "브랜드3",
         "브랜드4",
         "브랜드5",
     ]
+    assert brand_level["values"][0]["is_overall"] is True
 
 
-def test_target_customer_competition_copy_matches_level_top5_payload():
-    level_top5 = {
-        "available_levels": [{"key": "Class", "label": "Class"}],
-        "default_level": "Class",
-        "by_level": {"Class": {"values": [{"value": "A"}]}},
+def test_analysis_levels_keep_overall_line_but_exclude_it_from_ms_options():
+    rows = [
+        {
+            "brand_name": "브랜드A",
+            "brand_key": "브랜드A",
+            "company": "회사A",
+            "metric_history": {"2025-Q1": {"raw_value": 100.0}},
+            "by_dimension": {"class": "Class A"},
+            "dimension_data": {
+                "class": {"Class A": {"2025-Q1": {"raw_value": 100.0}}},
+            },
+        },
+        {
+            "brand_name": "브랜드B",
+            "brand_key": "브랜드B",
+            "company": "회사B",
+            "metric_history": {"2025-Q1": {"raw_value": 50.0}},
+            "by_dimension": {"class": "Class B"},
+            "dimension_data": {
+                "class": {"Class B": {"2025-Q1": {"raw_value": 50.0}}},
+            },
+        },
+    ]
+
+    analysis_levels = cause._build_analysis_levels_from_mart(
+        rows=rows,
+        source="IQVIA",
+        market={"analyze_class": True},
+        view_source_id="ml_test",
+        target_name=None,
+        fallback_level_top5={},
+    )
+
+    class_level = analysis_levels["data"]["Class"]
+    line_segments = class_level["by_channel"]["전체"]
+    overall = line_segments[0]
+    assert overall["name"] == "전체"
+    assert overall["is_overall"] is True
+    assert overall["value_series"] == [150.0]
+    assert "recent_share_pct" not in overall
+    assert "series_pct" not in overall
+
+    ms_segments = class_level["ms_by_channel"]["전체"]
+    assert [segment["name"] for segment in ms_segments] == ["Class A", "Class B"]
+    assert sum(segment["recent_share_pct"] for segment in ms_segments) == 100.0
+    assert all(not segment.get("is_overall") for segment in ms_segments)
+
+
+def test_analysis_level_market_status_overall_channel_matches_level_top5_payload():
+    row = {
+        "brand_name": "브랜드A",
+        "brand_key": "브랜드A",
+        "company": "회사A",
+        "metric_history": {"2025-Q1": {"raw_value": 100.0}},
+        "by_dimension": {"class": "Class A"},
+        "dimension_data": {"class": {"Class A": {"2025-Q1": {"raw_value": 100.0}}}},
+    }
+    analysis_levels = {
+        "levels": ["Class"],
+        "periods_monthly": ["2025-Q1"],
+        "data": {
+            "Class": {
+                "by_channel": {
+                    "전체": [
+                        {
+                            "name": "전체",
+                            "is_overall": True,
+                            "value_series": [100.0],
+                        },
+                        {
+                            "name": "Class A",
+                            "recent_share_pct": 100.0,
+                            "value_series": [100.0],
+                        },
+                    ],
+                    "KHPA": [
+                        {
+                            "name": "전체",
+                            "is_overall": True,
+                            "value_series": [100.0],
+                        },
+                        {
+                            "name": "Class A",
+                            "recent_share_pct": 100.0,
+                            "value_series": [100.0],
+                        },
+                    ],
+                }
+            }
+        },
     }
 
-    copied = cause._copy_level_top5_to_target_customer(level_top5)
+    level_top5 = cause._level_top5_trend(
+        analysis_levels,
+        [row],
+        "IQVIA",
+        target_name=None,
+        include_all_options=True,
+    )
+    clone_payload = cause._analysis_level_market_status_by_channel(
+        level_top5_trend=level_top5,
+        analysis_levels=analysis_levels,
+        rows=[row],
+        source="IQVIA",
+        channels=["전체", "KHPA"],
+        include_all_options=True,
+    )
 
-    assert copied == level_top5
-    assert copied is not level_top5
+    assert clone_payload["by_channel"]["전체"] == level_top5
+    assert clone_payload["by_channel"]["전체"] is not level_top5
+    assert clone_payload["channels"] == ["전체", "KHPA"]
+    assert [item["value"] for item in clone_payload["by_channel"]["전체"]["by_level"]["Class"]["values"]] == [
+        "전체",
+        "Class A",
+    ]
+    assert [item["value"] for item in clone_payload["ms_by_channel"]["전체"]["by_level"]["Class"]["values"]] == [
+        "Class A"
+    ]
 
 
 def test_ubist_resolver_returns_screen_facility_channels_and_preserves_specialty_data(monkeypatch):
@@ -271,9 +383,54 @@ def test_ubist_resolver_returns_screen_facility_channels_and_preserves_specialty
         measure="sales",
     )
 
-    assert context["channels"] == ["전체", "상급종병", "종병", "병원", "의원/보건소"]
+    assert context["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
     assert context["specialty_channels"] == ["전체", "종합병원 내분비", "의원 IGF"]
     assert rows[0]["__ubist_dual_channel_data"] == {
         "종합병원 내분비": {"2025-01": 10.0},
         "의원 IGF": {"2025-01": 5.0},
     }
+
+
+def test_strategic_product_materializes_mi_master_molecule_and_preserves_raw_metadata():
+    brand_row = {
+        "name": "리바로젯",
+        "merge_name": "리바로젯",
+        "brand_id": "ml_006__livarozet",
+        "ml_id": "ml_006",
+        "cd_id": None,
+        "class": "Statin + EZE",
+        "molecule": "Statin/EZE",
+        "dosage_form": "Oral",
+        "strength_pack": None,
+        "nhi_type": None,
+        "ox_gx": "Combo",
+        "fish_oil": None,
+        "판매사": "JW중외제약",
+        "제조사": "JW중외제약",
+        "source_file_version": "test",
+    }
+    candidate = {
+        "source_view": "IQVIA",
+        "product_name": "LIVAROZET TAB 10/10MG",
+        "pack_desc": "30T",
+        "molecule": "atorvastatin calcium trihydrate (as atorvastatin), ezetimibe",
+        "dosage_form": "Oral Solid Ordinary Film-Coated Tablets",
+        "strength_pack": "10/10mg",
+        "nhi_type": "NHI",
+        "manufacturer": "JW중외제약",
+    }
+
+    record = strategic_product.product_record_from_candidate(
+        brand_row=brand_row,
+        context={},
+        candidate=candidate,
+        product_id="ml_006__livarozet__001",
+        ingested_at=datetime(2026, 6, 6, tzinfo=timezone.utc),
+    )
+
+    assert record["molecule"] == "Statin/EZE"
+    assert record["molecule_raw"] == "atorvastatin calcium trihydrate (as atorvastatin), ezetimibe"
+    assert record["dosage_form"] == "Oral"
+    assert record["dosage_form_raw"] == "Oral Solid Ordinary Film-Coated Tablets"
+    assert record["strength_pack"] == "10/10mg"
+    assert record["nhi_type"] == "NHI"

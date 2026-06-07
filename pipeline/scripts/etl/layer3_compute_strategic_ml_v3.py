@@ -14,6 +14,7 @@ from typing import Any, Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import duckdb
 import pandas as pd
 
 from brand_key_normalize import normalize_brand_name
@@ -31,6 +32,8 @@ from layer3_compute_general_v3 import (
     mat_growth,
     pct_growth,
     read_jsonl,
+    SKU_DIMENSION_COLUMNS,
+    ubist_channel_to_raw,
     value_at,
     write_jsonl,
 )
@@ -39,11 +42,13 @@ from layer3_compute_market_metric import compute_market_mart_payload
 from layer3_normalize import prev_month, prev_quarter_month, same_month_prev_year
 from layer2_normalize import normalize_atc
 from ops_utils import configure_logging, find_project_root
+from utils.ubist_channel_mapping import parse_channel_code
 
 
 LOGGER = configure_logging(__name__)
 PROJECT_ROOT = find_project_root(Path(__file__).resolve())
 CATALOG_DIR = PROJECT_ROOT / "output" / "catalog"
+ENRICHED_DIR = PROJECT_ROOT / "output" / "enriched"
 DRY_RUN_DIR = Path("/tmp")
 ML_BRAND_JSONL = "strategic_ml_v3_brand_rows.jsonl"
 ML_MARKET_JSONL = "strategic_ml_v3_market_rows.jsonl"
@@ -62,6 +67,7 @@ ML_BRAND_COLUMNS = [
     "specialty_data",
     "dimension_data",
     "dimension_channel_data",
+    "dimension_specialty_data",
     "by_dimension",
     "raw_value_history",
     "overlay_data",
@@ -220,7 +226,14 @@ def _collapse_same_brand_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
         base = deepcopy(members[0])
         base["raw_value_history"] = _sum_raw_histories(members)
-        for column in ("channel_data", "specialty_data", "dimension_data", "dimension_channel_data", "channel_specialty_matrix"):
+        for column in (
+            "channel_data",
+            "specialty_data",
+            "dimension_data",
+            "dimension_channel_data",
+            "dimension_specialty_data",
+            "channel_specialty_matrix",
+        ):
             merged: Any = {}
             for member in members:
                 merged = _merge_numeric_json_values(merged, member.get(column) or {})
@@ -246,15 +259,17 @@ def expected_measure_pairs(data_source: Any) -> set[tuple[str, str]]:
     return expected
 
 
-def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     ml_market = pd.read_parquet(CATALOG_DIR / "ml_market" / "ml_market.parquet")
     strategic_brand = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
+    strategic_product = pd.read_parquet(CATALOG_DIR / "strategic_product" / "strategic_product.parquet")
     strategic_brand = drop_strict_excluded_rows(strategic_brand, "strategic_brand")
+    strategic_product = drop_strict_excluded_rows(strategic_product, "strategic_product")
     if "general_brand_key" in strategic_brand.columns:
         strategic_brand["brand_key"] = strategic_brand["general_brand_key"].fillna(strategic_brand["name"]).map(normalize_brand_name)
     else:
         strategic_brand["brand_key"] = strategic_brand["name"].map(normalize_brand_name)
-    return ml_market, strategic_brand
+    return ml_market, strategic_brand, strategic_product
 
 
 def drop_strict_excluded_rows(brands: pd.DataFrame, label: str) -> pd.DataFrame:
@@ -265,6 +280,397 @@ def drop_strict_excluded_rows(brands: pd.DataFrame, label: str) -> pd.DataFrame:
     if removed:
         print(f"[exclude] strict 제외 제거 ({label}): {len(brands)} -> {len(brands) - removed}")
     return brands.loc[~excluded_mask].copy()
+
+
+def _clean_dimension_label(value: Any) -> str | None:
+    if not _notna(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+        return None
+    return text
+
+
+def _dimension_atoms(value: Any) -> list[str]:
+    text = _clean_dimension_label(value)
+    if not text:
+        return []
+    atoms = [part.strip() for part in text.split("|") if part.strip()]
+    return list(dict.fromkeys(atoms))
+
+
+def _value_from_history_item(item: Any) -> float:
+    if isinstance(item, dict):
+        item = item.get("raw_value") or item.get("value") or item.get("sales")
+    try:
+        return float(item or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _series_from_history(history: Any) -> dict[str, dict[str, float]]:
+    if not isinstance(history, dict):
+        return {}
+    return {
+        str(period): {"raw_value": _value_from_history_item(value)}
+        for period, value in history.items()
+    }
+
+
+def _fill_dimension_series(
+    target: dict[str, Any],
+    existing: dict[str, Any],
+    field: str,
+    label: str,
+    series: dict[str, Any],
+) -> None:
+    if not label or not isinstance(series, dict):
+        return
+    label_bucket = target.setdefault(field, {}).setdefault(label, {})
+    for period, item in series.items():
+        period_key = str(period)
+        if _field_period_has_existing_value(existing, field, period_key):
+            continue
+        period_bucket = label_bucket.setdefault(period_key, {"raw_value": 0.0})
+        period_bucket["raw_value"] = _value_from_history_item(period_bucket) + _value_from_history_item(item)
+
+
+def _field_period_has_existing_value(existing: dict[str, Any], field: str, period: str) -> bool:
+    field_bucket = existing.get(field) if isinstance(existing, dict) else None
+    if not isinstance(field_bucket, dict):
+        return False
+    for label_series in field_bucket.values():
+        if isinstance(label_series, dict) and _value_from_history_item(label_series.get(period)) > 0:
+            return True
+    return False
+
+
+def _fill_dimension_channel_series(
+    target: dict[str, Any],
+    existing: dict[str, Any],
+    channel_totals: dict[str, Any],
+    field: str,
+    label: str,
+    channel: str,
+    series: dict[str, Any],
+) -> None:
+    if not label or not channel or not isinstance(series, dict):
+        return
+    channel_bucket = target.setdefault(field, {}).setdefault(label, {}).setdefault(str(channel), {})
+    for period, item in series.items():
+        period_key = str(period)
+        if _channel_period_total(channel_totals, str(channel), period_key) <= 0:
+            continue
+        if _field_channel_period_has_existing_value(existing, field, str(channel), period_key):
+            continue
+        period_bucket = channel_bucket.setdefault(period_key, {"raw_value": 0.0})
+        period_bucket["raw_value"] = _value_from_history_item(period_bucket) + _value_from_history_item(item)
+
+
+def _channel_period_total(channel_totals: dict[str, Any], channel: str, period: str) -> float:
+    if not isinstance(channel_totals, dict):
+        return 0.0
+    series = channel_totals.get(channel)
+    if not isinstance(series, dict):
+        return 0.0
+    return _value_from_history_item(series.get(period))
+
+
+def _field_channel_period_has_existing_value(existing: dict[str, Any], field: str, channel: str, period: str) -> bool:
+    field_bucket = existing.get(field) if isinstance(existing, dict) else None
+    if not isinstance(field_bucket, dict):
+        return False
+    for label_channels in field_bucket.values():
+        if not isinstance(label_channels, dict):
+            continue
+        channel_series = label_channels.get(channel)
+        if isinstance(channel_series, dict) and _value_from_history_item(channel_series.get(period)) > 0:
+            return True
+    return False
+
+
+def _enriched_ubist_specialty_display(channel: Any, specialty: Any) -> str | None:
+    """Map Layer2 UBIST channel/specialty codes to chart7 display channels.
+
+    Layer2 stores compact codes such as TH/GH/Semi/CL and Cardio/Endo.  The
+    chart7 target-channel contract groups TH/GH/Semi into GH ("종합병원") and
+    exposes the display label from ``ubist_channel_mapping``.
+    """
+
+    facility_text = str(channel or "").strip()
+    specialty_text = str(specialty or "").strip()
+    if not facility_text or not specialty_text or specialty_text == "Unknown":
+        return None
+    facility_code = {
+        "TH": "GH",
+        "GH": "GH",
+        "Semi": "GH",
+        "CL": "CL",
+        "기타": "OT",
+        "OT": "OT",
+    }.get(facility_text)
+    if not facility_code:
+        return None
+    try:
+        parsed = parse_channel_code(f"{facility_code} {specialty_text}")
+    except ValueError:
+        return None
+    return parsed.display_name if parsed else None
+
+
+def _fill_dimension_specialty_series(
+    target: dict[str, Any],
+    field: str,
+    label: str,
+    specialty_channel: str,
+    series: dict[str, Any],
+) -> None:
+    if not label or not specialty_channel or not isinstance(series, dict):
+        return
+    channel_bucket = target.setdefault(field, {}).setdefault(label, {}).setdefault(str(specialty_channel), {})
+    for period, item in series.items():
+        period_key = str(period)
+        period_bucket = channel_bucket.setdefault(period_key, {"raw_value": 0.0})
+        period_bucket["raw_value"] = _value_from_history_item(period_bucket) + _value_from_history_item(item)
+
+
+def _catalog_single_dimension_by_brand(
+    catalog_rows: pd.DataFrame,
+    strategic_products: pd.DataFrame,
+) -> dict[str, dict[str, str]]:
+    """Return dimensions that are a single catalog fact for each brand_id.
+
+    Multi-valued fields deliberately stay absent so downstream code never has
+    to split a pipe-joined label back into separate SKU semantics.
+    """
+
+    result: dict[str, dict[str, str]] = {}
+    source_frames = []
+    for frame in (strategic_products, catalog_rows):
+        if frame is not None and not frame.empty and "brand_id" in frame.columns:
+            source_frames.append(frame)
+    if not source_frames:
+        return result
+
+    all_rows = pd.concat(source_frames, ignore_index=True, sort=False)
+    for brand_id, part in all_rows.groupby("brand_id", dropna=False):
+        brand_key = str(brand_id or "")
+        if not brand_key:
+            continue
+        for field in SKU_DIMENSION_COLUMNS:
+            if field not in part.columns:
+                continue
+            atoms: set[str] = set()
+            for value in part[field]:
+                atoms.update(_dimension_atoms(value))
+            if len(atoms) == 1:
+                result.setdefault(brand_key, {})[field] = next(iter(atoms))
+    return result
+
+
+def _load_ubist_dimension_context(ml_id: str, strategic_products: pd.DataFrame) -> dict[str, Any]:
+    """Build product-code dimension evidence from Layer2 enriched rows.
+
+    Raw rows can duplicate when a product code maps to multiple catalog product
+    rows (for example NHI variants).  Channel histories are therefore summed
+    from distinct raw source rows, while product_id is used only to determine
+    whether a product_code has a single unambiguous label for a dimension.
+    """
+
+    enriched_path = ENRICHED_DIR / f"ml_id={ml_id}" / "data.parquet"
+    stats: dict[str, Any] = {
+        "enriched_path": str(enriched_path),
+        "exists": enriched_path.exists(),
+        "ubist_source_rows": 0,
+        "product_code_count": 0,
+        "single_label_counts": {field: 0 for field in SKU_DIMENSION_COLUMNS},
+        "multi_label_counts": {field: 0 for field in SKU_DIMENSION_COLUMNS},
+    }
+    if not enriched_path.exists() or strategic_products.empty:
+        return {"code_dimensions": {}, "code_channel_history": {}, "code_specialty_history": {}, "stats": stats}
+
+    con = duckdb.connect()
+    try:
+        code_product = con.execute(
+            f"""
+            SELECT DISTINCT
+              split_part(source_row_id, '::', 6) AS product_code,
+              product_id
+            FROM read_parquet('{enriched_path}')
+            WHERE source='ubist' AND source_row_id IS NOT NULL
+            """
+        ).df()
+        raw_channel = con.execute(
+            f"""
+            SELECT product_code, channel, specialty, period_yyyymm,
+                   SUM(raw_sales) AS raw_sales,
+                   SUM(raw_volume) AS raw_volume
+            FROM (
+              SELECT DISTINCT
+                source_row_id,
+                split_part(source_row_id, '::', 6) AS product_code,
+                channel,
+                specialty,
+                period_yyyymm,
+                TRY_CAST(raw_rx_amt AS DOUBLE) AS raw_sales,
+                TRY_CAST(raw_rx_qty AS DOUBLE) AS raw_volume
+              FROM read_parquet('{enriched_path}')
+              WHERE source='ubist' AND source_row_id IS NOT NULL
+                AND (TRY_CAST(raw_rx_amt AS DOUBLE) > 0 OR TRY_CAST(raw_rx_qty AS DOUBLE) > 0)
+            ) AS raw_rows
+            GROUP BY 1,2,3,4
+            """
+        ).df()
+    finally:
+        con.close()
+
+    stats["ubist_source_rows"] = int(len(raw_channel))
+    if code_product.empty:
+        return {"code_dimensions": {}, "code_channel_history": {}, "code_specialty_history": {}, "stats": stats}
+
+    product_dims = strategic_products[
+        [col for col in ["product_id", *SKU_DIMENSION_COLUMNS] if col in strategic_products.columns]
+    ].drop_duplicates("product_id")
+    code_dims = code_product.merge(product_dims, on="product_id", how="left")
+    code_dimensions: dict[str, dict[str, str]] = {}
+    for product_code, part in code_dims.groupby("product_code", dropna=False):
+        code = str(product_code or "").strip()
+        if not code:
+            continue
+        stats["product_code_count"] += 1
+        for field in SKU_DIMENSION_COLUMNS:
+            if field not in part.columns:
+                continue
+            atoms: set[str] = set()
+            for value in part[field]:
+                atoms.update(_dimension_atoms(value))
+            if len(atoms) == 1:
+                code_dimensions.setdefault(code, {})[field] = next(iter(atoms))
+                stats["single_label_counts"][field] += 1
+            elif len(atoms) > 1:
+                stats["multi_label_counts"][field] += 1
+
+    channel_history: dict[str, dict[str, dict[str, dict[str, dict[str, dict[str, float]]]]]] = {
+        "sales": {},
+        "volume": {},
+    }
+    specialty_history: dict[str, dict[str, dict[str, dict[str, dict[str, dict[str, float]]]]]] = {
+        "sales": {},
+        "volume": {},
+    }
+    specialty_channels_seen: set[str] = set()
+    for row in raw_channel.to_dict("records"):
+        code = str(row.get("product_code") or "").strip()
+        if not code or code not in code_dimensions:
+            continue
+        channel = ubist_channel_to_raw(row.get("channel"))
+        specialty_channel = _enriched_ubist_specialty_display(row.get("channel"), row.get("specialty"))
+        period = str(row.get("period_yyyymm") or "").strip()
+        if not period:
+            continue
+        for field, label in code_dimensions[code].items():
+            for measure, value_col in (("sales", "raw_sales"), ("volume", "raw_volume")):
+                value = _value_from_history_item(row.get(value_col))
+                if value <= 0:
+                    continue
+                measure_bucket = channel_history.setdefault(measure, {})
+                field_bucket = measure_bucket.setdefault(code, {}).setdefault(field, {}).setdefault(label, {})
+                channel_bucket = field_bucket.setdefault(channel, {})
+                channel_bucket[period] = {"raw_value": _value_from_history_item(channel_bucket.get(period)) + value}
+                if specialty_channel:
+                    specialty_channels_seen.add(specialty_channel)
+                    specialty_measure_bucket = specialty_history.setdefault(measure, {})
+                    specialty_field_bucket = (
+                        specialty_measure_bucket
+                        .setdefault(code, {})
+                        .setdefault(field, {})
+                        .setdefault(label, {})
+                    )
+                    specialty_bucket = specialty_field_bucket.setdefault(specialty_channel, {})
+                    specialty_bucket[period] = {
+                        "raw_value": _value_from_history_item(specialty_bucket.get(period)) + value
+                    }
+
+    stats["specialty_channel_count"] = len(specialty_channels_seen)
+    stats["specialty_channels"] = sorted(specialty_channels_seen)
+    return {
+        "code_dimensions": code_dimensions,
+        "code_channel_history": channel_history,
+        "code_specialty_history": specialty_history,
+        "stats": stats,
+    }
+
+
+def _enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    dimension_data = deepcopy(row.get("dimension_data") or {})
+    dimension_channel_data = deepcopy(row.get("dimension_channel_data") or {})
+    dimension_specialty_data = deepcopy(row.get("dimension_specialty_data") or {})
+    existing_dimension_data = deepcopy(dimension_data)
+    existing_dimension_channel_data = deepcopy(dimension_channel_data)
+    by_dimension = deepcopy(row.get("by_dimension") or {})
+    brand_id = str(row.get("brand_id") or "")
+    measure = str(row.get("measure") or "")
+    brand_single = context.get("brand_single_dimensions", {}).get(brand_id, {})
+    code_dimensions = context.get("code_dimensions", {})
+    code_channel_history = context.get("code_channel_history", {}).get(measure, {})
+    code_specialty_history = context.get("code_specialty_history", {}).get(measure, {})
+    row_history = _series_from_history(row.get("raw_value_history"))
+    channel_data = row.get("channel_data") if isinstance(row.get("channel_data"), dict) else {}
+    products = by_dimension.get("products") if isinstance(by_dimension.get("products"), list) else []
+
+    for field in SKU_DIMENSION_COLUMNS:
+        label = brand_single.get(field)
+        if label:
+            _fill_dimension_series(dimension_data, existing_dimension_data, field, label, row_history)
+            for channel, series in channel_data.items():
+                _fill_dimension_channel_series(
+                    dimension_channel_data,
+                    existing_dimension_channel_data,
+                    channel_data,
+                    field,
+                    label,
+                    str(channel),
+                    series,
+                )
+            if not _clean_dimension_label(by_dimension.get(field)):
+                by_dimension[field] = label
+
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            code = str(product.get("product_code") or "").strip()
+            product_label = code_dimensions.get(code, {}).get(field) or label
+            if not product_label:
+                continue
+            if not label:
+                product_history = _series_from_history(product.get("raw_value_history"))
+                _fill_dimension_series(dimension_data, existing_dimension_data, field, product_label, product_history)
+                channel_map = (((code_channel_history.get(code) or {}).get(field) or {}).get(product_label) or {})
+                for channel, series in channel_map.items():
+                    _fill_dimension_channel_series(
+                        dimension_channel_data,
+                        existing_dimension_channel_data,
+                        channel_data,
+                        field,
+                        product_label,
+                        str(channel),
+                        series,
+                    )
+            specialty_map = (((code_specialty_history.get(code) or {}).get(field) or {}).get(product_label) or {})
+            for specialty_channel, series in specialty_map.items():
+                _fill_dimension_specialty_series(
+                    dimension_specialty_data,
+                    field,
+                    product_label,
+                    str(specialty_channel),
+                    series,
+                )
+
+    row["dimension_data"] = dimension_data
+    row["dimension_channel_data"] = dimension_channel_data
+    row["dimension_specialty_data"] = dimension_specialty_data
+    row["by_dimension"] = by_dimension
+    return row
 
 
 def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]]:
@@ -484,9 +890,15 @@ def recompute_market_scoped_metric_history(rows: list[dict[str, Any]]) -> None:
         row["extended_metric_history"] = extended_history
 
 
-def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def build_ml_rows(
+    ml_row: pd.Series,
+    catalog_rows: pd.DataFrame,
+    general_rows: list[dict[str, Any]],
+    dimension_context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     by_key = catalog_by_key(catalog_rows)
     expected_pairs = expected_measure_pairs(ml_row.get("data_source"))
+    dimension_context = dimension_context or {}
     selected: list[dict[str, Any]] = []
     for row in general_rows:
         source_measure = (str(row.get("source")), str(row.get("measure")))
@@ -516,6 +928,7 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
                 "by_dimension": dim,
                 "dimension_data": copied.get("dimension_data") or {},
                 "dimension_channel_data": copied.get("dimension_channel_data") or {},
+                "dimension_specialty_data": copied.get("dimension_specialty_data") or {},
                 "_catalog_join_key": str(overlay.get("brand_key") or row.get("brand_key") or ""),
                 "overlay_data": {
                     "catalog_source": "strategic_brand",
@@ -540,6 +953,7 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
                 },
             }
         )
+        copied = _enhance_strategic_dimensions(copied, dimension_context)
         selected.append(copied)
 
     selected = _collapse_same_brand_rows(selected)
@@ -605,7 +1019,7 @@ def delete_existing_rows(table: str, market_col: str, market_ids: set[str]) -> N
 def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if not dry_run and not insert:
         raise RuntimeError("Use --dry-run or --insert")
-    ml_market, strategic_brand = load_catalogs()
+    ml_market, strategic_brand, strategic_product = load_catalogs()
     if ml:
         ml_market = ml_market.loc[ml_market["ml_id"] == ml]
     all_general: list[dict[str, Any]] = []
@@ -615,7 +1029,13 @@ def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str 
     market_rows: list[dict[str, Any]] = []
     for _, ml_row in ml_market.iterrows():
         catalog_rows = strategic_brand.loc[strategic_brand["ml_id"] == ml_row["ml_id"]].copy()
-        rows, markets = build_ml_rows(ml_row, catalog_rows, all_general)
+        product_rows = strategic_product.loc[strategic_product["ml_id"] == ml_row["ml_id"]].copy()
+        ubist_context = _load_ubist_dimension_context(str(ml_row["ml_id"]), product_rows)
+        dimension_context = {
+            **ubist_context,
+            "brand_single_dimensions": _catalog_single_dimension_by_brand(catalog_rows, product_rows),
+        }
+        rows, markets = build_ml_rows(ml_row, catalog_rows, all_general, dimension_context)
         brand_rows.extend(rows)
         market_rows.extend(markets)
     if dry_run:
@@ -623,7 +1043,10 @@ def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str 
         write_jsonl(output_dir / ML_MARKET_JSONL, market_rows)
     if insert:
         market_ids = {str(row["ml_id"]) for _, row in ml_market.iterrows()}
-        ensure_json_columns("mart_strategic_ml_brand_metric", ("dimension_data", "dimension_channel_data"))
+        ensure_json_columns(
+            "mart_strategic_ml_brand_metric",
+            ("dimension_data", "dimension_channel_data", "dimension_specialty_data"),
+        )
         delete_existing_rows("mart_strategic_ml_brand_metric", "ml_id", market_ids)
         delete_existing_rows("mart_strategic_ml_market_metric", "ml_id", market_ids)
         insert_rows("mart_strategic_ml_brand_metric", ML_BRAND_COLUMNS, brand_rows, {"ml_id", "brand_id", "source", "measure"})

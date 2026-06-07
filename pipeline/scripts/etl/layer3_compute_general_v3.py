@@ -99,6 +99,7 @@ JSON_INSERT_COLUMNS = {
     "specialty_data",
     "dimension_data",
     "dimension_channel_data",
+    "dimension_specialty_data",
     "by_dimension",
     "raw_value_history",
     "market_size_series",

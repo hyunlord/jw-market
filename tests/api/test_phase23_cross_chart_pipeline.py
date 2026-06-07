@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+import pytest
 from playwright.sync_api import sync_playwright
 
 
@@ -70,15 +71,23 @@ def test_hemlibra_d3_class_totals_are_real_segment_totals() -> None:
     assert hemlibra["ms_recent_pct"] > 90
 
 
-def test_target_customer_competition_copies_level_top5_trend() -> None:
+def test_target_customer_competition_restores_view_payload_and_keeps_level_copy() -> None:
     payload = cause_payload("헴리브라", view="competitive_dynamics", source="IQVIA", measure="sales")
     data = payload["data"]
 
-    assert data["target_customer_competition"] == data["level_top5_trend"]
+    assert "views" in data["target_customer_competition"]
+    clone_payload = data["analysis_level_market_status"]
+    assert clone_payload["by_channel"]["전체"] == data["level_top5_trend"]
+    assert "target_customer_competition_level_copy" not in data
 
 
 def test_frontend_sales_b1_is_not_overwritten_by_counting_unit_merge() -> None:
     """The frontend cache must not merge counting_unit neutral fields over sales fields."""
+    try:
+        urllib.request.urlopen(FRONTEND_URL, timeout=2).close()
+    except OSError as exc:
+        pytest.skip(f"frontend fixture unavailable at {FRONTEND_URL}: {exc}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 1000})

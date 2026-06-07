@@ -42,7 +42,9 @@ def test_cause_analysis_levels_follow_market_ground_truth_for_ml003() -> None:
         "상급종병",
         "종병",
         "병원",
-        "의원/보건소",
+        "의원",
+        "보건소",
+        "기타",
     ]
 
 
@@ -70,10 +72,18 @@ def test_cause_analysis_level_segments_are_populated_for_all_channels() -> None:
         )
         segments = analysis_levels["data"][level]["by_channel"][channel]
         assert segments, f"segments empty for channel '{channel}'"
-        segment = segments[0]
-        assert {"name", "rank", "recent_share_pct", "series_pct", "value_series"}.issubset(segment.keys())
-        assert len(segment["series_pct"]) == len(analysis_levels["periods_monthly"])
-        assert len(segment["value_series"]) == len(analysis_levels["periods_monthly"])
+        overall = segments[0]
+        assert {"name", "rank", "is_overall", "value_series"}.issubset(overall.keys())
+        assert overall["name"] == "전체"
+        assert overall["is_overall"] is True
+        assert "recent_share_pct" not in overall
+        assert "series_pct" not in overall
+        assert len(overall["value_series"]) == len(analysis_levels["periods_monthly"])
+
+        option_segment = next(segment for segment in segments if not segment.get("is_overall"))
+        assert {"name", "rank", "recent_share_pct", "series_pct", "value_series"}.issubset(option_segment.keys())
+        assert len(option_segment["series_pct"]) == len(analysis_levels["periods_monthly"])
+        assert len(option_segment["value_series"]) == len(analysis_levels["periods_monthly"])
 
 
 def test_cause_ml011_splits_class_into_class_1_and_class_2() -> None:

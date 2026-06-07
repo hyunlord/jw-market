@@ -18,6 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from layer3_compute_general_v3 import dumps, json_ready, mariadb_connect, safe_float
 
+try:
+    import orjson
+except ImportError:  # pragma: no cover - optional local speed-up
+    orjson = None
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CATALOG_DIR = PROJECT_ROOT / "output" / "catalog"
 
@@ -341,4 +346,7 @@ def metric_first(history: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def dump_payload(payload: Any) -> str:
-    return dumps(json_ready(payload))
+    ready = json_ready(payload)
+    if orjson is not None:
+        return orjson.dumps(ready).decode("utf-8")
+    return dumps(ready)

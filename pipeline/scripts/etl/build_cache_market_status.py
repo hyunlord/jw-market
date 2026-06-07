@@ -264,9 +264,11 @@ def build_brand_card(
     nhi_type = _valid_text(brand_row.get("catalog_row", {}).get("nhi_type")) or "NHI"
     direct_competition_count = _direct_competition_count(strategic_brand, brand_row.get("catalog_row", {}).get("cd_id"))
     total_brands_in_market = _market_brand_count(strategic_brand, brand_row.get("catalog_row", {}).get("ml_id"))
+    recent_rank_raw = recent.get("rank")
+    recent_rank = safe_float(recent_rank_raw) if recent_rank_raw not in (None, "") else None
 
     return {
-        "rank": int(meta.rank) if meta else safe_float(recent.get("rank")),
+        "rank": int(recent_rank) if recent_rank is not None else (int(meta.rank) if meta else None),
         "total_brands_in_market": total_brands_in_market,
         "brand": brand_name,
         "company": company,

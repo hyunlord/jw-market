@@ -31,6 +31,8 @@ PROJECT_ROOT = find_project_root(Path(__file__).resolve())
 DEFAULT_WORKLIST = PROJECT_ROOT / "inputs" / "molecule_v4_worklist.csv"
 DEFAULT_SB_PATH = PROJECT_ROOT / "output" / "catalog" / "strategic_brand" / "strategic_brand.parquet"
 DEFAULT_CB_PATH = PROJECT_ROOT / "output" / "catalog" / "cd_brand" / "cd_brand.parquet"
+DEFAULT_SP_PATH = PROJECT_ROOT / "output" / "catalog" / "strategic_product" / "strategic_product.parquet"
+DEFAULT_CP_PATH = PROJECT_ROOT / "output" / "catalog" / "cd_product" / "cd_product.parquet"
 
 COMMENT_BRAND_IDS = {"sb_004_00015", "sb_012_00081", "sb_016_00059"}
 EXPECTED_WORKLIST_ROWS = 5437
@@ -97,6 +99,71 @@ def apply_level(df: pd.DataFrame, rows: list[dict[str, str]], *, level: str) -> 
     return df, update_count, setnull_count
 
 
+def apply_product_level(
+    df: pd.DataFrame,
+    rows: list[dict[str, str]],
+    *,
+    level: str,
+    brand_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, int, int]:
+    df = df.copy()
+    before = len(df)
+    df = df[~df["brand_id"].isin(COMMENT_BRAND_IDS)].copy()
+    print(f"{level}_product: comment rows removed: {before - len(df)}")
+
+    if "molecule_raw" not in df.columns:
+        df["molecule_raw"] = df["molecule"].map(_clean_value)
+    else:
+        missing_raw = df["molecule_raw"].map(_clean_value).isna()
+        df.loc[missing_raw, "molecule_raw"] = df.loc[missing_raw, "molecule"].map(_clean_value)
+    if "dosage_form_raw" not in df.columns:
+        df["dosage_form_raw"] = df["dosage_form"].map(_clean_value)
+    else:
+        missing_dosage_raw = df["dosage_form_raw"].map(_clean_value).isna()
+        df.loc[missing_dosage_raw, "dosage_form_raw"] = df.loc[missing_dosage_raw, "dosage_form"].map(_clean_value)
+
+    removed_orphans = 0
+    if brand_df is not None and "brand_id" in brand_df.columns:
+        valid_brand_ids = set(brand_df["brand_id"].astype(str))
+        removed_orphans = int((~df["brand_id"].astype(str).isin(valid_brand_ids)).sum())
+        print(f"{level}_product: orphan rows retained with null display molecule: {removed_orphans}")
+
+    update_count = 0
+    setnull_count = 0
+    for row in rows:
+        if row["level"] != level:
+            continue
+        action = row["action"]
+        if action not in {"UPDATE", "SET_NULL"}:
+            continue
+
+        mask = df["brand_id"].astype(str).eq(row["brand_id"])
+        if not mask.any():
+            continue
+
+        if action == "UPDATE":
+            df.loc[mask, "molecule"] = _clean_value(row.get("target_value"))
+            update_count += int(mask.sum())
+        elif action == "SET_NULL":
+            df.loc[mask, "molecule"] = None
+            setnull_count += int(mask.sum())
+
+    if brand_df is not None and "brand_id" in brand_df.columns and "molecule" in brand_df.columns:
+        molecule_by_brand = brand_df.set_index("brand_id")["molecule"].map(_clean_value)
+        mapped_molecule = df["brand_id"].map(molecule_by_brand)
+        has_molecule = mapped_molecule.notna()
+        df.loc[has_molecule, "molecule"] = mapped_molecule.loc[has_molecule]
+        df.loc[~has_molecule, "molecule"] = None
+
+    if brand_df is not None and "brand_id" in brand_df.columns and "dosage_form" in brand_df.columns:
+        dosage_by_brand = brand_df.set_index("brand_id")["dosage_form"].map(_clean_value)
+        mapped_dosage = df["brand_id"].map(dosage_by_brand)
+        has_dosage = mapped_dosage.notna()
+        df.loc[has_dosage, "dosage_form"] = mapped_dosage.loc[has_dosage]
+
+    return df, update_count, setnull_count
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worklist", type=Path, default=DEFAULT_WORKLIST,
@@ -105,6 +172,10 @@ def parse_args() -> argparse.Namespace:
                         help=f"strategic_brand parquet (default: {DEFAULT_SB_PATH})")
     parser.add_argument("--cd-brand", type=Path, default=DEFAULT_CB_PATH,
                         help=f"cd_brand parquet (default: {DEFAULT_CB_PATH})")
+    parser.add_argument("--strategic-product", type=Path, default=DEFAULT_SP_PATH,
+                        help=f"strategic_product parquet (default: {DEFAULT_SP_PATH})")
+    parser.add_argument("--cd-product", type=Path, default=DEFAULT_CP_PATH,
+                        help=f"cd_product parquet (default: {DEFAULT_CP_PATH})")
     parser.add_argument("--apply", action="store_true",
                         help="write changes (default: dry-run; only print summary)")
     return parser.parse_args()
@@ -133,6 +204,12 @@ def main() -> int:
     print("\n=== sb sample after UPDATE ===")
     print(df_sb[df_sb["brand_id"].isin(sample_ids)][["brand_id", "name", "ml_id", "molecule"]].to_string())
 
+    df_sp = pd.read_parquet(args.strategic_product)
+    print(f"\nBefore strategic_product: {len(df_sp)} rows")
+    df_sp, update_sp, setnull_sp = apply_product_level(df_sp, rows, level="ml", brand_df=df_sb)
+    print(f"After strategic_product: {len(df_sp)} rows")
+    print(f"sp product rows UPDATE: {update_sp}, SET_NULL: {setnull_sp}")
+
     df_cb = pd.read_parquet(args.cd_brand)
     print(f"\nBefore cd_brand: {len(df_cb)} rows")
     df_cb, update_cb, setnull_cb = apply_level(df_cb, rows, level="cd")
@@ -143,11 +220,21 @@ def main() -> int:
     if (update_cb, setnull_cb) != EXPECTED_CB_ACTIONS:
         raise RuntimeError(f"cd_brand action counts mismatch: {(update_cb, setnull_cb)}")
 
+    df_cp = pd.read_parquet(args.cd_product)
+    print(f"\nBefore cd_product: {len(df_cp)} rows")
+    df_cp, update_cp, setnull_cp = apply_product_level(df_cp, rows, level="cd", brand_df=df_cb)
+    print(f"After cd_product: {len(df_cp)} rows")
+    print(f"cp product rows UPDATE: {update_cp}, SET_NULL: {setnull_cp}")
+
     if args.apply:
         df_sb.to_parquet(args.strategic_brand, index=False)
         print(f"wrote: {args.strategic_brand}")
+        df_sp.to_parquet(args.strategic_product, index=False)
+        print(f"wrote: {args.strategic_product}")
         df_cb.to_parquet(args.cd_brand, index=False)
         print(f"wrote: {args.cd_brand}")
+        df_cp.to_parquet(args.cd_product, index=False)
+        print(f"wrote: {args.cd_product}")
     else:
         print("dry-run only; pass --apply to write")
 

@@ -12,7 +12,7 @@ from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 UBIST_PARQUET_GLOB = PROJECT_ROOT / "output" / "ubist" / "year=*" / "month=*" / "data.parquet"
-SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "병원", "의원/보건소"]
+SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
 
 
 def _clean_target(value: Any) -> str | None:
