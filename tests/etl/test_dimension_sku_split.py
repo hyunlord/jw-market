@@ -361,6 +361,52 @@ def test_analysis_level_market_status_overall_channel_matches_level_top5_payload
     ]
 
 
+def test_specialty_dimension_overall_includes_legacy_single_label_rows():
+    rows = [
+        {
+            "brand_name": "정밀제품",
+            "brand_key": "정밀제품",
+            "company": "회사A",
+            "metric_history": {"2025-01": {"raw_value": 100.0}},
+            "by_dimension": {"molecule": "Statin/EZE"},
+            "dimension_specialty_data": {
+                "molecule": {
+                    "Statin/EZE": {
+                        "의원 IGF": {"2025-01": {"raw_value": 100.0}},
+                    }
+                }
+            },
+        },
+        {
+            "brand_name": "단일라벨제품",
+            "brand_key": "단일라벨제품",
+            "company": "회사B",
+            "metric_history": {"2025-01": {"raw_value": 20.0}},
+            "by_dimension": {"molecule": "Statin"},
+            "__ubist_dual_channel_data": {
+                "의원 IGF": {"2025-01": {"raw_value": 20.0}},
+            },
+        },
+    ]
+
+    analysis_levels = cause._build_analysis_levels_from_mart(
+        rows=rows,
+        source="UBIST",
+        market={"analyze_molecule": True},
+        view_source_id="ml_test",
+        target_name=None,
+        fallback_level_top5={},
+        channels_override=["전체", "의원 IGF"],
+    )
+
+    segments = analysis_levels["data"]["Molecule"]["by_channel"]["의원 IGF"]
+    by_name = {segment["name"]: segment for segment in segments}
+
+    assert by_name["Statin/EZE"]["value_series"] == [100.0]
+    assert by_name["Statin"]["value_series"] == [20.0]
+    assert by_name["전체"]["value_series"] == [120.0]
+
+
 def test_ubist_resolver_returns_screen_facility_channels_and_preserves_specialty_data(monkeypatch):
     monkeypatch.setattr(
         ubist_channel_resolver,

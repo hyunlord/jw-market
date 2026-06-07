@@ -7,6 +7,7 @@ from collections import defaultdict
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -73,7 +74,18 @@ def parse_args() -> Any:
         default=None,
         help="Regenerate only one ML market and its CD views, for example ml_006.",
     )
+    cli.add_argument(
+        "--target-table",
+        default="cache_cause",
+        help="Destination table for cache_cause rows. Used for local blue-green staging.",
+    )
     return cli.parse_args()
+
+
+def _quoted_table_name(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", str(name or "")):
+        raise SystemExit(f"unsafe --target-table: {name!r}")
+    return f"`{name}`"
 
 
 def selected_query(table: str, column: str, values: list[str] | None) -> tuple[str, list[str]]:
@@ -1327,15 +1339,25 @@ def _dimension_specialty_total_series(
     for row in rows:
         if _is_class_level(level) and _row_is_class_excluded(row):
             continue
-        if not _has_dimension_specialty_field(row, field):
+        if _has_dimension_specialty_field(row, field):
+            series_by_label = _dimension_specialty_series_map(row, field, channel)
+            if not series_by_label:
+                continue
+            found = True
+            for series in series_by_label.values():
+                for idx, period in enumerate(periods):
+                    totals[idx] += _value_from_period_item(series.get(period))
             continue
-        series_by_label = _dimension_specialty_series_map(row, field, channel)
-        if not series_by_label:
+
+        dual_channel_data = _dual_channel_data(row, source, channel)
+        dimension_values = _dimension_values(row, level)
+        if not isinstance(dual_channel_data, dict) or len(dimension_values) != 1:
+            continue
+        if _is_excluded_dimension_label(dimension_values[0]):
             continue
         found = True
-        for series in series_by_label.values():
-            for idx, period in enumerate(periods):
-                totals[idx] += _value_from_period_item(series.get(period))
+        for idx, period in enumerate(periods):
+            totals[idx] += _value_from_period_item(dual_channel_data.get(period))
     if not found:
         return None
     return [round(value, 4) for value in totals]
@@ -2736,10 +2758,11 @@ def main() -> None:
     ml_siblings = make_sibling_map(ml_brand_rows, "ml_id")
     cd_siblings = make_sibling_map(cd_brand_rows, "cd_market_id")
 
+    target_table = _quoted_table_name(args.target_table)
     columns = ["brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"]
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{c}`" for c in columns)
-    sql = f"REPLACE INTO `cache_cause` ({names}) VALUES ({placeholders})"
+    sql = f"REPLACE INTO {target_table} ({names}) VALUES ({placeholders})"
     inserted = 0
     conn = mariadb_connect()
     cur = conn.cursor()
@@ -2753,14 +2776,14 @@ def main() -> None:
         if selected_market_ids is not None:
             placeholders = ",".join(["%s"] * len(selected_market_ids))
             cur.execute(
-                "DELETE FROM `cache_cause` "
+                f"DELETE FROM {target_table} "
                 f"WHERE market_id IN ({placeholders}) "
                 "AND view_type IN ('market_landscape','competitive_dynamics')",
                 tuple(selected_market_ids),
             )
-            print(f"[B3] partial DELETE cache_cause market_id={selected_market_ids}", flush=True)
+            print(f"[B3] partial DELETE {args.target_table} market_id={selected_market_ids}", flush=True)
         else:
-            cur.execute("DELETE FROM `cache_cause`")
+            cur.execute(f"DELETE FROM {target_table}")
 
         def flush_batch() -> None:
             nonlocal batch
