@@ -187,7 +187,13 @@ def load_qa_records(
     wb = load_workbook(xlsx_path, read_only=True, data_only=True)
     try:
         if SOURCE_SHEET not in wb.sheetnames:
-            raise ValueError(f"required sheet not found: {SOURCE_SHEET!r}; sheets={wb.sheetnames}")
+            # 260518 MI Master에는 Q&A 시트가 빠졌다. 이 단계의 역할은
+            # 원본 Q&A sheet를 parquet로 옮기는 것뿐이고, 수프렙/TIRZEPATIDE
+            # 같은 실제 override는 별도 override/config 경로에서 검증한다.
+            # 시트 부재를 fatal로 두면 run_layer0_postfix가 원본 변경 하나로
+            # 멈추므로, 빈 산출로 skip한다. 더미 Q&A를 생성하는 대안은 원본에
+            # 없는 데이터를 만든다는 점에서 기각했다.
+            return [], QALoadStats()
 
         ws = wb[SOURCE_SHEET]
         headers = list(
@@ -246,6 +252,8 @@ def load_qa_records(
 
 
 def validate_records(records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
     if len(records) != EXPECTED_ROW_COUNT:
         raise ValueError(f"master_qa row count must be {EXPECTED_ROW_COUNT}, found {len(records)}")
 

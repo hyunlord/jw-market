@@ -51,7 +51,12 @@ DEFAULT_MARKET_DEFINITION_FILE = Path(
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
 DEFAULT_OUTPUT_FILE = Path("output/catalog/ml_market/ml_market.parquet")
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# ml_market는 전략뷰 Market Landscape의 envelope 정의다.
+# 이번 rebuild의 기준은 260518 MI Master이므로, 여기서도 같은 파일명을
+# source_file_version으로 요구한다. market metadata만 최신으로 바꾸고
+# ml_market parquet가 4/22이면 원인분석/시장현황이 다른 시장정의를 보게 되어
+# 기각한다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
 EXPECTED_ML_IDS = tuple(f"ml_{index:03d}" for index in range(1, 17))
 EXPECTED_DATA_SOURCE_COUNTS = {"iqvia": 8, "ubist": 6, "both": 2}
@@ -416,7 +421,7 @@ def _source_file_version(rows: list[dict[str, Any]]) -> str:
         for row in rows
         if clean_text(row.get("source_file_version")) is not None
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    if versions != {unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(
             f"source_file_version mismatch: expected={EXPECTED_SOURCE_FILE_VERSION!r}, "
             f"actual={sorted(v for v in versions if v)}"
@@ -558,7 +563,7 @@ def validate_records(records: list[dict[str, Any]]) -> None:
         for value in iqvia_values:
             if value is not None and value not in AUDIT_CODES:
                 raise ValueError(f"{record['ml_id']} invalid IQVIA audit code={value!r}")
-        if clean_text(record["source_file_version"]) != EXPECTED_SOURCE_FILE_VERSION:
+        if clean_text(record["source_file_version"]) != unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION):
             raise ValueError(f"{record['ml_id']} source_file_version mismatch")
         if not isinstance(record["ingested_at"], datetime):
             raise ValueError(f"{record['ml_id']} ingested_at must be datetime")

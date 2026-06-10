@@ -54,6 +54,11 @@ STRATEGIC_MARKET_ID = "strategy_011"
 SOURCE_SHEET = "악템라"
 HEADER_ROW = 5
 PRODUCT_NAME_SOURCE_COLUMN = "PRODUCT NAME KOR"
+# 260518 악템라 시트는 Excel formatting tail이 길게 남아 raw scan 기준으로는
+# 995행까지 보이지만 실제 staging 대상은 26개 약품 행이다. 따라서 raw-scanned
+# exact count가 아니라 staging drug row, consolidation 6행, member index
+# uniqueness를 불변량으로 둔다. 빈 tail을 행으로 취급하는 대안은 무의미한
+# 공백 데이터를 catalog에 끌어들이므로 기각했다.
 EXPECTED_DRUG_ROWS = 26
 EXPECTED_ROW_COUNT = 6
 EXPECTED_MEMBER_DRUG_INDEXES = {5, 6, 18, 19, 22, 23}
@@ -219,10 +224,6 @@ def load_brand_consolidation_records(
 
 
 def validate_records(records: list[dict[str, Any]], stats: BrandConsolidationStats) -> None:
-    if stats.raw_rows_scanned != EXPECTED_DRUG_ROWS:
-        raise ValueError(
-            f"raw scanned rows must be {EXPECTED_DRUG_ROWS}, found {stats.raw_rows_scanned}"
-        )
     if stats.staging_drug_rows != EXPECTED_DRUG_ROWS:
         raise ValueError(
             f"staging drug rows must be {EXPECTED_DRUG_ROWS}, found {stats.staging_drug_rows}"

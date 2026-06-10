@@ -43,7 +43,11 @@ DEFAULT_MARKET_DEFINITION_FILE = Path(
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_market_landscape/dim_market_landscape.parquet")
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# Market Landscape 정의는 MI Master 시트 전체 멤버십이 ground truth다.
+# 260518 migration에서는 이 정의가 4/22와 달라질 수 있으므로, 입력 버전을
+# 명시적으로 잠가 ML catalog가 다른 단계와 같은 원본을 읽게 한다. 버전 혼용은
+# strategy_006 class/molecule 같은 의미 drift를 만들 수 있어 허용하지 않는다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
 EXPECTED_MARKET_COUNTS = {
     "strategy_001": 358,
@@ -175,7 +179,7 @@ def _source_file_version(rows: list[dict[str, Any]]) -> str:
         for row in rows
         if clean_text(row.get("source_file_version")) is not None
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    if versions != {unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(
             f"source_file_version mismatch: expected={EXPECTED_SOURCE_FILE_VERSION!r}, "
             f"actual={sorted(versions)}"

@@ -21,10 +21,13 @@ from layer3_compute_market_metric import compute_market_mart_payload
 from layer3_compute_strategic_ml_v3 import (
     _allowed_atc4_aliases,
     _atc4_aliases,
+    _clear_dimension_field,
     _display_brand_name,
+    _iqvia_recode_label,
     _merge_numeric_json_values,
     _output_brand_key,
     _parse_json_list,
+    _rekey_dimension_field_to_label,
     _row_atc4_code,
     _sum_raw_histories,
     _truthy,
@@ -272,6 +275,19 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
                 },
             }
         )
+        is_iqvia = str(copied.get("source") or "").strip().lower() == "iqvia_nsa"
+        for field in ("molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
+            label = overlay.get(field)
+            if is_iqvia and field in {"dosage_form", "strength_pack"}:
+                # CD도 ML과 같은 A2 규칙을 쓴다. IQVIA 제형/strength는 raw NFC나
+                # pack 문자열이 아니라 catalog recode 라벨이 mart의 단일 source가
+                # 되어야 한다. CD만 별도 후처리하는 대안은 ML/CD 비교 시 raw/recode
+                # 혼재를 남기므로 기각했다.
+                label = _iqvia_recode_label(field, label)
+                if not label:
+                    _clear_dimension_field(copied, field)
+                    continue
+            _rekey_dimension_field_to_label(copied, field, label)
         selected.append(copied)
     selected = _collapse_same_cd_brand_rows(selected)
     validate_market_completeness(cd_row, catalog_rows, selected)

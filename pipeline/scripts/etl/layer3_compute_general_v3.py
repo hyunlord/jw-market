@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 from collections import defaultdict
@@ -133,13 +134,23 @@ def general_market_jsonl_path(source: str, output_dir: Path | None = None) -> Pa
 def load_env(path: Path) -> dict[str, str]:
     env: dict[str, str] = {}
     if not path.exists():
-        return env
+        # Stage 빌드/복구 환경에서는 pipeline/docker/.env가 없고 컨테이너가
+        # MARIADB_* 환경변수만 제공하는 경우가 있다. 이때도 official script를
+        # 그대로 쓰기 위해 env fallback을 허용한다. 별도 staging harness를
+        # 만드는 대안은 운영 빌더 경로 검증을 흐리므로 기각했다.
+        return {key: value for key, value in os.environ.items() if key.startswith("MARIADB_") or key == "HOST_PORT"}
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         env[key.strip()] = value.strip().strip('"').strip("'")
+    # .env를 읽은 뒤에도 shell env가 있으면 그 값을 우선한다.
+    # 로컬 live와 staging schema를 같은 script로 오갈 때 필요한 override이며,
+    # 파일을 직접 수정하는 방식은 보호 파일 drift를 만들기 때문에 기각했다.
+    for key in ("MARIADB_HOST", "MARIADB_PORT", "MARIADB_DATABASE", "MARIADB_USER", "MARIADB_PASSWORD", "HOST_PORT"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
     return env
 
 
@@ -150,8 +161,11 @@ def mariadb_connect(cursorclass=pymysql.cursors.DictCursor) -> pymysql.connectio
     if "MARIADB_PASSWORD" not in env:
         raise RuntimeError(f"MARIADB_PASSWORD is missing in {env_path}")
     return pymysql.connect(
-        host="127.0.0.1",
-        port=int(env.get("HOST_PORT", "3307")),
+        # HOST/PORT도 env로 열어 staging DB와 recover DB를 같은 코드 경로에서
+        # 다룬다. host를 127.0.0.1로 고정하는 대안은 docker recover 환경에서
+        # 접속 경로를 바꾸기 어렵게 해 기각했다.
+        host=env.get("MARIADB_HOST", "127.0.0.1"),
+        port=int(env.get("MARIADB_PORT") or env.get("HOST_PORT", "3307")),
         user=env.get("MARIADB_USER", "jwapp"),
         password=env["MARIADB_PASSWORD"],
         database=env.get("MARIADB_DATABASE", "jw_mart"),

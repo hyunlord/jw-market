@@ -9,6 +9,17 @@ parquet files; DB tables are not modified.
 Defaults align with the production worklist shipped at
 ``inputs/molecule_v4_worklist.csv``. Pass ``--apply`` to write changes; by
 default the script runs in dry-run mode.
+
+한글 운용 메모:
+- 무엇: worklist는 과거 배치에서 빠진 dual-source molecule 표시를 보정하는
+  후처리다.
+- 왜: 4/22 기준 worklist를 5/18 catalog 위에 그대로 덮으면 ml_006/cd_006
+  리바로젯 Molecule을 실제 성분 코드가 아니라 Statin/Statin-EZE class
+  라벨로 재오염시킨다.
+- 근거: 5/18 MI Master에서는 리바로젯 Class와 Molecule의 위치/의미가
+  정정됐고, 제외 46/51은 catalog is_excluded가 담당한다.
+- 기각: worklist 전체 삭제는 다른 시장의 보정 기능까지 없애므로, 이미
+  권위 있는 molecule이 materialize된 시장만 보호한다.
 """
 
 from __future__ import annotations
@@ -40,6 +51,10 @@ EXPECTED_SB_ROWS = 3874
 EXPECTED_CB_ROWS = 1559
 EXPECTED_SB_ACTIONS = (801, 246)  # (UPDATE, SET_NULL)
 EXPECTED_CB_ACTIONS = (702, 205)
+# 260518 리바로/리바로젯은 MI Master에서 molecule이 이미 올바른 성분 코드로
+# materialize된다. historical worklist가 이 값을 class 라벨로 덮는 경로만
+# 막고, 다른 시장의 worklist 보정은 그대로 둔다.
+PROTECT_EXISTING_MOLECULE_MARKETS = {"ml_006", "cd_006"}
 
 
 def _clean_value(value: Any) -> str | None:
@@ -86,7 +101,11 @@ def apply_level(df: pd.DataFrame, rows: list[dict[str, str]], *, level: str) -> 
             continue
 
         if action == "UPDATE":
-            df.at[idx, "molecule"] = _clean_value(row.get("target_value"))
+            # 보호 시장은 catalog가 이미 최신 MI Master를 읽어 molecule을 정한다.
+            # UPDATE를 건너뛰어 4/22 worklist가 5/18 molecule truth를 되돌리지
+            # 못하게 한다. row를 삭제하는 대안은 worklist audit trail을 잃는다.
+            if row.get("market") not in PROTECT_EXISTING_MOLECULE_MARKETS:
+                df.at[idx, "molecule"] = _clean_value(row.get("target_value"))
             update_count += 1
         elif action == "SET_NULL":
             df.at[idx, "molecule"] = None
@@ -142,7 +161,11 @@ def apply_product_level(
             continue
 
         if action == "UPDATE":
-            df.loc[mask, "molecule"] = _clean_value(row.get("target_value"))
+            # product 단위도 brand 단위와 같은 보호 규칙을 적용한다.
+            # SKU 행은 유지하되 molecule 덮어쓰기만 생략해야 strength/nhi
+            # granularity가 유지된다.
+            if row.get("market") not in PROTECT_EXISTING_MOLECULE_MARKETS:
+                df.loc[mask, "molecule"] = _clean_value(row.get("target_value"))
             update_count += int(mask.sum())
         elif action == "SET_NULL":
             df.loc[mask, "molecule"] = None

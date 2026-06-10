@@ -49,7 +49,11 @@ DEFAULT_MARKET_DEFINITION_FILE = Path(
 )
 DEFAULT_OUTPUT_FILE = Path("output/catalog/cd_market/cd_market.parquet")
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# cd_market 19개 정의도 260518 MI Master가 기준이다.
+# 이 상수는 CD 시장 수, target priority, view_source_id 추적을 같은 원본으로
+# 묶기 위한 checkpoint다. 파일명 mismatch를 조용히 통과시키는 대안은 운영
+# smoke에서 CD tooltip/시장정의 원인을 역추적하기 어렵게 하므로 기각했다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_CD_IDS = tuple(f"cd_{index:03d}" for index in range(1, 20))
 EXPECTED_DATA_SOURCE_COUNTS = {"both": 2, "iqvia": 9, "ubist": 8}
 COLLAPSE_PAIR_CD_ID = "cd_015"
@@ -163,7 +167,7 @@ def source_file_version(rows: list[dict[str, Any]], label: str) -> str:
         for row in rows
         if clean_text(row.get("source_file_version")) is not None
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    if versions != {unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(
             f"{label} source_file_version mismatch: "
             f"expected={EXPECTED_SOURCE_FILE_VERSION!r}, actual={sorted(v for v in versions if v)}"
@@ -399,7 +403,7 @@ def validate_records(
             raise ValueError(
                 f"{record['cd_id']} missing cd_filter FK: {record['cd_filter_id']}"
             )
-        if clean_text(record["source_file_version"]) != EXPECTED_SOURCE_FILE_VERSION:
+        if clean_text(record["source_file_version"]) != unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION):
             raise ValueError(f"{record['cd_id']} source_file_version mismatch")
         if not isinstance(record["ingested_at"], datetime):
             raise ValueError(f"{record['cd_id']} ingested_at must be datetime")

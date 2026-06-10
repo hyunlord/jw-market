@@ -515,6 +515,11 @@ def product_record_from_candidate(
         candidate.get("product_name"),
         candidate.get("pack_desc") if candidate.get("source_view") == "IQVIA" else None,
     ) or str(brand_row["name"])
+    # product row는 SKU granularity를 보존해야 하므로 raw molecule/dosage를
+    # metadata로 남긴다. display molecule/dosage는 brand catalog가 260518
+    # MI Master recode를 적용한 값이 있으면 그 값을 우선한다. raw 후보 값을
+    # display에 먼저 쓰는 대안은 리바로젯/제이클처럼 MI Master display truth를
+    # 다시 오염시키므로 기각했다.
     molecule_raw = clean_text(candidate.get("molecule"))
     dosage_form_raw = clean_text(candidate.get("dosage_form"))
     return {
@@ -529,7 +534,7 @@ def product_record_from_candidate(
         "molecule_raw": molecule_raw,
         "dosage_form": clean_text(brand_row.get("dosage_form")) or dosage_form_raw,
         "dosage_form_raw": dosage_form_raw,
-        "strength_pack": clean_text(candidate.get("strength_pack")) or brand_row.get("strength_pack"),
+        "strength_pack": clean_text(brand_row.get("strength_pack")) or clean_text(candidate.get("strength_pack")),
         "nhi_type": clean_text(candidate.get("nhi_type")) or brand_row.get("nhi_type"),
         "ox_gx": brand_row.get("ox_gx"),
         "fish_oil": brand_row.get("fish_oil"),

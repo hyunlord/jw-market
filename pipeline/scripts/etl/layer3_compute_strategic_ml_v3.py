@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Build and load strategic ML JSON marts from general-view rows."""
+"""Build and load strategic ML JSON marts from general-view rows.
+
+도메인 규칙 요약:
+- 일반뷰는 ATC4 기반 집계다.
+- 전략뷰 market_landscape는 MI Master 시트가 정의한 ATC4, molecule,
+  class, 제형/strength recode를 기준으로 멤버십을 만든다.
+- competitive_dynamics는 ML에서 cd_filter로 좁힌 universe다.
+- recode/override는 자기 field의 raw 값을 덮어쓰는 OVERWRITE다. 예를 들어
+  dosage_form recode는 dosage_form만, molecule recode는 molecule만 바꾼다.
+  class recode를 molecule에 넣는 식의 교차-field fallback은 금지한다.
+"""
 
 from __future__ import annotations
 
@@ -140,7 +150,15 @@ def _allowed_atc4_codes(overlay: dict[str, Any], ml_row: pd.Series) -> set[str]:
 
 
 def _atc4_aliases(value: Any) -> set[str]:
-    """Return equivalent MI/IQVIA and UBIST ATC4 spellings for matching only."""
+    """Return equivalent MI/IQVIA and UBIST ATC4 spellings for matching only.
+
+    IQVIA 쪽 MI Master 정의는 A10H0처럼 5글자 ATC4를 쓰는 반면,
+    UBIST general/raw 집계는 A10H처럼 끝의 0이 빠진 4글자 코드를 쓰는 경우가
+    있다. 이 차이 때문에 ml_003 UBIST에서 SU/AGI 제네릭 97개가 layer3
+    selection에서 누락됐다. 5글자 영문-숫자-숫자-영문-0 패턴만 4글자
+    alias로 연결하고, 다른 코드를 무차별 prefix 매칭하는 대안은 unrelated
+    ATC를 끌어들일 위험이 있어 기각했다.
+    """
 
     text = str(value or "").strip().upper()
     if not text:
@@ -157,6 +175,10 @@ def _atc4_aliases(value: Any) -> set[str]:
 
     for code in list(aliases):
         if len(code) == 4 and code[-1] == "0" and code[0].isalpha() and code[1].isdigit() and code[2].isalpha():
+            aliases.add(code[:-1])
+
+    for code in list(aliases):
+        if len(code) == 5 and code[-1] == "0" and code[0].isalpha() and code[1:3].isdigit() and code[3].isalpha():
             aliases.add(code[:-1])
 
     return aliases
@@ -343,6 +365,83 @@ def _field_period_has_existing_value(existing: dict[str, Any], field: str, perio
         if isinstance(label_series, dict) and _value_from_history_item(label_series.get(period)) > 0:
             return True
     return False
+
+
+def _rekey_dimension_field_to_label(row: dict[str, Any], field: str, label: Any) -> None:
+    clean_label = _clean_dimension_label(label)
+    if not clean_label:
+        return
+    for payload_key in ("dimension_data", "dimension_channel_data", "dimension_specialty_data"):
+        payload = row.get(payload_key)
+        if not isinstance(payload, dict):
+            continue
+        field_bucket = payload.get(field)
+        if not isinstance(field_bucket, dict) or not field_bucket:
+            continue
+        if set(field_bucket) == {clean_label}:
+            continue
+        merged: dict[str, Any] = {}
+        for series in field_bucket.values():
+            merged = _merge_numeric_json_values(merged, series)
+        payload[field] = {clean_label: merged}
+    by_dimension = row.get("by_dimension")
+    if isinstance(by_dimension, dict):
+        by_dimension[field] = clean_label
+
+
+def _clear_dimension_field(row: dict[str, Any], field: str) -> None:
+    for payload_key in ("dimension_data", "dimension_channel_data", "dimension_specialty_data"):
+        payload = row.get(payload_key)
+        if isinstance(payload, dict):
+            payload.pop(field, None)
+    by_dimension = row.get("by_dimension")
+    if isinstance(by_dimension, dict):
+        by_dimension.pop(field, None)
+
+
+def _raw_iqvia_strength_atom(atom: str) -> bool:
+    # IQVIA strength raw 누출 판정은 "명백히 raw pack/제형 토큰인가"만 본다.
+    # A2 fix의 목표는 mart dimension_data group key 자체를 catalog recode로
+    # 집계해 No STRENGTH, PRE-F, BAG 같은 raw pack 라벨이 API까지 나오지 않게
+    # 하는 것이다. cache 출력에서만 이름을 바꾸는 대안은 mart와 cache가 서로
+    # 다른 single source를 갖게 되어 기각했다.
+    text = str(atom or "").strip()
+    upper = text.upper()
+    if not upper or upper in {"NO STRENGTH", "NAN", "NONE", "NULL"}:
+        return True
+    raw_markers = (
+        "INFU", "C.T", "TAB", "CAP", "AMP", "LIQ", "PWD", "SYR",
+        "SACH", "ORAL", "VIAL", "FILM", "GRAN", "SUSP",
+        "V.SC", "PRE-F", "PREF", "PFS", "SRN", "DRY", "PLASTI", "BAG",
+    )
+    return any(marker in upper for marker in raw_markers)
+
+
+def _raw_iqvia_dosage_atom(atom: str) -> bool:
+    text = str(atom or "").strip()
+    upper = text.upper()
+    raw_markers = (
+        "ORDINARY", "TABLET", "CAPSULE", "POWDER", "SOLUTION", "UNIT DOSE",
+        "PARENTAL", "RETARD", "DRY", "VIAL", "BOTTLE", "INFUSION",
+    )
+    return any(marker in upper for marker in raw_markers)
+
+
+def _iqvia_recode_label(field: str, label: Any) -> str | None:
+    # IQVIA dimension 집계의 권위 라벨은 catalog의 recode된 field다.
+    # UBIST는 이미 catalog recode 경로를 타고 있었으므로 IQVIA만 raw NFC/raw
+    # pack이 남았다. 여기서 fallback은 recode가 비어 있는 예외 셀을 위한
+    # 보존 장치이고, recode가 있는데 raw를 우선하는 방식은 5/18 OVERWRITE
+    # 원칙을 깨므로 기각했다.
+    clean_label = _clean_dimension_label(label)
+    if not clean_label or field not in {"dosage_form", "strength_pack"}:
+        return clean_label
+    atoms = _dimension_atoms(clean_label)
+    if field == "strength_pack":
+        atoms = [atom for atom in atoms if not _raw_iqvia_strength_atom(atom)]
+    elif field == "dosage_form":
+        atoms = [atom for atom in atoms if not _raw_iqvia_dosage_atom(atom)]
+    return " | ".join(atoms) if atoms else None
 
 
 def _fill_dimension_channel_series(
@@ -617,10 +716,33 @@ def _enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any]) 
     row_history = _series_from_history(row.get("raw_value_history"))
     channel_data = row.get("channel_data") if isinstance(row.get("channel_data"), dict) else {}
     products = by_dimension.get("products") if isinstance(by_dimension.get("products"), list) else []
+    is_iqvia = str(row.get("source") or "").strip().lower() == "iqvia_nsa"
 
     for field in SKU_DIMENSION_COLUMNS:
-        label = brand_single.get(field)
+        overlay_data = row.get("overlay_data") if isinstance(row.get("overlay_data"), dict) else {}
+        label = brand_single.get(field) or _clean_dimension_label(overlay_data.get(field))
+        if is_iqvia and field in {"dosage_form", "strength_pack"}:
+            # A2: IQVIA mart dimension_data도 catalog recode 라벨로 다시 묶는다.
+            # cache에서만 recode하면 화면은 맞아도 mart audit에는 raw NFC/pack이
+            # 남아 false source of truth가 되므로, layer3 집계 시점부터 raw
+            # label을 제거한다. UBIST와 다른 dimension은 기대 경로라 건드리지
+            # 않는다.
+            label = _iqvia_recode_label(field, label)
+            if not label:
+                _clear_dimension_field(row, field)
+                dimension_data = deepcopy(row.get("dimension_data") or {})
+                dimension_channel_data = deepcopy(row.get("dimension_channel_data") or {})
+                dimension_specialty_data = deepcopy(row.get("dimension_specialty_data") or {})
+                by_dimension = deepcopy(row.get("by_dimension") or {})
+                continue
         if label:
+            _rekey_dimension_field_to_label(row, field, label)
+            dimension_data = deepcopy(row.get("dimension_data") or {})
+            dimension_channel_data = deepcopy(row.get("dimension_channel_data") or {})
+            dimension_specialty_data = deepcopy(row.get("dimension_specialty_data") or {})
+            existing_dimension_data = deepcopy(dimension_data)
+            existing_dimension_channel_data = deepcopy(dimension_channel_data)
+            by_dimension = deepcopy(row.get("by_dimension") or {})
             _fill_dimension_series(dimension_data, existing_dimension_data, field, label, row_history)
             for channel, series in channel_data.items():
                 _fill_dimension_channel_series(

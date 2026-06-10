@@ -41,7 +41,11 @@ DEFAULT_MEMBERS_FILE = Path(
     "parquet/master_brand_consolidation_members/master_brand_consolidation_members.parquet"
 )
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# 브랜드 그룹 split도 260518 MI Master와 같은 version gate를 쓴다.
+# 리바로젯처럼 같은 시트명이라도 컬럼 배치와 의미가 바뀔 수 있어서,
+# 파일명 검증 없이 이전 산출을 재사용하는 방식은 rebuild 추적성을 깨므로
+# 기각했다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_STRATEGIC_MARKET_ID = "strategy_011"
 EXPECTED_SOURCE_SHEET = "악템라"
 EXPECTED_SOURCE_REMARK = "Master Remark indicates one-brand consolidation"

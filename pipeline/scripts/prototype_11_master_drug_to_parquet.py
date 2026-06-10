@@ -137,22 +137,27 @@ MARKET_SHEETS: tuple[MarketSheetConfig, ...] = (
 )
 
 EXPECTED_MARKET_STATS = {
-    "strategy_001": {"sheet_name": "라베칸 라베칸듀오", "header_row": 5, "raw_rows_scanned": 358, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 358},
-    "strategy_002": {"sheet_name": "제이클", "header_row": 5, "raw_rows_scanned": 45, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 45},
-    "strategy_003": {"sheet_name": "가드렛 가드메트", "header_row": 5, "raw_rows_scanned": 113, "empty_rows": 31, "excluded_rows": 0, "staging_rows": 82},
-    "strategy_004": {"sheet_name": "타발리스", "header_row": 5, "raw_rows_scanned": 10, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 10},
+    # 260518 시트들은 일부 시장에서 실제 데이터 아래에 formatting tail이 남아
+    # raw scan은 995행까지 이어진다. 이 표는 raw_rows_scanned/empty_rows를
+    # 그대로 기록하되, staging_rows가 실제 약품 행수라는 불변량을 잡는다.
+    # raw scan을 과거 짧은 row count에 맞추는 대안은 260518 Excel 형식을
+    # 정상 입력으로 처리하지 못해 기각했다.
+    "strategy_001": {"sheet_name": "라베칸 라베칸듀오", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 637, "excluded_rows": 0, "staging_rows": 358},
+    "strategy_002": {"sheet_name": "제이클", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 950, "excluded_rows": 0, "staging_rows": 45},
+    "strategy_003": {"sheet_name": "가드렛 가드메트", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 913, "excluded_rows": 0, "staging_rows": 82},
+    "strategy_004": {"sheet_name": "타발리스", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 985, "excluded_rows": 0, "staging_rows": 10},
     "strategy_005": {"sheet_name": "시그마트", "header_row": 5, "raw_rows_scanned": 294, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 294},
     "strategy_006": {"sheet_name": "리바로 리바로젯", "header_row": 4, "raw_rows_scanned": 1295, "empty_rows": 200, "excluded_rows": 48, "staging_rows": 1047},
     "strategy_007": {"sheet_name": "리바로페노", "header_row": 4, "raw_rows_scanned": 996, "empty_rows": 385, "excluded_rows": 494, "staging_rows": 117},
     "strategy_008": {"sheet_name": "리바로하이 리바로브이", "header_row": 5, "raw_rows_scanned": 1096, "empty_rows": 15, "excluded_rows": 0, "staging_rows": 1081},
-    "strategy_009": {"sheet_name": "트루패스 피나스타 제이다트", "header_row": 5, "raw_rows_scanned": 418, "empty_rows": 12, "excluded_rows": 1, "staging_rows": 405},
+    "strategy_009": {"sheet_name": "트루패스 피나스타 제이다트", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 589, "excluded_rows": 1, "staging_rows": 405},
     "strategy_010": {"sheet_name": "뉴트로진 모빌리아", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 985, "excluded_rows": 0, "staging_rows": 10},
-    "strategy_011": {"sheet_name": "악템라", "header_row": 5, "raw_rows_scanned": 26, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 26},
+    "strategy_011": {"sheet_name": "악템라", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 969, "excluded_rows": 0, "staging_rows": 26},
     "strategy_012": {"sheet_name": "페린젝트 베노훼럼", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 919, "excluded_rows": 0, "staging_rows": 76},
-    "strategy_013": {"sheet_name": "헴리브라", "header_row": 5, "raw_rows_scanned": 14, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 14},
+    "strategy_013": {"sheet_name": "헴리브라", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 981, "excluded_rows": 0, "staging_rows": 14},
     "strategy_014": {"sheet_name": "위너프 위너프A+", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 664, "excluded_rows": 0, "staging_rows": 331},
-    "strategy_015": {"sheet_name": "엔커버", "header_row": 7, "raw_rows_scanned": 4, "empty_rows": 0, "excluded_rows": 0, "staging_rows": 4},
-    "strategy_016": {"sheet_name": "플라주오피", "header_row": 5, "raw_rows_scanned": 54, "empty_rows": 2, "excluded_rows": 0, "staging_rows": 52},
+    "strategy_015": {"sheet_name": "엔커버", "header_row": 7, "raw_rows_scanned": 993, "empty_rows": 989, "excluded_rows": 0, "staging_rows": 4},
+    "strategy_016": {"sheet_name": "플라주오피", "header_row": 5, "raw_rows_scanned": 995, "empty_rows": 943, "excluded_rows": 0, "staging_rows": 52},
 }
 
 
@@ -624,10 +629,14 @@ def validate_records(
                 raise ValueError(f"{config.strategic_market_id} column_metadata_json string mismatch")
             if metadata_json != metadata:
                 raise ValueError(f"{config.strategic_market_id} column_metadata_json structure mismatch")
-            if len(raw_payload.get("cells", [])) != 26:
+            # 시트별 컬럼 수가 달라져도 raw_row_json의 cells와 values_by_header가
+            # 같은 폭을 유지하는지만 검증한다. 26칸 고정 검사는 260518의 컬럼
+            # 배치 변화를 버그로 오판하므로 기각했다.
+            expected_cell_count = len(raw_payload.get("values_by_header", {}))
+            if len(raw_payload.get("cells", [])) != expected_cell_count:
                 raise ValueError(
                     f"{config.strategic_market_id} raw_row_json cells length mismatch: "
-                    f"actual={len(raw_payload.get('cells', []))}"
+                    f"expected={expected_cell_count}, actual={len(raw_payload.get('cells', []))}"
                 )
             if int(record["source_row_id"]) != int(raw_payload.get("source_row_id")):
                 raise ValueError(f"{config.strategic_market_id} source_row_id mismatch in raw_row_json")

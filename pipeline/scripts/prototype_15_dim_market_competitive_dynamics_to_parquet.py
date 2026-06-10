@@ -49,7 +49,12 @@ DEFAULT_OUTPUT_FILE = Path(
     "parquet/dim_market_competitive_dynamics/dim_market_competitive_dynamics.parquet"
 )
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# Competitive Dynamics는 ML보다 좁은 cd_filter 정의를 쓰지만, 그 정의 역시
+# 260518 MI Master에서 온다. CD만 이전 파일을 읽으면 ML/CD의 class, molecule,
+# target priority가 서로 다른 기준이 되므로 strict source version을 유지한다.
+# fallback으로 4/22 CD를 섞는 대안은 같은 시장의 두 view를 비교 불가능하게
+# 만들어 기각했다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 
 DIM_MARKET_COMPETITIVE_DYNAMICS_COLUMNS = (
     "competitive_dynamics_id",
@@ -359,7 +364,7 @@ def _source_file_version(rows: list[dict[str, Any]]) -> str:
         for row in rows
         if clean_text(row.get("source_file_version")) is not None
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    if versions != {unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(
             f"source_file_version mismatch: expected={EXPECTED_SOURCE_FILE_VERSION!r}, "
             f"actual={sorted(versions)}"

@@ -40,7 +40,11 @@ DEFAULT_MARKET_DEFINITION_FILE = Path(
 )
 DEFAULT_OUTPUT_FILE = Path("output/catalog/cd_filter/cd_filter.parquet")
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# cd_filter는 CD narrower universe를 결정하는 핵심 입력이다.
+# 260518 migration 뒤에는 ML과 CD가 같은 원본 버전에서 갈라져야 하므로,
+# source_file_version을 여기서도 강제한다. CD filter만 과거 파일을 허용하는
+# 방식은 rank/market size drift를 만든 경험이 있어 기각했다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_CD_FILTER_IDS = tuple(f"cdf_{index:03d}" for index in range(1, 20))
 ML_EQUALS_CD_FILTER_IDS = {"cdf_004", "cdf_006", "cdf_007", "cdf_014", "cdf_016", "cdf_017"}
 JSON_ARRAY_COLUMNS = ("atc3", "atc4", "molecule", "class")
@@ -110,7 +114,7 @@ def source_file_version(path: Path) -> str:
         for row in rows
         if clean_text(row.get("source_file_version")) is not None
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    if versions != {unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(
             f"source_file_version mismatch: expected={EXPECTED_SOURCE_FILE_VERSION!r}, "
             f"actual={sorted(v for v in versions if v)}"
@@ -372,7 +376,7 @@ def validate_records(records: list[dict[str, Any]]) -> None:
     for record in records:
         for column in JSON_ARRAY_COLUMNS:
             validate_json_array_column(record, column)
-        if clean_text(record["source_file_version"]) != EXPECTED_SOURCE_FILE_VERSION:
+        if clean_text(record["source_file_version"]) != unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION):
             raise ValueError(f"{record['cd_filter_id']} source_file_version mismatch")
         if not isinstance(record["ingested_at"], datetime):
             raise ValueError(f"{record['cd_filter_id']} ingested_at must be datetime")

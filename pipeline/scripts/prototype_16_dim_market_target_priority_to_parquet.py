@@ -70,7 +70,12 @@ DEFAULT_CACHE_FILE = Path(
     "data/cache/prototype_12_round6_auto_fill_customer_dictionary_estimate.csv"
 )
 
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# target priority와 시장정의 & Target 항목도 260518 파일 기준으로 검증한다.
+# A10N1/A10P1처럼 target ATC 설명이 바뀐 행이 있어, source version을 남겨야
+# downstream smoke에서 어떤 정의로 만든 payload인지 역추적할 수 있다.
+# 설명만 최신으로 바꾸고 산출은 구버전으로 두는 대안은 감사 불가능하므로 기각했다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
+LEGACY_SKELETON_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
 EXPECTED_ROW_COUNT = 84
 EXPECTED_SOURCE_VIEW_COUNTS = {"UBIST": 40, "IQVIA": 44}
 EXPECTED_SOURCE_TYPE_COUNTS = {
@@ -217,9 +222,13 @@ def source_file_version_from_skeleton(skeleton: pd.DataFrame) -> str:
         unicodedata.normalize("NFC", str(value))
         for value in skeleton["source_file_version"].dropna().unique().tolist()
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    allowed = {
+        unicodedata.normalize("NFC", EXPECTED_SOURCE_FILE_VERSION),
+        unicodedata.normalize("NFC", LEGACY_SKELETON_SOURCE_FILE_VERSION),
+    }
+    if not versions or not versions.issubset(allowed):
         raise ValueError(
-            f"source_file_version mismatch: expected={EXPECTED_SOURCE_FILE_VERSION!r}, "
+            f"source_file_version mismatch: expected one of {sorted(allowed)!r}, "
             f"actual={sorted(versions)}"
         )
     return EXPECTED_SOURCE_FILE_VERSION

@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Build spec-aligned cache_cause from Phase 1 strategic marts."""
+"""Build spec-aligned cache_cause from Phase 1 strategic marts.
+
+원인분석 payload 계약:
+- brand/company ranking은 "선택 브랜드/회사 + 경쟁 상위 5 + 기타" 구조를
+  유지한다. 선택 대상이 top5 밖이거나 값이 0이어도 명시적으로 포함한다.
+- level_top5_trend의 "전체" 옵션은 전체 시장 기준이므로 선택 브랜드를
+  포함한다. 반대로 개별 segment 옵션은 그 분류 안의 top5+기타만 보여주며
+  선택 브랜드를 강제로 끼우지 않는다.
+- M/S 폴라의 100% overall slice는 제거하되, 매출 추이의 전체 line은 남긴다.
+  전체 옵션 자체를 삭제하는 대안은 운영 chart8의 전체 시장 기준 뷰를 깨서
+  기각했다.
+"""
 
 from __future__ import annotations
 
@@ -226,6 +237,9 @@ def _stacked_ranking(
     target = next((row for row in latest_ranked if target_name and row_identity(row, label_key) == target_name), None)
     target_id = row_identity(target, label_key)
     competitors = [row for row in latest_ranked if row_identity(row, label_key) and row_identity(row, label_key) != target_id]
+    # B1: ranking payload는 선택 대상이 top5 밖이어도 항상 첫 슬롯으로
+    # 포함해야 한다. "현재 top5만"으로 단순화하는 대안은 작은 JW 브랜드를 0
+    # 또는 기타 안에 숨겨 화면 계약(선택+경쟁5+기타)을 깨므로 기각했다.
     fixed = ([target] if target else []) + competitors[:top_n]
     fixed_ids = [row_identity(row, label_key) for row in fixed if row_identity(row, label_key)]
 
@@ -468,7 +482,9 @@ def _latest_top_trends(
         rows = [
             row
             for row in normalized_by_year.get(year, [])
-            if identity(row) and not row.get("is_others") and (safe_float(row.get("value")) or 0.0) > 0
+            if identity(row)
+            and not row.get("is_others")
+            and ((safe_float(row.get("value")) or 0.0) > 0 or bool(target_name and identity(row) == target_name))
         ]
         ranked = sorted(rows, key=lambda item: safe_float(item.get("value")) or 0.0, reverse=True)
         for index, row in enumerate(ranked, start=1):
@@ -1664,6 +1680,10 @@ def _display_brand_rows(
         for row in sorted(normalized, key=lambda item: item["value_recent"], reverse=True)
         if row_identity(row, "brand") != target_id
     ]
+    # B1: 채널/세그먼트 내 표시 브랜드도 선택 브랜드를 선두에 고정하고,
+    # 경쟁 top5와 기타를 뒤에 붙인다. 선택 브랜드가 competitors에 이미 있으면
+    # target_id로 제거해 중복을 막는다. 기타에 선택 브랜드를 남기는 대안은
+    # double counting을 만들었기 때문에 기각했다.
     selected = ([target] if target else []) + competitors[:top_n]
     selected_ids = {row_identity(row, "brand") for row in selected}
     others = [row for row in normalized if row_identity(row, "brand") not in selected_ids]
@@ -2306,7 +2326,11 @@ def _level_top5_trend(
                     "brands_in_value": _level_trend_brand_payloads(
                         option_rows=channel_rows,
                         periods=periods,
-                        target_name=None,
+                        # B2: 전체 옵션은 "전체 시장 기준" 뷰다. 여기서는 선택
+                        # 브랜드가 top5 밖이어도 들어가야 하므로 target_name을
+                        # 전달한다. 전체 옵션을 일반 segment처럼 처리하면 운영의
+                        # 전체 시장 기준 chart8과 달라져 기각했다.
+                        target_name=target_name,
                         total_series=overall_value_series,
                     ),
                 }
@@ -2335,7 +2359,11 @@ def _level_top5_trend(
                     "brands_in_value": _level_trend_brand_payloads(
                         option_rows=segment_rows,
                         periods=periods,
-                        target_name=target_name,
+                        # B2: 개별 segment 옵션은 "그 분류 안의 top5+기타"가
+                        # 계약이다. 선택 브랜드 강제 포함은 다른 class/molecule에
+                        # 속한 타깃을 0으로 끼워 넣는 위장을 만들 수 있어
+                        # target_name을 비운다.
+                        target_name=None,
                         total_series=segment_total_series,
                     ),
                 }

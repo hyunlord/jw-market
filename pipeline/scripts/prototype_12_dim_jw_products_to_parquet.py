@@ -41,7 +41,11 @@ DEFAULT_QA_FILE = Path("parquet/master_qa/master_qa.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_jw_products/dim_jw_products.parquet")
 
 EXPECTED_ROW_COUNT = 25
-EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# 260518 재공유본을 JW 제품 차원의 기준 원본으로 고정한다.
+# 이 단계가 다른 MI Master 버전을 조용히 읽으면 downstream catalog/mart가
+# 서로 다른 ground truth를 섞게 되므로, source_file_version을 strict하게
+# 검증한다. 버전 mismatch를 허용하는 대안은 재현성 추적을 잃기 때문에 기각했다.
+EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 
 DIM_JW_PRODUCTS_COLUMNS = (
     "jw_product_id",

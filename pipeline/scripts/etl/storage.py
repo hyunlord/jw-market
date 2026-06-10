@@ -20,7 +20,14 @@ VALID_BACKENDS = {BACKEND_LOCAL, BACKEND_MINIO}
 DEFAULT_WORK_DIR = Path("/tmp/jw-market-etl")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MI_MASTER_DIR_NAME = "JW 주요 약품 수동 매핑"
-MI_MASTER_FILE_NAME = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
+# 260518 재공유본이 이번 rebuild의 기준 원본이다.
+# 4/22 파일은 리바로/리바로젯 시트의 Class/Molecule 배치가 현재 MI팀
+# ground truth와 달라, 카탈로그를 다시 만들면 리바로젯 Molecule에
+# Statin/Statin-EZE class 라벨이 섞였다. 원본 파일명을 여기서 고정해
+# prototype_12~19의 source_file_version 검증과 같은 기준을 쓰게 한다.
+# 대안으로 시장별 보정표를 두는 방식은 Excel -> ETL 재현성을 깨므로
+# 기각했다.
+MI_MASTER_FILE_NAME = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 
 
 def get_storage_backend() -> str:

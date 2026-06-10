@@ -661,8 +661,11 @@ source_files:
     strategic_product: "parquet/strategic_product/strategic_product.parquet"
     commit_tag: prototype-14-extended
     commit_sha: be7e6ac
-    source_master_version: "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
-    note: "★ Phase 14 는 260422 master 기준. 260518 reload 필요."
+    # 260518 재공유본이 이번 rebuild의 기준 원본이다.
+    # 이 값은 storage.py/prototype_12~19의 version gate와 같은 의미이며,
+    # audit에서 "어떤 Excel로 만든 catalog인가"를 역추적하기 위한 checkpoint다.
+    source_master_version: "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
+    note: "Phase 0 260518 surgical rebuild target; live swap requires staged gates."
 
   mi_master_260518:
     path: "docs/reference/MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"

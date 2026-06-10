@@ -51,7 +51,11 @@ DEFAULT_CATALOG_PATH = Path("docs/reference/master_column_mapping_catalog.md")
 DEFAULT_OUTPUT_FILE = Path("parquet/master_mapping_table/master_mapping_table.parquet")
 
 STANDARD_PREFIX = "drug_extra_json."
-EXPECTED_ROW_COUNT = 5932
+# 4/22 기준 5932행에서 260518 기준 5956행으로 24행이 늘었다.
+# diff 확인 결과 시장정의/Target 계열의 정상 추가분이라, 검증을 완화하지 않고
+# 새 원본 버전에 맞춘 strict count로 고정한다. 행수 검사를 제거하는 대안은
+# mapping 누락을 조기에 잡지 못하므로 기각했다.
+EXPECTED_ROW_COUNT = 5956
 ZERO_MAPPING_MARKETS = {"strategy_006", "strategy_007", "strategy_009"}
 
 MASTER_MAPPING_TABLE_COLUMNS = (
@@ -98,18 +102,18 @@ EXPECTED_MARKET_STATS = {
     "strategy_001": {
         "sheet_name": "라베칸 라베칸듀오",
         "header_row": 5,
-        "raw_rows_scanned": 358,
-        "empty_rows": 0,
+        "raw_rows_scanned": 995,
+        "empty_rows": 637,
         "excluded_rows": 0,
         "staging_rows": 358,
         "manual_specs": 3,
-        "mapping_rows": 731,
+        "mapping_rows": 716,
     },
     "strategy_002": {
         "sheet_name": "제이클",
         "header_row": 5,
-        "raw_rows_scanned": 45,
-        "empty_rows": 0,
+        "raw_rows_scanned": 995,
+        "empty_rows": 950,
         "excluded_rows": 0,
         "staging_rows": 45,
         "manual_specs": 3,
@@ -118,8 +122,8 @@ EXPECTED_MARKET_STATS = {
     "strategy_003": {
         "sheet_name": "가드렛 가드메트",
         "header_row": 5,
-        "raw_rows_scanned": 113,
-        "empty_rows": 31,
+        "raw_rows_scanned": 995,
+        "empty_rows": 913,
         "excluded_rows": 0,
         "staging_rows": 82,
         "manual_specs": 2,
@@ -128,8 +132,8 @@ EXPECTED_MARKET_STATS = {
     "strategy_004": {
         "sheet_name": "타발리스",
         "header_row": 5,
-        "raw_rows_scanned": 10,
-        "empty_rows": 0,
+        "raw_rows_scanned": 995,
+        "empty_rows": 985,
         "excluded_rows": 0,
         "staging_rows": 10,
         "manual_specs": 1,
@@ -173,13 +177,13 @@ EXPECTED_MARKET_STATS = {
         "excluded_rows": 0,
         "staging_rows": 1081,
         "manual_specs": 5,
-        "mapping_rows": 1653,
+        "mapping_rows": 1676,
     },
     "strategy_009": {
         "sheet_name": "트루패스 피나스타 제이다트",
         "header_row": 5,
-        "raw_rows_scanned": 418,
-        "empty_rows": 12,
+        "raw_rows_scanned": 995,
+        "empty_rows": 589,
         "excluded_rows": 1,
         "staging_rows": 405,
         "manual_specs": 0,
@@ -198,8 +202,8 @@ EXPECTED_MARKET_STATS = {
     "strategy_011": {
         "sheet_name": "악템라",
         "header_row": 5,
-        "raw_rows_scanned": 26,
-        "empty_rows": 0,
+        "raw_rows_scanned": 995,
+        "empty_rows": 969,
         "excluded_rows": 0,
         "staging_rows": 26,
         "manual_specs": 3,
@@ -213,13 +217,13 @@ EXPECTED_MARKET_STATS = {
         "excluded_rows": 0,
         "staging_rows": 76,
         "manual_specs": 5,
-        "mapping_rows": 182,
+        "mapping_rows": 198,
     },
     "strategy_013": {
         "sheet_name": "헴리브라",
         "header_row": 5,
-        "raw_rows_scanned": 14,
-        "empty_rows": 0,
+        "raw_rows_scanned": 995,
+        "empty_rows": 981,
         "excluded_rows": 1,
         "staging_rows": 13,
         "manual_specs": 2,
@@ -238,8 +242,8 @@ EXPECTED_MARKET_STATS = {
     "strategy_015": {
         "sheet_name": "엔커버",
         "header_row": 7,
-        "raw_rows_scanned": 4,
-        "empty_rows": 0,
+        "raw_rows_scanned": 993,
+        "empty_rows": 989,
         "excluded_rows": 0,
         "staging_rows": 4,
         "manual_specs": 1,
@@ -248,8 +252,8 @@ EXPECTED_MARKET_STATS = {
     "strategy_016": {
         "sheet_name": "플라주오피",
         "header_row": 5,
-        "raw_rows_scanned": 54,
-        "empty_rows": 2,
+        "raw_rows_scanned": 995,
+        "empty_rows": 943,
         "excluded_rows": 31,
         "staging_rows": 21,
         "manual_specs": 2,
@@ -258,15 +262,15 @@ EXPECTED_MARKET_STATS = {
 }
 
 EXPECTED_MARKET_DISTRIBUTION = {
-    "strategy_001": 731,
+    "strategy_001": 716,
     "strategy_002": 135,
     "strategy_003": 164,
     "strategy_004": 9,
     "strategy_005": 1176,
-    "strategy_008": 1653,
+    "strategy_008": 1676,
     "strategy_010": 38,
     "strategy_011": 78,
-    "strategy_012": 182,
+    "strategy_012": 198,
     "strategy_013": 26,
     "strategy_014": 1696,
     "strategy_015": 4,
@@ -274,11 +278,11 @@ EXPECTED_MARKET_DISTRIBUTION = {
 }
 
 EXPECTED_MAPPING_TYPE_DISTRIBUTION = {
-    "class_recode": 1353,
-    "manual_mapping": 2024,
+    "class_recode": 1376,
+    "manual_mapping": 2009,
     "molecule_recode": 1984,
     "nhi_overlay": 490,
-    "strength_recode": 81,
+    "strength_recode": 97,
 }
 
 

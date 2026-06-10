@@ -15,6 +15,15 @@ Policy:
 - D-30: recode/redefine columns overwrite the analysis column. strategy_008
   and strategy_011 promote class_2 into class when present, while retaining
   class_1/class_2 as explicit audit and downstream analysis axes.
+
+한글 도메인 규칙:
+- 일반뷰는 ATC4만, 전략뷰 ML은 MI Master 시트 전체 정의, CD는 cd_filter로
+  좁힌 정의를 따른다.
+- recode는 자기 field raw를 덮어쓰는 OVERWRITE다. class recode가 molecule을
+  대신 채우면 제이클처럼 Molecule==Class가 되어 분석 level이 무너진다.
+- molecule 표시값은 molecule recode가 있을 때만 recode를 쓰고, 없으면 raw
+  MOLECULE DESC를 쓴다. 화면에서 보기 좋게 class 그룹으로 대체하는 대안은
+  molecule 세분 분석을 잃으므로 기각했다.
 """
 
 from __future__ import annotations
@@ -385,6 +394,14 @@ def first_present(*values: Any) -> str | None:
     return None
 
 
+def source_value_by_header(headers: list[Any] | tuple[Any, ...], values: list[Any] | tuple[Any, ...], source_column: str) -> Any:
+    target = str(source_column).strip()
+    for header, value in zip(headers, values):
+        if header is not None and str(header).strip().startswith(target):
+            return value
+    return None
+
+
 def make_name(
     standard_values: dict[str, Any],
     strategic_market_id: str,
@@ -402,16 +419,22 @@ def make_name(
 def strategic_fields(
     standard_values: dict[str, Any],
     extras: dict[str, Any],
+    strategic_market_id: str | None = None,
 ) -> dict[str, str | None]:
     class_2_value = first_present(standard_values.get("class_2"), standard_values.get("class"), extras.get("class_raw"))
     class_1_value = first_present(standard_values.get("class_1"))
     if class_1_value is None and first_present(standard_values.get("class_2")) is not None:
         class_1_value = first_present(standard_values.get("class"))
+    molecule_value = first_present(standard_values.get("molecule"))
+    if strategic_market_id == "strategy_002":
+        class_value = first_present(standard_values.get("class"), standard_values.get("class_2"))
+        if molecule_value == class_value:
+            molecule_value = None
     return {
         "class": class_2_value,
         "class_1": class_1_value,
         "class_2": class_2_value if first_present(standard_values.get("class_2")) is not None else None,
-        "molecule": first_present(standard_values.get("molecule")),
+        "molecule": molecule_value,
         "dosage_form": first_present(standard_values.get("dosage_form"), extras.get("administration_route")),
         "strength_pack": first_present(standard_values.get("strength"), standard_values.get("pack_desc"), extras.get("product_pack")),
         "nhi_type": first_present(standard_values.get("nhi_type")),
@@ -494,10 +517,17 @@ def load_strategic_brand_records(
                 if row_excluded:
                     continue
                 standard_values, extras = helpers.apply_column_mapping(headers, values, metadata)
+                if config.strategic_market_id == "strategy_002":
+                    # A1: 제이클의 "Recode Class(성분)"은 class grouping이지
+                    # molecule display가 아니다. molecule은 raw MOLECULE DESC로
+                    # 남겨야 Class와 Molecule level이 서로 다른 축이 된다.
+                    # class 그룹을 molecule에 재사용하는 대안은 002 IQVIA에서
+                    # Molecule==Class를 만들었기 때문에 기각했다.
+                    standard_values["molecule"] = source_value_by_header(headers, values, "MOLECULE DESC")
                 if source_row_id in explicit_overrides:
                     standard_values.update(explicit_overrides[source_row_id])
                 name = make_name(standard_values, config.strategic_market_id, source_row_id)
-                fields = strategic_fields(standard_values, extras)
+                fields = strategic_fields(standard_values, extras, strategic_market_id=config.strategic_market_id)
                 atc4_code = extract_atc_code(fields.get("atc4_code"))
                 if atc4_code:
                     allowed_atc4_by_name[normalize_for_match(name)].add(atc4_code)
