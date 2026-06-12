@@ -18,6 +18,7 @@ import pandas as pd
 from brand_key_normalize import normalize_brand_name
 from layer3_compute_general_v3 import ALLOWED_SOURCES, dumps, general_brand_jsonl_path, json_ready, mariadb_connect, read_jsonl, write_jsonl
 from layer3_compute_market_metric import compute_market_mart_payload
+from iron_iv_dimensions import apply_iron_iv_dimension_rule, capture_iron_iv_source_strength
 from layer3_compute_strategic_ml_v3 import (
     _allowed_atc4_aliases,
     _atc4_aliases,
@@ -221,6 +222,10 @@ def _group_by_source_measure(rows: list[dict[str, Any]]) -> dict[tuple[str, str]
     return grouped
 
 
+def _apply_iron_iv_dimension_rule(row: dict[str, Any], market_id: str | None) -> dict[str, Any]:
+    return apply_iron_iv_dimension_rule(row, market_id=market_id)
+
+
 def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.DataFrame, general_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     cd_filter_info = filter_payload(cd_row, cd_filter)
     by_key = catalog_by_key(catalog_rows)
@@ -276,6 +281,10 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
             }
         )
         is_iqvia = str(copied.get("source") or "").strip().lower() == "iqvia_nsa"
+        # CD 철 시장도 ML과 동일하게 raw IV pack 라벨을 sidecar에 보존한다.
+        # 이후 strength_pack은 display recode로 유지하고, iron rule만 내부
+        # sidecar를 읽어 IV 전용 Molecule/Strength/Fe/ml dimension을 만든다.
+        capture_iron_iv_source_strength(copied, market_id=cd_row.get("cd_id"))
         for field in ("molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
             label = overlay.get(field)
             if is_iqvia and field in {"dosage_form", "strength_pack"}:
@@ -288,6 +297,7 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
                     _clear_dimension_field(copied, field)
                     continue
             _rekey_dimension_field_to_label(copied, field, label)
+        copied = _apply_iron_iv_dimension_rule(copied, market_id=cd_row.get("cd_id"))
         selected.append(copied)
     selected = _collapse_same_cd_brand_rows(selected)
     validate_market_completeness(cd_row, catalog_rows, selected)

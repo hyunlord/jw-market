@@ -51,6 +51,7 @@ from layer3_compute_extended import compute_ei, compute_growth_contribution, com
 from layer3_compute_market_metric import compute_market_mart_payload
 from layer3_normalize import prev_month, prev_quarter_month, same_month_prev_year
 from layer2_normalize import normalize_atc
+from iron_iv_dimensions import apply_iron_iv_dimension_rule, capture_iron_iv_source_strength
 from ops_utils import configure_logging, find_project_root
 from utils.ubist_channel_mapping import parse_channel_code
 
@@ -700,7 +701,12 @@ def _load_ubist_dimension_context(ml_id: str, strategic_products: pd.DataFrame) 
     }
 
 
-def _enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def _enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any], *, market_id: str | None = None) -> dict[str, Any]:
+    # 철 시장은 display strength_pack을 catalog recode로 묶기 전에 raw IV pack
+    # 라벨을 sidecar로 남긴다. apply_iron_iv_dimension_rule은 이 내부 라벨로
+    # Molecule/Strength/Fe/ml을 재구성하고 sidecar를 제거한다. display 라벨을
+    # raw로 되돌리는 대안은 A2(IQVIA raw pack 누출 0)를 깨므로 기각했다.
+    capture_iron_iv_source_strength(row, market_id=market_id)
     dimension_data = deepcopy(row.get("dimension_data") or {})
     dimension_channel_data = deepcopy(row.get("dimension_channel_data") or {})
     dimension_specialty_data = deepcopy(row.get("dimension_specialty_data") or {})
@@ -793,6 +799,10 @@ def _enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any]) 
     row["dimension_specialty_data"] = dimension_specialty_data
     row["by_dimension"] = by_dimension
     return row
+
+
+def _apply_iron_iv_dimension_rule(row: dict[str, Any], market_id: str | None) -> dict[str, Any]:
+    return apply_iron_iv_dimension_rule(row, market_id=market_id)
 
 
 def fetch_general_rows_from_db(source: str | None = None) -> list[dict[str, Any]]:
@@ -1075,7 +1085,8 @@ def build_ml_rows(
                 },
             }
         )
-        copied = _enhance_strategic_dimensions(copied, dimension_context)
+        copied = _enhance_strategic_dimensions(copied, dimension_context, market_id=ml_row.get("ml_id"))
+        copied = _apply_iron_iv_dimension_rule(copied, market_id=ml_row.get("ml_id"))
         selected.append(copied)
 
     selected = _collapse_same_brand_rows(selected)
