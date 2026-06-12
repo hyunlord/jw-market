@@ -32,6 +32,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run all stages in apply-change skeleton mode.",
     )
+    parser.add_argument(
+        "--record-baseline",
+        action="store_true",
+        help="Manually record the s0 file manifest baseline.",
+    )
     parser.add_argument("--stage", choices=[stage.STAGE.split()[0] for stage in STAGES])
     return parser.parse_args(argv)
 
@@ -59,6 +64,10 @@ def main(argv: list[str] | None = None) -> int:
     params: dict[str, Any] = {
         "period": args.period,
         "apply_change": args.apply_change,
+        # s0 only reports file-manifest facts. Automatic skip/incremental
+        # decisions belong here in run.py once s1-s6 perform real work; phase
+        # 1B exposes only this manual recording switch.
+        "record_baseline": args.record_baseline,
         "mode": mode_name(args),
     }
     print(f"[etl] 모드={params['mode']} period={params['period']}")
@@ -73,4 +82,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
