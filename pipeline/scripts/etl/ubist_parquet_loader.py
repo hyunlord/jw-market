@@ -93,6 +93,12 @@ GENERIC_VALUES = {
     "개량신약(Super Generic)",
 }
 
+UBIST_2026_02_DUPLICATE_REGULAR_SOURCES = {
+    "상급종병_2025 2026.xlsx",
+    "의원_내과 제외 2601-02.xlsx",
+    "종병 병원 2601-02.xlsx",
+}
+
 COLUMNS = (
     CANONICAL_DIMENSIONS
     + PATENT_DIMENSIONS
@@ -152,6 +158,20 @@ def normalize_text(value: object) -> str | None:
     if not text:
         return None
     return unicodedata.normalize("NFC", text)
+
+
+def should_skip_ubist_source_row(period: str, source_file: str) -> bool:
+    """Return True for source rows that should not enter Layer 1 parquet."""
+
+    # [임시 2026-02 source dedup, 20260612] 2026-02는 Sales(2021-2026.02) regular와
+    # Sales(2026.02) 성분_* 파일이 같은 2026-02 데이터를 중복 보유(73,684 key, 182.6B 중복).
+    # → 2026-02만 성분_*(병원/상급종병/의원세부/의원제외/종병)+regular의 기타/보건소만 적재,
+    #   중복 regular(상급종병_2025 2026, 의원_내과 제외 2601-02, 종병 병원 2601-02)의 2026-02 행 제외.
+    # source 정비(단일 폴더 일원화) 후 원복/일반화 대상. 다른 월 불변.
+    if period != "2026-02":
+        return False
+    source = unicodedata.normalize("NFC", str(source_file or "").strip())
+    return source in UBIST_2026_02_DUPLICATE_REGULAR_SOURCES
 
 
 def to_string_or_none(value: object) -> str | None:
@@ -397,6 +417,8 @@ def iter_xlsx_rows(xlsx_path: Path, generic_lookup: dict[str, str] | None = None
                 period_metrics[period][metric] = to_number_or_none(row[idx] if idx < len(row) else None)
 
             for period, metrics in period_metrics.items():
+                if should_skip_ubist_source_row(period, xlsx_path.name):
+                    continue
                 output = dict(base)
                 output.update(metrics)
                 output["period_yyyymm"] = period

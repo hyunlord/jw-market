@@ -7,6 +7,11 @@ raw Korean channel/specialty labels whenever raw data provides them.
 
 from __future__ import annotations
 
+try:
+    from pipeline.scripts.utils.ubist_channel_mapping import INTERNAL_MEDICINE_DETAIL_SPECIALTIES
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path
+    from utils.ubist_channel_mapping import INTERNAL_MEDICINE_DETAIL_SPECIALTIES
+
 
 CHANNEL_CODE_TO_RAW = {
     "TH": "상급종합병원",
@@ -25,7 +30,14 @@ CHANNEL_RAW_TO_CODE.update(
 )
 
 SPECIALTY_CODE_TO_RAW = {
-    "IGF": ["가정의학과(FM)", "내과(IM)", "일반의(GP)"],
+    # 무엇: MI target code ``IGF``를 FM/GP 2개에서 FM/GP+내과 세부10
+    # 12개로 확장한다. 왜: PL 결정상 standalone 내과(IM)는 중복 원천이라
+    # 버리되, target_customer breakdown의 IGF에는 세부 내과가 포함되어야 한다.
+    # 도메인 근거: 이 번역 테이블은 target_ubist_* code를 raw specialty 후보로
+    # 풀 때만 쓰이며 headline 시장총합/MS/순위/HHI 계산식에는 들어가지 않는다.
+    # 기각 대안: 별도 ``IM`` target code를 유지하면 화면에 독립 내과 채널이
+    # 되살아나 PL 결정과 충돌한다.
+    "IGF": ["가정의학과(FM)", "일반의(GP)", *INTERNAL_MEDICINE_DETAIL_SPECIALTIES],
     "Cardio": ["순환기(Cardiology IM)"],
     "GI": ["소화기(Gastroenterology IM)"],
     "Endo": ["내분비(Endocrinology IM)"],

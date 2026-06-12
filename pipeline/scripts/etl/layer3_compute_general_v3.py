@@ -34,6 +34,10 @@ from layer3_compute_market_metric import compute_market_mart_payload
 from layer3_normalize import period_range_mat, period_sort_key, prev_month, prev_quarter_month, safe_div, same_month_prev_year
 from ops_utils import configure_logging, find_project_root, first_existing, retry
 from resolve_company import resolve_company
+try:
+    from pipeline.scripts.utils.ubist_channel_mapping import STANDALONE_INTERNAL_MEDICINE_SPECIALTY
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path
+    from utils.ubist_channel_mapping import STANDALONE_INTERNAL_MEDICINE_SPECIALTY
 
 
 LOGGER = configure_logging(__name__)
@@ -273,6 +277,25 @@ def ubist_specialty_to_raw(value: Any) -> str:
     return "분리되지 않은 진료과"
 
 
+def deduplicate_ubist_internal_medicine_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop standalone 내과(IM) rows before UBIST aggregation.
+
+    무엇: UBIST raw의 standalone ``내과(IM)`` 행만 제거하고 세부 10개 내과
+    specialty는 보존한다.
+    왜: PL 검증에서 standalone 내과가 세부 10개 합과 등가라 같이 더하면
+    시장 총합이 약 40% 과대 집계된다.
+    도메인 근거: 내과 표시는 세부 10개 합으로 재구성하고, standalone은
+    중복 원천 행이다.
+    기각 대안: cache 화면에서만 감추면 mart 시장 총합/MS/HHI 과대가 남는다.
+    """
+    if frame.empty or "specialty" not in frame.columns:
+        return frame
+    mask = frame["specialty"].astype(str).str.strip() == STANDALONE_INTERNAL_MEDICINE_SPECIALTY
+    if not mask.any():
+        return frame
+    return frame.loc[~mask].copy()
+
+
 def normalize_period_label(value: Any) -> str | None:
     if value is None or pd.isna(value):
         return None
@@ -371,6 +394,7 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
         frame["atc4_desc"] = atc.map(lambda pair: pair[1])
         frame["channel"] = frame["channel"].map(ubist_channel_to_raw)
         frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
+        frame = deduplicate_ubist_internal_medicine_rows(frame)
         return frame.loc[frame["brand_key"] != ""].copy()
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
@@ -429,6 +453,7 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
     frame["company"] = frame.get("판매사")
     frame["channel"] = frame["channel"].map(ubist_channel_to_raw)
     frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
+    frame = deduplicate_ubist_internal_medicine_rows(frame)
     return frame.loc[frame["brand_key"] != ""].copy()
 
 
