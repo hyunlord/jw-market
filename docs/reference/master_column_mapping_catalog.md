@@ -108,15 +108,15 @@ Type definitions:
 ```json
 {
   "atc4_code": {"source_column": "ATC", "type": "raw", "overlay_target": null, "override_priority": null},
-  "molecule": {"source_column": "성분", "type": "raw", "overlay_target": null, "override_priority": null},
+  "molecule": {"source_column": "Molecule", "type": "raw", "overlay_target": null, "override_priority": null},
   "seller": {"source_column": "판매사", "type": "raw", "overlay_target": null, "override_priority": null},
   "product_name": {"source_column": "제품", "type": "raw", "overlay_target": null, "override_priority": null},
   "manufacturer": {"source_column": "제조사", "type": "raw", "overlay_target": null, "override_priority": null},
-  "class": {"source_column": null, "position": 9, "type": "raw", "overlay_target": null, "override_priority": null},
+  "class": {"source_column": "Class", "type": "raw", "overlay_target": null, "override_priority": null},
   "formulation": {"source_column": "성분용량", "type": "raw", "overlay_target": null, "override_priority": null},
   "strength": {"source_column": "Strength", "type": "raw", "overlay_target": null, "override_priority": null},
   "ox_gx": {"source_column": "Ox/Gx", "type": "raw", "overlay_target": null, "override_priority": null},
-  "drug_extra_json.molecule_eng": {"source_column": "Molecule", "type": "raw_supplementary", "overlay_target": null, "override_priority": null}
+  "drug_extra_json.molecule_eng": {"source_column": "성분", "type": "raw_supplementary", "overlay_target": null, "override_priority": null}
 }
 ```
 
