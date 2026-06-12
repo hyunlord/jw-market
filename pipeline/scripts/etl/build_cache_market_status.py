@@ -179,6 +179,15 @@ def _ratio_to_pct(value: Any) -> float | None:
     return round(number * 100, 4) if number is not None else None
 
 
+def _ratio_to_pct_5y_then_3y(metric: dict[str, Any]) -> float | None:
+    # 브랜드 CAGR 표시는 cause와 같은 5년→3년 fallback 계약을 따른다.
+    # 리바로젯처럼 5년 시작점 매출이 0이면 cagr_5y는 계산 불가지만, 이미
+    # extended_metric_history에 저장된 cagr_3y는 동일 endpoint 계산 산물이다.
+    # 새 계산식을 만들지 않고 기존 ratio→percent 변환만 공유해 N/A 불일치를 줄인다.
+    five_year = _ratio_to_pct(metric.get("cagr_5y"))
+    return five_year if five_year is not None else _ratio_to_pct(metric.get("cagr_3y"))
+
+
 def _market_definition_label(atc_codes: list[str]) -> str:
     return "1 ATC" if len(atc_codes) == 1 else f"{len(atc_codes)} ATCs"
 
@@ -248,7 +257,12 @@ def build_brand_card(
     meta_sources = list(meta.sources) if meta else []
     sources = _ordered_sources(meta_sources or brand_row["sources"])
     atc_codes = _catalog_atc_codes(market)
-    brand_cagr = _ratio_to_pct(ext_recent.get("cagr_5y"))
+    brand_cagr = _ratio_to_pct_5y_then_3y(ext_recent)
+    # 헤드라인 market CAGR은 "시장 자체" endpoint 기준이다.
+    # cause payload의 per-brand EI는 브랜드 시작값이 0이면 3년으로 fallback될 수
+    # 있으나, market-status 헤더는 브랜드별 fallback에 오염되면 안 된다.
+    # 따라서 공유 helper의 시장 series endpoint(5y 가능 시 5y, 없으면 3y)를
+    # 그대로 사용한다. per-brand 기준에 맞추는 대안은 헤드라인 의미를 깨서 기각했다.
     market_cagr = series_cagr(market_series)
     excess_growth = round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None
     company = (
@@ -409,7 +423,13 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
 
 
 def main() -> None:
-    args = parser(__doc__).parse_args()
+    cli = parser(__doc__)
+    cli.add_argument(
+        "--target-table",
+        default="cache_market_status",
+        help="Destination table. Use schema.table for test cache refreshes.",
+    )
+    args = cli.parse_args()
     strategic_brand = load_catalog("strategic_brand")
     ml_market = load_catalog("ml_market").set_index("ml_id", drop=False)
 
@@ -465,7 +485,7 @@ def main() -> None:
         "brand_cards": cards,
     }
     replace_rows(
-        "cache_market_status",
+        args.target_table,
         ["query_key", "response_json", "payload_size"],
         [{"query_key": "default", "response_json": dump_payload(payload), "payload_size": payload_size(payload)}],
     )

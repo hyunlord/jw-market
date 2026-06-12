@@ -106,51 +106,114 @@ def _window_start(annual: list[tuple[int, float]], end_year: int, target_years: 
     return earlier[0] if earlier else None
 
 
+def _period_ordinal(period: str) -> tuple[int, int] | None:
+    """Return (ordinal, periods_per_year) for monthly/quarterly period labels."""
+    text = str(period)
+    match = re.match(r"^(\d{4})-(\d{2})$", text)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        if 1 <= month <= 12:
+            return year * 12 + (month - 1), 12
+        return None
+    match = re.match(r"^(\d{4})-Q([1-4])$", text)
+    if match:
+        year = int(match.group(1))
+        quarter = int(match.group(2))
+        return year * 4 + (quarter - 1), 4
+    return None
+
+
+def _endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
+    """CAGR using the same latest-vs-exact-endpoint rule as Layer3 marts.
+
+    annual sum was rejected for Wave 3a because partial current-year totals
+    (for example 2026 Jan-Apr) created fake negative CAGR/EI while the portal
+    also displayed a separate positive CAGR. Cache now uses one domain rule:
+    latest period vs exactly 5 years ago, falling back to 3 years only when
+    the caller asks for that basis.
+    """
+    data = series or {}
+    if len(data) < 2:
+        return {"cagr_pct": None, "basis": f"endpoint_{years}y", "period_years": years, "note": "insufficient history"}
+    latest_period, latest_item = latest_pair(data)
+    latest_ord = _period_ordinal(str(latest_period)) if latest_period else None
+    if latest_period is None or latest_ord is None:
+        return {"cagr_pct": None, "basis": f"endpoint_{years}y", "period_years": years, "note": "invalid latest period"}
+    ordinal, periods_per_year = latest_ord
+    target_ordinal = ordinal - periods_per_year * years
+    start_period = next(
+        (str(period) for period in data if (_period_ordinal(str(period)) or (None, None))[0] == target_ordinal),
+        None,
+    )
+    latest_value = period_value(latest_item)
+    start_value = period_value(data.get(start_period)) if start_period else None
+    if start_period is None or start_value is None:
+        return {
+            "cagr_pct": None,
+            "basis": f"endpoint_{years}y",
+            "period_years": years,
+            "start_period": start_period,
+            "end_period": latest_period,
+            "note": "missing endpoint period",
+        }
+    if start_value <= 0:
+        return {
+            "cagr_pct": None,
+            "basis": f"endpoint_{years}y",
+            "period_years": years,
+            "start_period": start_period,
+            "end_period": latest_period,
+            "note": "endpoint start value is not positive",
+        }
+    cagr = calculate_cagr_v2(start_value, latest_value, years)
+    return {
+        "cagr_pct": round(cagr, 4) if cagr is not None else None,
+        "basis": f"endpoint_{years}y",
+        "period_years": years,
+        "start_period": start_period,
+        "end_period": latest_period,
+        "start_value": start_value,
+        "end_value": latest_value,
+    }
+
+
 def calculate_ei_with_fallback(
     brand_series: dict[str, Any] | None,
     market_series: dict[str, Any] | None,
     target_years: int = 5,
 ) -> dict[str, Any]:
-    """Calculate EI on the 5-year basis, preserving pre-launch as uncomputable.
+    """Calculate EI from one cache-wide endpoint CAGR policy.
 
-    PL originally considered a one-year fallback for pre-launch brands, then
-    reversed that decision: if the 5-year brand CAGR cannot be calculated
-    because the start value is zero and the end value is positive, EI should
-    remain N/A rather than switching bases.
+    무엇/왜: 기존 annual_totals 경로는 2026년 4개월 partial-year를 최신
+    연간값으로 사용해 표시 CAGR은 양수인데 EI용 market CAGR은 음수인
+    분기를 만들었다. Wave 3a는 mart의 cagr_from_history와 같은 최신
+    period-vs-exact-endpoint 기준으로 cache 표시값과 EI 값을 통일한다.
+    도메인 근거: 5년 전 endpoint가 양수이면 5년 CAGR, 브랜드 5년 전이
+    0/없으면 3년 endpoint로 fallback, 3년도 불가하면 N/A. annual-sum/MAT
+    대안은 PL이 단일 endpoint를 선택했으므로 이번 cache-only fix에서는
+    기각한다.
     """
-    brand_annual = annual_totals(brand_series)
-    market_annual = annual_totals(market_series)
-    if len(brand_annual) < 2 or len(market_annual) < 2:
-        return {"ei": None, "basis": "no_data", "note": "insufficient history"}
-
-    end_year, brand_end = brand_annual[-1]
-    market_by_year = dict(market_annual)
-    if end_year not in market_by_year:
-        return {"ei": None, "basis": "no_data", "note": "missing market end period"}
-    market_end = market_by_year[end_year]
-
-    brand_start_pair = _window_start(brand_annual, end_year, target_years)
-    market_start_pair = _window_start(market_annual, end_year, target_years)
-    if not brand_start_pair or not market_start_pair:
-        return {"ei": None, "basis": "no_data", "note": "insufficient history"}
-
-    brand_start_year, brand_start = brand_start_pair
-    market_start_year, market_start = market_start_pair
-    standard_years = max(end_year - brand_start_year, 1)
-    market_years = max(end_year - market_start_year, 1)
-    brand_cagr = calculate_cagr_v2(brand_start, brand_end, standard_years)
-    market_cagr = calculate_cagr_v2(market_start, market_end, market_years)
-
-    if brand_cagr is not None and market_cagr is not None and market_cagr != 0:
+    for years in (target_years, 3):
+        brand_meta = _endpoint_cagr(brand_series, years)
+        market_meta = _endpoint_cagr(market_series, years)
+        brand_cagr = brand_meta.get("cagr_pct")
+        market_cagr = market_meta.get("cagr_pct")
+        if brand_cagr is None or market_cagr is None or market_cagr == 0:
+            continue
         return {
             "ei": round((brand_cagr / market_cagr) * 100, 4),
-            "basis": "standard_5y",
-            "period_years": target_years,
-            "brand_cagr_pct": round(brand_cagr, 4),
-            "market_cagr_pct": round(market_cagr, 4),
+            "basis": f"endpoint_{years}y",
+            "period_years": years,
+            "brand_cagr_pct": round(float(brand_cagr), 4),
+            "market_cagr_pct": round(float(market_cagr), 4),
+            "brand_start_period": brand_meta.get("start_period"),
+            "brand_end_period": brand_meta.get("end_period"),
+            "market_start_period": market_meta.get("start_period"),
+            "market_end_period": market_meta.get("end_period"),
         }
 
-    return {"ei": None, "basis": "unable", "note": "5년 전 매출 0 — N/A"}
+    return {"ei": None, "basis": "endpoint_na", "note": "5년/3년 endpoint CAGR 산출 불가 — N/A"}
 
 
 UNIT_LABELS = {
@@ -281,18 +344,13 @@ def series_latest_number(series: dict[str, Any] | None) -> float | None:
 
 
 def series_cagr(series: dict[str, Any] | None) -> float | None:
-    data = series or {}
-    if len(data) < 2:
-        return None
-    first_key, first_value = first_pair(data)
-    last_key, last_value = latest_pair(data)
-    first = period_value(first_value)
-    last = period_value(last_value)
-    if first is None or last is None or first_key is None or last_key is None:
-        return None
-    years = max((period_key(last_key)[0] - period_key(first_key)[0]), 1)
-    cagr = calculate_cagr_v2(first, last, years)
-    return round(cagr, 2) if cagr is not None else None
+    """Display market CAGR using the same 5y→3y endpoint policy as EI."""
+    for years in (5, 3):
+        meta = _endpoint_cagr(series, years)
+        cagr = meta.get("cagr_pct")
+        if cagr is not None:
+            return round(float(cagr), 2)
+    return None
 
 
 def fetch_all(sql: str, params: Iterable[Any] | None = None) -> list[dict[str, Any]]:
@@ -305,12 +363,22 @@ def fetch_all(sql: str, params: Iterable[Any] | None = None) -> list[dict[str, A
         conn.close()
 
 
+def quote_table_name(table: str) -> str:
+    parts = str(table or "").split(".")
+    if not parts or len(parts) > 2:
+        raise ValueError(f"unsafe table name: {table!r}")
+    for part in parts:
+        if not re.fullmatch(r"[A-Za-z0-9_]+", part):
+            raise ValueError(f"unsafe table name: {table!r}")
+    return ".".join(f"`{part}`" for part in parts)
+
+
 def replace_rows(table: str, columns: list[str], rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{c}`" for c in columns)
-    sql = f"REPLACE INTO `{table}` ({names}) VALUES ({placeholders})"
+    sql = f"REPLACE INTO {quote_table_name(table)} ({names}) VALUES ({placeholders})"
     values = [tuple(row.get(col) for col in columns) for row in rows]
     conn = mariadb_connect()
     try:

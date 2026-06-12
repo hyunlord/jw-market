@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -46,6 +47,7 @@ from cache_build_common import (
     source_list,
 )
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
+from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
 from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels
 
 period_key = lru_cache(maxsize=None)(period_key)
@@ -65,10 +67,11 @@ LEVEL_FIELD_BY_LABEL = {
     "용량": "strength_pack",
     "비/급여": "nhi_type",
     "Ox/Gx": "ox_gx",
+    FE_CONTENT_LEVEL: FE_CONTENT_FIELD,
     FISH_OIL_LEVEL: "fish_oil",
     "fish_oil": "fish_oil",
 }
-SPECIALTY_DIMENSION_FIELDS = {"molecule", "dosage_form", "strength_pack", "nhi_type"}
+SPECIALTY_DIMENSION_FIELDS = {"molecule", "dosage_form", "strength_pack", "nhi_type", FE_CONTENT_FIELD}
 ANALYSIS_LEVELS_CACHE: dict[tuple[str | None, str, str], dict[str, Any]] = {}
 LEVEL_ROW_GROUPS_CACHE: dict[tuple[str | None, str, str], dict[str, dict[str, list[dict[str, Any]]]]] = {}
 ANALYSIS_LEVELS_BY_CHANNEL_CACHE: dict[Any, dict[str, Any]] = {}
@@ -90,6 +93,11 @@ def parse_args() -> Any:
         default="cache_cause",
         help="Destination table for cache_cause rows. Used for local blue-green staging.",
     )
+    cli.add_argument(
+        "--full-all-brands",
+        action="store_true",
+        help="Debug mode: write every mart brand row. Default serving cache writes only cache_brands canonical brands.",
+    )
     return cli.parse_args()
 
 
@@ -97,6 +105,82 @@ def _quoted_table_name(name: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_]+", str(name or "")):
         raise SystemExit(f"unsafe --target-table: {name!r}")
     return f"`{name}`"
+
+
+def prepare_full_target_table(cur: Any, requested_table: str) -> tuple[str, bool]:
+    """Prepare a full-build target table without deleting live cache_cause first."""
+    if requested_table == "cache_cause":
+        target = "cache_cause_staging"
+        should_switch = True
+    else:
+        target = requested_table
+        should_switch = False
+    quoted = _quoted_table_name(target)
+    cur.execute(f"DROP TABLE IF EXISTS {quoted}")
+    cur.execute(f"CREATE TABLE {quoted} LIKE `cache_cause`")
+    return target, should_switch
+
+
+def switch_full_cache_cause(cur: Any, staging_table: str, *, timestamp: str | None = None) -> str:
+    ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    old_table = f"cache_cause_old_fullregen_{ts}"
+    cur.execute(
+        f"RENAME TABLE `cache_cause` TO {_quoted_table_name(old_table)}, "
+        f"{_quoted_table_name(staging_table)} TO `cache_cause`"
+    )
+    return old_table
+
+
+def serving_brand_names_from_cache_brands_payload(payload: Any) -> set[str]:
+    if isinstance(payload, str):
+        payload = decode_json(payload)
+    if isinstance(payload, dict):
+        items = payload.get("brands") or payload.get("data") or payload.get("items") or []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = []
+    names: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("brand") or item.get("brand_name") or item.get("name")
+        if value:
+            names.add(str(value))
+    return names
+
+
+def load_serving_brand_names(cur: Any) -> set[str]:
+    cur.execute("SELECT response_json FROM cache_brands WHERE query_key='default' LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        raise SystemExit("cache_brands default row is required for serving-slim cache_cause build")
+    response_json = row.get("response_json") if isinstance(row, dict) else row[0]
+    names = serving_brand_names_from_cache_brands_payload(response_json)
+    if not names:
+        raise SystemExit("cache_brands default row did not contain serving brand names")
+    metadata_names = {item.brand for item in BRAND_METADATA}
+    if names != metadata_names:
+        raise SystemExit(
+            f"cache_brands mismatch with canonical metadata: missing={sorted(metadata_names - names)}, "
+            f"extra={sorted(names - metadata_names)}"
+        )
+    return names
+
+
+def filter_serving_brand_rows(
+    rows: list[dict[str, Any]],
+    serving_brand_names: set[str],
+    *,
+    full_all_brands: bool = False,
+) -> list[dict[str, Any]]:
+    if full_all_brands:
+        return rows
+    # cache_cause는 배포 포탈 전용 serving cache다. 시장 계산은 sibling_rows
+    # 전체를 계속 쓰고, 출력 row만 /api/brands와 같은 canonical 25로 제한한다.
+    # full 3,450행은 19GB급 dead weight라 Wave 3a 빌드를 멈추게 했고,
+    # 별도 full table을 두는 대안은 프론트 전용 계약 확인으로 기각했다.
+    return [row for row in rows if str(row.get("brand_name") or "") in serving_brand_names]
 
 
 def selected_query(table: str, column: str, values: list[str] | None) -> tuple[str, list[str]]:
@@ -356,39 +440,47 @@ def _annual_rank_rows(
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
     if full_rows:
         return _annual_rank_rows_from_full_rows(full_rows, label_key=label_key, target_name=target_name)
-    latest_rows_by_year: dict[int, list[dict[str, Any]]] = {}
-    latest_period_by_year: dict[int, str] = {}
+    grouped: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     period_count_by_year: dict[int, int] = defaultdict(int)
     for period, rows in sorted((period_map or {}).items(), key=lambda pair: period_key(str(pair[0]))):
         year = _period_year(str(period))
         if year is None or not isinstance(rows, list):
             continue
         period_count_by_year[year] += 1
-        period_str = str(period)
-        current = latest_period_by_year.get(year)
-        if current is not None and period_key(period_str) <= period_key(current):
-            continue
-        latest_period_by_year[year] = period_str
-        latest_rows_by_year[year] = rows
-
-    grouped: dict[int, list[dict[str, Any]]] = {}
-    for year, rows in latest_rows_by_year.items():
-        normalized_rows = []
         for row in rows:
             normalized = _normalize_rank_row(row, label_key=label_key, target_name=target_name)
             name = row_identity(normalized, label_key)
             if not name:
                 continue
-            normalized_rows.append(normalized)
-        grouped[year] = normalized_rows
-    return {year: _rank_normalized_rows(rows, label_key=label_key) for year, rows in grouped.items()}, dict(period_count_by_year)
+            # 연간 ranking/HHI는 연말 스냅샷이 아니라 full-year 합산이다.
+            # 연말 한 달/분기만 쓰면 2024/2025 HHI가 기간 믹스에 민감해져
+            # PL이 재검산한 full-year 기준과 어긋난다. latest snapshot 유지
+            # 대안은 partial 표시에는 간단하지만 연간 농도 지표 의미가 틀려
+            # 기각했다.
+            bucket = grouped[year].setdefault(
+                name,
+                {
+                    label_key: name,
+                    "brand": normalized.get("brand") if label_key == "brand" else None,
+                    "company": normalized.get("company") if label_key == "company" else normalized.get("company"),
+                    "is_target": bool(normalized.get("is_target")),
+                    "is_jw": bool(normalized.get("is_jw")),
+                    "is_others": False,
+                    "value": 0.0,
+                    "rank": None,
+                    "ms_pct": 0.0,
+                },
+            )
+            bucket["value"] += safe_float(normalized.get("value")) or 0.0
+            bucket["is_jw"] = bool(bucket.get("is_jw") or normalized.get("is_jw"))
+            bucket["is_target"] = bool(bucket.get("is_target") or normalized.get("is_target"))
+    return {year: _rank_normalized_rows(list(rows.values()), label_key=label_key) for year, rows in grouped.items()}, dict(period_count_by_year)
 
 
 def _annual_rank_rows_from_full_rows(
     rows: list[dict[str, Any]], *, label_key: str, target_name: str | None
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
     periods_by_year: dict[int, set[str]] = defaultdict(set)
-    latest_period_by_year_name: dict[int, dict[str, str]] = defaultdict(dict)
     grouped: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         history = _metric_history(row)
@@ -406,15 +498,6 @@ def _annual_rank_rows_from_full_rows(
                 continue
             period_str = str(period)
             periods_by_year[year].add(period_str)
-            current = latest_period_by_year_name[year].get(name)
-            if current is not None:
-                current_key = period_key(current)
-                next_key = period_key(period_str)
-                if next_key < current_key:
-                    continue
-                if next_key > current_key:
-                    grouped[year].pop(name, None)
-            latest_period_by_year_name[year][name] = period_str
             bucket = grouped[year].setdefault(
                 name,
                 {
@@ -788,6 +871,39 @@ def _normalize_segment_name_lists(analysis_levels: dict[str, Any]) -> dict[str, 
     return analysis_levels
 
 
+def _ensure_split_class_alias(payload: dict[str, Any]) -> dict[str, Any]:
+    """배포 포탈의 generic Class 계약을 split-class payload에도 보존한다.
+
+    일부 시장(예: 악템라)은 MI Master 정의상 Class가 Class 1/Class 2로
+    쪼개진다. 하지만 현재 배포된 포탈 번들은 방어 없이
+    analysis_levels.data.Class를 읽는다. 프론트만 고치는 대안은 이미 배포된
+    번들에는 효과가 없으므로, Class 1은 있고 Class는 없는 payload에 한해
+    Class=Class 1 alias를 추가한다. 원본 Class 1/Class 2는 데이터 구동
+    셀렉터에 계속 필요하므로 삭제하지 않는다.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    data = payload.get("data")
+    if isinstance(data, dict) and "Class" not in data and "Class 1" in data:
+        data["Class"] = deepcopy(data["Class 1"])
+    return payload
+
+
+def _ensure_analysis_level_market_status_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    """배포 포탈이 기대하는 chart8형 analysis_level_market_status 계약을 보존한다.
+
+    운영 포탈 번들은 이 카드도 chart8 렌더러로 그리기 때문에
+    analysis_level_market_status.data[level].by_channel[channel]을 직접 읽는다.
+    by_level/by_channel 래퍼를 별도로 내보내는 대안은 신규 구조처럼 보이지만,
+    배포 번들에서는 data가 없어 흰 화면으로 죽으므로 기각한다. 이 함수는
+    chart8형 data/levels/channels 구조를 유지하면서 split-class 시장에 필요한
+    generic Class alias만 보강한다.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    return _ensure_split_class_alias(payload)
+
+
 def _history_periods(rows: list[dict[str, Any]], source: str) -> list[str]:
     periods: set[str] = set()
     for row in rows:
@@ -819,6 +935,13 @@ def _market_levels(market: dict[str, Any] | None) -> list[str]:
         levels.append("Ox/Gx")
     if bool(market.get("analyze_fish_oil")):
         levels.append(FISH_OIL_LEVEL)
+    market_id = market.get("ml_id") or market.get("cd_id")
+    if is_iron_iv_dimension_market(market_id) and FE_CONTENT_LEVEL not in levels:
+        # Wave 3b: 철 시장의 Fe/ml은 MI Master의 IV pack overlay에서만
+        # 만들어지는 시장 특수 dimension이다. 전역 level로 열면 타 시장 payload
+        # 계약이 흔들리므로 strategy_012/cd_015에서만 노출한다.
+        insert_at = levels.index("용량") + 1 if "용량" in levels else len(levels)
+        levels.insert(insert_at, FE_CONTENT_LEVEL)
     return levels
 
 
@@ -851,6 +974,14 @@ def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) 
         levels = list(CAUSE_LEVELS_V091)
     if bool((market or {}).get("analyze_fish_oil")) and FISH_OIL_LEVEL not in levels:
         levels.append(FISH_OIL_LEVEL)
+    market_id = (market or {}).get("ml_id") or (market or {}).get("cd_id") or view_source_id
+    if is_iron_iv_dimension_market(market_id) and FE_CONTENT_LEVEL not in levels:
+        # 무엇: response contract에 Fe/ml level을 iron market 한정으로 추가한다.
+        # 왜: mart에는 Fe/ml을 IV-only로 materialize하지만 cache level mapping이
+        # 없으면 화면/검증 payload에서 dimension이 사라진다.
+        # 기각 대안: CAUSE_LEVELS_V091 전역 추가는 비철 시장에 빈 level을 만든다.
+        insert_at = levels.index("용량") + 1 if "용량" in levels else len(levels)
+        levels.insert(insert_at, FE_CONTENT_LEVEL)
     return levels
 
 
@@ -1785,10 +1916,36 @@ def _annual_share_hhi(period_map: Any) -> list[dict[str, Any]]:
     return points
 
 
-def _annual_share_hhi_from_rows(rows: list[dict[str, Any]], *, label_key: str) -> list[dict[str, Any]]:
-    by_year, _ = _annual_rank_rows({}, label_key=label_key, target_name=None, full_rows=rows)
+def _complete_calendar_years(period_count_by_year: dict[int, int], *, source: str | None) -> set[int]:
+    """Return years that have the full source-specific calendar coverage.
+
+    무엇/왜: HHI는 연간 시장 집중도를 비교하는 지표라 12개월(UBIST) 또는
+    4분기(IQVIA)를 모두 채운 달력연만 서로 비교 가능하다. 2026년처럼
+    4개월 partial-year를 넣으면 몇 개 브랜드의 초기기간 집중도가 과장돼
+    HHI가 302처럼 튀는 왜곡이 생겼다.
+    도메인 근거: UBIST는 월 단위, IQVIA는 분기 단위로 적재된다. 연도
+    하드코딩 대신 실제 period count로 판정해야 다음 사이클에서도 자동으로
+    2022~2026 등 최근 5개 완전연으로 이동한다.
+    기각한 대안: partial year를 연율화하거나 최신 5개 연도를 무조건 쓰는
+    방식은 동일 길이 관측치 비교가 아니어서 HHI 추세 해석을 깨뜨린다.
+    """
+    source_key = str(source or "").upper()
+    expected = 12 if source_key == "UBIST" else 4 if source_key == "IQVIA" else None
+    if expected is None:
+        return set(period_count_by_year)
+    return {year for year, count in period_count_by_year.items() if count >= expected}
+
+
+def _annual_share_hhi_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    label_key: str,
+    source: str | None = None,
+) -> list[dict[str, Any]]:
+    by_year, period_count_by_year = _annual_rank_rows({}, label_key=label_key, target_name=None, full_rows=rows)
+    complete_years = _complete_calendar_years(period_count_by_year, source=source)
     points = []
-    for year in sorted(by_year.keys())[-5:]:
+    for year in sorted(year for year in by_year.keys() if year in complete_years)[-5:]:
         year_rows = by_year[year]
         hhi = sum((safe_float(row.get("ms_pct")) or 0.0) ** 2 for row in year_rows)
         points.append({"period": str(year), "period_full": str(year), "year": year, "hhi": round(hhi, 4)})
@@ -1813,8 +1970,8 @@ def _company_hhi_from_ranking(company_ranking: Any) -> dict[str, Any]:
     return {"periods": periods, "hhi_values": values}
 
 
-def _company_hhi_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    points = _annual_share_hhi_from_rows(rows, label_key="company")
+def _company_hhi_from_rows(rows: list[dict[str, Any]], *, source: str | None = None) -> dict[str, Any]:
+    points = _annual_share_hhi_from_rows(rows, label_key="company", source=source)
     return {
         "periods": [str(point["year"]) for point in points],
         "hhi_values": [round(safe_float(point.get("hhi")) or 0.0, 4) for point in points],
@@ -2063,6 +2220,34 @@ def _market_share_series(value_series: list[float], total_series: list[float]) -
     ]
 
 
+def _period_rank_series_by_brand(rows: list[dict[str, Any]], periods: list[str]) -> dict[str, list[int | None]]:
+    """Return each brand's rank for every display period."""
+
+    brand_values: dict[str, list[float]] = defaultdict(lambda: [0.0 for _ in periods])
+    for row in rows:
+        brand = _row_brand(row)
+        if not brand:
+            continue
+        history = _metric_history(row)
+        for idx, period in enumerate(periods):
+            brand_values[brand][idx] += _value_from_period_item(history.get(period))
+
+    ranks = {brand: [None for _ in periods] for brand in brand_values}
+    for idx, _period in enumerate(periods):
+        ranked = sorted(
+            (
+                (brand, values[idx])
+                for brand, values in brand_values.items()
+                if idx < len(values) and values[idx] > 0
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        for rank, (brand, _value) in enumerate(ranked, start=1):
+            ranks[brand][idx] = rank
+    return ranks
+
+
 def _target_customer_competition(
     *,
     rows: list[dict[str, Any]],
@@ -2080,6 +2265,7 @@ def _target_customer_competition(
         selected = _display_brand_rows(channel_rows, target_name=target_name, top_n=5, include_others=True)
         row_by_brand = {_row_brand(row): row for row in channel_rows if _row_brand(row)}
         total_series = _total_series_for_rows(channel_rows, period_tail)
+        rank_series_by_brand = _period_rank_series_by_brand(channel_rows, period_tail)
         selected_series: list[list[float]] = []
         trend_brands = []
         composition = []
@@ -2101,6 +2287,17 @@ def _target_customer_competition(
                 selected_series.append(value_series)
             ms_series = _market_share_series(value_series, total_series)
             ms_recent_pct = ms_series[-1] if ms_series else 0.0
+            # 55ff85f4에서 최근 시점 scalar rank만 붙으면서 line chart의
+            # 과거 rank가 모두 최근 순위로 보이는 회귀가 생겼다. 멤버십은
+            # 최근 top5+기타로 고정해 라인 가독성을 지키되, rank만 해당 기간
+            # 전체 브랜드 값을 다시 정렬해 series로 노출한다. 멤버십까지
+            # 기간별 재계산하는 대안은 브랜드 라인이 매 기간 바뀌는 churn을
+            # 만들어 기각했다.
+            rank_series = (
+                [None for _ in period_tail]
+                if item.get("is_others")
+                else rank_series_by_brand.get(str(item.get("brand")), [None for _ in period_tail])
+            )
             trend_brands.append(
                 {
                     "brand": item.get("brand"),
@@ -2109,6 +2306,7 @@ def _target_customer_competition(
                     "is_jw": item.get("is_jw"),
                     "is_others": item.get("is_others"),
                     "rank": item.get("rank"),
+                    "rank_series": rank_series,
                     "value_series": value_series,
                     "volume_series": value_series,
                     "ms_series": ms_series,
@@ -2155,59 +2353,21 @@ def _analysis_level_market_status_by_channel(
     include_all_options: bool,
     cache_key: Any | None = None,
 ) -> dict[str, Any]:
-    channel_list = [str(channel) for channel in (channels or ["전체"]) if str(channel)]
+    """Return the deployed portal's chart8-compatible clone-card payload.
+
+    analysis_levels is already built with the desired channel list via
+    channels_override. Re-wrapping it into by_level/by_channel creates a new
+    contract and breaks the deployed portal, which dereferences
+    analysis_level_market_status.data[level].by_channel[channel]. Keep the same
+    structure as the production API and let only values differ by regenerated
+    data.
+    """
+    payload = deepcopy(analysis_levels)
+    channel_list = [str(channel) for channel in (channels or payload.get("channels") or ["전체"]) if str(channel)]
     if "전체" not in channel_list:
         channel_list = ["전체", *channel_list]
-
-    cached_payloads = ANALYSIS_LEVEL_STATUS_CHANNEL_CACHE.get(cache_key) if cache_key is not None else None
-    if not isinstance(cached_payloads, dict):
-        cached_payloads = {}
-        for channel in channel_list:
-            if channel == "전체":
-                continue
-            cached_payloads[channel] = _level_top5_trend(
-                analysis_levels,
-                rows,
-                source,
-                None,
-                include_all_options=include_all_options,
-                channel=channel,
-            )
-        if cache_key is not None:
-            ANALYSIS_LEVEL_STATUS_CHANNEL_CACHE[cache_key] = cached_payloads
-
-    by_channel: dict[str, Any] = {"전체": deepcopy(level_top5_trend)}
-    for channel in channel_list:
-        if channel == "전체":
-            continue
-        by_channel[channel] = deepcopy(cached_payloads.get(channel) or {})
-
-    payload = deepcopy(level_top5_trend)
     payload["channels"] = channel_list
-    payload["targets"] = channel_list
-    payload["by_channel"] = by_channel
-    payload["ms_by_channel"] = {
-        channel: {
-            "available_levels": channel_payload.get("available_levels"),
-            "by_level": {
-                level: {
-                    "values": [
-                        {
-                            "value": option.get("value"),
-                            "ms_pct": option.get("ms_pct"),
-                            "is_default": option.get("is_default"),
-                        }
-                        for option in ((level_payload or {}).get("values") or [])
-                        if isinstance(option, dict) and not option.get("is_overall")
-                    ]
-                }
-                for level, level_payload in ((channel_payload or {}).get("by_level") or {}).items()
-            },
-        }
-        for channel, channel_payload in by_channel.items()
-    }
-    payload["note"] = "주요 고객 채널별 분석 level top 5 + 기타"
-    return payload
+    return _ensure_analysis_level_market_status_contract(payload)
 
 
 def _level_rows_by_segment(rows: list[dict[str, Any]], levels: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -2235,6 +2395,7 @@ def _level_trend_brand_payloads(
         include_others=True,
     ) if option_rows else []
     row_by_brand = {_row_brand(row): row for row in option_rows if _row_brand(row)}
+    rank_series_by_brand = _period_rank_series_by_brand(option_rows, periods)
     selected_series: list[list[float]] = []
     brands_in_value = []
     for entry in brand_entries:
@@ -2253,6 +2414,15 @@ def _level_trend_brand_payloads(
         else:
             series = _series_for_row(source_row or {}, periods, scaled_sales=True) if source_row else [0.0] * len(periods)
             selected_series.append(series)
+        # D3도 D2와 같은 회귀를 막는다. 표시 멤버십은 최근 segment top5로
+        # 고정하지만, rank_series_10pt는 각 기간의 segment 전체 브랜드 값을
+        # 정렬한 순위다. 이렇게 해야 과거 기간 6위/8위였던 고정 멤버도
+        # 실제 과거 순위를 tooltip/chart에서 복원할 수 있다.
+        rank_series = (
+            [None for _ in periods]
+            if entry.get("is_others")
+            else rank_series_by_brand.get(str(entry.get("brand")), [None for _ in periods])
+        )
         brands_in_value.append(
             {
                 "brand": entry.get("brand"),
@@ -2261,6 +2431,7 @@ def _level_trend_brand_payloads(
                 "is_jw": entry.get("is_jw"),
                 "is_others": entry.get("is_others"),
                 "rank": entry.get("rank"),
+                "rank_series_10pt": rank_series,
                 "ms_recent_pct": safe_float(entry.get("share_pct")) or 0.0,
                 "value_recent": safe_float(entry.get("value_recent")) or 0.0,
                 "raw_value": safe_float(entry.get("raw_value")) or safe_float(entry.get("value_recent")) or 0.0,
@@ -2531,7 +2702,7 @@ def build_response(
             fallback_level_top5=level_top5,
             channels_override=channels_override,
         )
-    analysis_levels = deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key])
+    analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key]))
     if analysis_cache_key not in LEVEL_ROW_GROUPS_CACHE:
         LEVEL_ROW_GROUPS_CACHE[analysis_cache_key] = _level_rows_by_segment(
             sibling_rows,
@@ -2583,8 +2754,11 @@ def build_response(
     )
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
     periods = _history_periods(sibling_rows, source_api)
-    hhi_points = _annual_share_hhi_from_rows(sibling_rows, label_key="brand")
-    company_concentration = _company_hhi_from_rows(sibling_rows)
+    hhi_points = _annual_share_hhi_from_rows(sibling_rows, label_key="brand", source=source_api)
+    if hhi_points:
+        hhi_series = hhi_points
+        hhi_recent = safe_float(hhi_points[-1].get("hhi"))
+    company_concentration = _company_hhi_from_rows(sibling_rows, source=source_api)
     data_period_coverage = _data_period_coverage(market_series, source=source_api)
     growth_contribution = _growth_contribution_payload(sibling_rows, brand_row.get("brand_name"), periods, source=source_api)
     target_customer_channels = analysis_levels.get("channels")
@@ -2606,7 +2780,7 @@ def build_response(
                 fallback_level_top5=level_top5,
                 channels_override=analysis_level_market_channels,
             )
-        clone_analysis_levels = deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key])
+        clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
         if not include_all_d3_options:
             clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
 
@@ -2626,7 +2800,7 @@ def build_response(
         include_all_options=include_all_d3_options,
     )
     target_customer_competition = target_customer_competition_by_channel
-    analysis_level_market_status = _analysis_level_market_status_by_channel(
+    analysis_level_market_status = _ensure_analysis_level_market_status_contract(_analysis_level_market_status_by_channel(
         level_top5_trend=level_top5_trend,
         analysis_levels=clone_analysis_levels,
         rows=sibling_rows,
@@ -2634,12 +2808,20 @@ def build_response(
         channels=analysis_level_market_channels,
         include_all_options=include_all_d3_options,
         cache_key=(analysis_cache_key, include_all_d3_options, tuple(analysis_level_market_channels or [])),
-    )
+    ))
     direct_competition_count = max(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
         len({member["name"] for member in catalog_members if member.get("name")}),
     )
     market_series_payload = latest_market_series_payload(market_series)
+    # 표시 CAGR도 EI 계산에 쓰인 endpoint CAGR과 같은 basis를 쓴다.
+    # annual-partial 제거 후에도 brand 5년 시작값이 0이면 EI는 3년으로
+    # fallback되므로, market 5년값을 따로 표시하면 다시 두 경로가 갈라진다.
+    # 순수 market 5년 표시만 고집하는 대안은 PL의 "표시 CAGR == EI CAGR"
+    # 검증 게이트와 어긋나 기각했다.
+    display_market_cagr = optional_float(target_display.get("market_cagr_pct"))
+    if display_market_cagr is None:
+        display_market_cagr = series_cagr(market_series)
 
     return {
         "brand": brand_row["brand_name"],
@@ -2653,7 +2835,7 @@ def build_response(
         "data": {
             "kpi": {
                 "market_size_recent": series_latest_number(market_series),
-                "market_cagr_5y_pct": series_cagr(market_series),
+                "market_cagr_5y_pct": display_market_cagr,
                 "top3_share_pct": top3_share(sibling_rows),
                 "hhi_recent": hhi_recent,
                 "direct_competition_count": direct_competition_count,
@@ -2677,7 +2859,7 @@ def build_response(
                 "periods_unit": "월간" if brand_row["source"] == "ubist" else "분기",
                 "hhi_series_5y": hhi_points,
                 "hhi_recent": hhi_recent,
-                "cagr_5y_pct": series_cagr(market_series),
+                "cagr_5y_pct": display_market_cagr,
             },
             "market_size_series": market_series_payload["market_size_series"],
             "market_yoy_series": market_series_payload["market_yoy_series"],
@@ -2786,21 +2968,46 @@ def main() -> None:
     ml_siblings = make_sibling_map(ml_brand_rows, "ml_id")
     cd_siblings = make_sibling_map(cd_brand_rows, "cd_market_id")
 
-    target_table = _quoted_table_name(args.target_table)
     columns = ["brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"]
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{c}`" for c in columns)
-    sql = f"REPLACE INTO {target_table} ({names}) VALUES ({placeholders})"
     inserted = 0
     conn = mariadb_connect()
     cur = conn.cursor()
     batch: list[tuple[Any, ...]] = []
     partial_mode = bool(args.market)
+    should_switch_full = False
     if partial_mode:
         conn.autocommit(False)
         conn.begin()
 
     try:
+        serving_brand_names = load_serving_brand_names(cur) if not args.full_all_brands else set()
+        ml_output_rows = filter_serving_brand_rows(
+            ml_brand_rows,
+            serving_brand_names,
+            full_all_brands=args.full_all_brands,
+        )
+        cd_output_rows = filter_serving_brand_rows(
+            cd_brand_rows,
+            serving_brand_names,
+            full_all_brands=args.full_all_brands,
+        )
+        if args.verbose:
+            mode = "full-all-brands" if args.full_all_brands else "serving-slim"
+            print(
+                f"[B3] cache_cause output mode={mode} "
+                f"ml_rows={len(ml_output_rows)}/{len(ml_brand_rows)} "
+                f"cd_rows={len(cd_output_rows)}/{len(cd_brand_rows)}",
+                flush=True,
+            )
+
+        target_table_name = args.target_table
+        if not partial_mode:
+            target_table_name, should_switch_full = prepare_full_target_table(cur, args.target_table)
+        target_table = _quoted_table_name(target_table_name)
+        sql = f"REPLACE INTO {target_table} ({names}) VALUES ({placeholders})"
+
         if selected_market_ids is not None:
             placeholders = ",".join(["%s"] * len(selected_market_ids))
             cur.execute(
@@ -2820,7 +3027,7 @@ def main() -> None:
             cur.executemany(sql, batch)
             batch = []
 
-        for row in ml_brand_rows:
+        for row in ml_output_rows:
             market = ml_market.loc[row["ml_id"]].to_dict() if row["ml_id"] in ml_market.index else {}
             market_id = ml_to_strategy(row["ml_id"])
             source = api_source(row["source"])
@@ -2855,7 +3062,7 @@ def main() -> None:
             if args.verbose and inserted % 1000 == 0:
                 print(f"inserted cache_cause rows={inserted}", flush=True)
 
-        for row in cd_brand_rows:
+        for row in cd_output_rows:
             cd = cd_market.loc[row["cd_market_id"]].to_dict() if row["cd_market_id"] in cd_market.index else {}
             ml_id = cd.get("ml_id") or row.get("ml_id")
             ml = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
@@ -2895,8 +3102,16 @@ def main() -> None:
         if partial_mode:
             conn.commit()
             print(f"[B3] partial commit cache_cause rows={inserted}", flush=True)
+        elif should_switch_full:
+            old_table = switch_full_cache_cause(cur, target_table_name)
+            conn.commit()
+            print(f"[B3] full cache_cause blue-green switch rows={inserted} old_table={old_table}", flush=True)
+        else:
+            conn.commit()
     except Exception:
         if partial_mode:
+            conn.rollback()
+        elif not conn.get_autocommit():
             conn.rollback()
         raise
     finally:

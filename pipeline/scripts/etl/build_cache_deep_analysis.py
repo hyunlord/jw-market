@@ -663,8 +663,83 @@ def choose_base(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return sorted(rows, key=lambda r: (not bool(r.get("is_jw")), str(r.get("ml_id")), str(r.get("source")), str(r.get("measure"))))[0]
 
 
+def _safe_table_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", value or ""):
+        raise SystemExit(f"unsafe table name: {value!r}")
+    return value
+
+
+def _rebuild_events_for_brand(conn: Any, brand: str) -> list[dict[str, Any]]:
+    events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
+    events_payload = _dedup_cut_a_events(events_payload)
+    return _events_spec_list(events_payload)
+
+
+def update_events_only(target_table: str, brands: set[str] | None = None, *, verbose: bool = False) -> None:
+    """기존 forecast/simulation은 보존하고 deep-analysis 이벤트만 stage 테이블에 재작성한다.
+
+    277건 증분 뉴스는 Agent 1 산출물이라 forecast/simulation 시장값과 독립이다.
+    기존 full builder는 live `cache_deep_analysis`를 DELETE 후 전체 REPLACE하므로 운영
+    증분 반영에는 위험하다. 이 경로는 live row를 읽고 `data.events`만 갈아끼운 뒤
+    별도 target table에 기록한다. 기각한 대안은 full rebuild다. full rebuild는 mart
+    freshness와 forecast/simulation까지 같이 흔들어 이번 범위의 "events-only" 계약을
+    깨뜨린다.
+    """
+    target_table = _safe_table_name(target_table)
+    conn = mariadb_connect()
+    cur = conn.cursor()
+    ensure_events_raw_table(conn)
+    cur.execute(f"CREATE TABLE IF NOT EXISTS `{target_table}` LIKE `cache_deep_analysis`")
+    cur.execute(f"DELETE FROM `{target_table}`")
+    cur.execute("SELECT brand, market_id, response_json FROM `cache_deep_analysis` ORDER BY brand, market_id")
+    source_rows = list(cur.fetchall())
+
+    columns = ["brand", "market_id", "response_json", "payload_size"]
+    placeholders = ", ".join(["%s"] * len(columns))
+    names = ", ".join(f"`{column}`" for column in columns)
+    sql = f"REPLACE INTO `{target_table}` ({names}) VALUES ({placeholders})"
+    batch: list[tuple[Any, ...]] = []
+    changed = 0
+
+    for row in source_rows:
+        brand = str(row["brand"])
+        payload = decode_json(row.get("response_json")) or {}
+        if brands is None or brand in brands:
+            data = payload.setdefault("data", {})
+            data["events"] = _rebuild_events_for_brand(conn, brand)
+            changed += 1
+        out = {
+            "brand": brand,
+            "market_id": row.get("market_id"),
+            "response_json": dump_payload(payload),
+            "payload_size": payload_size(payload),
+        }
+        batch.append(tuple(out[column] for column in columns))
+        if len(batch) >= 20:
+            cur.executemany(sql, batch)
+            conn.commit()
+            batch = []
+    if batch:
+        cur.executemany(sql, batch)
+        conn.commit()
+    cur.close()
+    conn.close()
+    if verbose:
+        print(f"events-only target={target_table} rows={len(source_rows)} event_rows_updated={changed}")
+
+
 def main() -> None:
-    args = parser(__doc__).parse_args()
+    args_parser = parser(__doc__)
+    args_parser.add_argument("--events-only", action="store_true", help="Update only data.events into --target-table from current cache_deep_analysis.")
+    args_parser.add_argument("--target-table", help="Events-only staging target table name.")
+    args_parser.add_argument("--brands", nargs="*", help="Optional brand names to update in events-only mode. Defaults to all rows.")
+    args = args_parser.parse_args()
+    if args.events_only:
+        if not args.target_table:
+            raise SystemExit("--events-only requires --target-table")
+        update_events_only(args.target_table, set(args.brands) if args.brands else None, verbose=args.verbose)
+        return
+
     ml_market = load_catalog("ml_market").set_index("ml_id", drop=False)
     rows = fetch_all("SELECT * FROM mart_strategic_ml_brand_metric")
     by_brand: dict[str, list[dict[str, Any]]] = defaultdict(list)

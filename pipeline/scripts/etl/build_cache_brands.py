@@ -21,7 +21,13 @@ from pipeline.scripts.api.metadata import BRAND_METADATA
 
 
 def main() -> None:
-    args = parser(__doc__).parse_args()
+    cli = parser(__doc__)
+    cli.add_argument(
+        "--target-table",
+        default="cache_brands",
+        help="Destination table. Use schema.table for test cache refreshes.",
+    )
+    args = cli.parse_args()
     strategic_brand = load_catalog("strategic_brand")
 
     jw = strategic_brand[strategic_brand["is_jw"].astype(bool)].copy()
@@ -44,7 +50,7 @@ def main() -> None:
         "response_json": dump_payload(payload),
         "payload_size": payload_size(payload),
     }
-    replace_rows("cache_brands", ["query_key", "response_json", "payload_size"], [row])
+    replace_rows(args.target_table, ["query_key", "response_json", "payload_size"], [row])
     if args.verbose:
         print(f"cache_brands default brand_count={len(payload)} payload_size={row['payload_size']}")
 
