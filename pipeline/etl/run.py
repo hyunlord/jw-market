@@ -37,6 +37,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Manually record the s0 file manifest baseline.",
     )
+    parser.add_argument(
+        "--target-dir",
+        help="Override the parquet target directory for load stages.",
+    )
+    parser.add_argument("--file", help="Load or dry-run one source file for s1 smoke checks.")
+    parser.add_argument(
+        "--source",
+        choices=["ubist", "iqvia", "all"],
+        default="all",
+        help="Source dispatcher for s1.",
+    )
+    parser.add_argument(
+        "--target-db",
+        help="Temporary target database for s1 IQVIA verification loads.",
+    )
+    parser.add_argument(
+        "--source-db",
+        default="jw_mart",
+        help="Source database to clone raw table definitions from for s1 IQVIA.",
+    )
+    parser.add_argument(
+        "--record-parquet-dir",
+        help="Override the IQVIA record parquet cache directory for s1.",
+    )
+    parser.add_argument("--batch-size", type=int, default=10000, help="Batch size for s1 source loaders.")
+    parser.add_argument("--dry-run", action="store_true", help="Run source dispatch without writing when supported.")
+    parser.add_argument(
+        "--ubist-mode",
+        choices=["replace", "append"],
+        default="replace",
+        help="UBIST parquet write mode for s1.",
+    )
     parser.add_argument("--stage", choices=[stage.STAGE.split()[0] for stage in STAGES])
     return parser.parse_args(argv)
 
@@ -68,6 +100,15 @@ def main(argv: list[str] | None = None) -> int:
         # decisions belong here in run.py once s1-s6 perform real work; phase
         # 1B exposes only this manual recording switch.
         "record_baseline": args.record_baseline,
+        "target_dir": args.target_dir,
+        "file": args.file,
+        "source": args.source,
+        "target_db": args.target_db,
+        "source_db": args.source_db,
+        "record_parquet_dir": args.record_parquet_dir,
+        "batch_size": args.batch_size,
+        "dry_run": args.dry_run,
+        "ubist_mode": args.ubist_mode,
         "mode": mode_name(args),
     }
     print(f"[etl] 모드={params['mode']} period={params['period']}")
