@@ -1,5 +1,0 @@
-.env
-.env.local
-data/
-*.sqldump
-
