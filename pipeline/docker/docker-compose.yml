@@ -19,10 +19,10 @@ services:
       MARIADB_PASSWORD: "${MARIADB_PASSWORD}"
       MARIADB_CHARACTER_SET: "utf8mb4"
       MARIADB_COLLATE: "utf8mb4_unicode_ci"
-      MARIADB_EXTRA_FLAGS: "--default-time-zone=+09:00"
+      MARIADB_EXTRA_FLAGS: "--default-time-zone=+09:00 --skip-name-resolve --max-connect-errors=100000 --max_allowed_packet=256M --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci"
     volumes:
       - ./data/mariadb:/bitnami/mariadb
-      - ./init:/docker-entrypoint-startdb.d:ro
+      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
