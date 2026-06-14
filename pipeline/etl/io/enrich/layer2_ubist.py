@@ -13,6 +13,7 @@ from pipeline.etl.io.enrich.catalog import (
     load_strategic_product,
     ml_data_source,
 )
+from pipeline.etl.io.enrich.iqvia_nsa_bridge import write_iqvia_nsa_ml
 from pipeline.etl.io.enrich.normalize import load_customer_dictionary
 from pipeline.etl.io.enrich.schema import EnrichResult
 from pipeline.etl.io.enrich.ubist_bridge import write_empty_ml, write_ubist_ml
@@ -21,6 +22,7 @@ from pipeline.etl.lib.ops_utils import find_project_root, first_existing
 
 REPO_ROOT = find_project_root(Path(__file__).resolve())
 UBIST_DIR = first_existing(REPO_ROOT / "output" / "ubist", REPO_ROOT / "parquet" / "ubist")
+IQVIA_NSA_DIR = first_existing(REPO_ROOT / "output" / "iqvia_nsa", REPO_ROOT / "parquet" / "iqvia_nsa")
 ENRICHED_DIR = REPO_ROOT / "output" / "enriched"
 AUDIT_DIR = REPO_ROOT / "audit" / "phase16d_layer2"
 
@@ -32,11 +34,13 @@ def enrich_ml(
     output_dir: Path = ENRICHED_DIR,
     catalog_root: Path = CATALOG_OUTPUT_DIR,
     ubist_dir: Path = UBIST_DIR,
+    iqvia_nsa_dir: Path = IQVIA_NSA_DIR,
     ingested_at: str | None = None,
+    source_filter: str = "all",
 ) -> EnrichResult:
     audit_dir.mkdir(parents=True, exist_ok=True)
     customer_dict = load_customer_dictionary()
-    load_market_metadata()
+    metadata = load_market_metadata()
     ml_market = load_ml_market(catalog_root)
     ml_rows = ml_market[ml_market["ml_id"] == ml_id]
     if ml_rows.empty:
@@ -50,10 +54,13 @@ def enrich_ml(
     matched_products = 0
     total_rows = 0
 
-    if output_path.exists():
+    if output_path.exists() and source_filter == "all":
         output_path.unlink()
 
-    if data_source in {"ubist", "both"}:
+    run_ubist = source_filter in {"ubist", "all"} and data_source in {"ubist", "both"}
+    run_nsa = source_filter in {"nsa", "iqvia", "all"} and data_source in {"iqvia", "both"}
+
+    if run_ubist:
         if not ubist_dir.exists():
             raise FileNotFoundError(f"Missing UBIST parquet directory: {ubist_dir}")
         ubist_glob = str(ubist_dir / "year=*" / "month=*" / "data.parquet")
@@ -67,11 +74,28 @@ def enrich_ml(
         sources["ubist"] = rows
         total_rows += rows
         matched_products = max(matched_products, prod_count)
-    else:
+    elif source_filter == "all":
         write_empty_ml(output_path)
 
+    if run_nsa:
+        if not iqvia_nsa_dir.exists():
+            raise FileNotFoundError(f"Missing IQVIA NSA canonical parquet directory: {iqvia_nsa_dir}")
+        nsa_glob = str(iqvia_nsa_dir / "*.parquet")
+        nsa_stats = write_iqvia_nsa_ml(
+            products,
+            metadata,
+            ml_id,
+            ml_row,
+            output_path,
+            nsa_glob=nsa_glob,
+            ingested_at=ingested_at,
+        )
+        sources["nsa"] = nsa_stats.rows
+        total_rows += nsa_stats.rows
+        matched_products = max(matched_products, nsa_stats.matched_products)
+
     if data_source in {"iqvia", "both"}:
-        skipped_sources.extend(["nsa:s3-b", "chso:removed", "csd:removed"])
+        skipped_sources.extend(["chso:removed", "csd:removed"])
 
     return EnrichResult(ml_id, total_rows, matched_products, len(products), sources, skipped_sources)
 
@@ -113,7 +137,9 @@ def run_layer2_ubist(
     audit_dir: Path = AUDIT_DIR,
     catalog_root: Path = CATALOG_OUTPUT_DIR,
     ubist_dir: Path = UBIST_DIR,
+    iqvia_nsa_dir: Path = IQVIA_NSA_DIR,
     ingested_at: str | None = None,
+    source_filter: str = "all",
     truncate: bool = False,
 ) -> list[EnrichResult]:
     if truncate and output_dir.exists():
@@ -126,7 +152,9 @@ def run_layer2_ubist(
             output_dir=output_dir,
             catalog_root=catalog_root,
             ubist_dir=ubist_dir,
+            iqvia_nsa_dir=iqvia_nsa_dir,
             ingested_at=ingested_at,
+            source_filter=source_filter,
         )
         for target in targets
     ]

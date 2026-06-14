@@ -20,15 +20,17 @@ def _str_param(params: dict[str, Any], key: str) -> str | None:
 
 def run(params: dict[str, Any]) -> int:
     source = str(params.get("source") or "ubist")
-    if source not in {"ubist", "all"}:
-        print(f"[{STAGE}] source={source}는 s3-b 이후 지원 예정입니다. 이번 s3-a는 UBIST만 실행합니다.")
+    if source not in {"ubist", "nsa", "iqvia", "all"}:
+        print(f"[{STAGE}] 실패: unknown source={source!r}")
         return 2
     output_dir = _path_param(params, "target_dir") or Path("output") / "enriched"
     audit_dir = _path_param(params, "audit_dir") or Path("audit") / "phase16d_layer2"
     catalog_root = _path_param(params, "catalog_root") or Path("parquet")
     ubist_dir = _path_param(params, "ubist_dir") or Path("output") / "ubist"
+    iqvia_nsa_dir = _path_param(params, "iqvia_nsa_dir") or Path("output") / "iqvia_nsa"
     ml_id = _str_param(params, "ml_id")
     ingested_at = _str_param(params, "ingested_at")
+    source_filter = "nsa" if source == "iqvia" else source
     try:
         results = run_layer2_ubist(
             ml_id=ml_id,
@@ -36,11 +38,13 @@ def run(params: dict[str, Any]) -> int:
             audit_dir=audit_dir,
             catalog_root=catalog_root,
             ubist_dir=ubist_dir,
+            iqvia_nsa_dir=iqvia_nsa_dir,
             ingested_at=ingested_at,
+            source_filter=source_filter,
             truncate=bool(params.get("truncate")),
         )
     except Exception as exc:
-        print(f"[{STAGE}] UBIST enrich 실패: {exc}")
+        print(f"[{STAGE}] enrich 실패: {exc}")
         return 1
 
     for result in results:

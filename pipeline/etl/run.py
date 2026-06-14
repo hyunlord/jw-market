@@ -14,13 +14,13 @@ from pipeline.etl.stages import (  # noqa: E402
     s0_verify,
     s1_load,
     s2_catalog,
-    s3_postfix,
+    s3_enrich,
     s4_enrich,
     s5_mart,
     s6_cache,
 )
 
-STAGES = [s0_verify, s1_load, s2_catalog, s3_postfix, s4_enrich, s5_mart, s6_cache]
+STAGES = [s0_verify, s1_load, s2_catalog, s3_enrich, s4_enrich, s5_mart, s6_cache]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -47,12 +47,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--audit-dir", help="Override the stage audit directory when supported.")
     parser.add_argument("--catalog-root", help="Override the catalog parquet root when supported.")
     parser.add_argument("--ubist-dir", help="Override the UBIST parquet root when supported.")
+    parser.add_argument("--iqvia-nsa-dir", help="Override the canonical IQVIA NSA parquet root when supported.")
     parser.add_argument("--ml-id", help="Run one market id when supported.")
     parser.add_argument("--truncate", action="store_true", help="Remove target output before supported stage loads.")
     parser.add_argument("--ingested-at", help="Override s2 extract timestamp for deterministic parity checks.")
     parser.add_argument(
         "--source",
-        choices=["ubist", "iqvia", "all"],
+        choices=["ubist", "iqvia", "nsa", "all"],
         default="all",
         help="Source dispatcher for s1.",
     )
@@ -115,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         "audit_dir": args.audit_dir,
         "catalog_root": args.catalog_root,
         "ubist_dir": args.ubist_dir,
+        "iqvia_nsa_dir": args.iqvia_nsa_dir,
         "ml_id": args.ml_id,
         "truncate": args.truncate,
         "ingested_at": args.ingested_at,
