@@ -42,6 +42,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override the parquet target directory for load stages.",
     )
     parser.add_argument("--file", help="Load or dry-run one source file for s1 smoke checks.")
+    parser.add_argument("--input-file", help="Override the stage input file when supported.")
+    parser.add_argument("--catalog-path", help="Override the s2 catalog mapping config.")
+    parser.add_argument("--ingested-at", help="Override s2 extract timestamp for deterministic parity checks.")
     parser.add_argument(
         "--source",
         choices=["ubist", "iqvia", "all"],
@@ -102,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         "record_baseline": args.record_baseline,
         "target_dir": args.target_dir,
         "file": args.file,
+        "input_file": args.input_file,
+        "catalog_path": args.catalog_path,
+        "ingested_at": args.ingested_at,
         "source": args.source,
         "target_db": args.target_db,
         "source_db": args.source_db,

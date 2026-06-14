@@ -25,6 +25,8 @@ def find_project_root(start: Path) -> Path:
     for candidate in [start.resolve(), *start.resolve().parents]:
         if (candidate / "catalog").is_dir() and (candidate / "data").is_dir():
             return candidate
+        if (candidate / ".git").exists() and (candidate / "pipeline" / "etl").is_dir():
+            return candidate
     raise RuntimeError(f"Unable to locate project root from {start}")
 
 

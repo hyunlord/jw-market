@@ -23,6 +23,7 @@ data/
 docs/*
 !docs/reference/
 !docs/reference/**
+docs/reference/*.xlsx
 audit_*.json
 audit_F5_*
 
