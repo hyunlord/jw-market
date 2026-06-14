@@ -60,6 +60,7 @@ from pipeline.etl.io.catalog._lib.common import (
     utc_now_text,
     write_records_parquet,
 )
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
 
 
 DEFAULT_INPUT_FILE = get_mi_master_path()
@@ -76,8 +77,8 @@ PRODUCT_NAME_SOURCE_COLUMN = "PRODUCT NAME KOR"
 # exact count가 아니라 staging drug row, consolidation 6행, member index
 # uniqueness를 불변량으로 둔다. 빈 tail을 행으로 취급하는 대안은 무의미한
 # 공백 데이터를 catalog에 끌어들이므로 기각했다.
-EXPECTED_DRUG_ROWS = 26
-EXPECTED_ROW_COUNT = 6
+EXPECTED_DRUG_ROWS = expected_int("master_brand_consolidation.staging_drug_rows")
+EXPECTED_ROW_COUNT = expected_int("master_brand_consolidation.row_count")
 EXPECTED_MEMBER_DRUG_INDEXES = {5, 6, 18, 19, 22, 23}
 SOURCE_REMARK = "Master Remark indicates one-brand consolidation"
 
@@ -100,11 +101,7 @@ BRAND_GROUP_MEMBERS = {
     }
 }
 
-EXPECTED_BRAND_GROUP_COUNTS = {
-    "엔브렐": 2,
-    "오렌시아": 2,
-    "젤잔즈": 2,
-}
+EXPECTED_BRAND_GROUP_COUNTS = expected_mapping("master_brand_consolidation.brand_group_counts")
 
 
 @dataclass
@@ -322,4 +319,3 @@ if __name__ == "__main__":
 
 def write_parquet(records: list[dict[str, Any]], output_file: Path) -> None:
     write_records_parquet(records, MASTER_BRAND_CONSOLIDATION_COLUMNS, output_file, compression_level=3, stringify=True)
-

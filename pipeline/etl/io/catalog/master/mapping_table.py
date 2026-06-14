@@ -63,6 +63,7 @@ from pipeline.etl.io.catalog._lib.common import (
     utc_now_text,
     write_records_parquet,
 )
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
 
 
 DEFAULT_INPUT_FILE = get_mi_master_path()
@@ -75,7 +76,7 @@ STANDARD_PREFIX = "drug_extra_json."
 # diff 확인 결과 시장정의/Target 계열의 정상 추가분이라, 검증을 완화하지 않고
 # 새 원본 버전에 맞춘 strict count로 고정한다. 행수 검사를 제거하는 대안은
 # mapping 누락을 조기에 잡지 못하므로 기각했다.
-EXPECTED_ROW_COUNT = 5956
+EXPECTED_ROW_COUNT = expected_int("master_mapping_table.row_count")
 ZERO_MAPPING_MARKETS = {"strategy_006", "strategy_007", "strategy_009"}
 
 MASTER_MAPPING_TABLE_COLUMNS = (
@@ -118,192 +119,10 @@ MARKET_SHEETS: tuple[MarketSheetConfig, ...] = (
     MarketSheetConfig("strategy_016", "플라주오피", 5, "IQVIA"),
 )
 
-EXPECTED_MARKET_STATS = {
-    "strategy_001": {
-        "sheet_name": "라베칸 라베칸듀오",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 637,
-        "excluded_rows": 0,
-        "staging_rows": 358,
-        "manual_specs": 3,
-        "mapping_rows": 716,
-    },
-    "strategy_002": {
-        "sheet_name": "제이클",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 950,
-        "excluded_rows": 0,
-        "staging_rows": 45,
-        "manual_specs": 3,
-        "mapping_rows": 135,
-    },
-    "strategy_003": {
-        "sheet_name": "가드렛 가드메트",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 913,
-        "excluded_rows": 0,
-        "staging_rows": 82,
-        "manual_specs": 2,
-        "mapping_rows": 164,
-    },
-    "strategy_004": {
-        "sheet_name": "타발리스",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 985,
-        "excluded_rows": 0,
-        "staging_rows": 10,
-        "manual_specs": 1,
-        "mapping_rows": 9,
-    },
-    "strategy_005": {
-        "sheet_name": "시그마트",
-        "header_row": 5,
-        "raw_rows_scanned": 294,
-        "empty_rows": 0,
-        "excluded_rows": 0,
-        "staging_rows": 294,
-        "manual_specs": 4,
-        "mapping_rows": 1176,
-    },
-    "strategy_006": {
-        "sheet_name": "리바로 리바로젯",
-        "header_row": 4,
-        "raw_rows_scanned": 1295,
-        "empty_rows": 200,
-        "excluded_rows": 48,
-        "staging_rows": 1047,
-        "manual_specs": 0,
-        "mapping_rows": 0,
-    },
-    "strategy_007": {
-        "sheet_name": "리바로페노",
-        "header_row": 4,
-        "raw_rows_scanned": 996,
-        "empty_rows": 385,
-        "excluded_rows": 494,
-        "staging_rows": 117,
-        "manual_specs": 0,
-        "mapping_rows": 0,
-    },
-    "strategy_008": {
-        "sheet_name": "리바로하이 리바로브이",
-        "header_row": 5,
-        "raw_rows_scanned": 1096,
-        "empty_rows": 15,
-        "excluded_rows": 0,
-        "staging_rows": 1081,
-        "manual_specs": 5,
-        "mapping_rows": 1676,
-    },
-    "strategy_009": {
-        "sheet_name": "트루패스 피나스타 제이다트",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 589,
-        "excluded_rows": 1,
-        "staging_rows": 405,
-        "manual_specs": 0,
-        "mapping_rows": 0,
-    },
-    "strategy_010": {
-        "sheet_name": "뉴트로진 모빌리아",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 985,
-        "excluded_rows": 0,
-        "staging_rows": 10,
-        "manual_specs": 4,
-        "mapping_rows": 38,
-    },
-    "strategy_011": {
-        "sheet_name": "악템라",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 969,
-        "excluded_rows": 0,
-        "staging_rows": 26,
-        "manual_specs": 3,
-        "mapping_rows": 78,
-    },
-    "strategy_012": {
-        "sheet_name": "페린젝트 베노훼럼",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 919,
-        "excluded_rows": 0,
-        "staging_rows": 76,
-        "manual_specs": 5,
-        "mapping_rows": 198,
-    },
-    "strategy_013": {
-        "sheet_name": "헴리브라",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 981,
-        "excluded_rows": 1,
-        "staging_rows": 13,
-        "manual_specs": 2,
-        "mapping_rows": 26,
-    },
-    "strategy_014": {
-        "sheet_name": "위너프 위너프A+",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 664,
-        "excluded_rows": 8,
-        "staging_rows": 323,
-        "manual_specs": 6,
-        "mapping_rows": 1696,
-    },
-    "strategy_015": {
-        "sheet_name": "엔커버",
-        "header_row": 7,
-        "raw_rows_scanned": 993,
-        "empty_rows": 989,
-        "excluded_rows": 0,
-        "staging_rows": 4,
-        "manual_specs": 1,
-        "mapping_rows": 4,
-    },
-    "strategy_016": {
-        "sheet_name": "플라주오피",
-        "header_row": 5,
-        "raw_rows_scanned": 995,
-        "empty_rows": 943,
-        "excluded_rows": 31,
-        "staging_rows": 21,
-        "manual_specs": 2,
-        "mapping_rows": 40,
-    },
-}
-
-EXPECTED_MARKET_DISTRIBUTION = {
-    "strategy_001": 716,
-    "strategy_002": 135,
-    "strategy_003": 164,
-    "strategy_004": 9,
-    "strategy_005": 1176,
-    "strategy_008": 1676,
-    "strategy_010": 38,
-    "strategy_011": 78,
-    "strategy_012": 198,
-    "strategy_013": 26,
-    "strategy_014": 1696,
-    "strategy_015": 4,
-    "strategy_016": 40,
-}
-
-EXPECTED_MAPPING_TYPE_DISTRIBUTION = {
-    "class_recode": 1376,
-    "manual_mapping": 2009,
-    "molecule_recode": 1984,
-    "nhi_overlay": 490,
-    "strength_recode": 97,
-}
+MARKET_SHEET_BY_ID = {config.strategic_market_id: config for config in MARKET_SHEETS}
+EXPECTED_MARKET_STATS = expected_mapping("master_mapping_table.market_stats")
+EXPECTED_MARKET_DISTRIBUTION = expected_mapping("master_mapping_table.market_distribution")
+EXPECTED_MAPPING_TYPE_DISTRIBUTION = expected_mapping("master_mapping_table.mapping_type_distribution")
 
 
 @dataclass
@@ -549,16 +368,17 @@ def validate_records(records: list[dict[str, Any]], stats: list[MarketMappingSta
 
     for market_id, expected in EXPECTED_MARKET_STATS.items():
         actual = stats_by_market[market_id]
-        for field in (
-            "sheet_name",
-            "header_row",
-            "raw_rows_scanned",
-            "empty_rows",
-            "excluded_rows",
-            "staging_rows",
-            "manual_specs",
-            "mapping_rows",
+        sheet_config = MARKET_SHEET_BY_ID[market_id]
+        for field, expected_value in (
+            ("sheet_name", sheet_config.sheet_name),
+            ("header_row", sheet_config.header_row),
         ):
+            actual_value = getattr(actual, field)
+            if actual_value != expected_value:
+                raise ValueError(
+                    f"{market_id} {field} mismatch: expected={expected_value}, actual={actual_value}"
+                )
+        for field in ("raw_rows_scanned", "empty_rows", "excluded_rows", "staging_rows", "manual_specs", "mapping_rows"):
             actual_value = getattr(actual, field)
             expected_value = expected[field]
             if actual_value != expected_value:
@@ -651,4 +471,3 @@ def load_column_metadata_catalog(path: Path) -> dict[str, dict[str, dict[str, An
 
 def write_parquet(records: list[dict[str, Any]], output_file: Path) -> None:
     write_records_parquet(records, MASTER_MAPPING_TABLE_COLUMNS, output_file, stringify=True)
-

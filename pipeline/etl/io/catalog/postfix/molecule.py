@@ -6,10 +6,12 @@ from typing import Any
 
 import pandas as pd
 
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
+
 COMMENT_BRAND_IDS = {"sb_004_00015", "sb_012_00081", "sb_016_00059"}
-EXPECTED_WORKLIST_ROWS = 5437
-EXPECTED_SB_ROWS = 3874
-EXPECTED_CB_ROWS = 1559
+EXPECTED_WORKLIST_ROWS = expected_int("postfix_molecule.worklist_rows")
+EXPECTED_SB_ROWS = expected_int("postfix_molecule.strategic_brand_rows")
+EXPECTED_CB_ROWS = expected_int("postfix_molecule.cd_brand_rows")
 EXPECTED_SB_ACTIONS = (801, 246)
 EXPECTED_CB_ACTIONS = (702, 205)
 PROTECT_EXISTING_MOLECULE_MARKETS = {"ml_006", "cd_006"}

@@ -57,11 +57,13 @@ from pipeline.etl.io.catalog._lib.common import (
     utc_now_text,
     write_records_parquet,
 )
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 
 
 DEFAULT_INPUT_FILE = get_mi_master_path()
 DEFAULT_OUTPUT_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
 SOURCE_SHEET = "시장정의 & Target"
+EXPECTED_ROW_COUNT = expected_int("master_market_definition.row_count")
 
 MASTER_MARKET_DEFINITION_COLUMNS = (
     "strategic_market_id",
@@ -318,11 +320,11 @@ def iter_market_definition_rows(xlsx_path: Path, ingested_at: str | None = None)
 
 
 def validate_records(records: list[dict[str, Any]]) -> None:
-    if len(records) != 16:
-        raise ValueError(f"market_definition row count must be 16, found {len(records)}")
+    if len(records) != EXPECTED_ROW_COUNT:
+        raise ValueError(f"market_definition row count must be {EXPECTED_ROW_COUNT}, found {len(records)}")
 
     ids = [record["strategic_market_id"] for record in records]
-    if len(set(ids)) != 16:
+    if len(set(ids)) != EXPECTED_ROW_COUNT:
         raise ValueError(f"strategic_market_id must be unique, found duplicate ids: {ids}")
     if tuple(ids) != EXPECTED_STRATEGIC_MARKET_IDS:
         raise ValueError(
@@ -385,4 +387,3 @@ if __name__ == "__main__":
 
 def write_parquet(records: list[dict[str, Any]], output_file: Path) -> None:
     write_records_parquet(records, MASTER_MARKET_DEFINITION_COLUMNS, output_file, compression_level=3)
-

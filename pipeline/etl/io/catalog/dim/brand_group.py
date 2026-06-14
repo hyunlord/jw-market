@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.etl.io.catalog._lib.common import read_parquet_rows, utc_now_text, write_records_parquet
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 
 DEFAULT_BRAND_CONSOLIDATION_FILE = Path("parquet/master_brand_consolidation/master_brand_consolidation.parquet")
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
@@ -15,6 +16,9 @@ EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI
 EXPECTED_STRATEGIC_MARKET_ID = "strategy_011"
 EXPECTED_SOURCE_SHEET = "악템라"
 EXPECTED_SOURCE_REMARK = "Master Remark indicates one-brand consolidation"
+EXPECTED_SOURCE_MASTER_BRAND_CONSOLIDATION_ROWS = expected_int("dim_brand_group.source_master_brand_consolidation_rows")
+EXPECTED_GROUP_ROWS = expected_int("dim_brand_group.group_rows")
+EXPECTED_MEMBER_ROWS = expected_int("dim_brand_group.member_rows")
 
 DIM_BRAND_GROUP_COLUMNS = (
     "brand_group_id",
@@ -53,8 +57,11 @@ GROUP_NAME_BY_ID = dict(EXPECTED_GROUPS)
 
 
 def validate_source_brand_consolidation(rows: list[dict[str, Any]]) -> None:
-    if len(rows) != 6:
-        raise ValueError(f"source master_brand_consolidation row count must be 6, found={len(rows)}")
+    if len(rows) != EXPECTED_SOURCE_MASTER_BRAND_CONSOLIDATION_ROWS:
+        raise ValueError(
+            f"source master_brand_consolidation row count must be "
+            f"{EXPECTED_SOURCE_MASTER_BRAND_CONSOLIDATION_ROWS}, found={len(rows)}"
+        )
 
     expected_old_rows = {
         (EXPECTED_STRATEGIC_MARKET_ID, GROUP_NAME_BY_ID[group_id], drug_index, name)
@@ -139,11 +146,11 @@ def validate_outputs(
     member_records: list[dict[str, str | None]],
     master_drug_rows: list[dict[str, Any]],
 ) -> None:
-    if len(group_records) != 3:
-        raise ValueError(f"dim_brand_group row count must be 3, found={len(group_records)}")
-    if len(member_records) != 6:
+    if len(group_records) != EXPECTED_GROUP_ROWS:
+        raise ValueError(f"dim_brand_group row count must be {EXPECTED_GROUP_ROWS}, found={len(group_records)}")
+    if len(member_records) != EXPECTED_MEMBER_ROWS:
         raise ValueError(
-            f"master_brand_consolidation_members row count must be 6, found={len(member_records)}"
+            f"master_brand_consolidation_members row count must be {EXPECTED_MEMBER_ROWS}, found={len(member_records)}"
         )
 
     for index, record in enumerate(group_records, start=1):
@@ -154,19 +161,19 @@ def validate_outputs(
             raise ValueError(f"member row {index} columns mismatch: {tuple(record.keys())}")
 
     group_ids = [record["brand_group_id"] for record in group_records]
-    if len(set(group_ids)) != 3:
+    if len(set(group_ids)) != EXPECTED_GROUP_ROWS:
         raise ValueError("dim_brand_group brand_group_id must be unique")
 
     group_natural_keys = [
         (record["strategic_market_id"], record["brand_group_name"]) for record in group_records
     ]
-    if len(set(group_natural_keys)) != 3:
+    if len(set(group_natural_keys)) != EXPECTED_GROUP_ROWS:
         raise ValueError("dim_brand_group natural key must be unique")
 
     member_pks = [
         (record["brand_group_id"], record["member_drug_index"]) for record in member_records
     ]
-    if len(set(member_pks)) != 6:
+    if len(set(member_pks)) != EXPECTED_MEMBER_ROWS:
         raise ValueError("member PK (brand_group_id, member_drug_index) must be unique")
 
     valid_group_ids = set(group_ids)

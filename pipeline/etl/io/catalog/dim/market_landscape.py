@@ -15,6 +15,7 @@ from pipeline.etl.io.catalog._lib.common import (
     utc_now_text,
     write_records_parquet,
 )
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
 
 DEFAULT_MARKET_DEFINITION_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
@@ -22,26 +23,10 @@ DEFAULT_OUTPUT_FILE = Path("parquet/dim_market_landscape/dim_market_landscape.pa
 
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
-EXPECTED_MARKET_COUNTS = {
-    "strategy_001": 358,
-    "strategy_002": 45,
-    "strategy_003": 82,
-    "strategy_004": 10,
-    "strategy_005": 294,
-    "strategy_006": 1047,
-    "strategy_007": 117,
-    "strategy_008": 1081,
-    "strategy_009": 405,
-    "strategy_010": 10,
-    "strategy_011": 26,
-    "strategy_012": 76,
-    "strategy_013": 14,
-    "strategy_014": 331,
-    "strategy_015": 4,
-    "strategy_016": 52,
-}
+EXPECTED_ROW_COUNT = expected_int("dim_market_landscape.row_count")
+EXPECTED_MARKET_COUNTS = expected_mapping("dim_market_landscape.market_counts")
 DEFAULT_SHEET_ALL_MARKETS = {"strategy_005", "strategy_011"}
-EXPECTED_TOTAL_MASTER_DRUG_ROWS = 3952
+EXPECTED_TOTAL_MASTER_DRUG_ROWS = expected_int("dim_market_landscape.total_master_drug_rows")
 
 DIM_MARKET_LANDSCAPE_COLUMNS = (
     "market_landscape_id",
@@ -217,8 +202,8 @@ def validate_records(
     market_definition_rows: list[dict[str, Any]],
     master_drug_rows: list[dict[str, Any]],
 ) -> None:
-    if len(records) != 16:
-        raise ValueError(f"dim_market_landscape row count must be 16, found={len(records)}")
+    if len(records) != EXPECTED_ROW_COUNT:
+        raise ValueError(f"dim_market_landscape row count must be {EXPECTED_ROW_COUNT}, found={len(records)}")
 
     for index, record in enumerate(records, start=1):
         if tuple(record.keys()) != DIM_MARKET_LANDSCAPE_COLUMNS:
@@ -233,13 +218,13 @@ def validate_records(
                 )
 
     market_landscape_ids = [record["market_landscape_id"] for record in records]
-    expected_ml_ids = [f"ml_{index:03d}" for index in range(1, 17)]
+    expected_ml_ids = [f"ml_{index:03d}" for index in range(1, EXPECTED_ROW_COUNT + 1)]
     if market_landscape_ids != expected_ml_ids:
         raise ValueError(
             f"market_landscape_id sequence mismatch: expected={expected_ml_ids}, "
             f"actual={market_landscape_ids}"
         )
-    if len(set(market_landscape_ids)) != 16:
+    if len(set(market_landscape_ids)) != EXPECTED_ROW_COUNT:
         raise ValueError("market_landscape_id must be unique")
 
     market_definition_ids = {str(row.get("strategic_market_id")) for row in market_definition_rows}

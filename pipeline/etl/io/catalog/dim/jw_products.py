@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.etl.io.catalog._lib.common import count_by, read_parquet_rows, utc_now_text, write_records_parquet
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
 
 DEFAULT_MARKET_DEFINITION_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
 DEFAULT_QA_FILE = Path("parquet/master_qa/master_qa.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_jw_products/dim_jw_products.parquet")
 
-EXPECTED_ROW_COUNT = 25
+EXPECTED_ROW_COUNT = expected_int("dim_jw_products.row_count")
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 
 DIM_JW_PRODUCTS_COLUMNS = (
@@ -57,24 +58,7 @@ EXPECTED_FINAL_ROWS = (
     ("strategy_016", "플라주오피", "플라주오피", "sheet split"),
 )
 
-EXPECTED_MARKET_DISTRIBUTION = {
-    "strategy_001": 2,
-    "strategy_002": 1,
-    "strategy_003": 2,
-    "strategy_004": 1,
-    "strategy_005": 1,
-    "strategy_006": 2,
-    "strategy_007": 1,
-    "strategy_008": 2,
-    "strategy_009": 3,
-    "strategy_010": 2,
-    "strategy_011": 1,
-    "strategy_012": 2,
-    "strategy_013": 1,
-    "strategy_014": 2,
-    "strategy_015": 1,
-    "strategy_016": 1,
-}
+EXPECTED_MARKET_DISTRIBUTION = expected_mapping("dim_jw_products.market_distribution")
 
 
 def jw_product_id(strategic_market_id: str, jw_product_name: str) -> str:

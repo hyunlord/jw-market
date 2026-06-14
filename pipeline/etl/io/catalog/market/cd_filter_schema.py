@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pyarrow as pa
 
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
+
 DEFAULT_MARKET_DEFINITION_FILE = Path(
     "parquet/master_market_definition/master_market_definition.parquet"
 )
@@ -15,6 +17,7 @@ DEFAULT_OUTPUT_FILE = Path("parquet/cd_filter/cd_filter.parquet")
 # 방식은 rank/market size drift를 만든 경험이 있어 기각했다.
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_CD_FILTER_IDS = tuple(f"cdf_{index:03d}" for index in range(1, 20))
+EXPECTED_ROW_COUNT = expected_int("cd_filter.row_count")
 ML_EQUALS_CD_FILTER_IDS = {"cdf_004", "cdf_006", "cdf_007", "cdf_014", "cdf_016", "cdf_017"}
 JSON_ARRAY_COLUMNS = ("atc3", "atc4", "molecule", "class")
 FILTER_COLUMNS = ("atc3", "atc4", "molecule", "class", "nhi", "dosage_form")
@@ -69,8 +72,8 @@ def validate_json_array_column(record: dict[str, Any], column: str) -> None:
 
 
 def validate_records(records: list[dict[str, Any]]) -> None:
-    if len(records) != 19:
-        raise ValueError(f"cd_filter row count must be 19, found={len(records)}")
+    if len(records) != EXPECTED_ROW_COUNT:
+        raise ValueError(f"cd_filter row count must be {EXPECTED_ROW_COUNT}, found={len(records)}")
     for index, record in enumerate(records, start=1):
         if tuple(record.keys()) != CD_FILTER_COLUMNS:
             raise ValueError(
@@ -80,7 +83,7 @@ def validate_records(records: list[dict[str, Any]]) -> None:
     ids = [str(record["cd_filter_id"]) for record in records]
     if tuple(ids) != EXPECTED_CD_FILTER_IDS:
         raise ValueError(f"cd_filter_id sequence mismatch: actual={ids}")
-    if len(set(ids)) != 19:
+    if len(set(ids)) != EXPECTED_ROW_COUNT:
         raise ValueError("cd_filter_id must be unique")
 
     by_id = {str(record["cd_filter_id"]): record for record in records}

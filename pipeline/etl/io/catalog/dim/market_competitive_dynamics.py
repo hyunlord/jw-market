@@ -15,6 +15,7 @@ from pipeline.etl.io.catalog._lib.common import (
     utc_now_text,
     write_records_parquet,
 )
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
 
 DEFAULT_DIM_MARKET_LANDSCAPE_FILE = Path("parquet/dim_market_landscape/dim_market_landscape.parquet")
 DEFAULT_MARKET_DEFINITION_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
@@ -44,34 +45,16 @@ DIM_MARKET_COMPETITIVE_DYNAMICS_COLUMNS = (
     "ingested_at",
 )
 
-EXPECTED_CD_COUNTS = {
-    "cd_001": 116,
-    "cd_002": 24,
-    "cd_003": 18,
-    "cd_004": 10,
-    "cd_005": 11,
-    "cd_006": 1047,
-    "cd_007": 117,
-    "cd_008": 20,
-    "cd_009": 26,
-    "cd_010": 160,
-    "cd_011": 140,
-    "cd_012": 8,
-    "cd_013": 2,
-    "cd_014": 26,
-    "cd_015": 16,
-    "cd_016": 14,
-    "cd_017": 4,
-    "cd_018": 64,
-    "cd_019": 8,
-}
-EXPECTED_TOTAL_CD_BRAND_COUNT = 1831
-EXPECTED_DEFINITION_TYPE_COUNTS = {
-    "filter_explicit": 12,
-    "ml_equals_cd_exact": 5,
-    "ml_equals_cd_by_empty": 1,
-    "collapse_pair": 1,
-}
+EXPECTED_ROW_COUNT = expected_int("dim_market_competitive_dynamics.row_count")
+EXPECTED_CD_COUNTS = expected_mapping("dim_market_competitive_dynamics.cd_counts")
+EXPECTED_TOTAL_CD_BRAND_COUNT = expected_int("dim_market_competitive_dynamics.total_cd_brand_count")
+EXPECTED_STRATEGY_008_CLASS2_NON_NULL_COUNT = expected_int(
+    "dim_market_competitive_dynamics.strategy_008_class2_non_null_count"
+)
+EXPECTED_STRATEGY_008_NON_CD_CLASS2_COUNT = expected_int(
+    "dim_market_competitive_dynamics.strategy_008_non_cd_class2_count"
+)
+EXPECTED_DEFINITION_TYPE_COUNTS = expected_mapping("dim_market_competitive_dynamics.definition_type_counts")
 
 CD_SPECS: tuple[dict[str, Any], ...] = (
     {
@@ -487,8 +470,8 @@ def validate_records(
     market_definition_rows: list[dict[str, Any]],
     master_drug_rows: list[dict[str, Any]],
 ) -> None:
-    if len(records) != 19:
-        raise ValueError(f"row count must be 19, found={len(records)}")
+    if len(records) != EXPECTED_ROW_COUNT:
+        raise ValueError(f"row count must be {EXPECTED_ROW_COUNT}, found={len(records)}")
     for index, record in enumerate(records, start=1):
         if tuple(record.keys()) != DIM_MARKET_COMPETITIVE_DYNAMICS_COLUMNS:
             raise ValueError(
@@ -500,10 +483,10 @@ def validate_records(
                 raise ValueError(f"row {index} column {column} must be string/None, got={type(value)}")
 
     cd_ids = [record["competitive_dynamics_id"] for record in records]
-    expected_cd_ids = [f"cd_{index:03d}" for index in range(1, 20)]
+    expected_cd_ids = [f"cd_{index:03d}" for index in range(1, EXPECTED_ROW_COUNT + 1)]
     if cd_ids != expected_cd_ids:
         raise ValueError(f"competitive_dynamics_id sequence mismatch: {cd_ids}")
-    if len(set(cd_ids)) != 19:
+    if len(set(cd_ids)) != EXPECTED_ROW_COUNT:
         raise ValueError("competitive_dynamics_id must be unique")
 
     landscape_ids = {str(row["market_landscape_id"]) for row in dim_market_landscape_rows}
@@ -564,13 +547,19 @@ def validate_records(
         if str(row.get("strategic_market_id")) == "strategy_008"
         and clean_text(row.get("class_2")) is not None
     )
-    if sum(strategy_008_class2_counts.values()) != 88:
-        raise ValueError(f"strategy_008 class_2 non-null count must be 88: {strategy_008_class2_counts}")
+    if sum(strategy_008_class2_counts.values()) != EXPECTED_STRATEGY_008_CLASS2_NON_NULL_COUNT:
+        raise ValueError(
+            f"strategy_008 class_2 non-null count must be "
+            f"{EXPECTED_STRATEGY_008_CLASS2_NON_NULL_COUNT}: {strategy_008_class2_counts}"
+        )
     other_strategy_008 = sum(strategy_008_class2_counts.values()) - (
         EXPECTED_CD_COUNTS["cd_008"] + EXPECTED_CD_COUNTS["cd_009"]
     )
-    if other_strategy_008 != 42:
-        raise ValueError(f"strategy_008 non-CD class_2 count must be 42, found={other_strategy_008}")
+    if other_strategy_008 != EXPECTED_STRATEGY_008_NON_CD_CLASS2_COUNT:
+        raise ValueError(
+            f"strategy_008 non-CD class_2 count must be "
+            f"{EXPECTED_STRATEGY_008_NON_CD_CLASS2_COUNT}, found={other_strategy_008}"
+        )
 
 
 def write_parquet(records: list[dict[str, Any]], output_file: Path) -> None:

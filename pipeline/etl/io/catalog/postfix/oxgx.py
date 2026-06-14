@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover
     duckdb = None
 
 from pipeline.etl.io.catalog.postfix.text import normalize_brand_name
+from pipeline.etl.io.catalog._lib.expected_counts import expected_mapping
 
 SOURCE_DERIVED_MARKETS = {"ml_006", "ml_007", "ml_008"}
 GENERIC_TO_OX_GX = {
@@ -21,7 +22,7 @@ GENERIC_TO_OX_GX = {
     "Generic": "Gx",
     "First Generic": "Gx",
 }
-ML011_EXPECTED_COUNTS = {"Ox": 14, "Biosimilar": 9, "Gx": 3}
+ML011_EXPECTED_COUNTS = expected_mapping("postfix_oxgx.ml011_ox_gx_counts")
 
 
 def _present(value: Any) -> bool:

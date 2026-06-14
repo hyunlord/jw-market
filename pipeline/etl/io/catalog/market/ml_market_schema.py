@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pyarrow as pa
 
+from pipeline.etl.io.catalog._lib.expected_counts import expected_mapping
+
 DEFAULT_MARKET_DEFINITION_FILE = Path(
     "parquet/master_market_definition/master_market_definition.parquet"
 )
@@ -19,7 +21,7 @@ DEFAULT_OUTPUT_FILE = Path("parquet/ml_market/ml_market.parquet")
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
 EXPECTED_ML_IDS = tuple(f"ml_{index:03d}" for index in range(1, 17))
-EXPECTED_DATA_SOURCE_COUNTS = {"iqvia": 8, "ubist": 6, "both": 2}
+EXPECTED_DATA_SOURCE_COUNTS = expected_mapping("ml_market.data_source_counts")
 EXPECTED_STRATEGY_005_SOURCE = "ubist"
 
 ANALYZE_COLUMNS = (

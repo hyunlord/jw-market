@@ -56,13 +56,14 @@ from pipeline.etl.io.catalog._lib.common import (
     utc_now_text,
     write_records_parquet,
 )
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 
 
 DEFAULT_INPUT_FILE = get_mi_master_path()
 DEFAULT_OUTPUT_FILE = Path("parquet/master_qa/master_qa.parquet")
 SOURCE_SHEET = "Q&A"
 HEADER_ROW = 2
-EXPECTED_ROW_COUNT = 13
+EXPECTED_ROW_COUNT = expected_int("master_qa.row_count")
 
 MASTER_QA_COLUMNS = (
     "qa_id",
@@ -285,4 +286,3 @@ if __name__ == "__main__":
 
 def write_parquet(records: list[dict[str, Any]], output_file: Path) -> None:
     write_records_parquet(records, MASTER_QA_COLUMNS, output_file, compression_level=3)
-

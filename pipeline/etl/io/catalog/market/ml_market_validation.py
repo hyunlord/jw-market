@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from pipeline.etl.io.catalog._lib.catalog_text import clean_text, parse_json_text
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 from pipeline.etl.io.catalog.market.ml_market_schema import (
     ANALYZE_COLUMNS,
     ANALYZE_MATRIX,
@@ -17,6 +18,7 @@ from pipeline.etl.io.catalog.market.ml_market_schema import (
     ML_MARKET_COLUMNS,
 )
 
+EXPECTED_ROW_COUNT = expected_int("ml_market.row_count")
 
 def analyze_values_for_ml(ml_id: str) -> dict[str, bool]:
     matrix = ANALYZE_MATRIX.get(ml_id)
@@ -25,8 +27,8 @@ def analyze_values_for_ml(ml_id: str) -> dict[str, bool]:
     return {f"analyze_{key}": bool(value) for key, value in matrix.items()}
 
 def validate_records(records: list[dict[str, Any]]) -> None:
-    if len(records) != 16:
-        raise ValueError(f"ml_market row count must be 16, found={len(records)}")
+    if len(records) != EXPECTED_ROW_COUNT:
+        raise ValueError(f"ml_market row count must be {EXPECTED_ROW_COUNT}, found={len(records)}")
     for index, record in enumerate(records, start=1):
         if tuple(record.keys()) != ML_MARKET_COLUMNS:
             raise ValueError(
@@ -37,7 +39,7 @@ def validate_records(records: list[dict[str, Any]]) -> None:
     ml_ids = [str(record["ml_id"]) for record in records]
     if tuple(ml_ids) != EXPECTED_ML_IDS:
         raise ValueError(f"ml_id sequence mismatch: actual={ml_ids}")
-    if len(set(ml_ids)) != 16:
+    if len(set(ml_ids)) != EXPECTED_ROW_COUNT:
         raise ValueError("ml_id must be unique")
 
     data_source_counts = dict(Counter(str(record["data_source"]) for record in records))

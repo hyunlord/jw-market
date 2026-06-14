@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
+
 DEFAULT_SKELETON_FILE = Path(
     "data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv"
 )
@@ -24,12 +26,9 @@ DEFAULT_CACHE_FILE = Path(
 # 설명만 최신으로 바꾸고 산출은 구버전으로 두는 대안은 감사 불가능하므로 기각했다.
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 LEGACY_SKELETON_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (260422).xlsx"
-EXPECTED_ROW_COUNT = 84
-EXPECTED_SOURCE_VIEW_COUNTS = {"UBIST": 40, "IQVIA": 44}
-EXPECTED_SOURCE_TYPE_COUNTS = {
-    "raw_from_sheet": 49,
-    "auto_fill_top_n_by_sales": 35,
-}
+EXPECTED_ROW_COUNT = expected_int("dim_market_target_priority.row_count")
+EXPECTED_SOURCE_VIEW_COUNTS = expected_mapping("dim_market_target_priority.source_view_counts")
+EXPECTED_SOURCE_TYPE_COUNTS = expected_mapping("dim_market_target_priority.source_type_counts")
 EXPECTED_BOTH_SOURCE_VIEW_CDS = {"cd_003", "cd_017"}
 
 DIM_MARKET_TARGET_PRIORITY_COLUMNS = (

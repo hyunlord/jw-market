@@ -9,9 +9,10 @@ import pyarrow.parquet as pq
 
 from pipeline.etl.io.catalog._lib.common import read_parquet_rows
 from pipeline.etl.io.catalog._lib.catalog_parquet import write_typed_parquet
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 from pipeline.etl.io.catalog.brand import strategic_brand, strategic_product
 
-EXPECTED_ROW_COUNT = 2379
+EXPECTED_ROW_COUNT = expected_int("cd_brand.row_count")
 
 
 def utc_now_datetime() -> datetime:

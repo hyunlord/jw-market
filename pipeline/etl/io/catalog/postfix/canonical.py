@@ -6,6 +6,10 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
+
+EXPECTED_CANONICAL_BRAND_ROWS = expected_int("postfix_canonical.canonical_brand_rows")
+
 from pipeline.etl.io.catalog.postfix.text import normalize_brand_name
 
 DIMENSION_COLUMNS = [
@@ -158,8 +162,8 @@ def verify_canonical(df: pd.DataFrame) -> None:
     extra = actual - expected
     if missing or extra:
         raise RuntimeError(f"Canonical mismatch. missing={sorted(missing)} extra={sorted(extra)}")
-    if int((df["is_jw"] == True).sum()) != 25:
-        raise RuntimeError("Expected exactly 25 is_jw=1 canonical rows")
+    if int((df["is_jw"] == True).sum()) != EXPECTED_CANONICAL_BRAND_ROWS:
+        raise RuntimeError(f"Expected exactly {EXPECTED_CANONICAL_BRAND_ROWS} is_jw=1 canonical rows")
 
 
 def apply_canonical(catalog_dir: Path) -> dict[str, int]:

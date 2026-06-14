@@ -8,8 +8,11 @@ from typing import Any
 import pandas as pd
 
 from pipeline.etl.io.catalog.postfix.text import extract_brand_base_name, normalize_brand_name
+from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 
 MOLECULE_NAME_RE = re.compile(r"^[A-Z0-9][A-Z0-9 /().+-]*$")
+EXPECTED_ML_MARKET_COUNT = expected_int("postfix_rebuild_strategic.ml_market_count")
+EXPECTED_JW_CANONICAL_ROWS = expected_int("postfix_rebuild_strategic.jw_canonical_rows")
 
 
 def _has_korean(value: Any) -> bool:
@@ -125,11 +128,11 @@ def validate_strategic_brand(catalog: pd.DataFrame) -> dict[str, Any]:
         dupes = catalog.loc[catalog["brand_id"].duplicated(), "brand_id"].head(20).tolist()
         raise ValueError(f"strategic_brand.brand_id must be unique, duplicate sample={dupes}")
     counts = catalog.groupby("ml_id")["brand_id"].nunique().sort_index().to_dict()
-    if len(counts) != 16:
-        raise ValueError(f"expected 16 ml markets, found {len(counts)}")
+    if len(counts) != EXPECTED_ML_MARKET_COUNT:
+        raise ValueError(f"expected {EXPECTED_ML_MARKET_COUNT} ml markets, found {len(counts)}")
     jw_count = int(catalog["is_jw"].astype(bool).sum()) if "is_jw" in catalog.columns else 0
-    if jw_count != 25:
-        raise ValueError(f"expected 25 JW canonical rows, found {jw_count}")
+    if jw_count != EXPECTED_JW_CANONICAL_ROWS:
+        raise ValueError(f"expected {EXPECTED_JW_CANONICAL_ROWS} JW canonical rows, found {jw_count}")
     return {"rows": int(len(catalog)), "ml_count": len(counts), "canonical_rows": jw_count, "counts_by_ml": {str(key): int(value) for key, value in counts.items()}}
 
 
