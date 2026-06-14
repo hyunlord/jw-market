@@ -4,12 +4,12 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from pipeline.etl.io.catalog.base_dimensions import run_base_dimensions
-from pipeline.etl.io.catalog.brand_product_catalog import run_brand_product_catalog
-from pipeline.etl.io.catalog.catalog_postfix import run_postfix
-from pipeline.etl.io.catalog.master_extracts import run_master_extracts
-from pipeline.etl.io.catalog.market_catalog import run_market_catalog
-from pipeline.etl.io.catalog.target_priority import run_target_priority
+from pipeline.etl.io.catalog.dim.base_dimensions import run_base_dimensions
+from pipeline.etl.io.catalog.brand.brand_product_catalog import run_brand_product_catalog
+from pipeline.etl.io.catalog.postfix.catalog_postfix import run_postfix
+from pipeline.etl.io.catalog.master.extracts import run_master_extracts
+from pipeline.etl.io.catalog.market.catalog import run_market_catalog
+from pipeline.etl.io.catalog.target.target_priority import run_target_priority
 
 STAGE = "s2 catalog"
 
