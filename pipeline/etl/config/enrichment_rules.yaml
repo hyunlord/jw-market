@@ -1,0 +1,176 @@
+# catalog/enrichment_rules.yaml
+# JW Mart Pipeline · column 별 enrichment rule
+# Version: v0.7 (MI Master 260518 기준)
+
+# ============================================================================
+# behavior 정의 (6 종)
+# ============================================================================
+# - add_only:       raw 에 없는 column. canonical 만 추가
+# - overwrite:      canonical 있으면 덮어씌움. 빈칸이면 raw 사용
+# - preserve_raw:   canonical 무시. raw 그대로 (★ rare)
+# - compute:        function 으로 derive
+# - undefined:      해당 axis 분석 안 함 (★ analyze_* = False)
+# - column_null:    "제외" 라벨 → column NULL 처리 (★ row 시장 안 유지)
+
+# ============================================================================
+# "제외" rule (★ v7 NEW)
+# ============================================================================
+exclude_rules:
+  label: "제외"
+  behavior: column_level_null
+  # "제외" 라벨이 있는 row → 그 column 만 NULL 로 변환
+  # row 자체는 시장 안 유지 (★ 시장 멤버 X)
+  # group by 시 NULL column 은 자동 제외
+  apply_to_columns:
+    - class
+    - molecule
+  case_sensitive: false
+  whitespace_strip: true
+
+# ============================================================================
+# 시장-공통 column rule (★ 기본 column)
+# ============================================================================
+column_rules:
+
+  # --- ATC ---
+  atc_code:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.atc_4_code | ubist.atc
+    canonical_source: strategic_brand.atc_code
+    exclude_check: false
+
+  atc_desc:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.atc_4_desc
+    canonical_source: dim_market.atc_desc
+    exclude_check: false
+
+  # --- Molecule ---
+  molecule:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.molecule_desc | ubist.성분
+    canonical_source: strategic_brand.molecule
+    exclude_check: true
+
+  molecule_short:
+    behavior: add_only
+    canonical_source: strategic_product.molecule_short
+    # 예: "ATV", "ATV/EZE", "Pita" 등
+    exclude_check: true
+
+  # --- Brand ---
+  brand_name:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.product_name_kor | ubist.제품
+    canonical_source: strategic_brand.brand_name
+    exclude_check: false
+
+  brand_name_short:
+    behavior: add_only
+    canonical_source: strategic_brand.brand_name_short
+
+  # --- Product ---
+  product_name:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.product_name_kor_pack_desc
+    canonical_source: strategic_product.product_name
+    exclude_check: false
+
+  # --- Class ---
+  class:
+    behavior: add_only
+    canonical_source: strategic_brand.class
+    # 예: "Statin", "Statin/EZE", "DPP-4i+MET", "Factor (SHL)" 등
+    exclude_check: true
+
+  # --- Dosage Form ---
+  dosage_form:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.pack_desc | ubist.성분용량
+    canonical_source: strategic_product.dosage_form
+    exclude_check: true
+
+  # --- Strength ---
+  strength:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.pack_desc | ubist.성분용량
+    canonical_source: strategic_product.strength
+    exclude_check: false
+
+  strength_tier:
+    behavior: compute
+    compute_function: compute_strength_tier
+    # 시장별 logic (★ 위너프: 1500ml 이상 / 1100-1500ml / etc)
+
+  # --- NHI ---
+  nhi_type:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.nhi_type
+    canonical_source: strategic_brand.nhi_type
+    # NHI / NON-NHI
+    exclude_check: false
+
+  # --- Manufacturer ---
+  manufacturer:
+    behavior: overwrite_if_canonical_present
+    raw_source: iqvia.mfr_name_kor | ubist.제조사
+    canonical_source: strategic_brand.manufacturer
+
+  marketer:
+    behavior: overwrite_if_canonical_present
+    raw_source: ubist.판매사
+    canonical_source: strategic_brand.marketer
+
+  # --- Ox/Gx ---
+  ox_gx:
+    behavior: add_only
+    canonical_source: strategic_brand.ox_gx
+    # Originator / Generic / Biosimilar
+    exclude_check: false
+
+  # --- Channel (UBIST + IQVIA) ---
+  channel:
+    behavior: compute
+    compute_function: derive_channel
+    # UBIST: 종별 → TH/GH/Semi/CL/기타 매핑 (★ customer_dictionary.yaml)
+    # IQVIA: AUDIT CODE → KHPA/KCPA/KPA 추출
+
+  specialty:
+    behavior: compute
+    compute_function: derive_specialty
+    # UBIST: 진료과 → IGF/Cardio/Endo/Nephro/Neuro/Uro/GI 매핑
+
+  # --- Brand age ---
+  brand_age:
+    behavior: compute
+    compute_function: compute_brand_age
+    # 출시일 ↔ 현재 period
+
+  # --- MAT 기간 ---
+  mat_period:
+    behavior: compute
+    compute_function: compute_mat_period
+
+# ============================================================================
+# Source-별 raw column 매핑
+# ============================================================================
+source_columns:
+  iqvia:
+    audit_code: "AUDIT CODE"
+    atc_4_code: "ATC 4 CODE"
+    atc_4_desc: "ATC 4 DESC"
+    molecule_desc: "MOLECULE DESC"
+    nhi_type: "NHI TYPE"
+    mfr_name_kor: "MFR NAME KOR"
+    product_name_kor: "PRODUCT NAME KOR"
+    pack_desc: "PACK DESC"
+    product_name_kor_pack_desc: "PRODUCT NAME KORPACK DESC"
+
+  ubist:
+    atc: "ATC"
+    molecule: "성분"
+    marketer: "판매사"
+    product: "제품"
+    manufacturer: "제조사"
+    strength: "성분용량"
+    period_value: "{year}년 {month}월"  # 동적 column
