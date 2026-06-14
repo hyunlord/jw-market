@@ -77,4 +77,3 @@ UBIST_JOIN_VALUE_COLUMN_BY_SMID = {
     "strategy_009": "brand",
     "strategy_015": "brand",
 }
-

@@ -249,4 +249,3 @@ def build_rankings_by_cd_source(
             "ranking_basis": basis,
         }
     return rankings
-

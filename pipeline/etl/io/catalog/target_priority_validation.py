@@ -90,4 +90,3 @@ def validate_records(
     for cache_row in cache_rows:
         if set(cache_row.keys()) != set(AUTO_FILL_CACHE_COLUMNS):
             raise ValueError(f"auto-fill cache shape mismatch: {cache_row.keys()}")
-

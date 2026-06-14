@@ -127,4 +127,3 @@ def customer_compare_key(value: Any) -> str:
         if upper_text.startswith(prefix):
             return upper_text[len(prefix):]
     return upper_text
-
