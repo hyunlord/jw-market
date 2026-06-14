@@ -6,6 +6,7 @@ from typing import Any
 
 from pipeline.etl.io.catalog.base_dimensions import run_base_dimensions
 from pipeline.etl.io.catalog.master_extracts import run_master_extracts
+from pipeline.etl.io.catalog.market_catalog import run_market_catalog
 from pipeline.etl.io.catalog.target_priority import run_target_priority
 
 STAGE = "s2 catalog"
@@ -41,11 +42,15 @@ def run(params: dict[str, Any]) -> int:
             output_root=output_root,
             ingested_at=ingested_at,
         )
+        market_catalog_results = run_market_catalog(
+            output_root=output_root,
+            ingested_at=ingested_at,
+        )
     except Exception as exc:
         print(f"[{STAGE}] catalog 생성 실패: {exc}")
         return 1
 
-    for result in [*master_results, *dimension_results, *target_priority_results]:
+    for result in [*master_results, *dimension_results, *target_priority_results, *market_catalog_results]:
         print(
             f"[{STAGE}] {result.name}: rows={result.rows} "
             f"columns={len(result.columns)} path={result.output_path}"
