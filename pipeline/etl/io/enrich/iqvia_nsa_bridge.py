@@ -97,29 +97,35 @@ def _values_csv(values: list[str]) -> str:
     return ", ".join("'" + value.replace("'", "''") + "'" for value in values)
 
 
-def _iqvia_product_name_key_expr() -> str:
+def _iqvia_product_title_expr() -> str:
+    return "coalesce(cast(product_name_kor as varchar), cast(product_name as varchar), '')"
+
+
+def _normalize_iqvia_product_title_expr(value_expr: str) -> str:
     return (
         "lower(regexp_replace("
-        "replace(replace(replace(coalesce(cast(product_name as varchar), ''), '㎎', 'mg'), 'ＭＧ', 'mg'), ' ', ''), "
+        f"replace(replace(replace(replace(replace({value_expr}, '㎎', 'mg'), 'ＭＧ', 'mg'), "
+        "'μg', 'mcg'), '㎍', 'mcg'), ' ', ''), "
         "'\\\\s+', '', 'g'))"
     )
+
+
+def _iqvia_product_name_key_expr() -> str:
+    return _normalize_iqvia_product_title_expr(_iqvia_product_title_expr())
 
 
 def _iqvia_product_full_key_expr() -> str:
-    return (
-        "lower(regexp_replace("
-        "replace(replace(replace(concat(coalesce(cast(product_name as varchar), ''), ' ', "
-        "coalesce(cast(pack_desc as varchar), '')), '㎎', 'mg'), 'ＭＧ', 'mg'), ' ', ''), "
-        "'\\\\s+', '', 'g'))"
-    )
+    title = _iqvia_product_title_expr()
+    return _normalize_iqvia_product_title_expr(f"concat({title}, ' ', coalesce(cast(pack_desc as varchar), ''))")
 
 
 def _iqvia_brand_key_expr() -> str:
+    title = _iqvia_product_title_expr()
     return (
         "trim(regexp_replace("
         "regexp_replace("
         "regexp_replace("
-        "replace(replace(lower(coalesce(cast(product_name as varchar), '')), '㎎', 'mg'), 'ＭＧ', 'mg'), "
+        f"replace(replace(lower({title}), '㎎', 'mg'), 'ＭＧ', 'mg'), "
         "'\\\\([^)]*\\\\)', ' ', 'g'), "
         "'\\\\b[0-9]+(?:\\\\.[0-9]+)?\\\\s*/\\\\s*[0-9]+(?:\\\\.[0-9]+)?(?:\\\\s*/\\\\s*[0-9]+(?:\\\\.[0-9]+)?)?\\\\s*(?:mg|g|ml|iu|mcg)?\\\\b', ' ', 'gi'), "
         "'\\\\b[0-9]+(?:\\\\.[0-9]+)?\\\\s*(?:mg|g|ml|iu|mcg)\\\\b|필름코팅정|연질캡슐|장용정|서방정|복합정|프리필드펜|캡슐|정|주사|주|액|시럽', ' ', 'gi'))"
