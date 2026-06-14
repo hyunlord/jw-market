@@ -42,6 +42,7 @@ AUDIT_DIR = REPO_ROOT / "audit" / "phase16c3_iqvia_mariadb"
 NSA_TABLE = "iqvia_nsa_quarterly_raw"
 DEFAULT_NSA_PARQUET_DIR = REPO_ROOT / "output" / "iqvia_nsa"
 DEFAULT_RECORD_PARQUET_DIR = REPO_ROOT / "output" / "iqvia"
+NSA_CANONICAL_2Q_SUPPLEMENT_PERIODS = frozenset({"2020-Q3", "2020-Q4"})
 
 
 MONTH_NAME_TO_NUM = {
@@ -530,17 +531,49 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
         yield from iter_nsa_xlsx(path)
 
 
+def nsa_canonical_source_kind(path: Path) -> str | None:
+    """Classify NSA sources for canonical parquet materialization."""
+    if path.suffix.lower() != ".csv":
+        return None
+    name = path.name.lower()
+    if "4q" in name:
+        return "4q"
+    if "2q" in name:
+        return "2q"
+    return None
+
+
 def materialize_iqvia_nsa_parquet(files: list[Path], output_dir: Path) -> dict[str, int]:
-    """Write IQVIA NSA records as period parquet files for Layer0 prototypes."""
+    """Write canonical IQVIA NSA period parquet files for Layer0 consumers.
+
+    Raw loading keeps every lineage source: the 2Q CSV, 2Q XLSX, and 4Q CSV
+    are all preserved by ``iter_records``/DB insert paths. This parquet surface
+    is the de-duplicated consumer view: prefer the 4Q CSV for overlapping
+    quarters, add only the 2Q CSV quarters that 4Q does not contain
+    (currently 2020-Q3 and 2020-Q4), and always exclude the 2Q XLSX duplicate.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    csv_files = [path for path in files if path.suffix.lower() == ".csv"]
-    materialize_files = csv_files or files
     rows_by_period: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for path in materialize_files:
+    four_q_periods: set[str] = set()
+
+    canonical_files = sorted(
+        (path for path in files if nsa_canonical_source_kind(path) is not None),
+        key=lambda path: 0 if nsa_canonical_source_kind(path) == "4q" else 1,
+    )
+    for path in canonical_files:
+        source_kind = nsa_canonical_source_kind(path)
         LOGGER.info("materializing NSA parquet from %s", path)
         for record in iter_records(path):
             row = nsa_record_to_parquet_row(record)
-            rows_by_period[str(row["period_label"])].append(row)
+            period = str(row["period_label"])
+            # Canonical rule: 4Q CSV wins; 2Q CSV is only a historical
+            # supplement for quarters not present in 4Q. XLSX is excluded by
+            # nsa_canonical_source_kind so raw lineage remains separate.
+            if source_kind == "4q":
+                rows_by_period[period].append(row)
+                four_q_periods.add(period)
+            elif period in NSA_CANONICAL_2Q_SUPPLEMENT_PERIODS and period not in four_q_periods:
+                rows_by_period[period].append(row)
 
     written: dict[str, int] = {}
     for period, rows in sorted(rows_by_period.items()):
