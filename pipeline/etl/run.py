@@ -44,6 +44,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--file", help="Load or dry-run one source file for s1 smoke checks.")
     parser.add_argument("--input-file", help="Override the stage input file when supported.")
     parser.add_argument("--catalog-path", help="Override the s2 catalog mapping config.")
+    parser.add_argument("--audit-dir", help="Override the stage audit directory when supported.")
+    parser.add_argument("--catalog-root", help="Override the catalog parquet root when supported.")
+    parser.add_argument("--ubist-dir", help="Override the UBIST parquet root when supported.")
+    parser.add_argument("--ml-id", help="Run one market id when supported.")
+    parser.add_argument("--truncate", action="store_true", help="Remove target output before supported stage loads.")
     parser.add_argument("--ingested-at", help="Override s2 extract timestamp for deterministic parity checks.")
     parser.add_argument(
         "--source",
@@ -107,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
         "file": args.file,
         "input_file": args.input_file,
         "catalog_path": args.catalog_path,
+        "audit_dir": args.audit_dir,
+        "catalog_root": args.catalog_root,
+        "ubist_dir": args.ubist_dir,
+        "ml_id": args.ml_id,
+        "truncate": args.truncate,
         "ingested_at": args.ingested_at,
         "source": args.source,
         "target_db": args.target_db,
