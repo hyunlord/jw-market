@@ -18,6 +18,7 @@ docker/data/
 # Raw data moved to object storage
 data/
 !data/.gitkeep
+inputs/molecule_v4_worklist.csv
 
 # Documentation and audit artifacts moved out of source git
 docs/*
