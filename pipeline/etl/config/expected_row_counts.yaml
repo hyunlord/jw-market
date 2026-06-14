@@ -104,6 +104,9 @@ dim_brand_group:
 dim_market_landscape:
   row_count: 16
   total_master_drug_rows: 3952
+  definition_type_counts:
+    atc_codes_explicit: 14
+    default_sheet_all: 2
   market_counts:
     strategy_001: 358
     strategy_002: 45
