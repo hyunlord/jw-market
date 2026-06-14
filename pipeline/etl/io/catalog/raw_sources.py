@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -39,3 +40,7 @@ def read_parquet_compat(path: Path, columns: list[str], aliases: dict[str, str])
         raise ValueError(f"{path} missing columns for compatibility read: {missing}")
     frame = pd.read_parquet(path, columns=source_columns)
     return frame.rename(columns={source: target for target, source in aliases.items()})
+
+
+def read_parquet_compat_rows(path: Path, columns: list[str], aliases: dict[str, str]) -> list[dict[str, Any]]:
+    return read_parquet_compat(path, columns, aliases).to_dict("records")
