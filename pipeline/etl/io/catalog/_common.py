@@ -28,6 +28,10 @@ def dumps_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=to_jsonable, sort_keys=True)
 
 
+def dumps_compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def normalize_header(value: object) -> str | None:
     if value is None:
         return None
@@ -37,6 +41,33 @@ def normalize_header(value: object) -> str | None:
 
 def cell_text(value: object) -> str | None:
     return normalize_header(value)
+
+
+def clean_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def read_parquet_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(f"required parquet not found: {path}")
+    return pq.read_table(path).to_pylist()
+
+
+def stringify_record(record: dict[str, Any], columns: tuple[str, ...]) -> dict[str, str | None]:
+    return {column: None if record.get(column) is None else str(record.get(column)) for column in columns}
+
+
+def count_by(records: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        value = str(record.get(key) or "")
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 def is_empty_row(values: list[Any] | tuple[Any, ...]) -> bool:

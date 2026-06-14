@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from pipeline.etl.io.catalog.base_dimensions import run_base_dimensions
 from pipeline.etl.io.catalog.master_extracts import run_master_extracts
 
 STAGE = "s2 catalog"
@@ -25,17 +26,21 @@ def run(params: dict[str, Any]) -> int:
     catalog_path = _path_param(params, "catalog_path")
     ingested_at = _str_param(params, "ingested_at")
     try:
-        results = run_master_extracts(
+        master_results = run_master_extracts(
             output_root=output_root,
             input_file=input_file,
             catalog_path=catalog_path,
             ingested_at=ingested_at,
         )
+        dimension_results = run_base_dimensions(
+            output_root=output_root,
+            ingested_at=ingested_at,
+        )
     except Exception as exc:
-        print(f"[{STAGE}] master extracts 실패: {exc}")
+        print(f"[{STAGE}] catalog 생성 실패: {exc}")
         return 1
 
-    for result in results:
+    for result in [*master_results, *dimension_results]:
         print(
             f"[{STAGE}] {result.name}: rows={result.rows} "
             f"columns={len(result.columns)} path={result.output_path}"
