@@ -91,24 +91,17 @@ GENERIC_VALUES = {
     "개량신약(Super Generic)",
 }
 
-UBIST_2026_02_DUPLICATE_REGULAR_SOURCES = {
-    "상급종병_2025 2026.xlsx",
-    "의원_내과 제외 2601-02.xlsx",
-    "종병 병원 2601-02.xlsx",
-}
-
+METRIC_COLUMNS = list(METRIC_MAP.values())
+LINEAGE_COLUMNS = ["source_file", "source_folder", "source_sheet", "source_row_no", "ingested_at"]
+BUSINESS_GRAIN_COLUMNS = CANONICAL_DIMENSIONS + PATENT_DIMENSIONS + ["period_yyyymm"]
+BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + METRIC_COLUMNS
+DEDUP_SORT_COLUMNS = ["source_file", "source_sheet", "source_row_no"]
 COLUMNS = (
     CANONICAL_DIMENSIONS
     + PATENT_DIMENSIONS
-    + list(METRIC_MAP.values())
-    + [
-        "period_yyyymm",
-        "source_file",
-        "source_folder",
-        "source_sheet",
-        "source_row_no",
-        "ingested_at",
-    ]
+    + METRIC_COLUMNS
+    + ["period_yyyymm"]
+    + LINEAGE_COLUMNS
 )
 
 STRING_COLUMNS = (
@@ -145,6 +138,17 @@ class PartitionStats:
     source_files: set[str] = field(default_factory=set)
 
 
+@dataclass
+class DedupReport:
+    period: str
+    rows_before: int
+    rows_after: int
+    duplicate_groups: int
+    duplicate_rows_removed: int
+    conflict_groups: int
+    conflict_rows: int
+
+
 def now_kst() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
 
@@ -156,20 +160,6 @@ def normalize_text(value: object) -> str | None:
     if not text:
         return None
     return unicodedata.normalize("NFC", text)
-
-
-def should_skip_ubist_source_row(period: str, source_file: str) -> bool:
-    """Return True for source rows that should not enter Layer 1 parquet."""
-
-    # [임시 2026-02 source dedup, 20260612] 2026-02는 Sales(2021-2026.02) regular와
-    # Sales(2026.02) 성분_* 파일이 같은 2026-02 데이터를 중복 보유(73,684 key, 182.6B 중복).
-    # → 2026-02만 성분_*(병원/상급종병/의원세부/의원제외/종병)+regular의 기타/보건소만 적재,
-    #   중복 regular(상급종병_2025 2026, 의원_내과 제외 2601-02, 종병 병원 2601-02)의 2026-02 행 제외.
-    # source 정비(단일 폴더 일원화) 후 원복/일반화 대상. 다른 월 불변.
-    if period != "2026-02":
-        return False
-    source = unicodedata.normalize("NFC", str(source_file or "").strip())
-    return source in UBIST_2026_02_DUPLICATE_REGULAR_SOURCES
 
 
 def to_string_or_none(value: object) -> str | None:
@@ -417,8 +407,6 @@ def iter_xlsx_rows(xlsx_path: Path, generic_lookup: dict[str, str] | None = None
                 period_metrics[period][metric] = to_number_or_none(row[idx] if idx < len(row) else None)
 
             for period, metrics in period_metrics.items():
-                if should_skip_ubist_source_row(period, xlsx_path.name):
-                    continue
                 output = dict(base)
                 output.update(metrics)
                 output["period_yyyymm"] = period
@@ -436,6 +424,88 @@ def prepare_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
         frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     frame["source_row_no"] = pd.to_numeric(frame["source_row_no"], errors="coerce").fillna(0).astype("int64")
     return frame.reindex(columns=COLUMNS)
+
+
+def _metric_tuple_key(row: pd.Series) -> tuple[float | None, ...]:
+    values: list[float | None] = []
+    for column in METRIC_COLUMNS:
+        value = row[column]
+        values.append(None if pd.isna(value) else float(value))
+    return tuple(values)
+
+
+def deduplicate_business_grain(frame: pd.DataFrame, period: str) -> tuple[pd.DataFrame, DedupReport]:
+    """Replace the 2026-02 should_skip workaround with metric-safe grain dedup.
+
+    Lineage columns are excluded from identity. Rows are collapsed only when the
+    business grain and metrics are identical, keeping the deterministic first
+    row by ``source_file, source_sheet, source_row_no``. If the same business
+    grain has different metrics, all rows are preserved and the conflict is
+    reported so the loader never hides data loss behind deduplication.
+    """
+    if frame.empty:
+        return frame, DedupReport(period, 0, 0, 0, 0, 0, 0)
+
+    work = frame.reindex(columns=COLUMNS).copy()
+    work["_metric_tuple"] = work.apply(_metric_tuple_key, axis=1)
+    metric_counts = work.groupby(BUSINESS_GRAIN_COLUMNS, dropna=False)["_metric_tuple"].nunique()
+    conflict_keys = metric_counts[metric_counts > 1].reset_index()[BUSINESS_GRAIN_COLUMNS]
+    if conflict_keys.empty:
+        work["_metric_conflict"] = False
+    else:
+        conflict_keys = conflict_keys.assign(_metric_conflict=True)
+        work = work.merge(conflict_keys, on=BUSINESS_GRAIN_COLUMNS, how="left")
+        work["_metric_conflict"] = work["_metric_conflict"].fillna(False).astype(bool)
+
+    safe = work[~work["_metric_conflict"]]
+    conflicts = work[work["_metric_conflict"]]
+    duplicate_sizes = safe.groupby(BUSINESS_METRIC_COLUMNS, dropna=False).size()
+    duplicate_groups = int((duplicate_sizes > 1).sum())
+    duplicate_rows_removed = int((duplicate_sizes[duplicate_sizes > 1] - 1).sum())
+
+    stable_safe = safe.sort_values(DEDUP_SORT_COLUMNS, kind="mergesort")
+    deduped_safe = stable_safe.drop_duplicates(subset=BUSINESS_METRIC_COLUMNS, keep="first")
+    result = pd.concat([deduped_safe, conflicts], ignore_index=True)
+    result = result.drop(columns=["_metric_tuple", "_metric_conflict"], errors="ignore")
+    result = result.sort_values(DEDUP_SORT_COLUMNS, kind="mergesort").reset_index(drop=True)
+    report = DedupReport(
+        period=period,
+        rows_before=len(frame),
+        rows_after=len(result),
+        duplicate_groups=duplicate_groups,
+        duplicate_rows_removed=duplicate_rows_removed,
+        conflict_groups=len(conflict_keys),
+        conflict_rows=len(conflicts),
+    )
+    if report.conflict_groups:
+        # Metric conflicts are never collapsed; warning keeps the data visible
+        # while making the collision auditable in loader logs and reports.
+        LOGGER.warning(
+            "UBIST metric conflicts preserved period=%s groups=%s rows=%s",
+            period,
+            report.conflict_groups,
+            report.conflict_rows,
+        )
+    if report.duplicate_rows_removed:
+        LOGGER.info(
+            "UBIST business-grain dedup period=%s duplicate_groups=%s removed=%s rows_before=%s rows_after=%s",
+            period,
+            report.duplicate_groups,
+            report.duplicate_rows_removed,
+            report.rows_before,
+            report.rows_after,
+        )
+    return result.reindex(columns=COLUMNS), report
+
+
+def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
+    table = pq.read_table(path).select(COLUMNS)
+    frame = table.to_pandas()
+    deduped, report = deduplicate_business_grain(frame, period)
+    temp_path = path.with_suffix(".dedup.tmp")
+    pq.write_table(pa.Table.from_pandas(deduped, schema=SCHEMA, preserve_index=False), temp_path, compression="snappy")
+    temp_path.replace(path)
+    return report
 
 
 class PartitionWriter:
@@ -493,6 +563,28 @@ def flush_buffers(writer: PartitionWriter, buffers: dict[str, list[dict[str, obj
             writer.write_rows(period, rows)
 
 
+def deduplicate_written_partitions(target: Path, stats: dict[str, PartitionStats]) -> list[DedupReport]:
+    reports: list[DedupReport] = []
+    for period in sorted(stats):
+        path = PartitionWriter(target)._path_for(period)
+        if not path.exists():
+            continue
+        report = deduplicate_partition_file(path, period)
+        reports.append(report)
+        table = pq.read_table(path, columns=["source_file"])
+        stats[period].row_count = table.num_rows
+        stats[period].source_files = {str(value.as_py()) for value in table["source_file"].unique() if value.as_py()}
+    total_removed = sum(report.duplicate_rows_removed for report in reports)
+    total_conflicts = sum(report.conflict_groups for report in reports)
+    if total_removed or total_conflicts:
+        LOGGER.info(
+            "UBIST business-grain dedup complete removed=%s conflict_groups=%s",
+            total_removed,
+            total_conflicts,
+        )
+    return reports
+
+
 def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate: bool) -> dict[str, PartitionStats]:
     timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
     tmp_target = target.parent / f"{target.name}.__tmp_{timestamp}"
@@ -525,6 +617,7 @@ def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate
     finally:
         writer.close()
 
+    deduplicate_written_partitions(tmp_target, writer.stats)
     write_manifest(tmp_target, writer.stats, xlsx_paths)
 
     if target.exists():
