@@ -6,13 +6,17 @@ import json
 import os
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 import xml.etree.ElementTree as ET
 
 import requests
 
 
 DATA_GO_KR_KEY_ENV = "DATA_GO_KR_KEY"
+MFDS_PATENT_QUERY_ALIASES = {
+    "pitavastatin": "리바로",
+    "ezetimibe": "리바로젯",
+}
 
 
 @dataclass(frozen=True)
@@ -61,13 +65,15 @@ class ExternalApiClient:
         return self._fixture_or_live("clinicaltrials_v2_search", {"query.intr": query_intr})
 
     def openfda_label_search(self, substance_name: str) -> ExternalCall:
-        return self._fixture_or_live("openfda_label_search", {"substance_name": substance_name})
+        query = f'openfda.substance_name:"{substance_name.upper()}"'
+        return self._fixture_or_live("openfda_label_search", {"search": query})
 
     def mfds_patent(self, ingredient_en: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_patent", {"INGR_ENG_NAME": ingredient_en}, xml=True)
+        query = MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower(), ingredient_en)
+        return self._fixture_or_live("mfds_patent", {"query": query}, xml=True)
 
     def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_fda_orangebook", {"INGR_NAME": ingredient_en}, xml=True)
+        return self._fixture_or_live("mfds_fda_orangebook", {"query": ingredient_en.title()}, xml=True)
 
     def _fixture_or_live(self, tool: str, params: dict[str, str], xml: bool = False) -> ExternalCall:
         if self.mode != "live":
@@ -85,13 +91,13 @@ class ExternalApiClient:
 
     def _live_get(self, tool: str, params: dict[str, str], xml: bool = False) -> ExternalCall:
         spec = self.fixtures[tool]["live"]
-        query = dict(params)
+        query = self._live_query(spec, params)
         if spec.get("requires_service_key"):
             key = os.environ.get(DATA_GO_KR_KEY_ENV)
             if not key:
                 raise RuntimeError(f"{DATA_GO_KR_KEY_ENV} is required for live {tool}")
             query["serviceKey"] = key
-        url = spec["url"] + "?" + urlencode(query)
+        url = self._url_with_query(spec["url"], query)
         start = time.monotonic()
         last_error: Exception | None = None
         for _ in range(2):
@@ -99,13 +105,13 @@ class ExternalApiClient:
                 response = requests.get(url, timeout=self.timeout_s)
                 elapsed = round((time.monotonic() - start) * 1000, 1)
                 response.raise_for_status()
-                payload = self._parse_xml(response.text) if xml else response.json()
+                payload = self._parse_response(response, xml or spec.get("format") == "xml")
                 return ExternalCall(
                     tool=tool,
                     source="external_api",
                     status="live",
-                    summary_text=f"{tool} returned HTTP {response.status_code}",
-                    render_data={"payload": payload},
+                    summary_text=self._summary(tool, response.status_code, payload),
+                    render_data=self._render_payload(payload),
                     safe_url=self.redact_url(url),
                     elapsed_ms=elapsed,
                 )
@@ -124,11 +130,89 @@ class ExternalApiClient:
         )
 
     @staticmethod
+    def _live_query(spec: dict[str, Any], params: dict[str, str]) -> dict[str, str]:
+        mapped: dict[str, str] = {}
+        for key, value in spec.get("default_params", {}).items():
+            mapped[key] = str(value)
+        param_map = spec.get("param_map", {})
+        for key, value in params.items():
+            target = param_map.get(key, key)
+            if target:
+                mapped[target] = value
+        return mapped
+
+    @staticmethod
+    def _url_with_query(url: str, query: dict[str, str]) -> str:
+        parts = urlsplit(url)
+        existing = dict(parse_qsl(parts.query, keep_blank_values=True))
+        existing.update(query)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query and urlencode(existing) or urlencode(existing), parts.fragment))
+
+    @staticmethod
+    def _parse_response(response: requests.Response, xml: bool) -> dict[str, Any]:
+        if xml:
+            return ExternalApiClient._parse_xml(response.text)
+        return response.json()
+
+    @staticmethod
+    def _render_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        if "body" in payload and isinstance(payload["body"], dict):
+            body = payload["body"]
+            items = body.get("items", [])
+            if isinstance(items, list):
+                return {
+                    "resultCode": payload.get("header", {}).get("resultCode"),
+                    "totalCount": body.get("totalCount"),
+                    "items": items[:5],
+                }
+        if "studies" in payload and isinstance(payload["studies"], list):
+            return {"payload": {"studies": payload["studies"][:5], "nextPageToken": payload.get("nextPageToken")}}
+        if "results" in payload and isinstance(payload["results"], list):
+            meta = payload.get("meta", {})
+            return {"payload": {"meta": meta, "results": payload["results"][:1]}}
+        return {"payload": payload}
+
+    @staticmethod
+    def _summary(tool: str, status_code: int, payload: dict[str, Any]) -> str:
+        if "body" in payload and isinstance(payload["body"], dict):
+            total = payload["body"].get("totalCount")
+            return f"{tool} returned HTTP {status_code}, totalCount={total}"
+        if "studies" in payload and isinstance(payload["studies"], list):
+            ids = []
+            for study in payload["studies"][:3]:
+                ident = study.get("protocolSection", {}).get("identificationModule", {})
+                if ident.get("nctId"):
+                    ids.append(ident["nctId"])
+            return f"{tool} returned HTTP {status_code}, nct_ids={','.join(ids)}"
+        if "results" in payload and isinstance(payload["results"], list):
+            total = payload.get("meta", {}).get("results", {}).get("total")
+            return f"{tool} returned HTTP {status_code}, total={total}"
+        return f"{tool} returned HTTP {status_code}"
+
+    @staticmethod
     def _parse_xml(text: str) -> dict[str, Any]:
         root = ET.fromstring(text)
+        return ExternalApiClient._xml_node(root)
+
+    @staticmethod
+    def _xml_node(node: ET.Element) -> Any:
+        children = list(node)
+        if not children:
+            return node.text
+        grouped: dict[str, list[Any]] = {}
+        for child in children:
+            grouped.setdefault(child.tag, []).append(ExternalApiClient._xml_node(child))
         out: dict[str, Any] = {}
-        for child in root.iter():
-            if child is root or list(child):
-                continue
-            out.setdefault(child.tag, []).append(child.text)
+        for key, values in grouped.items():
+            if key == "item":
+                out[key] = values
+            elif len(values) == 1:
+                out[key] = values[0]
+            else:
+                out[key] = values
+        if node.tag == "items":
+            item = out.get("item")
+            if item is None:
+                return []
+            return item if isinstance(item, list) else [item]
         return out

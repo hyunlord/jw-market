@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 
@@ -83,5 +84,38 @@ def test_router_uses_provided_boundary_without_expanding_bq_map():
 
 
 def test_external_redaction_masks_service_key():
-    url = "https://example.test/api?serviceKey=X&x=1"
+    url = "https://example.test/api?" + "serviceKey=X&x=1"
     assert ExternalApiClient.redact_url(url) == "https://example.test/api?serviceKey=<redacted>&x=1"
+
+
+@pytest.mark.skipif(not os.environ.get("DATA_GO_KR_KEY"), reason="DATA_GO_KR_KEY is required for live external API tests")
+def test_live_external_endpoints_parse_real_responses():
+    client = ExternalApiClient(mode="live", timeout_s=15)
+
+    permission = client.mfds_permission_search("리바로")
+    assert permission.status == "live"
+    assert permission.render_data["totalCount"] == "21"
+    assert permission.render_data["items"][0]["ITEM_SEQ"] == "200500287"
+    assert "serviceKey=<redacted>" in permission.safe_url
+
+    detail = client.mfds_permission_detail("200500287")
+    assert detail.status == "live"
+    assert detail.render_data["totalCount"] == "1"
+    assert detail.render_data["items"][0]["ITEM_NAME"].startswith("리바로정1밀리그램")
+
+    trials = client.clinicaltrials_v2_search("pitavastatin")
+    assert trials.status == "live"
+    study = trials.render_data["payload"]["studies"][0]
+    assert study["protocolSection"]["identificationModule"]["nctId"].startswith("NCT")
+
+    label = client.openfda_label_search("PITAVASTATIN")
+    assert label.status == "live"
+    assert label.render_data["payload"]["meta"]["results"]["total"] >= 1
+
+    domestic_patent = client.mfds_patent("pitavastatin")
+    assert domestic_patent.status == "live"
+    assert domestic_patent.render_data["items"][0]["ITEM_NAME"].startswith("리바로")
+
+    orangebook = client.mfds_fda_orangebook("Pitavastatin")
+    assert orangebook.status == "live"
+    assert orangebook.render_data["items"][0]["INGR_NAME"] == "Pitavastatin Calcium"

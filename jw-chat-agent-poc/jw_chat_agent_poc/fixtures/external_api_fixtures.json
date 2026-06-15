@@ -1,49 +1,243 @@
 {
   "mfds_permission_search": {
-    "summary_text": "MFDS 품목 검색에서 리바로 계열 품목기준코드와 성분명을 확인했습니다.",
-    "render_data": {"ITEM_SEQ": "200402090", "ITEM_NAME": "리바로정", "INGR_ENG_NAME": "pitavastatin"},
-    "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06?serviceKey=<redacted>",
-    "live": {"url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06", "requires_service_key": true}
+    "summary_text": "MFDS 품목 검색에서 리바로 계열 21건을 확인했습니다.",
+    "render_data": {
+      "totalCount": "21",
+      "items": [
+        {
+          "ITEM_SEQ": "200500287",
+          "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+          "ITEM_ENG_NAME": "Livalo Tablet 1mg (Pitavastatin Calcium Hydrate)",
+          "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+          "EDI_CODE": "644900790"
+        },
+        {
+          "ITEM_SEQ": "200500288",
+          "ITEM_NAME": "리바로정2밀리그램",
+          "ITEM_ENG_NAME": "Livalo Tablet 2mg",
+          "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+          "EDI_CODE": "644900800"
+        }
+      ]
+    },
+    "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "brand": "item_name"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   },
   "mfds_permission_detail": {
-    "summary_text": "MFDS 품목 상세에서 전문의약품 허가 정보를 확인했습니다.",
-    "render_data": {"ITEM_SEQ": "200402090", "CLASS_NAME": "전문의약품"},
-    "live": {"url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06", "requires_service_key": true}
+    "summary_text": "MFDS 품목 상세에서 리바로 ITEM_SEQ 1건의 허가 상세를 확인했습니다.",
+    "render_data": {
+      "totalCount": "1",
+      "items": [
+        {
+          "ITEM_SEQ": "200500287",
+          "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+          "ETC_OTC_CODE": "전문의약품",
+          "ATC_CODE": "C10AA08",
+          "MAIN_INGR_ENG": "Pitavastatin Calcium Hydrate",
+          "EDI_CODE": "644900790"
+        }
+      ]
+    },
+    "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq06?serviceKey=<redacted>&item_seq=200500287&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq06",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "item_seq": "item_seq"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   },
   "mfds_composition": {
-    "summary_text": "MFDS 조성 정보에서 복합제 성분을 확인했습니다.",
-    "render_data": {"ingredients": ["ezetimibe", "pitavastatin"]},
-    "live": {"url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06", "requires_service_key": true}
+    "summary_text": "MFDS 조성 API는 XML 파싱은 정상이나 실측 파라미터 필터가 전체 목록을 반환해 resolver 연결은 UNKNOWN입니다.",
+    "render_data": {
+      "totalCount": "127014",
+      "items": [
+        {
+          "ITEM_SEQ": "195500005",
+          "PRDUCT": "중외5%포도당생리식염액(수출명:5%DextroseinnormalsalineInj.)",
+          "MTRAL_NM": "포도당",
+          "MAIN_INGR_ENG": "Glucose/Sodium Chloride"
+        }
+      ],
+      "unknown": "item_seq, ITEM_SEQ, PRDUCT, item_name all returned the unfiltered first page in live probes"
+    },
+    "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtMcpnDtlInq07?serviceKey=<redacted>&item_seq=200500287&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtMcpnDtlInq07",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "item_seq": "item_seq"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   },
   "mfds_easy_drug": {
-    "summary_text": "e약은요에서 복약 안내 요약을 확인했습니다.",
-    "render_data": {"usage": "의사 처방에 따라 복용"},
-    "live": {"url": "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList", "requires_service_key": true}
+    "summary_text": "e약은요 XML API는 ITEM_SEQ 대문자에서 목록 응답을 반환했습니다.",
+    "render_data": {
+      "totalCount": "4803",
+      "items": [
+        {
+          "itemSeq": "195700020",
+          "itemName": "활명수",
+          "efcyQesitm": "이 약은 식욕감퇴, 위부팽만감, 소화불량, 과식, 체함, 구역, 구토에 사용합니다."
+        }
+      ]
+    },
+    "safe_url": "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList?serviceKey=<redacted>&ITEM_SEQ=200402090&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "item_seq": "ITEM_SEQ"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   },
   "mfds_clinical_trial_kr": {
-    "summary_text": "국내 임상시험 fixture에서 지질저하제 관련 임상 1건을 확인했습니다.",
-    "render_data": {"trials": [{"phase": "3", "status": "completed"}]},
-    "live": {"url": "https://apis.data.go.kr/1471000/MdcinClincTestInfoService01/getMdcinClincTestInfoList01", "requires_service_key": true}
+    "summary_text": "국내 임상시험 Service02는 XML 응답을 반환하지만 리바로 필터 후보는 전체 목록과 동일했습니다.",
+    "render_data": {
+      "totalCount": "13965",
+      "items": [
+        {
+          "GOODS_NAME": "CJ-20001",
+          "CLINIC_STEP_NAME": "2상",
+          "CLNC_TEST_SN": "201002160"
+        }
+      ],
+      "unknown": "itemName, drugNm, searchKeyword, prduct probes returned the same unfiltered first page"
+    },
+    "safe_url": "https://apis.data.go.kr/1471000/MdcinClincTestInfoService02/getMdcinClincTestInfoList02?serviceKey=<redacted>&itemName=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "https://apis.data.go.kr/1471000/MdcinClincTestInfoService02/getMdcinClincTestInfoList02",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "keyword": "itemName"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   },
   "clinicaltrials_v2_search": {
     "summary_text": "ClinicalTrials v2에서 pitavastatin 관련 NCT verbatim 결과를 확인했습니다.",
-    "render_data": {"query.intr": "pitavastatin", "nct_ids": ["NCT01234567"]},
-    "live": {"url": "https://clinicaltrials.gov/api/v2/studies", "requires_service_key": false}
+    "render_data": {
+      "query.intr": "pitavastatin",
+      "nct_ids": [
+        "NCT01764178"
+      ],
+      "briefTitle": "To Evaluate the Safety and PK Characteristics in Healthy Volunteers-Livalozet"
+    },
+    "safe_url": "https://clinicaltrials.gov/api/v2/studies?query.intr=pitavastatin&pageSize=5&format=json",
+    "live": {
+      "url": "https://clinicaltrials.gov/api/v2/studies",
+      "requires_service_key": false,
+      "format": "json",
+      "default_params": {
+        "pageSize": "5",
+        "format": "json"
+      }
+    }
   },
   "openfda_label_search": {
-    "summary_text": "openFDA label에서 성분명 기반 라벨 검색을 수행했습니다.",
-    "render_data": {"substance_name": "pitavastatin", "label_sections": ["indications_and_usage"]},
-    "live": {"url": "https://api.fda.gov/drug/label.json", "requires_service_key": false}
+    "summary_text": "openFDA label에서 성분별 substance_name 검색을 수행했습니다.",
+    "render_data": {
+      "substance_name": "PITAVASTATIN",
+      "total": 15,
+      "label_sections": [
+        "indications_and_usage",
+        "dosage_and_administration",
+        "dosage_forms_and_strengths"
+      ]
+    },
+    "safe_url": "https://api.fda.gov/drug/label.json?search=openfda.substance_name%3A%22PITAVASTATIN%22&limit=1",
+    "live": {
+      "url": "https://api.fda.gov/drug/label.json",
+      "requires_service_key": false,
+      "format": "json",
+      "default_params": {
+        "limit": "1"
+      }
+    }
   },
   "mfds_patent": {
-    "summary_text": "국내 의약품특허 XML API에서 품목-특허 연결 필드를 확인했습니다.",
-    "render_data": {"ITEM_SEQ": "200402090", "DOMESTIC_PATENT_NO": "10-0000000", "DOMESTIC_END_DATE": "2030-12-31"},
-    "live": {"url": "http://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2", "requires_service_key": true}
+    "summary_text": "국내 의약품특허 XML API는 item_name=리바로에서 품목-특허 연결 필드를 확인했습니다.",
+    "render_data": {
+      "totalCount": "541",
+      "items": [
+        {
+          "ITEM_SEQ": "200500288",
+          "ITEM_NAME": "리바로정2밀리그램",
+          "INGR_ENG_NAME": "Pitavastatin Calcium",
+          "DOMESTIC_PATENT_NO": "10-0777553",
+          "DOMESTIC_END_DATE": "2010-11-12"
+        }
+      ]
+    },
+    "safe_url": "http://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "http://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "query": "item_name"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   },
   "mfds_fda_orangebook": {
-    "summary_text": "FDA 오렌지북 특허 XML API에서 성분 기반 특허 만료 정보를 확인했습니다.",
-    "render_data": {"INGR_NAME": "pitavastatin", "KOR_PAT_NO": "7727548", "KOR_EXP_DATE": "2027-01-01"},
-    "live": {"url": "http://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01", "requires_service_key": true}
+    "summary_text": "FDA 오렌지북 특허 XML API는 lowercase ingr_name에서 성분 기반 특허 만료 정보를 확인했습니다.",
+    "render_data": {
+      "totalCount": "18",
+      "items": [
+        {
+          "INGR_NAME": "Pitavastatin Calcium",
+          "PRT_NAME": "LIVALO",
+          "KOR_PAT_NO": "8557993",
+          "KOR_EXP_DATE": "2024-02-02 00:00:00"
+        }
+      ]
+    },
+    "safe_url": "http://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01?serviceKey=<redacted>&ingr_name=Pitavastatin&pageNo=1&numOfRows=5",
+    "live": {
+      "url": "http://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "query": "ingr_name"
+      },
+      "default_params": {
+        "pageNo": "1",
+        "numOfRows": "5"
+      }
+    }
   }
 }
-
