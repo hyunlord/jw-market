@@ -1,0 +1,6 @@
+JW dyslipidemia guideline mock.
+
+For primary prevention in adult dyslipidemia, first-line therapy is lifestyle modification plus statin therapy when LDL-C risk threshold is met.
+Ezetimibe can be combined with statin therapy when LDL-C goals are not reached.
+Treatment choice should consider cardiovascular risk, LDL-C baseline, tolerability, and drug-drug interaction.
+

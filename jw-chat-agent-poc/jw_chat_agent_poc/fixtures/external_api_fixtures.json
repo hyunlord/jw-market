@@ -1,0 +1,49 @@
+{
+  "mfds_permission_search": {
+    "summary_text": "MFDS 품목 검색에서 리바로 계열 품목기준코드와 성분명을 확인했습니다.",
+    "render_data": {"ITEM_SEQ": "200402090", "ITEM_NAME": "리바로정", "INGR_ENG_NAME": "pitavastatin"},
+    "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06?serviceKey=<redacted>",
+    "live": {"url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06", "requires_service_key": true}
+  },
+  "mfds_permission_detail": {
+    "summary_text": "MFDS 품목 상세에서 전문의약품 허가 정보를 확인했습니다.",
+    "render_data": {"ITEM_SEQ": "200402090", "CLASS_NAME": "전문의약품"},
+    "live": {"url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06", "requires_service_key": true}
+  },
+  "mfds_composition": {
+    "summary_text": "MFDS 조성 정보에서 복합제 성분을 확인했습니다.",
+    "render_data": {"ingredients": ["ezetimibe", "pitavastatin"]},
+    "live": {"url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq06", "requires_service_key": true}
+  },
+  "mfds_easy_drug": {
+    "summary_text": "e약은요에서 복약 안내 요약을 확인했습니다.",
+    "render_data": {"usage": "의사 처방에 따라 복용"},
+    "live": {"url": "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList", "requires_service_key": true}
+  },
+  "mfds_clinical_trial_kr": {
+    "summary_text": "국내 임상시험 fixture에서 지질저하제 관련 임상 1건을 확인했습니다.",
+    "render_data": {"trials": [{"phase": "3", "status": "completed"}]},
+    "live": {"url": "https://apis.data.go.kr/1471000/MdcinClincTestInfoService01/getMdcinClincTestInfoList01", "requires_service_key": true}
+  },
+  "clinicaltrials_v2_search": {
+    "summary_text": "ClinicalTrials v2에서 pitavastatin 관련 NCT verbatim 결과를 확인했습니다.",
+    "render_data": {"query.intr": "pitavastatin", "nct_ids": ["NCT01234567"]},
+    "live": {"url": "https://clinicaltrials.gov/api/v2/studies", "requires_service_key": false}
+  },
+  "openfda_label_search": {
+    "summary_text": "openFDA label에서 성분명 기반 라벨 검색을 수행했습니다.",
+    "render_data": {"substance_name": "pitavastatin", "label_sections": ["indications_and_usage"]},
+    "live": {"url": "https://api.fda.gov/drug/label.json", "requires_service_key": false}
+  },
+  "mfds_patent": {
+    "summary_text": "국내 의약품특허 XML API에서 품목-특허 연결 필드를 확인했습니다.",
+    "render_data": {"ITEM_SEQ": "200402090", "DOMESTIC_PATENT_NO": "10-0000000", "DOMESTIC_END_DATE": "2030-12-31"},
+    "live": {"url": "http://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2", "requires_service_key": true}
+  },
+  "mfds_fda_orangebook": {
+    "summary_text": "FDA 오렌지북 특허 XML API에서 성분 기반 특허 만료 정보를 확인했습니다.",
+    "render_data": {"INGR_NAME": "pitavastatin", "KOR_PAT_NO": "7727548", "KOR_EXP_DATE": "2027-01-01"},
+    "live": {"url": "http://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01", "requires_service_key": true}
+  }
+}
+

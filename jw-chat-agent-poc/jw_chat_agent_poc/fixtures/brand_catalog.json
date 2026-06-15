@@ -1,0 +1,21 @@
+[
+  {
+    "canonical_brand": "리바로",
+    "aliases": ["livalo", "LIVALO"],
+    "audit_code": "ml_006_livalo",
+    "molecule_en": ["pitavastatin"],
+    "atc": ["C10A1"],
+    "edi_code": "645304520",
+    "item_seq": "200402090"
+  },
+  {
+    "canonical_brand": "리바로젯",
+    "aliases": ["livalozet", "LIVALOZET"],
+    "audit_code": "ml_006_livalozet",
+    "molecule_en": ["ezetimibe", "pitavastatin"],
+    "atc": ["C10A1", "C10C"],
+    "edi_code": "645306730",
+    "item_seq": "202105123"
+  }
+]
+

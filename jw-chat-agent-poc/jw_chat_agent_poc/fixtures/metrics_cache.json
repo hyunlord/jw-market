@@ -1,0 +1,41 @@
+{
+  "markets": {
+    "ml_006": {
+      "label": "리바로/리바로젯 지질저하제",
+      "latest_period": "2026-04",
+      "market_size_krw": 225646489397,
+      "cagr_5y_pct": 16.64,
+      "hhi": 225.78,
+      "market_size_series": {
+        "2025-12": 230934000000,
+        "2026-01": 217691677343,
+        "2026-02": 197843371901,
+        "2026-03": 228838670570,
+        "2026-04": 225646489397
+      }
+    },
+    "mock_market": {
+      "label": "POC mock market",
+      "latest_period": "2026-04",
+      "market_size_krw": 1000000000,
+      "cagr_5y_pct": 8.5,
+      "hhi": 350.0,
+      "market_size_series": {"2026-04": 1000000000}
+    }
+  },
+  "brands": {
+    "리바로": {
+      "market_share": 3.33,
+      "sales_krw": 8493234217,
+      "rank": 7,
+      "period": "2026-04"
+    },
+    "리바로젯": {
+      "market_share": 5.32,
+      "sales_krw": 12009054193,
+      "rank": 4,
+      "period": "2026-04"
+    }
+  }
+}
+

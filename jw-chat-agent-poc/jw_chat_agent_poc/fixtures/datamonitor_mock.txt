@@ -1,0 +1,6 @@
+Datamonitor market outlook mock.
+
+The lipid-lowering market is expected to grow through 2026 because combination therapy adoption increases.
+The market outlook highlights branded combination products and generic pressure as simultaneous drivers.
+JW's fixture share should be compared against the uploaded outlook as a cache source versus document source comparison.
+
