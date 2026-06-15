@@ -15,12 +15,12 @@ from pipeline.etl.stages import (  # noqa: E402
     s1_load,
     s2_catalog,
     s3_enrich,
-    s4_enrich,
+    s4_mart,
     s5_mart,
     s6_cache,
 )
 
-STAGES = [s0_verify, s1_load, s2_catalog, s3_enrich, s4_enrich, s5_mart, s6_cache]
+STAGES = [s0_verify, s1_load, s2_catalog, s3_enrich, s4_mart, s5_mart, s6_cache]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,6 +48,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--catalog-root", help="Override the catalog parquet root when supported.")
     parser.add_argument("--ubist-dir", help="Override the UBIST parquet root when supported.")
     parser.add_argument("--iqvia-nsa-dir", help="Override the canonical IQVIA NSA parquet root when supported.")
+    parser.add_argument("--enriched-dir", help="Override the layer2 enriched parquet root when supported.")
+    parser.add_argument("--input-mode", choices=["raw", "enriched"], default="raw", help="S4 general mart input surface.")
+    parser.add_argument("--limit-atc4", type=int, help="Limit S4 processing to the first N ATC4 codes for smoke checks.")
+    parser.add_argument("--max-rows", type=int, help="Limit raw input rows for supported smoke checks.")
     parser.add_argument("--ml-id", help="Run one market id when supported.")
     parser.add_argument("--truncate", action="store_true", help="Remove target output before supported stage loads.")
     parser.add_argument("--ingested-at", help="Override s2 extract timestamp for deterministic parity checks.")
@@ -117,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         "catalog_root": args.catalog_root,
         "ubist_dir": args.ubist_dir,
         "iqvia_nsa_dir": args.iqvia_nsa_dir,
+        "enriched_dir": args.enriched_dir,
+        "input_mode": args.input_mode,
+        "limit_atc4": args.limit_atc4,
+        "max_rows": args.max_rows,
         "ml_id": args.ml_id,
         "truncate": args.truncate,
         "ingested_at": args.ingested_at,
