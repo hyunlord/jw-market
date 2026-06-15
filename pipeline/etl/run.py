@@ -71,6 +71,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Source database to clone raw table definitions from for s1 IQVIA.",
     )
     parser.add_argument(
+        "--strategic-source-db",
+        help="Source database for strategic mart inputs when supported.",
+    )
+    parser.add_argument(
+        "--event-source-db",
+        default="jw_mart",
+        help="Source database for event inputs when supported.",
+    )
+    parser.add_argument(
         "--record-parquet-dir",
         help="Override the IQVIA record parquet cache directory for s1.",
     )
@@ -131,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
         "source": args.source,
         "target_db": args.target_db,
         "source_db": args.source_db,
+        "strategic_source_db": args.strategic_source_db,
+        "event_source_db": args.event_source_db,
         "record_parquet_dir": args.record_parquet_dir,
         "batch_size": args.batch_size,
         "dry_run": args.dry_run,
