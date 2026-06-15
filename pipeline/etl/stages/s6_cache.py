@@ -14,13 +14,26 @@ def run(params: dict[str, Any]) -> int:
     source_db = params.get("source_db") or "jw_mart"
     strategic_source_db = params.get("strategic_source_db") or source_db
     event_source_db = params.get("event_source_db") or "jw_mart"
+    cache_cause_mode = str(params.get("cache_cause_mode") or "full-all-brands")
     smoke_market = params.get("ml_id") if params.get("dry_run") or params.get("ml_id") else None
     if not isinstance(target_db, str) or not target_db:
         print(f"[{STAGE}] target_db is required for isolated cache builds")
         return 2
+    if cache_cause_mode not in {"full-all-brands", "serving-slim"}:
+        print(f"[{STAGE}] unsupported cache_cause_mode={cache_cause_mode}")
+        return 2
+    if smoke_market and cache_cause_mode == "full-all-brands":
+        print(
+            f"[{STAGE}] --ml-id partial cache_cause builds cannot use full-all-brands; "
+            "archive partial mode wraps the selected market in one Galera transaction. "
+            "Use --cache-cause-mode serving-slim for partial smoke, or omit --ml-id "
+            "for the production full-all-brands build."
+        )
+        return 2
     print(
         f"[{STAGE}] target_db={target_db} source_db={source_db} "
-        f"strategic_source_db={strategic_source_db} smoke_market={smoke_market}"
+        f"strategic_source_db={strategic_source_db} smoke_market={smoke_market} "
+        f"cache_cause_mode={cache_cause_mode}"
     )
     recreate_database(
         target_db,
@@ -34,7 +47,11 @@ def run(params: dict[str, Any]) -> int:
     )
     print(f"[{STAGE}] copied_inputs={copied}")
     create_cache_tables(target_db)
-    results = run_archive_builders(target_db, smoke_market=smoke_market)
+    results = run_archive_builders(
+        target_db,
+        smoke_market=smoke_market,
+        cache_cause_mode=cache_cause_mode,
+    )
     for result in results:
         print(f"[{STAGE}] builder={result.script} rc={result.rc}")
     failed = [result for result in results if result.rc != 0]

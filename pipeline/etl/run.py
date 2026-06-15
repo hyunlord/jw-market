@@ -53,6 +53,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit-atc4", type=int, help="Limit S4 processing to the first N ATC4 codes for smoke checks.")
     parser.add_argument("--max-rows", type=int, help="Limit raw input rows for supported smoke checks.")
     parser.add_argument("--ml-id", help="Run one market id when supported.")
+    parser.add_argument(
+        "--cache-cause-mode",
+        choices=["full-all-brands", "serving-slim"],
+        default="full-all-brands",
+        help="S6 cache_cause output mode; production default is full-all-brands.",
+    )
     parser.add_argument("--truncate", action="store_true", help="Remove target output before supported stage loads.")
     parser.add_argument("--ingested-at", help="Override s2 extract timestamp for deterministic parity checks.")
     parser.add_argument(
@@ -135,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         "limit_atc4": args.limit_atc4,
         "max_rows": args.max_rows,
         "ml_id": args.ml_id,
+        "cache_cause_mode": args.cache_cause_mode,
         "truncate": args.truncate,
         "ingested_at": args.ingested_at,
         "source": args.source,

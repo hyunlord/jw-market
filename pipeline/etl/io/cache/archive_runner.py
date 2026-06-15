@@ -160,7 +160,12 @@ def _run_script(temp_root: Path, script: str, args: list[str], env: dict[str, st
     return BuilderResult(script=script, rc=int(completed.returncode))
 
 
-def run_archive_builders(target_db: str, *, smoke_market: str | None = None) -> list[BuilderResult]:
+def run_archive_builders(
+    target_db: str,
+    *,
+    smoke_market: str | None = None,
+    cache_cause_mode: str = "full-all-brands",
+) -> list[BuilderResult]:
     temp_root = materialize_archive()
     try:
         env = build_env(target_db)
@@ -169,6 +174,10 @@ def run_archive_builders(target_db: str, *, smoke_market: str | None = None) -> 
             _run_script(temp_root, "build_cache_market_status.py", ["--verbose"], env),
         ]
         cause_args = ["--verbose"]
+        if cache_cause_mode == "full-all-brands":
+            cause_args.append("--full-all-brands")
+        elif cache_cause_mode != "serving-slim":
+            raise ValueError(f"unsupported cache_cause_mode: {cache_cause_mode}")
         if smoke_market:
             cause_args.extend(["--market", smoke_market])
         results.append(_run_script(temp_root, "build_cache_cause.py", cause_args, env))
