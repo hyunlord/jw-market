@@ -97,6 +97,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=10000, help="Batch size for s1 source loaders.")
     parser.add_argument("--dry-run", action="store_true", help="Run source dispatch without writing when supported.")
     parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="For UBIST s1, compare source files to target _manifest.json and append only new files.",
+    )
+    parser.add_argument(
         "--ubist-mode",
         choices=["replace", "append"],
         default="replace",
@@ -182,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         "record_parquet_dir": args.record_parquet_dir,
         "batch_size": args.batch_size,
         "dry_run": args.dry_run,
+        "incremental": args.incremental,
         "ubist_mode": args.ubist_mode,
         "mode": mode_name(args),
     }

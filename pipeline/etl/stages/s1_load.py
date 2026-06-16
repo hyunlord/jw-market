@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.etl.io import iqvia_loader
-from pipeline.etl.io.ubist_loader import TARGET_DIR, discover_xlsx, dry_run, run_ubist_load
+from pipeline.etl.io.ubist_loader import (
+    TARGET_DIR,
+    discover_xlsx,
+    dry_run,
+    run_incremental_ubist_load,
+    run_ubist_load,
+)
 
 STAGE = "s1 load"
 VALID_SOURCES = {"ubist", "iqvia", "all"}
@@ -16,8 +22,28 @@ def _run_ubist(params: dict[str, Any]) -> int:
     target = Path(params["target_dir"]) if params.get("target_dir") else TARGET_DIR
     mode = params.get("ubist_mode") or "replace"
     dry = bool(params.get("dry_run"))
+    incremental = bool(params.get("incremental"))
     file_arg = params.get("file")
     try:
+        if incremental:
+            stats = run_incremental_ubist_load(
+                target=target,
+                file=Path(str(file_arg)) if file_arg else None,
+                all_sources=not bool(file_arg),
+                dry=dry,
+            )
+            if dry:
+                print(f"[{STAGE}] UBIST incremental dry-run 완료 target={target}")
+                return 0
+            total_rows = sum(stat.row_count for stat in stats.values())
+            print(
+                f"[{STAGE}] UBIST incremental load 완료 "
+                f"target={target} partitions={len(stats)} rows={total_rows}"
+            )
+            for period in sorted(stats):
+                print(f"[{STAGE}] UBIST {period}: rows={stats[period].row_count}")
+            return 0
+
         if dry:
             paths = discover_xlsx(
                 argparse.Namespace(all=not bool(file_arg), folder=None, file=file_arg)
@@ -97,7 +123,12 @@ def run(params: dict[str, Any]) -> int:
         print(f"[{STAGE}] 실패: unknown source={source!r}")
         return 1
 
-    if source in {"ubist", "all"} and not params.get("dry_run") and not params.get("file"):
+    if (
+        source in {"ubist", "all"}
+        and not params.get("dry_run")
+        and not params.get("file")
+        and not params.get("incremental")
+    ):
         print(f"[{STAGE}] 실패: non-dry UBIST requires --file to avoid full reload")
         return 2
 

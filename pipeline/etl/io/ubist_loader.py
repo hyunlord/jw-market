@@ -149,6 +149,22 @@ class DedupReport:
     conflict_rows: int
 
 
+@dataclass(frozen=True)
+class SourceSummary:
+    path: Path
+    source_file: str
+    source_folder: str
+    periods: tuple[str, ...]
+
+
+@dataclass
+class IncrementalPlan:
+    add: list[SourceSummary]
+    skip: list[SourceSummary]
+    conflicts: list[dict[str, str]]
+    loaded_source_files: set[str]
+
+
 def now_kst() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
 
@@ -264,7 +280,7 @@ def resolve_path(raw_path: str) -> Path:
 
 def discover_xlsx(args: argparse.Namespace) -> list[Path]:
     paths: list[Path] = []
-    if args.all:
+    if args.all or (getattr(args, "incremental", False) and not args.folder and not args.file):
         if not UBIST_ROOT.exists():
             raise FileNotFoundError(f"Missing UBIST root: {UBIST_ROOT}")
         # 엑셀 임시 잠금파일(~$) 제외 — 원본 아님.
@@ -286,6 +302,11 @@ def source_folder_for(path: Path) -> str:
         return str(path.parent.relative_to(UBIST_ROOT))
     except ValueError:
         return str(path.parent)
+
+
+def normalized_source_file(path_or_name: Path | str) -> str:
+    name = path_or_name.name if isinstance(path_or_name, Path) else str(path_or_name)
+    return unicodedata.normalize("NFC", name)
 
 
 def classify_sheet(sheet_name: str, header1: tuple[object, ...], header2: tuple[object, ...]) -> SheetMapping:
@@ -585,7 +606,14 @@ def deduplicate_written_partitions(target: Path, stats: dict[str, PartitionStats
     return reports
 
 
-def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate: bool) -> dict[str, PartitionStats]:
+def load_to_parquet(
+    xlsx_paths: list[Path],
+    target: Path,
+    *,
+    mode: str,
+    truncate: bool,
+    previous_manifest: dict[str, object] | None = None,
+) -> dict[str, PartitionStats]:
     timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
     tmp_target = target.parent / f"{target.name}.__tmp_{timestamp}"
     backup_target = target.parent / f"{target.name}.__backup_{timestamp}"
@@ -618,7 +646,7 @@ def load_to_parquet(xlsx_paths: list[Path], target: Path, *, mode: str, truncate
         writer.close()
 
     deduplicate_written_partitions(tmp_target, writer.stats)
-    write_manifest(tmp_target, writer.stats, xlsx_paths)
+    write_manifest(tmp_target, writer.stats, xlsx_paths, previous_manifest=previous_manifest)
 
     if target.exists():
         if truncate or mode == "replace":
@@ -637,8 +665,37 @@ def partition_path(period: str) -> str:
     return f"year={year}/month={month}/data.parquet"
 
 
-def write_manifest(target: Path, stats: dict[str, PartitionStats], xlsx_paths: list[Path]) -> None:
+def write_manifest(
+    target: Path,
+    stats: dict[str, PartitionStats],
+    xlsx_paths: list[Path],
+    *,
+    previous_manifest: dict[str, object] | None = None,
+) -> None:
     generated_at = now_kst()
+    previous_partitions = {}
+    if previous_manifest:
+        for entry in previous_manifest.get("partitions", []):
+            if isinstance(entry, dict) and entry.get("period_yyyymm"):
+                previous_partitions[str(entry["period_yyyymm"])] = dict(entry)
+    partition_entries = previous_partitions
+    for period in sorted(stats):
+        partition_entries[period] = {
+            "period_yyyymm": period,
+            "path": partition_path(period),
+            "row_count": stats[period].row_count,
+            "source_files": sorted(stats[period].source_files),
+            "loaded_at": generated_at,
+        }
+    source_file_count = len(
+        {
+            normalized_source_file(source)
+            for entry in partition_entries.values()
+            for source in entry.get("source_files", [])
+        }
+    )
+    if not previous_manifest:
+        source_file_count = len(xlsx_paths)
     manifest = {
         "schema_version": "1.0",
         "generated_at": generated_at,
@@ -653,17 +710,8 @@ def write_manifest(target: Path, stats: dict[str, PartitionStats], xlsx_paths: l
             "dropped_after_sample_match": ["제조사", "국내/외자", "판매사", "ATC", "성분"],
             "retained_distinct": ["판매사2"],
         },
-        "source_file_count": len(xlsx_paths),
-        "partitions": [
-            {
-                "period_yyyymm": period,
-                "path": partition_path(period),
-                "row_count": stats[period].row_count,
-                "source_files": sorted(stats[period].source_files),
-                "loaded_at": generated_at,
-            }
-            for period in sorted(stats)
-        ],
+        "source_file_count": source_file_count,
+        "partitions": [partition_entries[period] for period in sorted(partition_entries)],
     }
     target.mkdir(parents=True, exist_ok=True)
     (target / "_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -704,23 +752,188 @@ def dry_run(xlsx_paths: list[Path], limit_rows: int = 3) -> None:
             print()
 
 
+def read_manifest(target: Path) -> dict[str, object]:
+    manifest_path = target / "_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing UBIST manifest: {manifest_path}")
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def manifest_source_files(manifest: dict[str, object]) -> set[str]:
+    return {
+        normalized_source_file(source)
+        for entry in manifest.get("partitions", [])
+        if isinstance(entry, dict)
+        for source in entry.get("source_files", [])
+    }
+
+
+def summarize_source(path: Path) -> SourceSummary:
+    periods: set[str] = set()
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        for sheet_name in workbook.sheetnames:
+            worksheet = workbook[sheet_name]
+            rows_iter = worksheet.iter_rows(values_only=True)
+            try:
+                header1 = next(rows_iter)
+                header2 = next(rows_iter)
+            except StopIteration:
+                continue
+            mapping = classify_sheet(sheet_name, header1, header2)
+            periods.update(period for _, _, _, period in mapping.metric_cols)
+    finally:
+        workbook.close()
+    return SourceSummary(
+        path=path,
+        source_file=normalized_source_file(path),
+        source_folder=unicodedata.normalize("NFC", source_folder_for(path)),
+        periods=tuple(sorted(periods)),
+    )
+
+
+def incremental_plan(xlsx_paths: list[Path], target: Path) -> IncrementalPlan:
+    manifest = read_manifest(target)
+    loaded = manifest_source_files(manifest)
+    summaries = [summarize_source(path) for path in xlsx_paths]
+    add = [summary for summary in summaries if summary.source_file not in loaded]
+    skip = [summary for summary in summaries if summary.source_file in loaded]
+
+    known_paths = {normalized_source_file(path): path for path in xlsx_paths}
+    if UBIST_ROOT.exists():
+        for path in UBIST_ROOT.rglob("*.xlsx"):
+            if not path.name.startswith("~$"):
+                known_paths.setdefault(normalized_source_file(path), path.resolve())
+    by_name = {summary.source_file: summary for summary in summaries}
+    existing: list[SourceSummary] = []
+    for name in sorted(loaded):
+        if name in by_name:
+            existing.append(by_name[name])
+        elif name in known_paths:
+            existing.append(summarize_source(known_paths[name]))
+    conflicts = detect_period_conflicts(add, existing)
+    return IncrementalPlan(add=add, skip=skip, conflicts=conflicts, loaded_source_files=loaded)
+
+
+def detect_period_conflicts(add: list[SourceSummary], existing: list[SourceSummary]) -> list[dict[str, str]]:
+    conflicts: list[dict[str, str]] = []
+    seen: dict[tuple[str, str], SourceSummary] = {}
+
+    # 같은 원천 폴더에서 같은 월을 두 파일이 제공하면 실제 metric-key 충돌
+    # 가능성이 높다. 예: 종병 2501-07과 종병 2507-12의 2025-07 겹침.
+    for summary in existing + add:
+        for period in summary.periods:
+            key = (summary.source_folder, period)
+            previous = seen.get(key)
+            if previous and (summary in add or previous in add):
+                conflicts.append(
+                    {
+                        "period_yyyymm": period,
+                        "source_folder": summary.source_folder,
+                        "left": previous.source_file,
+                        "right": summary.source_file,
+                        "reason": "same source_folder period overlap",
+                    }
+                )
+            else:
+                seen[key] = summary
+    return conflicts
+
+
+def print_incremental_plan(plan: IncrementalPlan) -> None:
+    print("# UBIST Incremental Plan\n")
+    print(f"- loaded source files in manifest: {len(plan.loaded_source_files)}")
+    print(f"- add candidates: {len(plan.add)}")
+    print(f"- skipped already loaded: {len(plan.skip)}")
+    print(f"- conflicts: {len(plan.conflicts)}\n")
+
+    print("## ADD")
+    for summary in plan.add:
+        print(f"- {summary.path} | periods={summary.periods[0]}..{summary.periods[-1]} ({len(summary.periods)})")
+    print("\n## SKIP")
+    for summary in plan.skip:
+        print(f"- {summary.path}")
+    if plan.conflicts:
+        print("\n## CONFLICTS")
+        for conflict in plan.conflicts:
+            print(
+                "- {period_yyyymm} | {source_folder} | {left} <> {right} | {reason}".format(
+                    **conflict
+                )
+            )
+
+
+def run_incremental_ubist_load(
+    *,
+    target: Path,
+    paths: list[Path] | None = None,
+    folder: Path | None = None,
+    file: Path | None = None,
+    all_sources: bool = True,
+    dry: bool = False,
+) -> dict[str, PartitionStats]:
+    args = argparse.Namespace(
+        all=all_sources,
+        folder=str(folder) if folder is not None else None,
+        file=str(file) if file is not None else None,
+        dry_run=dry,
+        truncate=False,
+        mode="append",
+        target_dir=str(target),
+        incremental=True,
+    )
+    xlsx_paths = [p.resolve() for p in paths] if paths is not None else discover_xlsx(args)
+    manifest = read_manifest(target)
+    plan = incremental_plan(xlsx_paths, target)
+    print_incremental_plan(plan)
+    if dry:
+        return {}
+    if plan.conflicts:
+        raise RuntimeError("UBIST incremental load stopped: period conflicts found")
+    if not plan.add:
+        LOGGER.info("UBIST incremental load has no new source files target=%s", target)
+        return {}
+    return load_to_parquet(
+        [summary.path for summary in plan.add],
+        target,
+        mode="append",
+        truncate=True,
+        previous_manifest=manifest,
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument("--folder", help="Folder containing UBIST xlsx files")
     source.add_argument("--file", help="Single UBIST xlsx file")
     source.add_argument("--all", action="store_true", help="Load all xlsx files below data/UBIST")
+    parser.add_argument("--incremental", action="store_true", help="Compare source files to target _manifest.json and append only new files")
     parser.add_argument("--dry-run", action="store_true", help="Analyze schema and sample rows without writing")
     parser.add_argument("--truncate", action="store_true", help="Replace the existing output/ubist target")
     parser.add_argument("--mode", choices=["replace", "append"], default="replace")
     parser.add_argument("--target-dir", default=str(TARGET_DIR))
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.incremental and not (args.folder or args.file or args.all):
+        parser.error("one of --folder, --file, or --all is required unless --incremental is used")
+    return args
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
         xlsx_paths = discover_xlsx(args)
+        if args.incremental:
+            stats = run_incremental_ubist_load(
+                target=Path(args.target_dir),
+                paths=xlsx_paths,
+                dry=args.dry_run,
+            )
+            if not args.dry_run:
+                LOGGER.info("partition summary")
+                for period in sorted(stats):
+                    LOGGER.info("%s: %s", period, f"{stats[period].row_count:,}")
+            return 0
         if args.dry_run:
             dry_run(xlsx_paths)
             return 0
