@@ -6,7 +6,6 @@ from typing import Any
 
 import pymysql
 
-from pipeline.etl.io.mart.layer3_compute_general_v3 import compute_general, load_env
 from pipeline.etl.lib.ops_utils import find_project_root, first_existing
 
 
@@ -73,6 +72,8 @@ CREATE TABLE IF NOT EXISTS mart_general_market_metric (
 
 
 def _env() -> dict[str, str]:
+    from pipeline.etl.io.mart.layer3_compute_general_v3 import load_env
+
     env_path = first_existing(PROJECT_ROOT / "pipeline" / "docker" / ".env", PROJECT_ROOT / "docker" / ".env")
     env = load_env(env_path)
     for key, value in os.environ.items():
@@ -140,6 +141,8 @@ def run(params: dict[str, Any]) -> int:
         enriched_dir = params.get("enriched_dir") or params.get("target_dir")
         if enriched_dir:
             os.environ["S4_ENRICHED_DIR"] = str(enriched_dir)
+        if params.get("catalog_root"):
+            os.environ["S4_CATALOG_DIR"] = str(params["catalog_root"])
         os.environ["S4_INPUT_MODE"] = str(params.get("input_mode") or "raw")
         if params.get("iqvia_nsa_dir"):
             os.environ["S4_IQVIA_NSA_DIR"] = str(params["iqvia_nsa_dir"])
@@ -147,6 +150,8 @@ def run(params: dict[str, Any]) -> int:
             os.environ["S4_UBIST_DIR"] = str(params["ubist_dir"])
         _ensure_isolated_schema(target_db, source_db)
         _configure_mart_env(target_db, source_db)
+        from pipeline.etl.io.mart.layer3_compute_general_v3 import compute_general
+
         stats: list[dict[str, Any]] = []
         for source in ("ubist", "iqvia_nsa"):
             _, _, source_stats = compute_general(

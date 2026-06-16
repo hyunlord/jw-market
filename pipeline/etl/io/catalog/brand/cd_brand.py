@@ -56,12 +56,14 @@ def load_cd_brand_records(
     strategic_brand_path: Path,
     cd_market_path: Path,
     cd_filter_path: Path,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
     ingested_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     brand_rows = read_parquet_rows(strategic_brand_path)
     cd_market_rows = read_parquet_rows(cd_market_path)
     cd_filter_rows = read_parquet_rows(cd_filter_path)
-    contexts = strategic_product.load_context_by_brand_id()
+    contexts = strategic_product.load_context_by_brand_id(input_file=input_file, catalog_path=catalog_path)
     mismatches = recompute_cd_assignments(brand_rows, cd_market_rows, cd_filter_rows, contexts)
     if mismatches:
         raise ValueError(f"Q-51 vs cd_filter cross-check mismatch: {mismatches[:10]}")

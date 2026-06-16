@@ -13,9 +13,12 @@ from pipeline.etl.io.catalog.master import drug as master_drug
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_CATALOG_PATH = PROJECT_ROOT / "pipeline" / "etl" / "config" / "master_column_mapping_catalog.md"
 
-def load_context_by_brand_id() -> dict[str, dict[str, Any]]:
-    xlsx_path = master_drug.resolve_input_file(master_drug.DEFAULT_INPUT_FILE)
-    metadata_catalog = master_drug.load_column_metadata_catalog(DEFAULT_CATALOG_PATH)
+def load_context_by_brand_id(
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    xlsx_path = master_drug.resolve_input_file(input_file or master_drug.DEFAULT_INPUT_FILE)
+    metadata_catalog = master_drug.load_column_metadata_catalog(catalog_path or DEFAULT_CATALOG_PATH)
 
     contexts: dict[str, dict[str, Any]] = {}
     wb = load_workbook(xlsx_path, read_only=True, data_only=True)

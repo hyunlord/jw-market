@@ -37,10 +37,12 @@ def load_strategic_brand_records(
     ml_market_path: Path,
     cd_filter_path: Path,
     cd_market_path: Path,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
     ingested_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    xlsx_path = master_drug.resolve_input_file(master_drug.DEFAULT_INPUT_FILE)
-    metadata_catalog = master_drug.load_column_metadata_catalog(DEFAULT_CATALOG_PATH)
+    xlsx_path = master_drug.resolve_input_file(input_file or master_drug.DEFAULT_INPUT_FILE)
+    metadata_catalog = master_drug.load_column_metadata_catalog(catalog_path or DEFAULT_CATALOG_PATH)
 
     ml_rows = read_parquet_rows(ml_market_path)
     cd_filter_rows = read_parquet_rows(cd_filter_path)

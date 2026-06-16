@@ -10,7 +10,7 @@ from pipeline.etl.lib.ops_utils import configure_logging, find_project_root, fir
 LOGGER = configure_logging(__name__)
 PROJECT_ROOT = find_project_root(Path(__file__).resolve())
 OUTPUT_DIR = PROJECT_ROOT / "output"
-CATALOG_DIR = first_existing(OUTPUT_DIR / "catalog", PROJECT_ROOT / "parquet")
+CATALOG_DIR = Path(os.environ["S4_CATALOG_DIR"]) if os.environ.get("S4_CATALOG_DIR") else first_existing(OUTPUT_DIR / "catalog", PROJECT_ROOT / "parquet")
 ENRICHED_DIR = Path(os.environ.get("S4_ENRICHED_DIR", str(OUTPUT_DIR / "enriched")))
 IQVIA_NSA_DIR = Path(os.environ.get("S4_IQVIA_NSA_DIR", str(OUTPUT_DIR / "iqvia_nsa")))
 UBIST_DIR = Path(os.environ.get("S4_UBIST_DIR", str(OUTPUT_DIR / "ubist")))

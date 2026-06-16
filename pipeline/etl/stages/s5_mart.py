@@ -6,9 +6,6 @@ from typing import Any
 
 import pymysql
 
-from pipeline.etl.io.mart.layer3_compute_general_v3 import load_env
-from pipeline.etl.io.mart.strategic_cd import compute_strategic_cd
-from pipeline.etl.io.mart.strategic_ml import compute_strategic_ml
 from pipeline.etl.lib.ops_utils import find_project_root, first_existing
 
 STAGE = "s5 mart"
@@ -99,6 +96,8 @@ STRATEGIC_CD_MARKET_DDL = STRATEGIC_ML_MARKET_DDL.replace("mart_strategic_ml_mar
 
 
 def _env() -> dict[str, str]:
+    from pipeline.etl.io.mart.layer3_compute_general_v3 import load_env
+
     env_path = first_existing(PROJECT_ROOT / "pipeline" / "docker" / ".env", PROJECT_ROOT / "docker" / ".env")
     env = load_env(env_path)
     for key, value in os.environ.items():
@@ -162,8 +161,13 @@ def run(params: dict[str, Any]) -> int:
         print(f"[{STAGE}] 실패: --target-db is required for isolated mart writes")
         return 2
     try:
+        if params.get("catalog_root"):
+            os.environ["S5_CATALOG_DIR"] = str(params["catalog_root"])
         _ensure_isolated_schema(target_db, source_db)
         _configure_mart_env(target_db, source_db)
+        from pipeline.etl.io.mart.strategic_cd import compute_strategic_cd
+        from pipeline.etl.io.mart.strategic_ml import compute_strategic_ml
+
         market_id = str(params.get("ml_id") or "").strip()
         run_ml = not market_id or market_id.startswith("ml_")
         run_cd = not market_id or market_id.startswith("cd_")

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .general_config import PROJECT_ROOT, first_existing
 
-CATALOG_DIR = first_existing(PROJECT_ROOT / "output" / "catalog", PROJECT_ROOT / "parquet")
+CATALOG_DIR = Path(os.environ["S5_CATALOG_DIR"]) if os.environ.get("S5_CATALOG_DIR") else first_existing(PROJECT_ROOT / "output" / "catalog", PROJECT_ROOT / "parquet")
 DRY_RUN_DIR = Path("/tmp")
 ML_BRAND_JSONL = "strategic_ml_v3_brand_rows.jsonl"
 ML_MARKET_JSONL = "strategic_ml_v3_market_rows.jsonl"

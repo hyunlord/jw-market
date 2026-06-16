@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--file", help="Load or dry-run one source file for s1 smoke checks.")
     parser.add_argument("--input-file", help="Override the stage input file when supported.")
+    parser.add_argument("--mi-master", help="Explicit MI Master xlsx path for s2 catalog stages.")
     parser.add_argument("--catalog-path", help="Override the s2 catalog mapping config.")
+    parser.add_argument("--cache-dir", help="Override the s2 seed cache directory when supported.")
+    parser.add_argument("--inputs-dir", help="Override the s2 auxiliary inputs directory when supported.")
+    parser.add_argument("--env-file", help="Load DB environment values from an explicit .env file.")
     parser.add_argument("--audit-dir", help="Override the stage audit directory when supported.")
     parser.add_argument("--catalog-root", help="Override the catalog parquet root when supported.")
     parser.add_argument("--ubist-dir", help="Override the UBIST parquet root when supported.")
@@ -98,7 +103,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="UBIST parquet write mode for s1.",
     )
     parser.add_argument("--stage", choices=[stage.STAGE.split()[0] for stage in STAGES])
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.input_file and args.mi_master:
+        parser.error("--input-file and --mi-master are aliases; pass only one")
+    return args
+
+
+def load_env_file(path: str | None) -> None:
+    if not path:
+        return
+    env_path = Path(path)
+    if not env_path.exists():
+        raise FileNotFoundError(f"--env-file not found: {env_path}")
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
 
 def select_stages(args: argparse.Namespace) -> list[Any]:
@@ -121,6 +143,11 @@ def mode_name(args: argparse.Namespace) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    try:
+        load_env_file(args.env_file)
+    except Exception as exc:
+        print(f"[etl] 실패 env-file={args.env_file}: {exc}")
+        return 1
     params: dict[str, Any] = {
         "period": args.period,
         "apply_change": args.apply_change,
@@ -130,8 +157,11 @@ def main(argv: list[str] | None = None) -> int:
         "record_baseline": args.record_baseline,
         "target_dir": args.target_dir,
         "file": args.file,
-        "input_file": args.input_file,
+        "input_file": args.mi_master or args.input_file,
         "catalog_path": args.catalog_path,
+        "cache_dir": args.cache_dir,
+        "inputs_dir": args.inputs_dir,
+        "env_file": args.env_file,
         "audit_dir": args.audit_dir,
         "catalog_root": args.catalog_root,
         "ubist_dir": args.ubist_dir,

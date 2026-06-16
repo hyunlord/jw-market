@@ -33,22 +33,27 @@ def _result(catalog_dir: Path, name: str, stats: dict[str, Any]) -> PostfixResul
     return PostfixResult(name=name, rows=int(len(frame)), columns=list(frame.columns), output_path=path, stats=stats)
 
 
-def run_postfix(*, output_root: Path) -> list[PostfixResult]:
+def run_postfix(
+    *,
+    output_root: Path,
+    inputs_dir: Path | None = None,
+    ubist_dir: Path | None = None,
+) -> list[PostfixResult]:
     """Run the six archive run_layer0_postfix stages against parquet catalog."""
     catalog_dir = output_root / "parquet"
-    ubist_dir = output_root / "output" / "ubist"
-    worklist_path = output_root / "inputs" / "molecule_v4_worklist.csv"
+    ubist_source_dir = ubist_dir or output_root / "output" / "ubist"
+    worklist_path = (inputs_dir or output_root / "inputs") / "molecule_v4_worklist.csv"
     if not worklist_path.exists():
         raise FileNotFoundError(f"required molecule worklist not found: {worklist_path}")
     results: list[PostfixResult] = []
     stats = apply_canonical(catalog_dir)
     results.append(_result(catalog_dir, "strategic_brand", {"step": "canonical", **stats}))
     results.append(_result(catalog_dir, "cd_brand", {"step": "canonical", **stats}))
-    stats = apply_ml003(catalog_dir, ubist_dir)
+    stats = apply_ml003(catalog_dir, ubist_source_dir)
     results.append(_result(catalog_dir, "strategic_brand", {"step": "fix_ml003", **stats}))
     stats = rebuild_strategic_brand(_catalog_file(catalog_dir, "strategic_brand"))
     results.append(_result(catalog_dir, "strategic_brand", {"step": "rebuild_strategic_brand", **stats}))
-    stats = apply_ox_gx(catalog_dir, ubist_dir)
+    stats = apply_ox_gx(catalog_dir, ubist_source_dir)
     results.append(_result(catalog_dir, "ml_market", {"step": "apply_oxgx", **stats}))
     results.append(_result(catalog_dir, "strategic_brand", {"step": "apply_oxgx", **stats}))
     stats = rebuild_cd_brand(catalog_dir)

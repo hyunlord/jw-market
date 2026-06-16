@@ -47,6 +47,8 @@ def _ingested_at(value: str | datetime | None) -> datetime | None:
 def run_strategic_brand(
     *,
     output_root: Path = PROJECT_ROOT,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
     ingested_at: str | datetime | None = None,
 ) -> BrandProductCatalogResult:
     ml_market = _output(output_root, "parquet/ml_market/ml_market.parquet")
@@ -58,6 +60,8 @@ def run_strategic_brand(
         ml_market,
         cd_filter,
         cd_market,
+        input_file=input_file,
+        catalog_path=catalog_path,
         ingested_at=_ingested_at(ingested_at),
     )
     strategic_brand.write_parquet(records, output_path)
@@ -69,13 +73,17 @@ def run_strategic_brand(
 def run_strategic_product(
     *,
     output_root: Path = PROJECT_ROOT,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
+    ubist_dir: Path | None = None,
+    iqvia_nsa_dir: Path | None = None,
     ingested_at: str | datetime | None = None,
 ) -> BrandProductCatalogResult:
     strategic_brand_path = _output(output_root, "parquet/strategic_brand/strategic_brand.parquet")
     ml_market = _output(output_root, "parquet/ml_market/ml_market.parquet")
     cd_market = _output(output_root, "parquet/cd_market/cd_market.parquet")
-    ubist_path = strategic_product.resolve_ubist_latest(_output(output_root, "output/ubist"))
-    iqvia_path = strategic_product.resolve_iqvia_latest(_output(output_root, "output/iqvia_nsa"))
+    ubist_path = strategic_product.resolve_ubist_latest(ubist_dir or _output(output_root, "output/ubist"))
+    iqvia_path = strategic_product.resolve_iqvia_latest(iqvia_nsa_dir or _output(output_root, "output/iqvia_nsa"))
     output_path = _output(output_root, "parquet/strategic_product/strategic_product.parquet")
     cache_path = _output(output_root, "data/cache/prototype_14_step6_product_match_coverage.csv")
     records, coverage_rows = strategic_product.load_strategic_product_records(
@@ -84,6 +92,8 @@ def run_strategic_product(
         cd_market,
         ubist_path,
         iqvia_path,
+        input_file=input_file,
+        catalog_path=catalog_path,
         ingested_at=_ingested_at(ingested_at),
     )
     strategic_product.write_parquet(records, output_path)
@@ -95,6 +105,8 @@ def run_strategic_product(
 def run_cd_brand(
     *,
     output_root: Path = PROJECT_ROOT,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
     ingested_at: str | datetime | None = None,
 ) -> BrandProductCatalogResult:
     strategic_brand_path = _output(output_root, "parquet/strategic_brand/strategic_brand.parquet")
@@ -105,6 +117,8 @@ def run_cd_brand(
         strategic_brand_path,
         cd_market,
         cd_filter,
+        input_file=input_file,
+        catalog_path=catalog_path,
         ingested_at=_ingested_at(ingested_at),
     )
     cd_brand.write_parquet(records, output_path)
@@ -143,9 +157,35 @@ BRAND_PRODUCT_CATALOG_STEPS: tuple[Callable[..., BrandProductCatalogResult], ...
 def run_brand_product_catalog(
     *,
     output_root: Path = PROJECT_ROOT,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
+    ubist_dir: Path | None = None,
+    iqvia_nsa_dir: Path | None = None,
     ingested_at: str | datetime | None = None,
 ) -> list[BrandProductCatalogResult]:
-    return [step(output_root=output_root, ingested_at=ingested_at) for step in BRAND_PRODUCT_CATALOG_STEPS]
+    return [
+        run_strategic_brand(
+            output_root=output_root,
+            input_file=input_file,
+            catalog_path=catalog_path,
+            ingested_at=ingested_at,
+        ),
+        run_strategic_product(
+            output_root=output_root,
+            input_file=input_file,
+            catalog_path=catalog_path,
+            ubist_dir=ubist_dir,
+            iqvia_nsa_dir=iqvia_nsa_dir,
+            ingested_at=ingested_at,
+        ),
+        run_cd_brand(
+            output_root=output_root,
+            input_file=input_file,
+            catalog_path=catalog_path,
+            ingested_at=ingested_at,
+        ),
+        run_cd_product(output_root=output_root, ingested_at=ingested_at),
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:

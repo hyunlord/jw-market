@@ -113,13 +113,15 @@ def load_strategic_product_records(
     cd_market_path: Path,
     ubist_path: Path,
     iqvia_path: Path,
+    input_file: Path | None = None,
+    catalog_path: Path | None = None,
     ingested_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     brand_rows = read_parquet_rows(strategic_brand_path)
     ml_rows = read_parquet_rows(ml_market_path)
     cd_rows = read_parquet_rows(cd_market_path)
     ml_by_id = {str(row["ml_id"]): row for row in ml_rows}
-    contexts = load_context_by_brand_id()
+    contexts = load_context_by_brand_id(input_file=input_file, catalog_path=catalog_path)
     ubist_indexes = load_ubist_indexes(ubist_path)
     iqvia_indexes = load_iqvia_indexes(iqvia_path)
     timestamp = ingested_at or utc_now_datetime()

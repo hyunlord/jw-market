@@ -38,21 +38,22 @@ def _result(name: str, output_path: Path, cache_path: Path) -> TargetPriorityRes
 def run_target_priority(
     *,
     output_root: Path = PROJECT_ROOT,
+    cache_dir: Path | None = None,
+    ubist_dir: Path | None = None,
+    iqvia_nsa_dir: Path | None = None,
     ingested_at: str | None = None,
 ) -> list[TargetPriorityResult]:
+    source_cache_dir = cache_dir or output_root / "data" / "cache"
+    output_cache_dir = output_root / "data" / "cache"
     output_path = _output(
         output_root,
         "parquet/dim_market_target_priority/dim_market_target_priority.parquet",
     )
-    cache_path = _output(
-        output_root,
-        "data/cache/prototype_12_round6_auto_fill_customer_dictionary_estimate.csv",
-    )
-    ubist_path = dim_market_target_priority.resolve_ubist_latest(output_root / "output/ubist")
-    iqvia_path = dim_market_target_priority.resolve_iqvia_latest(output_root / "output/iqvia_nsa")
+    cache_path = output_cache_dir / "prototype_12_round6_auto_fill_customer_dictionary_estimate.csv"
+    ubist_path = dim_market_target_priority.resolve_ubist_latest(ubist_dir or output_root / "output/ubist")
+    iqvia_path = dim_market_target_priority.resolve_iqvia_latest(iqvia_nsa_dir or output_root / "output/iqvia_nsa")
     records = dim_market_target_priority.load_dim_market_target_priority_records(
-        skeleton_path=output_root
-        / "data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv",
+        skeleton_path=source_cache_dir / "prototype_11_step_c4_target_priority_precompute_sample.csv",
         dim_competitive_path=output_root
         / "parquet/dim_market_competitive_dynamics/dim_market_competitive_dynamics.parquet",
         master_drug_path=output_root / "parquet/master_drug/master_drug.parquet",
