@@ -102,6 +102,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="For UBIST s1, compare source files to target _manifest.json and append only new files.",
     )
     parser.add_argument(
+        "--allow-overlap-dedup",
+        action="store_true",
+        help="For UBIST incremental loads, allow same-folder period overlap and rely on business+metric dedup.",
+    )
+    parser.add_argument(
         "--ubist-mode",
         choices=["replace", "append"],
         default="replace",
@@ -188,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": args.batch_size,
         "dry_run": args.dry_run,
         "incremental": args.incremental,
+        "allow_overlap_dedup": args.allow_overlap_dedup,
         "ubist_mode": args.ubist_mode,
         "mode": mode_name(args),
     }

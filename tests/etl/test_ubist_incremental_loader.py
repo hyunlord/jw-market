@@ -5,7 +5,9 @@ from pathlib import Path
 
 import openpyxl
 
-from pipeline.etl.io.ubist_loader import incremental_plan
+import pytest
+
+from pipeline.etl.io.ubist_loader import incremental_plan, run_incremental_ubist_load
 
 
 def _write_manifest(target: Path, source_files: list[str]) -> None:
@@ -70,3 +72,31 @@ def test_incremental_plan_reports_same_folder_period_overlap(tmp_path):
     assert plan.conflicts[0]["period_yyyymm"] == "2025-07"
     assert plan.conflicts[0]["left"] == "종병 2501-07.xlsx"
     assert plan.conflicts[0]["right"] == "종병 2507-12.xlsx"
+
+
+def test_incremental_load_stops_on_period_overlap_by_default(tmp_path):
+    target = tmp_path / "target"
+    _write_manifest(target, [])
+    first = _workbook(tmp_path / "종병 2501-07.xlsx", ["2025-07"])
+    second = _workbook(tmp_path / "종병 2507-12.xlsx", ["2025-07", "2025-08"])
+
+    with pytest.raises(RuntimeError, match="period conflicts"):
+        run_incremental_ubist_load(target=target, paths=[first, second])
+
+
+def test_incremental_load_allows_period_overlap_when_dedup_enabled(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    _write_manifest(target, [])
+    first = _workbook(tmp_path / "종병 2501-07.xlsx", ["2025-07"])
+    second = _workbook(tmp_path / "종병 2507-12.xlsx", ["2025-07", "2025-08"])
+    loaded_paths: list[Path] = []
+
+    def fake_load_to_parquet(paths, target, *, mode, truncate, previous_manifest):
+        loaded_paths.extend(paths)
+        return {}
+
+    monkeypatch.setattr("pipeline.etl.io.ubist_loader.load_to_parquet", fake_load_to_parquet)
+
+    run_incremental_ubist_load(target=target, paths=[first, second], allow_overlap_dedup=True)
+
+    assert loaded_paths == [first.resolve(), second.resolve()]

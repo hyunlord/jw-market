@@ -871,6 +871,7 @@ def run_incremental_ubist_load(
     file: Path | None = None,
     all_sources: bool = True,
     dry: bool = False,
+    allow_overlap_dedup: bool = False,
 ) -> dict[str, PartitionStats]:
     args = argparse.Namespace(
         all=all_sources,
@@ -888,8 +889,13 @@ def run_incremental_ubist_load(
     print_incremental_plan(plan)
     if dry:
         return {}
-    if plan.conflicts:
+    if plan.conflicts and not allow_overlap_dedup:
         raise RuntimeError("UBIST incremental load stopped: period conflicts found")
+    if plan.conflicts and allow_overlap_dedup:
+        LOGGER.warning(
+            "UBIST incremental period conflicts allowed for append+dedup conflicts=%s",
+            len(plan.conflicts),
+        )
     if not plan.add:
         LOGGER.info("UBIST incremental load has no new source files target=%s", target)
         return {}
@@ -909,6 +915,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     source.add_argument("--file", help="Single UBIST xlsx file")
     source.add_argument("--all", action="store_true", help="Load all xlsx files below data/UBIST")
     parser.add_argument("--incremental", action="store_true", help="Compare source files to target _manifest.json and append only new files")
+    parser.add_argument(
+        "--allow-overlap-dedup",
+        action="store_true",
+        help="Allow same-folder period overlap during incremental append; partition dedup keeps identical business+metric rows.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Analyze schema and sample rows without writing")
     parser.add_argument("--truncate", action="store_true", help="Replace the existing output/ubist target")
     parser.add_argument("--mode", choices=["replace", "append"], default="replace")
@@ -928,6 +939,7 @@ def main(argv: list[str]) -> int:
                 target=Path(args.target_dir),
                 paths=xlsx_paths,
                 dry=args.dry_run,
+                allow_overlap_dedup=args.allow_overlap_dedup,
             )
             if not args.dry_run:
                 LOGGER.info("partition summary")

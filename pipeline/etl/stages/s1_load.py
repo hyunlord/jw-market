@@ -31,6 +31,7 @@ def _run_ubist(params: dict[str, Any]) -> int:
                 file=Path(str(file_arg)) if file_arg else None,
                 all_sources=not bool(file_arg),
                 dry=dry,
+                allow_overlap_dedup=bool(params.get("allow_overlap_dedup")),
             )
             if dry:
                 print(f"[{STAGE}] UBIST incremental dry-run 완료 target={target}")
