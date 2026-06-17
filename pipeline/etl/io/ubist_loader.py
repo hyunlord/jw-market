@@ -94,21 +94,7 @@ GENERIC_VALUES = {
 METRIC_COLUMNS = list(METRIC_MAP.values())
 LINEAGE_COLUMNS = ["source_file", "source_folder", "source_sheet", "source_row_no", "ingested_at"]
 STATIC_METADATA_COLUMNS = PATENT_DIMENSIONS
-BUSINESS_GRAIN_COLUMNS = [
-    "제품",
-    "ATC",
-    "브랜드",
-    "성분",
-    "약품코드",
-    "제형",
-    "투여경로",
-    "급여구분",
-    "종별",
-    "진료과",
-    "연령",
-    "성별",
-    "period_yyyymm",
-]
+BUSINESS_GRAIN_COLUMNS = CANONICAL_DIMENSIONS + ["period_yyyymm"]
 BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + METRIC_COLUMNS
 DEDUP_SORT_COLUMNS = ["source_file", "source_sheet", "source_row_no"]
 DEDUP_METADATA_SORT_COLUMNS = ["_static_meta_score"] + DEDUP_SORT_COLUMNS

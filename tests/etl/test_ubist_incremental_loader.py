@@ -63,10 +63,17 @@ def _ubist_row(**overrides):
     row = dict.fromkeys(COLUMNS)
     row.update(
         {
+            "제조사": "테스트제조사",
+            "국내/외자": "국내",
+            "판매사": "테스트판매사",
+            "판매사2": "테스트판매사2",
             "제품": "테스트제품",
             "ATC": "A10BA",
             "브랜드": "테스트브랜드",
+            "약가": "100",
             "성분": "테스트성분",
+            "성분용량": "10mg",
+            "일반/전문": "전문",
             "약품코드": "P001",
             "제형": "정제",
             "투여경로": "경구",
@@ -126,6 +133,19 @@ def test_business_grain_dedup_preserves_metric_conflicts():
     assert report.duplicate_rows_removed == 0
     assert report.conflict_groups == 1
     assert report.conflict_rows == 2
+
+
+def test_business_grain_dedup_preserves_non_patent_canonical_differences():
+    rows = [
+        _ubist_row(source_file="a.xlsx", 제조사="제조사A"),
+        _ubist_row(source_file="b.xlsx", 제조사="제조사B"),
+    ]
+
+    deduped, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+
+    assert len(deduped) == 2
+    assert report.duplicate_rows_removed == 0
+    assert set(deduped["제조사"]) == {"제조사A", "제조사B"}
 
 
 def test_incremental_plan_skips_manifest_source_files_and_adds_new_ones(tmp_path):
