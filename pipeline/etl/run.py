@@ -19,9 +19,10 @@ from pipeline.etl.stages import (  # noqa: E402
     s4_mart,
     s5_mart,
     s6_cache,
+    s7_bridge,
 )
 
-STAGES = [s0_verify, s1_load, s2_catalog, s3_enrich, s4_mart, s5_mart, s6_cache]
+STAGES = [s0_verify, s1_load, s2_catalog, s3_enrich, s4_mart, s5_mart, s6_cache, s7_bridge]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
