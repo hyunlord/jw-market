@@ -93,9 +93,25 @@ GENERIC_VALUES = {
 
 METRIC_COLUMNS = list(METRIC_MAP.values())
 LINEAGE_COLUMNS = ["source_file", "source_folder", "source_sheet", "source_row_no", "ingested_at"]
-BUSINESS_GRAIN_COLUMNS = CANONICAL_DIMENSIONS + PATENT_DIMENSIONS + ["period_yyyymm"]
+STATIC_METADATA_COLUMNS = PATENT_DIMENSIONS
+BUSINESS_GRAIN_COLUMNS = [
+    "제품",
+    "ATC",
+    "브랜드",
+    "성분",
+    "약품코드",
+    "제형",
+    "투여경로",
+    "급여구분",
+    "종별",
+    "진료과",
+    "연령",
+    "성별",
+    "period_yyyymm",
+]
 BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + METRIC_COLUMNS
 DEDUP_SORT_COLUMNS = ["source_file", "source_sheet", "source_row_no"]
+DEDUP_METADATA_SORT_COLUMNS = ["_static_meta_score"] + DEDUP_SORT_COLUMNS
 COLUMNS = (
     CANONICAL_DIMENSIONS
     + PATENT_DIMENSIONS
@@ -455,14 +471,63 @@ def _metric_tuple_key(row: pd.Series) -> tuple[float | None, ...]:
     return tuple(values)
 
 
+def _has_metadata_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    return bool(str(value).strip())
+
+
+def _metadata_completeness_score(frame: pd.DataFrame) -> pd.Series:
+    if not STATIC_METADATA_COLUMNS:
+        return pd.Series(0, index=frame.index)
+    return frame[STATIC_METADATA_COLUMNS].apply(lambda column: column.map(_has_metadata_value)).sum(axis=1)
+
+
+def _dedup_key_value(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, str):
+        text = unicodedata.normalize("NFC", value.strip())
+        return text or None
+    return value
+
+
+def fact_metric_key_set(frame: pd.DataFrame) -> set[tuple[object, ...]]:
+    prepared = frame.reindex(columns=BUSINESS_METRIC_COLUMNS)
+    return {
+        tuple(_dedup_key_value(value) for value in row)
+        for row in prepared.itertuples(index=False, name=None)
+    }
+
+
+def fact_metric_source_map(frame: pd.DataFrame) -> dict[tuple[object, ...], set[str]]:
+    prepared = frame.reindex(columns=BUSINESS_METRIC_COLUMNS + ["source_file"])
+    sources: dict[tuple[object, ...], set[str]] = defaultdict(set)
+    for row in prepared.itertuples(index=False, name=None):
+        key = tuple(_dedup_key_value(value) for value in row[:-1])
+        source = _dedup_key_value(row[-1])
+        if source:
+            sources[key].add(str(source))
+    return sources
+
+
+def fact_metric_overlaps(left: pd.DataFrame, right: pd.DataFrame) -> set[tuple[object, ...]]:
+    return fact_metric_key_set(left) & fact_metric_key_set(right)
+
+
 def deduplicate_business_grain(frame: pd.DataFrame, period: str) -> tuple[pd.DataFrame, DedupReport]:
     """Replace the 2026-02 should_skip workaround with metric-safe grain dedup.
 
-    Lineage columns are excluded from identity. Rows are collapsed only when the
-    business grain and metrics are identical, keeping the deterministic first
-    row by ``source_file, source_sheet, source_row_no``. If the same business
-    grain has different metrics, all rows are preserved and the conflict is
-    reported so the loader never hides data loss behind deduplication.
+    Lineage and static metadata columns are excluded from identity. Rows are
+    collapsed only when the fact grain and metrics are identical, preferring the
+    row with populated patent/PMS/approval metadata and then using the stable
+    ``source_file, source_sheet, source_row_no`` order. If the same fact grain
+    has different metrics, all rows are preserved and the conflict is reported
+    so the loader never hides data loss behind deduplication.
     """
     if frame.empty:
         return frame, DedupReport(period, 0, 0, 0, 0, 0, 0)
@@ -484,10 +549,15 @@ def deduplicate_business_grain(frame: pd.DataFrame, period: str) -> tuple[pd.Dat
     duplicate_groups = int((duplicate_sizes > 1).sum())
     duplicate_rows_removed = int((duplicate_sizes[duplicate_sizes > 1] - 1).sum())
 
-    stable_safe = safe.sort_values(DEDUP_SORT_COLUMNS, kind="mergesort")
+    safe = safe.assign(_static_meta_score=_metadata_completeness_score(safe))
+    stable_safe = safe.sort_values(
+        DEDUP_METADATA_SORT_COLUMNS,
+        ascending=[False, True, True, True],
+        kind="mergesort",
+    )
     deduped_safe = stable_safe.drop_duplicates(subset=BUSINESS_METRIC_COLUMNS, keep="first")
     result = pd.concat([deduped_safe, conflicts], ignore_index=True)
-    result = result.drop(columns=["_metric_tuple", "_metric_conflict"], errors="ignore")
+    result = result.drop(columns=["_metric_tuple", "_metric_conflict", "_static_meta_score"], errors="ignore")
     result = result.sort_values(DEDUP_SORT_COLUMNS, kind="mergesort").reset_index(drop=True)
     report = DedupReport(
         period=period,
@@ -704,6 +774,14 @@ def write_manifest(
         "metric_map": METRIC_MAP,
         "canonical_dimensions": CANONICAL_DIMENSIONS,
         "patent_dimensions": PATENT_DIMENSIONS,
+        "dedup_identity": {
+            "fact_grain_columns": BUSINESS_GRAIN_COLUMNS,
+            "metric_columns": METRIC_COLUMNS,
+            "excluded_lineage_columns": LINEAGE_COLUMNS,
+            "excluded_static_metadata_columns": STATIC_METADATA_COLUMNS,
+            "static_metadata_policy": "prefer populated metadata, then source_file/source_sheet/source_row_no",
+            "metric_conflict_policy": "preserve all rows and report conflicts",
+        },
         "dimension_duplicate_policy": {
             "decision": "collapse_duplicate_semantic_headers",
             "kept": "first occurrence in the fixed dimension block",
@@ -792,6 +870,24 @@ def summarize_source(path: Path) -> SourceSummary:
     )
 
 
+def existing_partition_for(target: Path, period: str) -> Path:
+    year, month = period.split("-")
+    return target / f"year={year}" / f"month={month}" / "data.parquet"
+
+
+def source_period_frame(path: Path, period: str) -> pd.DataFrame:
+    rows = [row for row_period, row in iter_xlsx_rows(path) if row_period == period]
+    return prepare_frame(rows)
+
+
+def source_period_frames(path: Path, periods: set[str]) -> dict[str, pd.DataFrame]:
+    rows_by_period: dict[str, list[dict[str, object]]] = {period: [] for period in periods}
+    for row_period, row in iter_xlsx_rows(path):
+        if row_period in rows_by_period:
+            rows_by_period[row_period].append(row)
+    return {period: prepare_frame(rows) for period, rows in rows_by_period.items()}
+
+
 def incremental_plan(xlsx_paths: list[Path], target: Path) -> IncrementalPlan:
     manifest = read_manifest(target)
     loaded = manifest_source_files(manifest)
@@ -812,6 +908,7 @@ def incremental_plan(xlsx_paths: list[Path], target: Path) -> IncrementalPlan:
         elif name in known_paths:
             existing.append(summarize_source(known_paths[name]))
     conflicts = detect_period_conflicts(add, existing)
+    conflicts.extend(detect_content_overlaps(add, target))
     return IncrementalPlan(add=add, skip=skip, conflicts=conflicts, loaded_source_files=loaded)
 
 
@@ -837,6 +934,39 @@ def detect_period_conflicts(add: list[SourceSummary], existing: list[SourceSumma
                 )
             else:
                 seen[key] = summary
+    return conflicts
+
+
+def detect_content_overlaps(add: list[SourceSummary], target: Path) -> list[dict[str, str]]:
+    conflicts: list[dict[str, str]] = []
+    existing_cache: dict[str, tuple[pd.DataFrame, dict[tuple[object, ...], set[str]]]] = {}
+
+    for summary in add:
+        existing_periods = {period for period in summary.periods if existing_partition_for(target, period).exists()}
+        if not existing_periods:
+            continue
+        frames_by_period = source_period_frames(summary.path, existing_periods)
+        for period in sorted(existing_periods):
+            partition = existing_partition_for(target, period)
+            if period not in existing_cache:
+                existing_frame = pq.read_table(partition, columns=BUSINESS_METRIC_COLUMNS + ["source_file"]).to_pandas()
+                existing_cache[period] = (existing_frame, fact_metric_source_map(existing_frame))
+            existing_frame, source_map = existing_cache[period]
+            candidate_frame = frames_by_period[period]
+            overlaps = fact_metric_overlaps(existing_frame, candidate_frame)
+            if not overlaps:
+                continue
+            left_sources = sorted({source for key in overlaps for source in source_map.get(key, set())})
+            conflicts.append(
+                {
+                    "period_yyyymm": period,
+                    "source_folder": summary.source_folder,
+                    "left": ", ".join(left_sources[:5]) if left_sources else "existing partition",
+                    "right": summary.source_file,
+                    "reason": "content-level fact+metric overlap",
+                    "overlap_keys": str(len(overlaps)),
+                }
+            )
     return conflicts
 
 
