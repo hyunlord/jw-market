@@ -52,6 +52,7 @@ class BrandMetric:
     brand_key: str
     brand_name: str
     atc4_code: str
+    atc4_desc: str
     total_value: float
     market_share_pct: float
     rank: int
@@ -72,6 +73,7 @@ class AggregatedMetrics:
     cagr: float | None
     monthly_series: tuple[dict[str, float | str], ...]
     brands: tuple[BrandMetric, ...]
+    all_brands: tuple[BrandMetric, ...] = ()
 
 
 def quote_identifier(name: str) -> str:

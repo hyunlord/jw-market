@@ -1,10 +1,4 @@
-"""Dynamic market route.
-
-The MVP exposes the general view only: ATC4 filters and molecule filters are
-resolved into a runtime brand set, then aggregated from mart histories.  Existing
-cache routes are untouched; this route is additive and returns ``computed:
-runtime`` so callers can distinguish it from prebuilt serving caches.
-"""
+"""Dynamic market route."""
 
 from __future__ import annotations
 
@@ -15,15 +9,15 @@ from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest, DynamicMarketResponse
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
 
 
 router = APIRouter()
 
 
-@router.post("/api/dynamic-market", response_model=DynamicMarketResponse)
-def dynamic_market(payload: DynamicMarketRequest) -> DynamicMarketResponse:
-    """Compute a general-view market from caller-supplied filters."""
+@router.post("/api/dynamic-market")
+def dynamic_market(payload: DynamicMarketRequest) -> dict:
+    """Compute a caller-defined general-view market with the ``/api/cause`` response contract."""
 
     resolver = GeneralViewResolver(mart_db=config.db_name, bridge_db=config.bridge_db_name)
     aggregator = MetricAggregator(mart_db=config.db_name)
@@ -51,7 +45,7 @@ def dynamic_market(payload: DynamicMarketRequest) -> DynamicMarketResponse:
     return composer.compose(definition=definition, metrics=metrics)
 
 
-def strategic_stub_for_smoke() -> DynamicMarketResponse:
+def strategic_stub_for_smoke() -> dict:
     """Exercise the future strategic resolver contract without mounting it.
 
     Test and audit scripts use this function to prove that a strategic resolver

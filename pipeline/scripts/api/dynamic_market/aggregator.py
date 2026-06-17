@@ -38,7 +38,7 @@ class MetricAggregator:
         top_n: int,
     ) -> AggregatedMetrics:
         if not brands:
-            return AggregatedMetrics(source, measure, "", 0.0, None, None, (), ())
+            return AggregatedMetrics(source, measure, "", 0.0, None, None, (), (), ())
         rows = self._load_metric_rows(brands=brands, source=source, measure=measure)
         brand_metrics, monthly_totals = self._aggregate_rows(rows, period_range=period_range)
         market_size = float(sum(monthly_totals.values()))
@@ -47,6 +47,7 @@ class MetricAggregator:
                 brand_key=item.brand_key,
                 brand_name=item.brand_name,
                 atc4_code=item.atc4_code,
+                atc4_desc=item.atc4_desc,
                 total_value=item.total_value,
                 market_share_pct=round((item.total_value / market_size) * 100, 6) if market_size > 0 else 0.0,
                 rank=index,
@@ -67,6 +68,7 @@ class MetricAggregator:
             cagr=compute_cagr(monthly_series),
             monthly_series=monthly_series,
             brands=ranked[:top_n],
+            all_brands=ranked,
         )
 
     def _load_metric_rows(
@@ -77,18 +79,17 @@ class MetricAggregator:
         measure: str,
     ) -> list[dict]:
         mart_db = quote_identifier(self.mart_db)
-        brand_keys = tuple(brand.brand_key for brand in brands)
-        placeholders = ", ".join(["%s"] * len(brand_keys))
+        scope_sql, scope_params = brand_scope_predicate(brands)
         return db.fetch_all(
             f"""
-            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history
+            SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure, unit_label, raw_value_history
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
-              AND brand_key IN ({placeholders})
+              AND {scope_sql}
             ORDER BY brand_name, brand_key
             """,
-            (source, measure, *brand_keys),
+            (source, measure, *scope_params),
         )
 
     def _aggregate_rows(
@@ -110,6 +111,7 @@ class MetricAggregator:
                     brand_key=str(row["brand_key"]),
                     brand_name=str(row["brand_name"]),
                     atc4_code=str(row["atc4_code"]),
+                    atc4_desc=str(row.get("atc4_desc") or ""),
                     total_value=float(sum(filtered.values())),
                     market_share_pct=0.0,
                     rank=0,
@@ -137,6 +139,27 @@ def filter_periods(history: dict[str, float], period_range: PeriodRange) -> dict
         if (period_range.start is None or period >= period_range.start)
         and (period_range.end is None or period <= period_range.end)
     }
+
+
+def brand_scope_predicate(brands: tuple[BrandRef, ...]) -> tuple[str, tuple[str, ...]]:
+    """Return SQL that preserves the resolver's market grain.
+
+    General-view filters resolve brand rows at ``brand_key + atc4_code`` grain.
+    A few brands appear in more than one ATC4 bucket, so reloading by brand key
+    alone would leak rows outside the caller-defined market.  Strategic-view
+    stubs do not yet carry ATC4 overlay keys; those intentionally fall back to
+    brand-key scope until the real strategic resolver is implemented.
+    """
+
+    if all(brand.atc4_code for brand in brands):
+        pairs = tuple((brand.brand_key, brand.atc4_code) for brand in brands)
+        predicates = " OR ".join(["(brand_key = %s AND atc4_code = %s)"] * len(pairs))
+        params = tuple(value for pair in pairs for value in pair)
+        return f"({predicates})", params
+
+    brand_keys = tuple(brand.brand_key for brand in brands)
+    placeholders = ", ".join(["%s"] * len(brand_keys))
+    return f"brand_key IN ({placeholders})", brand_keys
 
 
 def compute_hhi(brands: tuple[BrandMetric, ...]) -> float | None:
