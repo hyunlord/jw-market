@@ -18,12 +18,12 @@ OLD_ANALYSIS_LEVEL_MARKET_STATUS_BLOCK = '''    target_customer_channels = analy
     analysis_level_market_channels = target_customer_channels or _channels_for_source(source_api)
 '''
 
-NEW_ANALYSIS_LEVEL_MARKET_STATUS_BLOCK = '''    analysis_level_market_channels = analysis_levels.get("channels") or _channels_for_source(source_api)
-    target_customer_channels = analysis_levels.get("channels")
+NEW_ANALYSIS_LEVEL_MARKET_STATUS_BLOCK = '''    target_customer_channels = analysis_levels.get("channels")
     if source_api == "UBIST":
         specialty_channels = ubist_channel_context.get("specialty_channels")
         if isinstance(specialty_channels, list) and specialty_channels:
             target_customer_channels = [str(channel) for channel in specialty_channels]
+    analysis_level_market_channels = target_customer_channels or _channels_for_source(source_api)
 '''
 
 TARGET_LABEL_HELPER_ANCHOR = '''def _analysis_level_market_status_by_channel(
@@ -52,6 +52,28 @@ TARGET_LABEL_REWRITE_ANCHOR = '''    target_customer_competition_by_channel = _t
         periods=periods,
         channels=target_customer_channels,
     )
+'''
+
+ALMS_LABEL_REWRITE_ANCHOR = '''        if not include_all_d3_options:
+            clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
+
+'''
+
+ALMS_LABEL_REWRITE_BLOCK = '''        if not include_all_d3_options:
+            clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
+        if source_api == "UBIST" and isinstance(ubist_channel_context, dict):
+            target_label_map = ubist_channel_context.get("target_channel_label_map")
+            if isinstance(target_label_map, dict) and target_label_map:
+                display_label_map = {str(key): str(value) for key, value in target_label_map.items()}
+                clone_analysis_levels = _target_label_replaced(
+                    clone_analysis_levels,
+                    display_label_map,
+                )
+                analysis_level_market_channels = _target_label_replaced(
+                    analysis_level_market_channels,
+                    display_label_map,
+                )
+
 '''
 
 TARGET_LABEL_REWRITE_BLOCK = '''    target_customer_competition_by_channel = _target_customer_competition(
@@ -118,9 +140,12 @@ def _patch_target_display_labels(temp_root: Path) -> None:
         raise ArchiveTargetPatchError("cache cause archive no longer matches target label helper point")
     if TARGET_LABEL_REWRITE_ANCHOR not in text:
         raise ArchiveTargetPatchError("cache cause archive no longer matches target label rewrite point")
+    if ALMS_LABEL_REWRITE_ANCHOR not in text:
+        raise ArchiveTargetPatchError("cache cause archive no longer matches ALMS label rewrite point")
     if SPECIALTY_CHANNEL_OUTPUT_OLD not in text:
         raise ArchiveTargetPatchError("cache cause archive no longer matches specialty channel output point")
     text = text.replace(TARGET_LABEL_HELPER_ANCHOR, TARGET_LABEL_HELPER_BLOCK, 1)
+    text = text.replace(ALMS_LABEL_REWRITE_ANCHOR, ALMS_LABEL_REWRITE_BLOCK, 1)
     text = text.replace(TARGET_LABEL_REWRITE_ANCHOR, TARGET_LABEL_REWRITE_BLOCK, 1)
     text = text.replace(SPECIALTY_CHANNEL_OUTPUT_OLD, SPECIALTY_CHANNEL_OUTPUT_NEW, 1)
     cause_builder.write_text(text, encoding="utf-8")

@@ -99,11 +99,14 @@ def test_archive_builder_materialization_receives_target_patch_only() -> None:
         assert "target_channel_label_map" in resolver
         assert "specialty_display_channels" in resolver
         assert "from pipeline.scripts.utils.ubist_channel_mapping import" not in resolver
+        assert "analysis_level_market_channels = target_customer_channels or" in cause_builder
         assert (
             'analysis_level_market_channels = analysis_levels.get("channels") '
             'or _channels_for_source(source_api)'
-        ) in cause_builder
-        assert "analysis_level_market_channels = target_customer_channels or" not in cause_builder
+        ) not in cause_builder
+        assert "channels_override=analysis_level_market_channels" in cause_builder
+        assert "clone_analysis_levels = _target_label_replaced(" in cause_builder
+        assert "analysis_level_market_channels = _target_label_replaced(" in cause_builder
         assert "_target_label_replaced" in cause_builder
         assert 'ubist_channel_context.get("specialty_display_channels")' in cause_builder
     finally:
