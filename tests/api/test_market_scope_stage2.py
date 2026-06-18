@@ -229,25 +229,6 @@ def test_strategy_resolver_passes_canonical_source_to_dependencies() -> None:
     assert seen == {"source": "IQVIA", "measure": "sales"}
 
 
-def test_strategy_resolver_blocks_group_when_mart_identity_is_missing() -> None:
-    catalog = MarketScopeCatalog.load_default()
-    resolver = StrategyScopeResolver(
-        catalog=catalog,
-        cache_reader=lambda request, resolved: pytest.fail("group scope must not hit cache fast path"),
-        fact_provider=lambda request, resolved: (_fact("strategy_006", "A", raw_fact_id=None, value=100),),
-    )
-    request = MarketScopeRequest(
-        brand="리바로젯",
-        view_family=ViewFamily.STRATEGY,
-        source="UBIST",
-        measure="sales",
-        option_ids=("group:livalo_family",),
-    )
-
-    with pytest.raises(FactIdentityIncompleteError):
-        resolver.cause(request)
-
-
 def test_mart_collector_maps_contract_source_to_mart_source() -> None:
     captured: dict[str, object] = {}
 

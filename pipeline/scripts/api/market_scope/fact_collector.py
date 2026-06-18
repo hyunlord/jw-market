@@ -9,7 +9,7 @@ from typing import Any
 
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 from pipeline.scripts.api.market_id import to_ml_id
-from pipeline.scripts.api.market_scope.types import DEDUP_KEY_VERSION, DedupDiagnostics
+from pipeline.scripts.api.market_scope.types import BRAND_KEY_GUARD_VERSION, DEDUP_KEY_VERSION, DedupDiagnostics
 
 
 class FactIdentityIncompleteError(Exception):
@@ -25,6 +25,29 @@ class FactIdentityIncompleteError(Exception):
         """Return the stored dedup-gate failure message."""
 
         return self.message
+
+
+class OverlapWithoutFactIdentityError(Exception):
+    """Raised when overlapping brand keys cannot be deduplicated safely."""
+
+    def __init__(self, message: str) -> None:
+        """Store a stable overlap-guard failure message."""
+
+        self.message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        """Return the stored overlap-guard failure message."""
+
+        return self.message
+
+
+@dataclass(frozen=True, slots=True)
+class BrandKeyOverlapReport:
+    """Per-request evidence for the disjoint-sum guard."""
+
+    disjoint: bool
+    overlap_brand_key_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,14 +89,56 @@ def deduplicate_facts(facts: Sequence[StrategyFact]) -> tuple[tuple[StrategyFact
             continue
         seen.add(key)
         deduped.append(fact)
+    overlap = inspect_brand_key_overlap(facts)
     diagnostics = DedupDiagnostics(
         dedup_strategy="raw_fact_identity_v1",
         dedup_key_version=DEDUP_KEY_VERSION,
         candidate_fact_count=len(facts),
         deduped_fact_count=len(deduped),
         dropped_duplicate_count=len(facts) - len(deduped),
+        disjoint=overlap.disjoint,
+        overlap_brand_key_count=overlap.overlap_brand_key_count,
     )
     return tuple(deduped), diagnostics
+
+
+def deduplicate_or_guard_disjoint(facts: Sequence[StrategyFact]) -> tuple[tuple[StrategyFact, ...], DedupDiagnostics]:
+    """Deduplicate by raw identity, or allow a provably disjoint sum.
+
+    Current strategic mart rows may not carry raw fact ids. A union is still
+    safe when no ``brand_key`` appears in more than one selected member market:
+    the same brand cannot be counted twice. When a brand key overlaps and raw
+    identity is absent, the request hard-fails instead of guessing whether the
+    rows are duplicated or genuinely separate facts.
+    """
+
+    overlap = inspect_brand_key_overlap(facts)
+    if all(fact.raw_fact_id for fact in facts):
+        return deduplicate_facts(facts)
+    if not overlap.disjoint:
+        raise OverlapWithoutFactIdentityError(
+            f"overlap brand_key count={overlap.overlap_brand_key_count}; raw fact identity is required"
+        )
+    diagnostics = DedupDiagnostics(
+        dedup_strategy="brand_key_disjoint_sum_v1",
+        dedup_key_version=BRAND_KEY_GUARD_VERSION,
+        candidate_fact_count=len(facts),
+        deduped_fact_count=len(facts),
+        dropped_duplicate_count=0,
+        disjoint=True,
+        overlap_brand_key_count=0,
+    )
+    return tuple(facts), diagnostics
+
+
+def inspect_brand_key_overlap(facts: Sequence[StrategyFact]) -> BrandKeyOverlapReport:
+    """Report whether any brand key appears in multiple member markets."""
+
+    markets_by_brand: dict[str, set[str]] = {}
+    for fact in facts:
+        markets_by_brand.setdefault(fact.brand_key, set()).add(fact.market_id)
+    overlap_count = sum(1 for markets in markets_by_brand.values() if len(markets) > 1)
+    return BrandKeyOverlapReport(disjoint=overlap_count == 0, overlap_brand_key_count=overlap_count)
 
 
 def collect_strategy_facts_from_rows(rows: Sequence[dict[str, Any]], *, market_id_field: str = "ml_id") -> tuple[StrategyFact, ...]:

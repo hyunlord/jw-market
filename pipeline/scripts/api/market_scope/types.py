@@ -14,7 +14,8 @@ from typing import Any, Final, Literal
 
 CONTRACT_VERSION: Final[str] = "market-scope-v1"
 ALGORITHM_VERSION: Final[str] = "strategy-union-recalc-v1"
-DEDUP_KEY_VERSION: Final[str] = "raw_fact_identity_v1"
+DEDUP_KEY_VERSION: Final[str] = "raw_fact_identity_or_brand_key_disjoint_v2"
+BRAND_KEY_GUARD_VERSION: Final[str] = "brand_key_market_guard_v1"
 MemberStatus = Literal["present", "absent_in_csd"]
 
 
@@ -110,6 +111,7 @@ class MarketScopeRequest:
     source: str
     measure: str
     option_ids: tuple[str, ...]
+    view: str = "market_landscape"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +123,8 @@ class DedupDiagnostics:
     candidate_fact_count: int
     deduped_fact_count: int
     dropped_duplicate_count: int
+    disjoint: bool | None = None
+    overlap_brand_key_count: int = 0
 
     @classmethod
     def empty(cls) -> "DedupDiagnostics":
@@ -132,9 +136,11 @@ class DedupDiagnostics:
             candidate_fact_count=0,
             deduped_fact_count=0,
             dropped_duplicate_count=0,
+            disjoint=None,
+            overlap_brand_key_count=0,
         )
 
-    def to_dict(self) -> dict[str, int | str]:
+    def to_dict(self) -> dict[str, bool | int | str | None]:
         """Return JSON-ready diagnostic counters."""
 
         return asdict(self)
