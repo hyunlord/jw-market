@@ -99,3 +99,33 @@ secrets/
 
 # Phase B-6 - root scripts were folded into pipeline/scripts.
 /scripts/
+
+# GitHub hygiene remediation 2026-06-18: keep agent state, audit bundles,
+# raw root data, credentials, and DB dumps local-only.
+# Agent-internal working state (Codex/OMX)
+.omo/
+*.omx
+
+# Audit deliverables stay local
+audit/
+audit_*/
+
+# Root-level raw spreadsheets/CSV must not slip in (data/ already ignored)
+/*.xlsx
+/*.csv
+
+# Secrets and credentials (hard block)
+.rnd_creds*
+*.rnd_creds*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# DB dumps (NOT migrations)
+*.dump
+*.sql
+!pipeline/migrations/*.sql
+!pipeline/migrations/**/*.sql
+!**/migrations/*.sql
+!**/migrations/**/*.sql
