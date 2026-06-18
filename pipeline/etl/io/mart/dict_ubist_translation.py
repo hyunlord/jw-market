@@ -12,12 +12,21 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path
     from .ubist_channel_mapping import INTERNAL_MEDICINE_DETAIL_SPECIALTIES
 
+from pipeline.scripts.utils.ubist_target_channel_mapping import (
+    OTHERS_SPECIALTY,
+    target_facility_abbr_for_raw,
+    target_specialty_abbr_for_raw,
+    translate_target_channel_to_raw_labels,
+)
+
 
 CHANNEL_CODE_TO_RAW = {
     "TH": "상급종합병원",
     "GH": "종합병원",
+    "TGH": "주요고객 종합병원",
     "Semi": "병원",
     "CL": "의원",
+    "OT": "기타",
 }
 
 CHANNEL_RAW_TO_CODE = {v: k for k, v in CHANNEL_CODE_TO_RAW.items()}
@@ -44,20 +53,17 @@ SPECIALTY_CODE_TO_RAW = {
     "Nephro": ["신장(Nephrology IM)"],
     "Neuro": ["신경과(NR)"],
     "Uro": ["비뇨의학과(URO)"],
+    "Hemato": ["혈액종양(Hemoto Oncology IM)"],
+    "OS": ["정형외과(OS)"],
+    "PED": ["소아청소년과(PED)"],
+    "Others": [OTHERS_SPECIALTY],
 }
 
 
 def translate_target_ubist(target_label: str | None) -> list[str]:
     """Translate catalog ``target_ubist`` shorthand to raw Korean labels."""
 
-    if not target_label or " " not in str(target_label).strip():
-        return []
-    channel_code, specialty_code = str(target_label).strip().split(" ", 1)
-    channel_raw = CHANNEL_CODE_TO_RAW.get(channel_code)
-    specialty_raws = SPECIALTY_CODE_TO_RAW.get(specialty_code, [])
-    if not channel_raw or not specialty_raws:
-        return []
-    return [f"{channel_raw} {specialty}" for specialty in specialty_raws]
+    return translate_target_channel_to_raw_labels(target_label)
 
 
 def reverse_translate_raw(channel_raw: str | None, specialty_raw: str | None) -> str | None:
@@ -65,14 +71,8 @@ def reverse_translate_raw(channel_raw: str | None, specialty_raw: str | None) ->
 
     if not channel_raw or not specialty_raw:
         return None
-    channel_code = CHANNEL_RAW_TO_CODE.get(str(channel_raw).strip())
-    if not channel_code:
-        return None
-    specialty_code = None
-    for code, raws in SPECIALTY_CODE_TO_RAW.items():
-        if str(specialty_raw).strip() in raws:
-            specialty_code = code
-            break
-    if not specialty_code:
+    channel_code = target_facility_abbr_for_raw(channel_raw)
+    specialty_code = target_specialty_abbr_for_raw(specialty_raw)
+    if not channel_code or not specialty_code:
         return None
     return f"{channel_code} {specialty_code}"

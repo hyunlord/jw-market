@@ -8,6 +8,12 @@ from typing import Any
 
 import pandas as pd
 
+from pipeline.scripts.utils.ubist_target_channel_mapping import (
+    target_facility_abbr_for_raw,
+    target_specialty_abbr_for_raw,
+)
+
+
 def utc_now_text() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
 
@@ -77,9 +83,12 @@ def spec_by_cd_id() -> dict[str, dict[str, Any]]:
 def ubist_customer_label(channel: Any, specialty: Any) -> str:
     channel_text = clean(channel) or ""
     specialty_text = clean(specialty) or ""
-    prefix = "CL" if channel_text == "의원" else "GH"
+    prefix = target_facility_abbr_for_raw(channel_text) or "OT"
 
-    if "순환기" in specialty_text:
+    mapped_suffix = target_specialty_abbr_for_raw(specialty_text)
+    if mapped_suffix:
+        suffix = mapped_suffix
+    elif "순환기" in specialty_text:
         suffix = "Cardio"
     elif "내분비" in specialty_text:
         suffix = "Endo"

@@ -8,6 +8,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .archive_target_4bucket_patch import apply_target_4bucket_patch
+
 ROOT = Path(__file__).resolve().parents[4]
 ARCHIVE_REF = "99a308b4c42c823870ea52868c0c8f9e1f1facb5"
 
@@ -138,6 +140,7 @@ def materialize_archive() -> Path:
     if output_link.exists():
         output_link.unlink()
     output_link.symlink_to(ROOT / "output", target_is_directory=True)
+    apply_target_4bucket_patch(temp_root, ROOT)
     return temp_root
 
 
