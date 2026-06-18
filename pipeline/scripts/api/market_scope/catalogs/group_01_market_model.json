@@ -1,0 +1,144 @@
+{
+  "catalog_version": "GROUP_01_20260619",
+  "source_markets": [
+    {
+      "source_market": "strategy_006",
+      "label": "리바로/리바로젯",
+      "atc4_set": ["C10A1", "C10C0", "C10C"],
+      "available_sources": ["UBIST"]
+    },
+    {
+      "source_market": "strategy_008",
+      "label": "리바로하이/리바로브이",
+      "atc4_set": ["C11A1", "C9C", "C9D1", "C9D3", "C8A", "C7A", "C3A1", "C3A2", "C3A3", "C7B1", "C9A", "C9B1", "C9B3"],
+      "available_sources": ["UBIST"]
+    },
+    {
+      "source_market": "strategy_009",
+      "label": "트루패스/피나스타/제이다트",
+      "atc4_set": ["G04C2", "G04C3", "G4C4", "G4C9", "G4D4"],
+      "available_sources": ["UBIST"]
+    },
+    {
+      "source_market": "strategy_012",
+      "label": "페린젝트/베노훼럼",
+      "atc4_set": ["B03A1", "B03A2"],
+      "available_sources": ["IQVIA"]
+    },
+    {
+      "source_market": "strategy_014",
+      "label": "위너프/A+",
+      "atc4_set": ["K01D2", "K01E", "K01D"],
+      "available_sources": ["IQVIA"]
+    }
+  ],
+  "groups": [
+    {
+      "group_id": "livalo_family",
+      "label": "리바로 시장군",
+      "members": [
+        {
+          "brand_name": "리바로",
+          "source_market": "strategy_006",
+          "atc4_set": ["C10A1"],
+          "member_status": "present",
+          "reason": null
+        },
+        {
+          "brand_name": "리바로젯",
+          "source_market": "strategy_006",
+          "atc4_set": ["C10C0"],
+          "member_status": "present",
+          "reason": null
+        }
+      ]
+    },
+    {
+      "group_id": "livalo_high_family",
+      "label": "리바로하이 시장군",
+      "members": [
+        {
+          "brand_name": "리바로하이",
+          "source_market": null,
+          "atc4_set": ["C11A1"],
+          "member_status": "absent_in_csd",
+          "reason": "GROUP_01 metadata keeps the member, but CSD source market is absent."
+        },
+        {
+          "brand_name": "리바로브이",
+          "source_market": "strategy_008",
+          "atc4_set": ["C11A1"],
+          "member_status": "present",
+          "reason": null
+        }
+      ]
+    },
+    {
+      "group_id": "trupass_family",
+      "label": "트루패스 시장군",
+      "members": [
+        {
+          "brand_name": "트루패스",
+          "source_market": "strategy_009",
+          "atc4_set": ["G04C2"],
+          "member_status": "present",
+          "reason": null
+        },
+        {
+          "brand_name": "피나스타",
+          "source_market": null,
+          "atc4_set": ["G04C3"],
+          "member_status": "absent_in_csd",
+          "reason": "GROUP_01 metadata keeps the member, but CSD source market is absent."
+        },
+        {
+          "brand_name": "제이다트",
+          "source_market": null,
+          "atc4_set": ["G04C3"],
+          "member_status": "absent_in_csd",
+          "reason": "GROUP_01 metadata keeps the member, but CSD source market is absent."
+        }
+      ]
+    },
+    {
+      "group_id": "ferinject_family",
+      "label": "페린젝트 시장군",
+      "members": [
+        {
+          "brand_name": "페린젝트",
+          "source_market": "strategy_012",
+          "atc4_set": ["B03A1"],
+          "member_status": "present",
+          "reason": null
+        },
+        {
+          "brand_name": "베노훼럼",
+          "source_market": "strategy_012",
+          "atc4_set": ["B03A2"],
+          "member_status": "present",
+          "reason": null
+        }
+      ]
+    },
+    {
+      "group_id": "winuf_family",
+      "label": "위너프 시장군",
+      "members": [
+        {
+          "brand_name": "위너프",
+          "source_market": "strategy_014",
+          "atc4_set": ["K01D2"],
+          "member_status": "present",
+          "reason": null
+        },
+        {
+          "brand_name": "위너프A+",
+          "source_market": "strategy_014",
+          "atc4_set": ["K01E", "K01D"],
+          "member_status": "present",
+          "reason": null
+        }
+      ]
+    }
+  ]
+}
