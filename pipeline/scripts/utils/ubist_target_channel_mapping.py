@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 STANDALONE_INTERNAL_MEDICINE_SPECIALTY = "내과(IM)"
 INTERNAL_MEDICINE_DETAIL_SPECIALTIES = (
@@ -17,6 +17,11 @@ INTERNAL_MEDICINE_DETAIL_SPECIALTIES = (
     "분리되지 않은 내과",
 )
 OTHERS_SPECIALTY = "Others(병원,보건기관, 그 외 요양기관)"
+FACILITY_ONLY_CATCH_ALL_FACILITIES: Final[frozenset[str]] = frozenset({"Semi", "OT"})
+
+
+class TargetChannelCodeError(ValueError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +31,7 @@ class TargetUbistChannel:
     specialty_abbr: str
     facility_kor: str
     specialty_kor: str
+    series_name: str
     display_name: str
     facility_raw_values: tuple[str, ...]
     specialty_raw_values: tuple[str, ...]
@@ -148,6 +154,20 @@ def target_specialty_abbr_for_raw(specialty_raw: Any) -> str | None:
     )
 
 
+def target_display_name(
+    facility_abbr: str,
+    facility_kor: str,
+    specialty_abbr: str,
+    specialty_kor: str,
+) -> str:
+    if (
+        specialty_abbr == "Others"
+        and facility_abbr in FACILITY_ONLY_CATCH_ALL_FACILITIES
+    ):
+        return facility_kor
+    return f"{facility_kor} {specialty_kor}"
+
+
 def parse_target_channel_code(code: str | None) -> TargetUbistChannel | None:
     if code is None:
         return None
@@ -156,20 +176,29 @@ def parse_target_channel_code(code: str | None) -> TargetUbistChannel | None:
         return None
     parts = text.split()
     if len(parts) != 2:
-        raise ValueError(f"Invalid target UBIST channel code: {code!r}")
+        raise TargetChannelCodeError(f"Invalid target UBIST channel code: {code!r}")
     facility_abbr = canonical_target_facility_abbr(parts[0])
     specialty_abbr = parts[1]
     facility = TARGET_FACILITY_MAPPING.get(facility_abbr)
     specialty = TARGET_SPECIALTY_MAPPING.get(specialty_abbr)
     if facility is None or specialty is None:
-        raise ValueError(f"Unknown target UBIST channel abbreviation: {code!r}")
+        raise TargetChannelCodeError(f"Unknown target UBIST channel abbreviation: {code!r}")
+    facility_kor = str(facility["korean"])
+    specialty_kor = str(specialty["korean"])
+    series_name = f"{facility_kor} {specialty_kor}"
     return TargetUbistChannel(
         code=f"{facility_abbr} {specialty_abbr}",
         facility_abbr=facility_abbr,
         specialty_abbr=specialty_abbr,
-        facility_kor=str(facility["korean"]),
-        specialty_kor=str(specialty["korean"]),
-        display_name=f"{facility['korean']} {specialty['korean']}",
+        facility_kor=facility_kor,
+        specialty_kor=specialty_kor,
+        series_name=series_name,
+        display_name=target_display_name(
+            facility_abbr=facility_abbr,
+            facility_kor=facility_kor,
+            specialty_abbr=specialty_abbr,
+            specialty_kor=specialty_kor,
+        ),
         facility_raw_values=tuple(facility["raw_values"]),
         specialty_raw_values=tuple(specialty["raw_values"]),
     )
