@@ -5,6 +5,7 @@ import shutil
 from pipeline.etl.io.cache.archive_runner import materialize_archive
 from pipeline.etl.io.catalog.target.text import ubist_customer_label
 from pipeline.etl.io.mart.dict_ubist_translation import translate_target_ubist
+from pipeline.etl.io.mart.general_utils import ubist_channel_to_raw
 from pipeline.etl.io.mart.ubist_channel_mapping import parse_channel_code
 
 
@@ -47,6 +48,8 @@ def test_shared_ubist_channel_mapping_keeps_existing_global_gh_semantics() -> No
     assert parsed is not None
     assert parsed.display_name == "종합병원 순환기"
     assert parsed.facility_raw_values == ("상급종합병원", "종합병원", "병원")
+    assert ubist_channel_to_raw("TGH") == "분리되지 않은 종별"
+    assert ubist_channel_to_raw("OT") == "분리되지 않은 종별"
 
 
 def test_archive_builder_materialization_receives_target_patch_only() -> None:

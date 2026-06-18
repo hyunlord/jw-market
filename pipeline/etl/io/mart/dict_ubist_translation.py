@@ -23,20 +23,9 @@ from pipeline.scripts.utils.ubist_target_channel_mapping import (
 CHANNEL_CODE_TO_RAW = {
     "TH": "상급종합병원",
     "GH": "종합병원",
-    "TGH": "주요고객 종합병원",
     "Semi": "병원",
     "CL": "의원",
-    "OT": "기타",
 }
-
-CHANNEL_RAW_TO_CODE = {v: k for k, v in CHANNEL_CODE_TO_RAW.items()}
-CHANNEL_RAW_TO_CODE.update(
-    {
-        "보건소": "기타",
-        "기타": "기타",
-        "기타(치과의원, 치과병원 등)": "기타",
-    }
-)
 
 SPECIALTY_CODE_TO_RAW = {
     # 무엇: MI target code ``IGF``를 FM/GP 2개에서 FM/GP+내과 세부10
