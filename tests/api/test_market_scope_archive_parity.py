@@ -90,8 +90,8 @@ def test_recompute_uses_archive_growth_windows_without_changing_raw_series() -> 
 
     # Then: raw period market series is unchanged, but growth contribution uses
     # archive first-to-last windows rather than latest-vs-previous only.
-    assert payload["data"]["market_size_series"][periods[0]] == pytest.approx(101.0)
-    assert payload["data"]["market_size_series"][periods[-1]] == pytest.approx(160.0)
+    assert _market_size_value(payload, periods[0]) == pytest.approx(101.0)
+    assert _market_size_value(payload, periods[-1]) == pytest.approx(160.0)
     growth = payload["data"]["growth_contribution"]
     assert growth["period_start"] == periods[0]
     assert growth["period_end"] == periods[-1]
@@ -137,3 +137,18 @@ def _monthly_periods(*, start_year: int, start_month: int, count: int) -> tuple[
             year += 1
             month = 1
     return tuple(periods)
+
+
+def _market_size_value(payload: dict[str, object], period: str) -> float:
+    """Return one FE-facing market-size point value from a recompute payload."""
+
+    data = payload["data"]
+    assert isinstance(data, dict)
+    series = data["market_size_series"]
+    assert isinstance(series, list)
+    values = {
+        str(point["period"]): float(point["value"])
+        for point in series
+        if isinstance(point, dict)
+    }
+    return values[period]

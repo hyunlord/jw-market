@@ -26,7 +26,7 @@ def test_recompute_requires_archive_endpoint_for_monthly_cagr() -> None:
     # exact 5-year and 3-year endpoints are absent.
     assert payload["summary"]["cagr_5y"] is None
     assert payload["summary"]["market_cagr_5y"] is None
-    assert payload["data"]["market_size_series"]["2026-01"] == 300.0
+    assert _market_size_value(payload, "2026-01") == 300.0
     assert payload["data"]["brand_ranking"]["rankings_by_year"]["2026"][0]["brand_key"] == "Focus"
 
 
@@ -45,7 +45,7 @@ def test_recompute_handles_iqvia_quarterly_cagr_when_periods_are_yyyy_qn() -> No
     assert payload["summary"]["cagr_5y"] == pytest.approx(14.8698)
     assert payload["summary"]["market_cagr_5y"] == pytest.approx(4.564)
     assert payload["summary"]["market_share"] == pytest.approx(40.0)
-    assert payload["data"]["market_size_series"]["2025-Q4"] == 500.0
+    assert _market_size_value(payload, "2025-Q4") == 500.0
     assert payload["data"]["brand_ranking"]["rankings_by_year"]["2025"][1]["brand_key"] == "Focus"
     assert payload["data"]["hhi_series_5y"] == []
 
@@ -80,3 +80,18 @@ def _iqvia_fact(brand_key: str, company: str, raw_value_history: dict[str, float
         unit_label="KRW",
         raw_value_history=raw_value_history,
     )
+
+
+def _market_size_value(payload: dict[str, object], period: str) -> float:
+    """Return one FE-facing market-size point value from a recompute payload."""
+
+    data = payload["data"]
+    assert isinstance(data, dict)
+    series = data["market_size_series"]
+    assert isinstance(series, list)
+    values = {
+        str(point["period"]): float(point["value"])
+        for point in series
+        if isinstance(point, dict)
+    }
+    return values[period]

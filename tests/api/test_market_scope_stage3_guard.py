@@ -34,7 +34,7 @@ def test_strategy_resolver_allows_missing_raw_identity_when_brand_keys_are_disjo
 
     response = resolver.cause(request)
 
-    assert response["result"]["data"]["market_size_series"]["2026-01"] == 150.0
+    assert _market_size_value(response["result"], "2026-01") == 150.0
     assert response["resolved_scope"]["dedup"]["disjoint"] is True
     assert response["resolved_scope"]["dedup"]["overlap_brand_key_count"] == 0
 
@@ -73,3 +73,19 @@ def _fact(market_id: str, brand_key: str, *, value: float) -> StrategyFact:
         unit_label="KRW",
         raw_value_history={"2025-01": value / 2, "2026-01": value},
     )
+
+
+def _market_size_value(payload: object, period: str) -> float:
+    """Return one FE-facing market-size point value from a resolver response."""
+
+    assert isinstance(payload, dict)
+    data = payload["data"]
+    assert isinstance(data, dict)
+    series = data["market_size_series"]
+    assert isinstance(series, list)
+    values = {
+        str(point["period"]): float(point["value"])
+        for point in series
+        if isinstance(point, dict)
+    }
+    return values[period]

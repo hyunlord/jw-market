@@ -142,7 +142,7 @@ def test_disjoint_scope_dedup_keeps_simple_sum() -> None:
     payload = recompute_strategy_payload(deduped, focus_brand_key="A", source="ubist", measure="sales")
 
     assert diagnostics.dropped_duplicate_count == 0
-    assert payload["data"]["market_size_series"]["2026-01"] == 150.0
+    assert _market_size_value(payload, "2026-01") == 150.0
 
 
 def test_recompute_union_metrics_recalculates_ratios_and_rankings() -> None:
@@ -156,7 +156,7 @@ def test_recompute_union_metrics_recalculates_ratios_and_rankings() -> None:
     payload = recompute_strategy_payload(facts, focus_brand_key="A", source="ubist", measure="sales")
     data = payload["data"]
 
-    assert data["market_size_series"]["2026-01"] == 300.0
+    assert _market_size_value(payload, "2026-01") == 300.0
     latest_ranking = data["brand_ranking_stacked"]["rankings_by_year"]["2026"]
     assert latest_ranking[0]["brand_key"] == "A"
     assert latest_ranking[0]["raw_value"] == 200.0
@@ -281,3 +281,18 @@ def _fact(
         unit_label="KRW",
         raw_value_history={"2025-01": value / 2, "2026-01": value},
     )
+
+
+def _market_size_value(payload: dict[str, object], period: str) -> float:
+    """Return one FE-facing market-size point value from a recompute payload."""
+
+    data = payload["data"]
+    assert isinstance(data, dict)
+    series = data["market_size_series"]
+    assert isinstance(series, list)
+    values = {
+        str(point["period"]): float(point["value"])
+        for point in series
+        if isinstance(point, dict)
+    }
+    return values[period]
