@@ -7,6 +7,7 @@ import math
 from typing import Any
 
 from pipeline.scripts.api.market_scope.fact_collector import StrategyFact
+from pipeline.scripts.api.market_scope.periods import period_span_years, sort_periods, sorted_period_items
 
 
 def recompute_strategy_payload(
@@ -43,9 +44,9 @@ def recompute_strategy_payload(
             "ei_ms_matrix": _ei_ms_matrix(brand_ranking, brand_histories, market_size),
             "growth_contribution": _growth_contribution(brand_histories, market_size),
             "hhi_series_5y": hhi,
-            "market_size_series": dict(sorted(market_size.items())),
+            "market_size_series": sorted_period_items(market_size),
             "sources_data": {
-                "market_size_series": dict(sorted(market_size.items())),
+                "market_size_series": sorted_period_items(market_size),
                 "hhi_series_5y": hhi,
                 "cagr_5y_pct": _cagr(market_size),
             },
@@ -75,7 +76,7 @@ def recompute_strategy_payload(
 def _periods(facts: tuple[StrategyFact, ...]) -> tuple[str, ...]:
     """Return all periods present in the candidate facts."""
 
-    return tuple(sorted({period for fact in facts for period in fact.raw_value_history}))
+    return sort_periods({period for fact in facts for period in fact.raw_value_history})
 
 
 def _brand_histories(
@@ -111,7 +112,7 @@ def _brand_ranking(
     """Rank brands per period from union totals."""
 
     result: dict[str, list[dict[str, Any]]] = {}
-    for period in sorted(market_size):
+    for period in sort_periods(market_size):
         ranked = []
         for brand_key, history in histories.items():
             value = history.get(period, 0.0)
@@ -140,7 +141,7 @@ def _company_ranking(
     """Rank companies per period from union totals."""
 
     result: dict[str, list[dict[str, Any]]] = {}
-    for period in sorted(market_size):
+    for period in sort_periods(market_size):
         ranked = []
         for company, history in histories.items():
             value = history.get(period, 0.0)
@@ -168,7 +169,7 @@ def _hhi_series(
     """Compute HHI from union brand shares, never from market-level HHI."""
 
     result: dict[str, float] = {}
-    for period, total in sorted(market_size.items()):
+    for period, total in sorted_period_items(market_size).items():
         if total <= 0:
             result[period] = 0.0
             continue
@@ -188,7 +189,7 @@ def _ei_ms_matrix(
 
     if not market_size:
         return []
-    latest = sorted(market_size)[-1]
+    latest = sort_periods(market_size)[-1]
     market_cagr = _cagr(market_size)
     result = []
     for item in ranking.get(latest, []):
@@ -212,7 +213,7 @@ def _growth_contribution(
 ) -> dict[str, list[dict[str, Any]]]:
     """Compute brand growth contribution from union period deltas."""
 
-    periods = sorted(market_size)
+    periods = sort_periods(market_size)
     if len(periods) < 2:
         return {}
     previous, latest = periods[-2], periods[-1]
@@ -234,23 +235,15 @@ def _growth_contribution(
 def _cagr(history: dict[str, float]) -> float | None:
     """Compute annualized growth from first to last positive history point."""
 
-    positive = [(period, value) for period, value in sorted(history.items()) if value > 0]
+    positive = [(period, history[period]) for period in sort_periods(history) if history[period] > 0]
     if len(positive) < 2:
         return None
     first_period, first_value = positive[0]
     last_period, last_value = positive[-1]
-    months = _month_distance(first_period, last_period)
-    if months <= 0:
+    years = period_span_years(first_period, last_period)
+    if years <= 0:
         return None
-    return round((math.pow(last_value / first_value, 12 / months) - 1) * 100, 6)
-
-
-def _month_distance(start: str, end: str) -> int:
-    """Return elapsed months between two ``YYYY-MM`` periods."""
-
-    start_year, start_month = (int(part) for part in start.split("-", 1))
-    end_year, end_month = (int(part) for part in end.split("-", 1))
-    return (end_year * 12 + end_month) - (start_year * 12 + start_month)
+    return round((math.pow(last_value / first_value, 1 / years) - 1) * 100, 6)
 
 
 def _share(value: float, total: float) -> float:
