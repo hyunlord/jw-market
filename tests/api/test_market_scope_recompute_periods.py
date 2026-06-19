@@ -24,8 +24,8 @@ def test_recompute_requires_archive_endpoint_for_monthly_cagr() -> None:
 
     # Then: the archive endpoint policy does not invent a 1-year CAGR when
     # exact 5-year and 3-year endpoints are absent.
-    assert payload["summary"]["cagr_5y"] is None
-    assert payload["summary"]["market_cagr_5y"] is None
+    assert payload["data"]["kpi"]["brand_cagr_pct"] is None
+    assert payload["data"]["kpi"]["market_cagr_5y_pct"] is None
     assert _market_size_value(payload, "2026-01") == 300.0
     assert payload["data"]["brand_ranking"]["rankings_by_year"]["2026"][0]["brand_key"] == "Focus"
 
@@ -42,9 +42,9 @@ def test_recompute_handles_iqvia_quarterly_cagr_when_periods_are_yyyy_qn() -> No
 
     # Then: no YYYY-Qn parsing exception occurs and quarterly endpoint CAGR
     # follows archive rounding.
-    assert payload["summary"]["cagr_5y"] == pytest.approx(14.8698)
-    assert payload["summary"]["market_cagr_5y"] == pytest.approx(4.564)
-    assert payload["summary"]["market_share"] == pytest.approx(40.0)
+    assert payload["data"]["kpi"]["brand_cagr_pct"] == pytest.approx(14.8698)
+    assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(4.564)
+    assert payload["data"]["kpi"]["target_share_pct"] == pytest.approx(40.0)
     assert _market_size_value(payload, "2025-Q4") == 500.0
     assert payload["data"]["brand_ranking"]["rankings_by_year"]["2025"][1]["brand_key"] == "Focus"
     assert payload["data"]["hhi_series_5y"] == []

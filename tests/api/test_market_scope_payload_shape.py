@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 import sys
 from typing import Any
@@ -13,12 +12,7 @@ from pipeline.scripts.api.market_scope.fact_collector import StrategyFact
 from pipeline.scripts.api.market_scope.recompute import recompute_strategy_payload
 
 
-@dataclass(frozen=True, slots=True)
-class ShapeSignature:
-    """Container kind and first list-item keys for FE-facing parity checks."""
-
-    kind: str
-    item_keys: tuple[str, ...] = ()
+SchemaSignature = dict[str, tuple[str, tuple[str, ...]]]
 
 
 def test_recompute_payload_matches_cache_frontend_shape_for_ubist() -> None:
@@ -34,7 +28,7 @@ def test_recompute_payload_matches_cache_frontend_shape_for_iqvia() -> None:
 
 
 def _assert_frontend_shape_parity(*, source: str, periods: tuple[str, ...]) -> None:
-    """Compare cache composer output and scoped recompute output at FE paths."""
+    """Compare full cache fast-path and scoped recompute JSON schemas."""
 
     recompute = recompute_strategy_payload(
         _facts(source=source, periods=periods),
@@ -42,32 +36,13 @@ def _assert_frontend_shape_parity(*, source: str, periods: tuple[str, ...]) -> N
         source=source,
         measure="sales",
     )
-    cache_payload = compose_cached_json(_cache_like_payload(recompute), measure="sales")
-    for path in _required_paths():
-        assert _shape(cache_payload, path).kind == _shape(recompute, path).kind
-
+    cache_payload = _legacy_cache_payload_template(source=source, periods=periods, recompute=recompute)
+    assert _schema_signature(recompute) == _schema_signature(cache_payload), _schema_diff(
+        expected=_schema_signature(cache_payload),
+        actual=_schema_signature(recompute),
+    )
     _assert_point_series(recompute, "$.data.market_size_series")
     _assert_point_series(recompute, "$.data.sources_data.market_size_series")
-    assert _shape(recompute, "$.data.kpi").kind == "dict"
-    assert _shape(recompute, "$.data.brand_ranking_stacked.yearly[]").kind == "dict"
-    assert _shape(recompute, "$.data.company_ranking_stacked.yearly[]").kind == "dict"
-    assert _shape(recompute, "$.data.ei_ms_matrix.data[]").kind == "dict"
-    assert _shape(recompute, "$.data.growth_contribution.by_brand.top_contributors[]").kind == "dict"
-
-
-def _required_paths() -> tuple[str, ...]:
-    """Return the FE paths whose container kind must match cache fast-path."""
-
-    return (
-        "$.data.market_size_series",
-        "$.data.sources_data.market_size_series",
-        "$.data.sources_data.hhi_series_5y",
-        "$.data.kpi",
-        "$.data.brand_ranking_stacked.yearly[]",
-        "$.data.company_ranking_stacked.yearly[]",
-        "$.data.ei_ms_matrix.data[]",
-        "$.data.growth_contribution.by_brand.top_contributors[]",
-    )
 
 
 def _assert_point_series(payload: dict[str, Any], path: str) -> None:
@@ -81,16 +56,39 @@ def _assert_point_series(payload: dict[str, Any], path: str) -> None:
     assert {"period", "value", "sales_krw"}.issubset(first)
 
 
-def _shape(payload: Any, path: str) -> ShapeSignature:
-    """Return a small structural signature for a JSON path."""
+def _schema_signature(payload: Any) -> SchemaSignature:
+    """Return JSON paths with container kinds and list-item keysets."""
 
-    value = _value_at(payload, path)
-    if isinstance(value, list):
-        first_dict = next((item for item in value if isinstance(item, dict)), None)
-        return ShapeSignature("list", tuple(sorted(first_dict.keys())) if first_dict else ())
-    if isinstance(value, dict):
-        return ShapeSignature("dict", tuple(sorted(value.keys())))
-    return ShapeSignature(type(value).__name__)
+    signature: SchemaSignature = {}
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            keys = tuple(sorted(value.keys()))
+            signature[path] = ("dict", keys)
+            for key in keys:
+                visit(value[key], f"{path}.{key}")
+            return
+        if isinstance(value, list):
+            first_dict = next((item for item in value if isinstance(item, dict)), None)
+            item_keys = tuple(sorted(first_dict.keys())) if first_dict else ()
+            signature[path] = ("list", item_keys)
+            if first_dict is not None:
+                visit(first_dict, f"{path}[]")
+            return
+        signature[path] = (type(value).__name__, ())
+
+    visit(payload, "$")
+    return signature
+
+
+def _schema_diff(*, expected: SchemaSignature, actual: SchemaSignature) -> str:
+    """Return a compact structural diff for assertion output."""
+
+    lines: list[str] = []
+    for path in sorted(set(expected) | set(actual)):
+        if expected.get(path) != actual.get(path):
+            lines.append(f"{path}: expected={expected.get(path)!r} actual={actual.get(path)!r}")
+    return "\n".join(lines[:80])
 
 
 def _value_at(payload: Any, path: str) -> Any:
@@ -111,20 +109,169 @@ def _value_at(payload: Any, path: str) -> Any:
     return current
 
 
-def _cache_like_payload(recompute: dict[str, Any]) -> dict[str, Any]:
-    """Return a cache-shaped sample that exercises composer aliases."""
+def _legacy_cache_payload_template(
+    *,
+    source: str,
+    periods: tuple[str, ...],
+    recompute: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a cache fast-path schema template with legacy empty sections."""
 
-    data = dict(recompute["data"])
+    data = recompute["data"]
+    assert isinstance(data, dict)
     series_points = data["market_size_series"]
     assert isinstance(series_points, list)
-    series_dict = {str(point["period"]): point["value"] for point in series_points if isinstance(point, dict)}
-    sources_data = dict(data["sources_data"])
-    sources_data["market_size_series"] = series_dict
-    data["market_size_series"] = series_dict
-    data["sources_data"] = sources_data
-    payload = dict(recompute)
-    payload["data"] = data
-    return payload
+    series_dict = {
+        str(point["period"]): {
+            "value": point["value"],
+            "yoy_growth_pct": point.get("yoy_growth_pct"),
+        }
+        for point in series_points
+        if isinstance(point, dict)
+    }
+    yoy_series = {period: None for period in periods}
+    payload = {
+        "brand": recompute["brand"],
+        "brand_key": recompute["brand_key"],
+        "brand_name": recompute["brand"],
+        "data": {
+            "analysis_level_market_status": _empty_market_status_template(),
+            "analysis_levels": _empty_analysis_levels_template(periods=periods, source=source),
+            "brand_ranking": data["brand_ranking"],
+            "brand_ranking_stacked": data["brand_ranking_stacked"],
+            "company_concentration_trend": {"periods": [], "hhi_values": []},
+            "company_ranking": data["company_ranking"],
+            "company_ranking_stacked": data["company_ranking_stacked"],
+            "data_period_coverage": _coverage_template(periods=periods, source=source),
+            "ei_ms_matrix": data["ei_ms_matrix"],
+            "growth_contribution": data["growth_contribution"],
+            "growth_contribution_ms_matrix": {"data": [], "ms_avg_pct": 0.0, "share_avg_pct": 0.0},
+            "hhi_recent": data["hhi_recent"],
+            "hhi_series_5y": data["hhi_series_5y"],
+            "kpi": data["kpi"],
+            "level_top5_trend": _empty_level_top5_template(),
+            "market_size_series": series_dict,
+            "market_yoy_recent_pct": None,
+            "market_yoy_series": yoy_series,
+            "sources_data": {
+                "periods_unit": _period_unit(source),
+                "periods_count": len(periods),
+                "market_size_series": series_dict,
+                "market_yoy_series": yoy_series,
+                "market_yoy_recent_pct": None,
+                "hhi_series_5y": data["hhi_series_5y"],
+                "hhi_recent": data["hhi_recent"],
+                "cagr_5y_pct": data["kpi"]["market_cagr_5y_pct"],
+            },
+            "target_customer_competition": _empty_target_template(),
+            "target_customer_competition_by_channel": {},
+            "ubist_specialty_channels": [],
+            "ubist_specialty_target_channels": [],
+        },
+        "market_id": "scope:unresolved",
+        "market_meta": _market_meta_template(source=source, recompute=recompute),
+        "measure": recompute["measure"],
+        "source": recompute["source"],
+        "unit_label": recompute["unit_label"],
+        "view": recompute["view"],
+    }
+    return compose_cached_json(payload, measure="sales")
+
+
+def _empty_analysis_levels_template(*, periods: tuple[str, ...], source: str) -> dict[str, Any]:
+    """Return legacy AnalysisLevels shape without scoped-only note keys."""
+
+    return {
+        "period_unit": _period_unit(source),
+        "channels": [],
+        "levels": [],
+        "periods_monthly": list(periods) if source == "UBIST" else [],
+        "periods_quarterly": list(periods) if source != "UBIST" else [],
+        "data": {},
+    }
+
+
+def _empty_market_status_template() -> dict[str, Any]:
+    """Return legacy ALMS shape for a scope with no level overlay."""
+
+    return {
+        "available_levels": [],
+        "default_level": None,
+        "by_level": {},
+        "channels": [],
+        "by_channel": {},
+        "ms_by_channel": {},
+        "targets": [],
+        "note": "",
+    }
+
+
+def _empty_level_top5_template() -> dict[str, Any]:
+    """Return legacy level trend shape for a scope with no level overlay."""
+
+    return {"available_levels": [], "default_level": None, "by_level": {}, "note": ""}
+
+
+def _empty_target_template() -> dict[str, Any]:
+    """Return legacy target-competition shape for a scope with no targets."""
+
+    return {"available_in_view": [], "target_type": "strategy_union", "targets": [], "views": [], "note": ""}
+
+
+def _coverage_template(*, periods: tuple[str, ...], source: str) -> dict[str, Any]:
+    """Return the legacy period coverage container."""
+
+    years = {period[:4] for period in periods}
+    latest = periods[-1] if periods else None
+    latest_year = int(latest[:4]) if latest else None
+    counts = {year: sum(1 for period in periods if period.startswith(year)) for year in sorted(years)}
+    expected = 12 if source == "UBIST" else 4
+    latest_count = counts.get(str(latest_year), 0) if latest_year is not None else 0
+    return {
+        "latest_period": latest,
+        "latest_year": latest_year,
+        "latest_year_period_count": latest_count,
+        "latest_year_is_partial": latest_count < expected,
+        "period_count_by_year": counts,
+        "expected_periods_per_year": expected,
+    }
+
+
+def _market_meta_template(*, source: str, recompute: dict[str, Any]) -> dict[str, Any]:
+    """Return the legacy market_meta keyset for scoped recompute payloads."""
+
+    return {
+        "strategic_market_id": recompute["market_id"],
+        "market_name": "Scoped strategy union",
+        "market_name_short": "Scoped strategy union",
+        "market_label_kor": "Scoped strategy union",
+        "market_definition_label": "Scoped strategy union",
+        "market_definition_full": "Scoped strategy union",
+        "mkt_team": "Runtime",
+        "brand_list": [],
+        "atc_codes": [],
+        "atc_desc": "",
+        "view_source_id": "market_scope_union",
+        "atc_count": None,
+        "nhi_type": None,
+        "sources": [recompute["source"]],
+        "source_label": recompute["source"],
+        "is_dual_source": False,
+        "measures": ["sales", "volume"] if source == "UBIST" else ["counting_unit", "dosage_unit", "sales", "unit"],
+        "measures_label": {"primary": "sales", "secondary": None},
+        "available_levels": [],
+        "direct_competition_count": recompute["data"]["kpi"]["direct_competition_count"],
+        "market_size_recent": recompute["data"]["kpi"]["market_size_recent"],
+        "market_cagr_5y_pct": recompute["data"]["kpi"]["market_cagr_5y_pct"],
+        "is_jw": False,
+        "is_target": False,
+    }
+
+
+def _period_unit(source: str) -> str:
+    """Return the legacy period unit label for source-specific series."""
+
+    return "월간" if source == "UBIST" else "분기"
 
 
 def _facts(*, source: str, periods: tuple[str, ...]) -> tuple[StrategyFact, ...]:

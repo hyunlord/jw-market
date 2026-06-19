@@ -14,9 +14,21 @@ from pipeline.scripts.api.market_scope.archive_metrics import (
 )
 from pipeline.scripts.api.market_scope.archive_growth import growth_contribution_payload
 from pipeline.scripts.api.market_scope.fact_collector import StrategyFact
+from pipeline.scripts.api.market_scope.legacy_shape import (
+    LegacyMarketMetaInput,
+    empty_analysis_level_market_status,
+    empty_analysis_levels,
+    empty_company_concentration_trend,
+    empty_level_top5_trend,
+    empty_matrix,
+    empty_target_customer_competition,
+    market_meta,
+    market_size_series_payload,
+    market_yoy_series,
+    period_coverage,
+    period_unit,
+)
 from pipeline.scripts.api.market_scope.periods import sort_periods, sorted_period_items
-
-SCOPE_DEFERRED_NOTE = "not_available_for_scope"
 
 
 def recompute_strategy_payload(
@@ -61,17 +73,32 @@ def recompute_strategy_payload(
         companies=companies,
     )
     source_label = "UBIST" if source.lower() == "ubist" else source.upper()
+    focus_brand_name = _brand_name(facts, focus_brand_key)
+    market_size_points = market_size_series_payload(sorted_period_items(market_size))
+    yoy_series = market_yoy_series(sorted_period_items(market_size))
+    kpi = _kpi(
+        brand_histories=brand_histories,
+        market_size=market_size,
+        focus_brand_key=focus_brand_key,
+        focus_ei=focus_ei,
+        hhi_recent=hhi_recent,
+        ei_matrix=ei_matrix,
+        periods=periods,
+    )
+    scope_market_id = "scope:unresolved"
     raw_payload = {
-        "brand": _brand_name(facts, focus_brand_key),
+        "brand": focus_brand_name,
         "brand_key": focus_brand_key,
+        "brand_name": focus_brand_name,
         "data": {
-            "analysis_level_market_status": _empty_analysis_levels(),
-            "analysis_levels": _empty_analysis_levels(),
+            "analysis_level_market_status": empty_analysis_level_market_status(),
+            "analysis_levels": empty_analysis_levels(periods, source=source),
             "brand_ranking": brand_ranking,
             "brand_ranking_stacked": brand_ranking,
-            "company_concentration_trend": _empty_company_concentration_trend(),
+            "company_concentration_trend": empty_company_concentration_trend(),
             "company_ranking": company_ranking,
             "company_ranking_stacked": company_ranking,
+            "data_period_coverage": period_coverage(periods, source=source),
             "ei_ms_matrix": ei_matrix,
             "growth_contribution": growth_contribution_payload(
                 brand_histories,
@@ -80,39 +107,42 @@ def recompute_strategy_payload(
                 brand_names=brand_names,
                 companies=companies,
             ),
-            "growth_contribution_ms_matrix": _empty_matrix(),
+            "growth_contribution_ms_matrix": empty_matrix(),
             "hhi_series_5y": hhi,
             "hhi_recent": hhi_recent,
-            "kpi": _kpi(
-                brand_histories=brand_histories,
-                market_size=market_size,
-                focus_brand_key=focus_brand_key,
-                focus_ei=focus_ei,
-                hhi_recent=hhi_recent,
-                ei_matrix=ei_matrix,
-                periods=periods,
-            ),
-            "level_top5_trend": _empty_level_top5_trend(),
-            "market_size_series": sorted_period_items(market_size),
+            "kpi": kpi,
+            "level_top5_trend": empty_level_top5_trend(),
+            "market_size_series": market_size_points,
+            "market_yoy_recent_pct": yoy_series.get(periods[-1]) if periods else None,
+            "market_yoy_series": yoy_series,
             "sources_data": {
-                "market_size_series": sorted_period_items(market_size),
+                "periods_unit": period_unit(source),
+                "periods_count": len(periods),
+                "market_size_series": market_size_points,
+                "market_yoy_series": yoy_series,
+                "market_yoy_recent_pct": yoy_series.get(periods[-1]) if periods else None,
                 "hhi_series_5y": hhi,
                 "hhi_recent": hhi_recent,
                 "cagr_5y_pct": focus_ei.get("market_cagr_pct"),
             },
-            "target_customer_competition": _empty_target_customer_competition(),
+            "target_customer_competition": empty_target_customer_competition(),
             "target_customer_competition_by_channel": {},
             "ubist_specialty_channels": [],
             "ubist_specialty_target_channels": [],
         },
-        "market_id": "scope:unresolved",
+        "market_id": scope_market_id,
+        "market_meta": market_meta(
+            LegacyMarketMetaInput(
+                market_id=scope_market_id,
+                source_label=source_label,
+                measure=measure,
+                direct_competition_count=kpi["direct_competition_count"],
+                market_size_recent=kpi["market_size_recent"],
+                market_cagr_5y_pct=kpi["market_cagr_5y_pct"],
+            )
+        ),
         "measure": measure,
         "source": source_label,
-        "summary": {
-            "market_share": _share(focus_history.get(periods[-1], 0.0), market_size.get(periods[-1], 0.0)) if periods else 0.0,
-            "cagr_5y": focus_ei.get("brand_cagr_pct"),
-            "market_cagr_5y": focus_ei.get("market_cagr_pct"),
-        },
         "unit_label": facts[0].unit_label if facts else "",
         "view": "market_landscape",
     }
@@ -221,55 +251,6 @@ def _top_share(ei_matrix: dict[str, Any], *, limit: int) -> float:
     rows = [row for row in ei_matrix.get("data", []) if isinstance(row, dict)]
     shares = [float(row.get("share_pct") or 0.0) for row in rows[:limit]]
     return round(sum(shares), 4)
-
-
-def _empty_analysis_levels() -> dict[str, Any]:
-    """Return an AnalysisLevels-shaped empty value for scoped deferral."""
-
-    return {
-        "period_unit": "",
-        "channels": [],
-        "levels": [],
-        "periods_monthly": [],
-        "periods_quarterly": [],
-        "data": {},
-        "note": SCOPE_DEFERRED_NOTE,
-    }
-
-
-def _empty_target_customer_competition() -> dict[str, Any]:
-    """Return a stable target-competition container for scoped deferral."""
-
-    return {
-        "available_in_view": [],
-        "target_type": "strategy_union",
-        "targets": [],
-        "views": [],
-        "note": SCOPE_DEFERRED_NOTE,
-    }
-
-
-def _empty_level_top5_trend() -> dict[str, Any]:
-    """Return a stable level-top5 container for scoped deferral."""
-
-    return {
-        "available_levels": [],
-        "default_level": None,
-        "by_level": {},
-        "note": SCOPE_DEFERRED_NOTE,
-    }
-
-
-def _empty_matrix() -> dict[str, Any]:
-    """Return a matrix-shaped empty value for non-recomputed scoped sections."""
-
-    return {"data": [], "ms_avg_pct": 0.0, "share_avg_pct": 0.0, "note": SCOPE_DEFERRED_NOTE}
-
-
-def _empty_company_concentration_trend() -> dict[str, Any]:
-    """Return a stable company-HHI container for scoped deferral."""
-
-    return {"periods": [], "hhi_values": [], "note": SCOPE_DEFERRED_NOTE}
 
 
 def _brand_name(facts: tuple[StrategyFact, ...], brand_key: str) -> str:

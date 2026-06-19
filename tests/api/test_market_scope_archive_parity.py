@@ -71,8 +71,8 @@ def test_recompute_uses_archive_endpoint_cagr_fallback_for_ei_matrix() -> None:
     assert target["brand_cagr_pct"] == pytest.approx(expected_brand_cagr)
     assert target["market_cagr_pct"] == pytest.approx(expected_market_cagr)
     assert target["ei_5y"] == pytest.approx(round((expected_brand_cagr / expected_market_cagr) * 100.0, 4))
-    assert payload["summary"]["cagr_5y"] == pytest.approx(expected_brand_cagr)
-    assert payload["summary"]["market_cagr_5y"] == pytest.approx(expected_market_cagr)
+    assert payload["data"]["kpi"]["brand_cagr_pct"] == pytest.approx(expected_brand_cagr)
+    assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(expected_market_cagr)
 
 
 def test_recompute_uses_archive_growth_windows_without_changing_raw_series() -> None:
