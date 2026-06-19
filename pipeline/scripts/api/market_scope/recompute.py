@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import math
 from typing import Any
 
+from pipeline.scripts.api.market_scope.archive_metrics import (
+    annual_hhi_series,
+    annual_ranking_payload,
+    ei_ms_matrix_payload,
+    endpoint_ei_with_fallback,
+)
+from pipeline.scripts.api.market_scope.archive_growth import growth_contribution_payload
 from pipeline.scripts.api.market_scope.fact_collector import StrategyFact
-from pipeline.scripts.api.market_scope.periods import period_span_years, sort_periods, sorted_period_items
+from pipeline.scripts.api.market_scope.periods import sort_periods, sorted_period_items
 
 
 def recompute_strategy_payload(
@@ -22,14 +28,28 @@ def recompute_strategy_payload(
     periods = _periods(facts)
     brand_histories = _brand_histories(facts, periods)
     company_histories = _company_histories(facts, periods)
+    brand_names = _brand_names(facts)
+    companies = _brand_companies(facts)
     market_size = {
         period: sum(history[period] for history in brand_histories.values())
         for period in periods
     }
-    brand_ranking = _brand_ranking(brand_histories, market_size)
-    company_ranking = _company_ranking(company_histories, market_size)
-    hhi = _hhi_series(brand_histories, market_size)
+    brand_ranking = annual_ranking_payload(
+        brand_histories,
+        label_key="brand_key",
+        focus_id=focus_brand_key,
+        display_names=brand_names,
+    )
+    focus_company = companies.get(focus_brand_key)
+    company_ranking = annual_ranking_payload(
+        company_histories,
+        label_key="company",
+        focus_id=focus_company,
+    )
+    hhi = annual_hhi_series(brand_histories, source=source)
+    hhi_recent = hhi[-1]["hhi"] if hhi else None
     focus_history = brand_histories.get(focus_brand_key, {period: 0.0 for period in periods})
+    focus_ei = endpoint_ei_with_fallback(focus_history, market_size)
     source_label = "UBIST" if source.lower() == "ubist" else source.upper()
     return {
         "brand": _brand_name(facts, focus_brand_key),
@@ -41,14 +61,28 @@ def recompute_strategy_payload(
             "brand_ranking_stacked": brand_ranking,
             "company_ranking": company_ranking,
             "company_ranking_stacked": company_ranking,
-            "ei_ms_matrix": _ei_ms_matrix(brand_ranking, brand_histories, market_size),
-            "growth_contribution": _growth_contribution(brand_histories, market_size),
+            "ei_ms_matrix": ei_ms_matrix_payload(
+                brand_histories,
+                market_size,
+                focus_brand_key=focus_brand_key,
+                brand_names=brand_names,
+                companies=companies,
+            ),
+            "growth_contribution": growth_contribution_payload(
+                brand_histories,
+                source=source,
+                focus_brand_key=focus_brand_key,
+                brand_names=brand_names,
+                companies=companies,
+            ),
             "hhi_series_5y": hhi,
+            "hhi_recent": hhi_recent,
             "market_size_series": sorted_period_items(market_size),
             "sources_data": {
                 "market_size_series": sorted_period_items(market_size),
                 "hhi_series_5y": hhi,
-                "cagr_5y_pct": _cagr(market_size),
+                "hhi_recent": hhi_recent,
+                "cagr_5y_pct": focus_ei.get("market_cagr_pct"),
             },
             "target_customer_competition": {
                 "available_in_view": [],
@@ -65,8 +99,8 @@ def recompute_strategy_payload(
         "source": source_label,
         "summary": {
             "market_share": _share(focus_history.get(periods[-1], 0.0), market_size.get(periods[-1], 0.0)) if periods else 0.0,
-            "cagr_5y": _cagr(focus_history),
-            "market_cagr_5y": _cagr(market_size),
+            "cagr_5y": focus_ei.get("brand_cagr_pct"),
+            "market_cagr_5y": focus_ei.get("market_cagr_pct"),
         },
         "unit_label": facts[0].unit_label if facts else "",
         "view": "market_landscape",
@@ -105,147 +139,6 @@ def _company_histories(
     return dict(histories)
 
 
-def _brand_ranking(
-    histories: dict[str, dict[str, float]],
-    market_size: dict[str, float],
-) -> dict[str, list[dict[str, Any]]]:
-    """Rank brands per period from union totals."""
-
-    result: dict[str, list[dict[str, Any]]] = {}
-    for period in sort_periods(market_size):
-        ranked = []
-        for brand_key, history in histories.items():
-            value = history.get(period, 0.0)
-            if value <= 0:
-                continue
-            ranked.append(
-                {
-                    "brand_key": brand_key,
-                    "brand": brand_key,
-                    "rank": 0,
-                    "raw_value": value,
-                    "ms": _share(value, market_size[period]),
-                }
-            )
-        ranked.sort(key=lambda item: (-float(item["raw_value"]), str(item["brand_key"])))
-        for index, item in enumerate(ranked, start=1):
-            item["rank"] = index
-        result[period] = ranked
-    return result
-
-
-def _company_ranking(
-    histories: dict[str, dict[str, float]],
-    market_size: dict[str, float],
-) -> dict[str, list[dict[str, Any]]]:
-    """Rank companies per period from union totals."""
-
-    result: dict[str, list[dict[str, Any]]] = {}
-    for period in sort_periods(market_size):
-        ranked = []
-        for company, history in histories.items():
-            value = history.get(period, 0.0)
-            if value <= 0:
-                continue
-            ranked.append(
-                {
-                    "company": company,
-                    "rank": 0,
-                    "raw_value": value,
-                    "ms": _share(value, market_size[period]),
-                }
-            )
-        ranked.sort(key=lambda item: (-float(item["raw_value"]), str(item["company"])))
-        for index, item in enumerate(ranked, start=1):
-            item["rank"] = index
-        result[period] = ranked
-    return result
-
-
-def _hhi_series(
-    histories: dict[str, dict[str, float]],
-    market_size: dict[str, float],
-) -> dict[str, float]:
-    """Compute HHI from union brand shares, never from market-level HHI."""
-
-    result: dict[str, float] = {}
-    for period, total in sorted_period_items(market_size).items():
-        if total <= 0:
-            result[period] = 0.0
-            continue
-        result[period] = round(
-            sum(math.pow(_share(history.get(period, 0.0), total), 2) for history in histories.values()),
-            6,
-        )
-    return result
-
-
-def _ei_ms_matrix(
-    ranking: dict[str, list[dict[str, Any]]],
-    histories: dict[str, dict[str, float]],
-    market_size: dict[str, float],
-) -> list[dict[str, Any]]:
-    """Build a latest-period EI/MS matrix from recomputed histories."""
-
-    if not market_size:
-        return []
-    latest = sort_periods(market_size)[-1]
-    market_cagr = _cagr(market_size)
-    result = []
-    for item in ranking.get(latest, []):
-        brand_key = str(item["brand_key"])
-        brand_cagr = _cagr(histories[brand_key])
-        result.append(
-            {
-                "brand_key": brand_key,
-                "brand": item["brand"],
-                "period": latest,
-                "ms": item["ms"],
-                "ei_5y": (brand_cagr / market_cagr * 100.0) if market_cagr not in (None, 0) and brand_cagr is not None else None,
-            }
-        )
-    return result
-
-
-def _growth_contribution(
-    histories: dict[str, dict[str, float]],
-    market_size: dict[str, float],
-) -> dict[str, list[dict[str, Any]]]:
-    """Compute brand growth contribution from union period deltas."""
-
-    periods = sort_periods(market_size)
-    if len(periods) < 2:
-        return {}
-    previous, latest = periods[-2], periods[-1]
-    market_delta = market_size[latest] - market_size[previous]
-    rows = []
-    for brand_key, history in histories.items():
-        delta = history[latest] - history[previous]
-        rows.append(
-            {
-                "brand_key": brand_key,
-                "brand": brand_key,
-                "growth_contribution": (delta / market_delta * 100.0) if market_delta else None,
-            }
-        )
-    rows.sort(key=lambda item: abs(float(item["growth_contribution"] or 0.0)), reverse=True)
-    return {latest: rows}
-
-
-def _cagr(history: dict[str, float]) -> float | None:
-    """Compute annualized growth from first to last positive history point."""
-
-    positive = [(period, history[period]) for period in sort_periods(history) if history[period] > 0]
-    if len(positive) < 2:
-        return None
-    first_period, first_value = positive[0]
-    last_period, last_value = positive[-1]
-    years = period_span_years(first_period, last_period)
-    if years <= 0:
-        return None
-    return round((math.pow(last_value / first_value, 1 / years) - 1) * 100, 6)
-
-
 def _share(value: float, total: float) -> float:
     """Return percentage share rounded for JSON stability."""
 
@@ -259,3 +152,15 @@ def _brand_name(facts: tuple[StrategyFact, ...], brand_key: str) -> str:
         if fact.brand_key == brand_key:
             return fact.brand_name
     return brand_key
+
+
+def _brand_names(facts: tuple[StrategyFact, ...]) -> dict[str, str]:
+    """Return display names keyed by brand key."""
+
+    return {fact.brand_key: fact.brand_name for fact in facts}
+
+
+def _brand_companies(facts: tuple[StrategyFact, ...]) -> dict[str, str]:
+    """Return company names keyed by brand key."""
+
+    return {fact.brand_key: fact.company for fact in facts}

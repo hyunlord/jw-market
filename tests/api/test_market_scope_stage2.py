@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 import sys
 
@@ -24,6 +25,7 @@ from pipeline.scripts.api.market_scope.types import (
     MarketScopeRequest,
     MarketScopeValidationError,
     OptionType,
+    ResolvedScope,
     ViewFamily,
 )
 
@@ -155,13 +157,13 @@ def test_recompute_union_metrics_recalculates_ratios_and_rankings() -> None:
     data = payload["data"]
 
     assert data["market_size_series"]["2026-01"] == 300.0
-    assert data["brand_ranking_stacked"]["2026-01"][0]["brand_key"] == "A"
-    assert data["brand_ranking_stacked"]["2026-01"][0]["raw_value"] == 200.0
-    assert data["brand_ranking_stacked"]["2026-01"][0]["ms"] == pytest.approx(66.666667)
-    assert data["hhi_series_5y"]["2026-01"] == pytest.approx(5000.0)
-    assert data["hhi_series_5y"]["2026-01"] != pytest.approx(5625.0)
-    assert data["company_ranking_stacked"]["2026-01"][0]["company"] == "JW"
-    assert data["ei_ms_matrix"][0]["ei_5y"] == pytest.approx(100.0)
+    latest_ranking = data["brand_ranking_stacked"]["rankings_by_year"]["2026"]
+    assert latest_ranking[0]["brand_key"] == "A"
+    assert latest_ranking[0]["raw_value"] == 200.0
+    assert latest_ranking[0]["ms"] == pytest.approx(66.6667)
+    assert data["hhi_series_5y"] == []
+    assert data["company_ranking_stacked"]["rankings_by_year"]["2026"][0]["company"] == "JW"
+    assert data["ei_ms_matrix"]["data"][0]["ei_5y"] is None
 
 
 def test_scope_hash_cache_copies_payload_by_scope_hash() -> None:
@@ -205,7 +207,7 @@ def test_strategy_resolver_passes_canonical_source_to_dependencies() -> None:
     catalog = MarketScopeCatalog.load_default()
     seen: dict[str, str] = {}
 
-    def cache_reader(request: MarketScopeRequest, resolved: object) -> dict[str, object]:
+    def cache_reader(request: MarketScopeRequest, resolved: ResolvedScope) -> dict[str, bool]:
         del resolved
         seen["source"] = request.source
         seen["measure"] = request.measure
@@ -230,9 +232,9 @@ def test_strategy_resolver_passes_canonical_source_to_dependencies() -> None:
 
 
 def test_mart_collector_maps_contract_source_to_mart_source() -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, str | Sequence[str]] = {}
 
-    def fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+    def fetch_all(sql: str, params: Sequence[str]) -> list[dict[str, str]]:
         captured["sql"] = sql
         captured["params"] = params
         return []

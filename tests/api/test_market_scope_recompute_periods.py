@@ -12,7 +12,7 @@ from pipeline.scripts.api.market_scope.fact_collector import StrategyFact
 from pipeline.scripts.api.market_scope.recompute import recompute_strategy_payload
 
 
-def test_recompute_preserves_monthly_cagr_when_periods_are_yyyy_mm() -> None:
+def test_recompute_requires_archive_endpoint_for_monthly_cagr() -> None:
     # Given: UBIST-style monthly strategy facts with a one-year span.
     facts = (
         _ubist_fact("Focus", "JW", {"2025-01": 100.0, "2026-01": 200.0}),
@@ -22,11 +22,12 @@ def test_recompute_preserves_monthly_cagr_when_periods_are_yyyy_mm() -> None:
     # When: strategy recompute annualizes the history.
     payload = recompute_strategy_payload(facts, focus_brand_key="Focus", source="UBIST", measure="sales")
 
-    # Then: the existing monthly CAGR behavior and latest ranking stay intact.
-    assert payload["summary"]["cagr_5y"] == pytest.approx(100.0)
-    assert payload["summary"]["market_cagr_5y"] == pytest.approx(50.0)
+    # Then: the archive endpoint policy does not invent a 1-year CAGR when
+    # exact 5-year and 3-year endpoints are absent.
+    assert payload["summary"]["cagr_5y"] is None
+    assert payload["summary"]["market_cagr_5y"] is None
     assert payload["data"]["market_size_series"]["2026-01"] == 300.0
-    assert payload["data"]["brand_ranking"]["2026-01"][0]["brand_key"] == "Focus"
+    assert payload["data"]["brand_ranking"]["rankings_by_year"]["2026"][0]["brand_key"] == "Focus"
 
 
 def test_recompute_handles_iqvia_quarterly_cagr_when_periods_are_yyyy_qn() -> None:
@@ -39,13 +40,14 @@ def test_recompute_handles_iqvia_quarterly_cagr_when_periods_are_yyyy_qn() -> No
     # When: strategy recompute annualizes quarterly periods.
     payload = recompute_strategy_payload(facts, focus_brand_key="Focus", source="IQVIA", measure="sales")
 
-    # Then: no YYYY-Qn parsing exception occurs and quarterly CAGR uses quarters / 4.
-    assert payload["summary"]["cagr_5y"] == pytest.approx(14.869835)
-    assert payload["summary"]["market_cagr_5y"] == pytest.approx(4.563955)
+    # Then: no YYYY-Qn parsing exception occurs and quarterly endpoint CAGR
+    # follows archive rounding.
+    assert payload["summary"]["cagr_5y"] == pytest.approx(14.8698)
+    assert payload["summary"]["market_cagr_5y"] == pytest.approx(4.564)
     assert payload["summary"]["market_share"] == pytest.approx(40.0)
     assert payload["data"]["market_size_series"]["2025-Q4"] == 500.0
-    assert payload["data"]["brand_ranking"]["2025-Q4"][1]["brand_key"] == "Focus"
-    assert payload["data"]["hhi_series_5y"]["2025-Q4"] == pytest.approx(5200.0)
+    assert payload["data"]["brand_ranking"]["rankings_by_year"]["2025"][1]["brand_key"] == "Focus"
+    assert payload["data"]["hhi_series_5y"] == []
 
 
 def _ubist_fact(brand_key: str, company: str, raw_value_history: dict[str, float]) -> StrategyFact:
