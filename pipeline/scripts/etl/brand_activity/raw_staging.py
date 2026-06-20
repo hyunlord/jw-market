@@ -8,7 +8,7 @@ import hashlib
 from typing import Final
 
 from pipeline.scripts.etl.brand_activity.csd_core import CsdRow
-from pipeline.scripts.etl.brand_activity.km_core import KeywordEvent, MeetingEvent
+from pipeline.scripts.etl.brand_activity.km_core import KeywordEvent
 
 
 CSD_METRIC: Final[str] = "product_details"
@@ -37,11 +37,6 @@ def csd_dedup_key(row: CsdRow) -> str:
 def keyword_dedup_key(event: KeywordEvent) -> str:
     """Return the Keyword event key that preserves duplicate source rows."""
     return _hash_key(("keyword", event.source_file, str(event.source_row_no)))
-
-
-def meeting_dedup_key(event: MeetingEvent) -> str:
-    """Return the Meeting event key that preserves duplicate source rows."""
-    return _hash_key(("meeting", event.source_file, str(event.source_row_no)))
 
 
 def recent_month_window(max_period_ym: str, months: int = 36) -> tuple[str, str]:

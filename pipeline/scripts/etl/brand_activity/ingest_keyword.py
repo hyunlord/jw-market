@@ -9,16 +9,15 @@ import openpyxl
 from pipeline.scripts.etl.brand_activity.km_core import (
     CellValue,
     KeywordEvent,
-    MessageCountCell,
     header_index,
     normalize_spaces,
     normalize_text,
     parse_period_ym,
     read_header_row,
-    read_message_count_cells,
     row_is_empty,
     source_sha256,
 )
+from pipeline.scripts.etl.brand_activity.km_message_count import MessageCountCell, read_message_count_cells
 
 
 KEYWORD_HEADERS: tuple[str, ...] = (

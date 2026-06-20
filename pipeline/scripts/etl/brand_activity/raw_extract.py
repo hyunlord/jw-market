@@ -23,11 +23,10 @@ from pipeline.scripts.etl.brand_activity.km_core import JsonValue, source_period
 
 @dataclass(frozen=True, slots=True)
 class SourceRoots:
-    """Resolved source folders for the reorganized CSD/Keyword/Meeting files."""
+    """Resolved source folders for the reorganized CSD and Keyword files."""
 
     csd: Path
     keyword: Path
-    meeting: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,14 +68,11 @@ class CsdSourceRow:
 
 
 def resolve_source_roots(root: Path) -> SourceRoots:
-    """Find the three PL-supplied source folders under `data/IQVIA/CSD`."""
+    """Find the CSD and Keyword source folders under `data/IQVIA/CSD`."""
     directories = [path for path in root.iterdir() if path.is_dir()]
     csd = _single_dir(directories, "ChannelDynamics")
     keyword = _single_dir(directories, "Keyword")
-    meeting = root / "Meetings"
-    if not meeting.is_dir():
-        raise FileNotFoundError(f"Meeting source folder not found: {meeting}")
-    return SourceRoots(csd=csd, keyword=keyword, meeting=meeting)
+    return SourceRoots(csd=csd, keyword=keyword)
 
 
 def discover_source_files(roots: SourceRoots) -> dict[str, list[Path]]:
@@ -84,7 +80,6 @@ def discover_source_files(roots: SourceRoots) -> dict[str, list[Path]]:
     return {
         "csd": _sorted_workbooks(roots.csd, "ChannelDynamics*.xlsx"),
         "keyword": _sorted_workbooks(roots.keyword, "Keywords for JW*.xlsx"),
-        "meeting": _sorted_workbooks(roots.meeting, "Meetings for JW*.xlsx"),
     }
 
 

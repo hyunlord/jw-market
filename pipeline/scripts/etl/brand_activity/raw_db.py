@@ -9,15 +9,14 @@ from typing import Final
 from typing import TypeAlias
 
 from pipeline.scripts.etl.brand_activity.ingest_csd import stage_ddl as csd_stage_ddl
-from pipeline.scripts.etl.brand_activity.ingest_keyword_meeting import stage_ddl as km_stage_ddl
-from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, MeetingEvent, text_sha256
+from pipeline.scripts.etl.brand_activity.ingest_keyword_stage import stage_ddl as keyword_stage_ddl
+from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, text_sha256
 from pipeline.scripts.etl.brand_activity.raw_extract import CsdSourceRow
 from pipeline.scripts.etl.brand_activity.raw_schema import RAW_DDL
 from pipeline.scripts.etl.brand_activity.raw_stage_refresh import refresh_stage
 from pipeline.scripts.etl.brand_activity.raw_staging import (
     csd_dedup_key,
     keyword_dedup_key,
-    meeting_dedup_key,
 )
 
 
@@ -44,7 +43,6 @@ class SourceRows:
 
     csd: list[CsdSourceRow]
     keyword: list[KeywordEvent]
-    meeting: list[MeetingEvent]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,12 +81,11 @@ def load_sources(config: DbConfig, rows: SourceRows, window: tuple[str, str]) ->
         with connection.cursor() as cursor:
             _execute_ddl(cursor, RAW_DDL.format(raw_schema=raw_schema))
             _execute_ddl(cursor, csd_stage_ddl(stage_schema))
-            _execute_ddl(cursor, km_stage_ddl(stage_schema))
+            _execute_ddl(cursor, keyword_stage_ddl(stage_schema))
             before = _raw_counts(cursor, raw_schema)
             inserted = {
                 "raw_csd_channel_dynamics": _insert_csd(cursor, raw_schema, rows.csd),
                 "raw_keyword_events": _insert_keyword(cursor, raw_schema, rows.keyword),
-                "raw_meeting_events": _insert_meeting(cursor, raw_schema, rows.meeting),
             }
             after = _raw_counts(cursor, raw_schema)
             stage_rows = refresh_stage(cursor, raw_schema, stage_schema, window)
@@ -112,7 +109,7 @@ def _execute_ddl(cursor: object, ddl: str) -> None:
 def _raw_counts(cursor: object, schema: str) -> dict[str, int]:
     """Count raw rows in all brand-activity raw tables."""
     result: dict[str, int] = {}
-    for table in ("raw_csd_channel_dynamics", "raw_keyword_events", "raw_meeting_events"):
+    for table in ("raw_csd_channel_dynamics", "raw_keyword_events"):
         cursor.execute(f"SELECT COUNT(*) FROM `{schema}`.`{table}`")
         result[table] = int(cursor.fetchone()[0])
     return result
@@ -143,20 +140,6 @@ def _insert_keyword(cursor: object, schema: str, events: list[KeywordEvent]) -> 
         VALUES ({", ".join(["%s"] * 25)})
     """
     cursor.executemany(sql, [_keyword_tuple(event) for event in events])
-    return int(cursor.rowcount)
-
-
-def _insert_meeting(cursor: object, schema: str, events: list[MeetingEvent]) -> int:
-    """Insert raw Meeting events with source-file/row idempotency."""
-    sql = f"""
-        INSERT IGNORE INTO `{schema}`.`raw_meeting_events`
-        (source_dataset, meeting_date, period_ym, meeting_topic, meeting_format, pharma_sponsor,
-         non_pharma_sponsor, no_at_meeting, product_name, therapeutic_class, prescription_frequency,
-         prescription_evolution, interest, verbatim_message, other_comments, source_file, source_sheet,
-         source_row_no, source_file_sha256, dedup_key, row_hash, raw_payload_json)
-        VALUES ({", ".join(["%s"] * 22)})
-    """
-    cursor.executemany(sql, [_meeting_tuple(event) for event in events])
     return int(cursor.rowcount)
 
 
@@ -215,35 +198,6 @@ def _keyword_tuple(event: KeywordEvent) -> DbTuple:
         event.source_row_no,
         event.source_file_sha256,
         keyword_dedup_key(event),
-        text_sha256(payload),
-        payload,
-    )
-
-
-def _meeting_tuple(event: MeetingEvent) -> DbTuple:
-    """Return the raw Meeting DB tuple."""
-    payload = _payload(event.to_stage_row())
-    return (
-        "meeting",
-        event.meeting_date,
-        event.period_ym,
-        event.meeting_topic,
-        event.meeting_format,
-        event.pharma_sponsor,
-        event.non_pharma_sponsor,
-        event.no_at_meeting,
-        event.product_name,
-        event.therapeutic_class,
-        event.prescription_frequency,
-        event.prescription_evolution,
-        event.interest,
-        event.verbatim_message,
-        event.other_comments,
-        event.source_file,
-        event.source_sheet,
-        event.source_row_no,
-        event.source_file_sha256,
-        meeting_dedup_key(event),
         text_sha256(payload),
         payload,
     )

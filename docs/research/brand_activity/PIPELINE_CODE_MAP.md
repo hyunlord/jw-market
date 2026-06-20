@@ -8,7 +8,7 @@ Authoritative map for the Brand Activity auto-topic pipeline after the
 - LLM route: serving-direct only.
 - Retained serving path: Mac `127.0.0.1:19080` -> SSH 2-hop -> GCP node `kubectl port-forward svc/vertex-openai-proxy-service:8080` -> OpenAI-compatible `/v1/chat/completions`.
 - Removed/unsupported paths in this package: `jwai-dev` gateway, Vertex direct, Vertex node-token direct.
-- Source DB: local MariaDB `jw_brand_activity_stage` on `127.0.0.1:3308`.
+- Source DB: local MariaDB `jw_brand_activity_stage` on `127.0.0.1:3308`; topic extraction uses Keyword rows only.
 - API result tables: `jw_brand_activity_stage.mart_brand_activity_topics` and `jw_brand_activity_stage.mart_brand_activity_topic_runs`.
 - Current measured run loaded to DB: `serving_direct_singleconcept_top7_exec_20260620_143124`.
 
@@ -47,8 +47,8 @@ Authoritative map for the Brand Activity auto-topic pipeline after the
 
 | Path | Role |
 |---|---|
-| `pipeline/scripts/etl/brand_activity/load_raw_staging.py` | Local-only raw staging CLI; discovers source workbooks, profiles coverage, loads raw/stage tables idempotently. |
-| `pipeline/scripts/etl/brand_activity/raw_db.py` | MariaDB raw/stage adapter for CSD, Keyword, and Meeting source rows. |
+| `pipeline/scripts/etl/brand_activity/load_raw_staging.py` | Local-only raw staging CLI; discovers CSD/Keyword source workbooks, profiles coverage, loads raw/stage tables idempotently. |
+| `pipeline/scripts/etl/brand_activity/raw_db.py` | MariaDB raw/stage adapter for CSD and Keyword source rows. |
 | `pipeline/scripts/etl/brand_activity/raw_schema.py` | Raw staging DDL. |
 | `pipeline/scripts/etl/brand_activity/raw_extract.py` | CSD workbook extraction and source-root resolution. |
 | `pipeline/scripts/etl/brand_activity/raw_source_sets.py` | Old/new source discovery and market coverage summaries. |
@@ -58,10 +58,10 @@ Authoritative map for the Brand Activity auto-topic pipeline after the
 | `pipeline/scripts/etl/brand_activity/csd_validation.py` | CSD source validation helpers. |
 | `pipeline/scripts/etl/brand_activity/ingest_csd.py` | CSD workbook-to-stage reader. |
 | `pipeline/scripts/etl/brand_activity/ingest_keyword.py` | Keyword workbook event reader. |
-| `pipeline/scripts/etl/brand_activity/ingest_meeting.py` | Meeting workbook event reader. |
-| `pipeline/scripts/etl/brand_activity/ingest_keyword_meeting.py` | Shared Keyword/Meeting stage DDL builder. |
-| `pipeline/scripts/etl/brand_activity/km_core.py` | Keyword/Meeting models, parsing, hashes, JSON helpers. |
-| `pipeline/scripts/etl/brand_activity/km_validation.py` | Keyword/Meeting source validation helpers. |
+| `pipeline/scripts/etl/brand_activity/ingest_keyword_stage.py` | Keyword stage DDL builder. |
+| `pipeline/scripts/etl/brand_activity/km_core.py` | Keyword models, parsing, hashes, JSON helpers. |
+| `pipeline/scripts/etl/brand_activity/km_message_count.py` | Keyword Message Count sheet parser. |
+| `pipeline/scripts/etl/brand_activity/km_validation.py` | Keyword source validation helpers. |
 
 ## Execution Flow
 
@@ -160,14 +160,13 @@ This is the authoritative order for rebuilding the Brand Activity data layer fro
 
 ### 1. Source Files
 
-- New CSD/Keyword/Meeting root: `data/IQVIA/CSD`
-- Legacy Keyword/Meeting root: `data/IQVIA/CSD2`
+- New CSD/Keyword root: `data/IQVIA/CSD`
+- Legacy Keyword root: `data/IQVIA/CSD2`
 - Current deterministic source set:
   - CSD: `ChannelDynamics_JW Pharma Regional Report_Dec.23.xlsx`, `Dec.24.xlsx`, `Dec.25.xlsx`
   - Keyword new: `Keywords for JW Dec. 23.xlsx`, `Dec. 24.xlsx`, `Dec. 25.xlsx`, `Apr. 26.xlsx`
   - Keyword legacy: `Keywords for JW Jan. 25.xlsx`, `Feb. 25.xlsx`, `Mar. 25.xlsx`, `Apr. 25.xlsx`, `May. 25.xlsx`, `June. 25.xlsx`, `July. 25.xlsx`, `Aug. 25.xlsx`, `Sep. 25.xlsx`, `Oct. 25.xlsx`
-  - Meeting new: `Meetings for JW Dec. 23.xlsx`, `Dec. 24.xlsx`, `Dec. 25.xlsx`, `Apr. 26.xlsx`
-  - Meeting legacy: `Meetings for JW Jan. 25.xlsx`, `Feb. 25.xlsx`, `Mar. 25.xlsx`, `Apr. 25.xlsx`, `May. 25.xlsx`, `June. 25.xlsx`, `July. 25.xlsx`, `Aug. 25.xlsx`, `Sep. 25.xlsx`, `Oct. 25.xlsx`
+- Meeting workbooks under the same source roots are preserved on disk but not loaded by this keyword-only topic pipeline; they can be reintroduced by a future ETL change if PL requests meeting analysis again.
 
 ### 2. ETL Raw + Stage Load
 
@@ -198,10 +197,8 @@ The second pass must insert 0 raw rows. Current measured counts for the 2023-05.
 |---|---:|
 | `raw_csd_channel_dynamics` | 187847 |
 | `raw_keyword_events` | 29346 |
-| `raw_meeting_events` | 2363 |
 | `csd_channel_dynamics_stage` | 44025 |
 | `km_keyword_event_stage` | 29346 |
-| `km_meeting_event_stage` | 2363 |
 
 ### 3. Topic Extraction
 

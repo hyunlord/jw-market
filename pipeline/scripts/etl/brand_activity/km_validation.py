@@ -1,4 +1,4 @@
-"""Validation helpers for Keyword/Meeting overlap and isolated load evidence."""
+"""Validation helpers for Keyword overlap and isolated load evidence."""
 
 from __future__ import annotations
 
@@ -10,16 +10,12 @@ from typing import Sequence
 from pipeline.scripts.etl.brand_activity.km_core import (
     JsonValue,
     KeywordEvent,
-    MeetingEvent,
-    MessageCountCell,
     ProductPeriodEvent,
     language_bucket,
     normalize_key,
     text_sha256,
 )
-
-
-KmEvent = KeywordEvent | MeetingEvent
+from pipeline.scripts.etl.brand_activity.km_message_count import MessageCountCell
 
 
 def _counter_to_json(counter: Counter[str]) -> dict[str, int]:
@@ -181,7 +177,7 @@ def file_period_distribution(events: Sequence[ProductPeriodEvent]) -> dict[str, 
     return {source_file: _counter_to_json(counts) for source_file, counts in sorted(file_counts.items())}
 
 
-def duplicate_hash_summary(events: Sequence[KmEvent]) -> dict[str, JsonValue]:
+def duplicate_hash_summary(events: Sequence[KeywordEvent]) -> dict[str, JsonValue]:
     """Count exact duplicate source rows by hash without exposing raw text."""
     hashes: Counter[str] = Counter()
     for event in events:
@@ -215,31 +211,13 @@ def keyword_enum_distribution(events: Sequence[KeywordEvent]) -> dict[str, dict[
     }
 
 
-def meeting_enum_distribution(events: Sequence[MeetingEvent]) -> dict[str, dict[str, int]]:
-    """Summarize Meeting enum fields for survey-alignment validation."""
-    return {
-        "meeting_format": _counter_to_json(Counter(event.meeting_format for event in events)),
-        "therapeutic_class": _counter_to_json(Counter(event.therapeutic_class for event in events)),
-        "prescription_frequency": _counter_to_json(Counter(event.prescription_frequency for event in events)),
-        "prescription_evolution": _counter_to_json(Counter(event.prescription_evolution for event in events)),
-        "interest": _counter_to_json(Counter(event.interest for event in events)),
-    }
-
-
-def text_field_summary(events: Sequence[KmEvent], field_name: str) -> dict[str, JsonValue]:
+def text_field_summary(events: Sequence[KeywordEvent], field_name: str) -> dict[str, JsonValue]:
     """Summarize sensitive text by length and language without raw strings."""
     values: list[str] = []
     for event in events:
         match field_name:
             case "keyword_text":
-                if isinstance(event, KeywordEvent):
-                    values.append(event.keyword_text)
-            case "meeting_topic":
-                if isinstance(event, MeetingEvent):
-                    values.append(event.meeting_topic)
-            case "verbatim_message":
-                if isinstance(event, MeetingEvent):
-                    values.append(event.verbatim_message)
+                values.append(event.keyword_text)
             case other:
                 raise ValueError(f"unsupported sensitive text field: {other}")
     lengths = sorted(len(value) for value in values)

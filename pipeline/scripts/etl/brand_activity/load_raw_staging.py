@@ -25,8 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.scripts.etl.brand_activity.csd_core import deduplicate_rows
 from pipeline.scripts.etl.brand_activity.ingest_keyword import read_keyword_events
-from pipeline.scripts.etl.brand_activity.ingest_meeting import read_meeting_events
-from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, MeetingEvent, source_sha256
+from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, source_sha256
 from pipeline.scripts.etl.brand_activity.raw_db import DbConfig, SourceRows, load_sources
 from pipeline.scripts.etl.brand_activity.raw_extract import (
     CsdSourceRow,
@@ -107,7 +106,6 @@ def main() -> int:
         "source_rows": {
             "csd": len(source_rows.csd),
             "keyword": len(source_rows.keyword),
-            "meeting": len(source_rows.meeting),
         },
     }
     write_json(args.audit_dir / "run_summary.json", run_summary)
@@ -121,15 +119,13 @@ def read_all_sources(files: dict[str, list[Path]]) -> SourceRows:
     for workbook in files["csd"]:
         csd_rows.extend(read_csd_source_rows(workbook, source_sha256(workbook)))
     keyword_events = [event for workbook in files["keyword"] for event in read_keyword_events(workbook)]
-    meeting_events = [event for workbook in files["meeting"] for event in read_meeting_events(workbook)]
-    return SourceRows(csd=csd_rows, keyword=keyword_events, meeting=meeting_events)
+    return SourceRows(csd=csd_rows, keyword=keyword_events)
 
 
 def max_period(rows: SourceRows) -> str:
-    """Return the newest row-level period across all three datasets."""
+    """Return the newest row-level period across CSD and Keyword datasets."""
     periods = [row.period_ym for row in rows.csd]
     periods.extend(event.period_ym for event in rows.keyword)
-    periods.extend(event.period_ym for event in rows.meeting)
     return max(periods)
 
 
@@ -163,24 +159,21 @@ def build_profile(
         "source_roots": {
             "csd": str(roots.csd),
             "keyword": sorted({str(path.parent) for path in files["keyword"]}),
-            "meeting": sorted({str(path.parent) for path in files["meeting"]}),
         },
         "source_files": {dataset: [path.name for path in paths] for dataset, paths in files.items()},
         "source_collection_counts": source_collection_counts(files),
         "analysis_window": {"start": window[0], "end": window[1], "basis": "max row-level period"},
         "current_loader_audit": {
             "csd_transform": "market sheets excluding Market2 + Region == TOTAL + natural-grain dedup",
-            "keyword_meeting_transform": "event rows preserved; DB loader truncates stage before insert",
+            "keyword_transform": "event rows preserved; DB loader truncates stage before insert",
         },
         "source_periods": {
             "csd": period_counter([row.period_ym for row in rows.csd]),
             "keyword": period_counter([event.period_ym for event in rows.keyword]),
-            "meeting": period_counter([event.period_ym for event in rows.meeting]),
         },
         "source_year_rows": {
             "csd": year_counter([row.period_ym for row in rows.csd]),
             "keyword": year_counter([event.period_ym for event in rows.keyword]),
-            "meeting": year_counter([event.period_ym for event in rows.meeting]),
         },
         "csd": {
             "raw_rows_all_regions_market_sheets": len(rows.csd),
@@ -190,12 +183,10 @@ def build_profile(
             "market2_rows_preserved_raw": sum(1 for row in rows.csd if row.source_sheet.endswith("Market2")),
         },
         "keyword": event_profile(rows.keyword),
-        "meeting": event_profile(rows.meeting),
         "target_market_coverage": target_market_coverage(
             CoverageSources(
                 product_markets=product_markets,
                 keyword_events=rows.keyword,
-                meeting_events=rows.meeting,
                 window=window,
                 source_collection=source_collections,
             )
@@ -212,7 +203,7 @@ def product_market_map(rows: list[object]) -> dict[str, set[str]]:
     return mapping
 
 
-def event_profile(events: list[KeywordEvent] | list[MeetingEvent]) -> dict[str, JsonValue]:
+def event_profile(events: list[KeywordEvent]) -> dict[str, JsonValue]:
     """Return row, file, period, ATC4, and product counts without raw text."""
     return {
         "rows": len(events),

@@ -1,4 +1,4 @@
-"""Shared Keyword/Meeting workbook parsing primitives for isolated stage loads."""
+"""Shared Keyword workbook parsing primitives for isolated stage loads."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import re
 from typing import Final, Protocol, TypeAlias
 import unicodedata
 
-import openpyxl
 from openpyxl.worksheet._read_only import ReadOnlyWorksheet
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -52,36 +51,15 @@ MESSAGE_MONTH_PATTERN: Final[re.Pattern[str]] = re.compile(
 
 
 class KmParseError(ValueError):
-    """Raised when a Keyword/Meeting workbook value cannot be parsed safely."""
+    """Raised when a Keyword workbook value cannot be parsed safely."""
 
 
 class ProductPeriodEvent(Protocol):
-    """Protocol for event rows that can be counted by product and source month."""
+    """Protocol for Keyword rows that can be counted by product and source month."""
 
     source_file: str
     product_name: str
     period_ym: str
-
-
-@dataclass(frozen=True, slots=True)
-class MessageCountCell:
-    """Single product-month value from a cumulative `2025 Message Count` sheet."""
-
-    kind: str
-    source_file: str
-    source_period_ym: str
-    product_name: str
-    product_key: str
-    month_ym: str
-    value: int
-
-    def comparison_key(self) -> tuple[str, str]:
-        """Return the stable product/month key used across source files."""
-        return (self.product_key, self.month_ym)
-
-    def to_dict(self) -> dict[str, JsonValue]:
-        """Serialize the non-sensitive count cell for JSON audit output."""
-        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,54 +107,6 @@ class KeywordEvent:
         row["what_other_materials_len"] = len(what_other_materials)
         row["what_other_materials_language"] = language_bucket(what_other_materials)
         row["what_other_materials_sha256"] = text_sha256(what_other_materials)
-        row["other_comments_len"] = len(other_comments)
-        row["other_comments_language"] = language_bucket(other_comments)
-        row["other_comments_sha256"] = text_sha256(other_comments)
-        return row
-
-
-@dataclass(frozen=True, slots=True)
-class MeetingEvent:
-    """Event-level row from the `Meetings` sheet; duplicate rows are meaningful."""
-
-    meeting_date: str
-    period_ym: str
-    meeting_topic: str
-    meeting_format: str
-    pharma_sponsor: str
-    non_pharma_sponsor: str
-    no_at_meeting: int | None
-    product_name: str
-    therapeutic_class: str
-    prescription_frequency: str
-    prescription_evolution: str
-    interest: str
-    verbatim_message: str
-    other_comments: str
-    source_file: str
-    source_sheet: str
-    source_row_no: int
-    source_file_sha256: str
-
-    def to_stage_row(self) -> dict[str, JsonValue]:
-        """Serialize the raw DB stage row that keeps the source verbatim text."""
-        return asdict(self)
-
-    def to_redacted_row(self) -> dict[str, JsonValue]:
-        """Serialize an audit row without dumping raw verbatim text."""
-        row = asdict(self)
-        meeting_topic = self.meeting_topic
-        verbatim_message = self.verbatim_message
-        other_comments = self.other_comments
-        del row["meeting_topic"]
-        del row["verbatim_message"]
-        del row["other_comments"]
-        row["meeting_topic_len"] = len(meeting_topic)
-        row["meeting_topic_language"] = language_bucket(meeting_topic)
-        row["meeting_topic_sha256"] = text_sha256(meeting_topic)
-        row["verbatim_message_len"] = len(verbatim_message)
-        row["verbatim_message_language"] = language_bucket(verbatim_message)
-        row["verbatim_message_sha256"] = text_sha256(verbatim_message)
         row["other_comments_len"] = len(other_comments)
         row["other_comments_language"] = language_bucket(other_comments)
         row["other_comments_sha256"] = text_sha256(other_comments)
@@ -235,18 +165,7 @@ def parse_period_ym(value: CellValue) -> str:
             year_raw = int(reverse_match.group(1))
             year = 2000 + year_raw if year_raw < 100 else year_raw
             return f"{year:04d}-{month:02d}"
-    raise KmParseError(f"unparseable Keyword/Meeting period: {value!r}")
-
-
-def parse_date_iso(value: CellValue) -> str:
-    """Parse a Meeting date value into `YYYY-MM-DD`."""
-    if isinstance(value, datetime | date):
-        return f"{value.year:04d}-{value.month:02d}-{value.day:02d}"
-    text = normalize_spaces(normalize_text(value))
-    date_match = re.search(r"\b(20\d{2})[/-](\d{1,2})[/-](\d{1,2})\b", text)
-    if date_match is None:
-        raise KmParseError(f"unparseable Meeting date: {value!r}")
-    return f"{int(date_match.group(1)):04d}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
+    raise KmParseError(f"unparseable Keyword period: {value!r}")
 
 
 def parse_nullable_int(value: CellValue) -> int | None:
@@ -326,59 +245,3 @@ def alias_header_index(headers: list[str], aliases: dict[str, tuple[str, ...]]) 
     if missing:
         raise KmParseError(f"missing workbook headers: {missing}")
     return result
-
-
-def message_count_header(sheet: WorksheetLike) -> tuple[int, int, dict[int, str]]:
-    """Locate the product column and normalized month columns in Message Count."""
-    for row_no in range(1, 10):
-        row = next(sheet.iter_rows(min_row=row_no, max_row=row_no, max_col=80, values_only=True))
-        headers = [normalize_spaces(normalize_text(value)) for value in row]
-        normalized = [normalize_key(header) for header in headers]
-        product_index = -1
-        if "PRODUCT NAME" in normalized:
-            product_index = normalized.index("PRODUCT NAME")
-        elif "PRODUCT" in normalized:
-            product_index = normalized.index("PRODUCT")
-        if product_index < 0:
-            continue
-        month_columns: dict[int, str] = {}
-        for index, header in enumerate(headers):
-            if MESSAGE_MONTH_PATTERN.search(header) is not None:
-                month_columns[index] = parse_period_ym(header)
-        if not month_columns:
-            raise KmParseError("Message Count has a product header but no month columns")
-        return row_no, product_index, month_columns
-    raise KmParseError("Message Count product header not found")
-
-
-def read_message_count_cells(workbook_path: Path, kind: str) -> list[MessageCountCell]:
-    """Read product-month count cells from a workbook's `2025 Message Count` sheet."""
-    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
-    try:
-        if "2025 Message Count" not in workbook.sheetnames:
-            return []
-        sheet = workbook["2025 Message Count"]
-        header_row_no, product_index, month_columns = message_count_header(sheet)
-        source_period = source_period_from_name(workbook_path)
-        cells: list[MessageCountCell] = []
-        max_col = max([product_index, *month_columns.keys()]) + 1
-        for row in sheet.iter_rows(min_row=header_row_no + 1, max_col=max_col, values_only=True):
-            product_name = normalize_spaces(normalize_text(row[product_index]))
-            if product_name == "":
-                continue
-            product_key = normalize_key(product_name)
-            for column_index, month_ym in month_columns.items():
-                cells.append(
-                    MessageCountCell(
-                        kind=kind,
-                        source_file=workbook_path.name,
-                        source_period_ym=source_period,
-                        product_name=product_name,
-                        product_key=product_key,
-                        month_ym=month_ym,
-                        value=parse_count_value(row[column_index]),
-                    )
-                )
-        return cells
-    finally:
-        workbook.close()

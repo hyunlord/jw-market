@@ -1,4 +1,4 @@
-"""Source-set discovery and coverage helpers for combined Keyword/Meeting loads."""
+"""Source-set discovery and coverage helpers for combined Keyword loads."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, MeetingEvent, source_period_from_name
+from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, source_period_from_name
 from pipeline.scripts.etl.brand_activity.raw_extract import SourceRoots, discover_source_files
 
 
@@ -27,11 +27,10 @@ TARGET_MARKETS: dict[str, tuple[str, ...]] = {
 
 
 @dataclass(frozen=True, slots=True)
-class KeywordMeetingRoots:
-    """Resolved legacy Keyword/Meeting folders that do not carry CSD scope."""
+class LegacyKeywordRoot:
+    """Resolved legacy Keyword folder that does not carry CSD scope."""
 
     keyword: Path
-    meeting: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +39,6 @@ class CoverageSources:
 
     product_markets: Mapping[str, set[str]]
     keyword_events: Sequence[KeywordEvent]
-    meeting_events: Sequence[MeetingEvent]
     window: tuple[str, str]
     source_collection: Mapping[str, str]
 
@@ -57,37 +55,33 @@ class EventCoverageFilter:
 
 
 def discover_combined_source_files(roots: SourceRoots, legacy_root: Path) -> dict[str, list[Path]]:
-    """Return CSD new-only files plus new+old Keyword/Meeting files."""
+    """Return CSD new-only files plus new+old Keyword files."""
     files = discover_source_files(roots)
-    legacy = resolve_legacy_keyword_meeting_roots(legacy_root)
+    legacy = resolve_legacy_keyword_root(legacy_root)
     combined = {
         "csd": files["csd"],
         "keyword": _sorted_km_workbooks((*files["keyword"], *_source_workbooks(legacy.keyword, "Keywords for JW*.xlsx"))),
-        "meeting": _sorted_km_workbooks((*files["meeting"], *_source_workbooks(legacy.meeting, "Meetings for JW*.xlsx"))),
     }
     _ensure_unique_event_filenames(combined)
     return combined
 
 
-def resolve_legacy_keyword_meeting_roots(root: Path) -> KeywordMeetingRoots:
-    """Find old monthly Keyword/Meeting folders under the CSD2 source root."""
+def resolve_legacy_keyword_root(root: Path) -> LegacyKeywordRoot:
+    """Find the old monthly Keyword folder under the CSD2 source root."""
     if not root.is_dir():
-        raise FileNotFoundError(f"legacy Keyword/Meeting source root not found: {root}")
+        raise FileNotFoundError(f"legacy Keyword source root not found: {root}")
     directories = [path for path in root.iterdir() if path.is_dir()]
     keyword_matches = [path for path in directories if "Keyword" in path.name]
-    meeting = root / "Meetings"
     if len(keyword_matches) != 1:
         raise FileNotFoundError(f"expected one legacy Keyword folder under {root}, found {len(keyword_matches)}")
-    if not meeting.is_dir():
-        raise FileNotFoundError(f"legacy Meeting source folder not found: {meeting}")
-    return KeywordMeetingRoots(keyword=keyword_matches[0], meeting=meeting)
+    return LegacyKeywordRoot(keyword=keyword_matches[0])
 
 
 def source_collection_by_file(files: Mapping[str, Sequence[Path]]) -> dict[str, str]:
     """Map workbook names to `old` or `new` source collection labels."""
     result: dict[str, str] = {}
-    for dataset in ("csd", "keyword", "meeting"):
-        for path in files.get(dataset, ()):
+    for paths in files.values():
+        for path in paths:
             result[path.name] = _collection_label(path)
     return result
 
@@ -98,7 +92,7 @@ def source_collection_counts(files: Mapping[str, Sequence[Path]]) -> dict[str, d
 
 
 def target_market_coverage(sources: CoverageSources) -> list[dict[str, JsonValue]]:
-    """Count Keyword/Meeting rows that can be joined to the 11 CSD markets."""
+    """Count Keyword rows that can be joined to the 11 CSD markets."""
     start, end = sources.window
     coverage: list[dict[str, JsonValue]] = []
     for label, markets in TARGET_MARKETS.items():
@@ -111,7 +105,6 @@ def target_market_coverage(sources: CoverageSources) -> list[dict[str, JsonValue
             source_collection=sources.source_collection,
         )
         keyword_counts = _event_collection_counts(sources.keyword_events, event_filter)
-        meeting_counts = _event_collection_counts(sources.meeting_events, event_filter)
         coverage.append(
             {
                 "market": label,
@@ -120,12 +113,7 @@ def target_market_coverage(sources: CoverageSources) -> list[dict[str, JsonValue
                 "keyword_rows_old": keyword_counts.get("old", 0),
                 "keyword_rows_new": keyword_counts.get("new", 0),
                 "keyword_rows_unknown": keyword_counts.get("unknown", 0),
-                "meeting_rows": sum(meeting_counts.values()),
-                "meeting_rows_old": meeting_counts.get("old", 0),
-                "meeting_rows_new": meeting_counts.get("new", 0),
-                "meeting_rows_unknown": meeting_counts.get("unknown", 0),
                 "has_keyword": sum(keyword_counts.values()) > 0,
-                "has_meeting": sum(meeting_counts.values()) > 0,
             }
         )
     return coverage
@@ -137,14 +125,16 @@ def _source_workbooks(root: Path, pattern: str) -> tuple[Path, ...]:
 
 
 def _sorted_km_workbooks(paths: Sequence[Path]) -> list[Path]:
-    """Sort Keyword/Meeting workbooks by parsed source period and name."""
+    """Sort Keyword workbooks by parsed source period and name."""
     return sorted(paths, key=lambda path: (source_period_from_name(path), path.name))
 
 
 def _ensure_unique_event_filenames(files: Mapping[str, Sequence[Path]]) -> None:
     """Reject source sets whose event filenames would collide in raw dedup keys."""
-    for dataset in ("keyword", "meeting"):
-        names = [path.name for path in files.get(dataset, ())]
+    for dataset, paths in files.items():
+        if dataset == "csd":
+            continue
+        names = [path.name for path in paths]
         duplicate_names = sorted(name for name, count in Counter(names).items() if count > 1)
         if duplicate_names:
             raise ValueError(f"{dataset} source filenames collide with raw dedup keys: {duplicate_names}")
@@ -160,7 +150,7 @@ def _collection_label(path: Path) -> str:
 
 
 def _event_collection_counts(
-    events: Sequence[KeywordEvent] | Sequence[MeetingEvent],
+    events: Sequence[KeywordEvent],
     event_filter: EventCoverageFilter,
 ) -> Counter[str]:
     """Count joined event rows by old/new workbook collection."""

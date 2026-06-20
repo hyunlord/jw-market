@@ -10,15 +10,12 @@ def refresh_stage(cursor: object, raw_schema: str, stage_schema: str, window: tu
     start, end = window
     cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`csd_channel_dynamics_stage`")
     cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`km_keyword_event_stage`")
-    cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`km_meeting_event_stage`")
     csd_rows = _canonical_csd_stage_rows(cursor, raw_schema, start, end)
     _insert_csd_stage(cursor, stage_schema, csd_rows)
     keyword_count = _copy_keyword_stage(cursor, raw_schema, stage_schema, start, end)
-    meeting_count = _copy_meeting_stage(cursor, raw_schema, stage_schema, start, end)
     return {
         "csd_channel_dynamics_stage": len(csd_rows),
         "km_keyword_event_stage": keyword_count,
-        "km_meeting_event_stage": meeting_count,
     }
 
 
@@ -94,28 +91,6 @@ def _copy_keyword_stage(cursor: object, raw_schema: str, stage_schema: str, star
                promotional_lit, samples_left, other_materials_left, what_other_materials, other_comments,
                source_file, source_sheet, source_row_no, source_file_sha256, row_hash
         FROM `{raw_schema}`.`raw_keyword_events`
-        WHERE period_ym BETWEEN %s AND %s
-        ORDER BY period_ym, source_file, source_row_no
-        """,
-        (start, end),
-    )
-    return int(cursor.rowcount)
-
-
-def _copy_meeting_stage(cursor: object, raw_schema: str, stage_schema: str, start: str, end: str) -> int:
-    """Copy raw Meeting events into the existing stage table."""
-    cursor.execute(
-        f"""
-        INSERT INTO `{stage_schema}`.`km_meeting_event_stage`
-        (meeting_date, period_ym, meeting_topic, meeting_format, pharma_sponsor, non_pharma_sponsor,
-         no_at_meeting, product_name, therapeutic_class, prescription_frequency, prescription_evolution,
-         interest, verbatim_message, other_comments, source_file, source_sheet, source_row_no,
-         source_file_sha256, stage_row_sha256)
-        SELECT meeting_date, period_ym, meeting_topic, meeting_format, pharma_sponsor, non_pharma_sponsor,
-               no_at_meeting, product_name, therapeutic_class, prescription_frequency, prescription_evolution,
-               interest, verbatim_message, other_comments, source_file, source_sheet, source_row_no,
-               source_file_sha256, row_hash
-        FROM `{raw_schema}`.`raw_meeting_events`
         WHERE period_ym BETWEEN %s AND %s
         ORDER BY period_ym, source_file, source_row_no
         """,
