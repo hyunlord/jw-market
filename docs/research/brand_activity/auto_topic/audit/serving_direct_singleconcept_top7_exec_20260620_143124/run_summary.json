@@ -1,0 +1,49 @@
+{
+  "auth_mode": "bearer",
+  "average_etc_pct": 1.1,
+  "backup_zip": "/Users/rexxa/jw_artifact_backups/brand_activity_auto_topic/brand_activity_auto_topic_serving_direct_singleconcept_top7_exec_20260620_143124.zip",
+  "brand_specific_duplicate_pair_count": 0,
+  "complex_label_count": 0,
+  "csd_market_missing_atc4": [],
+  "csd_markets_without_keyword_data": [],
+  "dropped_atc4_csd_missing": [],
+  "executed_call_count": 463,
+  "execution_mode": "bounded_real_genos_calls",
+  "group_sanity_checks": {
+    "gardlet_A10N1_A10N3_grouped": true,
+    "livalo_C10A1_C10C0_grouped": true,
+    "status": "pass"
+  },
+  "group_scope_count": 2,
+  "large_markets": [
+    "A02B2",
+    "group:livalo_family",
+    "group:gardlet_family"
+  ],
+  "manifest_entries": 57,
+  "market_count": 11,
+  "open_questions": 4,
+  "planned_call_count": 463,
+  "planned_estimated_input_tokens": 2115084,
+  "quality_grade_distribution": {
+    "A": 11,
+    "B": 0,
+    "C": 0,
+    "D": 0
+  },
+  "raw_text_leak_count": 0,
+  "sampled_brand_count": 56,
+  "scope_count": 11,
+  "static_quality": {
+    "dead_code_count": 0,
+    "dead_functions": [],
+    "docstring_coverage": 1.0,
+    "file_count": 23,
+    "function_count": 240,
+    "missing_docstrings": [],
+    "rationale_comment_status": "PASS"
+  },
+  "tag": "serving_direct_singleconcept_top7_exec_20260620_143124",
+  "tmp_zip": "/tmp/brand_activity_auto_topic_serving_direct_singleconcept_top7_exec_20260620_143124.zip",
+  "zip_sha256": "a61c088fd7236b3f5fc633e934cdcb25d60a7fab163a662a3e1f9745bd396a3e"
+}

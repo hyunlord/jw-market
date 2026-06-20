@@ -1,0 +1,1849 @@
+{
+  "A02B2": {
+    "atc4_values": [
+      "A02B2"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 34,
+      "estimated_input_tokens": [
+        4917,
+        4999,
+        4984,
+        4934,
+        4994,
+        4934,
+        4991,
+        4996,
+        4960,
+        4993,
+        4915,
+        4998,
+        4997,
+        4992,
+        4987,
+        4989,
+        4963,
+        4996,
+        4988,
+        4997,
+        4991,
+        4987,
+        5000,
+        4999,
+        4986,
+        4998,
+        4953,
+        4998,
+        4982,
+        5000,
+        4994,
+        4948,
+        4996,
+        3676
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        285,
+        411,
+        483,
+        365,
+        305,
+        346,
+        333,
+        327,
+        389,
+        313,
+        314,
+        312,
+        354,
+        319,
+        353,
+        354,
+        307,
+        343,
+        332,
+        358,
+        331,
+        382,
+        362,
+        373,
+        361,
+        341,
+        359,
+        322,
+        296,
+        302,
+        273,
+        278,
+        315,
+        205
+      ],
+      "successful_chunks": 34,
+      "token_budget": 5000
+    },
+    "display_name": "PPI Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:A02B2",
+    "scope_key": "A02B2",
+    "source_row_count": 11403,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "위식도역류질환 및 미란성 식도염 등 주요 소화기 질환에 대한 치료 효능과 적응증을 다룸.",
+        "keywords": [
+          "GERD",
+          "역류성식도염",
+          "미란성식도염",
+          "위식도역류질환"
+        ],
+        "label": "질환적응증",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "식사 시간과 관계없는 복용 가능성 및 빠른 약효 발현 속도를 통한 복약 순응도 개선을 다룸.",
+        "keywords": [
+          "식사무관",
+          "복용편의성",
+          "빠른효과",
+          "속효성"
+        ],
+        "label": "복용편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "강력한 위산 분비 억제 기전 및 야간 산분비 조절을 통한 증상 완화 효과를 다룸.",
+        "keywords": [
+          "위산억제",
+          "야간산분비",
+          "산분비조절",
+          "가슴쓰림"
+        ],
+        "label": "위산억제력",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "장기 복용 시의 안전성 프로파일 및 타 약물과의 상호작용 최소화를 다룸.",
+        "keywords": [
+          "안전성",
+          "부작용",
+          "상호작용",
+          "내약성"
+        ],
+        "label": "약물안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "위염, 위궤양 및 NSAID 병용 요법 등 GERD 외 추가적인 치료 영역을 다룸.",
+        "keywords": [
+          "위염",
+          "위궤양",
+          "NSAID",
+          "헬리코박터"
+        ],
+        "label": "적응증확대",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "기존 PPI 대비 P-CAB 등 차세대 제제의 기전적 우위 및 경쟁력을 다룸.",
+        "keywords": [
+          "P-CAB",
+          "PPI",
+          "기전",
+          "경쟁우위"
+        ],
+        "label": "제제차별성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "합리적인 약가 정책 및 처방 효율성을 통한 환자 부담 경감 효과를 다룸.",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용",
+          "처방효율"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "A02B2:lite": {
+    "axis_note": "",
+    "axis_version": "1.0",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:A02B2",
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "위식도역류질환 및 미란성 식도염 등 주요 소화기 질환에 대한 치료 효능과 적응증을 다룸.",
+        "keywords": [
+          "GERD",
+          "역류성식도염",
+          "미란성식도염",
+          "위식도역류질환"
+        ],
+        "label": "질환적응증",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "식사 시간과 관계없는 복용 가능성 및 빠른 약효 발현 속도를 통한 복약 순응도 개선을 다룸.",
+        "keywords": [
+          "식사무관",
+          "복용편의성",
+          "빠른효과",
+          "속효성"
+        ],
+        "label": "복용편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "강력한 위산 분비 억제 기전 및 야간 산분비 조절을 통한 증상 완화 효과를 다룸.",
+        "keywords": [
+          "위산억제",
+          "야간산분비",
+          "산분비조절",
+          "가슴쓰림"
+        ],
+        "label": "위산억제력",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "장기 복용 시의 안전성 프로파일 및 타 약물과의 상호작용 최소화를 다룸.",
+        "keywords": [
+          "안전성",
+          "부작용",
+          "상호작용",
+          "내약성"
+        ],
+        "label": "약물안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "위염, 위궤양 및 NSAID 병용 요법 등 GERD 외 추가적인 치료 영역을 다룸.",
+        "keywords": [
+          "위염",
+          "위궤양",
+          "NSAID",
+          "헬리코박터"
+        ],
+        "label": "적응증확대",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "기존 PPI 대비 P-CAB 등 차세대 제제의 기전적 우위 및 경쟁력을 다룸.",
+        "keywords": [
+          "P-CAB",
+          "PPI",
+          "기전",
+          "경쟁우위"
+        ],
+        "label": "제제차별성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "합리적인 약가 정책 및 처방 효율성을 통한 환자 부담 경감 효과를 다룸.",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용",
+          "처방효율"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "A02B2:pro": {
+    "axis_note": "",
+    "axis_version": "1.0",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:A02B2",
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "위식도역류질환 및 미란성 식도염 등 주요 소화기 질환에 대한 치료 효능과 적응증을 다룸.",
+        "keywords": [
+          "GERD",
+          "역류성식도염",
+          "미란성식도염",
+          "위식도역류질환"
+        ],
+        "label": "질환적응증",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "식사 시간과 관계없는 복용 가능성 및 빠른 약효 발현 속도를 통한 복약 순응도 개선을 다룸.",
+        "keywords": [
+          "식사무관",
+          "복용편의성",
+          "빠른효과",
+          "속효성"
+        ],
+        "label": "복용편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "강력한 위산 분비 억제 기전 및 야간 산분비 조절을 통한 증상 완화 효과를 다룸.",
+        "keywords": [
+          "위산억제",
+          "야간산분비",
+          "산분비조절",
+          "가슴쓰림"
+        ],
+        "label": "위산억제력",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "장기 복용 시의 안전성 프로파일 및 타 약물과의 상호작용 최소화를 다룸.",
+        "keywords": [
+          "안전성",
+          "부작용",
+          "상호작용",
+          "내약성"
+        ],
+        "label": "약물안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "위염, 위궤양 및 NSAID 병용 요법 등 GERD 외 추가적인 치료 영역을 다룸.",
+        "keywords": [
+          "위염",
+          "위궤양",
+          "NSAID",
+          "헬리코박터"
+        ],
+        "label": "적응증확대",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "기존 PPI 대비 P-CAB 등 차세대 제제의 기전적 우위 및 경쟁력을 다룸.",
+        "keywords": [
+          "P-CAB",
+          "PPI",
+          "기전",
+          "경쟁우위"
+        ],
+        "label": "제제차별성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "합리적인 약가 정책 및 처방 효율성을 통한 환자 부담 경감 효과를 다룸.",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용",
+          "처방효율"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "A03F0": {
+    "atc4_values": [
+      "A03F0"
+    ],
+    "axis_note": "시장 규모가 작아 6개 토픽으로 구성하였으며, 신뢰도 유지를 위해 핵심 기전과 환자군 중심의 분류를 우선함.",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 1,
+      "estimated_input_tokens": [
+        4436
+      ],
+      "mode": "single_call",
+      "row_counts": [
+        345
+      ],
+      "token_budget": 5000
+    },
+    "display_name": "GANAKHAN Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:A03F0",
+    "scope_key": "A03F0",
+    "source_row_count": 345,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "기능성 소화불량증 환자의 증상 완화 및 치료에 대한 임상적 유효성",
+        "keywords": [
+          "소화불량",
+          "기능성",
+          "치료제"
+        ],
+        "label": "소화불량 치료",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "위장관 운동 조절 및 배출 기능 향상을 통한 작용 기전",
+        "keywords": [
+          "위장관",
+          "운동",
+          "조절"
+        ],
+        "label": "위장관 운동",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "타 약제와의 병용 처방 가능성 및 임상적 안전성",
+        "keywords": [
+          "병용",
+          "안전성",
+          "부작용"
+        ],
+        "label": "병용 안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "복약 순응도 향상을 위한 1일 1회 투여 및 지속적 약효",
+        "keywords": [
+          "복약",
+          "순응도",
+          "편의성"
+        ],
+        "label": "복약 편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "상부 및 하부 위장관 질환에 대한 광범위한 적응증",
+        "keywords": [
+          "상하부",
+          "적응증",
+          "범위"
+        ],
+        "label": "적응증 범위",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "당뇨병성 위마비 또는 파킨슨병 환자 등 특정 기저질환자 대상 처방",
+        "keywords": [
+          "당뇨",
+          "파킨슨",
+          "기저질환"
+        ],
+        "label": "특수 환자군",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      }
+    ]
+  },
+  "B03A1": {
+    "atc4_values": [
+      "B03A1"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 2,
+      "estimated_input_tokens": [
+        4992,
+        599
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        376,
+        30
+      ],
+      "successful_chunks": 2,
+      "token_budget": 5000
+    },
+    "display_name": "FERINJECT Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:B03A1",
+    "scope_key": "B03A1",
+    "source_row_count": 406,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "철결핍성 빈혈 환자의 혈색소 수치 개선 및 저장철 회복에 관한 임상적 효능",
+        "keywords": [
+          "빈혈",
+          "혈색소",
+          "철결핍",
+          "저장철",
+          "조혈"
+        ],
+        "label": "치료효과",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "고용량 철분 주사제의 신속한 투여 및 원내 프로토콜 운영을 통한 투여 효율성",
+        "keywords": [
+          "고용량",
+          "주사제",
+          "신속",
+          "투여",
+          "용법"
+        ],
+        "label": "투여편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "수술 전후 환자의 빈혈 관리 및 수혈 필요성을 낮추는 수혈 대체 효과",
+        "keywords": [
+          "수술",
+          "수혈",
+          "수술전후",
+          "수혈감소"
+        ],
+        "label": "수술관리",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "건강보험 급여 기준 적용 및 환자 부담금 관련 경제적 처방 가이드라인",
+        "keywords": [
+          "보험",
+          "급여",
+          "약가",
+          "비용",
+          "부담금"
+        ],
+        "label": "보험급여",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "주사 부위 통증, 알레르기 반응 및 위장관 부작용 최소화에 관한 안전성 프로파일",
+        "keywords": [
+          "부작용",
+          "내약성",
+          "통증",
+          "안전성",
+          "저인산혈증"
+        ],
+        "label": "약물안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "경구용 철분제 복용이 불가능하거나 효과가 불충분한 환자를 위한 대안적 치료 이점",
+        "keywords": [
+          "경구제",
+          "대안",
+          "복용불가",
+          "신속",
+          "약효"
+        ],
+        "label": "제형차별점",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "제품의 유효성과 안전성을 뒷받침하는 대규모 임상 연구 데이터 및 학술적 근거",
+        "keywords": [
+          "임상",
+          "데이터",
+          "연구",
+          "근거"
+        ],
+        "label": "임상근거",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "C11A1": {
+    "atc4_values": [
+      "C11A1"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 2,
+      "estimated_input_tokens": [
+        4979,
+        3911
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        309,
+        236
+      ],
+      "successful_chunks": 2,
+      "token_budget": 5000
+    },
+    "display_name": "LIVALO V Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:C11A1",
+    "scope_key": "C11A1",
+    "source_row_count": 545,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "고혈압과 이상지질혈증을 동시에 치료하는 복합제제로서의 특성",
+        "keywords": [
+          "복합제",
+          "동시치료",
+          "병용요법"
+        ],
+        "label": "복합제제",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "복약 횟수 및 알약 개수 감소를 통한 환자의 복약 편의성 개선",
+        "keywords": [
+          "복약순응도",
+          "복용편의성",
+          "한알"
+        ],
+        "label": "복약순응도",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "임상 데이터를 통해 입증된 유의미한 혈압 강하 효과",
+        "keywords": [
+          "혈압강하",
+          "강압효과",
+          "혈압조절"
+        ],
+        "label": "혈압조절",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "LDL-C 및 총 콜레스테롤 수치 감소를 통한 지질 개선 효능",
+        "keywords": [
+          "LDL-C",
+          "콜레스테롤",
+          "지질개선"
+        ],
+        "label": "지질관리",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "심혈관 질환 예방 및 당뇨병 발생 위험을 고려한 처방 안전성",
+        "keywords": [
+          "안전성",
+          "내약성",
+          "당뇨안전성"
+        ],
+        "label": "안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "약제 처방 시 고려되는 경제적 가치 및 약가 경쟁력",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용"
+        ],
+        "label": "처방경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "다양한 용량 구성을 통해 환자 증상별 최적화된 치료 지원",
+        "keywords": [
+          "용량",
+          "맞춤형",
+          "제형"
+        ],
+        "label": "맞춤형용량",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "G04C2": {
+    "atc4_values": [
+      "G04C2"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 5,
+      "estimated_input_tokens": [
+        4991,
+        4989,
+        4832,
+        4993,
+        4371
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        305,
+        324,
+        333,
+        316,
+        254
+      ],
+      "successful_chunks": 5,
+      "token_budget": 5000
+    },
+    "display_name": "TURUPAS Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:G04C2",
+    "scope_key": "G04C2",
+    "source_row_count": 1532,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "전립선 비대증 및 하부요로증상(LUTS)의 치료 필요성과 질환 중심의 접근을 다룹니다.",
+        "keywords": [
+          "전립선",
+          "BPH",
+          "비대",
+          "LUTS"
+        ],
+        "label": "질환관리",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "IPSS 점수, 요속, 잔뇨량 등 배뇨 관련 임상 지표의 개선 효과를 다룹니다.",
+        "keywords": [
+          "배뇨",
+          "IPSS",
+          "요속",
+          "잔뇨",
+          "야간뇨"
+        ],
+        "label": "배뇨개선",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "기립성 저혈압 등 심혈관계 이상 반응 발생 가능성이 낮은 안전성 프로파일을 다룹니다.",
+        "keywords": [
+          "저혈압",
+          "심혈관",
+          "안전성",
+          "혈압"
+        ],
+        "label": "심혈관안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "역행성 사정 등 성기능 관련 부작용 발현율 및 환자의 삶의 질을 다룹니다.",
+        "keywords": [
+          "성기능",
+          "사정",
+          "역사정",
+          "발기"
+        ],
+        "label": "성기능안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "용량 다양성, 제형 특성, 복용 횟수 등 환자의 복약 순응도 향상 요소를 다룹니다.",
+        "keywords": [
+          "복용",
+          "용량",
+          "편의성",
+          "제형",
+          "순응도"
+        ],
+        "label": "복약편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "신경인성 방광 및 여성 배뇨장애 등 기존 적응증 외 치료 영역 확대를 다룹니다.",
+        "keywords": [
+          "신경인성방광",
+          "하부요관석",
+          "적응증",
+          "여성"
+        ],
+        "label": "적응증확장",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "오리지널 약제의 처방 경험, 마케팅 활동 및 브랜드 인지도를 다룹니다.",
+        "keywords": [
+          "오리지널",
+          "처방",
+          "신뢰도",
+          "마케팅",
+          "심포지엄"
+        ],
+        "label": "브랜드신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "K01A3": {
+    "atc4_values": [
+      "K01A3"
+    ],
+    "axis_note": "소규모 시장 데이터로 인해 4개의 핵심 토픽으로 구성함.",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 1,
+      "estimated_input_tokens": [
+        88
+      ],
+      "mode": "single_call",
+      "row_counts": [
+        4
+      ],
+      "token_budget": 5000
+    },
+    "display_name": "PLAJU OP Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:K01A3",
+    "scope_key": "K01A3",
+    "source_row_count": 4,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "인체 체액 및 혈액 성분과 유사한 조성과 pH를 보유하여 생리학적 적합성이 높음.",
+        "keywords": [
+          "pH",
+          "체액유사",
+          "성분조성"
+        ],
+        "label": "생체유사성",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "포트 개선 등 제품의 물리적 구조를 통해 의료진의 투여 및 처방 과정을 효율화함.",
+        "keywords": [
+          "포트",
+          "편의성",
+          "투여"
+        ],
+        "label": "처방편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "패혈증 등 특정 중증 질환 환자에게 임상적 유효성을 입증함.",
+        "keywords": [
+          "패혈증",
+          "효과",
+          "임상"
+        ],
+        "label": "적응증확대",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "세포외액 보급 및 대사성 산증 교정을 통해 체액 불균형을 정상화함.",
+        "keywords": [
+          "산증",
+          "세포외액",
+          "교정"
+        ],
+        "label": "대사교정",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      }
+    ]
+  },
+  "K01D2": {
+    "atc4_values": [
+      "K01D2"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 3,
+      "estimated_input_tokens": [
+        4967,
+        4961,
+        4436
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        305,
+        247,
+        252
+      ],
+      "successful_chunks": 3,
+      "token_budget": 5000
+    },
+    "display_name": "WINUF Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:K01D2",
+    "scope_key": "K01D2",
+    "source_row_count": 804,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "경구 섭취가 불가능한 환자에게 필수 영양소를 정맥으로 보급하는 치료적 가치",
+        "keywords": [
+          "TPN",
+          "영양공급",
+          "수액제"
+        ],
+        "label": "영양공급",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "제품 내 아미노산 및 단백질 함량의 우수성을 통한 질소 균형 개선 효과",
+        "keywords": [
+          "아미노산",
+          "단백질",
+          "고함량"
+        ],
+        "label": "단백질함량",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "오메가-3 지방산 및 피쉬오일 함유를 통한 항염증 및 면역 기능 개선 효과",
+        "keywords": [
+          "오메가3",
+          "피쉬오일",
+          "항염증"
+        ],
+        "label": "면역조절",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "말초 정맥 투여 가능성 및 투여 시간 단축을 통한 임상 현장의 사용 편의성",
+        "keywords": [
+          "말초정맥",
+          "투여속도",
+          "편의성"
+        ],
+        "label": "투여편의",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "3챔버 시스템을 통한 영양소 혼합의 안전성 및 사용 환경에서의 기술적 효율성",
+        "keywords": [
+          "3챔버",
+          "안전성",
+          "잔량"
+        ],
+        "label": "제품구조",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "타사 제품 대비 보험 약가 및 비급여 정책을 통한 비용 효율성",
+        "keywords": [
+          "약가",
+          "급여",
+          "비용"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "임상 시험을 통해 입증된 환자 회복 촉진 및 대조약 대비 유효성 데이터",
+        "keywords": [
+          "임상",
+          "회복",
+          "유효성"
+        ],
+        "label": "임상근거",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "V03G2": {
+    "atc4_values": [
+      "V03G2"
+    ],
+    "axis_note": "시장 내 주요 브랜드 메시지를 기반으로 6개 토픽을 도출함. 데이터의 특성상 인 조절 효능과 안전성 관련 메시지가 세분화되어 있음.",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 1,
+      "estimated_input_tokens": [
+        187
+      ],
+      "mode": "single_call",
+      "row_counts": [
+        22
+      ],
+      "token_budget": 5000
+    },
+    "display_name": "FOSRENOL Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:V03G2",
+    "scope_key": "V03G2",
+    "source_row_count": 22,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "혈중 인 농도를 효과적으로 낮추는 약제의 기본 효능",
+        "keywords": [
+          "인 조절",
+          "인 강하",
+          "인산 결합력"
+        ],
+        "label": "인조절효능",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "혈관 석회화 억제 및 칼슘 수치 안정 등 장기적 안전성",
+        "keywords": [
+          "혈관석회화",
+          "칼슘",
+          "심보호"
+        ],
+        "label": "안전성프로파일",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "환자의 복약 편의성 및 순응도를 높이는 제형적 특성",
+        "keywords": [
+          "복약순응도",
+          "복용방법",
+          "용량"
+        ],
+        "label": "복약편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "특정 환자군(유당불내증 등)에 대한 투여 적합성",
+        "keywords": [
+          "유당",
+          "부작용",
+          "환자군"
+        ],
+        "label": "환자적합성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "보험 급여 기준 확대 및 타 약제 철수 등 시장 환경 변화",
+        "keywords": [
+          "보험기준",
+          "급여",
+          "시장철수"
+        ],
+        "label": "시장접근성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "투석 환자의 생존율 개선 및 임상적 예후 향상",
+        "keywords": [
+          "생존율",
+          "고인산혈증",
+          "투석환자"
+        ],
+        "label": "임상예후",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      }
+    ]
+  },
+  "V06D0": {
+    "atc4_values": [
+      "V06D0"
+    ],
+    "axis_note": "소규모 시장 데이터로 4개의 핵심 토픽을 도출함.",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 1,
+      "estimated_input_tokens": [
+        130
+      ],
+      "mode": "single_call",
+      "row_counts": [
+        10
+      ],
+      "token_budget": 5000
+    },
+    "display_name": "ENCOVER Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "atc4:V06D0",
+    "scope_key": "V06D0",
+    "source_row_count": 10,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "환자의 상태에 따른 필수 영양 성분 보충 및 균형 잡힌 영양 조성에 관한 내용",
+        "keywords": [
+          "영양보충",
+          "영양구성",
+          "영양공급"
+        ],
+        "label": "영양공급",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "환자의 기호성 개선 및 다양한 제형 선택을 통한 복용 편의성 증대",
+        "keywords": [
+          "복약순응도",
+          "맛",
+          "선택"
+        ],
+        "label": "복약순응도",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "보험 급여 적용 및 약가 경쟁력을 통한 환자의 비용 부담 완화",
+        "keywords": [
+          "약가",
+          "보험급여",
+          "경제적 이점"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "질환별 증상 개선, 배변 활동, 혈당 조절 등 치료적 유익성",
+        "keywords": [
+          "증상개선",
+          "식이섬유",
+          "혈당억제"
+        ],
+        "label": "임상효과",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      }
+    ]
+  },
+  "group:gardlet_family": {
+    "atc4_values": [
+      "A10N1",
+      "A10N3"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 11,
+      "estimated_input_tokens": [
+        4973,
+        5000,
+        4953,
+        4980,
+        4984,
+        4995,
+        5000,
+        4989,
+        4984,
+        4888,
+        4364
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        295,
+        327,
+        350,
+        235,
+        247,
+        274,
+        256,
+        238,
+        234,
+        291,
+        223
+      ],
+      "successful_chunks": 11,
+      "token_budget": 5000
+    },
+    "display_name": "GUARDLET Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "group:gardlet_family",
+    "scope_key": "group:gardlet_family",
+    "source_row_count": 2970,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "당화혈색소 및 공복 혈당을 유의미하게 낮추는 약제의 기본 효능",
+        "keywords": [
+          "혈당강하",
+          "HbA1c",
+          "당화혈색소",
+          "혈당조절"
+        ],
+        "label": "혈당강하",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "신장 기능 저하 환자에게 용량 조절 없이 투여 가능한 임상적 편의성",
+        "keywords": [
+          "신장애",
+          "신기능",
+          "용량조절",
+          "CKD"
+        ],
+        "label": "신장안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "저혈당 위험이 낮고 심혈관계 등 장기적 부작용 우려가 적은 안전 프로파일",
+        "keywords": [
+          "저혈당",
+          "안전성",
+          "심혈관",
+          "부작용"
+        ],
+        "label": "약제안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "1일 1회 복용 및 제형 최적화를 통해 환자의 복약 순응도를 높이는 특성",
+        "keywords": [
+          "복약순응도",
+          "복약편의성",
+          "1일1회",
+          "제형"
+        ],
+        "label": "복약편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "식후 혈당 변동성을 줄이고 목표 범위 내 시간(TIR)을 개선하는 관리 효과",
+        "keywords": [
+          "식후혈당",
+          "혈당변동성",
+          "TIR",
+          "변동폭"
+        ],
+        "label": "식후혈당",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "오리지널 의약품으로서 축적된 임상 데이터와 처방 경험에 기반한 가치",
+        "keywords": [
+          "오리지널",
+          "임상데이터",
+          "처방경험",
+          "신뢰도"
+        ],
+        "label": "브랜드신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "약가 경쟁력 및 보험 코드 등 시장 내 처방 효율성을 강조하는 정보",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용",
+          "처방경쟁력"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "group:gardlet_family:lite": {
+    "axis_note": "",
+    "axis_version": "1.0",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "group:gardlet_family",
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "당화혈색소 및 공복 혈당을 유의미하게 낮추는 약제의 기본 효능",
+        "keywords": [
+          "혈당강하",
+          "HbA1c",
+          "당화혈색소",
+          "혈당조절"
+        ],
+        "label": "혈당강하",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "신장 기능 저하 환자에게 용량 조절 없이 투여 가능한 임상적 편의성",
+        "keywords": [
+          "신장애",
+          "신기능",
+          "용량조절",
+          "CKD"
+        ],
+        "label": "신장안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "저혈당 위험이 낮고 심혈관계 등 장기적 부작용 우려가 적은 안전 프로파일",
+        "keywords": [
+          "저혈당",
+          "안전성",
+          "심혈관",
+          "부작용"
+        ],
+        "label": "약제안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "1일 1회 복용 및 제형 최적화를 통해 환자의 복약 순응도를 높이는 특성",
+        "keywords": [
+          "복약순응도",
+          "복약편의성",
+          "1일1회",
+          "제형"
+        ],
+        "label": "복약편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "식후 혈당 변동성을 줄이고 목표 범위 내 시간(TIR)을 개선하는 관리 효과",
+        "keywords": [
+          "식후혈당",
+          "혈당변동성",
+          "TIR",
+          "변동폭"
+        ],
+        "label": "식후혈당",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "약가 경쟁력 및 보험 코드 등 처방 비용 효율성을 강조하는 가치",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용",
+          "보험"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "오리지널 약제로서 축적된 대규모 임상 데이터 및 처방 경험",
+        "keywords": [
+          "오리지널",
+          "임상데이터",
+          "처방경험",
+          "신뢰도"
+        ],
+        "label": "임상신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "group:gardlet_family:pro": {
+    "axis_note": "",
+    "axis_version": "1.0",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "group:gardlet_family",
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "당화혈색소 및 공복 혈당을 유의미하게 낮추는 약제의 기본 효능",
+        "keywords": [
+          "혈당강하",
+          "HbA1c",
+          "당화혈색소",
+          "혈당조절"
+        ],
+        "label": "혈당강하",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "신장 기능 저하 환자에게 용량 조절 없이 투여 가능한 임상적 편의성",
+        "keywords": [
+          "신장애",
+          "신기능",
+          "용량조절",
+          "CKD"
+        ],
+        "label": "신장안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "저혈당 위험이 낮고 심혈관계 등 장기적 부작용 우려가 적은 안전 프로파일",
+        "keywords": [
+          "저혈당",
+          "안전성",
+          "심혈관",
+          "부작용"
+        ],
+        "label": "약제안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "1일 1회 복용 및 제형 최적화를 통해 환자의 복약 순응도를 높이는 특성",
+        "keywords": [
+          "복약순응도",
+          "복약편의성",
+          "1일1회",
+          "제형"
+        ],
+        "label": "복약편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "식후 혈당 변동성을 줄이고 목표 범위 내 시간(TIR)을 개선하는 관리 효과",
+        "keywords": [
+          "식후혈당",
+          "혈당변동성",
+          "TIR",
+          "변동폭"
+        ],
+        "label": "식후혈당",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "오리지널 의약품으로서 축적된 임상 데이터와 처방 경험에 기반한 가치",
+        "keywords": [
+          "오리지널",
+          "임상데이터",
+          "처방경험",
+          "신뢰도"
+        ],
+        "label": "브랜드신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "약가 경쟁력 및 보험 코드 등 시장 내 처방 효율성을 강조하는 정보",
+        "keywords": [
+          "약가",
+          "경제성",
+          "비용",
+          "처방경쟁력"
+        ],
+        "label": "경제성",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "group:livalo_family": {
+    "atc4_values": [
+      "C10A1",
+      "C10C0"
+    ],
+    "axis_note": "",
+    "axis_version": "1.0",
+    "chunking": {
+      "chunk_count": 29,
+      "estimated_input_tokens": [
+        5000,
+        4978,
+        4995,
+        4856,
+        4995,
+        4976,
+        4994,
+        4998,
+        4964,
+        4996,
+        4992,
+        4953,
+        4990,
+        4943,
+        4937,
+        4987,
+        4985,
+        4993,
+        4982,
+        4992,
+        4981,
+        4990,
+        4989,
+        4991,
+        4995,
+        4993,
+        4993,
+        4994,
+        3151
+      ],
+      "mode": "chunk_map_reduce",
+      "row_counts": [
+        312,
+        376,
+        352,
+        368,
+        277,
+        289,
+        297,
+        284,
+        222,
+        295,
+        321,
+        282,
+        294,
+        299,
+        285,
+        249,
+        308,
+        292,
+        295,
+        309,
+        321,
+        313,
+        272,
+        286,
+        313,
+        340,
+        329,
+        325,
+        183
+      ],
+      "successful_chunks": 29,
+      "token_budget": 5000
+    },
+    "display_name": "LIVALO+LIVALOZET Market",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "group:livalo_family",
+    "scope_key": "group:livalo_family",
+    "source_row_count": 8688,
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "LDL-콜레스테롤 수치를 효과적으로 낮추는 약제의 강력한 지질 조절 효능을 강조함.",
+        "keywords": [
+          "LDL-C",
+          "콜레스테롤",
+          "강하",
+          "지질"
+        ],
+        "label": "지질강하",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "심혈관 질환의 발생 위험을 낮추고 주요 심혈관계 사건을 예방하는 임상적 혜택을 설명함.",
+        "keywords": [
+          "심혈관",
+          "ASCVD",
+          "예방",
+          "사건"
+        ],
+        "label": "심혈관예방",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "스타틴 투여 시 우려되는 신규 당뇨병 발생 위험이 낮거나 혈당 관리에 이점이 있음을 강조함.",
+        "keywords": [
+          "NODM",
+          "당뇨",
+          "혈당",
+          "대사"
+        ],
+        "label": "당뇨안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "근육통 및 간독성 등 스타틴 계열의 주요 부작용이 적어 장기 처방에 적합한 안전성을 설명함.",
+        "keywords": [
+          "부작용",
+          "내약성",
+          "근육통",
+          "간수치"
+        ],
+        "label": "약물내약성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "스타틴과 에제티미브 병용을 통한 이중 작용 기전 및 복합제 처방의 치료적 이점을 강조함.",
+        "keywords": [
+          "복합제",
+          "병용",
+          "에제티미브",
+          "이중작용"
+        ],
+        "label": "복합제유용성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "다양한 용량 옵션과 제형 구성을 통해 환자 맞춤형 처방 및 복약 순응도를 개선함을 설명함.",
+        "keywords": [
+          "용량",
+          "제형",
+          "순응도",
+          "편의성"
+        ],
+        "label": "처방편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "오리지널 의약품으로서 보유한 방대한 임상 데이터와 시장 내 처방 실적을 통한 신뢰성을 강조함.",
+        "keywords": [
+          "오리지널",
+          "임상데이터",
+          "신뢰도",
+          "근거"
+        ],
+        "label": "브랜드신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "group:livalo_family:lite": {
+    "axis_note": "",
+    "axis_version": "1.0",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "group:livalo_family",
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "LDL-콜레스테롤 수치를 효과적으로 낮추는 약제의 강력한 지질 조절 효능을 강조함.",
+        "keywords": [
+          "LDL-C",
+          "콜레스테롤",
+          "강하",
+          "지질"
+        ],
+        "label": "지질강하",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "심혈관 질환의 발생 위험을 낮추고 주요 심혈관계 사건을 예방하는 임상적 혜택을 설명함.",
+        "keywords": [
+          "심혈관",
+          "ASCVD",
+          "예방",
+          "사건"
+        ],
+        "label": "심혈관예방",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "스타틴 투여 시 우려되는 신규 당뇨병 발생 위험이 낮거나 혈당 관리에 이점이 있음을 강조함.",
+        "keywords": [
+          "NODM",
+          "당뇨",
+          "혈당",
+          "대사"
+        ],
+        "label": "당뇨안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "근육통 및 간독성 등 스타틴 계열의 주요 부작용이 적어 장기 처방에 적합한 안전성을 설명함.",
+        "keywords": [
+          "부작용",
+          "내약성",
+          "근육통",
+          "간수치"
+        ],
+        "label": "약물내약성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "스타틴과 에제티미브 병용을 통한 이중 작용 기전 및 복합제 처방의 치료적 이점을 강조함.",
+        "keywords": [
+          "복합제",
+          "병용",
+          "에제티미브",
+          "이중작용"
+        ],
+        "label": "복합제유용성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "다양한 용량 옵션과 제형 구성을 통해 환자 맞춤형 처방 및 복약 순응도를 개선함을 설명함.",
+        "keywords": [
+          "용량",
+          "제형",
+          "순응도",
+          "편의성"
+        ],
+        "label": "처방편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "오리지널 의약품으로서 보유한 방대한 임상 데이터와 시장 내 처방 실적을 통한 신뢰성을 강조함.",
+        "keywords": [
+          "오리지널",
+          "임상데이터",
+          "신뢰도",
+          "근거"
+        ],
+        "label": "브랜드신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  },
+  "group:livalo_family:pro": {
+    "axis_note": "",
+    "axis_version": "1.0",
+    "etc": {
+      "label": "기타"
+    },
+    "scope_id": "group:livalo_family",
+    "status": "ok",
+    "topics": [
+      {
+        "definition": "LDL-콜레스테롤 수치를 효과적으로 낮추는 약제의 강력한 지질 조절 효능을 강조함.",
+        "keywords": [
+          "LDL-C",
+          "콜레스테롤",
+          "강하",
+          "지질"
+        ],
+        "label": "지질강하",
+        "single_concept_rewritten": false,
+        "topic_id": "T1"
+      },
+      {
+        "definition": "심혈관 질환의 발생 위험을 낮추고 주요 심혈관계 사건을 예방하는 임상적 혜택을 설명함.",
+        "keywords": [
+          "심혈관",
+          "ASCVD",
+          "예방",
+          "사건"
+        ],
+        "label": "심혈관예방",
+        "single_concept_rewritten": false,
+        "topic_id": "T2"
+      },
+      {
+        "definition": "스타틴 투여 시 우려되는 신규 당뇨병 발생 위험이 낮거나 혈당 관리에 이점이 있음을 강조함.",
+        "keywords": [
+          "NODM",
+          "당뇨",
+          "혈당",
+          "대사"
+        ],
+        "label": "당뇨안전성",
+        "single_concept_rewritten": false,
+        "topic_id": "T3"
+      },
+      {
+        "definition": "근육통 및 간독성 등 스타틴 계열의 주요 부작용이 적어 장기 처방에 적합한 안전성을 설명함.",
+        "keywords": [
+          "부작용",
+          "내약성",
+          "근육통",
+          "간수치"
+        ],
+        "label": "약물내약성",
+        "single_concept_rewritten": false,
+        "topic_id": "T4"
+      },
+      {
+        "definition": "스타틴과 에제티미브 병용을 통한 이중 작용 기전 및 복합제 처방의 치료적 이점을 강조함.",
+        "keywords": [
+          "복합제",
+          "병용",
+          "에제티미브",
+          "이중작용"
+        ],
+        "label": "복합제유용성",
+        "single_concept_rewritten": false,
+        "topic_id": "T5"
+      },
+      {
+        "definition": "다양한 용량 옵션과 제형 구성을 통해 환자 맞춤형 처방 및 복약 순응도를 개선함을 설명함.",
+        "keywords": [
+          "용량",
+          "제형",
+          "순응도",
+          "편의성"
+        ],
+        "label": "처방편의성",
+        "single_concept_rewritten": false,
+        "topic_id": "T6"
+      },
+      {
+        "definition": "오리지널 의약품으로서 보유한 방대한 임상 데이터와 시장 내 처방 실적을 통한 신뢰성을 강조함.",
+        "keywords": [
+          "오리지널",
+          "임상데이터",
+          "신뢰도",
+          "근거"
+        ],
+        "label": "브랜드신뢰도",
+        "single_concept_rewritten": false,
+        "topic_id": "T7"
+      }
+    ]
+  }
+}

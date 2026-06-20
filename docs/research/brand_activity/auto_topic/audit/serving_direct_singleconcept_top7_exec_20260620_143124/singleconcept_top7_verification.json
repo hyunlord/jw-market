@@ -1,0 +1,53 @@
+{
+  "average_etc_pct": 1.1,
+  "backend_counts": {
+    "direct_serving": 463
+  },
+  "brand_count_max": 7,
+  "brand_counts_by_scope": {
+    "A02B2": 7,
+    "A03F0": 5,
+    "B03A1": 2,
+    "C11A1": 7,
+    "G04C2": 6,
+    "K01A3": 2,
+    "K01D2": 7,
+    "V03G2": 4,
+    "V06D0": 2,
+    "group:gardlet_family": 7,
+    "group:livalo_family": 7
+  },
+  "brand_specific_dedup_count": 4,
+  "brand_specific_duplicate_pair_count": 0,
+  "completion_tokens": 306961,
+  "complex_label_count": 0,
+  "cost_note": "GenOS actual billing policy is unconfirmed; USD uses Vertex Flash public-rate proxy $0.50/M input and $3.00/M output.",
+  "estimated_usd_vertex_flash_proxy": 10.9084,
+  "executed_call_count": 463,
+  "model_counts": {
+    "genos-flash": 463
+  },
+  "prompt_tokens": 19974946,
+  "quality_grade_distribution": {
+    "A": 11,
+    "B": 0,
+    "C": 0,
+    "D": 0
+  },
+  "raw_text_leak_count": 0,
+  "retry_count": 0,
+  "serving_route": {
+    "backend": "direct_serving",
+    "gateway_used": false,
+    "manual_hosts_used": false,
+    "model_id": "genos-flash"
+  },
+  "share_total_failures": [],
+  "single_concept_rewrite_count": 0,
+  "status_counts": {
+    "ok": 463
+  },
+  "tag": "serving_direct_singleconcept_top7_exec_20260620_143124",
+  "timeout_count": 0,
+  "topic_id_backfill_count": 158
+}

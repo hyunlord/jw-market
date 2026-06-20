@@ -16,7 +16,7 @@ if __package__ in {None, ""}:
 
 from pipeline.scripts.api.config import config  # noqa: E402
 from pipeline.scripts.api.db import close_pool, init_pool  # noqa: E402
-from pipeline.scripts.api.routes import brands, cause, deep_analysis, dynamic_market, health, market_scope, market_status  # noqa: E402
+from pipeline.scripts.api.routes import brand_activity, brands, cause, deep_analysis, dynamic_market, health, market_scope, market_status  # noqa: E402
 
 
 logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
@@ -77,6 +77,7 @@ app.include_router(cause.router)
 app.include_router(deep_analysis.router)
 app.include_router(dynamic_market.router)
 app.include_router(market_scope.router)
+app.include_router(brand_activity.router)
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR), check_dir=False), name="static")
 if config.external_path_prefix:
