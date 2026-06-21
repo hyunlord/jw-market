@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, resolve_brand_set
 from pipeline.scripts.api.brand_activity_csd_shared import (
     PUBLIC_MEASURES,
     RANKING_MEASURE,
@@ -20,15 +21,12 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     first,
     float_value,
     full_quarters_from_months,
-    int_or_none,
     json_map,
     normalized_product_overlap,
     period_ym_to_quarter,
     ratio,
-    select_ranked_brands,
     text,
 )
-from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
@@ -37,32 +35,35 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     """Return integrated CSD activity and IQVIA prescription series."""
 
     request = _parse_request(payload)
-    view = _view_config(request["view"])
-    brand_rows = _fetch_brand_rows(view, request["market_id"])
-    if not brand_rows:
-        return None
-    brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
-    market_row = _fetch_market_row(view, request["market_id"], RANKING_MEASURE)
-    if market_row is None:
-        return None
     all_csd_months = [str(row["period_ym"]) for row in db.fetch_all(_sql_csd_months())]
     quarters = _requested_quarters(full_quarters_from_months(all_csd_months), request["window"])
     if not quarters:
         return None
-    ranking = _ranking_for_quarter(market_row, view.ranking_column, quarters)
-    ranking_items = _with_selected_rank(ranking["items"], brand_rows, request["selected_brand"], ranking["quarter"])
-    choices = select_ranked_brands(ranking_items, selected_brand=request["selected_brand"])
+    try:
+        brand_set = resolve_brand_set(
+            view_name=request["view"],
+            market_id=request["market_id"],
+            selected_brand=request["selected_brand"],
+            filter_payload=request["filter"],
+            ranking_quarters=quarters,
+        )
+    except BrandSetInputError as exc:
+        raise CsdTimeseriesInputError(str(exc)) from exc
+    if brand_set is None:
+        return None
+    choices = list(brand_set.choices)
+    brand_meta = brand_set.brand_meta
     selected_meta = brand_meta.get(request["selected_brand"])
     if selected_meta is None:
         return None
     mart_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
     crosswalk = resolve_csd_market(mart_codes)
-    rx_rows = _fetch_rx_rows(view, request["market_id"], tuple(choice.brand_key for choice in choices))
+    rx_rows = _fetch_rx_rows(brand_set.view, request["market_id"], tuple(choice.brand_key for choice in choices))
     activity = _activity_series(crosswalk.market, choices, brand_meta, quarters)
     return {
-        "scope": _scope_payload(request, view, market_row, selected_meta, ranking, crosswalk, quarters),
+        "scope": _scope_payload(request, brand_set.view, brand_set.market_row, selected_meta, brand_set.ranking_quarter, brand_set.applied_filter, crosswalk, quarters),
         "brands": [_brand_payload(choice, brand_meta, rx_rows, activity, quarters) for choice in choices],
-        "market_totals": _market_totals(view, request["market_id"], quarters, activity["totals"]),
+        "market_totals": _market_totals(brand_set.view, request["market_id"], quarters, activity["totals"]),
     }
 
 
@@ -107,13 +108,16 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
     }
 
 
-def _view_config(view: str) -> ViewConfig:
-    if view == "general":
-        return ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
-    return ViewConfig("mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "ml_id", "ml_name", "brand_ranking_stacked", True)
-
-
-def _scope_payload(request: JsonMap, view: ViewConfig, market_row: JsonMap, selected_meta: BrandMeta, ranking: JsonMap, crosswalk: CsdCrosswalk, quarters: list[str]) -> JsonMap:
+def _scope_payload(
+    request: JsonMap,
+    view: ViewConfig,
+    market_row: JsonMap,
+    selected_meta: BrandMeta,
+    ranking_quarter: str,
+    applied_filter: JsonMap,
+    crosswalk: CsdCrosswalk,
+    quarters: list[str],
+) -> JsonMap:
     return {
         "view": request["view"],
         "market_id": request["market_id"],
@@ -121,36 +125,12 @@ def _scope_payload(request: JsonMap, view: ViewConfig, market_row: JsonMap, sele
         "csd_market": crosswalk.display_market,
         "selected_brand": {"brand_key": selected_meta.brand_key, "product_code": first(selected_meta.product_codes)},
         "ranking_measure": RANKING_MEASURE,
-        "ranking_quarter": ranking["quarter"],
+        "ranking_quarter": ranking_quarter,
         "filter": request["filter"],
+        "applied_filter": applied_filter,
         "quarters": quarters,
         "measures": list(PUBLIC_MEASURES),
     }
-
-
-def _fetch_brand_rows(view: ViewConfig, market_id: str) -> list[JsonMap]:
-    is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
-    return db.fetch_all(
-        f"""
-        SELECT DISTINCT brand_key, brand_name, {is_jw}, by_dimension, metric_history
-        FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
-        WHERE {view.market_key} = %s AND source = %s AND measure = %s
-        ORDER BY brand_key
-        """,
-        (market_id, SOURCE, RANKING_MEASURE),
-    )
-
-
-def _fetch_market_row(view: ViewConfig, market_id: str, measure: str) -> JsonMap | None:
-    return db.fetch_one(
-        f"""
-        SELECT {view.market_key}, {view.market_name_column}, market_size_series, {view.ranking_column}
-        FROM {quote_identifier(config.db_name)}.{quote_identifier(view.market_table)}
-        WHERE {view.market_key} = %s AND source = %s AND measure = %s
-        LIMIT 1
-        """,
-        (market_id, SOURCE, measure),
-    )
 
 
 def _fetch_rx_rows(view: ViewConfig, market_id: str, brand_keys: tuple[str, ...]) -> list[JsonMap]:
@@ -239,39 +219,6 @@ def _rx_payload(row: JsonMap | None, quarters: list[str]) -> JsonMap:
         "ratio": {quarter: float_value(json_map(metric.get(quarter)).get("ms")) for quarter in quarters},
     }
 
-
-def _brand_meta_by_key(rows: list[JsonMap], *, has_is_jw: bool) -> dict[str, BrandMeta]:
-    metas: dict[str, BrandMeta] = {}
-    for row in rows:
-        brand_key = str(row["brand_key"])
-        products = tuple(sorted({normalize_iqvia_en(code) for code in _product_codes(row.get("by_dimension"))}))
-        is_jw = bool(row.get("is_jw")) if has_is_jw else get_display_brand(brand_key) is not None
-        metas[brand_key] = BrandMeta(brand_key, str(row.get("brand_name") or brand_key), products, is_jw)
-    return metas
-
-
-def _product_codes(value: Any) -> list[str]:
-    products = json_map(value).get("products")
-    if not isinstance(products, list):
-        return []
-    return [str(item.get("product_code")) for item in products if isinstance(item, dict) and item.get("product_code")]
-
-
-def _ranking_for_quarter(row: JsonMap, ranking_column: str, quarters: list[str]) -> JsonMap:
-    ranking = json_map(row.get(ranking_column))
-    quarter = next((quarter for quarter in reversed(quarters) if quarter in ranking), sorted(ranking)[-1] if ranking else "")
-    items = ranking.get(quarter, [])
-    return {"quarter": quarter, "items": items if isinstance(items, list) else []}
-
-
-def _with_selected_rank(ranking: list[JsonMap], rows: list[JsonMap], selected_brand: str, quarter: str) -> list[JsonMap]:
-    if any(item.get("brand_key") == selected_brand for item in ranking):
-        return ranking
-    selected = next((row for row in rows if row.get("brand_key") == selected_brand), None)
-    if selected is None:
-        return ranking
-    metric = json_map(json_map(selected.get("metric_history")).get(quarter))
-    return [{"brand_key": selected_brand, "brand": selected_brand, "rank": int_or_none(metric.get("rank"))}, *ranking]
 
 
 def _requested_quarters(default_quarters: list[str], window: Mapping[str, Any]) -> list[str]:

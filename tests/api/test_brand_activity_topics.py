@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from pipeline.scripts.api import brand_activity_topic_matrix as topic_matrix
+from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolution
+from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, ViewConfig
 from pipeline.scripts.api.main import app
+from pipeline.scripts.api.routes import brand_activity
 
 
 INTERNAL_BRAND_KEYS = {
@@ -78,6 +82,35 @@ def test_topic_endpoint_returns_null_data_when_scope_is_missing(monkeypatch) -> 
     assert response.json() == {"data": None, "reason": "scope_not_found", "scope_id": "missing-scope"}
 
 
+def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
+    expected = {"scope": {"view": "general"}, "brands": []}
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", lambda _payload: expected)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={"view": "general", "market_id": "C10A1", "selected_brand": "리바로"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"data": expected}
+
+
+def test_post_topic_service_matches_topics_by_product_code(monkeypatch) -> None:
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: [_post_topic_row()])
+
+    payload = topic_matrix.get_topic_brand_payload({"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "top_n": 1})
+
+    assert payload is not None
+    assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
+    assert payload["scope"]["sliced"] is False
+    assert payload["brands"][0]["brand_key"] == "리바로"
+    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share": 62.5}]
+    assert payload["brands"][1]["brand_key"] == "리피토"
+    assert payload["brands"][1]["topics"] == []
+
+
 def assert_public_brand_contract(payload: dict[str, Any]) -> None:
     """Assert that internal diagnostics are not exposed anywhere under brands."""
     brand = payload["brands"][0]
@@ -140,5 +173,50 @@ def _row(scope_id: str) -> dict[str, str]:
         "display_name": "PPI Market",
         "quality_grade": "A",
         "source_row_count": 123,
+        "payload": json.dumps(payload, ensure_ascii=False),
+    }
+
+
+def _brand_set() -> BrandSetResolution:
+    view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
+    brand_meta = {
+        "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
+        "리피토": BrandMeta("리피토", "리피토", ("LIPITOR",), False),
+    }
+    return BrandSetResolution(
+        view_name="general",
+        market_id="C10A1",
+        selected_brand="리바로",
+        view=view,
+        market_row={"atc4_desc": "STATINS"},
+        brand_rows=(),
+        brand_meta=brand_meta,
+        choices=(
+            BrandChoice("리바로", "리바로", 3, True),
+            BrandChoice("리피토", "리피토", 1, False),
+        ),
+        candidates=(),
+        ranking_quarter="2025-Q4",
+        applied_filter={"atc4": ["C10A1"]},
+    )
+
+
+def _post_topic_row() -> dict[str, str]:
+    payload = {
+        "brands": [
+            {
+                "brand": "LIVALO",
+                "top5_topic_shares": [
+                    {"topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "row_count": 10},
+                    {"topic_id": "T02", "label": "LDL 조절", "share_pct": 20.0, "row_count": 4},
+                ],
+            }
+        ]
+    }
+    return {
+        "scope_id": "atc4:C10A1",
+        "display_name": "LIVALO Market",
+        "quality_grade": "A",
+        "source_row_count": "1",
         "payload": json.dumps(payload, ensure_ascii=False),
     }

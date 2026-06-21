@@ -8,6 +8,10 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesInputError,
     get_csd_timeseries,
 )
+from pipeline.scripts.api.brand_activity_topic_matrix import (
+    TopicRequestError,
+    get_topic_brand_payload,
+)
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
     TopicPayloadError,
@@ -40,6 +44,20 @@ class CsdTimeseriesRequest(BaseModel):
     window: CsdTimeseriesWindow | None = None
 
 
+class BrandActivityTopicsRequest(BaseModel):
+    """Request body for the filtered Brand Activity topic route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    view: str
+    market_id: str
+    selected_brand: str
+    filter: dict[str, JsonValue] = Field(default_factory=dict)
+    visit_location: str = "전체"
+    specialty: str = "전체"
+    top_n: int = Field(default=5, ge=1, le=5)
+
+
 @router.get("/api/brand-activity/topics")
 def brand_activity_topics() -> dict[str, JsonValue]:
     """Return all Brand Activity topic market payloads."""
@@ -59,6 +77,21 @@ def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
     if payload is None:
         return {"data": None, "reason": "scope_not_found", "scope_id": scope_id}
     return {"data": payload}
+
+
+@router.post("/api/brand-activity/topics")
+def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str, JsonValue]:
+    """Return selected and competitor brand topic shares."""
+
+    try:
+        result = get_topic_brand_payload(payload.model_dump())
+    except TopicRequestError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_brand_activity_topic_request", "message": str(exc)}) from exc
+    except TopicPayloadError as exc:
+        raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
+    if result is None:
+        return {"data": None, "reason": "market_not_found"}
+    return {"data": result}
 
 
 @router.post("/api/brand-activity/csd-timeseries")

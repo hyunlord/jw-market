@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api import brand_activity_csd_timeseries as service
+from pipeline.scripts.api import brand_activity_csd_shared as shared
 from pipeline.scripts.api.routes import brand_activity
 
 
@@ -38,7 +39,7 @@ def test_select_ranked_brands_keeps_selected_and_fills_to_six() -> None:
         {"brand_key": "F", "brand": "F", "rank": 7},
     ]
 
-    selected = service.select_ranked_brands(ranking, selected_brand="selected")
+    selected = shared.select_ranked_brands(ranking, selected_brand="selected")
 
     assert [brand.brand_key for brand in selected] == ["selected", "A", "B", "C", "D", "E"]
     assert selected[0].is_selected is True
