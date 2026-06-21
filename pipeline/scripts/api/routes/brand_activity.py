@@ -8,6 +8,10 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesInputError,
     get_csd_timeseries,
 )
+from pipeline.scripts.api.brand_activity_interest_rx_matrix import (
+    InterestRxMatrixInputError,
+    get_interest_rx_matrix,
+)
 from pipeline.scripts.api.brand_activity_topic_matrix import (
     TopicRequestError,
     get_topic_brand_payload,
@@ -58,6 +62,32 @@ class BrandActivityTopicsRequest(BaseModel):
     top_n: int = Field(default=5, ge=1, le=5)
 
 
+class InterestRxWeights(BaseModel):
+    """Optional score-weight overrides for interest/Rx matrix axes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    interest: dict[str, float] = Field(default_factory=dict)
+    rx_frequency: dict[str, float] = Field(default_factory=dict)
+    prescription_evolution: dict[str, float] = Field(default_factory=dict)
+
+
+class BrandActivityInterestRxRequest(BaseModel):
+    """Request body for the Brand Activity interest/Rx matrix route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    view: str
+    market_id: str
+    selected_brand: str
+    filter: dict[str, JsonValue] = Field(default_factory=dict)
+    visit_location: str = "전체"
+    specialty: str = "전체"
+    period_start: str | None = None
+    period_end: str | None = None
+    weights: InterestRxWeights | None = None
+
+
 @router.get("/api/brand-activity/topics")
 def brand_activity_topics() -> dict[str, JsonValue]:
     """Return all Brand Activity topic market payloads."""
@@ -104,6 +134,19 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_timeseries_request", "message": str(exc)}) from exc
     except CsdTimeseriesAmbiguousMarketError as exc:
         return {"data": None, "reason": "csd_market_ambiguous", "message": str(exc)}
+    if result is None:
+        return {"data": None, "reason": "market_not_found"}
+    return {"data": result}
+
+
+@router.post("/api/brand-activity/interest-rx-matrix")
+def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
+    """Return interest/Rx distributions and detailing for selected brands."""
+
+    try:
+        result = get_interest_rx_matrix(payload.model_dump())
+    except InterestRxMatrixInputError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_interest_rx_matrix_request", "message": str(exc)}) from exc
     if result is None:
         return {"data": None, "reason": "market_not_found"}
     return {"data": result}
