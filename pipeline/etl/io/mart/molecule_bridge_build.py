@@ -139,7 +139,12 @@ def _payloads(records: list[MoleculeBridgeRecord]) -> list[BridgeInsertPayload]:
     return payloads
 
 
-def _insert_payloads(conn: pymysql.connections.Connection, target_db: str, payloads: list[BridgeInsertPayload]) -> None:
+def _insert_payloads(
+    conn: pymysql.connections.Connection,
+    target_db: str,
+    payloads: list[BridgeInsertPayload],
+    batch_size: int = 500,
+) -> None:
     """Insert bridge rows using one deterministic column list."""
 
     if not payloads:
@@ -149,7 +154,8 @@ def _insert_payloads(conn: pymysql.connections.Connection, target_db: str, paylo
     sql = f"INSERT INTO `{target_db}`.mart_brand_molecule ({columns}) VALUES ({placeholders})"
     values = [tuple(payload[column] for column in BRIDGE_INSERT_COLUMNS) for payload in payloads]
     with conn.cursor() as cur:
-        cur.executemany(sql, values)
+        for start in range(0, len(values), batch_size):
+            cur.executemany(sql, values[start : start + batch_size])
 
 
 def build_molecule_bridge(
