@@ -6,7 +6,7 @@ from collections import defaultdict
 import json
 from pathlib import Path
 
-from .models import CoverageRow, JsonValue, LabelCandidate, MethodScore, MessageRow
+from .models import CoverageRow, JsonValue, LabelCandidate, MethodScore
 
 
 def pct(value: float) -> str:

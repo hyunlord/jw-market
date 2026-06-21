@@ -15,7 +15,6 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     BrandMeta,
     JsonMap,
     ViewConfig,
-    first,
     float_value,
     int_or_none,
     json_map,
