@@ -206,6 +206,7 @@ def _post_topic_row() -> dict[str, str]:
         "brands": [
             {
                 "brand": "LIVALO",
+                "row_count": 473,
                 "top5_topic_shares": [
                     {"topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "row_count": 10},
                     {"topic_id": "T02", "label": "LDL 조절", "share_pct": 20.0, "row_count": 4},

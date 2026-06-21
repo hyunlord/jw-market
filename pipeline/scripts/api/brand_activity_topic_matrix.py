@@ -11,6 +11,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     resolve_brand_set,
 )
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
+from pipeline.scripts.api.brand_activity_topic_confidence import topic_confidence_for_event_count
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
     _fetch_topic_rows,
@@ -107,12 +108,15 @@ def _topic_brand_item(
     meta = brand_set.brand_meta[choice_key]
     choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
     stored = _stored_brand_topics(meta, topic_index, aliases)
+    event_count = _integer(stored.get("row_count")) if stored is not None else 0
     return {
         "brand_key": choice.brand_key,
         "brand_name": choice.brand_name,
         "is_jw": meta.is_jw,
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
+        "event_count": event_count,
+        "confidence": topic_confidence_for_event_count(event_count),
         "topics": _ranked_topics(stored, top_n=top_n),
     }
 
