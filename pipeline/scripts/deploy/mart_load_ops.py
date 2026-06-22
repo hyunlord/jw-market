@@ -269,13 +269,23 @@ def dump_tables(
         "--single-transaction",
         "--quick",
         "--skip-lock-tables",
+        "--skip-add-locks",
+        "--skip-extended-insert",
+        "--skip-disable-keys",
+        "--skip-no-autocommit",
         target_db,
         *tables,
     ]
     start = time.perf_counter()
     if dump_path.suffix == ".gz":
-        with gzip.open(dump_path, "wb") as out:
-            subprocess.run(command, check=True, stdout=out, env=env)
+        with subprocess.Popen(command, stdout=subprocess.PIPE, env=env) as proc:
+            if proc.stdout is None:
+                raise RuntimeError("dump command did not expose stdout")
+            with gzip.open(dump_path, "wb") as out:
+                shutil.copyfileobj(proc.stdout, out, length=1024 * 1024)
+            return_code = proc.wait()
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, command)
     else:
         with dump_path.open("wb") as out:
             subprocess.run(command, check=True, stdout=out, env=env)

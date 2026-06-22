@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import gzip
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
 from pipeline.etl.io.mart import molecule_bridge_build
 from pipeline.etl.io.mart.molecule_bridge_schema import BRIDGE_INSERT_COLUMNS
+from pipeline.scripts.deploy import mart_import_ops
 from pipeline.scripts.deploy import mart_load_ops
+from pipeline.scripts.deploy.mart_load_verify import CanonicalDigest
 from pipeline.scripts.deploy.mart_load_verify import _canonical_value, _stable_column_expression
 
 
@@ -133,3 +137,257 @@ def test_copy_table_batches_by_id(monkeypatch) -> None:
     assert "CREATE TABLE" in executed[0][0]
     assert [params for _, params in executed[1:]] == [(1, 2), (3, 4), (5, 6)]
     assert all("WHERE id BETWEEN %s AND %s" in sql for sql, _ in executed[1:])
+
+
+def test_direct_import_manifest_verifies_canonical_digest(monkeypatch) -> None:
+    manifest = {
+        "tables": [
+            {
+                "table": "mart_general_brand_metric",
+                "row_count": 2,
+                "canonical_sha256": "abc123",
+                "groups": {"ubist|sales": 2},
+            }
+        ]
+    }
+
+    monkeypatch.setattr(mart_import_ops, "table_exists", lambda *args: True)
+    monkeypatch.setattr(
+        mart_import_ops,
+        "canonical_reference_digest",
+        lambda *args: CanonicalDigest(row_count=2, sha256="abc123"),
+    )
+    monkeypatch.setattr(mart_import_ops, "fetch_group_counts", lambda *args: {("ubist", "sales"): 2})
+
+    results = mart_import_ops.verify_against_manifest(object(), target_db="target_db", manifest=manifest)
+
+    assert results == [
+        {
+            "table": "mart_general_brand_metric",
+            "row_count": 2,
+            "canonical_sha256": "abc123",
+            "groups": {"ubist|sales": 2},
+        }
+    ]
+
+
+def test_direct_import_manifest_rejects_digest_mismatch(monkeypatch) -> None:
+    manifest = {
+        "tables": [
+            {
+                "table": "mart_general_brand_metric",
+                "row_count": 2,
+                "canonical_sha256": "expected",
+                "groups": {"ubist|sales": 2},
+            }
+        ]
+    }
+
+    monkeypatch.setattr(mart_import_ops, "table_exists", lambda *args: True)
+    monkeypatch.setattr(
+        mart_import_ops,
+        "canonical_reference_digest",
+        lambda *args: CanonicalDigest(row_count=2, sha256="actual"),
+    )
+    monkeypatch.setattr(mart_import_ops, "fetch_group_counts", lambda *args: {("ubist", "sales"): 2})
+
+    try:
+        mart_import_ops.verify_against_manifest(object(), target_db="target_db", manifest=manifest)
+    except RuntimeError as exc:
+        assert "canonical checksum mismatch" in str(exc)
+    else:
+        raise AssertionError("expected digest mismatch to fail")
+
+
+def test_direct_import_target_absence_guard_rejects_existing_table(monkeypatch) -> None:
+    monkeypatch.setattr(mart_import_ops, "table_exists", lambda _conn, _db, table: table == "mart_brand_molecule")
+
+    try:
+        mart_import_ops.ensure_direct_import_target_absent(
+            object(),
+            target_db="jw_mart",
+            tables=("mart_general_brand_metric", "mart_brand_molecule"),
+        )
+    except RuntimeError as exc:
+        assert "already exists" in str(exc)
+        assert "mart_brand_molecule" in str(exc)
+    else:
+        raise AssertionError("expected existing target table to fail")
+
+
+def test_restore_dump_uses_password_env_not_command_args_and_strips_transactions(tmp_path, monkeypatch) -> None:
+    dump_path = tmp_path / "mart.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                "CREATE TABLE mart_general_brand_metric (id int);",
+                "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT, @@AUTOCOMMIT=0;",
+                "INSERT INTO mart_general_brand_metric VALUES (1);",
+                "COMMIT;",
+                "SET AUTOCOMMIT=@OLD_AUTOCOMMIT;",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class CapturingStdin(io.BytesIO):
+        def close(self) -> None:
+            captured["stdin_bytes"] = self.getvalue()
+            super().close()
+
+    class FakeProcess:
+        def __init__(self, command: list[str], *, stdin: object, env: dict[str, str]) -> None:
+            captured["command"] = command
+            captured["stdin_arg"] = stdin
+            captured["env"] = env
+            self.stdin = CapturingStdin()
+
+        def wait(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            captured["killed"] = True
+
+    monkeypatch.setattr(mart_import_ops.shutil, "which", lambda name: "/usr/bin/mariadb" if name == "mariadb" else None)
+    monkeypatch.setattr(
+        mart_import_ops,
+        "_db_env",
+        lambda: {
+            "MARIADB_HOST": "db-host",
+            "MARIADB_PORT": "3306",
+            "MARIADB_USER": "llmops",
+            "MARIADB_PASSWORD": "placeholder-value",
+        },
+    )
+    monkeypatch.setattr(mart_import_ops.subprocess, "Popen", FakeProcess)
+
+    result = mart_import_ops.restore_dump_into_schema(target_db="jw_mart", dump_path=dump_path)
+
+    assert result.size_bytes == dump_path.stat().st_size
+    assert captured["stdin_bytes"] == (
+        b"CREATE TABLE mart_general_brand_metric (id int);\n"
+        b"INSERT INTO mart_general_brand_metric VALUES (1);\n"
+    )
+    assert captured["command"] == [
+        "/usr/bin/mariadb",
+        "--host=db-host",
+        "--port=3306",
+        "--user=llmops",
+        "jw_mart",
+    ]
+    assert "placeholder-value" not in " ".join(captured["command"])
+    assert captured["env"]["MYSQL_PWD"] == "placeholder-value"
+
+
+def test_restore_gzip_dump_decompresses_before_client(tmp_path, monkeypatch) -> None:
+    dump_path = tmp_path / "mart.sql.gz"
+    sql = (
+        b"CREATE TABLE mart_general_brand_metric (id int);\n"
+        b"SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT, @@AUTOCOMMIT=0;\n"
+        b"INSERT INTO mart_general_brand_metric VALUES (1);\n"
+        b"COMMIT;\n"
+        b"SET AUTOCOMMIT=@OLD_AUTOCOMMIT;\n"
+    )
+    with gzip.open(dump_path, "wb") as handle:
+        handle.write(sql)
+    captured: dict[str, object] = {}
+
+    class CapturingStdin(io.BytesIO):
+        def close(self) -> None:
+            captured["stdin_bytes"] = self.getvalue()
+            super().close()
+
+    class FakeProcess:
+        def __init__(self, command: list[str], *, stdin: object, env: dict[str, str]) -> None:
+            captured["command"] = command
+            captured["stdin_arg"] = stdin
+            captured["env"] = env
+            self.stdin = CapturingStdin()
+
+        def wait(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            captured["killed"] = True
+
+    monkeypatch.setattr(mart_import_ops.shutil, "which", lambda name: "/usr/bin/mariadb" if name == "mariadb" else None)
+    monkeypatch.setattr(
+        mart_import_ops,
+        "_db_env",
+        lambda: {
+            "MARIADB_HOST": "db-host",
+            "MARIADB_PORT": "3306",
+            "MARIADB_USER": "llmops",
+            "MARIADB_PASSWORD": "placeholder-value",
+        },
+    )
+    monkeypatch.setattr(mart_import_ops.subprocess, "Popen", FakeProcess)
+
+    result = mart_import_ops.restore_dump_into_schema(target_db="jw_mart", dump_path=dump_path)
+
+    assert result.size_bytes == dump_path.stat().st_size
+    assert captured["stdin_bytes"] == (
+        b"CREATE TABLE mart_general_brand_metric (id int);\n"
+        b"INSERT INTO mart_general_brand_metric VALUES (1);\n"
+    )
+    assert captured["command"] == [
+        "/usr/bin/mariadb",
+        "--host=db-host",
+        "--port=3306",
+        "--user=llmops",
+        "jw_mart",
+    ]
+    assert "placeholder-value" not in " ".join(captured["command"])
+    assert captured["env"]["MYSQL_PWD"] == "placeholder-value"
+
+
+def test_dump_tables_compresses_gzip_and_uses_writeset_safe_options(tmp_path, monkeypatch) -> None:
+    dump_path = tmp_path / "mart.sql.gz"
+    sql = b"CREATE TABLE mart_general_brand_metric (id int);\n"
+    captured: dict[str, object] = {}
+
+    class FakeDumpProcess:
+        def __init__(self, command: list[str], *, stdout: object, env: dict[str, str]) -> None:
+            captured["command"] = command
+            captured["stdout_arg"] = stdout
+            captured["env"] = env
+            self.stdout = io.BytesIO(sql)
+
+        def __enter__(self) -> "FakeDumpProcess":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(mart_load_ops.shutil, "which", lambda name: "/usr/bin/mariadb-dump" if name == "mariadb-dump" else None)
+    monkeypatch.setattr(
+        mart_load_ops,
+        "_db_env",
+        lambda: {
+            "MARIADB_HOST": "db-host",
+            "MARIADB_PORT": "3306",
+            "MARIADB_USER": "llmops",
+            "MARIADB_PASSWORD": "placeholder-value",
+        },
+    )
+    monkeypatch.setattr(mart_load_ops.subprocess, "Popen", FakeDumpProcess)
+
+    result = mart_load_ops.dump_tables(
+        target_db="build_db",
+        tables=("mart_general_brand_metric",),
+        dump_path=dump_path,
+    )
+
+    assert result.size_bytes == dump_path.stat().st_size
+    assert gzip.open(dump_path, "rb").read() == sql
+    assert "--skip-add-locks" in captured["command"]
+    assert "--skip-extended-insert" in captured["command"]
+    assert "--skip-disable-keys" in captured["command"]
+    assert "--skip-no-autocommit" in captured["command"]
+    assert "placeholder-value" not in " ".join(captured["command"])
+    assert captured["env"]["MYSQL_PWD"] == "placeholder-value"

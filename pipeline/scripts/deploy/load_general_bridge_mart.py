@@ -25,6 +25,12 @@ from pipeline.scripts.deploy.mart_load_ops import (  # noqa: E402
     run_s4_general,
     run_strategic_ml_market_from_source,
 )
+from pipeline.scripts.deploy.mart_direct_import import (  # noqa: E402
+    DirectBuildImportConfig,
+    DumpImportConfig,
+    run_build_dump_import,
+    run_dump_import,
+)
 from pipeline.scripts.deploy.mart_load_verify import (  # noqa: E402
     find_bridge_reference_db,
     verify_loaded_tables,
@@ -44,6 +50,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input-mode", choices=["raw", "enriched"], default="raw", help="S4 general mart input mode.")
     parser.add_argument("--dump-path", type=Path, help="Optional SQL or .sql.gz dump path for published staging tables.")
     parser.add_argument("--audit-json", type=Path, help="Optional JSON summary path.")
+    parser.add_argument("--manifest-json", type=Path, help="Direct-import manifest path. Written by --direct-import; read with --import-from-dump unless --import-manifest is set.")
+    parser.add_argument("--import-manifest", type=Path, help="Manifest JSON to verify an import-only restore.")
+    parser.add_argument("--direct-import", action="store_true", help="Build locally, dump verified mart tables, then import the dump directly into --target-db.")
+    parser.add_argument("--import-from-dump", type=Path, help="Import a prebuilt direct-import dump into --target-db without rebuilding.")
+    parser.add_argument("--create-target-db", action="store_true", help="Create --target-db if missing. Intended for local rehearsal, not production jw_mart.")
+    parser.add_argument("--drop-build-after-dump", action="store_true", help="Drop the isolated local build schema after dump creation to reduce disk pressure.")
+    parser.add_argument("--drop-target-after-verify", action="store_true", help="Drop the direct-import target schema after successful verification. Refuses protected schemas.")
     parser.add_argument("--bridge-reference-db", help="Reference schema for 58,330-row mart_brand_molecule checksum.")
     parser.add_argument(
         "--skip-strategic-ml-market",
@@ -66,6 +79,48 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     try:
         load_env_file(args.env_file)
+        if args.direct_import:
+            if not args.dump_path:
+                raise RuntimeError("--direct-import requires --dump-path")
+            if not args.manifest_json:
+                raise RuntimeError("--direct-import requires --manifest-json")
+            summary = run_build_dump_import(
+                DirectBuildImportConfig(
+                    run_id=run_id,
+                    source_db=args.source_db,
+                    target_db=args.target_db,
+                    build_db=build_db,
+                    dump_path=args.dump_path,
+                    manifest_json=args.manifest_json,
+                    audit_json=args.audit_json,
+                    catalog_root=args.catalog_root,
+                    input_mode=args.input_mode,
+                    include_strategic_ml_market=include_strategic,
+                    allow_operating_target=bool(args.allow_operating_target),
+                    create_target_db=bool(args.create_target_db),
+                    drop_build_after_dump=bool(args.drop_build_after_dump),
+                    drop_target_after_verify=bool(args.drop_target_after_verify),
+                )
+            )
+            print(json.dumps({"event": "complete", **summary}, ensure_ascii=False, default=str))
+            return 0
+        if args.import_from_dump:
+            manifest_path = args.import_manifest or args.manifest_json
+            if not manifest_path:
+                raise RuntimeError("--import-from-dump requires --manifest-json or --import-manifest")
+            summary = run_dump_import(
+                DumpImportConfig(
+                    target_db=args.target_db,
+                    dump_path=args.import_from_dump,
+                    manifest_json=manifest_path,
+                    audit_json=args.audit_json,
+                    allow_operating_target=bool(args.allow_operating_target),
+                    create_target_db=bool(args.create_target_db),
+                    drop_target_after_verify=bool(args.drop_target_after_verify),
+                )
+            )
+            print(json.dumps({"event": "complete", **summary}, ensure_ascii=False, default=str))
+            return 0
         guard_run(
             source_db=args.source_db,
             target_db=args.target_db,
