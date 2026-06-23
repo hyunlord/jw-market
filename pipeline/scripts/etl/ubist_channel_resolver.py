@@ -1,3 +1,5 @@
+"""Resolve UBIST facility-specialty channels for cause cache payloads."""
+
 from __future__ import annotations
 
 import math
@@ -5,10 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pipeline.scripts.utils.ubist_target_channel_mapping import (
-    parse_target_channel_code as parse_channel_code,
-    raw_pair_to_target_channel_code as raw_pair_to_channel_code,
-)
+from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 UBIST_PARQUET_GLOB = PROJECT_ROOT / "output" / "ubist" / "year=*" / "month=*" / "data.parquet"
@@ -33,15 +33,6 @@ def _targets_from_market(market: dict[str, Any] | None) -> list[str]:
     ]
 
 
-def _canonical_target_codes(market: dict[str, Any] | None) -> set[str]:
-    codes: set[str] = set()
-    for target in _targets_from_market(market):
-        parsed = parse_channel_code(target)
-        if parsed is not None:
-            codes.add(parsed.code)
-    return codes
-
-
 def _value_column(measure: str) -> str:
     return "rx_qty" if str(measure).lower() in {"volume", "qty", "count", "unit"} else "rx_amt"
 
@@ -56,10 +47,13 @@ def _brand_names(rows: list[dict[str, Any]]) -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=64)
-def _load_market_raw_totals(
-    brand_names: tuple[str, ...],
-    measure: str,
-) -> tuple[dict[str, dict[str, dict[str, float]]], dict[str, float]]:
+def _load_market_raw_totals(brand_names: tuple[str, ...], measure: str) -> tuple[dict[str, dict[str, dict[str, float]]], dict[str, float]]:
+    """Return raw UBIST value series by brand and resolved channel display.
+
+    Shape:
+      by_brand[brand][display][period] = value
+      totals_by_code[code] = total value across the full raw window
+    """
     if not brand_names:
         return {}, {}
 
@@ -90,6 +84,7 @@ def _load_market_raw_totals(
 
     by_brand: dict[str, dict[str, dict[str, float]]] = {}
     totals_by_code: dict[str, float] = {}
+    display_by_code: dict[str, str] = {}
     for brand, period, facility_raw, specialty_raw, value in rows:
         code = raw_pair_to_channel_code(facility_raw, specialty_raw)
         if not code:
@@ -97,11 +92,16 @@ def _load_market_raw_totals(
         parsed = parse_channel_code(code)
         if parsed is None:
             continue
+        display = parsed.display_name
         numeric = float(value or 0.0)
-        totals_by_code[parsed.code] = totals_by_code.get(parsed.code, 0.0) + numeric
-        brand_bucket = by_brand.setdefault(str(brand), {}).setdefault(parsed.series_name, {})
+        display_by_code[code] = display
+        totals_by_code[code] = totals_by_code.get(code, 0.0) + numeric
+        brand_bucket = by_brand.setdefault(str(brand), {}).setdefault(display, {})
         period_text = str(period)
         brand_bucket[period_text] = brand_bucket.get(period_text, 0.0) + numeric
+
+    # The caller only needs totals by code for ranking fallback, but keeping
+    # display generation here validates that every code can be parsed.
     return by_brand, totals_by_code
 
 
@@ -112,6 +112,7 @@ def resolve_market_channels(
     measure: str,
     max_channels: int = 4,
 ) -> dict[str, Any]:
+    """Resolve UBIST target channels and attach raw series to mart rows."""
     brand_names = _brand_names(rows)
     series_by_brand, totals_by_code = _load_market_raw_totals(brand_names, measure)
 
@@ -134,28 +135,20 @@ def resolve_market_channels(
             if parsed is None:
                 continue
             channels.append(parsed)
-            used_codes.add(parsed.code)
+            used_codes.add(code)
 
-    series_names = [channel.series_name for channel in channels]
     display_names = [channel.display_name for channel in channels]
     for row in rows:
         brand = str(row.get("brand_name") or row.get("brand_key") or "").strip()
         row["__ubist_dual_channel_data"] = series_by_brand.get(brand, {})
         row["__ubist_specialty_channel_data"] = series_by_brand.get(brand, {})
 
-    requested_codes = _canonical_target_codes(market)
     return {
         "channels": list(SCREEN_FACILITY_CHANNELS),
-        "specialty_channels": ["전체", *series_names] if series_names else ["전체"],
-        "specialty_display_channels": ["전체", *display_names] if display_names else ["전체"],
+        "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
         "target_channels": [channel.as_dict() for channel in channels],
         "specialty_target_channels": [channel.as_dict() for channel in channels],
-        "target_channel_label_map": {
-            channel.series_name: channel.display_name
-            for channel in channels
-            if channel.series_name != channel.display_name
-        },
-        "fallback_codes": [channel.code for channel in channels if channel.code not in requested_codes],
+        "fallback_codes": [channel.code for channel in channels if channel.code not in set(_targets_from_market(market))],
         "series_brand_count": len(series_by_brand),
         "raw_brand_count": len(brand_names),
     }

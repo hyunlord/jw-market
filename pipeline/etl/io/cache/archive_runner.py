@@ -7,11 +7,16 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
+from .archive_cd_display_patch import apply_cd_display_patch
 from .archive_target_4bucket_patch import apply_target_4bucket_patch
 
 ROOT = Path(__file__).resolve().parents[4]
 ARCHIVE_REF = "99a308b4c42c823870ea52868c0c8f9e1f1facb5"
+LAYER3_SHIM_PATH = "pipeline/scripts/etl/layer3_compute_general_v3.py"
+SERVICES_SHIM_PATH = "pipeline/etl/io/cache/archive_services_shim.py"
+MaterializeMode = Literal["git-show", "vendored"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,88 +38,10 @@ ARCHIVE_PATHS = (
     "pipeline/scripts/api/metadata/ml_market_meta.py",
     "pipeline/scripts/utils/ubist_channel_mapping.py",
     "pipeline/scripts/forecast/forecast_runner.py",
+    "pipeline/scripts/forecast/backtest.py",
+    "pipeline/scripts/forecast/sarima_runner.py",
+    "pipeline/scripts/forecast/sentiment_scorer.py",
 )
-
-
-SHIM = r'''from __future__ import annotations
-
-import json
-import math
-import os
-from typing import Any
-
-import pymysql
-
-
-def mariadb_connect() -> pymysql.connections.Connection:
-    return pymysql.connect(
-        host=os.environ.get("MARIADB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("MARIADB_PORT", "3308")),
-        user=os.environ.get("MARIADB_USER", "root"),
-        password=os.environ.get("MARIADB_PASSWORD") or os.environ.get("MYSQL_PWD"),
-        database=os.environ.get("MARIADB_DATABASE", "jw_mart"),
-        charset="utf8mb4",
-        autocommit=True,
-        cursorclass=pymysql.cursors.DictCursor,
-    )
-
-
-def safe_float(value: Any) -> float | None:
-    try:
-        if value is None:
-            return None
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number) or math.isinf(number):
-        return None
-    return number
-
-
-def json_ready(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): json_ready(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [json_ready(v) for v in value]
-    if hasattr(value, "item"):
-        return json_ready(value.item())
-    return value
-
-
-def dumps(value: Any) -> str:
-    return json.dumps(json_ready(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-'''
-
-SERVICES_SHIM = r'''from __future__ import annotations
-
-MARKET_STATUS_COMPANY_BY_BRAND = {
-    "라베칸": "녹십자",
-    "라베칸듀오": "JW중외제약",
-    "제이클": "한미약품",
-    "가드렛": "엘지화학",
-    "가드메트": "유한양행",
-    "타발리스": "유한양행",
-    "시그마트": "대웅제약",
-    "리바로": "일동제약",
-    "리바로젯": "종근당",
-    "리바로페노": "종근당",
-    "리바로하이": "동아에스티",
-    "리바로브이": "유한양행",
-    "트루패스": "엘지화학",
-    "피나스타": "셀트리온제약",
-    "제이다트": "한미약품",
-    "뉴트로진": "한독",
-    "모빌리아": "한미약품",
-    "악템라": "한미약품",
-    "페린젝트": "일동제약",
-    "베노훼럼": "한미약품",
-    "헴리브라": "대웅제약",
-    "위너프": "한미약품",
-    "위너프A+": "한독",
-    "엔커버": "삼성바이오에피스",
-    "플라주오피": "한독",
-}
-'''
 
 
 def _git_show(path: str) -> bytes:
@@ -127,21 +54,45 @@ def _write_archive_file(temp_root: Path, path: str) -> None:
     destination.write_bytes(_git_show(path))
 
 
-def materialize_archive() -> Path:
-    temp_root = Path(tempfile.mkdtemp(prefix="jw-s6-archive-"))
-    for path in ARCHIVE_PATHS:
-        _write_archive_file(temp_root, path)
+def _copy_vendored_file(temp_root: Path, path: str) -> None:
+    destination = temp_root / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / path, destination)
+
+
+def _write_shims(temp_root: Path) -> None:
     etl_dir = temp_root / "pipeline" / "scripts" / "etl"
-    (etl_dir / "layer3_compute_general_v3.py").write_text(SHIM, encoding="utf-8")
+    etl_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / LAYER3_SHIM_PATH, etl_dir / "layer3_compute_general_v3.py")
     services = temp_root / "pipeline" / "scripts" / "api" / "services.py"
     services.parent.mkdir(parents=True, exist_ok=True)
-    services.write_text(SERVICES_SHIM, encoding="utf-8")
+    shutil.copy2(ROOT / SERVICES_SHIM_PATH, services)
+
+
+def materialize_archive(mode: MaterializeMode = "git-show") -> Path:
+    temp_root = Path(tempfile.mkdtemp(prefix="jw-s6-archive-"))
+    for path in ARCHIVE_PATHS:
+        match mode:
+            case "git-show":
+                _write_archive_file(temp_root, path)
+            case "vendored":
+                _copy_vendored_file(temp_root, path)
+    _write_shims(temp_root)
     output_link = temp_root / "output"
     if output_link.exists():
         output_link.unlink()
     output_link.symlink_to(ROOT / "output", target_is_directory=True)
+    parquet_link = temp_root / "parquet"
+    if parquet_link.exists():
+        parquet_link.unlink()
+    parquet_link.symlink_to(ROOT / "parquet", target_is_directory=True)
     apply_target_4bucket_patch(temp_root, ROOT)
+    apply_cd_display_patch(temp_root, ROOT)
     return temp_root
+
+
+def materialize_vendored() -> Path:
+    return materialize_archive(mode="vendored")
 
 
 def build_env(target_db: str) -> dict[str, str]:
@@ -168,8 +119,9 @@ def run_archive_builders(
     *,
     smoke_market: str | None = None,
     cache_cause_mode: str = "full-all-brands",
+    mode: MaterializeMode = "git-show",
 ) -> list[BuilderResult]:
-    temp_root = materialize_archive()
+    temp_root = materialize_archive(mode=mode)
     try:
         env = build_env(target_db)
         results = [
@@ -189,3 +141,17 @@ def run_archive_builders(
         return results
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def run_vendored_builders(
+    target_db: str,
+    *,
+    smoke_market: str | None = None,
+    cache_cause_mode: str = "full-all-brands",
+) -> list[BuilderResult]:
+    return run_archive_builders(
+        target_db,
+        smoke_market=smoke_market,
+        cache_cause_mode=cache_cause_mode,
+        mode="vendored",
+    )
