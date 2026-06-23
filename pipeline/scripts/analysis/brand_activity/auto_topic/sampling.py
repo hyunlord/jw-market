@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 import hashlib
+from typing import Final
 
 from .models import BrandDescription, JsonValue, KeywordRow
 from .privacy import estimate_tokens
@@ -21,6 +22,7 @@ JW_ANCHORS = {
     "WINUF A PLUS",
     "JAQBO",
 }
+DEFAULT_BRANDS_PER_MARKET: Final = 7
 
 
 def deterministic_sample(rows: Sequence[KeywordRow], *, limit: int, seed: str) -> list[KeywordRow]:
@@ -30,11 +32,11 @@ def deterministic_sample(rows: Sequence[KeywordRow], *, limit: int, seed: str) -
 
 
 def choose_sample_brands(rows: Sequence[KeywordRow], *, known_anchors: set[str], max_brands: int) -> tuple[str, ...]:
-    """Pick up to seven measured brands, preferring top volume, JW anchor, and competitors."""
+    """Pick configured measured brands, preferring top volume, JW anchor, and competitors."""
     counts = Counter(row.brand for row in rows)
     if not counts:
         return ()
-    limit = max(1, min(7, max_brands, len(counts)))
+    limit = max(1, min(max_brands, len(counts)))
     selected: list[str] = [counts.most_common(1)[0][0]]
     anchor_candidates = [brand for brand in counts if brand in known_anchors and brand not in selected]
     if anchor_candidates and len(selected) < limit:

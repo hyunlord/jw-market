@@ -74,6 +74,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.reports import (  # noq
     report_payload,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.sampling import (  # noqa: E402
+    DEFAULT_BRANDS_PER_MARKET,
     build_market_samples,
     large_scopes_by_row_count,
 )
@@ -101,7 +102,7 @@ def main(
     axis_per_brand: int = typer.Option(12, "--axis-per-brand", min=3, max=40, help="Rows sampled per selected brand for market axes."),
     axis_rows_cap: int = typer.Option(240, "--axis-rows-cap", min=30, max=300, help="Hard cap for total sampled rows in each market-axis prompt."),
     brand_rows: int = typer.Option(15, "--brand-rows", min=3, max=60, help="Rows sampled per brand-share call."),
-    brands_per_market: int = typer.Option(7, "--brands-per-market", min=1, max=7, help="Sampled brands per market."),
+    brands_per_market: int = typer.Option(DEFAULT_BRANDS_PER_MARKET, "--brands-per-market", min=1, help="Configured brands per market; set high enough to include every keyword-bearing brand."),
     large_market_limit: int = typer.Option(3, "--large-market-limit", min=0, max=3, help="Large markets receiving Pro/Lite recheck."),
     full_rows: bool = typer.Option(True, "--full-rows/--capped-rows", help="Use all rows for selected scopes, with chunking/batching for GenOS calls."),
     axis_chunk_token_budget: int = typer.Option(8000, "--axis-chunk-token-budget", min=1000, max=20000, help="Estimated input-token cap for one market-axis chunk."),

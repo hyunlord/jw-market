@@ -62,6 +62,21 @@ def test_choose_sample_brands_caps_one_to_seven_and_prefers_anchor() -> None:
     assert selected == ("LIVALOZET", "ATOZET", "ROSUZET", "CRESTOR", "LIPITOR", "EZETROL", "MINOR1")
 
 
+def test_choose_sample_brands_allows_configured_limit_above_seven() -> None:
+    rows = [_row(i, "C10C0", "LIVALOZET") for i in range(10)]
+    rows += [_row(100 + i, "C10C0", "ATOZET") for i in range(9)]
+    rows += [_row(200 + i, "C10C0", "ROSUZET") for i in range(8)]
+    rows += [_row(300 + i, "C10C0", "CRESTOR") for i in range(7)]
+    rows += [_row(400 + i, "C10C0", "LIPITOR") for i in range(6)]
+    rows += [_row(500 + i, "C10C0", "EZETROL") for i in range(5)]
+    rows += [_row(600 + i, "C10C0", "MINOR1") for i in range(4)]
+    rows += [_row(700 + i, "C10C0", "MINOR2") for i in range(3)]
+
+    selected = choose_sample_brands(rows, known_anchors={"LIVALOZET"}, max_brands=20)
+
+    assert selected == ("LIVALOZET", "ATOZET", "ROSUZET", "CRESTOR", "LIPITOR", "EZETROL", "MINOR1", "MINOR2")
+
+
 def test_prompt_manifest_declares_single_concept_and_distinct_brand_topic_policy() -> None:
     manifest = prompt_template_manifest()
     label_policy = manifest["label_policy"]
