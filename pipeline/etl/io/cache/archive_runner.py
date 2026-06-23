@@ -7,16 +7,13 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from .archive_cd_display_patch import apply_cd_display_patch
 from .archive_target_4bucket_patch import apply_target_4bucket_patch
 
 ROOT = Path(__file__).resolve().parents[4]
-ARCHIVE_REF = "99a308b4c42c823870ea52868c0c8f9e1f1facb5"
 LAYER3_SHIM_PATH = "pipeline/scripts/etl/layer3_compute_general_v3.py"
 SERVICES_SHIM_PATH = "pipeline/etl/io/cache/archive_services_shim.py"
-MaterializeMode = Literal["git-show", "vendored"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,16 +41,6 @@ ARCHIVE_PATHS = (
 )
 
 
-def _git_show(path: str) -> bytes:
-    return subprocess.check_output(["git", "show", f"{ARCHIVE_REF}:{path}"], cwd=ROOT)
-
-
-def _write_archive_file(temp_root: Path, path: str) -> None:
-    destination = temp_root / path
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(_git_show(path))
-
-
 def _copy_vendored_file(temp_root: Path, path: str) -> None:
     destination = temp_root / path
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -69,14 +56,10 @@ def _write_shims(temp_root: Path) -> None:
     shutil.copy2(ROOT / SERVICES_SHIM_PATH, services)
 
 
-def materialize_archive(mode: MaterializeMode = "git-show") -> Path:
+def materialize_archive() -> Path:
     temp_root = Path(tempfile.mkdtemp(prefix="jw-s6-archive-"))
     for path in ARCHIVE_PATHS:
-        match mode:
-            case "git-show":
-                _write_archive_file(temp_root, path)
-            case "vendored":
-                _copy_vendored_file(temp_root, path)
+        _copy_vendored_file(temp_root, path)
     _write_shims(temp_root)
     output_link = temp_root / "output"
     if output_link.exists():
@@ -92,7 +75,7 @@ def materialize_archive(mode: MaterializeMode = "git-show") -> Path:
 
 
 def materialize_vendored() -> Path:
-    return materialize_archive(mode="vendored")
+    return materialize_archive()
 
 
 def build_env(target_db: str) -> dict[str, str]:
@@ -119,9 +102,8 @@ def run_archive_builders(
     *,
     smoke_market: str | None = None,
     cache_cause_mode: str = "full-all-brands",
-    mode: MaterializeMode = "git-show",
 ) -> list[BuilderResult]:
-    temp_root = materialize_archive(mode=mode)
+    temp_root = materialize_archive()
     try:
         env = build_env(target_db)
         results = [
@@ -153,5 +135,4 @@ def run_vendored_builders(
         target_db,
         smoke_market=smoke_market,
         cache_cause_mode=cache_cause_mode,
-        mode="vendored",
     )
