@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import json
 
 import pyarrow.parquet as pq
 
@@ -17,6 +18,18 @@ EXPECTED_ROW_COUNT = expected_int("cd_brand.row_count")
 
 def utc_now_datetime() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _parse_allowed_atc4_codes(value: Any) -> list[str]:
+    if value is None:
+        return []
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+        return []
+    parsed = json.loads(text)
+    if not isinstance(parsed, list):
+        raise ValueError(f"allowed_atc4_codes_json must be a JSON array: {text!r}")
+    return [str(item).strip().upper() for item in parsed if str(item).strip()]
 
 
 def recompute_cd_assignments(
@@ -34,21 +47,34 @@ def recompute_cd_assignments(
     for row in brand_rows:
         brand_id = str(row["brand_id"])
         context = contexts.get(brand_id)
-        if context is None:
-            mismatches.append({"brand_id": brand_id, "actual_cd_id": row.get("cd_id"), "recomputed_cd_id": None, "candidates": "", "reason": "missing_source_context"})
-            continue
-        match_context = {
-            "ml_id": row["ml_id"],
-            "atc4_code": context.get("atc4_code"),
-            "class": row.get("class"),
-            "molecule": row.get("molecule"),
-            "dosage_form": row.get("dosage_form"),
-            "nhi_type": row.get("nhi_type"),
-        }
-        recomputed_cd_id, candidates = strategic_brand.assign_cd_id(match_context, cd_markets_for_ml, filter_by_id)
+        atc4_codes = [context.get("atc4_code")] if context is not None else _parse_allowed_atc4_codes(row.get("allowed_atc4_codes_json"))
+        atc4_codes = [str(code).strip().upper() for code in atc4_codes if str(code or "").strip()]
+        if not atc4_codes:
+            atc4_codes = [None]
+        candidates: list[str] = []
+        recomputed_values: list[str] = []
+        for atc4_code in atc4_codes:
+            match_context = {
+                "ml_id": row["ml_id"],
+                "atc4_code": atc4_code,
+                "class": row.get("class"),
+                "molecule": row.get("molecule"),
+                "dosage_form": row.get("dosage_form"),
+                "nhi_type": row.get("nhi_type"),
+            }
+            recomputed_cd_id, row_candidates = strategic_brand.assign_cd_id(match_context, cd_markets_for_ml, filter_by_id)
+            if recomputed_cd_id is not None and recomputed_cd_id not in recomputed_values:
+                recomputed_values.append(recomputed_cd_id)
+            for candidate in row_candidates:
+                if candidate not in candidates:
+                    candidates.append(candidate)
         actual_cd_id = row.get("cd_id")
-        if actual_cd_id != recomputed_cd_id or len(candidates) > 1:
-            mismatches.append({"brand_id": brand_id, "actual_cd_id": actual_cd_id, "recomputed_cd_id": recomputed_cd_id, "candidates": ",".join(candidates), "reason": "q51_vs_cd_filter_mismatch"})
+        if actual_cd_id is None:
+            if recomputed_values or len(candidates) > 1:
+                mismatches.append({"brand_id": brand_id, "actual_cd_id": actual_cd_id, "recomputed_cd_id": ",".join(recomputed_values), "candidates": ",".join(candidates), "reason": "q51_vs_cd_filter_mismatch"})
+            continue
+        if actual_cd_id not in recomputed_values or len(candidates) > 1:
+            mismatches.append({"brand_id": brand_id, "actual_cd_id": actual_cd_id, "recomputed_cd_id": ",".join(recomputed_values), "candidates": ",".join(candidates), "reason": "q51_vs_cd_filter_mismatch"})
     return mismatches
 
 
@@ -80,8 +106,8 @@ def load_cd_brand_records(
 
 
 def validate_records(records: list[dict[str, Any]], cd_market_rows: list[dict[str, Any]]) -> None:
-    if len(records) != EXPECTED_ROW_COUNT:
-        raise ValueError(f"cd_brand row count must be {EXPECTED_ROW_COUNT}, found={len(records)}")
+    if len(records) < EXPECTED_ROW_COUNT:
+        raise ValueError(f"cd_brand row count must be at least {EXPECTED_ROW_COUNT}, found={len(records)}")
     expected_columns = tuple(strategic_brand.EXPECTED_COLUMNS)
     cd_ids = {str(row["cd_id"]) for row in cd_market_rows}
     brand_ids = [str(row["brand_id"]) for row in records]
@@ -106,5 +132,5 @@ def validate_written_parquet(output_file: Path) -> None:
     table = pq.read_table(output_file)
     if table.schema != strategic_brand.STRATEGIC_BRAND_SCHEMA:
         raise ValueError(f"written schema mismatch:\nexpected={strategic_brand.STRATEGIC_BRAND_SCHEMA}\nactual={table.schema}")
-    if table.num_rows != EXPECTED_ROW_COUNT:
-        raise ValueError(f"written row count mismatch: {table.num_rows}")
+    if table.num_rows < EXPECTED_ROW_COUNT:
+        raise ValueError(f"written row count below baseline {EXPECTED_ROW_COUNT}: {table.num_rows}")

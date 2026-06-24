@@ -23,6 +23,10 @@ from pipeline.etl.io.catalog.brand.strategic_brand_logic import (
     source_version_from_ml_market,
     strategic_fields,
 )
+from pipeline.etl.io.catalog.brand.strategic_atc4_expansion import (
+    RawAtc4Brand,
+    load_raw_atc4_brands,
+)
 from pipeline.etl.io.catalog.brand.strategic_brand_schema import EXPECTED_COLUMNS, MERGE_NAME_BY_NAME
 from pipeline.etl.io.catalog.brand.strategic_brand_schema import validate_records
 
@@ -33,12 +37,91 @@ DEFAULT_CATALOG_PATH = PROJECT_ROOT / "pipeline" / "etl" / "config" / "master_co
 def utc_now_datetime() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+
+def _source_row_id_from_brand_id(brand_id: Any) -> int:
+    try:
+        return int(str(brand_id).rsplit("_", 1)[1])
+    except (IndexError, TypeError, ValueError):
+        return 0
+
+
+def _assign_cd_id_for_atc4_codes(
+    *,
+    ml_id: str,
+    atc4_codes: list[str],
+    cd_markets_for_ml: dict[str, list[dict[str, Any]]],
+    filter_by_id: dict[str, dict[str, Any]],
+) -> tuple[str | None, list[str]]:
+    candidates: list[str] = []
+    for atc4_code in atc4_codes:
+        match_context = {
+            "ml_id": ml_id,
+            "atc4_code": atc4_code,
+            "class": None,
+            "molecule": None,
+            "dosage_form": None,
+            "nhi_type": None,
+        }
+        _cd_id, row_candidates = assign_cd_id(match_context, cd_markets_for_ml, filter_by_id)
+        for candidate in row_candidates:
+            if candidate not in candidates:
+                candidates.append(candidate)
+    if len(candidates) == 1:
+        return candidates[0], candidates
+    return None, candidates
+
+
+def _expanded_record(
+    *,
+    ml_index: int,
+    ml_id: str,
+    seq: int,
+    raw_brand: RawAtc4Brand,
+    source_file_version: str,
+    ingested_at: datetime,
+    cd_markets_for_ml: dict[str, list[dict[str, Any]]],
+    filter_by_id: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    atc4_codes = sorted(raw_brand.atc4_codes)
+    cd_id, candidates = _assign_cd_id_for_atc4_codes(
+        ml_id=ml_id,
+        atc4_codes=atc4_codes,
+        cd_markets_for_ml=cd_markets_for_ml,
+        filter_by_id=filter_by_id,
+    )
+    record = {
+        "brand_id": f"sb_{ml_index:03d}_atc4_{seq:05d}",
+        "name": raw_brand.name,
+        "merge_name": MERGE_NAME_BY_NAME.get(raw_brand.name, raw_brand.name),
+        "ml_id": ml_id,
+        "cd_id": cd_id,
+        "is_excluded": False,
+        "is_class_excluded": False,
+        "allowed_atc4_codes_json": dumps_json_array(atc4_codes),
+        "class": None,
+        "class_1": None,
+        "class_2": None,
+        "molecule": None,
+        "dosage_form": None,
+        "strength_pack": None,
+        "nhi_type": None,
+        "ox_gx": None,
+        "fish_oil": None,
+        "판매사": None,
+        "제조사": None,
+        "source_file_version": source_file_version,
+        "ingested_at": ingested_at,
+    }
+    return {column: record.get(column) for column in EXPECTED_COLUMNS}, candidates
+
 def load_strategic_brand_records(
     ml_market_path: Path,
     cd_filter_path: Path,
     cd_market_path: Path,
     input_file: Path | None = None,
     catalog_path: Path | None = None,
+    ubist_dir: Path | None = None,
+    iqvia_nsa_dir: Path | None = None,
     ingested_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     xlsx_path = master_drug.resolve_input_file(input_file or master_drug.DEFAULT_INPUT_FILE)
@@ -55,6 +138,11 @@ def load_strategic_brand_records(
 
     timestamp = ingested_at or utc_now_datetime()
     source_file_version = source_version_from_ml_market(ml_rows)
+    raw_atc4_brands, raw_atc4_stats = load_raw_atc4_brands(
+        ml_rows,
+        ubist_dir=ubist_dir or (PROJECT_ROOT / "output" / "ubist"),
+        iqvia_nsa_dir=iqvia_nsa_dir or (PROJECT_ROOT / "output" / "iqvia_nsa"),
+    )
     records: list[dict[str, Any]] = []
     gadrelet_rows: list[dict[str, Any]] = []
     stats = {
@@ -65,6 +153,11 @@ def load_strategic_brand_records(
         "nullified_cells": Counter(),
         "overlap_rows": [],
         "unknown_name_rows": [],
+        "sheet_included_rows": Counter(),
+        "expanded_atc4_rows": Counter(),
+        "expanded_atc4_new_rows": Counter(),
+        "expanded_atc4_skipped_sheet_keys": Counter(),
+        "raw_atc4_sources": raw_atc4_stats,
     }
 
     wb = load_workbook(xlsx_path, read_only=True, data_only=True)
@@ -92,6 +185,7 @@ def load_strategic_brand_records(
                 raise ValueError(f"{config.strategic_market_id} missing ml_market FK: {ml_id}")
 
             allowed_atc4_by_name: dict[str, set[str]] = defaultdict(set)
+            sheet_name_keys: set[str] = set()
             for source_row_id, values in row_items:
                 if master_drug.is_empty_row(values):
                     continue
@@ -115,10 +209,15 @@ def load_strategic_brand_records(
                 if source_row_id in explicit_overrides:
                     standard_values.update(explicit_overrides[source_row_id])
                 name = make_name(standard_values, config.strategic_market_id, source_row_id)
+                sheet_name_keys.add(normalize_for_match(name))
                 fields = strategic_fields(standard_values, extras, strategic_market_id=config.strategic_market_id)
                 atc4_code = extract_atc_code(fields.get("atc4_code"))
                 if atc4_code:
                     allowed_atc4_by_name[normalize_for_match(name)].add(atc4_code)
+            for raw_brand in raw_atc4_brands.get(ml_id, {}).values():
+                sheet_key = normalize_for_match(raw_brand.name)
+                if sheet_key in sheet_name_keys:
+                    allowed_atc4_by_name[sheet_key].update(raw_brand.atc4_codes)
 
             for source_row_id, values in row_items:
                 stats["raw_rows_scanned"][config.strategic_market_id] += 1
@@ -203,6 +302,7 @@ def load_strategic_brand_records(
                         stats["nullified_cells"][column] += 1
                 records.append({column: record.get(column) for column in EXPECTED_COLUMNS})
                 stats["included_rows"][config.strategic_market_id] += 1
+                stats["sheet_included_rows"][config.strategic_market_id] += 1
 
                 if config.strategic_market_id == "strategy_003":
                     gadrelet_rows.append(
@@ -217,6 +317,35 @@ def load_strategic_brand_records(
                             "cd_id": cd_id,
                         }
                     )
+            expanded_seq = 0
+            for raw_key, raw_brand in sorted(raw_atc4_brands.get(ml_id, {}).items(), key=lambda item: item[0]):
+                if normalize_for_match(raw_brand.name) in sheet_name_keys:
+                    stats["expanded_atc4_skipped_sheet_keys"][config.strategic_market_id] += 1
+                    continue
+                expanded_seq += 1
+                record, candidates = _expanded_record(
+                    ml_index=ml_index,
+                    ml_id=ml_id,
+                    seq=expanded_seq,
+                    raw_brand=raw_brand,
+                    source_file_version=source_file_version,
+                    ingested_at=timestamp,
+                    cd_markets_for_ml=cd_markets_for_ml,
+                    filter_by_id=filter_by_id,
+                )
+                if len(candidates) > 1:
+                    stats["overlap_rows"].append(
+                        {
+                            "strategic_market_id": config.strategic_market_id,
+                            "source_row_id": _source_row_id_from_brand_id(record["brand_id"]),
+                            "name": record["name"],
+                            "candidates": ",".join(candidates),
+                        }
+                    )
+                records.append(record)
+                stats["included_rows"][config.strategic_market_id] += 1
+                stats["expanded_atc4_rows"][config.strategic_market_id] += 1
+                stats["expanded_atc4_new_rows"][config.strategic_market_id] += 1
     finally:
         wb.close()
 

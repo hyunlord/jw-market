@@ -119,14 +119,14 @@ def apply_molecule_worklist(catalog_dir: Path, worklist_path: Path) -> dict[str,
     cb_path = catalog_dir / "cd_brand" / "cd_brand.parquet"
     cp_path = catalog_dir / "cd_product" / "cd_product.parquet"
     df_sb, update_sb, setnull_sb = apply_level(pd.read_parquet(sb_path), rows, level="ml")
-    if len(df_sb) != EXPECTED_SB_ROWS:
-        raise RuntimeError(f"strategic_brand row count != {EXPECTED_SB_ROWS}: {len(df_sb)}")
+    if len(df_sb) < EXPECTED_SB_ROWS:
+        raise RuntimeError(f"strategic_brand row count below baseline {EXPECTED_SB_ROWS}: {len(df_sb)}")
     if (update_sb, setnull_sb) != EXPECTED_SB_ACTIONS:
         raise RuntimeError(f"strategic_brand action counts mismatch: {(update_sb, setnull_sb)}")
     df_sp, update_sp, setnull_sp = apply_product_level(pd.read_parquet(sp_path), rows, level="ml", brand_df=df_sb)
     df_cb, update_cb, setnull_cb = apply_level(pd.read_parquet(cb_path), rows, level="cd")
-    if len(df_cb) != EXPECTED_CB_ROWS:
-        raise RuntimeError(f"cd_brand row count != {EXPECTED_CB_ROWS}: {len(df_cb)}")
+    if len(df_cb) < EXPECTED_CB_ROWS:
+        raise RuntimeError(f"cd_brand row count below baseline {EXPECTED_CB_ROWS}: {len(df_cb)}")
     if (update_cb, setnull_cb) != EXPECTED_CB_ACTIONS:
         raise RuntimeError(f"cd_brand action counts mismatch: {(update_cb, setnull_cb)}")
     df_cp, update_cp, setnull_cp = apply_product_level(pd.read_parquet(cp_path), rows, level="cd", brand_df=df_cb)

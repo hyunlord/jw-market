@@ -80,8 +80,8 @@ def validate_records(
     ml_rows: list[dict[str, Any]],
     cd_market_rows: list[dict[str, Any]],
 ) -> None:
-    if len(records) != EXPECTED_ROW_COUNT:
-        raise ValueError(f"strategic_brand row count must be {EXPECTED_ROW_COUNT}, found={len(records)}")
+    if len(records) < EXPECTED_ROW_COUNT:
+        raise ValueError(f"strategic_brand row count must be at least {EXPECTED_ROW_COUNT}, found={len(records)}")
     for index, record in enumerate(records, start=1):
         if tuple(record.keys()) != EXPECTED_COLUMNS:
             raise ValueError(
@@ -102,7 +102,7 @@ def validate_records(
             raise ValueError(f"{record['brand_id']} missing cd FK: {record['cd_id']}")
 
     stats = summary["stats"]
-    included_counts = dict(sorted(stats["included_rows"].items()))
+    included_counts = dict(sorted(stats.get("sheet_included_rows", stats["included_rows"]).items()))
     expected_by_smid = {
         f"strategy_{index:03d}": EXPECTED_ML_COUNTS[f"ml_{index:03d}"]
         for index in range(1, 17)
@@ -116,7 +116,7 @@ def validate_records(
     strict_excluded = sum(1 for record in records if record.get("is_excluded") is True)
     if strict_excluded != EXPECTED_EXCLUDED_ROWS:
         raise ValueError(f"is_excluded rows must be {EXPECTED_EXCLUDED_ROWS}, found={strict_excluded}")
-    if sum(stats["included_rows"].values()) - sum(stats["excluded_rows"].values()) != EXPECTED_STAGING_ROWS:
+    if sum(stats.get("sheet_included_rows", stats["included_rows"]).values()) - sum(stats["excluded_rows"].values()) != EXPECTED_STAGING_ROWS:
         raise ValueError(f"included - strict_excluded must equal Phase 12 master_drug {EXPECTED_STAGING_ROWS} rows")
     if stats["overlap_rows"]:
         raise ValueError(f"Q-51 overlap rows found: {stats['overlap_rows'][:5]}")
@@ -124,8 +124,13 @@ def validate_records(
         raise ValueError(f"unknown brand name fallback rows found: {stats['unknown_name_rows'][:5]}")
 
     ml_counts = dict(sorted(Counter(record["ml_id"] for record in records).items()))
-    if ml_counts != EXPECTED_ML_COUNTS:
-        raise ValueError(f"ml distribution mismatch: expected={EXPECTED_ML_COUNTS}, actual={ml_counts}")
+    below_baseline = {
+        ml_id: {"expected_min": expected, "actual": ml_counts.get(ml_id, 0)}
+        for ml_id, expected in EXPECTED_ML_COUNTS.items()
+        if ml_counts.get(ml_id, 0) < expected
+    }
+    if below_baseline:
+        raise ValueError(f"ml distribution below sheet baseline: {below_baseline}")
 
     merge_groups = defaultdict(set)
     for record in records:

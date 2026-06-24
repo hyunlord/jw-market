@@ -26,5 +26,5 @@ def validate_written_parquet(output_file: Path) -> None:
     table = pq.read_table(output_file)
     if table.schema != STRATEGIC_BRAND_SCHEMA:
         raise ValueError(f"written schema mismatch:\nexpected={STRATEGIC_BRAND_SCHEMA}\nactual={table.schema}")
-    if table.num_rows != EXPECTED_ROW_COUNT:
-        raise ValueError(f"written row count mismatch: {table.num_rows}")
+    if table.num_rows < EXPECTED_ROW_COUNT:
+        raise ValueError(f"written row count below baseline {EXPECTED_ROW_COUNT}: {table.num_rows}")

@@ -49,6 +49,8 @@ def run_strategic_brand(
     output_root: Path = PROJECT_ROOT,
     input_file: Path | None = None,
     catalog_path: Path | None = None,
+    ubist_dir: Path | None = None,
+    iqvia_nsa_dir: Path | None = None,
     ingested_at: str | datetime | None = None,
 ) -> BrandProductCatalogResult:
     ml_market = _output(output_root, "parquet/ml_market/ml_market.parquet")
@@ -62,6 +64,8 @@ def run_strategic_brand(
         cd_market,
         input_file=input_file,
         catalog_path=catalog_path,
+        ubist_dir=ubist_dir or _output(output_root, "output/ubist"),
+        iqvia_nsa_dir=iqvia_nsa_dir or _output(output_root, "output/iqvia_nsa"),
         ingested_at=_ingested_at(ingested_at),
     )
     strategic_brand.write_parquet(records, output_path)
@@ -168,6 +172,8 @@ def run_brand_product_catalog(
             output_root=output_root,
             input_file=input_file,
             catalog_path=catalog_path,
+            ubist_dir=ubist_dir,
+            iqvia_nsa_dir=iqvia_nsa_dir,
             ingested_at=ingested_at,
         ),
         run_strategic_product(

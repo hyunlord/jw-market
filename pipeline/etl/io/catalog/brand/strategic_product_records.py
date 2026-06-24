@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import json
 
 from pipeline.etl.io.catalog._lib.common import read_parquet_rows
 from pipeline.etl.io.catalog.brand.strategic_product_context import load_context_by_brand_id
@@ -15,6 +16,52 @@ from pipeline.etl.io.catalog.brand.strategic_product_schema import validate_reco
 
 def utc_now_datetime() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _parse_allowed_atc4_codes(value: Any) -> list[str]:
+    if value is None:
+        return []
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+        return []
+    parsed = json.loads(text)
+    if not isinstance(parsed, list):
+        raise ValueError(f"allowed_atc4_codes_json must be a JSON array: {text!r}")
+    return [str(item).strip().upper() for item in parsed if str(item).strip()]
+
+
+def context_from_brand_row(brand_row: dict[str, Any]) -> dict[str, Any] | None:
+    atc4_codes = _parse_allowed_atc4_codes(brand_row.get("allowed_atc4_codes_json"))
+    if not atc4_codes:
+        return None
+    ml_id = str(brand_row["ml_id"])
+    try:
+        strategic_market_id = f"strategy_{int(ml_id.split('_', 1)[1]):03d}"
+    except (IndexError, ValueError):
+        strategic_market_id = ml_id
+    return {
+        "strategic_market_id": strategic_market_id,
+        "source_row_id": source_row_id_from_brand_id(str(brand_row["brand_id"])),
+        "atc4_code": atc4_codes[0],
+        "product_name": brand_row.get("name"),
+        "manufacturer": brand_row.get("제조사"),
+        "seller": brand_row.get("판매사"),
+        "pack_desc": brand_row.get("strength_pack"),
+        "strength": brand_row.get("strength_pack"),
+        "molecule": brand_row.get("molecule"),
+        "class": brand_row.get("class"),
+        "dosage_form": brand_row.get("dosage_form"),
+        "nhi_type": brand_row.get("nhi_type"),
+        "ox_gx": brand_row.get("ox_gx"),
+        "fish_oil": brand_row.get("fish_oil"),
+    }
+
+
+def _product_id_prefix(brand_id: str) -> str:
+    ml_index = ml_index_from_brand_id(brand_id)
+    if "_atc4_" in brand_id:
+        return f"sp_{ml_index:03d}_atc4_{source_row_id_from_brand_id(brand_id):05d}"
+    return f"sp_{ml_index:03d}_{source_row_id_from_brand_id(brand_id):05d}"
 
 def product_record_from_candidate(
     brand_row: dict[str, Any],
@@ -131,7 +178,7 @@ def load_strategic_product_records(
 
     for brand_row in brand_rows:
         brand_id = str(brand_row["brand_id"])
-        context = contexts.get(brand_id)
+        context = contexts.get(brand_id) or context_from_brand_row(brand_row)
         if context is None:
             raise ValueError(f"missing source context for brand_id={brand_id}")
         data_source = str(ml_by_id[str(brand_row["ml_id"])]["data_source"])
@@ -140,7 +187,7 @@ def load_strategic_product_records(
         source_views: list[str] = []
 
         if is_sheet_product_grain(brand_row, context):
-            product_id = f"sp_{ml_index_from_brand_id(brand_id):03d}_{source_row_id_from_brand_id(brand_id):05d}_001"
+            product_id = f"{_product_id_prefix(brand_id)}_001"
             records.append(product_record_from_sheet_product(brand_row, product_id, timestamp))
             match_status = "sheet_product"
             matched_count = 1
@@ -166,7 +213,7 @@ def load_strategic_product_records(
             )
 
             if not matched_candidates:
-                product_id = f"sp_{ml_index_from_brand_id(brand_id):03d}_{source_row_id_from_brand_id(brand_id):05d}_001"
+                product_id = f"{_product_id_prefix(brand_id)}_001"
                 records.append(
                     product_record_from_candidate(brand_row, context, None, product_id, timestamp)
                 )
@@ -176,8 +223,7 @@ def load_strategic_product_records(
             else:
                 for seq, candidate in enumerate(matched_candidates, start=1):
                     product_id = (
-                        f"sp_{ml_index_from_brand_id(brand_id):03d}_"
-                        f"{source_row_id_from_brand_id(brand_id):05d}_{seq:03d}"
+                        f"{_product_id_prefix(brand_id)}_{seq:03d}"
                     )
                     records.append(
                         product_record_from_candidate(brand_row, context, candidate, product_id, timestamp)

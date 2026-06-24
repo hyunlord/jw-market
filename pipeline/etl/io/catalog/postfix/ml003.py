@@ -77,6 +77,7 @@ def build_fixed_catalog(strategic_brand_path: Path, raw_path: Path, limit_per_mo
     keep = catalog.loc[catalog["ml_id"].astype(str) != ML_ID].copy()
     jw_rows = ml003.loc[ml003["is_jw"].astype(bool)].copy()
     non_jw = ml003.loc[~ml003["is_jw"].astype(bool)].copy()
+    atc4_expanded_rows = non_jw.loc[non_jw["brand_id"].astype(str).str.contains("_atc4_", na=False)].copy()
     jw_keys = {normalize_brand_name(name) for name in jw_rows["name"].astype(str)}
     mapping = raw_brand_mapping(raw_path, strategic_brand_path)
     new_rows: list[dict[str, Any]] = []
@@ -111,8 +112,16 @@ def build_fixed_catalog(strategic_brand_path: Path, raw_path: Path, limit_per_mo
             if str(record.get("molecule")).upper() == "TIRZEPATIDE":
                 record["class"] = "GLP-1RA"
             new_rows.append(record)
-    fixed = pd.concat([keep, jw_rows, pd.DataFrame(new_rows, columns=catalog.columns)], ignore_index=True)
-    stats = {"raw_path": str(raw_path), "old_ml003_rows": len(ml003), "old_non_jw_rows": len(non_jw), "new_non_jw_rows": len(new_rows), "skipped_molecules": sorted(set(skipped)), "total_rows": len(fixed)}
+    fixed = pd.concat([keep, jw_rows, pd.DataFrame(new_rows, columns=catalog.columns), atc4_expanded_rows], ignore_index=True)
+    stats = {
+        "raw_path": str(raw_path),
+        "old_ml003_rows": len(ml003),
+        "old_non_jw_rows": len(non_jw),
+        "new_non_jw_rows": len(new_rows),
+        "preserved_atc4_expanded_rows": len(atc4_expanded_rows),
+        "skipped_molecules": sorted(set(skipped)),
+        "total_rows": len(fixed),
+    }
     return fixed, stats
 
 
