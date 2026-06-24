@@ -22,7 +22,7 @@ from pipeline.etl.io.mart.molecule_bridge import build_molecule_bridge
 from pipeline.etl.io.mart.strategic_constants import ML_MARKET_COLUMNS
 from pipeline.etl.lib.ops_utils import first_existing
 from pipeline.etl.stages import s4_mart, s5_mart
-from pipeline.scripts.deploy.mart_load_verify import quote_id, table_digest, table_exists
+from pipeline.scripts.deploy.mart_load_verify import quote_id, table_exists
 
 
 MART_TABLES = (
@@ -304,7 +304,7 @@ def _publish_one(
         raise RuntimeError(f"build table missing: {build_db}.{table_name}")
     with conn.cursor() as cur:
         cur.execute(f"CREATE DATABASE IF NOT EXISTS {quote_id(target_db)} DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-    build_rows = table_digest(conn, build_db, table_name).row_count
+    build_rows = _table_row_count(conn, build_db, table_name)
     if not table_exists(conn, target_db, table_name):
         _copy_table(conn, build_db, target_db, table_name, table_name)
         return PublishAction(table_name, "create", table_name, None, build_rows)
@@ -313,7 +313,7 @@ def _publish_one(
     if table_exists(conn, target_db, new_table) or table_exists(conn, target_db, backup_table):
         raise RuntimeError(f"publish scratch table already exists for run_id={run_id}: {table_name}")
     _copy_table(conn, build_db, target_db, table_name, new_table)
-    copied_rows = table_digest(conn, target_db, new_table).row_count
+    copied_rows = _table_row_count(conn, target_db, new_table)
     if copied_rows != build_rows:
         raise RuntimeError(f"{target_db}.{new_table} row count mismatch after copy: {copied_rows} != {build_rows}")
     with conn.cursor() as cur:
@@ -330,8 +330,11 @@ def _copy_table(
     target_db: str,
     source_table: str,
     target_table: str,
-    batch_size: int = 250,
+    batch_size: int = 200,
 ) -> None:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    effective_batch_size = min(batch_size, 200)
     with conn.cursor() as cur:
         cur.execute(
             f"CREATE TABLE {quote_id(target_db)}.{quote_id(target_table)} "
@@ -340,11 +343,15 @@ def _copy_table(
     columns = _ordered_columns(conn, source_db, source_table)
     column_sql = ",".join(quote_id(column) for column in columns)
     if "id" not in columns:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO {quote_id(target_db)}.{quote_id(target_table)} ({column_sql}) "
-                f"SELECT {column_sql} FROM {quote_id(source_db)}.{quote_id(source_table)}"
-            )
+        _copy_table_without_id(
+            conn,
+            source_db,
+            target_db,
+            source_table,
+            target_table,
+            columns,
+            effective_batch_size,
+        )
         return
 
     bounds = _id_bounds(conn, source_db, source_table)
@@ -352,8 +359,8 @@ def _copy_table(
         return
     min_id, max_id = bounds
     with conn.cursor() as cur:
-        for lower in range(min_id, max_id + 1, batch_size):
-            upper = lower + batch_size - 1
+        for lower in range(min_id, max_id + 1, effective_batch_size):
+            upper = lower + effective_batch_size - 1
             cur.execute(
                 f"INSERT INTO {quote_id(target_db)}.{quote_id(target_table)} ({column_sql}) "
                 f"SELECT {column_sql} FROM {quote_id(source_db)}.{quote_id(source_table)} "
@@ -362,10 +369,109 @@ def _copy_table(
             )
 
 
+def _copy_table_without_id(
+    conn: pymysql.connections.Connection,
+    source_db: str,
+    target_db: str,
+    source_table: str,
+    target_table: str,
+    columns: list[str],
+    batch_size: int,
+) -> None:
+    source_rows = _table_row_count(conn, source_db, source_table)
+    if source_rows == 0:
+        return
+    order_columns = _primary_key_columns(conn, source_db, source_table) or columns
+    if order_columns != columns:
+        _copy_table_by_keyset(
+            conn,
+            source_db,
+            target_db,
+            source_table,
+            target_table,
+            columns,
+            order_columns,
+            batch_size,
+        )
+        return
+    column_sql = ",".join(quote_id(column) for column in columns)
+    order_sql = ",".join(quote_id(column) for column in order_columns)
+    with conn.cursor() as cur:
+        for offset in range(0, source_rows, batch_size):
+            cur.execute(
+                f"INSERT INTO {quote_id(target_db)}.{quote_id(target_table)} ({column_sql}) "
+                f"SELECT {column_sql} FROM {quote_id(source_db)}.{quote_id(source_table)} "
+                f"ORDER BY {order_sql} LIMIT {batch_size} OFFSET {offset}"
+            )
+
+
+def _copy_table_by_keyset(
+    conn: pymysql.connections.Connection,
+    source_db: str,
+    target_db: str,
+    source_table: str,
+    target_table: str,
+    columns: list[str],
+    key_columns: list[str],
+    batch_size: int,
+) -> None:
+    column_sql = ",".join(quote_id(column) for column in columns)
+    key_sql = ",".join(quote_id(column) for column in key_columns)
+    order_sql = ",".join(quote_id(column) for column in key_columns)
+    value_placeholders = ",".join(["%s"] * len(columns))
+    last_key: tuple[Any, ...] | None = None
+    while True:
+        where_sql, where_params = _keyset_after_clause(key_columns, last_key)
+        select_sql = (
+            f"SELECT {column_sql} FROM {quote_id(source_db)}.{quote_id(source_table)} "
+            f"{where_sql} ORDER BY {order_sql} LIMIT {batch_size}"
+        )
+        with conn.cursor() as cur:
+            cur.execute(select_sql, where_params)
+            rows = cur.fetchall()
+        if not rows:
+            return
+        values = [tuple(row[column] for column in columns) for row in rows]
+        with conn.cursor() as cur:
+            cur.executemany(
+                f"INSERT INTO {quote_id(target_db)}.{quote_id(target_table)} ({column_sql}) "
+                f"VALUES ({value_placeholders})",
+                values,
+            )
+        last_key = tuple(rows[-1][column] for column in key_columns)
+
+
+def _keyset_after_clause(key_columns: list[str], last_key: tuple[Any, ...] | None) -> tuple[str, tuple[Any, ...]]:
+    if last_key is None:
+        return "", ()
+    comparisons: list[str] = []
+    params: list[Any] = []
+    for index, column in enumerate(key_columns):
+        parts = [f"{quote_id(previous)} = %s" for previous in key_columns[:index]]
+        parts.append(f"{quote_id(column)} > %s")
+        comparisons.append("(" + " AND ".join(parts) + ")")
+        params.extend(last_key[:index])
+        params.append(last_key[index])
+    return "WHERE " + " OR ".join(comparisons), tuple(params)
+
+
 def _ordered_columns(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> list[str]:
     with conn.cursor() as cur:
         cur.execute(f"SHOW COLUMNS FROM {quote_id(db_name)}.{quote_id(table_name)}")
         return [str(row["Field"]) for row in cur.fetchall()]
+
+
+def _primary_key_columns(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(f"SHOW COLUMNS FROM {quote_id(db_name)}.{quote_id(table_name)}")
+        return [str(row["Field"]) for row in cur.fetchall() if str(row["Key"]) == "PRI"]
+
+
+def _table_row_count(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS row_count FROM {quote_id(db_name)}.{quote_id(table_name)}")
+        row = cur.fetchone()
+    return int(row["row_count"])
 
 
 def _id_bounds(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> tuple[int, int] | None:

@@ -139,6 +139,99 @@ def test_copy_table_batches_by_id(monkeypatch) -> None:
     assert all("WHERE id BETWEEN %s AND %s" in sql for sql, _ in executed[1:])
 
 
+def test_copy_table_batches_no_id_by_primary_key(monkeypatch) -> None:
+    executed: list[tuple[str, object]] = []
+    key_batches = [
+        [
+            {"brand": "a", "market_id": "m1", "response_json": None},
+            {"brand": "b", "market_id": "m1", "response_json": None},
+        ],
+        [{"brand": "c", "market_id": "m2", "response_json": None}],
+        [],
+    ]
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: object = None) -> None:
+            executed.append((sql, params))
+
+        def executemany(self, sql: str, params: object = None) -> None:
+            executed.append((sql, params))
+
+        def fetchall(self) -> list[dict[str, str]]:
+            return key_batches.pop(0)
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["brand", "market_id", "response_json"])
+    monkeypatch.setattr(mart_load_ops, "_primary_key_columns", lambda *args: ["brand", "market_id"])
+    monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: 5)
+
+    mart_load_ops._copy_table(Connection(), "build_db", "target_db", "source_table", "target_table", batch_size=2)
+
+    statements = [sql for sql, _ in executed]
+    params = [params for _, params in executed]
+    assert "CREATE TABLE" in statements[0]
+    assert statements[1].startswith("SELECT `brand`,`market_id`,`response_json`")
+    assert statements[1].endswith("ORDER BY `brand`,`market_id` LIMIT 2")
+    assert statements[2] == (
+        "INSERT INTO `target_db`.`target_table` (`brand`,`market_id`,`response_json`) "
+        "VALUES (%s,%s,%s)"
+    )
+    assert statements[3].endswith("WHERE (`brand` > %s) OR (`brand` = %s AND `market_id` > %s) ORDER BY `brand`,`market_id` LIMIT 2")
+    assert statements[4] == (
+        "INSERT INTO `target_db`.`target_table` (`brand`,`market_id`,`response_json`) "
+        "VALUES (%s,%s,%s)"
+    )
+    assert params[2] == [("a", "m1", None), ("b", "m1", None)]
+    assert params[3] == ("b", "b", "m1")
+    assert params[4] == [("c", "m2", None)]
+
+
+def test_copy_table_caps_no_id_batch_size_at_200(monkeypatch) -> None:
+    executed: list[tuple[str, object]] = []
+    key_batches = [[{"query_key": str(index)} for index in range(200)], []]
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: object = None) -> None:
+            executed.append((sql, params))
+
+        def executemany(self, sql: str, params: object = None) -> None:
+            executed.append((sql, params))
+
+        def fetchall(self) -> list[dict[str, str]]:
+            keys = key_batches.pop(0)
+            return [{"query_key": row["query_key"], "response_json": None} for row in keys]
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["query_key", "response_json"])
+    monkeypatch.setattr(mart_load_ops, "_primary_key_columns", lambda *args: ["query_key"])
+    monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: 450)
+
+    mart_load_ops._copy_table(Connection(), "build_db", "target_db", "source_table", "target_table", batch_size=500)
+
+    statements = [sql for sql, _ in executed]
+    assert statements[1].endswith("ORDER BY `query_key` LIMIT 200")
+    assert "INSERT INTO `target_db`.`target_table`" in statements[2]
+    assert statements[3].endswith("WHERE (`query_key` > %s) ORDER BY `query_key` LIMIT 200")
+
+
 def test_direct_import_manifest_verifies_canonical_digest(monkeypatch) -> None:
     manifest = {
         "tables": [
