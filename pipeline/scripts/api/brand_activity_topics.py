@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Final, TypeAlias
+from typing import Any, Final, TypeAlias
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.config import config
 
 
-JsonValue: TypeAlias = "None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]"
+JsonValue: TypeAlias = Any
 
 
 TOPICS_TABLE: Final = "mart_brand_activity_topics"
