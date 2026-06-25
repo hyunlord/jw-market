@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import json
-from typing import Any, Final
+from typing import Any, Final, TypeAlias
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 
 
-type JsonMap = dict[str, Any]
+JsonMap: TypeAlias = dict[str, Any]
 
 RX_MEASURES: Final[tuple[str, ...]] = ("unit", "counting_unit", "dosage_unit")
 PUBLIC_MEASURES: Final[tuple[str, ...]] = ("activity", *RX_MEASURES)
