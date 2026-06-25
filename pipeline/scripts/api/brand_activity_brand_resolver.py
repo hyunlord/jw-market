@@ -66,7 +66,7 @@ class BrandSetResolution:
 def resolve_brand_set(
     *,
     view_name: str,
-    market_id: str,
+    market_id: str | None,
     selected_brand: str,
     filter_payload: Mapping[str, Any] | None = None,
     ranking_quarters: Sequence[str] | None = None,
@@ -74,22 +74,28 @@ def resolve_brand_set(
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
     view = view_config(view_name)
-    brand_rows = tuple(_fetch_brand_rows(view, market_id))
+    resolved_market_id = market_id
+    if not resolved_market_id and view_name == "strategic_ml":
+        resolved_market_id = _ml_id_for_brand(selected_brand)
+    if not resolved_market_id:
+        raise BrandSetInputError("market_id is required")
+
+    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id))
     if not brand_rows:
         return None
-    market_row = _fetch_market_row(view, market_id)
+    market_row = _fetch_market_row(view, resolved_market_id)
     if market_row is None:
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
     brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
     if selected_brand not in brand_meta:
         return None
-    applied_filter = applied_brand_filter(view_name, market_id, filter_payload or {})
+    applied_filter = applied_brand_filter(view_name, resolved_market_id, filter_payload or {})
     candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking)
     choices = _select_choices(candidates, selected_brand=selected_brand, applied_filter=applied_filter)
     return BrandSetResolution(
         view_name=view_name,
-        market_id=market_id,
+        market_id=resolved_market_id,
         selected_brand=selected_brand,
         view=view,
         market_row=market_row,
@@ -110,6 +116,26 @@ def view_config(view_name: str) -> ViewConfig:
     if view_name == "strategic_ml":
         return ViewConfig("mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "ml_id", "ml_name", "brand_ranking_stacked", True)
     raise BrandSetInputError(f"unsupported view: {view_name}")
+
+
+def _ml_id_for_brand(brand: str) -> str:
+    """Resolve one strategic ML market for a selected brand in the ranking scope."""
+
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT ml_id
+        FROM {quote_identifier(config.db_name)}.`mart_strategic_ml_brand_metric`
+        WHERE source = %s AND measure = %s AND (brand_key = %s OR brand_name = %s)
+        ORDER BY ml_id
+        """,
+        (SOURCE, RANKING_MEASURE, brand, brand),
+    )
+    market_ids = tuple(str(row["ml_id"]) for row in rows if row.get("ml_id"))
+    if not market_ids:
+        raise BrandSetInputError("brand not in any ml market")
+    if len(market_ids) > 1:
+        raise BrandSetInputError(f"ambiguous ml market for brand; pass market_id: {', '.join(market_ids)}")
+    return market_ids[0]
 
 
 def _fetch_brand_rows(view: ViewConfig, market_id: str) -> list[JsonMap]:

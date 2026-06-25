@@ -33,7 +33,6 @@ from pipeline.scripts.api.brand_activity_interest_rx_source import (
     fetch_keyword_rows,
     period_for_request,
 )
-from pipeline.scripts.api.brand_activity_topic_confidence import topic_confidence_for_event_count
 from pipeline.scripts.api.brand_activity_topic_matrix import _alias_lookup
 
 
@@ -46,7 +45,7 @@ class MatrixRequest:
     """Parsed request for the interest/Rx matrix service."""
 
     view: str
-    market_id: str
+    market_id: str | None
     selected_brand: str
     filter_payload: JsonMap
     visit_location: str
@@ -113,15 +112,17 @@ def _parse_request(payload: Mapping[str, Any]) -> MatrixRequest:
         raise InterestRxMatrixInputError(f"unsupported view: {view}")
     market_id = text(payload.get("market_id"))
     selected_brand = text(payload.get("selected_brand"))
-    if not market_id or not selected_brand:
-        raise InterestRxMatrixInputError("market_id and selected_brand are required")
-    filter_payload = payload.get("filter")
+    filter_payload = _filter_payload(payload)
+    if view == "general" and not market_id:
+        market_id = _first_filter_value(filter_payload, "atc4")
+    if not selected_brand or (view == "general" and not market_id):
+        raise InterestRxMatrixInputError("market_id or filters.atc4, and selected_brand are required")
     weights = payload.get("weights")
     return MatrixRequest(
         view=view,
         market_id=market_id,
         selected_brand=selected_brand,
-        filter_payload=filter_payload if isinstance(filter_payload, dict) else {},
+        filter_payload=filter_payload,
         visit_location=text(payload.get("visit_location")) or "전체",
         specialty=text(payload.get("specialty")) or "전체",
         period_start=text(payload.get("period_start")),
@@ -155,7 +156,7 @@ def _keyword_query(inputs: MatrixInputs) -> KeywordQuery:
     return KeywordQuery(
         period=inputs.period,
         view=inputs.brand_set.view,
-        market_id=inputs.request.market_id,
+        market_id=inputs.brand_set.market_id,
         product_codes=product_codes,
         visit_location=inputs.request.visit_location,
         specialty=inputs.request.specialty,
@@ -226,7 +227,6 @@ def _brand_payload(choice: BrandChoice, projection: Projection) -> JsonMap:
         "is_selected": choice.is_selected,
         "is_jw": meta.is_jw,
         "sales_rank": choice.sales_rank,
-        "detailing": projection.detailing.get(choice.brand_key),
     }
     payload.update(_stats_payload(projection.brand_counts[choice.brand_key], projection.inputs.weights))
     return payload
@@ -242,7 +242,6 @@ def _stats_payload(counts: JsonMap, weights: JsonMap) -> JsonMap:
         "rx_frequency_distribution": rx_frequency,
         "prescription_evolution_distribution": evolution,
         "event_count": event_count,
-        "confidence": topic_confidence_for_event_count(event_count),
         "interest_score": _score(interest, weights["interest"]),
         "rx_frequency_score": _score(rx_frequency, weights["rx_frequency"]),
         "prescription_evolution_score": _score(evolution, weights["prescription_evolution"]),
@@ -269,12 +268,39 @@ def _scope_payload(inputs: MatrixInputs) -> JsonMap:
     crosswalk = inputs.crosswalk
     return {
         "view": inputs.request.view,
-        "market_id": inputs.request.market_id,
-        "market_name": str(inputs.brand_set.market_row.get(inputs.brand_set.view.market_name_column) or inputs.request.market_id),
+        "market_id": inputs.brand_set.market_id,
+        "market_name": str(inputs.brand_set.market_row.get(inputs.brand_set.view.market_name_column) or inputs.brand_set.market_id),
         "selected_brand": inputs.request.selected_brand,
         "csd_market": crosswalk.display_market if crosswalk else None,
         "ranking_quarter": inputs.brand_set.ranking_quarter,
         "applied_filter": inputs.brand_set.applied_filter,
+        "applied_filters": inputs.brand_set.applied_filter,
+        "resolved_market": _resolved_market_payload(inputs),
+    }
+
+
+def _filter_payload(payload: Mapping[str, Any]) -> JsonMap:
+    filters = payload.get("filters")
+    legacy_filter = payload.get("filter")
+    if isinstance(filters, dict) and filters:
+        return filters
+    return legacy_filter if isinstance(legacy_filter, dict) else {}
+
+
+def _first_filter_value(filter_payload: Mapping[str, Any], key: str) -> str:
+    value = filter_payload.get(key)
+    if isinstance(value, list):
+        return text(value[0]) if value else ""
+    return text(value)
+
+
+def _resolved_market_payload(inputs: MatrixInputs) -> JsonMap:
+    market_id = inputs.brand_set.market_id
+    return {
+        "type": inputs.request.view,
+        "market_id": market_id,
+        "market_label": str(inputs.brand_set.market_row.get(inputs.brand_set.view.market_name_column) or market_id),
+        "source": "filters" if inputs.request.view == "general" else f"brand:{inputs.request.selected_brand}",
     }
 
 

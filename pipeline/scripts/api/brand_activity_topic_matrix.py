@@ -11,7 +11,6 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     resolve_brand_set,
 )
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
-from pipeline.scripts.api.brand_activity_topic_confidence import topic_confidence_for_event_count
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
     _fetch_topic_rows,
@@ -49,9 +48,12 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
     return {
         "scope": {
             "view": request["view"],
-            "market_id": request["market_id"],
+            "market_id": brand_set.market_id,
+            "market_name": str(brand_set.market_row.get(brand_set.view.market_name_column) or brand_set.market_id),
             "selected_brand": request["selected_brand"],
             "applied_filter": brand_set.applied_filter,
+            "applied_filters": brand_set.applied_filter,
+            "resolved_market": _resolved_market_payload(request, brand_set),
             "visit_location": request["visit_location"],
             "specialty": request["specialty"],
             "top_n": request["top_n"],
@@ -69,17 +71,20 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     view = _text(payload.get("view"))
     market_id = _text(payload.get("market_id"))
     selected_brand = _text(payload.get("selected_brand"))
-    if not view or not market_id or not selected_brand:
-        raise TopicRequestError("view, market_id, and selected_brand are required")
+    filter_payload = _filter_payload(payload)
+    if view == "general" and not market_id:
+        market_id = _first_filter_value(filter_payload, "atc4")
+    if not view or not selected_brand or (view == "general" and not market_id):
+        raise TopicRequestError("view, market_id or filters.atc4, and selected_brand are required")
     top_n = _integer(payload.get("top_n") or 5)
     return {
         "view": view,
         "market_id": market_id,
         "selected_brand": selected_brand,
-        "filter": payload.get("filter") if isinstance(payload.get("filter"), dict) else {},
+        "filter": filter_payload,
         "visit_location": _text(payload.get("visit_location")) or "전체",
         "specialty": _text(payload.get("specialty")) or "전체",
-        "top_n": max(1, min(top_n, 5)),
+        "top_n": max(1, min(top_n, 10)),
     }
 
 
@@ -109,6 +114,7 @@ def _topic_brand_item(
     choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
     stored = _stored_brand_topics(meta, topic_index, aliases)
     event_count = _integer(stored.get("row_count")) if stored is not None else 0
+    topic_shares = _ranked_topics(stored, top_n=top_n)
     return {
         "brand_key": choice.brand_key,
         "brand_name": choice.brand_name,
@@ -116,8 +122,10 @@ def _topic_brand_item(
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
         "event_count": event_count,
-        "confidence": topic_confidence_for_event_count(event_count),
-        "topics": _ranked_topics(stored, top_n=top_n),
+        "topic_shares": topic_shares,
+        "topics": topic_shares,
+        "etc_pct": max(0.0, 100.0 - sum(_number(topic.get("share_pct")) for topic in topic_shares)),
+        "brand_specific_topics": _brand_specific_topics(stored),
     }
 
 
@@ -147,10 +155,54 @@ def _ranked_topics(stored: dict[str, JsonValue] | None, *, top_n: int) -> list[d
             "rank": index,
             "topic_id": _text(share.get("topic_id")),
             "label": _text(share.get("label")),
-            "share": _number(share.get("share_pct")),
+            "share_pct": _number(share.get("share_pct")),
         }
         for index, share in enumerate(shares[:top_n], start=1)
     ]
+
+
+def _brand_specific_topics(stored: dict[str, JsonValue] | None) -> list[dict[str, JsonValue]]:
+    if stored is None:
+        return []
+    raw_topics = _json_list(stored.get("brand_specific_topics"))
+    topics: list[dict[str, JsonValue]] = []
+    for raw_topic in raw_topics:
+        topic = _json_object(raw_topic)
+        topics.append(
+            {
+                "topic_id": _text(topic.get("topic_id")),
+                "label": _text(topic.get("label")),
+                "definition": _text(topic.get("definition")),
+                "share_pct": _number(topic.get("share_pct")),
+                "row_count": _integer(topic.get("row_count")),
+            }
+        )
+    return topics
+
+
+def _filter_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    filters = payload.get("filters")
+    legacy_filter = payload.get("filter")
+    if isinstance(filters, dict) and filters:
+        return filters
+    return legacy_filter if isinstance(legacy_filter, dict) else {}
+
+
+def _first_filter_value(filter_payload: dict[str, JsonValue], key: str) -> str:
+    value = filter_payload.get(key)
+    if isinstance(value, list):
+        return _text(value[0]) if value else ""
+    return _text(value)
+
+
+def _resolved_market_payload(request: dict[str, JsonValue], brand_set: BrandSetResolution) -> dict[str, JsonValue]:
+    market_id = brand_set.market_id
+    return {
+        "type": request["view"],
+        "market_id": market_id,
+        "market_label": str(brand_set.market_row.get(brand_set.view.market_name_column) or market_id),
+        "source": "filters" if request["view"] == "general" else f"brand:{request['selected_brand']}",
+    }
 
 
 def _alias_lookup() -> dict[str, str]:

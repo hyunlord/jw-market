@@ -58,12 +58,12 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
         return None
     mart_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
     crosswalk = resolve_csd_market(mart_codes)
-    rx_rows = _fetch_rx_rows(brand_set.view, request["market_id"], tuple(choice.brand_key for choice in choices))
+    rx_rows = _fetch_rx_rows(brand_set.view, brand_set.market_id, tuple(choice.brand_key for choice in choices))
     activity = _activity_series(crosswalk.market, choices, brand_meta, quarters)
     return {
         "scope": _scope_payload(request, brand_set.view, brand_set.market_row, selected_meta, brand_set.ranking_quarter, brand_set.applied_filter, crosswalk, quarters),
         "brands": [_brand_payload(choice, brand_meta, rx_rows, activity, quarters) for choice in choices],
-        "market_totals": _market_totals(brand_set.view, request["market_id"], quarters, activity["totals"]),
+        "market_totals": _market_totals(brand_set.view, brand_set.market_id, quarters, activity["totals"]),
     }
 
 
@@ -95,15 +95,18 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
         raise CsdTimeseriesInputError(f"unsupported view: {view}")
     market_id = text(payload.get("market_id"))
     selected_brand = text(payload.get("selected_brand"))
-    if not market_id or not selected_brand:
-        raise CsdTimeseriesInputError("market_id and selected_brand are required")
-    filter_payload = payload.get("filter")
+    filter_payload = _filter_payload(payload)
+    if view == "general" and not market_id:
+        market_id = _first_filter_value(filter_payload, "atc4")
+    if not selected_brand or (view == "general" and not market_id):
+        raise CsdTimeseriesInputError("market_id or filters.atc4, and selected_brand are required")
     window = payload.get("window")
     return {
         "view": view,
         "market_id": market_id,
         "selected_brand": selected_brand,
-        "filter": filter_payload if isinstance(filter_payload, dict) else {},
+        "filter": filter_payload,
+        "mode": text(payload.get("mode")) or "absolute",
         "window": window if isinstance(window, dict) else {},
     }
 
@@ -120,16 +123,44 @@ def _scope_payload(
 ) -> JsonMap:
     return {
         "view": request["view"],
-        "market_id": request["market_id"],
-        "market_name": str(market_row.get(view.market_name_column) or request["market_id"]),
+        "market_id": str(market_row.get(view.market_key) or request["market_id"]),
+        "market_name": str(market_row.get(view.market_name_column) or market_row.get(view.market_key) or request["market_id"]),
         "csd_market": crosswalk.display_market,
         "selected_brand": {"brand_key": selected_meta.brand_key, "product_code": first(selected_meta.product_codes)},
         "ranking_measure": RANKING_MEASURE,
         "ranking_quarter": ranking_quarter,
         "filter": request["filter"],
         "applied_filter": applied_filter,
+        "applied_filters": applied_filter,
+        "resolved_market": _resolved_market_payload(request, view, market_row),
         "quarters": quarters,
         "measures": list(PUBLIC_MEASURES),
+        "mode": request["mode"],
+    }
+
+
+def _filter_payload(payload: Mapping[str, Any]) -> JsonMap:
+    filters = payload.get("filters")
+    legacy_filter = payload.get("filter")
+    if isinstance(filters, dict) and filters:
+        return filters
+    return legacy_filter if isinstance(legacy_filter, dict) else {}
+
+
+def _first_filter_value(filter_payload: Mapping[str, Any], key: str) -> str:
+    value = filter_payload.get(key)
+    if isinstance(value, list):
+        return text(value[0]) if value else ""
+    return text(value)
+
+
+def _resolved_market_payload(request: JsonMap, view: ViewConfig, market_row: JsonMap) -> JsonMap:
+    market_id = str(market_row.get(view.market_key) or request["market_id"])
+    return {
+        "type": request["view"],
+        "market_id": market_id,
+        "market_label": str(market_row.get(view.market_name_column) or market_id),
+        "source": "filters" if request["view"] == "general" else f"brand:{request['selected_brand']}",
     }
 
 
