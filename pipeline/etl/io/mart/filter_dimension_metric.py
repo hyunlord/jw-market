@@ -23,6 +23,7 @@ from .general_config import MEASURES_BY_SOURCE
 
 FILTER_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
 DIMENSION_STAGE_PREFIX = "jw_mart_dim_stage_"
+LOCAL_SERVING_TARGET = "jw_mart"
 BLOCKED_DIMENSION_TARGETS = frozenset(
     {
         "jw_mart",
@@ -217,7 +218,18 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
     return rows
 
 
-def guard_dimension_stage_target(target_db: str) -> None:
+def guard_dimension_stage_target(target_db: str, *, allow_local_serving_target: bool = False) -> None:
+    """Reject unsafe sidecar targets unless the caller explicitly opens local serving.
+
+    Dimension sidecars are normally built in ``jw_mart_dim_stage_*`` schemas.
+    D-1 is the first local serving exercise, so ``jw_mart`` is permitted only
+    when the tracked CLI has already proven that it is talking to localhost.
+    This keeps the old staging safety default intact and prevents accidental
+    operating-Galera writes through the generic builder.
+    """
+
+    if allow_local_serving_target and target_db == LOCAL_SERVING_TARGET:
+        return
     if target_db in BLOCKED_DIMENSION_TARGETS:
         raise ValueError(f"refusing protected target schema: {target_db}")
     if not target_db.startswith(DIMENSION_STAGE_PREFIX):

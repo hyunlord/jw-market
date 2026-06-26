@@ -10,10 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from pipeline.etl.io.mart.filter_dimension_metric import DIMENSION_REGISTRY
+from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
+from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_value
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.types import (
     BrandRef,
+    DimensionFilter,
     DynamicMarketInputError,
     MarketDefinition,
     quote_identifier,
@@ -34,6 +38,8 @@ class MarketResolver(Protocol):
         *,
         atc4: list[str],
         molecule: list[str],
+        analysis_level: dict[str, dict[str, list[str]]] | None,
+        focus_brand_key: str | None,
         source: str,
         measure: str,
     ) -> MarketDefinition:
@@ -42,7 +48,7 @@ class MarketResolver(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class GeneralViewResolver:
-    """Resolve general-view markets from ATC4 and molecule bridge filters."""
+    """Resolve general-view markets from ATC4 and enabled source dimensions."""
 
     mart_db: str
     bridge_db: str
@@ -52,13 +58,28 @@ class GeneralViewResolver:
         *,
         atc4: list[str],
         molecule: list[str],
+        analysis_level: dict[str, dict[str, list[str]]] | None = None,
+        focus_brand_key: str | None = None,
         source: str,
         measure: str,
     ) -> MarketDefinition:
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
         normalized_atc4 = normalize_atc4_list(atc4)
+        normalized_focus_brand = focus_brand_key.strip() if focus_brand_key else None
+        if molecule:
+            raise DynamicMarketInputError("molecule filters are disabled for D-1; use ATC4 and enabled source-specific dimensions")
         normalized_molecules = normalize_molecule_list(molecule)
+        dimension_filters = self._dimension_filters(
+            analysis_level=analysis_level or {},
+            source=normalized_source,
+        )
+        if not normalized_atc4 and normalized_focus_brand:
+            normalized_atc4 = self._default_atc4_for_focus(
+                focus_brand_key=normalized_focus_brand,
+                source=normalized_source,
+                measure=normalized_measure,
+            )
         if not normalized_atc4 and not normalized_molecules:
             raise DynamicMarketInputError("at least one ATC4 or molecule filter is required")
 
@@ -68,6 +89,14 @@ class GeneralViewResolver:
             source=normalized_source,
             measure=normalized_measure,
         )
+        if dimension_filters and normalized_focus_brand:
+            dimension_filters = self._with_focus_dimension_values(
+                filters=dimension_filters,
+                focus_brand_key=normalized_focus_brand,
+                brands=brands,
+                source=normalized_source,
+                measure=normalized_measure,
+            )
         return MarketDefinition(
             view="general",
             filter_echo={
@@ -75,6 +104,8 @@ class GeneralViewResolver:
                 "atc4": list(normalized_atc4),
                 "molecule": list(molecule),
                 "normalized_molecule": list(normalized_molecules),
+                "analysis_level": _dimension_echo(dimension_filters),
+                "focus_brand_key": normalized_focus_brand,
                 "source": normalized_source,
                 "measure": normalized_measure,
             },
@@ -82,6 +113,8 @@ class GeneralViewResolver:
             measure=normalized_measure,
             normalized_molecules=normalized_molecules,
             brands=brands,
+            dimension_filters=dimension_filters,
+            focus_brand_key=normalized_focus_brand,
         )
 
     def _resolve_brands(
@@ -143,6 +176,99 @@ class GeneralViewResolver:
         )
         return tuple(str(row["brand_key"]) for row in rows)
 
+    def _default_atc4_for_focus(self, *, focus_brand_key: str, source: str, measure: str) -> tuple[str, ...]:
+        """Resolve the general-view default market for a selected brand.
+
+        The D-1 general API keeps the existing ATC4 path as the explicit market
+        definition. When a caller only supplies a focus brand, we infer a
+        default only if the brand has one unambiguous ATC4 bucket for the source
+        and measure. Brands spanning multiple ATC4s must still send ATC4
+        explicitly so the response cannot silently choose the wrong market.
+        """
+
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT atc4_code
+            FROM {quote_identifier(self.mart_db)}.mart_general_brand_metric
+            WHERE brand_key = %s
+              AND source = %s
+              AND measure = %s
+            ORDER BY atc4_code
+            """,
+            (focus_brand_key, source, measure),
+        )
+        atc4_codes = tuple(str(row["atc4_code"]) for row in rows if row.get("atc4_code"))
+        if len(atc4_codes) == 1:
+            return atc4_codes
+        if not atc4_codes:
+            raise DynamicMarketInputError(f"focus brand has no general-view ATC4 for {source}/{measure}: {focus_brand_key}")
+        raise DynamicMarketInputError(
+            f"focus brand spans multiple ATC4 buckets; send filters.atc4 explicitly: {focus_brand_key}"
+        )
+
+    def _dimension_filters(
+        self,
+        *,
+        analysis_level: dict[str, dict[str, list[str]]],
+        source: str,
+    ) -> tuple[DimensionFilter, ...]:
+        source_payload = analysis_level.get(_api_source_key(source), {})
+        if _other_source_has_values(analysis_level, source):
+            raise DynamicMarketInputError(f"analysis_level must match selected source: {source}")
+        registry = DIMENSION_REGISTRY[source]
+        api_to_registry = _api_dimension_names(source)
+        filters: list[DimensionFilter] = []
+        for api_name, values in sorted(source_payload.items()):
+            if not values:
+                continue
+            dimension_type = api_to_registry.get(api_name)
+            if dimension_type is None:
+                raise DynamicMarketInputError(f"unsupported analysis_level dimension for {source}: {api_name}")
+            spec = registry[dimension_type]
+            if not spec.enabled:
+                raise DynamicMarketInputError(f"analysis_level dimension is disabled for D-1: {api_name}")
+            normalized = _normalize_dimension_values(values)
+            if normalized:
+                filters.append(DimensionFilter(dimension_type=dimension_type, values=normalized))
+        return tuple(filters)
+
+    def _with_focus_dimension_values(
+        self,
+        *,
+        filters: tuple[DimensionFilter, ...],
+        focus_brand_key: str,
+        brands: tuple[BrandRef, ...],
+        source: str,
+        measure: str,
+    ) -> tuple[DimensionFilter, ...]:
+        focus_brand = focus_brand_key.strip()
+        if not focus_brand:
+            return filters
+        scoped_atc4 = tuple(sorted({brand.atc4_code for brand in brands if brand.brand_key == focus_brand and brand.atc4_code}))
+        if not scoped_atc4:
+            return filters
+        mart_db = quote_identifier(self.mart_db)
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT dimension_type, dimension_value_norm
+            FROM {mart_db}.{quote_identifier(FILTER_DIMENSION_TABLE)}
+            WHERE source = %s
+              AND measure = %s
+              AND brand_key = %s
+              AND atc4_code IN ({placeholders(scoped_atc4)})
+              AND dimension_type IN ({placeholders(tuple(item.dimension_type for item in filters))})
+            ORDER BY dimension_type, dimension_value_norm
+            """,
+            (source, measure, focus_brand, *scoped_atc4, *(item.dimension_type for item in filters)),
+        )
+        values_by_dimension: dict[str, set[str]] = {item.dimension_type: set(item.values) for item in filters}
+        for row in rows:
+            values_by_dimension[str(row["dimension_type"])].add(str(row["dimension_value_norm"]))
+        return tuple(
+            DimensionFilter(dimension_type=item.dimension_type, values=tuple(sorted(values_by_dimension[item.dimension_type])))
+            for item in filters
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class StrategicViewResolver:
@@ -161,10 +287,12 @@ class StrategicViewResolver:
         *,
         atc4: list[str],
         molecule: list[str],
+        analysis_level: dict[str, dict[str, list[str]]] | None = None,
+        focus_brand_key: str | None = None,
         source: str,
         measure: str,
     ) -> MarketDefinition:
-        del atc4, molecule
+        del atc4, molecule, analysis_level, focus_brand_key
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
         rows = db.fetch_all(
@@ -194,6 +322,54 @@ def placeholders(values: tuple[str, ...]) -> str:
 
     return ", ".join(["%s"] * len(values))
 
+
+def _api_source_key(source: str) -> str:
+    return "iqvia" if source == "iqvia_nsa" else source
+
+
+def _other_source_has_values(analysis_level: dict[str, dict[str, list[str]]], source: str) -> bool:
+    allowed = _api_source_key(source)
+    for source_key, payload in analysis_level.items():
+        if source_key == allowed:
+            continue
+        if any(values for values in payload.values()):
+            return True
+    return False
+
+
+def _api_dimension_names(source: str) -> dict[str, str]:
+    if source == "ubist":
+        return {
+            "seller": "seller",
+            "molecule": "molecule",
+            "molecule_strength": "molecule_strength",
+            "form": "form",
+            "route": "route",
+            "reimbursement": "reimbursement",
+        }
+    return {
+        "mfr_name_kor": "mfr",
+        "molecule_type": "molecule_type",
+        "molecule_desc": "molecule",
+        "pack_desc": "pack",
+        "strength": "strength",
+        "nhi_type": "nhi",
+    }
+
+
+def _normalize_dimension_values(values: list[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = normalize_dimension_value(value)
+        if item and item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return tuple(normalized)
+
+
+def _dimension_echo(filters: tuple[DimensionFilter, ...]) -> dict[str, list[str]]:
+    return {item.dimension_type: list(item.values) for item in filters}
 
 def normalize_source(value: str) -> str:
     """Normalize API source labels to mart source labels."""

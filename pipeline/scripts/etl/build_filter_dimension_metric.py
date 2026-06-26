@@ -3,7 +3,10 @@ from __future__ import annotations
 """Build dynamic filter dimension sidecars into an isolated schema.
 
 This tracked CLI is the only approved path for dynamic filter-dimension sidecar
-loads. It writes a new ``jw_mart_dim_stage_*`` schema, never live ``jw_mart``.
+loads. It writes a new ``jw_mart_dim_stage_*`` schema by default. D-1 also uses
+the same audited path to install the verified sidecar into the local developer
+``jw_mart`` serving schema, but only behind ``--allow-local-serving-target`` and
+only when the DB host is localhost.
 The sidecar uses product-level rows because source-specific dimensions such as
 UBIST 제형/투여경로 or IQVIA STRENGTH/MOLECULE TYPE belong to products.
 Filtering a whole brand row by one product's dimension would overstate market
@@ -57,6 +60,19 @@ def parse_args() -> argparse.Namespace:
             "while still using a tracked, batch-limited loader path."
         ),
     )
+    parser.add_argument(
+        "--copy-all-from",
+        help=(
+            "Optional verified jw_mart_dim_stage_* schema to copy all source rows from. "
+            "D-1 uses this to install the already-verified sidecar into local jw_mart "
+            "through the tracked Galera-safe batch path instead of an ad hoc loader."
+        ),
+    )
+    parser.add_argument(
+        "--allow-local-serving-target",
+        action="store_true",
+        help="Permit target-db=jw_mart only when the connection host is localhost.",
+    )
     parser.add_argument("--ubist-dir", type=Path, help="Raw UBIST parquet root. Defaults to S4_UBIST_DIR/output/ubist")
     parser.add_argument("--max-rows", type=int, default=None, help="Fast validation only; do not use for production evidence")
     parser.add_argument("--batch-size", type=int, default=200)
@@ -64,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
-    guard_dimension_stage_target(args.target_db)
+    guard_dimension_stage_target(args.target_db, allow_local_serving_target=args.allow_local_serving_target)
     if args.batch_size > 200:
         raise ValueError("--batch-size must be <= 200 for Galera writeset safety")
     if args.ubist_dir:
@@ -73,10 +89,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     conn = _connect_admin()
     try:
-        if _schema_exists(conn, args.target_db):
+        if args.allow_local_serving_target:
+            _guard_local_serving_target(conn, args.target_db)
+        if _schema_exists(conn, args.target_db) and not args.allow_local_serving_target:
             raise RuntimeError(f"target schema already exists: {args.target_db}")
         before_live = _general_table_counts(conn, "jw_mart")
-        create_filter_dimension_table(conn, args.target_db)
+        create_filter_dimension_table(
+            conn,
+            args.target_db,
+            allow_local_serving_target=args.allow_local_serving_target,
+        )
 
         manifest: dict[str, Any] = {
             "target_db": args.target_db,
@@ -85,6 +107,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "policy": {
                 "isolated_prefix": "jw_mart_dim_stage_",
                 "live_schema_blocked": "jw_mart",
+                "local_serving_target_allowed": bool(args.allow_local_serving_target),
                 "batch_size": args.batch_size,
                 "molecule_dimension": "disabled",
                 "pack_desc": "disabled",
@@ -94,7 +117,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "live_before": before_live,
         }
         for source in _selected_sources(args.source):
-            if source == "ubist" and args.copy_ubist_from:
+            if args.copy_all_from:
+                manifest["sources"][source] = _copy_source_rows(
+                    conn,
+                    args.copy_all_from,
+                    args.target_db,
+                    source,
+                    batch_size=args.batch_size,
+                    allow_local_serving_target=args.allow_local_serving_target,
+                )
+            elif source == "ubist" and args.copy_ubist_from:
                 manifest["sources"][source] = _copy_source_rows(
                     conn, args.copy_ubist_from, args.target_db, source,
                     batch_size=args.batch_size,
@@ -163,8 +195,16 @@ def _copy_source_rows(
     source: str,
     *,
     batch_size: int,
+    allow_local_serving_target: bool = False,
 ) -> dict[str, Any]:
-    return copy_filter_dimension_source_rows(conn, source_db, target_db, source, batch_size=batch_size)
+    return copy_filter_dimension_source_rows(
+        conn,
+        source_db,
+        target_db,
+        source,
+        batch_size=batch_size,
+        allow_local_serving_target=allow_local_serving_target,
+    )
 
 
 def _connect_admin() -> pymysql.connections.Connection:
@@ -182,6 +222,21 @@ def _connect_admin() -> pymysql.connections.Connection:
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
     )
+
+
+def _guard_local_serving_target(conn: pymysql.connections.Connection, target_db: str) -> None:
+    """Allow serving installs only for the local developer MariaDB instance."""
+
+    if target_db != "jw_mart":
+        raise RuntimeError("--allow-local-serving-target only permits target-db=jw_mart")
+    with conn.cursor() as cur:
+        cur.execute("SELECT @@hostname AS hostname, @@port AS port")
+        row = cur.fetchone()
+    host = str(conn.host).lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError(f"refusing non-local serving sidecar target host={conn.host!r}")
+    if int(row["port"]) != 3306 and int(row["port"]) != 3308:
+        raise RuntimeError(f"unexpected local MariaDB port: {row['port']}")
 
 
 def _schema_exists(conn: pymysql.connections.Connection, db_name: str) -> bool:

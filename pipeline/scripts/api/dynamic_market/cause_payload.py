@@ -139,6 +139,7 @@ def build_market_meta(
         "market_label_kor": label,
         "market_definition_label": label,
         "market_definition_full": f"ATC4={', '.join(atc_codes) or '-'}; molecule={', '.join(molecules) or '-'}",
+        "filters": definition.filter_echo,
         "mkt_team": "Runtime",
         "brand_list": [item.brand_name for item in metrics.all_brands[:100]],
         "atc_codes": atc_codes,

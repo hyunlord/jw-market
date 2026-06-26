@@ -45,8 +45,13 @@ CREATE TABLE IF NOT EXISTS {quoted} (
 """.strip()
 
 
-def create_filter_dimension_table(conn: pymysql.connections.Connection, target_db: str) -> None:
-    guard_dimension_stage_target(target_db)
+def create_filter_dimension_table(
+    conn: pymysql.connections.Connection,
+    target_db: str,
+    *,
+    allow_local_serving_target: bool = False,
+) -> None:
+    guard_dimension_stage_target(target_db, allow_local_serving_target=allow_local_serving_target)
     qualified = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
     with conn.cursor() as cur:
         cur.execute(f"CREATE DATABASE IF NOT EXISTS {quote_id(target_db)} DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
@@ -60,8 +65,9 @@ def insert_filter_dimension_rows(
     rows: Sequence[dict[str, Any]],
     *,
     batch_size: int = 200,
+    allow_local_serving_target: bool = False,
 ) -> None:
-    guard_dimension_stage_target(target_db)
+    guard_dimension_stage_target(target_db, allow_local_serving_target=allow_local_serving_target)
     if batch_size > 200:
         raise ValueError("batch_size must be <= 200 for Galera writeset safety")
     if not rows:
@@ -99,6 +105,7 @@ def copy_filter_dimension_source_rows(
     source: str,
     *,
     batch_size: int = 200,
+    allow_local_serving_target: bool = False,
 ) -> dict[str, Any]:
     """Copy verified sidecar rows between isolated schemas in Galera-safe chunks.
 
@@ -108,7 +115,7 @@ def copy_filter_dimension_source_rows(
     build manifest.
     """
     guard_dimension_stage_target(source_db)
-    guard_dimension_stage_target(target_db)
+    guard_dimension_stage_target(target_db, allow_local_serving_target=allow_local_serving_target)
     if source_db == target_db:
         raise ValueError("copy source and target schemas must differ")
     if batch_size > 200:

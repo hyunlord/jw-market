@@ -30,6 +30,8 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
         definition = resolver.resolve(
             atc4=payload.filters.atc4,
             molecule=payload.filters.molecule,
+            analysis_level=payload.filters.analysis_level.model_dump(),
+            focus_brand_key=payload.filters.focus_brand_key,
             source=payload.source,
             measure=payload.measure,
         )
@@ -39,6 +41,7 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
             measure=definition.measure,
             period_range=period_range,
             top_n=clamp_top_n(payload.options.top_n),
+            dimension_filters=definition.dimension_filters,
         )
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
@@ -54,7 +57,7 @@ def strategic_stub_for_smoke() -> dict:
     """
 
     resolver = StrategicViewResolver(mart_db=config.db_name)
-    definition = resolver.resolve(atc4=[], molecule=[], source="ubist", measure="sales")
+    definition = resolver.resolve(atc4=[], molecule=[], analysis_level=None, focus_brand_key=None, source="ubist", measure="sales")
     metrics = MetricAggregator(mart_db=config.db_name).aggregate(
         brands=definition.brands,
         source=definition.source,
