@@ -10,6 +10,7 @@ from pipeline.etl.io.mart.molecule_bridge_schema import BRIDGE_INSERT_COLUMNS
 from pipeline.scripts.deploy import mart_import_ops
 from pipeline.scripts.deploy import mart_load_ops
 from pipeline.scripts.deploy.mart_load_verify import CanonicalDigest
+from pipeline.scripts.deploy.mart_load_verify import TableDigest
 from pipeline.scripts.deploy.mart_load_verify import _canonical_value, _stable_column_expression
 
 
@@ -59,6 +60,17 @@ def test_canonical_value_rounds_float_serialization_noise() -> None:
     right = _canonical_value('{"nested": [1.0], "2021-01": 77684602.69999999}')
 
     assert left == right
+
+
+def test_canonical_reference_digest_fallback_handles_slots_digest(monkeypatch) -> None:
+    from pipeline.scripts.deploy import mart_load_verify
+
+    monkeypatch.setattr(mart_load_verify, "table_digest", lambda *args: TableDigest(row_count=3, crc_sum=5, crc_xor=7))
+
+    digest = mart_load_verify.canonical_reference_digest(object(), "jw_mart", "unknown_table")
+
+    assert digest.row_count == 3
+    assert len(digest.sha256) == 64
 
 
 def test_run_bridge_reads_from_source_db_and_writes_build_db(monkeypatch) -> None:

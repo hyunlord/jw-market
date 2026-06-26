@@ -100,6 +100,74 @@ CANONICAL_REFERENCE_COLUMNS: Mapping[str, tuple[str, ...]] = {
         "unit_label",
         "market_size_series",
     ),
+    "mart_strategic_ml_brand_metric": (
+        "ml_id",
+        "brand_id",
+        "brand_key",
+        "brand_name",
+        "source",
+        "measure",
+        "is_jw",
+        "unit_label",
+        "metric_history",
+        "extended_metric_history",
+        "channel_data",
+        "specialty_data",
+        "dimension_data",
+        "dimension_channel_data",
+        "dimension_specialty_data",
+        "by_dimension",
+        "raw_value_history",
+        "overlay_data",
+        "payload",
+        "computation_version",
+    ),
+    "mart_strategic_cd_brand_metric": (
+        "cd_market_id",
+        "cd_brand_id",
+        "brand_key",
+        "brand_name",
+        "source",
+        "measure",
+        "is_jw",
+        "unit_label",
+        "metric_history",
+        "extended_metric_history",
+        "channel_data",
+        "specialty_data",
+        "dimension_data",
+        "dimension_channel_data",
+        "by_dimension",
+        "raw_value_history",
+        "cd_overlay",
+        "overlay_data",
+        "payload",
+        "computation_version",
+    ),
+    "mart_strategic_cd_market_metric": (
+        "cd_market_id",
+        "cd_market_name",
+        "source",
+        "measure",
+        "unit_label",
+        "market_size_series",
+        "hhi_series_5y",
+        "brand_ranking_stacked",
+        "company_ranking_stacked",
+        "company_concentration_trend",
+        "ei_ms_matrix",
+        "growth_contribution_ms_matrix",
+        "growth_contribution",
+        "analysis_levels",
+        "level_top5_trend",
+        "target_customer_competition",
+        "payload",
+        "computation_version",
+    ),
+    "cache_brands": ("query_key", "response_json", "payload_size"),
+    "cache_market_status": ("query_key", "response_json", "payload_size"),
+    "cache_cause": ("brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"),
+    "cache_deep_analysis": ("brand", "market_id", "response_json", "payload_size"),
 }
 
 CANONICAL_ORDER_COLUMNS: Mapping[str, tuple[str, ...]] = {
@@ -107,6 +175,13 @@ CANONICAL_ORDER_COLUMNS: Mapping[str, tuple[str, ...]] = {
     "mart_general_market_metric": ("source", "measure", "atc4_code"),
     "mart_brand_molecule": ("mart_source", "atc4_code", "brand_key", "molecule_norm"),
     "mart_strategic_ml_market_metric": ("source", "measure", "ml_id"),
+    "mart_strategic_ml_brand_metric": ("ml_id", "brand_key", "source", "measure"),
+    "mart_strategic_cd_brand_metric": ("cd_market_id", "brand_key", "source", "measure"),
+    "mart_strategic_cd_market_metric": ("source", "measure", "cd_market_id"),
+    "cache_brands": ("query_key",),
+    "cache_market_status": ("query_key",),
+    "cache_cause": ("brand", "view_type", "source", "measure", "market_id"),
+    "cache_deep_analysis": ("brand", "market_id"),
 }
 
 
@@ -181,7 +256,15 @@ def canonical_reference_digest(
     order_columns = CANONICAL_ORDER_COLUMNS.get(table_name)
     if not columns or not order_columns:
         exact = table_digest(conn, db_name, table_name)
-        payload = json.dumps(exact.__dict__, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        payload = json.dumps(
+            {
+                "row_count": exact.row_count,
+                "crc_sum": exact.crc_sum,
+                "crc_xor": exact.crc_xor,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         return CanonicalDigest(row_count=exact.row_count, sha256=hashlib.sha256(payload).hexdigest())
 
     rendered_columns = ",".join(quote_id(column) for column in columns)
