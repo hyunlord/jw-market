@@ -2,11 +2,14 @@ from __future__ import annotations
 
 """Build dynamic filter dimension sidecars into an isolated schema.
 
-This tracked CLI is the only approved path for STAGE A UBIST dimension sidecar
+This tracked CLI is the only approved path for dynamic filter-dimension sidecar
 loads. It writes a new ``jw_mart_dim_stage_*`` schema, never live ``jw_mart``.
-The sidecar uses product-level rows because UBIST analysis dimensions such as
-제형, 투여경로, 성분용량, and 급여구분 belong to products. Filtering a whole
-brand row by one product's dimension would overstate market size.
+The sidecar uses product-level rows because source-specific dimensions such as
+UBIST 제형/투여경로 or IQVIA STRENGTH/MOLECULE TYPE belong to products.
+Filtering a whole brand row by one product's dimension would overstate market
+size. Molecule and PACK DESC are intentionally disabled by PL policy; the raw
+loader may preserve them for provenance, but this script does not expose them as
+dynamic API dimensions.
 """
 
 import argparse
@@ -19,6 +22,7 @@ from typing import Any
 import pymysql
 
 from pipeline.etl.io.mart.filter_dimension_load import create_filter_dimension_table
+from pipeline.etl.io.mart.filter_dimension_load import copy_filter_dimension_source_rows
 from pipeline.etl.io.mart.filter_dimension_load import insert_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_load import quote_id
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
@@ -28,6 +32,9 @@ from pipeline.etl.io.mart.filter_dimension_metric import summarize_dimension_row
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
 from pipeline.etl.io.mart.general_config import first_existing
 from pipeline.etl.io.mart.general_config import load_env
+from pipeline.etl.io.mart.general_config import MEASURES_BY_SOURCE
+from pipeline.etl.io.mart.general_iqvia import iqvia_measure_frame
+from pipeline.etl.io.mart.general_iqvia import load_iqvia_base_frame
 from pipeline.etl.io.mart.general_ubist import load_ubist_base_frame
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
 
@@ -36,6 +43,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target-db", required=True, help="New isolated schema, must start with jw_mart_dim_stage_")
     parser.add_argument("--manifest-path", type=Path, required=True)
+    parser.add_argument(
+        "--source",
+        choices=("ubist", "iqvia_nsa", "all"),
+        default="all",
+        help="Source dimension rows to emit. Use all for the complete sidecar evidence build.",
+    )
+    parser.add_argument(
+        "--copy-ubist-from",
+        help=(
+            "Optional verified jw_mart_dim_stage_* schema to copy UBIST rows from. "
+            "This keeps STAGE B from re-running the expensive UBIST raw aggregation "
+            "while still using a tracked, batch-limited loader path."
+        ),
+    )
     parser.add_argument("--ubist-dir", type=Path, help="Raw UBIST parquet root. Defaults to S4_UBIST_DIR/output/ubist")
     parser.add_argument("--max-rows", type=int, default=None, help="Fast validation only; do not use for production evidence")
     parser.add_argument("--batch-size", type=int, default=200)
@@ -57,31 +78,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         before_live = _general_table_counts(conn, "jw_mart")
         create_filter_dimension_table(conn, args.target_db)
 
-        base = load_ubist_base_frame(max_rows=args.max_rows)
-        source_rows = int(len(base))
         manifest: dict[str, Any] = {
             "target_db": args.target_db,
             "table": FILTER_DIMENSION_TABLE,
-            "source": "ubist",
+            "source": args.source,
             "policy": {
                 "isolated_prefix": "jw_mart_dim_stage_",
                 "live_schema_blocked": "jw_mart",
                 "batch_size": args.batch_size,
                 "molecule_dimension": "disabled",
-                "pack_desc": "not_applicable_to_ubist",
+                "pack_desc": "disabled",
+                "grain": "product_level",
             },
-            "source_rows": source_rows,
-            "measures": {},
+            "sources": {},
             "live_before": before_live,
         }
-        for measure in ("sales", "volume"):
-            frame = ubist_measure_frame(base, measure)
-            rows = build_filter_dimension_rows("ubist", measure, frame)
-            insert_filter_dimension_rows(conn, args.target_db, rows, batch_size=args.batch_size)
-            manifest["measures"][measure] = {
-                "input_rows": int(len(frame)),
-                "sidecar": summarize_dimension_rows(rows),
-            }
+        for source in _selected_sources(args.source):
+            if source == "ubist" and args.copy_ubist_from:
+                manifest["sources"][source] = _copy_source_rows(
+                    conn, args.copy_ubist_from, args.target_db, source,
+                    batch_size=args.batch_size,
+                )
+            else:
+                manifest["sources"][source] = _load_source_rows(
+                    conn,
+                    args.target_db,
+                    source,
+                    max_rows=args.max_rows,
+                    batch_size=args.batch_size,
+                )
 
         manifest["target"] = _target_summary(conn, args.target_db)
         manifest["live_after"] = _general_table_counts(conn, "jw_mart")
@@ -91,6 +116,55 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return manifest
     finally:
         conn.close()
+
+
+def _selected_sources(source: str) -> tuple[str, ...]:
+    if source == "all":
+        return ("ubist", "iqvia_nsa")
+    return (source,)
+
+
+def _load_source_rows(
+    conn: pymysql.connections.Connection,
+    target_db: str,
+    source: str,
+    *,
+    max_rows: int | None,
+    batch_size: int,
+) -> dict[str, Any]:
+    if source == "ubist":
+        base = load_ubist_base_frame(max_rows=max_rows)
+        measure_frame = ubist_measure_frame
+    elif source == "iqvia_nsa":
+        base = load_iqvia_base_frame(max_rows=max_rows)
+        measure_frame = iqvia_measure_frame
+    else:
+        raise ValueError(f"unsupported dimension source: {source}")
+
+    source_manifest: dict[str, Any] = {
+        "source_rows": int(len(base)),
+        "measures": {},
+    }
+    for measure in MEASURES_BY_SOURCE[source]:
+        frame = measure_frame(base, measure)
+        rows = build_filter_dimension_rows(source, measure, frame)
+        insert_filter_dimension_rows(conn, target_db, rows, batch_size=batch_size)
+        source_manifest["measures"][measure] = {
+            "input_rows": int(len(frame)),
+            "sidecar": summarize_dimension_rows(rows),
+        }
+    return source_manifest
+
+
+def _copy_source_rows(
+    conn: pymysql.connections.Connection,
+    source_db: str,
+    target_db: str,
+    source: str,
+    *,
+    batch_size: int,
+) -> dict[str, Any]:
+    return copy_filter_dimension_source_rows(conn, source_db, target_db, source, batch_size=batch_size)
 
 
 def _connect_admin() -> pymysql.connections.Connection:

@@ -62,6 +62,7 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
                     "strength_pack": static.get("STRENGTH") or static.get("PACK DESC") or static.get("PACK DESCRIPTION"),
                     "molecule_desc": static.get("MOLECULE DESC"),
                     "molecule": static.get("MOLECULE DESC"),
+                    "molecule_type": static.get("MOLECULE TYPE"),
                     "dosage_form": static.get("NFC 3 DESC") or static.get("NFC 2 DESC") or static.get("NFC 1 DESC"),
                     "nhi_type": static.get("NHI TYPE"),
                     "ox_gx": None,
@@ -136,6 +137,7 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
           first(n.pack_desc) AS pack_desc,
           first(n.strength) AS strength,
           first(n.molecule_desc) AS molecule_desc,
+          first(n.molecule_type) AS molecule_type,
           first(n.nfc3_desc) AS nfc3_desc,
           first(n.nfc2_desc) AS nfc2_desc,
           first(n.nfc1_desc) AS nfc1_desc,
@@ -173,6 +175,7 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
     frame["product_code"] = frame.apply(lambda row: best_name(row.get("product_name_en"), row.get("product_name")), axis=1)
     frame["strength_pack"] = frame.apply(lambda row: best_name(row.get("strength"), row.get("pack_desc"), row.get("strength_pack")), axis=1)
     frame["molecule"] = frame.apply(lambda row: best_name(row.get("molecule"), row.get("molecule_desc")), axis=1)
+    frame["molecule_type"] = frame["molecule_type"].where(frame["molecule_type"].notna(), None)
     frame["dosage_form"] = frame.apply(lambda row: best_name(row.get("dosage_form"), row.get("nfc3_desc"), row.get("nfc2_desc"), row.get("nfc1_desc")), axis=1)
     frame["manufacturer"] = frame.apply(lambda row: best_name(row.get("manufacturer"), row.get("mfr_name_kor"), row.get("mfr_name")), axis=1)
     frame["company"] = frame.apply(lambda row: best_name(row.get("company"), row.get("mfr_name_kor"), row.get("mfr_name")), axis=1)

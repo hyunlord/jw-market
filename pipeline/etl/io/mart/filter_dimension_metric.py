@@ -93,7 +93,57 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             source="ubist",
             notes="제품 단위 급여구분 필터.",
         ),
-    }
+    },
+    "iqvia_nsa": {
+        "mfr": DimensionSpec(
+            dimension_type="mfr",
+            display_name="MFR NAME KOR",
+            source_columns=("company", "manufacturer"),
+            enabled=True,
+            source="iqvia_nsa",
+            notes="IQVIA 판매사 축. MFR NAME KOR를 우선하고 row-level mfr_name을 fallback으로 둔다.",
+        ),
+        "molecule": DimensionSpec(
+            dimension_type="molecule",
+            display_name="MOLECULE DESC",
+            source_columns=("molecule_desc", "molecule"),
+            enabled=False,
+            source="iqvia_nsa",
+            notes="PL 결정으로 MVP 동적 필터에서 제외한다. raw provenance만 loader에 남긴다.",
+        ),
+        "molecule_type": DimensionSpec(
+            dimension_type="molecule_type",
+            display_name="MOLECULE TYPE",
+            source_columns=("molecule_type",),
+            enabled=True,
+            source="iqvia_nsa",
+            notes="IQVIA 고유 분석레벨. 기존 dimension_data에 없어서 raw static에서 별도 추출한다.",
+        ),
+        "pack": DimensionSpec(
+            dimension_type="pack",
+            display_name="PACK DESC",
+            source_columns=("pack_desc",),
+            enabled=False,
+            source="iqvia_nsa",
+            notes="PL 결정으로 제외한다. pack free-form 필터는 MVP 범위 밖이다.",
+        ),
+        "strength": DimensionSpec(
+            dimension_type="strength",
+            display_name="STRENGTH",
+            source_columns=("strength",),
+            enabled=True,
+            source="iqvia_nsa",
+            notes="제품 단위 성분용량 필터. PACK DESC fallback을 쓰지 않아 제외 정책을 지킨다.",
+        ),
+        "nhi": DimensionSpec(
+            dimension_type="nhi",
+            display_name="NHI TYPE",
+            source_columns=("nhi_type",),
+            enabled=True,
+            source="iqvia_nsa",
+            notes="제품 단위 급여구분 필터.",
+        ),
+    },
 }
 
 
@@ -130,7 +180,7 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
     for spec in enabled_dimension_specs(source):
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
-        working[label_col] = working.apply(lambda row: _first_dimension_value(row, spec), axis=1)
+        working[label_col] = _dimension_display_series(working, spec)
         working[norm_col] = working[label_col].map(normalize_dimension_value)
         dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
@@ -140,16 +190,16 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
             "measure",
             "atc4_code",
             "brand_key",
-            "brand_name",
             "product_code",
-            label_col,
             norm_col,
         ]
         for key, group in dim_frame.groupby(group_cols, dropna=False, sort=True):
             history = _period_history(group)
             if not history:
                 continue
-            source_v, measure_v, atc4, brand_key, brand_name, product_code, display, norm = key
+            source_v, measure_v, atc4, brand_key, product_code, norm = key
+            brand_name = _first_sorted_label(group["brand_name"])
+            display = _first_sorted_label(group[label_col])
             rows.append(
                 {
                     "source": str(source_v),
@@ -176,14 +226,26 @@ def guard_dimension_stage_target(target_db: str) -> None:
         raise ValueError(f"unsafe target schema name: {target_db}")
 
 
-def _first_dimension_value(row: pd.Series, spec: DimensionSpec) -> str | None:
+def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Series:
+    """Return the first non-empty configured source column without row-wise apply.
+
+    Full UBIST+IQVIA builds walk millions of raw product-period rows. A row-wise
+    ``DataFrame.apply`` made STAGE B spend minutes before the first Galera-safe
+    insert. This vectorized combine keeps the same fallback order while making
+    the tracked builder viable for full isolated evidence builds.
+    """
+    result = pd.Series([None] * len(frame), index=frame.index, dtype=object)
     for column in spec.source_columns:
-        if column not in row:
+        if column not in frame:
             continue
-        value = normalize_dimension_value(row.get(column))
-        if value:
-            return value
-    return None
+        values = frame[column].map(normalize_dimension_value)
+        result = result.where(result.notna(), values)
+    return result
+
+
+def _first_sorted_label(series: pd.Series) -> str:
+    labels = sorted({str(value) for value in series.dropna().tolist() if normalize_dimension_value(value)})
+    return labels[0] if labels else ""
 
 
 def _period_history(group: pd.DataFrame) -> dict[str, float]:

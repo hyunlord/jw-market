@@ -92,6 +92,89 @@ def insert_filter_dimension_rows(
             cur.executemany(sql, payloads[start : start + batch_size])
 
 
+def copy_filter_dimension_source_rows(
+    conn: pymysql.connections.Connection,
+    source_db: str,
+    target_db: str,
+    source: str,
+    *,
+    batch_size: int = 200,
+) -> dict[str, Any]:
+    """Copy verified sidecar rows between isolated schemas in Galera-safe chunks.
+
+    STAGE B reuses the already-verified UBIST STAGE A sidecar while building new
+    IQVIA rows. Keeping this copy path tracked here prevents ad hoc INSERT...SELECT
+    use, preserves the live-schema guard, and records copy completeness in the
+    build manifest.
+    """
+    guard_dimension_stage_target(source_db)
+    guard_dimension_stage_target(target_db)
+    if source_db == target_db:
+        raise ValueError("copy source and target schemas must differ")
+    if batch_size > 200:
+        raise ValueError("batch_size must be <= 200 for Galera writeset safety")
+
+    columns = [
+        "source",
+        "measure",
+        "atc4_code",
+        "brand_key",
+        "brand_name",
+        "product_code",
+        "dimension_type",
+        "dimension_value",
+        "dimension_value_norm",
+        "dimension_value_hash",
+        "raw_value_history",
+    ]
+    select_columns = ", ".join(quote_id(column) for column in columns)
+    copied = 0
+    last_id = 0
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) AS n FROM {quote_id(source_db)}.{quote_id(FILTER_DIMENSION_TABLE)} WHERE source=%s",
+            (source,),
+        )
+        expected = int(cur.fetchone()["n"])
+        while True:
+            cur.execute(
+                f"""
+                INSERT INTO {quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}
+                    ({select_columns})
+                SELECT {select_columns}
+                FROM {quote_id(source_db)}.{quote_id(FILTER_DIMENSION_TABLE)}
+                WHERE source=%s AND id > %s
+                ORDER BY id
+                LIMIT {int(batch_size)}
+                """,
+                (source, last_id),
+            )
+            inserted = int(cur.rowcount)
+            if inserted == 0:
+                break
+            copied += inserted
+            cur.execute(
+                f"""
+                SELECT MAX(id) AS max_id
+                FROM (
+                    SELECT id
+                    FROM {quote_id(source_db)}.{quote_id(FILTER_DIMENSION_TABLE)}
+                    WHERE source=%s AND id > %s
+                    ORDER BY id
+                    LIMIT {int(inserted)}
+                ) AS copied_rows
+                """,
+                (source, last_id),
+            )
+            last_id = int(cur.fetchone()["max_id"])
+    return {
+        "copy_from": source_db,
+        "copied_rows": copied,
+        "expected_rows": expected,
+        "copy_complete": copied == expected,
+    }
+
+
 def _column_value(row: dict[str, Any], column: str) -> Any:
     if column == "raw_value_history":
         return dumps(row[column])
