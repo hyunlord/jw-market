@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_cagr, compute_hhi
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
+from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
@@ -87,6 +88,112 @@ def test_compose_when_definition_and_metrics_are_ready() -> None:
 
     assert response["market_meta"]["view_source_id"] == "dynamic_general"
     assert response["data"]["market_size_series"][0]["value"] == 100.0
+
+
+def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_top5() -> None:
+    definition = MarketDefinition(
+        view="strategic_ml",
+        filter_echo={"view": "strategic_ml", "ml_id": "ml_005", "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+        focus_brand_key="focus",
+        strategic_market_kind="ml",
+        strategic_market_id="ml_005",
+    )
+    brands = tuple(
+        BrandMetric(
+            f"brand-{index}",
+            f"Brand {index}",
+            "",
+            "",
+            float(100 - index),
+            0.0,
+            index,
+            "2026-04",
+            float(100 - index),
+            ({"period": "2026-04", "value": float(100 - index)},),
+        )
+        for index in range(1, 6)
+    ) + (
+        BrandMetric(
+            "focus",
+            "Focus Brand",
+            "",
+            "",
+            1.0,
+            0.0,
+            6,
+            "2026-04",
+            1.0,
+            ({"period": "2026-04", "value": 1.0},),
+        ),
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=486.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-04", "market_size": 486.0},),
+        brands=brands[:5],
+        all_brands=brands,
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    ranking = payload["data"]["brand_ranking"]["rankings_by_year"]["2026"]
+    focus_rows = [row for row in ranking if row["brand"] == "Focus Brand"]
+    assert payload["brand_key"] == "focus"
+    assert payload["data"]["kpi"]["target_brand"] == "Focus Brand"
+    assert focus_rows == [
+        {
+            "brand": "Focus Brand",
+            "company": "Focus Brand",
+            "rank": 6,
+            "value": 1.0,
+            "ms_pct": 1.0 / 486.0 * 100,
+            "is_target": True,
+            "is_jw": False,
+            "is_others": False,
+        }
+    ]
+
+
+def test_cause_payload_hhi_recent_uses_complete_calendar_year_not_partial_latest_month() -> None:
+    definition = MarketDefinition(
+        view="strategic_ml",
+        filter_echo={"view": "strategic_ml", "ml_id": "ml_005", "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+        strategic_market_kind="ml",
+        strategic_market_id="ml_005",
+    )
+    complete_year_a = tuple({"period": f"2025-{month:02d}", "value": 75.0} for month in range(1, 13))
+    complete_year_b = tuple({"period": f"2025-{month:02d}", "value": 25.0} for month in range(1, 13))
+    partial_year_a = tuple({"period": f"2026-{month:02d}", "value": 10.0} for month in range(1, 5))
+    partial_year_b = tuple({"period": f"2026-{month:02d}", "value": 90.0} for month in range(1, 5))
+    brands = (
+        BrandMetric("a", "A", "", "", 940.0, 0.0, 1, "2026-04", 10.0, complete_year_a + partial_year_a),
+        BrandMetric("b", "B", "", "", 660.0, 0.0, 2, "2026-04", 90.0, complete_year_b + partial_year_b),
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1600.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=tuple({"period": f"2025-{month:02d}", "market_size": 100.0} for month in range(1, 13))
+        + tuple({"period": f"2026-{month:02d}", "market_size": 100.0} for month in range(1, 5)),
+        brands=brands,
+        all_brands=brands,
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    assert payload["data"]["hhi_series_5y"] == [{"period": "2025", "period_full": "2025", "year": 2025, "hhi": 6250.0}]
+    assert payload["data"]["kpi"]["hhi_recent"] == 6250.0
 
 
 def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:

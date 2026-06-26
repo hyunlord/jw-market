@@ -33,7 +33,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
 
     source = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     market_id = _market_id(definition)
-    focus = _focus_brand(metrics.all_brands)
+    focus = _focus_brand(metrics.all_brands, definition.focus_brand_key)
     data = build_cause_data(definition=definition, metrics=metrics, focus=focus)
     meta = build_market_meta(definition=definition, metrics=metrics, market_id=market_id, data=data)
     return {
@@ -62,12 +62,12 @@ def build_cause_data(
     del definition
     series = market_size_series(metrics)
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
-    hhi = hhi_series(metrics.all_brands)
+    hhi = hhi_series(metrics.all_brands, source=metrics.source)
     matrix = matrix_rows(metrics=metrics, focus=focus)
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     levels = empty_analysis_levels(series)
-    hhi_recent = latest_hhi(metrics.all_brands)
+    hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     return {
         "analysis_level_market_status": levels,
         "analysis_levels": levels,
@@ -194,5 +194,10 @@ def _valid_measures(source: str) -> set[str]:
     return {"sales", "volume"} if source == "ubist" else {"sales", "unit", "dosage_unit", "counting_unit"}
 
 
-def _focus_brand(brands: tuple[BrandMetric, ...]) -> BrandMetric | None:
+def _focus_brand(brands: tuple[BrandMetric, ...], focus_brand_key: str | None) -> BrandMetric | None:
+    if focus_brand_key:
+        requested = focus_brand_key.strip()
+        for brand in brands:
+            if brand.brand_key == requested:
+                return brand
     return brands[0] if brands else None
