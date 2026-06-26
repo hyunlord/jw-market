@@ -94,11 +94,13 @@ def test_archive_builder_materialization_receives_target_patch_only() -> None:
         )
 
         assert target_mapping.exists()
-        assert "parse_target_channel_code as parse_channel_code" in resolver
-        assert "raw_pair_to_target_channel_code as raw_pair_to_channel_code" in resolver
-        assert "target_channel_label_map" in resolver
-        assert "specialty_display_channels" in resolver
-        assert "from pipeline.scripts.utils.ubist_channel_mapping import" not in resolver
+        assert (
+            "from pipeline.scripts.utils.ubist_channel_mapping "
+            "import parse_channel_code, raw_pair_to_channel_code"
+        ) in resolver
+        assert "parse_target_channel_code as parse_channel_code" not in resolver
+        assert "raw_pair_to_target_channel_code as raw_pair_to_channel_code" not in resolver
+        assert "target_channel_label_map" in cause_builder
         assert "analysis_level_market_channels = target_customer_channels or" in cause_builder
         assert (
             'analysis_level_market_channels = analysis_levels.get("channels") '
