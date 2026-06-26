@@ -5,6 +5,7 @@
 *.tar.gz
 *.tgz
 *.zip
+*.zip.sha256
 *.rar
 *.7z
 *.image.tar
@@ -109,6 +110,8 @@ secrets/
 # Audit deliverables stay local
 audit/
 audit_*/
+initializationError
+sample_news_*.json
 
 # Root-level raw spreadsheets/CSV must not slip in (data/ already ignored)
 /*.xlsx
