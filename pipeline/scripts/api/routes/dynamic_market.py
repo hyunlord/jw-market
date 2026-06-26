@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
+from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
@@ -46,6 +47,21 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
     return composer.compose(definition=definition, metrics=metrics)
+
+
+@router.get("/api/dynamic-market/filter-options")
+def dynamic_market_filter_options(view: str = "general", source: str = "ubist", market_id: str | None = None) -> dict:
+    try:
+        return build_filter_options(
+            mart_db=config.db_name,
+            general_dimension_db=config.general_dimension_db_name,
+            strategic_dimension_db=config.strategic_dimension_db_name,
+            view=view,
+            source=source,
+            market_id=market_id,
+        )
+    except DynamicMarketInputError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_filter_options_request", "message": str(exc)}) from exc
 
 
 def strategic_stub_for_smoke() -> dict:
