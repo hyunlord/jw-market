@@ -47,7 +47,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
         "measure": metrics.measure,
         "source": source,
         "unit_label": metrics.unit_label,
-        "view": "market_landscape",
+        "view": str(definition.filter_echo.get("view_kind") or "market_landscape"),
     }
 
 
@@ -131,6 +131,8 @@ def build_market_meta(
     molecules = list(definition.normalized_molecules)
     source = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     label = _market_label(atc_codes=atc_codes, molecules=molecules)
+    if definition.view.startswith("strategic_"):
+        label = f"전략 동적 시장: {market_id}"
     atc_desc = join_unique(item.atc4_desc for item in metrics.all_brands if item.atc4_desc)
     return {
         "strategic_market_id": market_id,
@@ -138,13 +140,13 @@ def build_market_meta(
         "market_name_short": "동적 시장",
         "market_label_kor": label,
         "market_definition_label": label,
-        "market_definition_full": f"ATC4={', '.join(atc_codes) or '-'}; molecule={', '.join(molecules) or '-'}",
+        "market_definition_full": _market_definition_full(definition=definition, atc_codes=atc_codes, molecules=molecules),
         "filters": definition.filter_echo,
         "mkt_team": "Runtime",
         "brand_list": [item.brand_name for item in metrics.all_brands[:100]],
         "atc_codes": atc_codes,
         "atc_desc": atc_desc,
-        "view_source_id": "dynamic_general",
+        "view_source_id": _view_source_id(definition),
         "atc_count": len(atc_codes) or None,
         "nhi_type": None,
         "sources": [source],
@@ -162,9 +164,21 @@ def build_market_meta(
 
 
 def _market_id(definition: MarketDefinition) -> str:
+    if definition.strategic_market_id:
+        return definition.strategic_market_id
     fingerprint = repr(sorted((key, value) for key, value in definition.filter_echo.items()))
     digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:10]
     return f"dynamic_general_{digest}"
+
+
+def _view_source_id(definition: MarketDefinition) -> str:
+    return definition.view if definition.view.startswith("strategic_") else "dynamic_general"
+
+
+def _market_definition_full(*, definition: MarketDefinition, atc_codes: list[str], molecules: list[str]) -> str:
+    if definition.view.startswith("strategic_"):
+        return f"strategic_view={definition.view}; market_id={definition.strategic_market_id}; narrowing=analysis_level"
+    return f"ATC4={', '.join(atc_codes) or '-'}; molecule={', '.join(molecules) or '-'}"
 
 
 def _market_label(*, atc_codes: list[str], molecules: list[str]) -> str:

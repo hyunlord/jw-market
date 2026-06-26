@@ -45,12 +45,15 @@ class DynamicMarketAnalysisLevel(BaseModel):
 
 
 class DynamicMarketFilters(BaseModel):
-    """Filter set accepted by the general-view MVP resolver."""
+    """Filter set accepted by general and strategic dynamic resolvers."""
 
     model_config = ConfigDict(extra="forbid")
 
     atc4: list[str] = Field(default_factory=list, description="ATC4 codes included as an OR set.")
     molecule: list[str] = Field(default_factory=list, description="Molecules included as an OR set via bridge.")
+    view_kind: str | None = Field(default=None, description="Strategic view kind: market_landscape or competitive_dynamics.")
+    ml_id: str | None = Field(default=None, description="Strategic market_landscape market id.")
+    cd_market_id: str | None = Field(default=None, description="Strategic competitive_dynamics market id.")
     focus_brand_key: str | None = Field(default=None, description="Selected brand kept visible when dimension filters narrow the market.")
     analysis_level: DynamicMarketAnalysisLevel = Field(default_factory=DynamicMarketAnalysisLevel)
 

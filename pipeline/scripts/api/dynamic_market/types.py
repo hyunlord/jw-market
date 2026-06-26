@@ -58,6 +58,8 @@ class MarketDefinition:
     brands: tuple[BrandRef, ...] = ()
     dimension_filters: tuple[DimensionFilter, ...] = ()
     focus_brand_key: str | None = None
+    strategic_market_kind: str | None = None
+    strategic_market_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

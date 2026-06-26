@@ -8,6 +8,7 @@ import json
 import math
 
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
+from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
@@ -30,6 +31,7 @@ class MetricAggregator:
     """
 
     mart_db: str
+    strategic_dimension_db: str | None = None
 
     def aggregate(
         self,
@@ -40,10 +42,32 @@ class MetricAggregator:
         period_range: PeriodRange,
         top_n: int,
         dimension_filters: tuple[DimensionFilter, ...] = (),
+        view: str = "general",
+        strategic_market_id: str | None = None,
     ) -> AggregatedMetrics:
         if not brands:
             return AggregatedMetrics(source, measure, "", 0.0, None, None, (), (), ())
-        if dimension_filters:
+        if view.startswith("strategic_"):
+            if not strategic_market_id:
+                raise ValueError("strategic aggregation requires strategic_market_id")
+            if dimension_filters:
+                rows = self._load_strategic_sidecar_metric_rows(
+                    brands=brands,
+                    source=source,
+                    measure=measure,
+                    dimension_filters=dimension_filters,
+                    view=view,
+                    strategic_market_id=strategic_market_id,
+                )
+            else:
+                rows = self._load_strategic_mart_metric_rows(
+                    brands=brands,
+                    source=source,
+                    measure=measure,
+                    view=view,
+                    strategic_market_id=strategic_market_id,
+                )
+        elif dimension_filters:
             rows = self._load_sidecar_metric_rows(
                 brands=brands,
                 source=source,
@@ -82,6 +106,99 @@ class MetricAggregator:
             brands=ranked[:top_n],
             all_brands=ranked,
         )
+
+    def _load_strategic_mart_metric_rows(
+        self,
+        *,
+        brands: tuple[BrandRef, ...],
+        source: str,
+        measure: str,
+        view: str,
+        strategic_market_id: str,
+    ) -> list[dict]:
+        mart_db = quote_identifier(self.mart_db)
+        scope_sql, scope_params = brand_scope_predicate(brands)
+        table = strategic_table_for_view(view)
+        id_column = "ml_id" if strategic_kind_for_view(view) == "ml" else "cd_market_id"
+        return db.fetch_all(
+            f"""
+            SELECT brand_key, brand_name, '' AS atc4_code, '' AS atc4_desc, source, measure, unit_label, raw_value_history
+            FROM {mart_db}.{table}
+            WHERE {id_column} = %s
+              AND source = %s
+              AND measure = %s
+              AND {scope_sql}
+            ORDER BY brand_name, brand_key
+            """,
+            (strategic_market_id, source, measure, *scope_params),
+        )
+
+    def _load_strategic_sidecar_metric_rows(
+        self,
+        *,
+        brands: tuple[BrandRef, ...],
+        source: str,
+        measure: str,
+        dimension_filters: tuple[DimensionFilter, ...],
+        view: str,
+        strategic_market_id: str,
+    ) -> list[dict]:
+        dimension_db = quote_identifier(self.strategic_dimension_db or self.mart_db)
+        scope_sql, scope_params = brand_scope_predicate(brands)
+        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters)
+        market_kind = strategic_kind_for_view(view)
+        rows = db.fetch_all(
+            f"""
+            SELECT brand_key, brand_name, product_code, dimension_type, raw_value_history
+            FROM {dimension_db}.{quote_identifier(STRATEGIC_DIMENSION_TABLE)}
+            WHERE market_kind = %s
+              AND market_id = %s
+              AND source = %s
+              AND measure = %s
+              AND {scope_sql}
+              AND ({dimension_sql})
+            ORDER BY brand_key, product_code, dimension_type
+            """,
+            (market_kind, strategic_market_id, source, measure, *scope_params, *dimension_params),
+        )
+        metadata = self._strategic_metadata(
+            brands=brands,
+            source=source,
+            measure=measure,
+            view=view,
+            strategic_market_id=strategic_market_id,
+        )
+        return strategic_sidecar_rows_to_metric_rows(
+            rows,
+            metadata=metadata,
+            required_dimensions=tuple(item.dimension_type for item in dimension_filters),
+        )
+
+    def _strategic_metadata(
+        self,
+        *,
+        brands: tuple[BrandRef, ...],
+        source: str,
+        measure: str,
+        view: str,
+        strategic_market_id: str,
+    ) -> dict[str, dict]:
+        mart_db = quote_identifier(self.mart_db)
+        scope_sql, scope_params = brand_scope_predicate(brands)
+        table = strategic_table_for_view(view)
+        id_column = "ml_id" if strategic_kind_for_view(view) == "ml" else "cd_market_id"
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT brand_key, unit_label
+            FROM {mart_db}.{table}
+            WHERE {id_column} = %s
+              AND source = %s
+              AND measure = %s
+              AND {scope_sql}
+            """,
+            (strategic_market_id, source, measure, *scope_params),
+        )
+        return {str(row["brand_key"]): row for row in rows}
 
     def _load_metric_rows(
         self,
@@ -302,6 +419,69 @@ def sidecar_rows_to_metric_rows(
             }
         )
     return metric_rows
+
+
+def strategic_sidecar_rows_to_metric_rows(
+    rows: list[dict],
+    *,
+    metadata: dict[str, dict],
+    required_dimensions: tuple[str, ...],
+) -> list[dict]:
+    products: dict[tuple[str, str], dict[str, object]] = {}
+    required = set(required_dimensions)
+    for row in rows:
+        key = (str(row["brand_key"]), str(row["product_code"]))
+        item = products.setdefault(
+            key,
+            {
+                "brand_key": str(row["brand_key"]),
+                "brand_name": str(row["brand_name"]),
+                "raw_value_history": row["raw_value_history"],
+                "dimensions": set(),
+            },
+        )
+        dimensions = item["dimensions"]
+        if isinstance(dimensions, set):
+            dimensions.add(str(row["dimension_type"]))
+
+    histories_by_brand: dict[tuple[str, str], dict[str, float]] = {}
+    for item in products.values():
+        dimensions = item["dimensions"]
+        if not isinstance(dimensions, set) or not required.issubset(dimensions):
+            continue
+        brand_key = str(item["brand_key"])
+        row_key = (brand_key, str(item["brand_name"]))
+        history = parse_history(str(item["raw_value_history"]))
+        target = histories_by_brand.setdefault(row_key, {})
+        for period, value in history.items():
+            target[period] = target.get(period, 0.0) + value
+
+    metric_rows: list[dict] = []
+    for (brand_key, brand_name), history in sorted(histories_by_brand.items()):
+        meta = metadata.get(brand_key, {})
+        metric_rows.append(
+            {
+                "brand_key": brand_key,
+                "brand_name": brand_name,
+                "atc4_code": "",
+                "atc4_desc": "",
+                "unit_label": str(meta.get("unit_label") or ""),
+                "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    return metric_rows
+
+
+def strategic_kind_for_view(view: str) -> str:
+    if view == "strategic_ml":
+        return "ml"
+    if view == "strategic_cd":
+        return "cd"
+    raise ValueError(f"unsupported strategic view: {view}")
+
+
+def strategic_table_for_view(view: str) -> str:
+    return "mart_strategic_ml_brand_metric" if strategic_kind_for_view(view) == "ml" else "mart_strategic_cd_brand_metric"
 
 
 def _dimension_value_hash(value: str) -> str:

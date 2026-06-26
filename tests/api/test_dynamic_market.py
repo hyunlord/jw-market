@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_cagr, compute_hhi
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver
+from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
     BrandMetric,
@@ -197,3 +197,89 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
 
     assert metrics.market_size == 10.0
     assert any("mart_general_filter_dimension_metric" in sql for sql in calls)
+
+
+def test_strategic_resolver_requires_view_specific_market_id() -> None:
+    resolver = StrategicViewResolver(mart_db="jw_mart")
+
+    try:
+        resolver.resolve(
+            view_kind="market_landscape",
+            ml_id=None,
+            cd_market_id=None,
+            atc4=[],
+            molecule=[],
+            analysis_level=None,
+            focus_brand_key=None,
+            source="ubist",
+            measure="sales",
+        )
+    except DynamicMarketInputError as exc:
+        assert "ml_id" in str(exc)
+    else:
+        raise AssertionError("strategic market_landscape accepted a missing ml_id")
+
+
+def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        calls.append(sql)
+        assert params[:3] == ("cd_002", "iqvia_nsa", "sales")
+        return [{"brand_key": "brand-cd", "brand_name": "CD Brand", "atc4_code": ""}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all", fake_fetch_all)
+    definition = StrategicViewResolver(mart_db="jw_mart").resolve(
+        view_kind="competitive_dynamics",
+        ml_id=None,
+        cd_market_id="cd_002",
+        atc4=[],
+        molecule=[],
+        analysis_level=None,
+        focus_brand_key=None,
+        source="iqvia",
+        measure="sales",
+    )
+
+    assert definition.view == "strategic_cd"
+    assert definition.filter_echo["cd_market_id"] == "cd_002"
+    assert definition.brands == (BrandRef("brand-cd", "CD Brand", ""),)
+    assert any("mart_strategic_cd_brand_metric" in sql for sql in calls)
+
+
+def test_strategic_sidecar_aggregation_keeps_recode_product_history(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        calls.append(sql)
+        if "mart_strategic_filter_dimension_metric" in sql:
+            assert params[:4] == ("ml", "ml_005", "ubist", "sales")
+            return [
+                {
+                    "brand_key": "미케란",
+                    "brand_name": "미케란",
+                    "product_code": "649900100",
+                    "dimension_type": "seller",
+                    "raw_value_history": json.dumps({"2026-04": 31_282_626.06}),
+                }
+            ]
+        if "mart_strategic_ml_brand_metric" in sql:
+            return [{"brand_key": "미케란", "unit_label": "KRW"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("미케란", "미케란", ""),),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange("2026-04", "2026-04"),
+        top_n=20,
+        dimension_filters=(DimensionFilter("seller", ("태준제약",)),),
+        view="strategic_ml",
+        strategic_market_id="ml_005",
+    )
+
+    assert metrics.market_size == 31_282_626.06
+    assert metrics.brands[0].total_value == 31_282_626.06
+    assert any("mart_strategic_filter_dimension_metric" in sql for sql in calls)
+    assert not any("mart_general_filter_dimension_metric" in sql for sql in calls)

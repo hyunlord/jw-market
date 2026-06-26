@@ -13,6 +13,7 @@ from typing import Protocol
 from pipeline.etl.io.mart.filter_dimension_metric import DIMENSION_REGISTRY
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_value
+from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.types import (
@@ -70,7 +71,7 @@ class GeneralViewResolver:
         if molecule:
             raise DynamicMarketInputError("molecule filters are disabled for D-1; use ATC4 and enabled source-specific dimensions")
         normalized_molecules = normalize_molecule_list(molecule)
-        dimension_filters = self._dimension_filters(
+        dimension_filters = build_dimension_filters(
             analysis_level=analysis_level or {},
             source=normalized_source,
         )
@@ -272,19 +273,15 @@ class GeneralViewResolver:
 
 @dataclass(frozen=True, slots=True)
 class StrategicViewResolver:
-    """Stub resolver proving strategic overlays can reuse aggregation.
-
-    The next stage should replace the predefined ``ml_id`` lookup with the full
-    strategy overlay/cd_filter logic.  It still returns ``MarketDefinition``, so
-    the same ``MetricAggregator`` and ``ResponseComposer`` remain untouched.
-    """
-
     mart_db: str
-    ml_id: str = "ml_003"
+    dimension_db: str | None = None
 
     def resolve(
         self,
         *,
+        view_kind: str | None = None,
+        ml_id: str | None = None,
+        cd_market_id: str | None = None,
         atc4: list[str],
         molecule: list[str],
         analysis_level: dict[str, dict[str, list[str]]] | None = None,
@@ -292,28 +289,51 @@ class StrategicViewResolver:
         source: str,
         measure: str,
     ) -> MarketDefinition:
-        del atc4, molecule, analysis_level, focus_brand_key
+        if atc4 or molecule:
+            raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not ATC4/molecule expansion")
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
+        market_kind = normalize_strategic_view_kind(view_kind=view_kind, ml_id=ml_id, cd_market_id=cd_market_id)
+        market_id = normalize_strategic_market_id(market_kind=market_kind, ml_id=ml_id, cd_market_id=cd_market_id)
+        table = "mart_strategic_ml_brand_metric" if market_kind == "ml" else "mart_strategic_cd_brand_metric"
+        id_column = "ml_id" if market_kind == "ml" else "cd_market_id"
         rows = db.fetch_all(
             f"""
             SELECT DISTINCT brand_key, brand_name, '' AS atc4_code
-            FROM {quote_identifier(self.mart_db)}.mart_strategic_ml_brand_metric
-            WHERE ml_id = %s AND source = %s AND measure = %s
+            FROM {quote_identifier(self.mart_db)}.{table}
+            WHERE {id_column} = %s AND source = %s AND measure = %s
             ORDER BY brand_name, brand_key
             """,
-            (self.ml_id, normalized_source, normalized_measure),
+            (market_id, normalized_source, normalized_measure),
         )
         brands = tuple(
             BrandRef(str(row["brand_key"]), str(row["brand_name"]), str(row["atc4_code"]))
             for row in rows
         )
+        filters = build_dimension_filters(analysis_level=analysis_level or {}, source=normalized_source)
+        view = "strategic_ml" if market_kind == "ml" else "strategic_cd"
+        echo: dict[str, object] = {
+            "view": view,
+            "view_kind": "market_landscape" if market_kind == "ml" else "competitive_dynamics",
+            "source": normalized_source,
+            "measure": normalized_measure,
+            "analysis_level": _dimension_echo(filters),
+            "focus_brand_key": focus_brand_key,
+        }
+        if market_kind == "ml":
+            echo["ml_id"] = market_id
+        else:
+            echo["cd_market_id"] = market_id
         return MarketDefinition(
-            view="strategic_stub",
-            filter_echo={"view": "strategic_stub", "ml_id": self.ml_id, "source": normalized_source, "measure": normalized_measure},
+            view=view,
+            filter_echo=echo,
             source=normalized_source,
             measure=normalized_measure,
             brands=brands,
+            dimension_filters=filters,
+            focus_brand_key=focus_brand_key,
+            strategic_market_kind=market_kind,
+            strategic_market_id=market_id,
         )
 
 
@@ -321,6 +341,55 @@ def placeholders(values: tuple[str, ...]) -> str:
     """Return a stable placeholder list for PyMySQL parameter binding."""
 
     return ", ".join(["%s"] * len(values))
+
+
+def build_dimension_filters(
+    *,
+    analysis_level: dict[str, dict[str, list[str]]],
+    source: str,
+) -> tuple[DimensionFilter, ...]:
+    source_payload = analysis_level.get(_api_source_key(source), {})
+    if _other_source_has_values(analysis_level, source):
+        raise DynamicMarketInputError(f"analysis_level must match selected source: {source}")
+    registry = DIMENSION_REGISTRY[source]
+    api_to_registry = _api_dimension_names(source)
+    filters: list[DimensionFilter] = []
+    for api_name, values in sorted(source_payload.items()):
+        if not values:
+            continue
+        dimension_type = api_to_registry.get(api_name)
+        if dimension_type is None:
+            raise DynamicMarketInputError(f"unsupported analysis_level dimension for {source}: {api_name}")
+        spec = registry[dimension_type]
+        if not spec.enabled:
+            raise DynamicMarketInputError(f"analysis_level dimension is disabled for dynamic filters: {api_name}")
+        normalized = _normalize_dimension_values(values)
+        if normalized:
+            filters.append(DimensionFilter(dimension_type=dimension_type, values=normalized))
+    return tuple(filters)
+
+
+def normalize_strategic_view_kind(*, view_kind: str | None, ml_id: str | None, cd_market_id: str | None) -> str:
+    if view_kind:
+        normalized = view_kind.strip().lower()
+        if normalized in {"market_landscape", "strategic_ml", "ml"}:
+            return "ml"
+        if normalized in {"competitive_dynamics", "strategic_cd", "cd"}:
+            return "cd"
+        raise DynamicMarketInputError(f"unsupported strategic view_kind: {view_kind}")
+    if ml_id and not cd_market_id:
+        return "ml"
+    if cd_market_id and not ml_id:
+        return "cd"
+    raise DynamicMarketInputError("strategic view requires view_kind plus ml_id or cd_market_id")
+
+
+def normalize_strategic_market_id(*, market_kind: str, ml_id: str | None, cd_market_id: str | None) -> str:
+    market_id = ml_id if market_kind == "ml" else cd_market_id
+    label = "ml_id" if market_kind == "ml" else "cd_market_id"
+    if not market_id:
+        raise DynamicMarketInputError(f"strategic {market_kind} view requires {label}")
+    return market_id.strip()
 
 
 def _api_source_key(source: str) -> str:

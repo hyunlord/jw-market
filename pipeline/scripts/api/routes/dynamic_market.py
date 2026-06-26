@@ -20,22 +20,14 @@ router = APIRouter()
 def dynamic_market(payload: DynamicMarketRequest) -> dict:
     """Compute a caller-defined general-view market with the ``/api/cause`` response contract."""
 
-    resolver = GeneralViewResolver(mart_db=config.db_name, bridge_db=config.bridge_db_name)
-    aggregator = MetricAggregator(mart_db=config.db_name)
+    aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
     period_range = PeriodRange(
         start=payload.options.period_range.start if payload.options.period_range else None,
         end=payload.options.period_range.end if payload.options.period_range else None,
     )
     try:
-        definition = resolver.resolve(
-            atc4=payload.filters.atc4,
-            molecule=payload.filters.molecule,
-            analysis_level=payload.filters.analysis_level.model_dump(),
-            focus_brand_key=payload.filters.focus_brand_key,
-            source=payload.source,
-            measure=payload.measure,
-        )
+        definition = _resolve_definition(payload)
         metrics = aggregator.aggregate(
             brands=definition.brands,
             source=definition.source,
@@ -43,10 +35,37 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
             period_range=period_range,
             top_n=clamp_top_n(payload.options.top_n),
             dimension_filters=definition.dimension_filters,
+            view=definition.view,
+            strategic_market_id=definition.strategic_market_id,
         )
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
     return composer.compose(definition=definition, metrics=metrics)
+
+
+def _resolve_definition(payload: DynamicMarketRequest):
+    filters = payload.filters
+    analysis_level = filters.analysis_level.model_dump()
+    if filters.view_kind or filters.ml_id or filters.cd_market_id:
+        return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
+            view_kind=filters.view_kind,
+            ml_id=filters.ml_id,
+            cd_market_id=filters.cd_market_id,
+            atc4=filters.atc4,
+            molecule=filters.molecule,
+            analysis_level=analysis_level,
+            focus_brand_key=filters.focus_brand_key,
+            source=payload.source,
+            measure=payload.measure,
+        )
+    return GeneralViewResolver(mart_db=config.db_name, bridge_db=config.bridge_db_name).resolve(
+        atc4=filters.atc4,
+        molecule=filters.molecule,
+        analysis_level=analysis_level,
+        focus_brand_key=filters.focus_brand_key,
+        source=payload.source,
+        measure=payload.measure,
+    )
 
 
 @router.get("/api/dynamic-market/filter-options")
@@ -72,13 +91,25 @@ def strategic_stub_for_smoke() -> dict:
     general-view only until the overlay/CD filter rules are productized.
     """
 
-    resolver = StrategicViewResolver(mart_db=config.db_name)
-    definition = resolver.resolve(atc4=[], molecule=[], analysis_level=None, focus_brand_key=None, source="ubist", measure="sales")
-    metrics = MetricAggregator(mart_db=config.db_name).aggregate(
+    resolver = StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name)
+    definition = resolver.resolve(
+        view_kind="market_landscape",
+        ml_id="ml_003",
+        cd_market_id=None,
+        atc4=[],
+        molecule=[],
+        analysis_level=None,
+        focus_brand_key=None,
+        source="ubist",
+        measure="sales",
+    )
+    metrics = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name).aggregate(
         brands=definition.brands,
         source=definition.source,
         measure=definition.measure,
         period_range=PeriodRange(),
         top_n=20,
+        view=definition.view,
+        strategic_market_id=definition.strategic_market_id,
     )
     return ResponseComposer().compose(definition=definition, metrics=metrics)
