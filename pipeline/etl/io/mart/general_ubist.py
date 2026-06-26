@@ -24,6 +24,11 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
               "진료과" AS specialty,
               first("제조사") AS manufacturer,
               first("판매사") AS company,
+              first("성분") AS ubist_molecule_raw,
+              first("성분용량") AS ubist_molecule_strength,
+              first("제형") AS ubist_form,
+              first("투여경로") AS ubist_route,
+              first("급여구분") AS ubist_reimbursement,
               SUM(TRY_CAST(rx_amt AS DOUBLE)) AS raw_sales,
               SUM(TRY_CAST(rx_qty AS DOUBLE)) AS raw_volume
             FROM (
@@ -92,13 +97,21 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
     frame["display_priority_value"] = frame["raw_sales"]
     codes = [code for code in frame["product_code"].dropna().astype(str).unique().tolist() if code]
     atc_map: dict[str, tuple[str, str | None]] = {}
+    dimension_map: dict[str, dict[str, object]] = {}
     if codes:
         con = duckdb.connect()
         con.register("codes", pd.DataFrame({"product_code": codes}))
         try:
             mapping = con.execute(
                 f"""
-                SELECT CAST(u.약품코드 AS VARCHAR) AS product_code, first(u.ATC) AS atc_text
+                SELECT
+                  CAST(u.약품코드 AS VARCHAR) AS product_code,
+                  first(u.ATC) AS atc_text,
+                  first(u.성분) AS ubist_molecule_raw,
+                  first(u.성분용량) AS ubist_molecule_strength,
+                  first(u.제형) AS ubist_form,
+                  first(u.투여경로) AS ubist_route,
+                  first(u.급여구분) AS ubist_reimbursement
                 FROM read_parquet('{ubist_glob()}') AS u
                 JOIN codes AS c ON CAST(u.약품코드 AS VARCHAR)=c.product_code
                 GROUP BY 1
@@ -107,12 +120,20 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
         finally:
             con.close()
         atc_map = {row["product_code"]: extract_atc4(row["atc_text"]) for _, row in mapping.iterrows()}
+        dimension_map = mapping.set_index("product_code")[
+            ["ubist_molecule_raw", "ubist_molecule_strength", "ubist_form", "ubist_route", "ubist_reimbursement"]
+        ].to_dict("index")
     atc = frame.apply(
         lambda row: atc_map.get(str(row.get("product_code")), (row.get("catalog_atc4_code") or "UNKNOWN", None)),
         axis=1,
     )
     frame["atc4_code"] = atc.map(lambda pair: pair[0])
     frame["atc4_desc"] = atc.map(lambda pair: pair[1])
+    for column in ("ubist_molecule_raw", "ubist_molecule_strength", "ubist_form", "ubist_route", "ubist_reimbursement"):
+        if codes:
+            frame[column] = frame["product_code"].map(lambda code: dimension_map.get(str(code), {}).get(column))
+        else:
+            frame[column] = None
     frame["channel"] = frame["channel"].map(ubist_channel_to_raw)
     frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
     frame = deduplicate_ubist_internal_medicine_rows(frame)
