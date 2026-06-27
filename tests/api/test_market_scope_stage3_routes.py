@@ -57,11 +57,16 @@ def test_resolve_route_exposes_disjoint_dedup_diagnostics(monkeypatch: pytest.Mo
     assert body["dedup"]["overlap_brand_key_count"] == 0
 
 
-def test_cause_route_echoes_resolved_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cause_route_returns_portal_read_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResolver:
         def cause(self, request: object) -> dict[str, object]:
             return {
-                "result": {"brand": "리바로젯", "data": {"market_size_series": {"2026-01": 150.0}}},
+                "result": {
+                    "brand": "리바로젯",
+                    "market_meta": {"market_size_recent": 150.0},
+                    "source": "UBIST",
+                    "data": {"kpi": {"market_size_recent": 150.0}},
+                },
                 "resolved_scope": _resolved_scope().to_dict(),
             }
 
@@ -84,8 +89,12 @@ def test_cause_route_echoes_resolved_scope(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert response.status_code == 200
     body = response.json()
+    assert body["status"] == "SUCCESS"
     assert body["result"]["brand"] == "리바로젯"
-    assert body["resolved_scope"]["scope_hash"] == "abc123"
+    assert body["result"]["market_meta"]["market_size_recent"] == 150.0
+    assert body["result"]["source"] == "UBIST"
+    assert body["result"]["data"]["kpi"]["market_size_recent"] == 150.0
+    assert "resolved_scope" not in body
 
 
 def test_general_scope_routes_are_explicitly_not_ready() -> None:
