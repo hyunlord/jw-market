@@ -135,14 +135,13 @@ def _legacy_cache_payload_template(
         "brand_key": recompute["brand_key"],
         "brand_name": recompute["brand"],
         "data": {
-            "analysis_level_market_status": _empty_market_status_template(),
+            "analysis_level_market_status": _empty_market_status_template(periods=periods, source=source),
             "analysis_levels": _empty_analysis_levels_template(periods=periods, source=source),
             "brand_ranking": data["brand_ranking"],
             "brand_ranking_stacked": data["brand_ranking_stacked"],
             "company_concentration_trend": {"periods": [], "hhi_values": []},
             "company_ranking": data["company_ranking"],
             "company_ranking_stacked": data["company_ranking_stacked"],
-            "data_period_coverage": _coverage_template(periods=periods, source=source),
             "ei_ms_matrix": data["ei_ms_matrix"],
             "growth_contribution": data["growth_contribution"],
             "growth_contribution_ms_matrix": {"data": [], "ms_avg_pct": 0.0, "share_avg_pct": 0.0},
@@ -191,18 +190,16 @@ def _empty_analysis_levels_template(*, periods: tuple[str, ...], source: str) ->
     }
 
 
-def _empty_market_status_template() -> dict[str, Any]:
-    """Return legacy ALMS shape for a scope with no level overlay."""
+def _empty_market_status_template(*, periods: tuple[str, ...], source: str) -> dict[str, Any]:
+    """Return the portal-read chart-8 shape for a scope with no level overlay."""
 
     return {
-        "available_levels": [],
-        "default_level": None,
-        "by_level": {},
         "channels": [],
-        "by_channel": {},
-        "ms_by_channel": {},
-        "targets": [],
-        "note": "",
+        "data": {},
+        "levels": [],
+        "period_unit": _period_unit(source),
+        "periods_monthly": list(periods) if source == "UBIST" else [],
+        "periods_quarterly": list(periods) if source != "UBIST" else [],
     }
 
 
@@ -216,25 +213,6 @@ def _empty_target_template() -> dict[str, Any]:
     """Return legacy target-competition shape for a scope with no targets."""
 
     return {"available_in_view": [], "target_type": "strategy_union", "targets": [], "views": [], "note": ""}
-
-
-def _coverage_template(*, periods: tuple[str, ...], source: str) -> dict[str, Any]:
-    """Return the legacy period coverage container."""
-
-    years = {period[:4] for period in periods}
-    latest = periods[-1] if periods else None
-    latest_year = int(latest[:4]) if latest else None
-    counts = {year: sum(1 for period in periods if period.startswith(year)) for year in sorted(years)}
-    expected = 12 if source == "UBIST" else 4
-    latest_count = counts.get(str(latest_year), 0) if latest_year is not None else 0
-    return {
-        "latest_period": latest,
-        "latest_year": latest_year,
-        "latest_year_period_count": latest_count,
-        "latest_year_is_partial": latest_count < expected,
-        "period_count_by_year": counts,
-        "expected_periods_per_year": expected,
-    }
 
 
 def _market_meta_template(*, source: str, recompute: dict[str, Any]) -> dict[str, Any]:

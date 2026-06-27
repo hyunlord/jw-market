@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.dynamic_market.cause_payload import normalize_portal_read_data
 from pipeline.scripts.api.market_scope.archive_metrics import (
     annual_hhi_series,
     annual_ranking_payload,
@@ -16,7 +17,6 @@ from pipeline.scripts.api.market_scope.archive_growth import growth_contribution
 from pipeline.scripts.api.market_scope.fact_collector import StrategyFact
 from pipeline.scripts.api.market_scope.legacy_shape import (
     LegacyMarketMetaInput,
-    empty_analysis_level_market_status,
     empty_analysis_levels,
     empty_company_concentration_trend,
     empty_level_top5_trend,
@@ -25,7 +25,6 @@ from pipeline.scripts.api.market_scope.legacy_shape import (
     market_meta,
     market_size_series_payload,
     market_yoy_series,
-    period_coverage,
     period_unit,
 )
 from pipeline.scripts.api.market_scope.periods import sort_periods, sorted_period_items
@@ -90,15 +89,14 @@ def recompute_strategy_payload(
         "brand": focus_brand_name,
         "brand_key": focus_brand_key,
         "brand_name": focus_brand_name,
-        "data": {
-            "analysis_level_market_status": empty_analysis_level_market_status(),
+        "data": normalize_portal_read_data({
+            "analysis_level_market_status": empty_analysis_levels(periods, source=source),
             "analysis_levels": empty_analysis_levels(periods, source=source),
             "brand_ranking": brand_ranking,
             "brand_ranking_stacked": brand_ranking,
             "company_concentration_trend": empty_company_concentration_trend(),
             "company_ranking": company_ranking,
             "company_ranking_stacked": company_ranking,
-            "data_period_coverage": period_coverage(periods, source=source),
             "ei_ms_matrix": ei_matrix,
             "growth_contribution": growth_contribution_payload(
                 brand_histories,
@@ -129,7 +127,7 @@ def recompute_strategy_payload(
             "target_customer_competition_by_channel": {},
             "ubist_specialty_channels": [],
             "ubist_specialty_target_channels": [],
-        },
+        }),
         "market_id": scope_market_id,
         "market_meta": market_meta(
             LegacyMarketMetaInput(

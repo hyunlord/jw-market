@@ -16,7 +16,6 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     MEASURE_LABEL,
     SOURCE_LABELS,
     avg_share,
-    coverage,
     empty_analysis_levels,
     hhi_series,
     join_unique,
@@ -28,6 +27,9 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
 
 
+PORTAL_UNUSED_DATA_KEYS = frozenset({"data_period_coverage"})
+
+
 def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetrics) -> dict[str, Any]:
     """Return a runtime payload with the same field tree as ``/api/cause``."""
 
@@ -36,7 +38,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
     focus = _focus_brand(metrics.all_brands, definition.focus_brand_key)
     data = build_cause_data(definition=definition, metrics=metrics, focus=focus)
     meta = build_market_meta(definition=definition, metrics=metrics, market_id=market_id, data=data)
-    return {
+    payload = {
         "brand": focus.brand_name if focus else "동적 시장",
         "brand_key": focus.brand_key if focus else market_id,
         "brand_name": focus.brand_name if focus else "동적 시장",
@@ -49,6 +51,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
         "unit_label": metrics.unit_label,
         "view": str(definition.filter_echo.get("view_kind") or "market_landscape"),
     }
+    return normalize_portal_read_payload(payload)
 
 
 def build_cause_data(
@@ -68,7 +71,7 @@ def build_cause_data(
     company = company_ranking(metrics.all_brands)
     levels = empty_analysis_levels(series)
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
-    return {
+    data = {
         "analysis_level_market_status": levels,
         "analysis_levels": levels,
         "brand_ranking": ranking,
@@ -79,7 +82,6 @@ def build_cause_data(
         },
         "company_ranking": company,
         "company_ranking_stacked": company,
-        "data_period_coverage": coverage(series),
         "ei_ms_matrix": {"data": matrix, "ms_avg_pct": avg_share(matrix), "share_avg_pct": avg_share(matrix)},
         "growth_contribution": growth_contribution(metrics.all_brands, focus=focus),
         "growth_contribution_ms_matrix": {"data": matrix, "ms_avg_pct": avg_share(matrix), "share_avg_pct": avg_share(matrix)},
@@ -116,6 +118,37 @@ def build_cause_data(
         "ubist_specialty_channels": [],
         "ubist_specialty_target_channels": [],
     }
+    return normalize_portal_read_data(data)
+
+
+def normalize_portal_read_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply the audited portal-read cause contract without changing metric values."""
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        payload["data"] = normalize_portal_read_data(data)
+    payload.pop("resolved_scope", None)
+    return payload
+
+
+def normalize_portal_read_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep only portal-read data shape and add the split-class ``Class`` alias."""
+
+    normalized = {key: value for key, value in data.items() if key not in PORTAL_UNUSED_DATA_KEYS}
+    for key in ("analysis_levels", "analysis_level_market_status"):
+        section = normalized.get(key)
+        if isinstance(section, dict):
+            normalized[key] = _ensure_class_alias(section)
+    return normalized
+
+
+def _ensure_class_alias(section: dict[str, Any]) -> dict[str, Any]:
+    """Mirror the cache builder's split-class alias for portal chart compatibility."""
+
+    data = section.get("data")
+    if not isinstance(data, dict) or "Class" in data or "Class 1" not in data:
+        return section
+    return {**section, "data": {**data, "Class": data["Class 1"]}}
 
 
 def build_market_meta(

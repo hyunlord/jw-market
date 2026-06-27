@@ -90,6 +90,55 @@ def test_compose_when_definition_and_metrics_are_ready() -> None:
     assert response["data"]["market_size_series"][0]["value"] == 100.0
 
 
+def test_compose_emits_only_portal_read_cause_sections() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["C10B"], "molecule": [], "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+    )
+    brand = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "C10B",
+        "demo",
+        100.0,
+        100.0,
+        1,
+        "2026-04",
+        100.0,
+        ({"period": "2026-04", "value": 100.0},),
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-04", "market_size": 100.0},),
+        brands=(brand,),
+        all_brands=(brand,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    data = payload["data"]
+    assert "data_period_coverage" not in data
+    assert "resolved_scope" not in payload
+    assert {"market_size_recent", "target_share_pct", "target_rank", "market_cagr_5y_pct", "direct_competition_count"}.issubset(
+        data["kpi"]
+    )
+    assert {"market_size_series", "hhi_series_5y"}.issubset(data["sources_data"])
+    assert {"years", "yearly"}.issubset(data["brand_ranking_stacked"])
+    assert {"years", "yearly"}.issubset(data["company_ranking_stacked"])
+    assert {"levels", "channels", "data"}.issubset(data["analysis_levels"])
+    assert {"available_levels", "default_level", "by_level"}.issubset(data["level_top5_trend"])
+    assert {"data"}.issubset(data["ei_ms_matrix"])
+    assert {"data"}.issubset(data["growth_contribution_ms_matrix"])
+    assert {"targets"}.issubset(data["target_customer_competition"])
+
+
 def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_top5() -> None:
     definition = MarketDefinition(
         view="strategic_ml",

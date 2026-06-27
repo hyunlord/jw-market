@@ -68,11 +68,15 @@ def resolve(payload: MarketScopeResolveRequest) -> dict[str, Any]:
 
 @router.post("/api/market-scope/cause")
 def cause(payload: MarketScopeCauseRequest) -> dict[str, Any]:
-    """Return a cause-compatible payload plus the resolved scope echo."""
+    """Return the portal-read cause envelope while keeping scope resolution internal."""
 
     _reject_general(_view_family(payload.view_family))
     try:
-        return build_strategy_resolver().cause(_to_engine_request(payload))
+        scoped = build_strategy_resolver().cause(_to_engine_request(payload))
+        result = scoped.get("result")
+        if not isinstance(result, dict):
+            raise MarketScopeValidationError("market-scope cause result is not an object")
+        return {"status": "SUCCESS", "result": result}
     except MarketScopeValidationError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_market_scope", "message": str(exc)}) from exc
     except (FactIdentityIncompleteError, OverlapWithoutFactIdentityError) as exc:
