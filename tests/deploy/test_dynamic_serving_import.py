@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 
 import pytest
 
@@ -92,3 +93,41 @@ def test_import_verifies_manifest_counts(tmp_path, monkeypatch) -> None:
     assert calls == ["jw_mart_d1_stage_20260625_173115"]
     assert summary["verification"] == [{"table": "mart_general_brand_metric", "rows": 2}]
     assert json.loads(output_path.read_text(encoding="utf-8"))["target_db"] == "jw_mart_d1_stage_20260625_173115"
+
+
+def test_restore_gzip_streams_decompressed_sql(tmp_path, monkeypatch) -> None:
+    dump_path = tmp_path / "dump.sql.gz"
+    expected_sql = b"CREATE TABLE mart_general_brand_metric (id int);\n"
+    with gzip.open(dump_path, "wb") as handle:
+        handle.write(expected_sql)
+
+    captured = bytearray()
+
+    class FakeStdin:
+        def write(self, data: bytes) -> int:
+            captured.extend(data)
+            return len(data)
+
+        def close(self) -> None:
+            return None
+
+    class FakeProcess:
+        def __init__(self, command, stdin=None, env=None):
+            self.command = command
+            self.stdin = FakeStdin()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(importer.shutil, "which", lambda name: "/usr/bin/mariadb")
+    monkeypatch.setattr(importer.subprocess, "Popen", FakeProcess)
+
+    importer._restore_dump(importer.DbEndpoint("127.0.0.1", "13306", "root", "p"), "jw_mart_d1_stage_20260625_173115", dump_path)
+
+    assert captured == expected_sql

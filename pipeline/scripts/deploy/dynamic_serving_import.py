@@ -359,8 +359,18 @@ def _restore_dump(endpoint: DbEndpoint, target_db: str, dump_path: Path) -> None
     command = [client, f"--host={endpoint.host}", f"--port={endpoint.port}", f"--user={endpoint.user}", target_db]
     env = _client_env(endpoint)
     if dump_path.suffix == ".gz":
-        with gzip.open(dump_path, "rb") as handle:
-            subprocess.run(command, check=True, stdin=handle, env=env)
+        # Do not pass a GzipFile directly as subprocess stdin: subprocess uses
+        # the wrapped file descriptor and MariaDB would receive compressed bytes.
+        with gzip.open(dump_path, "rb") as handle, subprocess.Popen(command, stdin=subprocess.PIPE, env=env) as proc:
+            if proc.stdin is None:
+                raise RuntimeError("restore command did not expose stdin")
+            try:
+                shutil.copyfileobj(handle, proc.stdin, length=1024 * 1024)
+            finally:
+                proc.stdin.close()
+            return_code = proc.wait()
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, command)
         return
     with dump_path.open("rb") as handle:
         subprocess.run(command, check=True, stdin=handle, env=env)
