@@ -3,14 +3,16 @@
 # This Dockerfile restores the historical API image shape used by the
 # running backend: Python 3.11, /app workdir, non-root UID/GID 3000, and a
 # uvicorn entrypoint for pipeline.scripts.api.main:app.  The current scoped
-# backend imports pipeline.etl helpers from the dynamic-market resolver, so
-# pipeline/etl is included as runtime support.
+# backend imports pipeline.etl helpers from the dynamic-market resolver and
+# analysis aliases from the brand-activity routes, so both support trees are
+# included as runtime modules.
 
 FROM python:3.11-slim
 
 ARG APP_VERSION="local"
 
 ENV APP_VERSION="${APP_VERSION}" \
+    PROJECT_ROOT="/app" \
     PYTHONUNBUFFERED=1 \
     API_HOST="0.0.0.0" \
     API_PORT="8000" \
@@ -29,6 +31,7 @@ COPY pipeline/scripts/api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY pipeline/scripts/api /app/pipeline/scripts/api
+COPY pipeline/scripts/analysis /app/pipeline/scripts/analysis
 COPY pipeline/etl /app/pipeline/etl
 COPY docs/reference /app/static
 

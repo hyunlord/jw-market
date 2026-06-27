@@ -13,12 +13,13 @@ general mart.
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import re
 
-import pandas as pd
-
 from .general_config import MEASURES_BY_SOURCE
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 FILTER_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
@@ -31,7 +32,7 @@ BLOCKED_DIMENSION_TARGETS = frozenset(
         "jw_mart_d1_stage_20260625_173115",
     }
 )
-EMPTY_DIMENSION_VALUES = frozenset({"", "-", "n/a", "na", "nan", "none", "null", "미상", "해당없음"})
+EMPTY_DIMENSION_VALUES = frozenset({"", "-", "<na>", "n/a", "na", "nan", "none", "null", "미상", "해당없음"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +157,13 @@ def enabled_dimension_specs(source: str) -> tuple[DimensionSpec, ...]:
 
 
 def normalize_dimension_value(value: object) -> str | None:
-    if value is None or pd.isna(value):
+    if value is None:
         return None
+    try:
+        if value != value:
+            return None
+    except TypeError:
+        pass
     normalized = re.sub(r"\s+", " ", str(value)).strip()
     if normalized.lower() in EMPTY_DIMENSION_VALUES:
         return None
@@ -208,7 +214,7 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
                     "atc4_code": str(atc4),
                     "brand_key": str(brand_key),
                     "brand_name": str(brand_name),
-                    "product_code": "" if pd.isna(product_code) else str(product_code),
+                    "product_code": "" if normalize_dimension_value(product_code) is None else str(product_code),
                     "dimension_type": spec.dimension_type,
                     "dimension_value": str(display),
                     "dimension_value_norm": str(norm),
@@ -246,6 +252,8 @@ def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Se
     insert. This vectorized combine keeps the same fallback order while making
     the tracked builder viable for full isolated evidence builds.
     """
+    import pandas as pd
+
     result = pd.Series([None] * len(frame), index=frame.index, dtype=object)
     for column in spec.source_columns:
         if column not in frame:
