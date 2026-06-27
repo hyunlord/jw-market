@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
+from pipeline.scripts.api.dynamic_market.filter_options import build_brand_option_check, build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
@@ -81,6 +81,30 @@ def dynamic_market_filter_options(view: str = "general", source: str = "ubist", 
         )
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_filter_options_request", "message": str(exc)}) from exc
+
+
+@router.get("/api/dynamic-market/brand-option-check")
+def dynamic_market_brand_option_check(brand: str, view: str = "general", source: str = "ubist", market_id: str | None = None) -> dict:
+    """Return option values and the sidecar values already matched by a brand.
+
+    This endpoint exists for the test2 portal filter panel.  It keeps the
+    option list contract identical to ``filter-options`` and adds
+    ``brand_matched`` as dimension-type -> list, because a brand can span
+    multiple product-level values (for example several forms or strengths).
+    """
+
+    try:
+        return build_brand_option_check(
+            mart_db=config.db_name,
+            general_dimension_db=config.general_dimension_db_name,
+            strategic_dimension_db=config.strategic_dimension_db_name,
+            brand=brand,
+            view=view,
+            source=source,
+            market_id=market_id,
+        )
+    except DynamicMarketInputError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_brand_option_check_request", "message": str(exc)}) from exc
 
 
 def strategic_stub_for_smoke() -> dict:

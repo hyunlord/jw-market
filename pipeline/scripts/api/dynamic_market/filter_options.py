@@ -67,6 +67,49 @@ def build_filter_options(
     )
 
 
+def build_brand_option_check(
+    *,
+    mart_db: str,
+    brand: str,
+    view: str,
+    source: str,
+    market_id: str | None = None,
+    general_dimension_db: str | None = None,
+    strategic_dimension_db: str | None = None,
+) -> dict[str, object]:
+    """Return all option values plus the values already carried by one brand.
+
+    The portal uses this as a short-term test2 convenience endpoint: it can
+    draw the same option list as ``filter-options`` and pre-check all
+    product-level sidecar dimensions that the selected brand actually owns.
+    We deliberately read from the view-specific sidecar so strategic recode
+    values never leak back to the general ATC sidecar, and vice versa.
+    """
+
+    payload = build_filter_options(
+        mart_db=mart_db,
+        general_dimension_db=general_dimension_db,
+        strategic_dimension_db=strategic_dimension_db,
+        view=view,
+        source=source,
+        market_id=market_id,
+    )
+    normalized_view = str(payload["view"])
+    normalized_source = str(payload["source"])
+    dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
+    return {
+        **payload,
+        "brand": brand,
+        "brand_matched": _load_brand_dimension_matches(
+            dimension_db=dimension_db,
+            brand=brand,
+            view=normalized_view,
+            source=normalized_source,
+            market_id=market_id,
+        ),
+    }
+
+
 def build_filter_option_payload(
     *,
     view: str,
@@ -161,6 +204,52 @@ def _load_dimension_options(*, dimension_db: str, view: str, source: str, market
         )
         for row in rows
     )
+
+
+def _load_brand_dimension_matches(
+    *,
+    dimension_db: str,
+    brand: str,
+    view: str,
+    source: str,
+    market_id: str | None,
+) -> dict[str, list[str]]:
+    table = GENERAL_DIMENSION_TABLE if view == "general" else STRATEGIC_DIMENSION_TABLE
+    allowed_dimensions = DIMENSION_ORDER_BY_SOURCE.get(source, ())
+    if not allowed_dimensions:
+        return {}
+
+    where = [
+        "source = %s",
+        "(brand_name = %s OR brand_key = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')) OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))",
+    ]
+    params: list[object] = [source, brand, brand, brand, brand]
+    if view == "general":
+        if atc_prefix := _general_atc_prefix(market_id):
+            where.append("atc4_code LIKE %s")
+            params.append(atc_prefix)
+    elif market_id:
+        market_kind, normalized_market_id = _strategic_market_filter(market_id)
+        where.extend(["market_kind = %s", "market_id = %s"])
+        params.extend([market_kind, normalized_market_id])
+
+    rows = db.fetch_all(
+        f"""
+        SELECT dimension_type, dimension_value_norm
+        FROM {quote_identifier(dimension_db)}.{table}
+        WHERE {" AND ".join(where)}
+        GROUP BY dimension_type, dimension_value_norm
+        ORDER BY dimension_type, dimension_value_norm
+        """,
+        params,
+    )
+    grouped: dict[str, list[str]] = {dimension_type: [] for dimension_type in allowed_dimensions}
+    for row in rows:
+        dimension_type = str(row["dimension_type"])
+        value = str(row["dimension_value_norm"])
+        if dimension_type in grouped and value:
+            grouped[dimension_type].append(value)
+    return {dimension_type: values for dimension_type, values in grouped.items() if values}
 
 
 def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | None) -> tuple[dict[str, object], ...]:
