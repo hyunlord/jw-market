@@ -199,9 +199,9 @@
         }
       ]
     },
-    "safe_url": "http://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+    "safe_url": "https://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
     "live": {
-      "url": "http://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2",
+      "url": "https://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2",
       "requires_service_key": true,
       "format": "xml",
       "param_map": {
@@ -226,9 +226,9 @@
         }
       ]
     },
-    "safe_url": "http://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01?serviceKey=<redacted>&ingr_name=Pitavastatin&pageNo=1&numOfRows=5",
+    "safe_url": "https://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01?serviceKey=<redacted>&ingr_name=Pitavastatin&pageNo=1&numOfRows=5",
     "live": {
-      "url": "http://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01",
+      "url": "https://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01",
       "requires_service_key": true,
       "format": "xml",
       "param_map": {
@@ -237,6 +237,154 @@
       "default_params": {
         "pageNo": "1",
         "numOfRows": "5"
+      }
+    }
+  },
+  "hira_disease_name_code": {
+    "summary_text": "HIRA 질병명칭/코드조회에서 E78은 '지질단백질대사장애 및 기타 지질증'으로 확인됩니다.",
+    "render_data": {
+      "totalCount": "1",
+      "items": [
+        {
+          "sickCd": "E78",
+          "sickEngNm": "Disorders of lipoprotein metabolism and other lipidaemias",
+          "sickNm": "지질단백질대사장애 및 기타 지질증"
+        }
+      ],
+      "request_note": "고지혈증/이상지질혈증 명칭 검색은 0건이며 SICK_CD=E78 또는 공식명 일부인 '지질' 검색을 사용합니다."
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissNameCodeList1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&diseaseType=SICK_CD&searchText=E78",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissNameCodeList1",
+      "requires_service_key": true,
+      "format": "xml",
+      "param_map": {
+        "sickCd": "searchText"
+      },
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "sickType": "1",
+        "medTp": "1",
+        "diseaseType": "SICK_CD"
+      }
+    }
+  },
+  "hira_disease_hospitalization_outpatient_stats": {
+    "summary_text": "HIRA 질병입원외래별통계에서 2024년 E78 연간 입원/외래 환자수 분포를 확인했습니다.",
+    "render_data": {
+      "totalCount": "4",
+      "items": [
+        {
+          "inpatOpat": "입원",
+          "sex": "남",
+          "sickCd": "E78",
+          "sickNm": "지질단백질대사장애 및 기타 지질증",
+          "ptntCnt": "4010",
+          "specCnt": "7405",
+          "vstDdcnt": "11166"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByHsptlzFrgnStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByHsptlzFrgnStats1",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "sickType": "1",
+        "medTp": "1"
+      }
+    }
+  },
+  "hira_disease_gender_age_stats": {
+    "summary_text": "HIRA 질병성별연령별통계 API를 KCD 코드로 조회했습니다.",
+    "render_data": {
+      "totalCount": "18",
+      "items": [
+        {
+          "age": "0_9세",
+          "sex": "남",
+          "sickCd": "E78",
+          "sickNm": "지질단백질대사장애 및 기타 지질증",
+          "ptntCnt": "1379",
+          "specCnt": "2258",
+          "vstDdcnt": "2262"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByGenderAgeStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByGenderAgeStats1",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "sickType": "1",
+        "medTp": "1"
+      }
+    }
+  },
+  "hira_disease_institution_class_stats": {
+    "summary_text": "HIRA 질병의료기관종별통계에서 2024년 E78 연간 기관종별 환자수 분포를 확인했습니다.",
+    "render_data": {
+      "totalCount": "5",
+      "items": [
+        {
+          "grade": "상급종합병원",
+          "sickCd": "E78",
+          "sickNm": "지질단백질대사장애 및 기타 지질증",
+          "ptntCnt": "13959",
+          "specCnt": "30151",
+          "vstDdcnt": "28147"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByClassesStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByClassesStats1",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "sickType": "1",
+        "medTp": "1"
+      }
+    }
+  },
+  "hira_disease_area_stats": {
+    "summary_text": "HIRA 질병의료기관지역별통계 API를 KCD 코드로 조회했습니다.",
+    "render_data": {
+      "totalCount": "17",
+      "items": [
+        {
+          "lcName": "서울",
+          "sickCd": "E78",
+          "sickNm": "지질단백질대사장애 및 기타 지질증",
+          "ptntCnt": "679396",
+          "specCnt": "2137249",
+          "vstDdcnt": "2137443"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByAreaStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByAreaStats1",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "sickType": "1",
+        "medTp": "1"
       }
     }
   }

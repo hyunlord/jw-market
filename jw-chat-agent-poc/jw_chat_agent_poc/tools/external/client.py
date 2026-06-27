@@ -4,19 +4,24 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+import re
 import time
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
-import xml.etree.ElementTree as ET
 
 import requests
 
+from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient
+from jw_chat_agent_poc.tools.external.response_parsing import parse_response, render_payload, summary
+
 
 DATA_GO_KR_KEY_ENV = "DATA_GO_KR_KEY"
+CLINICAL_TRIALS_MCP_URL_ENV = "CLINICAL_TRIALS_MCP_URL"
 MFDS_PATENT_QUERY_ALIASES = {
     "pitavastatin": "리바로",
     "ezetimibe": "리바로젯",
 }
+HIRA_DISEASE_SOURCE = "hira_disease"
 
 
 @dataclass(frozen=True)
@@ -62,11 +67,29 @@ class ExternalApiClient:
         return self._fixture_or_live("mfds_clinical_trial_kr", {"keyword": keyword})
 
     def clinicaltrials_v2_search(self, query_intr: str) -> ExternalCall:
+        if self.mode == "live":
+            return self._clinicaltrials_mcp_search(query_intr)
         return self._fixture_or_live("clinicaltrials_v2_search", {"query.intr": query_intr})
 
     def openfda_label_search(self, substance_name: str) -> ExternalCall:
         query = f'openfda.substance_name:"{substance_name.upper()}"'
         return self._fixture_or_live("openfda_label_search", {"search": query})
+
+    def openfda_combo_label_search(self, substance_names: tuple[str, ...]) -> ExternalCall:
+        query = " AND ".join(f'openfda.substance_name:"{name.upper()}"' for name in substance_names)
+        call = self._fixture_or_live("openfda_label_search", {"search": query})
+        return ExternalCall(
+            tool="openfda_combo_label_search",
+            source=call.source,
+            status=call.status,
+            summary_text=(
+                f"openFDA label에서 {', '.join(substance_names)} 두 성분이 모두 포함된 복합제 라벨을 우선 확인했습니다. "
+                "없으면 성분별 라벨은 참고용입니다."
+            ),
+            render_data={**call.render_data, "match_scope": "combo_substance_and"},
+            safe_url=call.safe_url,
+            elapsed_ms=call.elapsed_ms,
+        )
 
     def mfds_patent(self, ingredient_en: str) -> ExternalCall:
         query = MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower(), ingredient_en)
@@ -74,6 +97,50 @@ class ExternalApiClient:
 
     def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
         return self._fixture_or_live("mfds_fda_orangebook", {"query": ingredient_en.title()}, xml=True)
+
+    def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+        call = self._fixture_or_live("hira_disease_name_code", {"sickCd": sick_cd}, xml=True)
+        return self._with_source(call, HIRA_DISEASE_SOURCE)
+
+    def hira_disease_hospitalization_outpatient_stats(self, sick_cd: str, year: str = "2024") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_disease_hospitalization_outpatient_stats",
+            {"sickCd": sick_cd, "year": year},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_DISEASE_SOURCE)
+
+    def hira_disease_gender_age_stats(self, sick_cd: str, year: str = "2024") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_disease_gender_age_stats",
+            {"sickCd": sick_cd, "year": year},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_DISEASE_SOURCE)
+
+    def hira_disease_institution_class_stats(self, sick_cd: str, year: str = "2024") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_disease_institution_class_stats",
+            {"sickCd": sick_cd, "year": year},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_DISEASE_SOURCE)
+
+    def hira_disease_area_stats(self, sick_cd: str, year: str = "2024") -> ExternalCall:
+        call = self._fixture_or_live("hira_disease_area_stats", {"sickCd": sick_cd, "year": year}, xml=True)
+        return self._with_source(call, HIRA_DISEASE_SOURCE)
+
+    @staticmethod
+    def _with_source(call: ExternalCall, source: str) -> ExternalCall:
+        return ExternalCall(
+            tool=call.tool,
+            source=source,
+            status=call.status,
+            summary_text=call.summary_text,
+            render_data=call.render_data,
+            safe_url=call.safe_url,
+            elapsed_ms=call.elapsed_ms,
+        )
 
     def _fixture_or_live(self, tool: str, params: dict[str, str], xml: bool = False) -> ExternalCall:
         if self.mode != "live":
@@ -88,6 +155,85 @@ class ExternalApiClient:
                 elapsed_ms=0.0,
             )
         return self._live_get(tool, params, xml=xml)
+
+    def _clinicaltrials_mcp_search(self, query_intr: str) -> ExternalCall:
+        url = os.environ.get(CLINICAL_TRIALS_MCP_URL_ENV)
+        if not url:
+            return self._clinicaltrials_fail_closed(
+                query_intr,
+                f"{CLINICAL_TRIALS_MCP_URL_ENV} is not configured",
+                elapsed_ms=0.0,
+            )
+        start = time.monotonic()
+        try:
+            result = McpJsonClient(url, timeout_s=self.timeout_s).call_tool(
+                "search_studies",
+                {"intervention": query_intr, "pageSize": 5},
+            )
+        except McpClientError as exc:
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            return self._clinicaltrials_fail_closed(query_intr, exc.message, elapsed_ms=elapsed, safe_url=url)
+        elapsed = round((time.monotonic() - start) * 1000, 1)
+        payload = _clinicaltrials_mcp_payload(result.content_text)
+        studies = payload.get("studies", [])
+        if not isinstance(studies, list) or not studies:
+            return ExternalCall(
+                tool="clinicaltrials_v2_search",
+                source="external_api",
+                status="no_data",
+                summary_text="ClinicalTrials MCP 조회 결과가 없어 외부 임상 근거를 생성하지 않습니다.",
+                render_data={
+                    "request": {"query.intr": query_intr},
+                    "payload": {"studies": []},
+                    "mcp": {"tool": "search_studies", "content_text": result.content_text},
+                    "external_claim_policy": "fail_closed_no_source_rows",
+                    "message": "ClinicalTrials MCP 조회 결과 없음",
+                },
+                safe_url=url,
+                elapsed_ms=elapsed,
+            )
+        nct_ids = _nct_ids_from_studies(studies)
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="live",
+            summary_text=f"ClinicalTrials MCP에서 {query_intr} 관련 NCT 원문 결과를 확인했습니다: {','.join(nct_ids[:3])}",
+            render_data={
+                "request": {"query.intr": query_intr},
+                "payload": payload,
+                "nct_ids": nct_ids,
+                "briefTitle": _first_study_value(studies, "briefTitle"),
+                "overallStatus": _first_study_value(studies, "overallStatus"),
+                "mcp": {"tool": "search_studies", "content_text": result.content_text},
+                "external_claim_policy": "source_relay_only",
+            },
+            safe_url=url,
+            elapsed_ms=elapsed,
+        )
+
+    @staticmethod
+    def _clinicaltrials_fail_closed(
+        query_intr: str,
+        reason: str,
+        *,
+        elapsed_ms: float | None,
+        safe_url: str | None = None,
+    ) -> ExternalCall:
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="error",
+            summary_text=f"ClinicalTrials MCP 조회 실패: {reason}. 외부 임상 근거를 생성하지 않습니다.",
+            render_data={
+                "request": {"query.intr": query_intr},
+                "payload": {"studies": []},
+                "error": reason,
+                "external_claim_policy": "fail_closed_error",
+                "message": "ClinicalTrials MCP 조회 실패",
+            },
+            safe_url=safe_url,
+            elapsed_ms=elapsed_ms,
+        )
 
     def _live_get(self, tool: str, params: dict[str, str], xml: bool = False) -> ExternalCall:
         spec = self.fixtures[tool]["live"]
@@ -105,13 +251,13 @@ class ExternalApiClient:
                 response = requests.get(url, timeout=self.timeout_s)
                 elapsed = round((time.monotonic() - start) * 1000, 1)
                 response.raise_for_status()
-                payload = self._parse_response(response, xml or spec.get("format") == "xml")
+                payload = parse_response(response, xml or spec.get("format") == "xml")
                 return ExternalCall(
                     tool=tool,
                     source="external_api",
                     status="live",
-                    summary_text=self._summary(tool, response.status_code, payload),
-                    render_data=self._render_payload(payload),
+                    summary_text=summary(tool, response.status_code, payload),
+                    render_data={**render_payload(payload), "request": params},
                     safe_url=self.redact_url(url),
                     elapsed_ms=elapsed,
                 )
@@ -119,12 +265,13 @@ class ExternalApiClient:
                 last_error = exc
                 time.sleep(0.2)
         elapsed = round((time.monotonic() - start) * 1000, 1)
+        error_text = self.redact_url(str(last_error)) if last_error else "unknown"
         return ExternalCall(
             tool=tool,
             source="external_api",
             status="error",
-            summary_text=f"{tool} failed: {last_error}",
-            render_data={"error": str(last_error) if last_error else "unknown"},
+            summary_text=f"{tool} failed: {error_text}",
+            render_data={"error": error_text, "request": params},
             safe_url=self.redact_url(url),
             elapsed_ms=elapsed,
         )
@@ -148,71 +295,111 @@ class ExternalApiClient:
         existing.update(query)
         return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query and urlencode(existing) or urlencode(existing), parts.fragment))
 
-    @staticmethod
-    def _parse_response(response: requests.Response, xml: bool) -> dict[str, Any]:
-        if xml:
-            return ExternalApiClient._parse_xml(response.text)
-        return response.json()
 
-    @staticmethod
-    def _render_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        if "body" in payload and isinstance(payload["body"], dict):
-            body = payload["body"]
-            items = body.get("items", [])
-            if isinstance(items, list):
-                return {
-                    "resultCode": payload.get("header", {}).get("resultCode"),
-                    "totalCount": body.get("totalCount"),
-                    "items": items[:5],
-                }
-        if "studies" in payload and isinstance(payload["studies"], list):
-            return {"payload": {"studies": payload["studies"][:5], "nextPageToken": payload.get("nextPageToken")}}
-        if "results" in payload and isinstance(payload["results"], list):
-            meta = payload.get("meta", {})
-            return {"payload": {"meta": meta, "results": payload["results"][:1]}}
-        return {"payload": payload}
+def _clinicaltrials_mcp_payload(text: str) -> dict[str, Any]:
+    studies: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    intervention_mode = False
+    next_page_token = ""
+    total_count: int | None = None
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("totalCount:"):
+            total_count = _int_or_none(stripped.split(":", 1)[1].strip())
+            continue
+        if stripped.startswith("nextPageToken:"):
+            next_page_token = stripped.split(":", 1)[1].strip()
+            continue
+        if stripped.startswith("- "):
+            if current:
+                studies.append(_clinical_study_from_flat(current))
+            current = {}
+            intervention_mode = False
+            _apply_mcp_key_value(current, stripped[2:])
+            continue
+        if current is None:
+            continue
+        if stripped.startswith("interventions["):
+            intervention_mode = True
+            current.setdefault("interventions", [])
+            continue
+        if intervention_mode and "," in stripped and ":" not in stripped:
+            kind, name = stripped.split(",", 1)
+            interventions = current.setdefault("interventions", [])
+            if isinstance(interventions, list):
+                interventions.append({"type": kind.strip(), "name": name.strip().strip('"')})
+            continue
+        intervention_mode = False
+        _apply_mcp_key_value(current, stripped)
+    if current:
+        studies.append(_clinical_study_from_flat(current))
+    payload: dict[str, Any] = {"studies": studies[:5]}
+    if next_page_token:
+        payload["nextPageToken"] = next_page_token
+    if total_count is not None:
+        payload["totalCount"] = total_count
+    return payload
 
-    @staticmethod
-    def _summary(tool: str, status_code: int, payload: dict[str, Any]) -> str:
-        if "body" in payload and isinstance(payload["body"], dict):
-            total = payload["body"].get("totalCount")
-            return f"{tool} returned HTTP {status_code}, totalCount={total}"
-        if "studies" in payload and isinstance(payload["studies"], list):
-            ids = []
-            for study in payload["studies"][:3]:
-                ident = study.get("protocolSection", {}).get("identificationModule", {})
-                if ident.get("nctId"):
-                    ids.append(ident["nctId"])
-            return f"{tool} returned HTTP {status_code}, nct_ids={','.join(ids)}"
-        if "results" in payload and isinstance(payload["results"], list):
-            total = payload.get("meta", {}).get("results", {}).get("total")
-            return f"{tool} returned HTTP {status_code}, total={total}"
-        return f"{tool} returned HTTP {status_code}"
 
-    @staticmethod
-    def _parse_xml(text: str) -> dict[str, Any]:
-        root = ET.fromstring(text)
-        return ExternalApiClient._xml_node(root)
+def _apply_mcp_key_value(target: dict[str, Any], text: str) -> None:
+    match = re.match(r"(?P<key>[A-Za-z_]+)(?:\[[^\]]+\])?:\s*(?P<value>.*)$", text)
+    if not match:
+        return
+    key = match.group("key")
+    value = match.group("value").strip().strip('"')
+    if key in {"clinicaltrials_url", "nctId", "title", "status", "studyType", "sponsor", "startDate", "url"}:
+        target[key] = value
+    elif key in {"phase", "conditions"}:
+        target[key] = [part.strip() for part in value.split(",") if part.strip()]
 
-    @staticmethod
-    def _xml_node(node: ET.Element) -> Any:
-        children = list(node)
-        if not children:
-            return node.text
-        grouped: dict[str, list[Any]] = {}
-        for child in children:
-            grouped.setdefault(child.tag, []).append(ExternalApiClient._xml_node(child))
-        out: dict[str, Any] = {}
-        for key, values in grouped.items():
-            if key == "item":
-                out[key] = values
-            elif len(values) == 1:
-                out[key] = values[0]
-            else:
-                out[key] = values
-        if node.tag == "items":
-            item = out.get("item")
-            if item is None:
-                return []
-            return item if isinstance(item, list) else [item]
-        return out
+
+def _clinical_study_from_flat(flat: dict[str, Any]) -> dict[str, Any]:
+    nct_id = str(flat.get("nctId") or "")
+    title = str(flat.get("title") or "")
+    status = str(flat.get("status") or "")
+    phases = flat.get("phase") if isinstance(flat.get("phase"), list) else []
+    interventions = flat.get("interventions") if isinstance(flat.get("interventions"), list) else []
+    study = {
+        "NCTId": nct_id,
+        "briefTitle": title,
+        "overallStatus": status,
+        "url": flat.get("url") or flat.get("clinicaltrials_url"),
+        "protocolSection": {
+            "identificationModule": {"nctId": nct_id, "briefTitle": title},
+            "statusModule": {"overallStatus": status, "startDate": flat.get("startDate")},
+            "designModule": {"phases": phases, "studyType": flat.get("studyType")},
+            "sponsorCollaboratorsModule": {"leadSponsor": {"name": flat.get("sponsor")}},
+            "armsInterventionsModule": {"interventions": interventions},
+        },
+    }
+    conditions = flat.get("conditions")
+    if isinstance(conditions, list):
+        study["protocolSection"]["conditionsModule"] = {"conditions": conditions}
+    return study
+
+
+def _nct_ids_from_studies(studies: list[Any]) -> list[str]:
+    out: list[str] = []
+    for study in studies:
+        if not isinstance(study, dict):
+            continue
+        nct_id = study.get("NCTId")
+        if isinstance(nct_id, str) and nct_id:
+            out.append(nct_id)
+    return out
+
+
+def _first_study_value(studies: list[Any], key: str) -> str:
+    if not studies or not isinstance(studies[0], dict):
+        return ""
+    value = studies[0].get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _int_or_none(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        return None

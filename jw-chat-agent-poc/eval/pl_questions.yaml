@@ -1,0 +1,21 @@
+# PL 추가 질문 슬롯
+#
+# 형식:
+# questions:
+#   - id: PL001
+#     category: "PL 추가"
+#     question: "여기에 실제 질문을 넣어주세요"
+#     gold_note: "기대 동작 또는 cache에서 확인할 기준"
+#     expected_behavior: "manual"
+#     gold_keys: []
+#
+# expected_behavior 값 예:
+# - supported_numeric
+# - supported_text
+# - no_data
+# - unsupported
+# - ambiguous
+# - complex_target
+# - manual
+
+questions: []
