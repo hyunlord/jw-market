@@ -17,7 +17,17 @@ FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
         "premium_positioning",
         "patient_severity_causal",
         "cash_cow_unverified",
-    )
+    ),
+    "brand_share_delta": (
+        "direct_switching",
+        "cannibalization",
+        "absorption_replacement",
+        "causal_competition_win",
+    ),
+    "news_context": (
+        "quantified_sales_impact",
+        "causal_market_impact_without_metric",
+    ),
 }
 
 _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
@@ -31,6 +41,12 @@ _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
     "premium_positioning": re.compile(r"(프리미엄|premium|quality\s+vs\s+quantity)", re.IGNORECASE),
     "patient_severity_causal": re.compile(r"(중증도|중증\s*환자|고위험\s*환자|환자\s*구성\w*\s*(?:원인|기인|때문))"),
     "cash_cow_unverified": re.compile(r"(cash\s*cow|캐시\s*카우)", re.IGNORECASE),
+    "direct_switching": re.compile(r"([가-힣A-Za-z0-9+._/-]+에서\s*[가-힣A-Za-z0-9+._/-]+로\s*(?:직접\s*)?(?:처방\s*)?(?:전환|이동)(?:이\s*)?(?:발생|확인|이어|됐|되었|했다)|직접\s*(?:처방\s*)?(?:전환|이동)(?:이\s*)?(?:발생|이어|됐|되었|했다))"),
+    "cannibalization": re.compile(r"(자기\s*잠식|카니발리[제제]이션|cannibali[sz]ation|잠식(?:했|한|한다|했다|효과))", re.IGNORECASE),
+    "absorption_replacement": re.compile(r"(흡수(?:했|한|한다|했다|됐다|되었다)|대체(?:했|한|한다|했다|됐다|되었다)|흡수[/·]\s*대체)"),
+    "causal_competition_win": re.compile(r"(경쟁(?:에서)?\s*(?:이겨|승리|우위).{0,30}점유율.{0,20}(?:가져|확보)|점유율을\s*(?:가져왔|빼앗|탈환))"),
+    "quantified_sales_impact": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|영향으로|기인해).{0,40}(?:매출|점유율).{0,20}\d[\d,.]*(?:억원|%|%p).{0,20}(?:증가|감소|상승|하락)"),
+    "causal_market_impact_without_metric": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|기인|유발|견인|주도).{0,40}(?:매출|점유율|시장|처방)"),
 }
 
 _CHANNEL_FACT_RE: Final = re.compile(r"(?m)^\|\s*channel\s+상위\s*\|")
@@ -50,6 +66,10 @@ _PERIOD_RE: Final = re.compile(r"[12]\d{3}-\d{2}")
 _SENTENCE_RE: Final = re.compile(r"[^.!?\n。]+(?:[.!?。]|$)")
 _SOURCE_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*출처\b")
 _TIMING_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*처리\s*시간\b")
+_BRAND_SHARE_DELTA_RE: Final = re.compile(
+    r"(brand_share_delta_pctp|comparison_share_delta_pctp|브랜드\s+MS\s+변화|비교\s+브랜드\s+MS\s+변화|competitive_insight_signals|brand_trend_comparison)"
+)
+_NEWS_CONTEXT_RE: Final = re.compile(r"(인사이트\s+근거\s+fact\s*-\s*뉴스/이슈|deep_analysis_related_news|background_news_context|search_news)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +94,8 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
         claims = FORBIDDEN_BY_FACT_TYPE.get(fact_type, ())
         revised, removed = _drop_forbidden_claim_sentences(revised, claims)
         if removed:
-            replacement = _SAFE_REPLACEMENTS[fact_type](question, fact_md)
+            replacement_builder = _SAFE_REPLACEMENTS.get(fact_type)
+            replacement = replacement_builder(question, fact_md) if replacement_builder else ""
             if replacement and replacement not in revised:
                 revised = "\n\n".join(part for part in (replacement, revised.strip()) if part)
     revised = _cleanup_policy_markdown(revised.strip())
@@ -87,6 +108,14 @@ def _is_channel_cross_section(fact_md: str) -> bool:
     if _CHANNEL_FACT_RE.search(fact_md):
         return True
     return "channel 상위" in fact_md and "시장점유율" in fact_md and "매출" in fact_md
+
+
+def _is_brand_share_delta(fact_md: str) -> bool:
+    return bool(_BRAND_SHARE_DELTA_RE.search(fact_md))
+
+
+def _is_news_context(fact_md: str) -> bool:
+    return bool(_NEWS_CONTEXT_RE.search(fact_md))
 
 
 def _active_fact_types(body: str, fact_md: str) -> tuple[str, ...]:
@@ -260,6 +289,8 @@ def _cleanup_policy_markdown(markdown: str) -> str:
 
 _FACT_TYPE_DETECTORS: Final[dict[str, Callable[[str], bool]]] = {
     "channel_cross_section": _is_channel_cross_section,
+    "brand_share_delta": _is_brand_share_delta,
+    "news_context": _is_news_context,
 }
 
 _SAFE_REPLACEMENTS: Final[dict[str, Callable[[str, str], str]]] = {

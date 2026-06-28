@@ -169,3 +169,75 @@ def test_claim_policy_is_table_driven_for_channel_cross_section() -> None:
     assert "causal_analysis_unverified" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]
     assert "clinical_evidence" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]
     assert "cash_cow_unverified" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]
+
+
+def test_claim_policy_registers_competitive_and_news_fact_types_without_new_branches() -> None:
+    assert FORBIDDEN_BY_FACT_TYPE["brand_share_delta"] == (
+        "direct_switching",
+        "cannibalization",
+        "absorption_replacement",
+        "causal_competition_win",
+    )
+    assert FORBIDDEN_BY_FACT_TYPE["news_context"] == (
+        "quantified_sales_impact",
+        "causal_market_impact_without_metric",
+    )
+
+
+def test_brand_share_delta_policy_preserves_current_cautious_q05_language() -> None:
+    fact_md = "\n".join(
+        [
+            "### 필수 답변 fact",
+            "| 항목 | 값 |",
+            "| --- | --- |",
+            "| 브랜드 MS 변화 | 0.53%p |",
+            "| 비교 브랜드 MS 변화 | -0.56%p |",
+        ]
+    )
+    answer = (
+        "리바로젯 0.53%p와 리피토 -0.56%p로 반대 방향입니다. "
+        "집계 데이터만으로 직접 처방 이동은 확인할 수 없습니다. "
+        "따라서 복합제 중심 재편 후보 신호로 해석됩니다."
+    )
+
+    revised = apply_claim_policy("리바로 경쟁 구도 변화는 어때", answer, fact_md)
+
+    assert revised == answer
+
+
+def test_brand_share_delta_policy_blocks_clear_direct_switching_claim() -> None:
+    fact_md = "| 브랜드 MS 변화 | 0.53%p |\n| 비교 브랜드 MS 변화 | -0.56%p |"
+    answer = (
+        "리피토에서 리바로젯으로 직접 처방 이동이 발생했습니다. "
+        "점유율은 서로 반대 방향으로 움직였습니다."
+    )
+
+    revised = apply_claim_policy("리바로 경쟁 구도 변화는 어때", answer, fact_md)
+
+    assert "직접 처방 이동이 발생" not in revised
+    assert "점유율은 서로 반대 방향으로 움직였습니다" in revised
+
+
+def test_news_context_policy_preserves_current_cautious_q01_language() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "최근 이슈는 시장 동향의 전조가 될 수 있으므로 모니터링이 필요합니다. "
+        "다만 개별 환자 처방 변경 사유나 경쟁사 프로모션은 포함하지 않습니다."
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 이슈", answer, fact_md)
+
+    assert revised == answer
+
+
+def test_news_context_policy_blocks_quantified_news_sales_impact_claim() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "이번 뉴스 때문에 리바로 매출이 12억원 감소했습니다. "
+        "기사 제목과 요약은 시장 동향 참고 자료입니다."
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 이슈", answer, fact_md)
+
+    assert "12억원 감소" not in revised
+    assert "기사 제목과 요약은 시장 동향 참고 자료입니다" in revised
