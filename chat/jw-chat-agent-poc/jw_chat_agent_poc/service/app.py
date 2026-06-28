@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
 from jw_chat_agent_poc.orchestrator import ChatAgent
+from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
@@ -350,6 +351,7 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
         if isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             safe_answer = ensure_top_brand_trend_table(safe_answer, fact_md)
+            safe_answer = apply_claim_policy(question, safe_answer, fact_md)
     try:
         with stage(timing, "chart_generation", "fact-backed chart spec"):
             charts = build_charts(result, question=question, answer=safe_answer)
