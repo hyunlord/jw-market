@@ -6,7 +6,7 @@
 # ///
 # ─── How to run ───
 # From repo root:
-#   python3 jw-chat-agent-poc/scripts/compare_llm_router.py --out /tmp/chat_llm_router_compare
+#   python3 chat/jw-chat-agent-poc/scripts/compare_llm_router.py --out /tmp/chat_llm_router_compare
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass

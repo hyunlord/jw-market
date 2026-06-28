@@ -24,8 +24,8 @@ are out of P1 scope.
 
 ```bash
 cd /Users/rexxa/github/jw-market-test
-PYTHONPATH=jw-chat-agent-poc pytest -q jw-chat-agent-poc/tests
-PYTHONPATH=jw-chat-agent-poc python jw-chat-agent-poc/scripts/run_scenarios.py --out /tmp/chat_poc_verify
+PYTHONPATH=chat/jw-chat-agent-poc pytest -q chat/jw-chat-agent-poc/tests
+PYTHONPATH=chat/jw-chat-agent-poc python chat/jw-chat-agent-poc/scripts/run_scenarios.py --out /tmp/chat_poc_verify
 ```
 
 ## BQ map status
