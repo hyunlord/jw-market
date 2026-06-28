@@ -40,9 +40,9 @@ _CHANNEL_ROW_RE: Final = re.compile(
     r"시장점유율\s+(?P<share>[+-]?\d+(?:\.\d+)?%)\s+"
     r"매출\s+(?P<sales>[+-]?\d+(?:,\d{3})*(?:\.\d+)?억원)"
 )
-_CHANNEL_TABLE_HEADER_RE: Final = re.compile(r"(?m)^\|\s*채널\s*\|\s*시장점유율\s*\|\s*매출\s*\|")
+_CHANNEL_TABLE_HEADER_RE: Final = re.compile(r"\|\s*채널\s*\|\s*시장점유율\s*\|\s*매출\s*\|")
 _CHANNEL_TABLE_ROW_RE: Final = re.compile(
-    r"(?m)^\|\s*(?P<name>[^|]+?)\s*\|\s*"
+    r"\|\s*(?P<name>[^|]+?)\s*\|\s*"
     r"(?P<share>[+-]?\d+(?:\.\d+)?%)\s*\|\s*"
     r"(?P<sales>[+-]?\d+(?:,\d{3})*(?:\.\d+)?억원)\s*\|"
 )
