@@ -46,6 +46,28 @@ CACHE_TABLES: Final[tuple[str, ...]] = (
 LOCAL_SOURCE_SCHEMA: Final[str] = "jw_mart"
 TEST2_SERVING_SCHEMA: Final[str] = "jw_mart_d1_stage_20260625_173115"
 TEST2_HOST_FRAGMENT: Final[str] = "llmops-mariadb-service"
+GENERAL_FILTER_TABLE: Final[str] = "mart_general_filter_dimension_metric"
+GENERAL_BRAND_TABLE: Final[str] = "mart_general_brand_metric"
+GENERAL_OPTION_INDEXES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "idx_general_option_universe",
+        "(`source`, `dimension_type`, `dimension_value_hash`, `dimension_value_norm`(191))",
+    ),
+    (
+        "idx_general_atc_scope",
+        "(`source`, `atc4_code`, `dimension_type`, `dimension_value_hash`)",
+    ),
+    (
+        "idx_general_brand_scope",
+        "(`source`, `atc4_code`, `brand_key`, `dimension_type`, `dimension_value_hash`)",
+    ),
+)
+GENERAL_BRAND_INDEXES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "idx_general_atc_universe",
+        "(`source`, `atc4_code`, `atc4_desc`)",
+    ),
+)
 BLOCKED_TARGET_SCHEMAS: Final[frozenset[str]] = frozenset(
     {
         "jw_mart",
@@ -75,9 +97,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-db", default=LOCAL_SOURCE_SCHEMA)
     parser.add_argument("--target-db")
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--dump-path", type=Path, required=True)
-    parser.add_argument("--manifest-path", type=Path, required=True)
+    parser.add_argument("--run-id")
+    parser.add_argument("--dump-path", type=Path)
+    parser.add_argument("--manifest-path", type=Path)
     parser.add_argument("--output-manifest-path", type=Path)
     parser.add_argument("--source-env-file", type=Path)
     parser.add_argument("--target-env-file", type=Path)
@@ -108,14 +130,25 @@ def parse_args() -> argparse.Namespace:
             "kubectl port-forward to the test2 MariaDB service."
         ),
     )
+    parser.add_argument(
+        "--apply-general-option-indexes",
+        action="store_true",
+        help=(
+            "Create the tracked general sidecar indexes needed by test2 "
+            "filter-options. Guarded to the known test2 serving schema only."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if args.dump_only == args.import_from_dump:
-        raise SystemExit("choose exactly one of --dump-only or --import-from-dump")
+    mode_count = sum(bool(value) for value in (args.dump_only, args.import_from_dump, args.apply_general_option_indexes))
+    if mode_count != 1:
+        raise SystemExit("choose exactly one of --dump-only, --import-from-dump, or --apply-general-option-indexes")
     if args.dump_only:
+        if not args.run_id or not args.dump_path or not args.manifest_path:
+            raise SystemExit("--run-id, --dump-path, and --manifest-path are required with --dump-only")
         manifest = dump_verified_source(
             source_db=str(args.source_db),
             run_id=str(args.run_id),
@@ -126,8 +159,22 @@ def main() -> int:
         )
         print(json.dumps({"mode": "dump_only", "manifest": str(args.manifest_path), "rows": manifest["tables"]}, ensure_ascii=False))
         return 0
+    if args.apply_general_option_indexes:
+        if not args.target_db:
+            raise SystemExit("--target-db is required with --apply-general-option-indexes")
+        manifest = apply_general_option_indexes(
+            target_db=str(args.target_db),
+            env_file=args.target_env_file,
+            output_manifest_path=args.output_manifest_path,
+            allow_test2_serving_target=bool(args.allow_test2_serving_target),
+            target_via_port_forward=bool(args.target_via_port_forward),
+        )
+        print(json.dumps({"mode": "apply_general_option_indexes", "indexes": manifest["indexes"]}, ensure_ascii=False))
+        return 0
     if not args.target_db:
         raise SystemExit("--target-db is required with --import-from-dump")
+    if not args.dump_path or not args.manifest_path:
+        raise SystemExit("--dump-path and --manifest-path are required with --import-from-dump")
     manifest = import_test2_serving(
         target_db=str(args.target_db),
         dump_path=args.dump_path,
@@ -141,6 +188,58 @@ def main() -> int:
     )
     print(json.dumps({"mode": "import_from_dump", "manifest": str(args.output_manifest_path or args.manifest_path), "rows": manifest["verification"]}, ensure_ascii=False))
     return 0
+
+
+def apply_general_option_indexes(
+    *,
+    target_db: str,
+    env_file: Path | None,
+    output_manifest_path: Path | None,
+    allow_test2_serving_target: bool,
+    target_via_port_forward: bool,
+) -> dict[str, object]:
+    """Apply only the test2 general option lookup indexes.
+
+    This is intentionally part of the tracked importer instead of an operator
+    SQL note.  It reuses the same target guard as table imports, so the live
+    ``jw_mart`` schema and arbitrary Galera schemas remain blocked.
+    """
+
+    endpoint = _endpoint_from_env(env_file)
+    _guard_target_endpoint(
+        target_db,
+        endpoint,
+        allow_test2_serving_target=allow_test2_serving_target,
+        target_via_port_forward=target_via_port_forward,
+    )
+    started = time.perf_counter()
+    index_results: list[dict[str, object]] = []
+    for table, indexes in ((GENERAL_FILTER_TABLE, GENERAL_OPTION_INDEXES), (GENERAL_BRAND_TABLE, GENERAL_BRAND_INDEXES)):
+        for index_name, definition in indexes:
+            if _index_exists(endpoint, target_db, table, index_name):
+                index_results.append({"table": table, "index": index_name, "status": "exists"})
+                continue
+            _mysql_execute(
+                endpoint,
+                f"ALTER TABLE `{target_db}`.`{table}` ADD INDEX `{index_name}` {definition}",
+            )
+            index_results.append({"table": table, "index": index_name, "status": "created"})
+    manifest: dict[str, object] = {
+        "mode": "apply_general_option_indexes",
+        "target_db": target_db,
+        "tables": [GENERAL_FILTER_TABLE, GENERAL_BRAND_TABLE],
+        "indexes": index_results,
+        "policy": {
+            "allow_test2_serving_target": allow_test2_serving_target,
+            "target_via_port_forward": target_via_port_forward,
+            "target_jw_mart_blocked": True,
+            "test2_host_fragment": TEST2_HOST_FRAGMENT,
+        },
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+    if output_manifest_path:
+        _write_json(output_manifest_path, manifest)
+    return manifest
 
 
 def dump_verified_source(
@@ -231,13 +330,14 @@ def _endpoint_from_env(env_file: Path | None) -> DbEndpoint:
     merged = dict(os.environ)
     if env_file:
         merged.update(_read_env_file(env_file))
-    password = merged.get("MARIADB_ROOT_PASSWORD") or merged.get("MARIADB_PASSWORD")
+    password = merged.get("MARIADB_ROOT_PASSWORD") or merged.get("MARIADB_PASSWORD") or merged.get("DB_PASSWORD")
     if not password:
-        raise RuntimeError("MARIADB_ROOT_PASSWORD/MARIADB_PASSWORD is missing")
+        raise RuntimeError("MARIADB_ROOT_PASSWORD/MARIADB_PASSWORD/DB_PASSWORD is missing")
+    user = "root" if merged.get("MARIADB_ROOT_PASSWORD") else merged.get("MARIADB_USER") or merged.get("DB_USER") or "jwapp"
     return DbEndpoint(
-        host=merged.get("MARIADB_HOST", "127.0.0.1"),
-        port=merged.get("MARIADB_PORT") or merged.get("HOST_PORT", "3308"),
-        user="root" if merged.get("MARIADB_ROOT_PASSWORD") else merged.get("MARIADB_USER", "jwapp"),
+        host=merged.get("MARIADB_HOST") or merged.get("DB_HOST") or "127.0.0.1",
+        port=merged.get("MARIADB_PORT") or merged.get("HOST_PORT") or merged.get("DB_PORT") or "3308",
+        user=user,
         password=password,
     )
 
@@ -394,6 +494,71 @@ def _mysql_scalar(endpoint: DbEndpoint, sql: str) -> str:
     if "\n" in output:
         raise RuntimeError(f"expected scalar output for SQL, got: {output!r}")
     return output
+
+
+def _mysql_execute(endpoint: DbEndpoint, sql: str) -> None:
+    client = shutil.which("mariadb") or shutil.which("mysql")
+    if client:
+        command = [
+            client,
+            f"--host={endpoint.host}",
+            f"--port={endpoint.port}",
+            f"--user={endpoint.user}",
+            "--execute",
+            sql,
+        ]
+        subprocess.run(command, check=True, env=_client_env(endpoint))
+        return
+    _pymysql_execute(endpoint, sql)
+
+
+def _index_exists(endpoint: DbEndpoint, db_name: str, table: str, index_name: str) -> bool:
+    sql = (
+        "SELECT COUNT(*) FROM information_schema.statistics "
+        f"WHERE table_schema='{_sql_literal(db_name)}' "
+        f"AND table_name='{_sql_literal(table)}' "
+        f"AND index_name='{_sql_literal(index_name)}'"
+    )
+    try:
+        return int(_mysql_scalar(endpoint, sql)) > 0
+    except RuntimeError as exc:
+        if "client not found" not in str(exc):
+            raise
+    return int(_pymysql_scalar(endpoint, sql)) > 0
+
+
+def _pymysql_scalar(endpoint: DbEndpoint, sql: str) -> str:
+    import pymysql
+
+    with pymysql.connect(
+        host=endpoint.host,
+        port=int(endpoint.port),
+        user=endpoint.user,
+        password=endpoint.password,
+        charset="utf8mb4",
+        autocommit=True,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    if not row:
+        return ""
+    return str(row[0])
+
+
+def _pymysql_execute(endpoint: DbEndpoint, sql: str) -> None:
+    import pymysql
+
+    with pymysql.connect(
+        host=endpoint.host,
+        port=int(endpoint.port),
+        user=endpoint.user,
+        password=endpoint.password,
+        charset="utf8mb4",
+        autocommit=True,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
 
 
 def _client_env(endpoint: DbEndpoint) -> dict[str, str]:

@@ -48,7 +48,7 @@ def test_build_brand_option_check_returns_brand_matched_lists(monkeypatch) -> No
 
     def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
         calls.append((sql, params))
-        if "GROUP BY dimension_type, dimension_value, dimension_value_norm" in sql:
+        if "idx_general_option_universe" in sql:
             return [
                 {"dimension_type": "seller", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 10},
                 {"dimension_type": "form", "dimension_value": "정제", "dimension_value_norm": "정제", "row_count": 5},
@@ -78,7 +78,17 @@ def test_build_brand_option_check_returns_brand_matched_lists(monkeypatch) -> No
     assert payload["brand_matched"] == {"seller": ["태준제약"], "form": ["서방정", "정제"]}
     assert payload["dimensions"][0]["dimension_type"] == "seller"
     assert any("jw_dim" in sql and "mart_general_filter_dimension_metric" in sql for sql, _ in calls)
-    assert any(params[-1] == "C07%" for _, params in calls if params)
+
+    option_call = next(item for item in calls if "idx_general_option_universe" in item[0])
+    brand_match_call = next(item for item in calls if "GROUP BY dimension_type, dimension_value_norm" in item[0])
+    atc_call = next(item for item in calls if "mart_general_brand_metric" in item[0])
+    assert option_call[1] == ["ubist"]
+    assert "GROUP BY dimension_type, dimension_value_hash" in option_call[0]
+    assert "atc4_code LIKE" not in option_call[0]
+    assert brand_match_call[1][-1] == "C07%"
+    assert "atc4_code LIKE" in brand_match_call[0]
+    assert atc_call[1] == ["ubist"]
+    assert "atc4_code LIKE" not in atc_call[0]
 
 
 def test_build_brand_option_check_scopes_strategic_matches(monkeypatch) -> None:

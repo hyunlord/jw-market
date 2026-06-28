@@ -40,7 +40,10 @@ CREATE TABLE IF NOT EXISTS {quoted} (
   INDEX idx_filter_lookup (source, measure, dimension_type, dimension_value_hash, atc4_code, brand_key),
   INDEX idx_filter_atc_brand (source, measure, atc4_code, brand_key),
   INDEX idx_filter_option (source, dimension_type, dimension_value_hash),
-  INDEX idx_filter_norm_prefix (source, dimension_type, dimension_value_norm(191))
+  INDEX idx_filter_norm_prefix (source, dimension_type, dimension_value_norm(191)),
+  INDEX idx_general_option_universe (source, dimension_type, dimension_value_hash, dimension_value_norm(191)),
+  INDEX idx_general_atc_scope (source, atc4_code, dimension_type, dimension_value_hash),
+  INDEX idx_general_brand_scope (source, atc4_code, brand_key, dimension_type, dimension_value_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """.strip()
 

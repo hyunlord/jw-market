@@ -95,6 +95,42 @@ def test_import_verifies_manifest_counts(tmp_path, monkeypatch) -> None:
     assert json.loads(output_path.read_text(encoding="utf-8"))["target_db"] == "jw_mart_d1_stage_20260625_173115"
 
 
+def test_apply_general_option_indexes_is_guarded_and_idempotent(tmp_path, monkeypatch) -> None:
+    endpoint = importer.DbEndpoint("llmops-mariadb-service.llmops.svc.cluster.local", "3306", "root", "p")
+    output_path = tmp_path / "indexes.json"
+    existing = {"idx_general_option_universe"}
+    executed: list[str] = []
+
+    monkeypatch.setattr(importer, "_endpoint_from_env", lambda env_file: endpoint)
+    monkeypatch.setattr(
+        importer,
+        "_index_exists",
+        lambda endpoint, db_name, table, index_name: index_name in existing,
+    )
+    monkeypatch.setattr(importer, "_mysql_execute", lambda endpoint, sql: executed.append(sql))
+
+    summary = importer.apply_general_option_indexes(
+        target_db="jw_mart_d1_stage_20260625_173115",
+        env_file=None,
+        output_manifest_path=output_path,
+        allow_test2_serving_target=True,
+        target_via_port_forward=False,
+    )
+
+    assert summary["indexes"][0] == {
+        "table": "mart_general_filter_dimension_metric",
+        "index": "idx_general_option_universe",
+        "status": "exists",
+    }
+    assert [item["status"] for item in summary["indexes"][1:]] == ["created", "created", "created"]
+    assert len(executed) == 3
+    assert any("mart_general_filter_dimension_metric" in sql for sql in executed)
+    assert any("mart_general_brand_metric" in sql for sql in executed)
+    manifest = json.loads(output_path.read_text(encoding="utf-8"))
+    assert manifest["policy"]["target_jw_mart_blocked"] is True
+    assert manifest["target_db"] == "jw_mart_d1_stage_20260625_173115"
+
+
 def test_restore_gzip_streams_decompressed_sql(tmp_path, monkeypatch) -> None:
     dump_path = tmp_path / "dump.sql.gz"
     expected_sql = b"CREATE TABLE mart_general_brand_metric (id int);\n"

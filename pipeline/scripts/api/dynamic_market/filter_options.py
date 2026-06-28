@@ -178,9 +178,23 @@ def _load_dimension_options(*, dimension_db: str, view: str, source: str, market
     where = ["source = %s"]
     params: list[str] = [source]
     if view == "general":
-        if atc_prefix := _general_atc_prefix(market_id):
-            where.append("atc4_code LIKE %s")
-            params.append(atc_prefix)
+        # General view dimensions are raw ATC-sidecar values, so the option
+        # universe intentionally spans the whole source.  The default checked
+        # values stay market-scoped in _load_brand_dimension_matches.
+        rows = db.fetch_all(
+            f"""
+            SELECT dimension_type,
+                   MIN(dimension_value) AS dimension_value,
+                   MIN(dimension_value_norm) AS dimension_value_norm,
+                   COUNT(*) AS row_count
+            FROM {quote_identifier(dimension_db)}.{table} FORCE INDEX (idx_general_option_universe)
+            WHERE source = %s
+            GROUP BY dimension_type, dimension_value_hash
+            ORDER BY dimension_type, dimension_value_hash
+            """,
+            params,
+        )
+        return _dimension_option_rows(rows)
     elif market_id:
         market_kind, normalized_market_id = _strategic_market_filter(market_id)
         where.extend(["market_kind = %s", "market_id = %s"])
@@ -195,6 +209,10 @@ def _load_dimension_options(*, dimension_db: str, view: str, source: str, market
         """,
         params,
     )
+    return _dimension_option_rows(rows)
+
+
+def _dimension_option_rows(rows: Sequence[Mapping[str, object]]) -> tuple[DimensionOptionRow, ...]:
     return tuple(
         DimensionOptionRow(
             dimension_type=str(row["dimension_type"]),
@@ -270,14 +288,14 @@ def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | Non
         return tuple(db.fetch_all(sql, params))
     where = ["source = %s"]
     params: list[str] = [source]
-    if atc_prefix := _general_atc_prefix(market_id):
-        where.append("atc4_code LIKE %s")
-        params.append(atc_prefix)
+    # General ATC choices follow the same all-source universe as the general
+    # dimension options.  Strategic ATC rows remain market-scoped above.
     rows = db.fetch_all(
         f"""
-        SELECT DISTINCT atc4_code, atc4_desc
-        FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+        SELECT atc4_code, MIN(atc4_desc) AS atc4_desc
+        FROM {quote_identifier(mart_db)}.mart_general_brand_metric FORCE INDEX (idx_general_atc_universe)
         WHERE {" AND ".join(where)}
+        GROUP BY atc4_code
         ORDER BY atc4_code
         """,
         params,
