@@ -9,6 +9,7 @@ from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner
 from jw_chat_agent_poc.orchestrator import answer_facts as answer_facts_module
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
+from jw_chat_agent_poc.orchestrator.markdown_renderers import _safe_table, drug_info_md
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.router.llm_bq_router import GenosBQDecomposer
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
@@ -2563,6 +2564,35 @@ def test_genos_markdown_interpretation_filters_wrong_units(monkeypatch) -> None:
     assert "숫자 검증" not in answer
 
 
+def test_query_failed_fact_is_rendered_as_lookup_failure_not_missing_data() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "query_failed",
+                "source": "cache",
+                "render_data": {
+                    "status": "query_failed",
+                    "message": "요청한 지표 조회 실행이 실패했습니다. 데이터가 없다는 뜻은 아니며, 수치를 추정하지 않습니다.",
+                    "tool_name": "query",
+                    "error_type": "LookupError",
+                },
+            }
+        ],
+        sources=["cache"],
+    )
+
+    mandatory = "\n".join(mandatory_fact_lines(response.fact_md))
+    messages = GenosClient._markdown_messages("리바로 채널별 매출", response.to_dict())
+    system_prompt = messages[0]["content"]
+
+    assert "조회 실패" in mandatory
+    assert "데이터 미보유" not in mandatory
+    assert "데이터가 없다는 뜻" in mandatory
+    assert "조회 실패 행" in system_prompt
+    assert "error 또는 query_failed" in system_prompt
+
+
 def test_genos_markdown_strips_news_only_metric_claims(monkeypatch) -> None:
     response = MarkdownResponseBuilder().build(
         brand="리바로",
@@ -2989,7 +3019,7 @@ def test_genos_fact_prompt_prioritizes_mandatory_rows() -> None:
     system_prompt = messages[0]["content"]
     user_prompt = messages[1]["content"]
 
-    assert "데이터 미보유/미지원 행은 별도 문장" in system_prompt
+    assert "데이터 미보유/미지원 행과 조회 실패 행은 별도 문장" in system_prompt
     assert user_prompt.index("필수 답변 fact") < user_prompt.index("확정 fact set")
     assert "리바로 2026-03→2026-04" in user_prompt
     assert "아토젯 매출 변화는 현재 지원 브랜드 목록" in user_prompt
@@ -3671,6 +3701,101 @@ def test_markdown_cells_escape_raw_html() -> None:
 
     assert "<script" not in response.markdown.lower()
     assert "&lt;script" in response.markdown
+
+
+def test_mfds_drug_info_splits_permission_and_ingredient_tables() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "search_drug_info",
+                "source": "external_api",
+                "render_data": {
+                    "calls": [
+                        {
+                            "tool": "mfds_permission_detail",
+                            "status": "live",
+                            "render_data": {
+                                "items": [
+                                    {
+                                        "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+                                        "ENTP_NAME": "제이더블유중외제약(주)",
+                                        "ITEM_PERMIT_DATE": "20050106",
+                                        "ETC_OTC_CODE": "전문의약품",
+                                        "MATERIAL_NAME": " ".join(
+                                            (
+                                                "총량 : 1정(85.102mg) 중\\",
+                                                "| 성분명 : 피타바스타틴칼슘수화물\\",
+                                                "| 분량 : 1.0\\",
+                                                "| 단위 : 밀리그램\\",
+                                                "| 규격 : JP\\",
+                                                "| 성분정보 : \\",
+                                                "| 비고 : 5수화물",
+                                            )
+                                        ),
+                                        "STORAGE_METHOD": "차광기밀용기, 실온(1-30℃)보관",
+                                        "VALID_TERM": "제조일로부터 36 개월",
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+            }
+        ],
+        sources=["external_api"],
+    )
+
+    assert "| 품목명 | 업체 | 허가일 | 구분 | 저장법 | 유효기간 |" in response.markdown
+    assert (
+        "| 리바로정1밀리그램(피타바스타틴칼슘수화물) | 제이더블유중외제약(주) | "
+        "2005-01-06 | 전문의약품 | 차광기밀용기, 실온(1-30℃)보관 | 제조일로부터 36 개월 |"
+    ) in response.markdown
+    assert "| 총량 | 성분명 | 분량 | 단위 | 규격 | 비고 |" in response.markdown
+    assert "| 1정(85.102mg) 중 | 피타바스타틴칼슘수화물 | 1.0 | 밀리그램 | JP | 5수화물 |" in response.markdown
+    mfds_rows = [
+        line
+        for line in response.markdown.splitlines()
+        if line.startswith("| 품목명 ")
+        or line.startswith("| 리바로정1밀리그램")
+        or line.startswith("| 총량 ")
+        or line.startswith("| 1정(")
+    ]
+    assert mfds_rows
+    for line in mfds_rows:
+        assert len([cell.strip() for cell in line.strip("|").split("|")]) == 6
+
+
+def test_mfds_drug_info_missing_basic_fields_stay_in_aligned_table() -> None:
+    markdown = drug_info_md(
+        {
+            "calls": [
+                {
+                    "tool": "mfds_permission_detail",
+                    "status": "live",
+                    "render_data": {
+                        "items": [
+                            {
+                                "ITEM_NAME": "리바로정1밀리그램",
+                                "ENTP_NAME": "제이더블유중외제약(주)",
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+
+    assert "| 품목명 | 업체 | 허가일 | 구분 | 저장법 | 유효기간 |" in markdown
+    assert "| 리바로정1밀리그램 | 제이더블유중외제약(주) | - | - | - | - |" in markdown
+    assert "\\|" not in markdown
+
+
+def test_mfds_table_shape_mismatch_uses_key_value_fallback() -> None:
+    markdown = _safe_table("### MFDS 성분 상세", ("총량", "성분명"), (("1정", "피타바스타틴", "extra"),))
+
+    assert "| 항목 | 값 |" in markdown
+    assert "| MFDS 성분 상세 행 1 | 1정 / 피타바스타틴 / extra |" in markdown
 
 
 def test_fallback_top_brand_answer_keeps_insight_shape() -> None:

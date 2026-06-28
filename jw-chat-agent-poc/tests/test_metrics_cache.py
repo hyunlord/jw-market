@@ -368,11 +368,12 @@ def test_chat_agent_routes_hospital_level_sales_to_channel_query() -> None:
     tool = MetricsTool(mode="cache", cache_reader=reader, cause_reader=CAUSE_READER)
 
     result = ChatAgent(metrics=tool).answer("리바로 병원별 매출")
-    brand_call = next(call for call in result["tool_calls"] if call["tool"] == "unsupported_metric")
+    brand_call = next(call for call in result["tool_calls"] if call["tool"] == "query_failed")
     data = brand_call["render_data"]
 
-    assert data["status"] == "unsupported"
-    assert data["message"] == "query layer is unavailable"
+    assert data["status"] == "query_failed"
+    assert "조회 실행이 실패" in data["message"]
+    assert data["error_type"] == "LookupError"
     assert '"dimensions": ["channel"]' in data["arguments"]["spec"]
     assert '"metrics": ["sales"]' in data["arguments"]["spec"]
     assert "granularity" not in result["answer"]

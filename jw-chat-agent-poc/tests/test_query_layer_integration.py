@@ -344,6 +344,28 @@ def test_generic_channel_question_maps_to_channel_distribution_query(question: s
     assert rows["종병"]["value"] == pytest.approx(2_700_000_000.0)
 
 
+def test_channel_sales_question_keeps_channel_facts_visible() -> None:
+    planner = ScriptedPlanner((AgentDecision(final_answer="done"),))
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, query_layer=_query_layer())
+
+    result = agent.answer("리바로 채널별 매출")
+
+    query_call = next(
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("metric") == "query_spec"
+    )
+    data = query_call["render_data"]
+    fact_md = result["markdown_response"]["fact_md"]
+    assert data["level"] == "channel"
+    assert data.get("answer_scope") is None
+    assert "### 필수 답변 fact" in fact_md
+    assert "channel 상위" in fact_md
+    assert "### 리바로 channel별 점유율 fact" in fact_md
+    assert "의원" in fact_md
+    assert "45.00억원" in fact_md
+
+
 def test_channel_share_question_keeps_share_metric() -> None:
     plan = strict_query_plan("리바로와 아토젯 채널별 점유율", "리바로")
 
@@ -391,6 +413,53 @@ def test_absent_dimension_question_blocks_generic_cache_fallback() -> None:
 
     assert [call.get("tool") for call in result["tool_calls"]] == ["unsupported_metric"]
     assert "nhi_type" in result["tool_calls"][0]["render_data"]["message"]
+
+
+def test_query_execution_failure_is_not_reported_as_unsupported(caplog) -> None:
+    """Given query execution fails, the facade reports 조회 실패 instead of 데이터 미보유."""
+
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=None,
+    )
+
+    execution = facade.execute(
+        "query",
+        {
+            "brand": "리바로",
+            "spec": '{"market":"ml_006","source":"ubist","dimensions":["channel"],"metrics":["sales"]}',
+        },
+    )
+
+    data = execution.call["render_data"]
+    assert execution.status == "error"
+    assert execution.call["tool"] == "query_failed"
+    assert data["status"] == "query_failed"
+    assert data["error_type"] == "LookupError"
+    assert "조회 실행이 실패" in data["message"]
+    assert "데이터가 없다는 뜻" in data["message"]
+    assert any(record.message == "agent_tool_execution_failed" for record in caplog.records)
+
+
+def test_unsupported_brand_still_reports_unsupported_metric() -> None:
+    """Given the brand is outside the allowed enum, the facade keeps the unsupported taxonomy."""
+
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=_query_layer(),
+    )
+
+    execution = facade.execute("get_brand_sales", {"brand": "없는브랜드", "period": "latest"})
+
+    data = execution.call["render_data"]
+    assert execution.status == "error"
+    assert execution.call["tool"] == "unsupported_metric"
+    assert data["status"] == "unsupported"
+    assert "지원" in data["message"] or "allowed canonical brand" in data["message"]
 
 
 def test_top_brand_questions_enter_agent_loop() -> None:

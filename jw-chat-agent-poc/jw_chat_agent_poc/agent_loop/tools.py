@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import logging
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, search_news_call
@@ -14,6 +15,11 @@ from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+
+
+logger = logging.getLogger(__name__)
+QUERY_FAILED_STATUS = "query_failed"
+UNSUPPORTED_STATUS = "unsupported"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +56,11 @@ class AgentToolFacade:
         return tool_schemas(self._allowed_brands, self._periods.schema_periods, self._query_catalog())
 
     def execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
-        grounded_arguments = arguments
         try:
             grounded_arguments = self.ground_arguments(name, arguments)
+        except (LookupError, TypeError, ValueError, UnsupportedBrandError) as exc:
+            return _tool_error(name, arguments, str(exc), status=UNSUPPORTED_STATUS, error=exc)
+        try:
             if name == "get_metric":
                 return self._metric(grounded_arguments)
             if name == "get_market_scope":
@@ -81,9 +89,17 @@ class AgentToolFacade:
                 return self._top_brands(grounded_arguments)
             if name == "query":
                 return self._query_spec(grounded_arguments)
-        except (LookupError, TypeError, ValueError, UnsupportedBrandError) as exc:
-            return _tool_error(name, arguments, str(exc))
-        return _tool_error(name, grounded_arguments, f"지원하지 않는 agent tool: {name}")
+        except UnsupportedBrandError as exc:
+            return _tool_error(name, arguments, str(exc), status=UNSUPPORTED_STATUS, error=exc)
+        except (LookupError, TypeError, ValueError) as exc:
+            return _tool_error(name, arguments, _query_failed_message(), status=QUERY_FAILED_STATUS, error=exc)
+        return _tool_error(
+            name,
+            grounded_arguments,
+            f"지원하지 않는 agent tool: {name}",
+            status=UNSUPPORTED_STATUS,
+            error=None,
+        )
 
     def ground_arguments(self, name: str, arguments: Mapping[str, str]) -> Mapping[str, str]:
         grounded = {str(key): str(value) for key, value in arguments.items()}
@@ -245,11 +261,57 @@ class AgentToolFacade:
         return catalog_for(self._query_layer, brand)
 
 
-def _tool_error(name: str, arguments: Mapping[str, str], message: str) -> ToolExecution:
+def _tool_error(
+    name: str,
+    arguments: Mapping[str, str],
+    message: str,
+    *,
+    status: str,
+    error: BaseException | None,
+) -> ToolExecution:
+    if status == QUERY_FAILED_STATUS:
+        _log_tool_execution_failure(name, arguments, error)
+    tool = "query_failed" if status == QUERY_FAILED_STATUS else "unsupported_metric"
+    render_data = {
+        "status": status,
+        "message": message,
+        "tool_name": name,
+        "arguments": _safe_arguments(arguments),
+    }
+    if error is not None:
+        render_data["error_type"] = type(error).__name__
     call = {
         "source": "cache",
-        "tool": "unsupported_metric",
+        "tool": tool,
         "summary_text": message,
-        "render_data": {"status": "unsupported", "message": message, "tool_name": name, "arguments": dict(arguments)},
+        "render_data": render_data,
     }
     return ToolExecution("error", message, call, arguments)
+
+
+def _query_failed_message() -> str:
+    return "요청한 지표 조회 실행이 실패했습니다. 데이터가 없다는 뜻은 아니며, 수치를 추정하지 않습니다."
+
+
+def _log_tool_execution_failure(name: str, arguments: Mapping[str, str], error: BaseException | None) -> None:
+    logger.warning(
+        "agent_tool_execution_failed",
+        extra={
+            "tool_name": name,
+            "exception_type": type(error).__name__ if error is not None else "",
+            "exception_message": str(error) if error is not None else "",
+            "arguments": _safe_arguments(arguments),
+        },
+    )
+
+
+def _safe_arguments(arguments: Mapping[str, str]) -> dict[str, str]:
+    safe: dict[str, str] = {}
+    for key, value in arguments.items():
+        key_text = str(key)
+        if any(token in key_text.lower() for token in ("key", "secret", "password", "token")):
+            safe[key_text] = "[redacted]"
+            continue
+        value_text = str(value)
+        safe[key_text] = value_text if len(value_text) <= 500 else f"{value_text[:500]}..."
+    return safe

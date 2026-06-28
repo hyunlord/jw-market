@@ -145,7 +145,7 @@ class MarkdownResponseBuilder:
     def _interpretation_summary(call: dict[str, Any]) -> str:
         tool = str(call.get("tool") or "")
         render_data = call.get("render_data")
-        if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "agent_calculation"} and isinstance(render_data, dict):
+        if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"} and isinstance(render_data, dict):
             return MarkdownResponseBuilder._metric_interpretation_summary(render_data)
         if tool == "get_disease_stats" and isinstance(render_data, dict):
             return MarkdownResponseBuilder._hira_interpretation_summary(render_data)
@@ -154,6 +154,8 @@ class MarkdownResponseBuilder:
 
     @staticmethod
     def _metric_interpretation_summary(data: dict[str, Any]) -> str:
+        if data.get("status") in {"error", "query_failed"}:
+            return str(data.get("message") or "요청한 지표 조회 실행이 실패했습니다. 데이터 미보유로 해석하지 않습니다.")
         if data.get("status") == "unsupported":
             return str(data.get("message") or "요청한 지표는 현재 지원 범위 밖입니다.")
 
@@ -265,7 +267,7 @@ class MarkdownResponseBuilder:
 
     @staticmethod
     def _call_without_duplicate_metric_fields(call: dict[str, Any], seen_labels: set[str]) -> dict[str, Any]:
-        if call.get("tool") not in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "agent_calculation"}:
+        if call.get("tool") not in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
             return call
         data = call.get("render_data")
         if not isinstance(data, dict) or not seen_labels:
@@ -282,7 +284,7 @@ class MarkdownResponseBuilder:
 
     @staticmethod
     def _visible_metric_labels(call: dict[str, Any]) -> set[str]:
-        if call.get("tool") not in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "agent_calculation"}:
+        if call.get("tool") not in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
             return set()
         data = call.get("render_data")
         if not isinstance(data, dict):

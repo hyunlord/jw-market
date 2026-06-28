@@ -212,6 +212,8 @@ def _mark_answer_scope(question: str, calls: list[dict[str, Any]], anchor_brand:
         data = _metric_data(call)
         if data.get("brand") != anchor_brand:
             continue
+        if data.get("level") == "channel" and isinstance(data.get("level_segments"), list):
+            continue
         if scope == "single_brand_trend" and data.get("metric") != "series":
             continue
         data["answer_scope"] = scope
@@ -431,7 +433,7 @@ def _strict_query_calls(
 
 
 def _non_metric_support_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    blocked = {"get_brand_metric", "get_market_landscape", "agent_calculation", "unsupported_metric"}
+    blocked = {"get_brand_metric", "get_market_landscape", "agent_calculation", "unsupported_metric", "query_failed"}
     return [call for call in calls if str(call.get("tool") or "") not in blocked]
 
 

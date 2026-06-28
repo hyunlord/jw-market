@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
@@ -25,7 +26,7 @@ def call_data_md(call: dict[str, Any]) -> str:
         return ""
     if tool == "deep_analysis_related_news":
         return news_md(render_data)
-    if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "agent_calculation"}:
+    if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
         return metrics_md(tool, render_data)
     if tool.startswith("hira_disease") or str(call.get("source")) == "hira_disease":
         return hira_md(tool, render_data)
@@ -43,6 +44,12 @@ def call_data_md(call: dict[str, Any]) -> str:
 
 
 def metrics_md(tool: str, data: dict[str, Any]) -> str:
+    if data.get("status") in {"error", "query_failed"}:
+        blocks = [table(f"### {cell(tool)}", ("지표", "값"), (("상태", data.get("message")),))]
+        filter_rows = metric_filter_rows(data)
+        if filter_rows:
+            blocks.append(table("### 지표 필터", ("구분", "값"), filter_rows))
+        return "\n\n".join(blocks)
     if data.get("status") == "unsupported":
         blocks = [table(f"### {cell(tool)}", ("지표", "값"), (("상태", data.get("message")),))]
         filter_rows = metric_filter_rows(data)
@@ -254,29 +261,123 @@ def patent_md(data: dict[str, Any]) -> str:
 
 
 def drug_info_md(data: dict[str, Any]) -> str:
-    rows = _drug_info_rows(data)
-    if rows:
-        return table("### MFDS 허가정보", ("품목명", "업체", "허가일", "구분", "성분", "저장법", "유효기간"), tuple(rows))
+    basic_rows = _drug_info_basic_rows(data)
+    if basic_rows:
+        blocks = [
+            _safe_table(
+                "### MFDS 허가정보",
+                ("품목명", "업체", "허가일", "구분", "저장법", "유효기간"),
+                tuple(basic_rows),
+            )
+        ]
+        ingredient_rows = _drug_info_ingredient_rows(data)
+        if ingredient_rows:
+            blocks.append(
+                _safe_table(
+                    "### MFDS 성분 상세",
+                    ("총량", "성분명", "분량", "단위", "규격", "비고"),
+                    tuple(ingredient_rows),
+                )
+            )
+        return "\n\n".join(blocks)
     message = data.get("message") or _nested_status_message(data) or "MFDS 허가정보 조회 실패, 근거 생성 안 함"
     return table("### MFDS 허가정보", ("상태",), ((message,),))
 
 
-def _drug_info_rows(data: dict[str, Any]) -> list[tuple[Any, Any, Any, Any, Any, Any, Any]]:
+def _drug_info_basic_rows(data: dict[str, Any]) -> list[tuple[Any, Any, Any, Any, Any, Any]]:
     detail_items = _nested_items(data, "mfds_permission_detail")
-    rows: list[tuple[Any, Any, Any, Any, Any, Any, Any]] = []
+    rows: list[tuple[Any, Any, Any, Any, Any, Any]] = []
     for item in detail_items[:TABLE_LIMIT]:
         rows.append(
             (
-                item.get("ITEM_NAME") or "-",
-                item.get("ENTP_NAME") or item.get("ENTP_NM") or "-",
-                item.get("ITEM_PERMIT_DATE") or item.get("PERMIT_DATE") or "-",
-                item.get("ETC_OTC_CODE") or item.get("PERMIT_KIND_NAME") or "-",
-                item.get("MATERIAL_NAME") or item.get("MAIN_INGR_ENG") or item.get("ITEM_INGR_NAME") or "-",
-                item.get("STORAGE_METHOD") or "-",
-                item.get("VALID_TERM") or "-",
+                _mfds_clean_value(item.get("ITEM_NAME") or "-"),
+                _mfds_clean_value(item.get("ENTP_NAME") or item.get("ENTP_NM") or "-"),
+                _format_mfds_date(item.get("ITEM_PERMIT_DATE") or item.get("PERMIT_DATE") or "-"),
+                _mfds_clean_value(item.get("ETC_OTC_CODE") or item.get("PERMIT_KIND_NAME") or "-"),
+                _mfds_clean_value(item.get("STORAGE_METHOD") or "-"),
+                _mfds_clean_value(item.get("VALID_TERM") or "-"),
             )
         )
     return rows
+
+
+def _drug_info_ingredient_rows(data: dict[str, Any]) -> list[tuple[Any, Any, Any, Any, Any, Any]]:
+    rows: list[tuple[Any, Any, Any, Any, Any, Any]] = []
+    for item in _nested_items(data, "mfds_permission_detail")[:TABLE_LIMIT]:
+        material = (
+            item.get("MATERIAL_NAME")
+            or item.get("MAIN_INGR_ENG")
+            or item.get("ITEM_INGR_NAME")
+            or ""
+        )
+        rows.extend(_parse_mfds_ingredients(material))
+    return rows
+
+
+def _parse_mfds_ingredients(raw: Any) -> list[tuple[str, str, str, str, str, str]]:
+    text = _mfds_clean_value(raw)
+    if not text or text == "-":
+        return []
+    tokens = [
+        token.strip()
+        for token in re.split(r"\s*(?:\\+|\||\r?\n)\s*", str(raw))
+        if token.strip()
+    ]
+    current: dict[str, str] = {}
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for token in tokens:
+        key, separator, value = token.partition(":")
+        if not separator:
+            key, separator, value = token.partition("：")
+        if not separator:
+            continue
+        normalized_key = _mfds_clean_value(key)
+        normalized_value = _mfds_clean_value(value)
+        if normalized_key == "총량" and current:
+            rows.append(_ingredient_row(current))
+            current = {}
+        current[normalized_key] = normalized_value
+    if current:
+        rows.append(_ingredient_row(current))
+    if rows:
+        return rows
+    return [("-", text, "-", "-", "-", "-")]
+
+
+def _ingredient_row(parts: dict[str, str]) -> tuple[str, str, str, str, str, str]:
+    return (
+        parts.get("총량") or "-",
+        parts.get("성분명") or parts.get("성분정보") or "-",
+        parts.get("분량") or "-",
+        parts.get("단위") or "-",
+        parts.get("규격") or "-",
+        parts.get("비고") or "-",
+    )
+
+
+def _format_mfds_date(raw: Any) -> str:
+    value = _mfds_clean_value(raw)
+    if re.fullmatch(r"\d{8}", value):
+        return f"{value[:4]}-{value[4:6]}-{value[6:]}"
+    return value
+
+
+def _mfds_clean_value(raw: Any) -> str:
+    text = "-" if raw is None or raw == "" else str(raw)
+    return re.sub(r"\s+", " ", text.replace("\\", " ").strip()) or "-"
+
+
+def _safe_table(title: str, headers: tuple[str, ...], rows: tuple[tuple[Any, ...], ...]) -> str:
+    if all(len(row) == len(headers) for row in rows):
+        return table(title, headers, rows)
+    fallback_rows = tuple(
+        (
+            f"{title.lstrip('# ').strip()} 행 {index}",
+            " / ".join(_mfds_clean_value(value) for value in row),
+        )
+        for index, row in enumerate(rows, 1)
+    )
+    return table(title, ("항목", "값"), fallback_rows)
 
 
 def _nested_items(data: dict[str, Any], tool_name: str) -> list[dict[str, Any]]:
