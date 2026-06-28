@@ -128,6 +128,20 @@ def test_channel_policy_uses_compacted_rendered_channel_table() -> None:
     assert "| 의원 | 3.37% | 41.93억원 |" in revised
 
 
+def test_channel_policy_falls_back_to_rendered_table_when_fact_md_marks_channel_without_rows() -> None:
+    fact_md = "### 리바로 channel별 근거\nchannel 상위 데이터가 있으며 시장점유율과 매출을 포함합니다.\n"
+    answer = (
+        "| 채널 | 시장점유율 | 매출 || --- | --- | --- || 의원 | 3.37% | 41.93억원 || "
+        "종합병원 | 4.22% | 20.60억원 || 상급종합병원 | 4.49% | 17.56억원 |"
+    )
+
+    revised = apply_claim_policy("리바로 채널별 매출", answer, fact_md)
+
+    assert "리바로 채널별 매출은 의원 41.93억원, 종합병원 20.60억원, 상급종합병원 17.56억원 순입니다" in revised
+    assert "현재 데이터만으로 확인할 수 없" in revised
+    assert "| 의원 | 3.37% | 41.93억원 |" in revised
+
+
 def test_claim_policy_is_table_driven_for_channel_cross_section() -> None:
     assert "channel_cross_section" in FORBIDDEN_BY_FACT_TYPE
     assert "causal_analysis_unverified" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]

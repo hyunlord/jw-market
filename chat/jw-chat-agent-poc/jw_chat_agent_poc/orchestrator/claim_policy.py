@@ -68,7 +68,7 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
     revised = body
     for fact_type in active_fact_types:
         if fact_type == "channel_cross_section":
-            support_md = fact_md if _is_channel_cross_section(fact_md) else revised
+            support_md = "\n\n".join(part for part in (fact_md.strip(), revised.strip()) if part)
             revised = _rewrite_channel_cross_section(question, revised, support_md)
             continue
         claims = FORBIDDEN_BY_FACT_TYPE.get(fact_type, ())
