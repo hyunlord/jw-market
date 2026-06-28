@@ -662,8 +662,8 @@ class GenosClient:
                 answer = _ensure_trend_prose_fail_closed(question, answer, trend_fact_md, sanitized_trend_prose)
         answer = _ensure_direct_metric_fact_answer(question, answer, fact_md)
         answer = _ensure_code_rendered_trend_table(answer, fact_lookup_md, trend_fact_md)
-        answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = ensure_top_brand_trend_table(answer, fact_md)
+        answer = _apply_final_claim_controls(question, answer, fact_md)
         return append_deterministic_source_block(answer, fact_md)
 
     @staticmethod
