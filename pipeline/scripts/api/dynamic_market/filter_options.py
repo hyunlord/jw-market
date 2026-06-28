@@ -15,10 +15,7 @@ from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, q
 GENERAL_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
 STRATEGIC_DIMENSION_TABLE = "mart_strategic_filter_dimension_metric"
 SELECTABLE_ATC_LEVELS = ("atc3", "atc4")
-ATC_FIVE_STYLE_RE = re.compile(r"^[A-Z][0-9]{2}[A-Z][0-9]$")
-ATC_UBIST_FOUR_STYLE_RE = re.compile(r"^[A-Z][0-9]{2}[A-Z]$")
-ATC_UBIST_SHORT_FOUR_STYLE_RE = re.compile(r"^[A-Z][0-9][A-Z][0-9]$")
-ATC_UBIST_THREE_STYLE_RE = re.compile(r"^[A-Z][0-9][A-Z]$")
+ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
 DIMENSION_LABELS: dict[str, str] = {
     "seller": "판매사",
     "molecule_strength": "성분용량",
@@ -171,20 +168,28 @@ def build_atc_hierarchy(rows: Iterable[Mapping[str, object]]) -> dict[str, objec
 
 
 def parse_atc_code(code: str) -> dict[str, str] | None:
-    """Return code-only ATC hierarchy prefixes from the deployed ATC4 code shapes."""
+    """Return code-only ATC hierarchy while preserving the original ATC4 code.
+
+    UBIST omits zero padding in one-digit numeric ATC segments (``A1A2``),
+    while IQVIA already uses canonical two-digit numeric segments (``A01A2``).
+    The UI groups upper levels on canonical tokens, but ATC4 remains the raw
+    code because downstream filters and marts use that exact key.
+    """
 
     normalized = code.strip().upper()
     if not normalized:
         return None
-    if ATC_FIVE_STYLE_RE.fullmatch(normalized):
+    tokens = ATC_TOKEN_RE.findall(normalized)
+    if not tokens:
         return {"atc1": normalized[:1], "atc2": normalized[:3], "atc3": normalized[:4], "atc4": normalized}
-    if ATC_UBIST_FOUR_STYLE_RE.fullmatch(normalized):
-        return {"atc1": normalized[:1], "atc2": normalized[:3], "atc3": normalized, "atc4": normalized}
-    if ATC_UBIST_SHORT_FOUR_STYLE_RE.fullmatch(normalized):
-        return {"atc1": normalized[:1], "atc2": normalized[:2], "atc3": normalized[:3], "atc4": normalized}
-    if ATC_UBIST_THREE_STYLE_RE.fullmatch(normalized):
-        return {"atc1": normalized[:1], "atc2": normalized[:2], "atc3": normalized, "atc4": normalized}
-    return {"atc1": normalized[:1], "atc2": normalized[:3], "atc3": normalized[:4], "atc4": normalized}
+    canonical_tokens = tuple(token.zfill(2) if token.isdigit() and len(token) == 1 else token for token in tokens)
+    levels = {
+        "atc1": canonical_tokens[0],
+        "atc2": "".join(canonical_tokens[:2]),
+        "atc3": "".join(canonical_tokens[:3]),
+        "atc4": normalized,
+    }
+    return {level: value for level, value in levels.items() if value}
 
 
 def normalize_view(value: str) -> str:

@@ -48,9 +48,10 @@ def test_build_filter_option_payload_groups_dimensions_and_atc_levels() -> None:
 
 def test_parse_atc_code_handles_deployed_source_shapes() -> None:
     assert parse_atc_code("C07A0") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C07A0"}
-    assert parse_atc_code("C7A") == {"atc1": "C", "atc2": "C7", "atc3": "C7A", "atc4": "C7A"}
+    assert parse_atc_code("C7A") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C7A"}
     assert parse_atc_code("A10H") == {"atc1": "A", "atc2": "A10", "atc3": "A10H", "atc4": "A10H"}
-    assert parse_atc_code("A1A2") == {"atc1": "A", "atc2": "A1", "atc3": "A1A", "atc4": "A1A2"}
+    assert parse_atc_code("A1A2") == {"atc1": "A", "atc2": "A01", "atc3": "A01A", "atc4": "A1A2"}
+    assert parse_atc_code("A11F") == {"atc1": "A", "atc2": "A11", "atc3": "A11F", "atc4": "A11F"}
 
 
 def test_build_brand_option_check_returns_brand_matched_lists(monkeypatch) -> None:
