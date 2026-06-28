@@ -12,6 +12,7 @@ import requests
 from jw_chat_agent_poc.genos_config import resolve_final_genos_base_url, resolve_final_genos_token
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels
+from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
@@ -55,6 +56,11 @@ from jw_chat_agent_poc.common.timing import stage
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
+
+
+def _apply_final_claim_controls(question: str, answer: str, fact_md: str) -> str:
+    guarded = apply_claim_guardrails(question, answer, fact_md)
+    return apply_claim_policy(question, guarded, fact_md)
 
 
 def _repair_answer_with_verified_facts(answer: str, strict_numbers: tuple[str, ...], mandatory_lines: tuple[str, ...]) -> str:
@@ -546,10 +552,10 @@ class GenosClient:
                 raw_interpretation = self._chat_text(messages)
         except requests.RequestException:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
-            return apply_claim_guardrails(question, fallback, fact_md)
+            return _apply_final_claim_controls(question, fallback, fact_md)
         if not raw_interpretation:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
-            return apply_claim_guardrails(question, fallback, fact_md)
+            return _apply_final_claim_controls(question, fallback, fact_md)
         trend_prose_candidate = ""
         if trend_fact_md and _needs_trend_fact_prose(question, raw_interpretation, trend_fact_md):
             try:
@@ -571,7 +577,7 @@ class GenosClient:
                     )
             except requests.RequestException:
                 fallback = finalized_fallback_fact_answer(question, markdown_response)
-                return apply_claim_guardrails(question, fallback, fact_md)
+                return _apply_final_claim_controls(question, fallback, fact_md)
         with stage(timing, "answer_safety", "fact-number validation"):
             removed_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
             answer = _sanitize_preserving_analysis(raw_interpretation, strict_numbers)
@@ -656,7 +662,7 @@ class GenosClient:
                 answer = _ensure_trend_prose_fail_closed(question, answer, trend_fact_md, sanitized_trend_prose)
         answer = _ensure_direct_metric_fact_answer(question, answer, fact_md)
         answer = _ensure_code_rendered_trend_table(answer, fact_lookup_md, trend_fact_md)
-        answer = apply_claim_guardrails(question, answer, fact_md)
+        answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = ensure_top_brand_trend_table(answer, fact_md)
         return append_deterministic_source_block(answer, fact_md)
 

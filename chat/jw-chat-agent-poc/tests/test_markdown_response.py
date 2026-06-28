@@ -3991,3 +3991,52 @@ def test_claim_guardrails_remove_hira_unavailable_derivatives_once() -> None:
     assert "수요를 실제 처방 성과로 전환" not in guarded
     assert guarded.count("HIRA 환자수 수치가 미반환되어") == 1
     assert "산출할 수 없습니다" in guarded
+
+
+def test_genos_final_answer_applies_channel_claim_policy(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "리바로",
+                    "metric": "query_spec",
+                    "period": "2026-04",
+                    "level": "channel",
+                    "level_segments": [
+                        {"name": "의원", "rank": 1, "ms_recent_pct": 3.37, "value": 4_193_000_000.0},
+                        {"name": "종합병원", "rank": 2, "ms_recent_pct": 4.22, "value": 2_057_000_000.0},
+                        {"name": "상급종합병원", "rank": 3, "ms_recent_pct": 4.49, "value": 1_764_000_000.0},
+                    ],
+                },
+            }
+        ],
+        sources=["cache"],
+    )
+
+    def stream_chat(_self: GenosClient, _messages: list[dict[str, str]]):
+        yield (
+            "리바로는 의원 매출이 Cash Cow임을 입증합니다. "
+            "상급종합병원은 임상적 근거와 처방 전이가 확인되는 채널입니다.\n\n"
+            "- channel 상위: 1위 의원 시장점유율 3.37% 매출 41.93억원\n"
+            "- channel 상위: 2위 종합병원 시장점유율 4.22% 매출 20.57억원\n"
+            "- channel 상위: 3위 상급종합병원 시장점유율 4.49% 매출 17.64억원"
+        )
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            "리바로 채널별 매출",
+            {"markdown_response": response.to_dict()},
+        )
+    )
+
+    body = answer.split("## 출처", maxsplit=1)[0]
+    for forbidden in ("Cash Cow", "입증", "임상적 근거", "전이"):
+        assert forbidden not in body
+    assert "| 의원 | 3.37% | 41.93억원 |" in body
+    assert "| 종합병원 | 4.22% | 20.57억원 |" in body
+    assert "| 상급종합병원 | 4.49% | 17.64억원 |" in body
