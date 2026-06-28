@@ -40,6 +40,12 @@ _CHANNEL_ROW_RE: Final = re.compile(
     r"시장점유율\s+(?P<share>[+-]?\d+(?:\.\d+)?%)\s+"
     r"매출\s+(?P<sales>[+-]?\d+(?:,\d{3})*(?:\.\d+)?억원)"
 )
+_CHANNEL_TABLE_HEADER_RE: Final = re.compile(r"(?m)^\|\s*채널\s*\|\s*시장점유율\s*\|\s*매출\s*\|")
+_CHANNEL_TABLE_ROW_RE: Final = re.compile(
+    r"(?m)^\|\s*(?P<name>[^|]+?)\s*\|\s*"
+    r"(?P<share>[+-]?\d+(?:\.\d+)?%)\s*\|\s*"
+    r"(?P<sales>[+-]?\d+(?:,\d{3})*(?:\.\d+)?억원)\s*\|"
+)
 _PERIOD_RE: Final = re.compile(r"[12]\d{3}-\d{2}")
 _SENTENCE_RE: Final = re.compile(r"[^.!?\n。]+(?:[.!?。]|$)")
 _SOURCE_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*출처\b")
@@ -58,13 +64,12 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
     """Remove interpretation claims that are not supported by the supplied fact types."""
 
     body, sources = _split_sources(answer)
-    active_fact_types = tuple(
-        fact_type for fact_type, detector in _FACT_TYPE_DETECTORS.items() if detector(fact_md)
-    )
+    active_fact_types = _active_fact_types(body, fact_md)
     revised = body
     for fact_type in active_fact_types:
         if fact_type == "channel_cross_section":
-            revised = _rewrite_channel_cross_section(question, revised, fact_md)
+            support_md = fact_md if _is_channel_cross_section(fact_md) else revised
+            revised = _rewrite_channel_cross_section(question, revised, support_md)
             continue
         claims = FORBIDDEN_BY_FACT_TYPE.get(fact_type, ())
         revised, removed = _drop_forbidden_claim_sentences(revised, claims)
@@ -82,6 +87,20 @@ def _is_channel_cross_section(fact_md: str) -> bool:
     if _CHANNEL_FACT_RE.search(fact_md):
         return True
     return "channel 상위" in fact_md and "시장점유율" in fact_md and "매출" in fact_md
+
+
+def _active_fact_types(body: str, fact_md: str) -> tuple[str, ...]:
+    active: list[str] = []
+    for fact_type, detector in _FACT_TYPE_DETECTORS.items():
+        if detector(fact_md):
+            active.append(fact_type)
+    if "channel_cross_section" not in active and _answer_has_channel_table(body):
+        active.append("channel_cross_section")
+    return tuple(active)
+
+
+def _answer_has_channel_table(markdown: str) -> bool:
+    return bool(_CHANNEL_TABLE_HEADER_RE.search(markdown))
 
 
 def _drop_forbidden_claim_sentences(body: str, claim_types: tuple[str, ...]) -> tuple[str, bool]:
@@ -154,6 +173,20 @@ def _channel_facts(fact_md: str) -> tuple[ChannelFact, ...]:
             ChannelFact(
                 rank=int(match.group("rank")),
                 name=match.group("name").strip(),
+                share=match.group("share"),
+                sales=match.group("sales"),
+            )
+        )
+    if facts:
+        return tuple(sorted(facts, key=lambda item: item.rank))
+    for index, match in enumerate(_CHANNEL_TABLE_ROW_RE.finditer(fact_md), start=1):
+        name = match.group("name").strip()
+        if name in {"---", "채널"}:
+            continue
+        facts.append(
+            ChannelFact(
+                rank=index,
+                name=name,
                 share=match.group("share"),
                 sales=match.group("sales"),
             )
