@@ -9,6 +9,7 @@ from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
     "channel_cross_section": (
+        "causal_analysis_unverified",
         "clinical_evidence",
         "clinical_preference",
         "brand_loyalty",
@@ -22,6 +23,7 @@ FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
 }
 
 _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
+    "causal_analysis_unverified": re.compile(r"(인과\s*분석|causal\s+analysis)", re.IGNORECASE),
     "clinical_evidence": re.compile(r"(임상(?:적)?\s*근거|임상\s*신뢰|임상\w*\s*입증|입증)"),
     "clinical_preference": re.compile(r"(임상\w*\s*선호|의료진\w*\s*선호|처방\w*\s*선호)"),
     "brand_loyalty": re.compile(r"(로열티|충성도|충성\s*고객|brand\s*loyalty)", re.IGNORECASE),
@@ -178,7 +180,7 @@ def _is_non_analysis_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return True
-    if stripped.startswith(("#", "|", "-", "*", ">")):
+    if stripped.startswith(("|", ">")):
         return True
     return bool(re.search(r"https?://", stripped))
 

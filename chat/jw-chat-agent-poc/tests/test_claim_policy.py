@@ -54,7 +54,30 @@ def test_channel_policy_leaves_allowed_observation_unchanged() -> None:
     assert apply_claim_policy("리바로 채널별 매출", answer, CHANNEL_FACT_MD) == answer
 
 
+def test_channel_policy_filters_markdown_headings_and_bullets() -> None:
+    answer = "\n".join(
+        [
+            "### 채널별 근거 기반 인과 분석",
+            "* **의원 채널:** 의원 채널은 캐시카우 역할을 수행합니다.",
+            "* **대형 병원:** 임상적 근거와 처방 전이 효과를 기대할 수 있습니다.",
+            "| 채널 | 시장점유율 | 매출 |",
+            "| --- | --- | --- |",
+            "| 의원 | 3.37% | 41.93억원 |",
+        ]
+    )
+
+    revised = apply_claim_policy("리바로 채널별 매출", answer, CHANNEL_FACT_MD)
+
+    assert "인과 분석" not in revised
+    assert "캐시카우" not in revised
+    assert "임상적 근거" not in revised
+    assert "처방 전이" not in revised
+    assert "| 의원 | 3.37% | 41.93억원 |" in revised
+    assert "현재 데이터만으로 확인할 수 없" in revised
+
+
 def test_claim_policy_is_table_driven_for_channel_cross_section() -> None:
     assert "channel_cross_section" in FORBIDDEN_BY_FACT_TYPE
+    assert "causal_analysis_unverified" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]
     assert "clinical_evidence" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]
     assert "cash_cow_unverified" in FORBIDDEN_BY_FACT_TYPE["channel_cross_section"]
