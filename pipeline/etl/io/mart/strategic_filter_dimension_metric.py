@@ -35,6 +35,7 @@ UBIST_DIMENSION_FIELDS: dict[str, tuple[str, ...]] = {
 IQVIA_DIMENSION_FIELDS: dict[str, tuple[str, ...]] = {
     "mfr": ("company", "manufacturer", "raw_company", "MFR NAME KOR", "제조사"),
     "molecule_type": ("molecule_type",),
+    "molecule_desc": ("molecule", "molecule_desc", "MOLECULE DESC"),
     "strength": ("strength_pack", "strength", "STRENGTH"),
     "nhi": ("nhi_type", "NHI TYPE"),
 }

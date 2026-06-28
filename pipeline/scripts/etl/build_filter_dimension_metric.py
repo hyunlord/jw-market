@@ -10,9 +10,8 @@ only when the DB host is localhost.
 The sidecar uses product-level rows because source-specific dimensions such as
 UBIST 제형/투여경로 or IQVIA STRENGTH/MOLECULE TYPE belong to products.
 Filtering a whole brand row by one product's dimension would overstate market
-size. Molecule and PACK DESC are intentionally disabled by PL policy; the raw
-loader may preserve them for provenance, but this script does not expose them as
-dynamic API dimensions.
+size. IQVIA MOLECULE DESC is exposed as the molecule_desc dimension from the raw
+source value; PACK DESC remains outside the dynamic API dimension contract.
 """
 
 import argparse
@@ -109,7 +108,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "live_schema_blocked": "jw_mart",
                 "local_serving_target_allowed": bool(args.allow_local_serving_target),
                 "batch_size": args.batch_size,
-                "molecule_dimension": "disabled",
+                "iqvia_molecule_desc_dimension": "enabled",
+                "ubist_molecule_dimension": "disabled",
                 "pack_desc": "disabled",
                 "grain": "product_level",
             },

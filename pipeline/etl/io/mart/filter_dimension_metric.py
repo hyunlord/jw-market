@@ -105,13 +105,13 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             source="iqvia_nsa",
             notes="IQVIA 판매사 축. MFR NAME KOR를 우선하고 row-level mfr_name을 fallback으로 둔다.",
         ),
-        "molecule": DimensionSpec(
-            dimension_type="molecule",
+        "molecule_desc": DimensionSpec(
+            dimension_type="molecule_desc",
             display_name="MOLECULE DESC",
             source_columns=("molecule_desc", "molecule"),
-            enabled=False,
+            enabled=True,
             source="iqvia_nsa",
-            notes="PL 결정으로 MVP 동적 필터에서 제외한다. raw provenance만 loader에 남긴다.",
+            notes="IQVIA 성분 축. MOLECULE DESC 원본 값을 그대로 노출한다.",
         ),
         "molecule_type": DimensionSpec(
             dimension_type="molecule_type",

@@ -31,12 +31,13 @@ DIMENSION_LABELS: dict[str, str] = {
     "reimbursement": "급여구분",
     "mfr": "MFR NAME KOR",
     "molecule_type": "MOLECULE TYPE",
+    "molecule_desc": "성분",
     "strength": "STRENGTH",
     "nhi": "NHI TYPE",
 }
 DIMENSION_ORDER_BY_SOURCE: dict[str, tuple[str, ...]] = {
     "ubist": ("seller", "molecule_strength", "form", "route", "reimbursement"),
-    "iqvia_nsa": ("mfr", "molecule_type", "strength", "nhi"),
+    "iqvia_nsa": ("mfr", "molecule_type", "molecule_desc", "strength", "nhi"),
 }
 
 

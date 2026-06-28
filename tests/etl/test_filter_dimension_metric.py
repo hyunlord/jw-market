@@ -14,12 +14,12 @@ def test_ubist_registry_exposes_enabled_dimensions_and_keeps_molecule_disabled()
     assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is False
 
 
-def test_iqvia_registry_exposes_enabled_dimensions_and_excludes_molecule_and_pack() -> None:
+def test_iqvia_registry_exposes_enabled_dimensions_and_excludes_pack() -> None:
     enabled = sidecar.enabled_dimension_specs("iqvia_nsa")
     names = {spec.dimension_type for spec in enabled}
 
-    assert names == {"mfr", "molecule_type", "strength", "nhi"}
-    assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["molecule"].enabled is False
+    assert names == {"mfr", "molecule_type", "molecule_desc", "strength", "nhi"}
+    assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["molecule_desc"].enabled is True
     assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["pack"].enabled is False
 
 
@@ -93,7 +93,7 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
                 "molecule_type": "Single",
                 "strength": "10MG",
                 "nhi_type": "급여",
-                "molecule_desc": "Excluded ingredient",
+                "molecule_desc": "CARTEOLOL",
                 "pack_desc": "Excluded pack",
             },
             {
@@ -110,7 +110,7 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
                 "molecule_type": "Combination",
                 "strength": "20MG",
                 "nhi_type": "비급여",
-                "molecule_desc": "Excluded ingredient",
+                "molecule_desc": "DORZOLAMIDE",
                 "pack_desc": "Excluded pack",
             },
         ]
@@ -122,11 +122,19 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
         for row in rows
         if row["dimension_type"] == "strength" and row["dimension_value_norm"] == "10MG"
     )
+    molecule = next(
+        row
+        for row in rows
+        if row["dimension_type"] == "molecule_desc" and row["dimension_value_norm"] == "CARTEOLOL"
+    )
     dimension_types = {row["dimension_type"] for row in rows}
 
     assert strength["product_code"] == "P1"
     assert strength["raw_value_history"] == {"2025-01": 125.0}
-    assert "molecule" not in dimension_types
+    assert molecule["product_code"] == "P1"
+    assert molecule["dimension_value"] == "CARTEOLOL"
+    assert molecule["raw_value_history"] == {"2025-01": 125.0}
+    assert "molecule_desc" in dimension_types
     assert "pack" not in dimension_types
 
 

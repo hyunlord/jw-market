@@ -128,5 +128,39 @@ def test_iqvia_molecule_type_uses_raw_label_but_strategic_history() -> None:
     assert molecule_type[0].raw_value_history == {"2025-Q4": 7.0}
 
 
+def test_iqvia_molecule_desc_uses_raw_molecule_label() -> None:
+    row = StrategicMetricSourceRow(
+        market_kind="cd",
+        market_id="cd_002",
+        brand_id="brand_iq",
+        brand_key="nexcolon",
+        brand_name="넥스콜론",
+        source="iqvia_nsa",
+        measure="sales",
+        unit_label="KRW",
+        raw_value_history=json.dumps({"2025-Q4": 7.0}),
+        by_dimension=json.dumps(
+            {
+                "products": [
+                    {"product_code": "NEXCOLON", "product_name": "넥스콜론", "raw_value_history": {"2025-Q4": 7.0}}
+                ],
+                "molecule": "CARTEOLOL",
+                "nhi_type": "NON-NHI",
+            },
+            ensure_ascii=False,
+        ),
+        dimension_data=json.dumps({"molecule": {"CARTEOLOL": {"2025-Q4": {"raw_value": 7.0}}}}, ensure_ascii=False),
+        overlay_data="{}",
+        cd_overlay=None,
+    )
+
+    extracted = extract_dimension_metric_rows(row, molecule_type_by_product={"NEXCOLON": "SINGLE"})
+    molecule_desc = [item for item in extracted if item.dimension_type == "molecule_desc"]
+
+    assert len(molecule_desc) == 1
+    assert molecule_desc[0].dimension_value == "CARTEOLOL"
+    assert molecule_desc[0].raw_value_history == {"2025-Q4": 7.0}
+
+
 def test_normalize_dimension_value_collapses_spacing_and_case() -> None:
     assert normalize_dimension_value("  Non- NHI\t") == "non- nhi"

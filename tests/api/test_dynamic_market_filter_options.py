@@ -48,6 +48,33 @@ def test_build_filter_option_payload_groups_dimensions_and_atc_levels() -> None:
     assert "atc4_desc" not in str(payload["atc"])
 
 
+def test_build_filter_option_payload_includes_iqvia_molecule_desc_dimension() -> None:
+    payload = build_filter_option_payload(
+        view="general",
+        source="iqvia_nsa",
+        market_id=None,
+        dimensions=(
+            DimensionOptionRow("mfr", "제조사A", "제조사a", 3),
+            DimensionOptionRow("molecule_type", "SINGLE", "single", 2),
+            DimensionOptionRow("molecule_desc", "CARTEOLOL", "carteolol", 2),
+            DimensionOptionRow("strength", "5MG", "5mg", 1),
+            DimensionOptionRow("nhi", "NHI", "nhi", 1),
+        ),
+        atc_rows=({"atc4_code": "C07A0"},),
+    )
+
+    assert [item["dimension_type"] for item in payload["dimensions"]] == [
+        "mfr",
+        "molecule_type",
+        "molecule_desc",
+        "strength",
+        "nhi",
+    ]
+    molecule_desc = payload["dimensions"][2]
+    assert molecule_desc["label"] == "성분"
+    assert molecule_desc["values"] == [{"key": "carteolol", "value": "CARTEOLOL", "row_count": 2}]
+
+
 def test_parse_atc_code_handles_deployed_source_shapes() -> None:
     assert parse_atc_code("C07A0") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C07A0"}
     assert parse_atc_code("C7A") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C7A"}
@@ -189,11 +216,15 @@ def test_build_brand_option_check_scopes_strategic_matches(monkeypatch) -> None:
     def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
         calls.append((sql, params))
         if "GROUP BY dimension_type, dimension_value, dimension_value_norm" in sql:
-            return [{"dimension_type": "mfr", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 2}]
+            return [
+                {"dimension_type": "mfr", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 2},
+                {"dimension_type": "molecule_desc", "dimension_value": "CARTEOLOL", "dimension_value_norm": "carteolol", "row_count": 1},
+            ]
         if "mart_strategic_ml_brand_metric" in sql:
             return [{"atc4_code": "C07A1"}]
         return [
             {"dimension_type": "mfr", "dimension_value_norm": "태준제약"},
+            {"dimension_type": "molecule_desc", "dimension_value_norm": "carteolol"},
             {"dimension_type": "nhi", "dimension_value_norm": "급여"},
         ]
 
@@ -210,7 +241,7 @@ def test_build_brand_option_check_scopes_strategic_matches(monkeypatch) -> None:
     )
 
     assert payload["source"] == "iqvia_nsa"
-    assert payload["brand_matched"] == {"mfr": ["태준제약"], "nhi": ["급여"]}
+    assert payload["brand_matched"] == {"mfr": ["태준제약"], "molecule_desc": ["carteolol"], "nhi": ["급여"]}
     match_call = next((item for item in calls if "GROUP BY dimension_type, dimension_value_norm" in item[0]), None)
     assert match_call is not None
     assert "mart_strategic_filter_dimension_metric" in match_call[0]

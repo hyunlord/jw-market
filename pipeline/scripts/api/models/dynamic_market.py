@@ -25,7 +25,7 @@ class IqviaAnalysisLevel(BaseModel):
 
     mfr_name_kor: list[str] = Field(default_factory=list)
     molecule_type: list[str] = Field(default_factory=list)
-    molecule_desc: list[str] = Field(default_factory=list, description="Disabled by PL policy for D-1.")
+    molecule_desc: list[str] = Field(default_factory=list, description="IQVIA MOLECULE DESC ingredient filters.")
     pack_desc: list[str] = Field(default_factory=list, description="Disabled by PL policy for D-1.")
     strength: list[str] = Field(default_factory=list)
     nhi_type: list[str] = Field(default_factory=list)

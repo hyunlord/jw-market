@@ -21,7 +21,9 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import build_strategic_sidecar
-from pipeline.etl.io.mart.general_config import MARIADB_CONFIG
+from pipeline.etl.io.mart.general_config import PROJECT_ROOT
+from pipeline.etl.io.mart.general_config import first_existing
+from pipeline.etl.io.mart.general_config import load_env
 
 
 SAFE_STAGE_RE = re.compile(r"^jw_mart_d2_strategic_dim_stage_[0-9]{8}_[0-9]{6}$")
@@ -56,13 +58,16 @@ def main() -> None:
 
 
 def _guard_local_serving_target(target_db: str) -> None:
-    host = MARIADB_CONFIG.host.strip().lower()
+    env_path = first_existing(PROJECT_ROOT / "pipeline" / "docker" / ".env", PROJECT_ROOT / "docker" / ".env")
+    env = load_env(env_path)
+    host = str(env.get("MARIADB_HOST", "127.0.0.1")).strip().lower()
+    port = int(env.get("MARIADB_PORT") or env.get("HOST_PORT") or "3308")
     if target_db != LOCAL_SERVING_TARGET:
         raise SystemExit(f"Refusing serving target other than {LOCAL_SERVING_TARGET}: {target_db}")
     if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise SystemExit(f"Refusing local serving load on non-local host: {MARIADB_CONFIG.host}")
-    if int(MARIADB_CONFIG.port) not in {3306, 3308}:
-        raise SystemExit(f"Refusing local serving load on unexpected port: {MARIADB_CONFIG.port}")
+        raise SystemExit(f"Refusing local serving load on non-local host: {host}")
+    if port not in {3306, 3308}:
+        raise SystemExit(f"Refusing local serving load on unexpected port: {port}")
 
 
 if __name__ == "__main__":
