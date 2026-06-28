@@ -68,5 +68,12 @@ runner_config: {runner_config}
 available: {bool(forecast.get("available", False))}
 {_dump(forecast)}
 
+[FULL_BUNDLE_JSON_FOR_FORMATTER]
+{_dump(bundle)}
+[/FULL_BUNDLE_JSON_FOR_FORMATTER]
+
 위 데이터를 활용해서 phenomenon, cause, prediction, recommendation 4단 분석을 한 번에 JSON 으로 생성하세요.
+각 stage의 body는 6문장 이상 9문장 이하로 작성하고, 9문장 초과는 금지합니다. bullets는 4개를 유지하세요.
+prediction stage는 forecast_simulation.available=true이면 1년/3년/5년 전망을 모두 명시하고, bundle의 horizon_1y/horizon_3y/horizon_5y 값을 각각 반영하세요.
+95% 신뢰구간 등 CI 수치는 단독 bullet로 분리하지 말고, 해당 예측값과 같은 문장/field에 두어 compact tag(예: ML·UBIST·매출·2029-03)가 동반되게 작성하세요.
 """

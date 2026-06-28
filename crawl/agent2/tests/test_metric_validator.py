@@ -258,6 +258,23 @@ def test_cd_metric_is_valid_when_competitive_dynamics_label_is_present():
     assert result.valid
 
 
+def test_market_metric_accepts_compact_view_label_from_production_shape():
+    parsed_output = {
+        "phenomenon": {
+            "title": "페린젝트 M/S 58.82%(CD·IQVIA·매출·2025-Q4)",
+            "body": "전체 시장 M/S는 25.36%(ML·IQVIA·매출·2025-Q4)입니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
 def test_market_metric_without_view_label_is_rejected():
     parsed_output = {
         "phenomenon": {
@@ -274,6 +291,51 @@ def test_market_metric_without_view_label_is_rejected():
 
     assert not result.valid
     assert any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
+
+
+def test_view_label_policy_ignores_bare_year_that_matches_period_metadata():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "",
+            "bullets": ["2025년 2분기 이후 매출 및 처방량의 가속화된 성장세 관찰"],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+    bundle = _cd_metric_bundle()
+    bundle["market_views"][0]["target_brand_metric"]["mat_12m_absolute"] = {
+        "latest_period": "2025-Q4",
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert not any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
+
+
+def test_view_label_policy_ignores_ci_confidence_literal():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "예측",
+            "body": (
+                "1년 후 1000(ML·UBIST·매출·2027-03), "
+                "3년 후 3000(ML·UBIST·매출·2029-03), "
+                "5년 후 5000(ML·UBIST·매출·2031-03)이며 95% 신뢰구간을 함께 봅니다."
+            ),
+            "bullets": [],
+            "evidence": [{"title": "예측 시뮬레이션", "basis": "1000(ML·UBIST·매출·2027-03)"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not any(item["raw_text"] == "95%" for item in result.unmatched_numbers)
+    assert not any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
 
 
 def test_prediction_news_claim_requires_evidence_when_source_exists():
@@ -309,6 +371,41 @@ def test_prediction_news_evidence_must_come_from_bundle():
     }
 
     result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_prediction_simulation_evidence_basis_must_match_bundle_number():
+    bundle = _simulation_bundle()
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW), "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다 "
+        "(ML·UBIST·매출·2031-03)."
+    )
+    parsed_output["prediction"]["evidence"] = [
+        {"title": "매출 및 처방량 예측 시뮬레이션", "basis": "5,000(ML·UBIST·매출·2031-03)"}
+    ]
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_prediction_simulation_evidence_rejects_basis_number_not_in_bundle():
+    bundle = _simulation_bundle()
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW), "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다 "
+        "(ML·UBIST·매출·2031-03)."
+    )
+    parsed_output["prediction"]["evidence"] = [
+        {"title": "매출 및 처방량 예측 시뮬레이션", "basis": "9,999(ML·UBIST·매출·2031-03)"}
+    ]
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
 
     assert not result.valid
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)

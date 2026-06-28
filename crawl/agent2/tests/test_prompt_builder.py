@@ -51,8 +51,18 @@ def test_prompt_structure():
 
     assert "[분석 대상]" in question
     assert "리바로" in question
+    assert '"bundle_meta"' in question
+    assert '"market_views"' in question
+    assert "[FULL_BUNDLE_JSON_FOR_FORMATTER]" in question
+    assert "[/FULL_BUNDLE_JSON_FOR_FORMATTER]" in question
     assert "forecast/simulation" in question
     assert "phenomenon, cause, prediction, recommendation" in question
+    assert "각 stage의 body는 6문장 이상 9문장 이하" in question
+    assert "9문장 초과는 금지" in question
+    assert "1년/3년/5년" in question
+    assert "horizon_1y/horizon_3y/horizon_5y" in question
+    assert "95% 신뢰구간" in question
+    assert "단독 bullet" in question
 
 
 def test_prompt_determinism():

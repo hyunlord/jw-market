@@ -44,8 +44,9 @@ DAMAGED_DATE_RE = re.compile(r"(?:2,0\d{2}\.00|20\d{2}\.00|\d,0\d{2}\.00-\d|\.00
 THREE_PLUS_DECIMAL_RE = re.compile(r"(?<!\d)\d[\d,]*\.\d{3,}\s*(?:%p|%|배)?")
 KRW_QTY_DECIMAL_RE = re.compile(r"(?<!\d)\d[\d,]*\.\d+\s*(?:원|개)")
 SOURCE_PERIOD_PREFIX_RE = re.compile(r"(IQVIA|UBIST)\s*(20\d{2}-(?:Q[1-4]|\d{2}))\s*기준(?:으로는|으로)?\s*")
-HEX_NEWS_ID_RE = re.compile(r"\b(?=[0-9a-f]*[a-f])[0-9a-f]{16}\b", re.IGNORECASE)
+HEX_NEWS_ID_RE = re.compile(r"(?<![0-9a-f])(?=[0-9a-f]{0,15}[a-f])[0-9a-f]{16}(?![0-9a-f])", re.IGNORECASE)
 FORBIDDEN_CERTAINTY_RE = re.compile(r"(반드시|확실히|틀림없이|분명히\s*(?:성장|하락|감소|증가))")
+FORBIDDEN_MARKER_RE = re.compile(r"★")
 
 
 def _json_dumps(obj: Any, indent: int | None = 2) -> str:
@@ -182,6 +183,8 @@ def validate_formatter_contract(parsed_output: dict[str, Any], brand: str) -> Fo
             errors.append({"type": "krw_or_qty_decimal", "path": path})
         for match in THREE_PLUS_DECIMAL_RE.finditer(text):
             errors.append({"type": "three_plus_decimal", "path": path, "value": match.group(0)})
+        if FORBIDDEN_MARKER_RE.search(text):
+            errors.append({"type": "forbidden_marker", "path": path})
         if _has_duplicate_period_prefix(text):
             errors.append({"type": "duplicate_source_period_prefix", "path": path})
         for match in TAG_RE.finditer(text):

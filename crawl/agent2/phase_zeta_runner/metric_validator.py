@@ -59,6 +59,23 @@ VIEW_DISPLAY = {
     "market_landscape": "Market Landscape",
     "competitive_dynamics": "Competitive Dynamics",
 }
+VIEW_COMPACT = {
+    "Market Landscape": "ML",
+    "Competitive Dynamics": "CD",
+}
+SIMULATION_EVIDENCE_TITLE_RE = re.compile(r"(시뮬레이션|예측|forecast|simulation)", re.IGNORECASE)
+COMPACT_VIEW_TAG_RE = re.compile(r"(?:ML|CD)\s*·\s*[A-Z]+\s*·", re.IGNORECASE)
+STANDALONE_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
+MARKET_METRIC_PATH_RE = re.compile(
+    r"("
+    r"\.(?:raw_value|value|raw_value_12m|growth_abs|growth_yoy_pct|ms_pct|yoy_pct|qoq_pct|mom_pct|mat_yoy_pct|rank)$"
+    r"|\.market_size\.history\.[^.]+$"
+    r"|\.hhi_5y\.[^.]+$"
+    r"|\.kpi_extras\.(?:brand_cagr_5y_pct|market_cagr_5y_pct|ei|momentum_score|target_rank|total_brands_in_market)$"
+    r"|\.momentum\.value_pct_per_period$"
+    r"|\.horizon_(?:1y|3y|5y|10y)\.base$"
+    r")"
+)
 
 
 DEFAULT_TOLERANCE_BY_TYPE = {
@@ -322,6 +339,7 @@ def validate_stage_output(
                 "tolerance": item["tolerance"],
                 "matched_path": matched_path,
                 "low_priority": item["low_priority"],
+                "ci_confidence_literal": item["ci_confidence_literal"],
             }
             extracted.append(record)
             if matched_path is None:
@@ -392,13 +410,34 @@ def _view_label_parts_from_path(bundle: dict, matched_path: str | None) -> tuple
 
 
 def _has_view_label(text: str, display: str, source: str) -> bool:
-    return bool(re.search(rf"{re.escape(display)}\s*·\s*{re.escape(source.upper())}\s*기준", text or "", re.I))
+    readable = rf"{re.escape(display)}\s*·\s*{re.escape(source.upper())}\s*기준"
+    compact_view = VIEW_COMPACT.get(display, display)
+    compact = rf"{re.escape(compact_view)}\s*·\s*{re.escape(source.upper())}\s*·"
+    return bool(re.search(readable, text or "", re.I) or re.search(compact, text or "", re.I))
+
+
+def _requires_view_label(item: dict[str, Any]) -> bool:
+    raw_text = str(item.get("raw_text") or "").strip()
+    if STANDALONE_YEAR_RE.fullmatch(raw_text):
+        return False
+    if bool(item.get("ci_confidence_literal")):
+        return False
+
+    matched_path = str(item.get("matched_path") or "")
+    metric_path = matched_path.split("::", 1)[0]
+    if not metric_path:
+        return False
+    if any(part in metric_path for part in (".latest_period", ".period", ".ci_lower_95", ".ci_upper_95")):
+        return False
+    return bool(MARKET_METRIC_PATH_RE.search(metric_path))
 
 
 def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValidation]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for stage, result in stage_results.items():
         for item in result.extracted:
+            if not _requires_view_label(item):
+                continue
             parts = _view_label_parts_from_path(bundle, item.get("matched_path"))
             if not parts:
                 continue
@@ -436,7 +475,30 @@ def _prediction_evidence(parsed_output: dict) -> list[dict[str, Any]]:
     return [item for item in prediction.get("evidence", []) or [] if isinstance(item, dict)]
 
 
-def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict) -> list[dict[str, Any]]:
+def _simulation_evidence_matches_bundle(item: dict[str, Any], bundle: dict, config: ValidatorConfig) -> bool:
+    title = str(item.get("title") or "")
+    basis = str(item.get("basis") or "")
+    if not basis.strip():
+        return False
+    if not (SIMULATION_EVIDENCE_TITLE_RE.search(title) or COMPACT_VIEW_TAG_RE.search(basis)):
+        return False
+
+    basis_numbers = [
+        number
+        for number in extract_numbers(basis, config)
+        if not bool(number.get("low_priority")) and not bool(number.get("ci_confidence_literal"))
+    ]
+    if not basis_numbers:
+        return False
+
+    bundle_index = build_bundle_path_index(bundle)
+    return all(
+        find_match_unit_aware(number["value"], bundle_index, number["number_type"], config) is not None
+        for number in basis_numbers
+    )
+
+
+def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> list[dict[str, Any]]:
     text = _prediction_text(parsed_output)
     bundle_events = _iter_bundle_events(bundle)
     evidence = _prediction_evidence(parsed_output)
@@ -459,11 +521,13 @@ def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict) -> li
             title = str(item.get("title") or "")
             if (news_id and news_id in source_ids) or (title and title in source_titles):
                 continue
+            if _simulation_evidence_matches_bundle(item, bundle, config):
+                continue
             issues.append(
                 _prediction_policy_issue(
                     "prediction_evidence_not_in_bundle",
-                    news_id or title,
-                    "prediction evidence는 bundle에 포함된 source event에서만 인용할 수 있습니다.",
+                    news_id or title or str(item.get("basis") or ""),
+                    "prediction evidence는 bundle에 포함된 source event 또는 bundle 수치 basis에서만 인용할 수 있습니다.",
                 )
             )
     return issues
@@ -571,7 +635,7 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
         )
     )
     policy_issues.extend(validate_view_label_policy(bundle, stage_results))
-    policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle))
+    policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle, config))
 
     if policy_issues:
         prediction_result = stage_results.get("prediction")

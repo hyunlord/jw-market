@@ -49,6 +49,18 @@ def test_formatter_contract_rejects_damaged_dates_and_double_formatting():
     assert any(error["type"] == "damaged_date_or_double_format" for error in result.errors)
 
 
+def test_formatter_contract_rejects_obvious_defects():
+    parsed = _parsed(
+        "리바로젯은 반드시 성장합니다. news id 0f282b5c1cfebdf8입니다. "
+        "점유율은 5.321%입니다. ★ 표시가 있습니다. 문장입니다. 문장입니다."
+    )
+
+    result = validate_formatter_contract(parsed, brand="리바로젯")
+
+    error_types = {error["type"] for error in result.errors}
+    assert {"prediction_certainty_phrase", "news_id_hex_present", "three_plus_decimal", "forbidden_marker"} <= error_types
+
+
 def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_path):
     calls = {"bundle": 0, "llm": 0, "compose": 0}
 
