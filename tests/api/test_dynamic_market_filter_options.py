@@ -9,7 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market.filter_options import (
     DimensionOptionRow,
     build_brand_option_check,
+    build_filter_options,
     build_filter_option_payload,
+    clear_filter_option_cache,
     parse_atc_code,
 )
 
@@ -100,6 +102,85 @@ def test_build_brand_option_check_returns_brand_matched_lists(monkeypatch) -> No
     assert "atc4_code LIKE" in brand_match_call[0]
     assert atc_call[1] == ["ubist"]
     assert "atc4_code LIKE" not in atc_call[0]
+
+
+def test_build_filter_options_reuses_cached_options_and_copies_payload(monkeypatch) -> None:
+    clear_filter_option_cache()
+    calls: list[tuple[str, list[object]]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        if "idx_general_option_universe" in sql:
+            return [{"dimension_type": "seller", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 10}]
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "A1A2"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.filter_options.db.fetch_all", fake_fetch_all)
+
+    first = build_filter_options(mart_db="jw_mart", view="general", source="ubist", market_id="A1")
+    first["dimensions"][0]["values"].append({"key": "mutated", "value": "mutated", "row_count": 1})
+    second = build_filter_options(mart_db="jw_mart", view="general", source="ubist", market_id="A1")
+
+    assert len(calls) == 2
+    assert second["dimensions"][0]["values"] == [{"key": "태준제약", "value": "태준제약", "row_count": 10}]
+    assert second["atc"]["atc2"] == [{"key": "A01", "value": "A01", "label": "A01"}]
+
+    clear_filter_option_cache()
+    build_filter_options(mart_db="jw_mart", view="general", source="ubist", market_id="A1")
+
+    assert len(calls) == 4
+    clear_filter_option_cache()
+
+
+def test_filter_option_cache_can_be_disabled(monkeypatch) -> None:
+    clear_filter_option_cache()
+    calls: list[tuple[str, list[object]]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        if "idx_general_option_universe" in sql:
+            return [{"dimension_type": "seller", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 10}]
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "A1A2"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setenv("DYNAMIC_MARKET_FILTER_OPTIONS_CACHE", "0")
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.filter_options.db.fetch_all", fake_fetch_all)
+
+    build_filter_options(mart_db="jw_mart", view="general", source="ubist", market_id="A1")
+    build_filter_options(mart_db="jw_mart", view="general", source="ubist", market_id="A1")
+
+    assert len(calls) == 4
+    clear_filter_option_cache()
+
+
+def test_build_brand_option_check_caches_options_but_not_brand_matches(monkeypatch) -> None:
+    clear_filter_option_cache()
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append(sql)
+        if "idx_general_option_universe" in sql:
+            return [{"dimension_type": "seller", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 10}]
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "A1A2"}]
+        if "GROUP BY dimension_type, dimension_value_norm" in sql:
+            return [{"dimension_type": "seller", "dimension_value_norm": f"brand-match-{len(calls)}"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.filter_options.db.fetch_all", fake_fetch_all)
+
+    first = build_brand_option_check(mart_db="jw_mart", brand="미케란", view="general", source="ubist", market_id="A1")
+    second = build_brand_option_check(mart_db="jw_mart", brand="미케란", view="general", source="ubist", market_id="A1")
+
+    assert sum("idx_general_option_universe" in sql for sql in calls) == 1
+    assert sum("mart_general_brand_metric" in sql for sql in calls) == 1
+    assert sum("GROUP BY dimension_type, dimension_value_norm" in sql for sql in calls) == 2
+    assert first["brand_matched"] != second["brand_matched"]
+    assert first["dimensions"] == second["dimensions"]
+    assert first["atc"] == second["atc"]
+    clear_filter_option_cache()
 
 
 def test_build_brand_option_check_scopes_strategic_matches(monkeypatch) -> None:

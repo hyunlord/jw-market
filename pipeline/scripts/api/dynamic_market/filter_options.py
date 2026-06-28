@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
+import os
 import re
+from threading import RLock
+from time import monotonic
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
@@ -16,6 +20,9 @@ GENERAL_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
 STRATEGIC_DIMENSION_TABLE = "mart_strategic_filter_dimension_metric"
 SELECTABLE_ATC_LEVELS = ("atc3", "atc4")
 ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
+FILTER_OPTION_CACHE_ENV = "DYNAMIC_MARKET_FILTER_OPTIONS_CACHE"
+FILTER_OPTION_CACHE_TTL_ENV = "DYNAMIC_MARKET_FILTER_OPTIONS_CACHE_TTL_SECONDS"
+DEFAULT_FILTER_OPTION_CACHE_TTL_SECONDS = 6 * 60 * 60
 DIMENSION_LABELS: dict[str, str] = {
     "seller": "판매사",
     "molecule_strength": "성분용량",
@@ -41,6 +48,17 @@ class DimensionOptionRow:
     row_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class FilterOptionCacheEntry:
+    payload: dict[str, object]
+    expires_at: float
+
+
+FilterOptionCacheKey = tuple[str, str, str | None, str, str]
+_FILTER_OPTION_CACHE: dict[FilterOptionCacheKey, FilterOptionCacheEntry] = {}
+_FILTER_OPTION_CACHE_LOCK = RLock()
+
+
 def build_filter_options(
     *,
     mart_db: str,
@@ -53,16 +71,106 @@ def build_filter_options(
     normalized_view = normalize_view(view)
     normalized_source = normalize_source(source)
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
-    dimensions = _load_dimension_options(
+    cache_key = _filter_option_cache_key(
+        mart_db=mart_db,
         dimension_db=dimension_db,
         view=normalized_view,
         source=normalized_source,
         market_id=market_id,
     )
-    atc_rows = _load_atc_rows(mart_db=mart_db, view=normalized_view, source=normalized_source, market_id=market_id)
-    return build_filter_option_payload(
+    if cached_payload := _get_cached_filter_options(cache_key):
+        return cached_payload
+    payload = _build_filter_options_uncached(
+        mart_db=mart_db,
+        dimension_db=dimension_db,
         view=normalized_view,
         source=normalized_source,
+        market_id=market_id,
+    )
+    _set_cached_filter_options(cache_key, payload)
+    return deepcopy(payload)
+
+
+def clear_filter_option_cache() -> None:
+    """Clear in-process option payloads after a sidecar refresh or in tests."""
+
+    with _FILTER_OPTION_CACHE_LOCK:
+        _FILTER_OPTION_CACHE.clear()
+
+
+def _filter_option_cache_key(
+    *,
+    mart_db: str,
+    dimension_db: str,
+    view: str,
+    source: str,
+    market_id: str | None,
+) -> FilterOptionCacheKey:
+    normalized_market_id = market_id.strip() if market_id else None
+    return (view, source, normalized_market_id, mart_db, dimension_db)
+
+
+def _filter_option_cache_enabled() -> bool:
+    value = os.getenv(FILTER_OPTION_CACHE_ENV, "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _filter_option_cache_ttl_seconds() -> float:
+    raw_value = os.getenv(FILTER_OPTION_CACHE_TTL_ENV, "").strip()
+    if not raw_value:
+        return float(DEFAULT_FILTER_OPTION_CACHE_TTL_SECONDS)
+    try:
+        ttl_seconds = float(raw_value)
+    except ValueError:
+        return float(DEFAULT_FILTER_OPTION_CACHE_TTL_SECONDS)
+    return max(0.0, ttl_seconds)
+
+
+def _get_cached_filter_options(cache_key: FilterOptionCacheKey) -> dict[str, object] | None:
+    if not _filter_option_cache_enabled():
+        return None
+    now = monotonic()
+    with _FILTER_OPTION_CACHE_LOCK:
+        entry = _FILTER_OPTION_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        if entry.expires_at <= now:
+            del _FILTER_OPTION_CACHE[cache_key]
+            return None
+        return deepcopy(entry.payload)
+
+
+def _set_cached_filter_options(cache_key: FilterOptionCacheKey, payload: dict[str, object]) -> None:
+    if not _filter_option_cache_enabled():
+        return
+    ttl_seconds = _filter_option_cache_ttl_seconds()
+    if ttl_seconds <= 0:
+        return
+    with _FILTER_OPTION_CACHE_LOCK:
+        _FILTER_OPTION_CACHE[cache_key] = FilterOptionCacheEntry(
+            payload=deepcopy(payload),
+            expires_at=monotonic() + ttl_seconds,
+        )
+
+
+def _build_filter_options_uncached(
+    *,
+    mart_db: str,
+    dimension_db: str,
+    view: str,
+    source: str,
+    market_id: str | None,
+) -> dict[str, object]:
+    dimensions = _load_dimension_options(
+        dimension_db=dimension_db,
+        view=view,
+        source=source,
+        market_id=market_id,
+    )
+    atc_rows = _load_atc_rows(mart_db=mart_db, view=view, source=source, market_id=market_id)
+    return build_filter_option_payload(
+        view=view,
+        source=source,
         market_id=market_id,
         dimensions=dimensions,
         atc_rows=atc_rows,
