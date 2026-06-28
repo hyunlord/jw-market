@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, TypeAlias
+from typing import Callable, Final, TypeAlias
 
 
 QuerySpec: TypeAlias = dict[str, object]
@@ -16,6 +16,17 @@ class StrictQueryPlan:
     exclusive: bool = True
     needs_top_competitor_specialty: bool = False
     needs_company_molecule: bool = False
+
+
+StrictPlanBuilder: TypeAlias = Callable[[str, str, str], StrictQueryPlan | None]
+
+
+@dataclass(frozen=True, slots=True)
+class StrictQueryRule:
+    """Ordered registry row for deterministic population query routing."""
+
+    name: str
+    build: StrictPlanBuilder
 
 
 CHANNEL_ALIASES: Final[tuple[str, ...]] = ("의원", "종병", "병원", "상급종병", "약국")
@@ -38,32 +49,95 @@ def strict_query_plan(question: str, brand: str) -> StrictQueryPlan | None:
     """Map filter/dimension/aggregation questions to catalog-valid query specs."""
 
     channel = _requested_channel(question)
+    for rule in STRICT_QUERY_RULES:
+        plan = rule.build(question, brand, channel)
+        if plan is not None:
+            return plan
+    return None
+
+
+def _causal_news_sales_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_causal_news_sales(question):
         return StrictQueryPlan(unsupported_message="뉴스와 매출의 인과 효과는 현재 mart 지표만으로 단정할 수 없습니다.")
+    return None
+
+
+def _nhi_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_nhi(question):
         return StrictQueryPlan(unsupported_message="nhi_type dimension absent in strategic mart for this market.")
+    return None
+
+
+def _yoy_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_yoy(question):
         return StrictQueryPlan(specs=(_spec("product", metric="growth", derive=("yoy",), filters={"brand": brand}),))
+    return None
+
+
+def _average_share_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_average_share(question):
         return StrictQueryPlan(specs=(_spec("product", metric="share", derive=("average",), filters={"brand": brand, "periods": "6"}),))
+    return None
+
+
+def _channel_molecule_plan(question: str, _brand: str, channel: str) -> StrictQueryPlan | None:
     if channel and "성분" in question:
         return StrictQueryPlan(specs=(_spec("molecule", metric="share", filters={"channel": channel}),))
+    return None
+
+
+def _channel_share_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if "채널별" in question and "점유율" in question:
         specs = [_spec("channel", metric="share", filters={"brand": brand})]
         if "아토젯" in question:
             specs.append(_spec("channel", metric="share", filters={"brand": "아토젯"}))
         return StrictQueryPlan(specs=tuple(specs))
+    return None
+
+
+def _channel_distribution_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_channel_distribution(question, brand):
         return StrictQueryPlan(specs=(_spec("channel", metric="sales", filters={"brand": brand}),))
+    return None
+
+
+def _origin_generic_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if any(token in question for token in ("오리지널", "제네릭", "Original", "Generic")):
         return StrictQueryPlan(specs=(_spec("ox_gx", metric="share"),))
+    return None
+
+
+def _specialty_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if "진료과" in question:
         return StrictQueryPlan(needs_top_competitor_specialty=True)
+    return None
+
+
+def _dosage_form_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_form_sales_trend(question):
         return StrictQueryPlan(specs=(_spec("dosage_form", metric="sales", group_by=("dosage_form", "period"), derive=("trend",), filters={"periods": "12"}),))
+    return None
+
+
+def _company_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if "회사" in question:
         return StrictQueryPlan(specs=(_spec("company", metric="sales", limit=3),), needs_company_molecule=True)
     return None
+
+
+STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
+    StrictQueryRule("causal_news_sales_unsupported", _causal_news_sales_plan),
+    StrictQueryRule("nhi_unsupported", _nhi_plan),
+    StrictQueryRule("yoy_product_growth", _yoy_plan),
+    StrictQueryRule("average_product_share", _average_share_plan),
+    StrictQueryRule("channel_molecule_share", _channel_molecule_plan),
+    StrictQueryRule("channel_share", _channel_share_plan),
+    StrictQueryRule("channel_distribution_sales", _channel_distribution_plan),
+    StrictQueryRule("origin_generic_share", _origin_generic_plan),
+    StrictQueryRule("specialty_top_competitor", _specialty_plan),
+    StrictQueryRule("dosage_form_sales_trend", _dosage_form_plan),
+    StrictQueryRule("company_sales", _company_plan),
+)
 
 
 def _spec(
