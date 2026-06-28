@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import re
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
@@ -14,6 +15,10 @@ from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, q
 GENERAL_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
 STRATEGIC_DIMENSION_TABLE = "mart_strategic_filter_dimension_metric"
 SELECTABLE_ATC_LEVELS = ("atc3", "atc4")
+ATC_FIVE_STYLE_RE = re.compile(r"^[A-Z][0-9]{2}[A-Z][0-9]$")
+ATC_UBIST_FOUR_STYLE_RE = re.compile(r"^[A-Z][0-9]{2}[A-Z]$")
+ATC_UBIST_SHORT_FOUR_STYLE_RE = re.compile(r"^[A-Z][0-9][A-Z][0-9]$")
+ATC_UBIST_THREE_STYLE_RE = re.compile(r"^[A-Z][0-9][A-Z]$")
 DIMENSION_LABELS: dict[str, str] = {
     "seller": "판매사",
     "molecule_strength": "성분용량",
@@ -147,23 +152,39 @@ def build_atc_hierarchy(rows: Iterable[Mapping[str, object]]) -> dict[str, objec
     buckets: dict[str, dict[str, str]] = {"atc1": {}, "atc2": {}, "atc3": {}, "atc4": {}}
     for row in rows:
         code = str(row.get("atc4_code") or "").strip().upper()
-        if not code:
+        parsed = parse_atc_code(code)
+        if parsed is None:
             continue
-        desc = str(row.get("atc4_desc") or "").strip()
-        prefixes = {"atc1": code[:1], "atc2": code[:3], "atc3": code[:4], "atc4": code}
-        for level, value in prefixes.items():
+        for level, value in parsed.items():
             if value:
-                buckets[level].setdefault(value, desc if level == "atc4" else "")
+                buckets[level].setdefault(value, value)
     return {
         **{
             level: [
-                {"key": value, "value": value, "label": f"{value} {label}".strip()}
-                for value, label in sorted(values.items())
+                {"key": value, "value": value, "label": value}
+                for value in sorted(values)
             ]
             for level, values in buckets.items()
         },
         "selectable_levels": list(SELECTABLE_ATC_LEVELS),
     }
+
+
+def parse_atc_code(code: str) -> dict[str, str] | None:
+    """Return code-only ATC hierarchy prefixes from the deployed ATC4 code shapes."""
+
+    normalized = code.strip().upper()
+    if not normalized:
+        return None
+    if ATC_FIVE_STYLE_RE.fullmatch(normalized):
+        return {"atc1": normalized[:1], "atc2": normalized[:3], "atc3": normalized[:4], "atc4": normalized}
+    if ATC_UBIST_FOUR_STYLE_RE.fullmatch(normalized):
+        return {"atc1": normalized[:1], "atc2": normalized[:3], "atc3": normalized, "atc4": normalized}
+    if ATC_UBIST_SHORT_FOUR_STYLE_RE.fullmatch(normalized):
+        return {"atc1": normalized[:1], "atc2": normalized[:2], "atc3": normalized[:3], "atc4": normalized}
+    if ATC_UBIST_THREE_STYLE_RE.fullmatch(normalized):
+        return {"atc1": normalized[:1], "atc2": normalized[:2], "atc3": normalized, "atc4": normalized}
+    return {"atc1": normalized[:1], "atc2": normalized[:3], "atc3": normalized[:4], "atc4": normalized}
 
 
 def normalize_view(value: str) -> str:
@@ -280,8 +301,7 @@ def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | Non
             where.append(f"{id_column} = %s")
             params.append(normalized_market_id)
         sql = f"""
-            SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_code')) AS atc4_code,
-                   JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_desc')) AS atc4_desc
+            SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_code')) AS atc4_code
             FROM {quote_identifier(mart_db)}.{table}
             WHERE {" AND ".join(where)}
         """
@@ -292,7 +312,7 @@ def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | Non
     # dimension options.  Strategic ATC rows remain market-scoped above.
     rows = db.fetch_all(
         f"""
-        SELECT atc4_code, MIN(atc4_desc) AS atc4_desc
+        SELECT atc4_code
         FROM {quote_identifier(mart_db)}.mart_general_brand_metric FORCE INDEX (idx_general_atc_universe)
         WHERE {" AND ".join(where)}
         GROUP BY atc4_code

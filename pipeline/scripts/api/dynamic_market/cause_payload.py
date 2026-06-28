@@ -18,7 +18,6 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     avg_share,
     empty_analysis_levels,
     hhi_series,
-    join_unique,
     latest_hhi,
     latest_market_value,
     market_size_series,
@@ -166,7 +165,6 @@ def build_market_meta(
     label = _market_label(atc_codes=atc_codes, molecules=molecules)
     if definition.view.startswith("strategic_"):
         label = f"전략 동적 시장: {market_id}"
-    atc_desc = join_unique(item.atc4_desc for item in metrics.all_brands if item.atc4_desc)
     return {
         "strategic_market_id": market_id,
         "market_name": label,
@@ -178,7 +176,6 @@ def build_market_meta(
         "mkt_team": "Runtime",
         "brand_list": [item.brand_name for item in metrics.all_brands[:100]],
         "atc_codes": atc_codes,
-        "atc_desc": atc_desc,
         "view_source_id": _view_source_id(definition),
         "atc_count": len(atc_codes) or None,
         "nhi_type": None,

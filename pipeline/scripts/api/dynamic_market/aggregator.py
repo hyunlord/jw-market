@@ -83,7 +83,6 @@ class MetricAggregator:
                 brand_key=item.brand_key,
                 brand_name=item.brand_name,
                 atc4_code=item.atc4_code,
-                atc4_desc=item.atc4_desc,
                 total_value=item.total_value,
                 market_share_pct=round((item.total_value / market_size) * 100, 6) if market_size > 0 else 0.0,
                 rank=index,
@@ -122,7 +121,7 @@ class MetricAggregator:
         id_column = "ml_id" if strategic_kind_for_view(view) == "ml" else "cd_market_id"
         return db.fetch_all(
             f"""
-            SELECT brand_key, brand_name, '' AS atc4_code, '' AS atc4_desc, source, measure, unit_label, raw_value_history
+            SELECT brand_key, brand_name, '' AS atc4_code, source, measure, unit_label, raw_value_history
             FROM {mart_db}.{table}
             WHERE {id_column} = %s
               AND source = %s
@@ -211,7 +210,7 @@ class MetricAggregator:
         scope_sql, scope_params = brand_scope_predicate(brands)
         return db.fetch_all(
             f"""
-            SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure, unit_label, raw_value_history
+            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -262,7 +261,7 @@ class MetricAggregator:
         scope_sql, scope_params = brand_scope_predicate(brands)
         rows = db.fetch_all(
             f"""
-            SELECT DISTINCT brand_key, atc4_code, atc4_desc, unit_label
+            SELECT DISTINCT brand_key, atc4_code, unit_label
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -291,7 +290,6 @@ class MetricAggregator:
                     brand_key=str(row["brand_key"]),
                     brand_name=str(row["brand_name"]),
                     atc4_code=str(row["atc4_code"]),
-                    atc4_desc=str(row.get("atc4_desc") or ""),
                     total_value=float(sum(filtered.values())),
                     market_share_pct=0.0,
                     rank=0,
@@ -413,7 +411,6 @@ def sidecar_rows_to_metric_rows(
                 "brand_key": brand_key,
                 "brand_name": brand_name,
                 "atc4_code": atc4_code,
-                "atc4_desc": str(meta.get("atc4_desc") or ""),
                 "unit_label": str(meta.get("unit_label") or ""),
                 "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
             }
@@ -464,7 +461,6 @@ def strategic_sidecar_rows_to_metric_rows(
                 "brand_key": brand_key,
                 "brand_name": brand_name,
                 "atc4_code": "",
-                "atc4_desc": "",
                 "unit_label": str(meta.get("unit_label") or ""),
                 "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
             }

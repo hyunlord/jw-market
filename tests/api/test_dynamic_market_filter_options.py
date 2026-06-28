@@ -10,6 +10,7 @@ from pipeline.scripts.api.dynamic_market.filter_options import (
     DimensionOptionRow,
     build_brand_option_check,
     build_filter_option_payload,
+    parse_atc_code,
 )
 
 
@@ -24,8 +25,8 @@ def test_build_filter_option_payload_groups_dimensions_and_atc_levels() -> None:
             DimensionOptionRow("route", "경구", "경구", 2),
         ),
         atc_rows=(
-            {"atc4_code": "A10N1", "atc4_desc": "GLP-1"},
-            {"atc4_code": "A10S0", "atc4_desc": "SGLT2"},
+            {"atc4_code": "A10N1"},
+            {"atc4_code": "A10S0"},
         ),
     )
 
@@ -40,7 +41,16 @@ def test_build_filter_option_payload_groups_dimensions_and_atc_levels() -> None:
     assert payload["dimensions"][0]["values"][0]["value"] == "JW중외제약"
     assert payload["atc"]["atc1"][0]["value"] == "A"
     assert payload["atc"]["atc3"][0]["value"] == "A10N"
+    assert payload["atc"]["atc4"][0] == {"key": "A10N1", "value": "A10N1", "label": "A10N1"}
     assert payload["atc"]["selectable_levels"] == ["atc3", "atc4"]
+    assert "atc4_desc" not in str(payload["atc"])
+
+
+def test_parse_atc_code_handles_deployed_source_shapes() -> None:
+    assert parse_atc_code("C07A0") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C07A0"}
+    assert parse_atc_code("C7A") == {"atc1": "C", "atc2": "C7", "atc3": "C7A", "atc4": "C7A"}
+    assert parse_atc_code("A10H") == {"atc1": "A", "atc2": "A10", "atc3": "A10H", "atc4": "A10H"}
+    assert parse_atc_code("A1A2") == {"atc1": "A", "atc2": "A1", "atc3": "A1A", "atc4": "A1A2"}
 
 
 def test_build_brand_option_check_returns_brand_matched_lists(monkeypatch) -> None:
@@ -55,7 +65,7 @@ def test_build_brand_option_check_returns_brand_matched_lists(monkeypatch) -> No
                 {"dimension_type": "form", "dimension_value": "서방정", "dimension_value_norm": "서방정", "row_count": 2},
             ]
         if "mart_general_brand_metric" in sql:
-            return [{"atc4_code": "C07A1", "atc4_desc": "beta"}]
+            return [{"atc4_code": "C07A1"}]
         return [
             {"dimension_type": "seller", "dimension_value_norm": "태준제약"},
             {"dimension_type": "form", "dimension_value_norm": "서방정"},
@@ -99,7 +109,7 @@ def test_build_brand_option_check_scopes_strategic_matches(monkeypatch) -> None:
         if "GROUP BY dimension_type, dimension_value, dimension_value_norm" in sql:
             return [{"dimension_type": "mfr", "dimension_value": "태준제약", "dimension_value_norm": "태준제약", "row_count": 2}]
         if "mart_strategic_ml_brand_metric" in sql:
-            return [{"atc4_code": "C07A1", "atc4_desc": "beta"}]
+            return [{"atc4_code": "C07A1"}]
         return [
             {"dimension_type": "mfr", "dimension_value_norm": "태준제약"},
             {"dimension_type": "nhi", "dimension_value_norm": "급여"},

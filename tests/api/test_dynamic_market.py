@@ -25,8 +25,8 @@ from pipeline.scripts.api.dynamic_market.types import (
 
 def test_compute_hhi_when_brand_shares_are_known() -> None:
     brands = (
-        BrandMetric("a", "A", "C10B", "demo", 75.0, 75.0, 1, "2026-04", 75.0),
-        BrandMetric("b", "B", "C10B", "demo", 25.0, 25.0, 2, "2026-04", 25.0),
+        BrandMetric("a", "A", "C10B", 75.0, 75.0, 1, "2026-04", 75.0),
+        BrandMetric("b", "B", "C10B", 25.0, 25.0, 2, "2026-04", 25.0),
     )
 
     assert compute_hhi(brands) == 6250.0
@@ -101,7 +101,6 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
         "focus",
         "Focus Brand",
         "C10B",
-        "demo",
         100.0,
         100.0,
         1,
@@ -124,6 +123,7 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     data = payload["data"]
+    assert "atc_desc" not in payload["market_meta"]
     assert "data_period_coverage" not in data
     assert "resolved_scope" not in payload
     assert {"market_size_recent", "target_share_pct", "target_rank", "market_cagr_5y_pct", "direct_competition_count"}.issubset(
@@ -154,7 +154,6 @@ def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_to
             f"brand-{index}",
             f"Brand {index}",
             "",
-            "",
             float(100 - index),
             0.0,
             index,
@@ -167,7 +166,6 @@ def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_to
         BrandMetric(
             "focus",
             "Focus Brand",
-            "",
             "",
             1.0,
             0.0,
@@ -223,8 +221,8 @@ def test_cause_payload_hhi_recent_uses_complete_calendar_year_not_partial_latest
     partial_year_a = tuple({"period": f"2026-{month:02d}", "value": 10.0} for month in range(1, 5))
     partial_year_b = tuple({"period": f"2026-{month:02d}", "value": 90.0} for month in range(1, 5))
     brands = (
-        BrandMetric("a", "A", "", "", 940.0, 0.0, 1, "2026-04", 10.0, complete_year_a + partial_year_a),
-        BrandMetric("b", "B", "", "", 660.0, 0.0, 2, "2026-04", 90.0, complete_year_b + partial_year_b),
+        BrandMetric("a", "A", "", 940.0, 0.0, 1, "2026-04", 10.0, complete_year_a + partial_year_a),
+        BrandMetric("b", "B", "", 660.0, 0.0, 2, "2026-04", 90.0, complete_year_b + partial_year_b),
     )
     metrics = AggregatedMetrics(
         source="ubist",
@@ -315,7 +313,7 @@ def test_sidecar_rows_require_all_dimensions_without_product_overinclude() -> No
 
     metric_rows = sidecar_rows_to_metric_rows(
         rows,
-        metadata={("brand-a", "A10A1"): {"atc4_desc": "demo", "unit_label": "KRW"}},
+        metadata={("brand-a", "A10A1"): {"unit_label": "KRW"}},
         required_dimensions=("form", "route"),
     )
 
@@ -339,7 +337,7 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
                     "raw_value_history": json.dumps({"2026-01": 10}),
                 }
             ]
-        return [{"brand_key": "brand-a", "atc4_code": "A10A1", "atc4_desc": "demo", "unit_label": "KRW"}]
+        return [{"brand_key": "brand-a", "atc4_code": "A10A1", "unit_label": "KRW"}]
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
     metrics = MetricAggregator(mart_db="jw_mart").aggregate(

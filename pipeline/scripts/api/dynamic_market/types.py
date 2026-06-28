@@ -69,7 +69,6 @@ class BrandMetric:
     brand_key: str
     brand_name: str
     atc4_code: str
-    atc4_desc: str
     total_value: float
     market_share_pct: float
     rank: int
