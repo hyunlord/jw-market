@@ -348,10 +348,11 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
     with stage(timing, "answer_cleanup", "markdown cleanup"):
         safe_answer = cleanup_markdown_answer(generated_answer)
         markdown_response = result.get("markdown_response")
+        fact_md = ""
         if isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             safe_answer = ensure_top_brand_trend_table(safe_answer, fact_md)
-            safe_answer = apply_claim_policy(question, safe_answer, fact_md)
+        safe_answer = apply_claim_policy(question, safe_answer, fact_md)
     try:
         with stage(timing, "chart_generation", "fact-backed chart spec"):
             charts = build_charts(result, question=question, answer=safe_answer)
@@ -359,6 +360,7 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(_append_timing_before_sources(safe_answer, markdown_block(timing_payload)))
+    safe_answer = apply_claim_policy(question, safe_answer, fact_md)
     for token in chunk_text(safe_answer):
         yield _sse_delta(token)
     if charts:

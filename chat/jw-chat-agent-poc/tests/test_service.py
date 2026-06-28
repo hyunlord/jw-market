@@ -497,6 +497,36 @@ def test_stream_endpoint_emits_user_visible_timing(monkeypatch) -> None:
     assert "event: done" in response.text
 
 
+def test_stream_endpoint_applies_channel_claim_policy_without_markdown_response(monkeypatch) -> None:
+    class ChannelAgent:
+        def __init__(self, *, external_mode: str = "live") -> None:
+            self.external_mode = external_mode
+
+        def answer(self, _question: str, _documents=None) -> dict:
+            return {
+                "answer": "channel fallback",
+                "sources": ["UBIST"],
+                "tool_calls": [],
+            }
+
+    def stream_answer(_self, _question, _result):
+        yield (
+            "| 채널 | 시장점유율 | 매출 || --- | --- | --- || 의원 | 3.37% | 41.93억원 || "
+            "종합병원 | 4.22% | 20.60억원 || 상급종합병원 | 4.49% | 17.56억원 |"
+        )
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    app = create_app(agent_factory=lambda external_mode="live": ChannelAgent(external_mode=external_mode))
+    client = TestClient(app)
+
+    response = client.get("/chat/stream", params={"question": "리바로 채널별 매출"})
+
+    assert response.status_code == 200
+    assert "현재 데이터만으로 확인할 수 없" in response.text
+    assert "의원 41.93억원" in response.text
+    assert "event: done" in response.text
+
+
 def test_timing_block_stays_before_deterministic_sources() -> None:
     answer = "본문\n\n## 출처\n- 데이터: UBIST (2026-04)"
     result = _append_timing_before_sources(answer, "## 처리 시간\n\n- 총 소요: 1.00초")
