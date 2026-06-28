@@ -1,0 +1,44 @@
+{
+  "약 한글명": "악템라",
+  "약 영문명": "ACTEMRA",
+  "경쟁사 약 한글명": [
+    "램시마",
+    "레미케이드",
+    "린버크",
+    "맙테라",
+    "심퍼니",
+    "아달로체",
+    "올루미언트",
+    "젤잔즈",
+    "지셀레카",
+    "트룩시마",
+    "휴미라"
+  ],
+  "경쟁사 약 영문명": [
+    "REMSIMA",
+    "REMICADE",
+    "RINVOQ",
+    "MABTHERA",
+    "SIMPONI",
+    "ADALROCE",
+    "OLUMIANT",
+    "XELJANZ",
+    "JYSELECA",
+    "TRUXIMA",
+    "HUMIRA"
+  ],
+  "metadata": {
+    "version": "v2_top5_union",
+    "source": "mart_strategic_ml_brand_metric latest-period top5 union",
+    "combos": [
+      "UBIST/sales",
+      "UBIST/volume",
+      "IQVIA/sales",
+      "IQVIA/unit",
+      "IQVIA/dosage_unit",
+      "IQVIA/counting_unit"
+    ],
+    "normalization": "short_name_company_form_suffix_and_space_variant_cleanup",
+    "profile_hash": "d1eb31258c13826190ac8dc798abb24221eff4164c8c1555dbb5cbc5e5988ced"
+  }
+}

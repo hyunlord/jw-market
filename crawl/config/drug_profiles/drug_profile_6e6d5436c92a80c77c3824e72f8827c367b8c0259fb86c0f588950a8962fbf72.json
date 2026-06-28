@@ -1,0 +1,38 @@
+{
+  "약 한글명": "위너프",
+  "약 영문명": "WINUF",
+  "경쟁사 약 한글명": [
+    "뉴트리헥스",
+    "스모프리피드",
+    "스모프카비벤페리페랄",
+    "아르믹스",
+    "오마프원페리",
+    "위너프에이플러스페리",
+    "위너프페리",
+    "페리올리멜엔4이"
+  ],
+  "경쟁사 약 영문명": [
+    "NUTRIHEX",
+    "SMOFLIPID",
+    "SMOFKABIVEN PERIPHERAL",
+    "ARMIX",
+    "OMAPONE PERI",
+    "WINUF A+ PERI",
+    "WINUF PERI",
+    "PERIOLIMEL N4E"
+  ],
+  "metadata": {
+    "version": "v2_top5_union",
+    "source": "mart_strategic_ml_brand_metric latest-period top5 union",
+    "combos": [
+      "UBIST/sales",
+      "UBIST/volume",
+      "IQVIA/sales",
+      "IQVIA/unit",
+      "IQVIA/dosage_unit",
+      "IQVIA/counting_unit"
+    ],
+    "normalization": "short_name_company_form_suffix_and_space_variant_cleanup",
+    "profile_hash": "6e6d5436c92a80c77c3824e72f8827c367b8c0259fb86c0f588950a8962fbf72"
+  }
+}

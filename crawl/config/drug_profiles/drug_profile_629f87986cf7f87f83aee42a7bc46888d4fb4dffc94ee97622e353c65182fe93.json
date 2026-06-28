@@ -1,0 +1,42 @@
+{
+  "약 한글명": "페린젝트",
+  "약 영문명": "FERINJECT",
+  "경쟁사 약 한글명": [
+    "모노퍼",
+    "베노스틴",
+    "베노훼럼",
+    "볼그레",
+    "산타몬플러스",
+    "훼럼키드",
+    "훼로맥스",
+    "훼로바유",
+    "훼리탑",
+    "훼마틴에이"
+  ],
+  "경쟁사 약 영문명": [
+    "MONOFER",
+    "VENOSTIN",
+    "VENOFERRUM",
+    "BOLGRE",
+    "SANTAMON PLUS",
+    "FERRUMKID",
+    "FERROMAX",
+    "FERROBA-U",
+    "FERITOP",
+    "FEMATIN-A"
+  ],
+  "metadata": {
+    "version": "v2_top5_union",
+    "source": "mart_strategic_ml_brand_metric latest-period top5 union",
+    "combos": [
+      "UBIST/sales",
+      "UBIST/volume",
+      "IQVIA/sales",
+      "IQVIA/unit",
+      "IQVIA/dosage_unit",
+      "IQVIA/counting_unit"
+    ],
+    "normalization": "short_name_company_form_suffix_and_space_variant_cleanup",
+    "profile_hash": "629f87986cf7f87f83aee42a7bc46888d4fb4dffc94ee97622e353c65182fe93"
+  }
+}

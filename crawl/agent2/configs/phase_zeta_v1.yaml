@@ -1,0 +1,42 @@
+config_version: phase_zeta_v1
+builder_version: "1.0.0"
+
+event:
+  lookback_months: 6
+  min_score_direct: 50
+  max_count_direct: 30
+  min_score_cross: 50
+  max_count_cross: 5
+  sort_order:
+    - field: score
+      direction: desc
+    - field: published_date
+      direction: desc
+    - field: news_id
+      direction: asc
+
+market:
+  lookback_months: 6
+  include_mat_12m: true
+  brand_metrics:
+    - source: ubist
+      measures: [sales, volume]
+    - source: iqvia
+      measures: [sales, unit, dosage_unit, counting_unit]
+  include_market_size: true
+  include_hhi: true
+
+competitor:
+  latest_n_months: 3
+  include_mat_12m: true
+  recent_high_score_event_min: 70
+  recent_high_score_event_max_count: 5
+
+pilot_brands_file: pilot_brands.txt
+
+db:
+  host: localhost
+  port: 3308
+  user_env: DB_USER
+  password_env: DB_ROOT_PASSWORD
+  database: jw_mart

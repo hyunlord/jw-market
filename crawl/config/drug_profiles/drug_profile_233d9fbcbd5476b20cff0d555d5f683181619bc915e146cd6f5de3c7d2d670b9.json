@@ -1,0 +1,30 @@
+{
+  "약 한글명": "리바로젯",
+  "약 영문명": "LIVALOZET",
+  "경쟁사 약 한글명": [
+    "리바로",
+    "리피로우",
+    "아토르바",
+    "크레스토"
+  ],
+  "경쟁사 약 영문명": [
+    "LIVALO",
+    "LIPILOU",
+    "ATORVA",
+    "CRESTOR"
+  ],
+  "metadata": {
+    "version": "v2_top5_union",
+    "source": "mart_strategic_ml_brand_metric latest-period top5 union",
+    "combos": [
+      "UBIST/sales",
+      "UBIST/volume",
+      "IQVIA/sales",
+      "IQVIA/unit",
+      "IQVIA/dosage_unit",
+      "IQVIA/counting_unit"
+    ],
+    "normalization": "short_name_company_form_suffix_and_space_variant_cleanup",
+    "profile_hash": "233d9fbcbd5476b20cff0d555d5f683181619bc915e146cd6f5de3c7d2d670b9"
+  }
+}

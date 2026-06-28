@@ -39,6 +39,8 @@ reports/
 exports/
 audits/
 phase_*/
+!crawl/agent2/phase_zeta_runner/
+!crawl/agent2/phase_zeta_runner/**
 phase_*_audit_*/
 phase_*_audit_*.zip
 *_audit_*.zip

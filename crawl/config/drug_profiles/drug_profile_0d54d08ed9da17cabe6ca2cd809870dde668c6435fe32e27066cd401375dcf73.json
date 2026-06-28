@@ -1,0 +1,38 @@
+{
+  "약 한글명": "가드렛",
+  "약 영문명": "GUARDLET",
+  "경쟁사 약 한글명": [
+    "디아미크롱",
+    "리조덱",
+    "아마릴",
+    "자디앙",
+    "제미메트",
+    "트라젠타",
+    "트레시바",
+    "트루리시티"
+  ],
+  "경쟁사 약 영문명": [
+    "DIAMICRON",
+    "RYZODEG",
+    "AMARYL",
+    "JARDIANCE",
+    "ZEMIMET",
+    "TRAJENTA",
+    "TRESIBA",
+    "TRULICITY"
+  ],
+  "metadata": {
+    "version": "v2_top5_union",
+    "source": "mart_strategic_ml_brand_metric latest-period top5 union",
+    "combos": [
+      "UBIST/sales",
+      "UBIST/volume",
+      "IQVIA/sales",
+      "IQVIA/unit",
+      "IQVIA/dosage_unit",
+      "IQVIA/counting_unit"
+    ],
+    "normalization": "short_name_company_form_suffix_and_space_variant_cleanup",
+    "profile_hash": "0d54d08ed9da17cabe6ca2cd809870dde668c6435fe32e27066cd401375dcf73"
+  }
+}

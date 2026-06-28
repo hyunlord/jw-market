@@ -1,0 +1,34 @@
+{
+  "약 한글명": "헴리브라",
+  "약 영문명": "HEMLIBRA",
+  "경쟁사 약 한글명": [
+    "그린모노",
+    "노보세븐알티",
+    "애드베이트",
+    "애디노베이트",
+    "엘록테이트",
+    "진타솔로퓨즈"
+  ],
+  "경쟁사 약 영문명": [
+    "GREEN MONO",
+    "NOVOSEVEN RT",
+    "ADVATE",
+    "ADYNOVATE",
+    "ELOCTATE",
+    "XYNTHA SOLOFUSE"
+  ],
+  "metadata": {
+    "version": "v2_top5_union",
+    "source": "mart_strategic_ml_brand_metric latest-period top5 union",
+    "combos": [
+      "UBIST/sales",
+      "UBIST/volume",
+      "IQVIA/sales",
+      "IQVIA/unit",
+      "IQVIA/dosage_unit",
+      "IQVIA/counting_unit"
+    ],
+    "normalization": "short_name_company_form_suffix_and_space_variant_cleanup",
+    "profile_hash": "39a5f437688f67b62492db38c313b91d9e86d1bd7e083fc952b497a2884c0819"
+  }
+}
