@@ -51,7 +51,11 @@ def test_channel_policy_removes_forbidden_claims_and_inserts_safe_summary(forbid
 def test_channel_policy_leaves_allowed_observation_unchanged() -> None:
     answer = "리바로는 의원 매출 41.93억원으로 볼륨이 가장 크고, 상급종합병원 시장점유율 4.49%가 가장 높습니다."
 
-    assert apply_claim_policy("리바로 채널별 매출", answer, CHANNEL_FACT_MD) == answer
+    revised = apply_claim_policy("리바로 채널별 매출", answer, CHANNEL_FACT_MD)
+
+    assert "리바로 채널별 매출은 의원 41.93억원, 종합병원 20.57억원, 상급종합병원 17.64억원 순입니다" in revised
+    assert "| 채널 | 시장점유율 | 매출 |" in revised
+    assert "| 의원 | 3.37% | 41.93억원 |" in revised
 
 
 def test_channel_policy_filters_markdown_headings_and_bullets() -> None:
@@ -74,6 +78,20 @@ def test_channel_policy_filters_markdown_headings_and_bullets() -> None:
     assert "처방 전이" not in revised
     assert "| 의원 | 3.37% | 41.93억원 |" in revised
     assert "현재 데이터만으로 확인할 수 없" in revised
+
+
+def test_channel_policy_normalizes_adjacent_unsupported_interpretation() -> None:
+    answer = (
+        "상급종합병원에서의 높은 MS는 리바로의 브랜드 신뢰도를 상징합니다. "
+        "의원 채널에서 점유율을 끌어올릴 경우 폭발적인 매출 증대가 가능할 것으로 판단됩니다."
+    )
+
+    revised = apply_claim_policy("리바로 채널별 매출", answer, CHANNEL_FACT_MD)
+
+    assert "브랜드 신뢰도" not in revised
+    assert "폭발적인 매출 증대" not in revised
+    assert "현재 데이터만으로 확인할 수 없" in revised
+    assert "| 상급종합병원 | 4.49% | 17.64억원 |" in revised
 
 
 def test_claim_policy_is_table_driven_for_channel_cross_section() -> None:

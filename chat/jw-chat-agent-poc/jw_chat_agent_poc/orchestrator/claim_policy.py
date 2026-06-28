@@ -4,8 +4,6 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Final
 
-from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
-
 
 FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
     "channel_cross_section": (
@@ -45,6 +43,7 @@ _CHANNEL_ROW_RE: Final = re.compile(
 _PERIOD_RE: Final = re.compile(r"[12]\d{3}-\d{2}")
 _SENTENCE_RE: Final = re.compile(r"[^.!?\n。]+(?:[.!?。]|$)")
 _SOURCE_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*출처\b")
+_TIMING_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*처리\s*시간\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,15 +63,18 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
     )
     revised = body
     for fact_type in active_fact_types:
+        if fact_type == "channel_cross_section":
+            revised = _rewrite_channel_cross_section(question, revised, fact_md)
+            continue
         claims = FORBIDDEN_BY_FACT_TYPE.get(fact_type, ())
         revised, removed = _drop_forbidden_claim_sentences(revised, claims)
         if removed:
             replacement = _SAFE_REPLACEMENTS[fact_type](question, fact_md)
             if replacement and replacement not in revised:
                 revised = "\n\n".join(part for part in (replacement, revised.strip()) if part)
-    revised = cleanup_markdown_answer(revised.strip())
+    revised = _cleanup_policy_markdown(revised.strip())
     if sources:
-        return cleanup_markdown_answer("\n\n".join((revised, sources.strip())))
+        return _cleanup_policy_markdown("\n\n".join((revised, sources.strip())))
     return revised
 
 
@@ -113,7 +115,7 @@ def _channel_safe_summary(question: str, fact_md: str) -> str:
     sales_phrase = ", ".join(f"{item.name} {item.sales}" for item in sales_top)
     share_phrase = ", ".join(f"{item.name} {item.share}" for item in share_top)
     prefix = f"{period} 기준 " if period else ""
-    return cleanup_markdown_answer(
+    return _cleanup_policy_markdown(
         " ".join(
             (
                 f"{prefix}{brand} 채널별 매출은 {sales_phrase} 순입니다.",
@@ -123,6 +125,26 @@ def _channel_safe_summary(question: str, fact_md: str) -> str:
             )
         )
     )
+
+
+def _rewrite_channel_cross_section(question: str, body: str, fact_md: str) -> str:
+    summary = _channel_safe_summary(question, fact_md)
+    table = _channel_fact_table(fact_md)
+    timing = _timing_block(body)
+    if not summary:
+        claims = FORBIDDEN_BY_FACT_TYPE.get("channel_cross_section", ())
+        revised, _ = _drop_forbidden_claim_sentences(body, claims)
+        return revised
+    return "\n\n".join(part for part in (summary, table, timing) if part)
+
+
+def _channel_fact_table(fact_md: str) -> str:
+    facts = _channel_facts(fact_md)
+    if not facts:
+        return ""
+    rows = ["| 채널 | 시장점유율 | 매출 |", "| --- | --- | --- |"]
+    rows.extend(f"| {item.name} | {item.share} | {item.sales} |" for item in facts)
+    return "\n".join(rows)
 
 
 def _channel_facts(fact_md: str) -> tuple[ChannelFact, ...]:
@@ -190,6 +212,17 @@ def _split_sources(answer: str) -> tuple[str, str]:
     if not match:
         return answer, ""
     return answer[: match.start()], answer[match.start() :]
+
+
+def _timing_block(body: str) -> str:
+    match = _TIMING_HEADING_RE.search(body)
+    if not match:
+        return ""
+    return body[match.start() :].strip()
+
+
+def _cleanup_policy_markdown(markdown: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", markdown).strip()
 
 
 _FACT_TYPE_DETECTORS: Final[dict[str, Callable[[str], bool]]] = {
