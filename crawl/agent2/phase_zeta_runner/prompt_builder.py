@@ -78,7 +78,8 @@ available: {bool(forecast.get("available", False))}
 prediction stage는 forecast_simulation.available=true이면 1년/3년/5년 전망을 모두 명시하고, bundle의 horizon_1y/horizon_3y/horizon_5y 값을 각각 반영하세요.
 95% 신뢰구간 등 CI 수치는 단독 bullet로 분리하지 말고, 해당 예측값과 같은 문장/field에 두어 compact tag(예: ML·UBIST·매출·2029-03)가 동반되게 작성하세요.
 prediction evidence는 FULL_BUNDLE_JSON_FOR_FORMATTER 안에 실제로 존재하는 source event 또는 forecast_simulation 수치 basis만 사용하세요. bundle에 없는 근거 제목, news_id, 시뮬레이션명을 새로 만들지 마세요.
-prediction stage에서는 forecast_simulation 수치, CI, 불확실성만 서술하세요. 임상/뉴스/급여/허가/출시/경쟁사/약가/정책/제네릭 진입/외부 변수/시장 경쟁 환경 변화/경쟁 심화/시장 변화 모니터링 등 사건성 해석은 cause 또는 recommendation에 두고, prediction에서 그런 표현을 쓰는 경우에는 반드시 bundle의 실제 event를 prediction.evidence에 함께 넣으세요.
+prediction stage에서는 forecast_simulation 수치와 95% CI를 유지하되, 1년/3년/5년 horizon의 방향성(성장/둔화/정체/감소), CI 폭 변화와 장단기 불확실성, 현재 시장/처방 지표와 연결한 시사점을 함께 서술하세요. prediction은 미래 전망의 해석이며 cause의 과거 원인 분석이나 recommendation의 실행 지시와 중복하지 마세요. 임상/뉴스/급여/허가/출시/경쟁사/약가/정책/제네릭 진입/외부 변수/시장 경쟁 환경 변화/경쟁 심화/시장 변화 모니터링 등 사건성 해석은 bundle event가 있을 때만 prediction.evidence에 연결하고, bundle event가 없으면 prediction에서 단정하지 마세요.
+prediction body에는 숫자/CI를 나열하는 문장과 별도로, forecast 수치가 의미하는 시장/처방 방향성·CI 폭의 리스크·현재 지표와 연결한 시사점 해석 문장을 최소 3개 포함하세요. 단, bundle event가 없는 정책/경쟁/급여/허가/출시 같은 외부 변수 가정으로 해석문을 채우지 말고 forecast와 market_views 수치 자체의 의미를 해석하세요.
 prediction body도 예외 없이 6문장 이상 9문장 이하로 작성하세요. forecast 숫자가 많더라도 5문장 이하로 압축하지 말고, 모델/신뢰구간/불확실성 설명을 별도 완결 문장으로 분리하세요.
 market_views 또는 forecast_simulation에 UBIST와 IQVIA가 모두 있으면 최종 JSON 전체에서 두 source를 모두 사용하세요. 최소 한 문장 이상에는 (ML·UBIST·...) compact tag를, 최소 한 문장 이상에는 (ML·IQVIA·...) compact tag를 포함해야 하며, 한 source만으로 4단을 작성하지 마세요.
 forecast_simulation 수치는 bundle의 raw value와 단위를 그대로 사용하세요. 원 단위를 억/만/k/M 등으로 환산하거나 IQVIA 수량 단위를 임의로 KRW처럼 바꾸지 마세요.

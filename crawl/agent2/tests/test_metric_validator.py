@@ -166,7 +166,9 @@ def test_simulation_prediction_accepts_raw_krw_with_ci_wording():
         "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW), "
         "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
         "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다 "
-        "(Market Landscape · UBIST 기준)."
+        "(Market Landscape · UBIST 기준). 1년에서 5년으로 갈수록 기준 예측값이 높아져 "
+        "중장기 성장 방향성이 유지될 가능성을 시사합니다. 신뢰구간 폭도 함께 확대되므로 "
+        "장기 구간에서는 실제 시장 성과의 변동성 리스크를 함께 봐야 합니다."
     )
 
     result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
@@ -176,6 +178,37 @@ def test_simulation_prediction_accepts_raw_krw_with_ci_wording():
         item.get("matched_path", "").startswith("forecast_simulation.by_view.ML.UBIST.sales.horizon_1y")
         for item in result.stage_results["prediction"].extracted
     )
+
+
+def test_simulation_prediction_rejects_number_listing_without_insight():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW)입니다. "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW)입니다. "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)입니다. "
+        "예측 모델은 Prophet입니다."
+    )
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "prediction_insight_too_sparse" for item in result.unmatched_numbers)
+
+
+def test_simulation_prediction_rejects_numeric_heavy_sparse_insight():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW)입니다. "
+        "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW)입니다. "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)입니다. "
+        "1년 하한은 800 KRW, 상한은 1,200 KRW입니다. "
+        "5년 하한은 4,000 KRW, 상한은 6,000 KRW입니다. "
+        "장기 예측값 상승은 성장 방향성이 이어질 가능성을 시사합니다. "
+        "CI 확대는 장기 불확실성 리스크가 커진다는 의미입니다."
+    )
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "prediction_insight_too_sparse" for item in result.unmatched_numbers)
 
 
 def test_simulation_prediction_rejects_optimistic_pessimistic_scenario_words():
@@ -376,13 +409,33 @@ def test_prediction_news_evidence_must_come_from_bundle():
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
 
 
+def test_prediction_news_evidence_accepts_news_title_wrapper():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "급여 확대 뉴스로 성장 전망",
+            "body": "급여 확대 보도에 따라 향후 처방 증가가 예상됩니다.",
+            "bullets": [],
+            "evidence": [{"title": "뉴스 '페린젝트 급여 확대'", "source": "뉴스"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
 def test_prediction_simulation_evidence_basis_must_match_bundle_number():
     bundle = _simulation_bundle()
     parsed_output = _parsed_with_prediction(
         "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW), "
         "3년 후 3,000 KRW (95% 신뢰구간 2,400~3,600 KRW), "
         "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다 "
-        "(ML·UBIST·매출·2031-03)."
+        "(ML·UBIST·매출·2031-03). 기준 예측값이 장기 구간으로 갈수록 확대되어 "
+        "성장 방향성이 이어질 가능성을 시사합니다. 신뢰구간 폭 확대는 장기 전망의 "
+        "불확실성 리스크가 함께 커진다는 의미입니다."
     )
     parsed_output["prediction"]["evidence"] = [
         {"title": "매출 및 처방량 예측 시뮬레이션", "basis": "5,000(ML·UBIST·매출·2031-03)"}
@@ -391,6 +444,24 @@ def test_prediction_simulation_evidence_basis_must_match_bundle_number():
     result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
 
     assert result.valid
+
+
+def test_prediction_simulation_evidence_accepts_compact_tagged_integer_basis():
+    bundle = _simulation_bundle()
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000(ML·UBIST·sales·2027-03), "
+        "3년 후 3,000(ML·UBIST·sales·2029-03), "
+        "5년 후 5,000(ML·UBIST·sales·2031-03)로 예측됩니다. "
+        "95% 신뢰구간은 800(ML·UBIST·sales·2027-03)에서 "
+        "1,200(ML·UBIST·sales·2027-03)입니다. "
+        "기준 예측값이 장기 구간으로 갈수록 확대되어 성장 방향성이 이어질 가능성을 시사합니다. "
+        "신뢰구간 폭 확대는 장기 전망의 불확실성 리스크가 함께 커진다는 의미입니다."
+    )
+    parsed_output["prediction"]["evidence"] = [{"title": "수치 근거", "basis": "1,000(ML·UBIST·sales·2027-03)"}]
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert not any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
 
 
 def test_prediction_simulation_evidence_rejects_basis_number_not_in_bundle():

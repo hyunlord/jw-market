@@ -60,6 +60,18 @@ PREDICTION_NEWS_TRIGGER_RE = re.compile(
     r"(뉴스|보도|급여|허가|출시|신약|경쟁사|진입|임상|학회|약가|정책|규제|공세|시장\s*변화)",
     re.IGNORECASE,
 )
+PREDICTION_INSIGHT_RE = re.compile(
+    r"(시사|의미|전망|가능성|리스크|불확실|변동성|방향성|성장|둔화|정체|감소|하락|상승|"
+    r"확대|축소|회복|유지|처방|시장|점유율|경쟁력|모멘텀|추세|안정|압박|중장기|장기|단기)",
+    re.IGNORECASE,
+)
+PREDICTION_NUMERIC_LIST_RE = re.compile(
+    r"(1년|3년|5년|예측값|기준\s*예측|신뢰구간|CI|하한|상한|forecast|horizon)",
+    re.IGNORECASE,
+)
+MIN_PREDICTION_INSIGHT_SENTENCES = 2
+MIN_PREDICTION_INSIGHT_SENTENCES_FOR_NUMERIC_HEAVY = 3
+MAX_NUMERIC_LIST_SENTENCES_WITH_SPARSE_INSIGHT = 4
 VIEW_DISPLAY = {
     "ML": "Market Landscape",
     "CD": "Competitive Dynamics",
@@ -72,6 +84,10 @@ VIEW_COMPACT = {
 }
 SIMULATION_EVIDENCE_TITLE_RE = re.compile(r"(시뮬레이션|예측|forecast|simulation)", re.IGNORECASE)
 COMPACT_VIEW_TAG_RE = re.compile(r"(?:ML|CD)\s*·\s*[A-Z]+\s*·", re.IGNORECASE)
+COMPACT_TAGGED_BASIS_RE = re.compile(
+    r"(?<![\d,.])(?P<number>[+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[+-]?\d+(?:\.\d+)?)"
+    r"(?P<tag>\((?:ML|CD)·(?:IQVIA|UBIST)·[^)]{1,80}\))"
+)
 STANDALONE_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 MARKET_METRIC_PATH_RE = re.compile(
     r"("
@@ -384,6 +400,44 @@ def _prediction_text(parsed_output: dict) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _prediction_body_text(parsed_output: dict) -> str:
+    prediction = parsed_output.get("prediction", {}) or {}
+    return str(prediction.get("body") or "")
+
+
+def _split_korean_sentences(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized:
+        return []
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?。])\s+|(?<=다[.])\s*", normalized) if part.strip()]
+    if len(sentences) <= 1:
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", normalized) if part.strip()]
+    return sentences or [normalized]
+
+
+def _has_prediction_insight(sentence: str) -> bool:
+    if not PREDICTION_INSIGHT_RE.search(sentence):
+        return False
+    numbers = re.findall(r"[+-]?\d+(?:,\d{3})*(?:\.\d+)?", sentence)
+    if len(numbers) >= 3 and PREDICTION_NUMERIC_LIST_RE.search(sentence):
+        low_signal = not re.search(r"(때문|따라|따르|이어|커지|줄어|압박|기회|방어|민감|봐야|관리|해석)", sentence)
+        if low_signal:
+            return False
+    return True
+
+
+def _prediction_insight_counts(text: str) -> tuple[int, int]:
+    insight_count = 0
+    numeric_list_count = 0
+    for sentence in _split_korean_sentences(text):
+        numbers = re.findall(r"[+-]?\d+(?:,\d{3})*(?:\.\d+)?", sentence)
+        if len(numbers) >= 2 and PREDICTION_NUMERIC_LIST_RE.search(sentence):
+            numeric_list_count += 1
+        if _has_prediction_insight(sentence):
+            insight_count += 1
+    return insight_count, numeric_list_count
+
+
 def _forecast_simulation_available(bundle: dict) -> bool:
     forecast = bundle.get("forecast_simulation") or {}
     return bool(forecast.get("available") and forecast.get("by_view"))
@@ -490,6 +544,11 @@ def _simulation_evidence_matches_bundle(item: dict[str, Any], bundle: dict, conf
     if not (SIMULATION_EVIDENCE_TITLE_RE.search(title) or COMPACT_VIEW_TAG_RE.search(basis)):
         return False
 
+    bundle_index = build_bundle_path_index(bundle)
+    compact_matches = list(COMPACT_TAGGED_BASIS_RE.finditer(basis))
+    if compact_matches:
+        return all(_compact_tagged_basis_matches(match, bundle_index, config) for match in compact_matches)
+
     basis_numbers = [
         number
         for number in extract_numbers(basis, config)
@@ -498,11 +557,30 @@ def _simulation_evidence_matches_bundle(item: dict[str, Any], bundle: dict, conf
     if not basis_numbers:
         return False
 
-    bundle_index = build_bundle_path_index(bundle)
     return all(
         find_match_unit_aware(number["value"], bundle_index, number["number_type"], config) is not None
         for number in basis_numbers
     )
+
+
+def _compact_tagged_basis_matches(
+    match: re.Match[str],
+    bundle_index: dict[float, list[str]],
+    config: ValidatorConfig,
+) -> bool:
+    try:
+        value = float(match.group("number").replace(",", ""))
+    except ValueError:
+        return False
+    tag = match.group("tag")
+    if re.search(r"(unit|counting|dosage|volume|처방|개|정|캡슐)", tag, re.IGNORECASE):
+        number_type = "unit_pack"
+    elif "%" in match.group(0):
+        number_type = "percent_signed" if match.group("number").startswith(("+", "-")) else "percent"
+    else:
+        number_type = "currency_krw"
+    matched_path = find_match_unit_aware(value, bundle_index, number_type, config)
+    return str(matched_path or "").startswith(("forecast_simulation.by_view.", "market_views["))
 
 
 def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> list[dict[str, Any]]:
@@ -522,11 +600,11 @@ def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, confi
 
     if evidence:
         source_ids = {str(item.get("news_id")) for item in bundle_events if item.get("news_id")}
-        source_titles = {str(item.get("title")) for item in bundle_events if item.get("title")}
+        source_titles = {_canonical_event_title(str(item.get("title"))) for item in bundle_events if item.get("title")}
         for item in evidence:
             news_id = str(item.get("news_id") or "")
             title = str(item.get("title") or "")
-            if (news_id and news_id in source_ids) or (title and title in source_titles):
+            if (news_id and news_id in source_ids) or (title and _canonical_event_title(title) in source_titles):
                 continue
             if _simulation_evidence_matches_bundle(item, bundle, config):
                 continue
@@ -538,6 +616,12 @@ def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, confi
                 )
             )
     return issues
+
+
+def _canonical_event_title(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", title or "").strip()
+    normalized = re.sub(r"^(?:뉴스|보도|기사)\s*[:：]?\s*", "", normalized)
+    return normalized.strip(" '\"‘’“”[]()")
 
 
 def validate_evidence_pool_policy(parsed_output: dict, bundle: dict) -> list[dict[str, Any]]:
@@ -676,6 +760,21 @@ def validate_simulation_prediction_policy(
                     f"prediction stage에서 forecast_simulation horizon_{horizon} 수치를 사용해야 합니다.",
                 )
             )
+
+    insight_count, numeric_list_count = _prediction_insight_counts(_prediction_body_text(parsed_output))
+    insight_too_sparse = insight_count < MIN_PREDICTION_INSIGHT_SENTENCES and numeric_list_count >= 2
+    numeric_heavy_without_enough_insight = (
+        insight_count < MIN_PREDICTION_INSIGHT_SENTENCES_FOR_NUMERIC_HEAVY
+        and numeric_list_count > MAX_NUMERIC_LIST_SENTENCES_WITH_SPARSE_INSIGHT
+    )
+    if insight_too_sparse or numeric_heavy_without_enough_insight:
+        issues.append(
+            _prediction_policy_issue(
+                "prediction_insight_too_sparse",
+                f"insight_sentences={insight_count}; numeric_list_sentences={numeric_list_count}",
+                "prediction stage는 forecast 수치와 함께 방향성, CI 폭/불확실성, 시장/처방 시사점 해석을 포함해야 합니다.",
+            )
+        )
     return issues
 
 

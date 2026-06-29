@@ -81,6 +81,18 @@ def _forecast_bundle():
     }
 
 
+def _negative_trend_bundle():
+    return {
+        "market_views": [
+            {
+                "view_id": "ML.IQVIA.sales",
+                "source": "IQVIA",
+                "target_brand_metric": {"history": {"2025-Q4": {"qoq_pct": -19.27}}},
+            }
+        ]
+    }
+
+
 def test_repair_adds_existing_bundle_view_label_before_validation():
     parsed_output = {
         "phenomenon": {"title": "점유율", "body": "M/S는 58.82%입니다.", "bullets": []},
@@ -142,6 +154,92 @@ def test_repair_does_not_fabricate_prediction_evidence():
     assert repaired.changes == []
     assert not result.valid
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_repair_adds_prediction_evidence_only_from_existing_forecast_basis():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "향후 처방량",
+            "body": (
+                "1년 뒤 338.49(ML·IQVIA·counting_unit·2026-Q3), "
+                "3년 뒤 492.87(ML·IQVIA·counting_unit·2028-Q3), "
+                "5년 뒤 537.57(ML·IQVIA·counting_unit·2030-Q3)입니다. "
+                "95% 신뢰구간은 275.99(ML·IQVIA·counting_unit·2026-Q3)에서 "
+                "499.68(ML·IQVIA·counting_unit·2026-Q3)입니다. "
+                "장기 구간으로 갈수록 처방량 성장 방향성이 이어질 가능성을 시사합니다. "
+                "CI 폭 확대는 장기 전망의 불확실성 리스크를 함께 봐야 한다는 의미입니다."
+            ),
+            "bullets": [],
+            "evidence": [],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _forecast_bundle(), _config())
+    result = validate_output(repaired.parsed_output, _forecast_bundle(), _config())
+
+    assert repaired.parsed_output["prediction"]["evidence"] == [
+        {
+            "title": "forecast_simulation 수치 근거",
+            "basis": "338.49(ML·IQVIA·counting_unit·2026-Q3)",
+            "stage": "prediction",
+        }
+    ]
+    assert any(change["type"] == "prediction_numeric_evidence" for change in repaired.changes)
+    assert result.valid
+
+
+def test_repair_restores_missing_negative_percent_sign_only_when_bundle_confirms_trend_metric():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "전 분기 대비 19.27%(ML·IQVIA·sales·2025-Q4)의 매출 변동이 관찰됩니다.",
+            "bullets": ["전 분기 대비 매출은 19.27%(ML·IQVIA·sales·2025-Q4) 감소"],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _negative_trend_bundle(), _config())
+    result = validate_output(repaired.parsed_output, _negative_trend_bundle(), _config())
+
+    assert "-19.27%(ML·IQVIA·sales·2025-Q4)" in repaired.parsed_output["phenomenon"]["body"]
+    assert "-19.27%(ML·IQVIA·sales·2025-Q4)" in repaired.parsed_output["phenomenon"]["bullets"][0]
+    assert [change["type"] for change in repaired.changes] == [
+        "signed_percent_polarity",
+        "signed_percent_polarity",
+    ]
+    assert result.valid
+
+
+def test_repair_keeps_positive_percent_when_bundle_has_positive_value():
+    bundle = {
+        "market_views": [
+            {
+                "view_id": "ML.IQVIA.sales",
+                "source": "IQVIA",
+                "target_brand_metric": {"history": {"2025-Q4": {"ms_pct": 19.27}}},
+            }
+        ]
+    }
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "시장 점유율은 19.27%(ML·IQVIA·sales·2025-Q4)로 감소 압박을 받습니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, bundle, _config())
+
+    assert repaired.parsed_output == parsed_output
+    assert repaired.changes == []
 
 
 def test_repair_normalizes_korean_large_unit_numbers_before_validation():
@@ -220,7 +318,9 @@ def test_repair_restores_forecast_tags_and_large_units_without_weakening_validat
                 "1년 뒤 4만 6012.98 unit(ML·IQVIA·counting_unit·2025-Q4), "
                 "3년 뒤 4만 9346.94 unit(ML·IQVIA·counting_unit·2025-Q4), "
                 "5년 뒤 5만 2549.86 unit(ML·IQVIA·counting_unit·2025-Q4)입니다. "
-                "95% 신뢰구간은 3만 8134.79 unit에서 5만 3282.74 unit입니다."
+                "95% 신뢰구간은 3만 8134.79 unit에서 5만 3282.74 unit입니다. "
+                "기준 예측값이 장기 구간으로 갈수록 높아져 처방량 성장 방향성이 이어질 가능성을 시사합니다. "
+                "신뢰구간 폭 확대는 장기 전망에서 실제 수요 변동성 리스크도 함께 봐야 한다는 의미입니다."
             ),
             "bullets": [],
             "evidence": [{"title": "수치 근거", "basis": "4만 6012.98 unit(ML·IQVIA·counting_unit·2025-Q4)"}],
@@ -249,7 +349,9 @@ def test_repair_converts_dotted_forecast_tags_to_compact_tags():
                 "1년 뒤 338.49(ML.IQVIA.counting_unit), "
                 "3년 뒤 492.87(ML.IQVIA.counting_unit), "
                 "5년 뒤 537.57(ML.IQVIA.counting_unit)입니다. "
-                "95% 신뢰구간은 275.99에서 499.68(ML.IQVIA.counting_unit)입니다."
+                "95% 신뢰구간은 275.99에서 499.68(ML.IQVIA.counting_unit)입니다. "
+                "1년에서 5년으로 갈수록 처방량 기준 예측이 확대되어 시장 내 수요 회복 방향성을 시사합니다. "
+                "CI 폭은 단기보다 장기 구간에서 불확실성이 커질 수 있어 추세 해석에 주의가 필요합니다."
             ),
             "bullets": [
                 "1년 뒤 처방량 338.49(ML.IQVIA.counting_unit)",
