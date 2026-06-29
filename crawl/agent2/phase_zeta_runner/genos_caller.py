@@ -27,8 +27,8 @@ def validate_genos_output(parsed: dict[str, Any]) -> dict[str, Any]:
         bullets = stage_data.get("bullets")
         if not isinstance(bullets, list):
             errors.append(f"{stage}.bullets is not a list")
-        elif not 2 <= len(bullets) <= 3:
-            errors.append(f"{stage}.bullets has {len(bullets)} items; expected 2-3")
+        elif len(bullets) != 4:
+            errors.append(f"{stage}.bullets has {len(bullets)} items; expected exactly 4")
     return {"valid": not errors, "errors": errors}
 
 

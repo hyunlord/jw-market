@@ -22,6 +22,29 @@ def test_llm_runner_has_no_vertex_dependency_loaded():
     assert "vertexai" not in sys.modules
 
 
+def test_genos_output_requires_operational_four_bullets_per_stage():
+    def stage_with_bullets(count: int) -> dict[str, str | list[str]]:
+        return {"title": "t", "body": "b", "bullets": [str(index) for index in range(count)]}
+
+    four_bullet_output = {
+        "phenomenon": stage_with_bullets(4),
+        "cause": stage_with_bullets(4),
+        "prediction": stage_with_bullets(4),
+        "recommendation": stage_with_bullets(4),
+    }
+    three_bullet_output = {
+        "phenomenon": stage_with_bullets(3),
+        "cause": stage_with_bullets(3),
+        "prediction": stage_with_bullets(3),
+        "recommendation": stage_with_bullets(3),
+    }
+
+    assert genos_caller.validate_genos_output(four_bullet_output)["valid"]
+    result = genos_caller.validate_genos_output(three_bullet_output)
+    assert not result["valid"]
+    assert "expected exactly 4" in "; ".join(result["errors"])
+
+
 def test_call_llm_routes_to_genos(monkeypatch):
     captured = {}
 
@@ -31,10 +54,10 @@ def test_call_llm_routes_to_genos(monkeypatch):
         return {
             "success": True,
             "parsed_output": {
-                "phenomenon": {"title": "t", "body": "b", "bullets": ["a", "b"]},
-                "cause": {"title": "t", "body": "b", "bullets": ["a", "b"]},
-                "prediction": {"title": "t", "body": "b", "bullets": ["a", "b"]},
-                "recommendation": {"title": "t", "body": "b", "bullets": ["a", "b"]},
+                "phenomenon": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+                "cause": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+                "prediction": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+                "recommendation": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
             },
             "raw_response": json.dumps({"ok": True}),
             "tokens_in": 10,
