@@ -160,6 +160,31 @@ def test_agent_loop_completes_missing_competitor_metric_for_largest_competitor()
     assert "리바로젯" in result["answer"]
 
 
+def test_agent_loop_backfills_ranking_metric_when_planner_returns_no_tool_calls() -> None:
+    # Given: the planner produces a valid final response shell without calling the ranking metric tool.
+    planner = ScriptedPlanner((AgentDecision(final_answer="도구 결과로 답변하세요."),))
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner),
+    )
+
+    # When: a ranking/share question asks for required rank facts.
+    result = agent.answer("리바로 점유율 몇 위야")
+
+    # Then: AnswerContract backfills the metric call deterministically instead of returning an empty shell.
+    metric_calls = [call for call in result["tool_calls"] if call["tool"] == "get_brand_metric"]
+    assert metric_calls
+    data = metric_calls[0]["render_data"]
+    assert data["brand"] == "리바로"
+    assert data["rank"] == 6
+    assert data["total_brands_in_market"] == 516
+    assert data["completion_reason"] == "answer_contract_requires_ranking_facts"
+    assert "순위 6/516" in result["markdown_response"]["fact_md"]
+    assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
+
+
 def test_agent_loop_corrects_invalid_llm_brand_to_pre_resolved_canonical() -> None:
     # Given: a planner emits the spike failure brand typo even though the question says 리바로.
     planner = ScriptedPlanner(

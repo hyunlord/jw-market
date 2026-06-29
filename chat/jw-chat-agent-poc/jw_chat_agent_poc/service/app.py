@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
 from jw_chat_agent_poc.orchestrator import ChatAgent
+from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
@@ -359,6 +360,7 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
+    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
     safe_answer = apply_claim_policy(question, safe_answer, fact_md)
     yield from iter_markdown_sse_events(safe_answer)
     if charts:

@@ -12,6 +12,7 @@ from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicTool
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
+from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -113,6 +114,23 @@ class ToolUseAgent:
                         brand,
                         metric_brands or (brand,),
                         comparison.unsupported_terms,
+                        self.metrics,
+                        self.resolver,
+                        self.current_month,
+                        period_grounding,
+                        self.news,
+                        self.external,
+                        self.query_layer,
+                    )
+                )
+            with stage(timing, "answer_contract_preflight", "required fact backfill"):
+                calls.extend(
+                    _answer_contract_calls(
+                        question,
+                        calls,
+                        observations,
+                        brand,
+                        metric_brands or (brand,),
                         self.metrics,
                         self.resolver,
                         self.current_month,
@@ -534,6 +552,35 @@ def _completion_facade(
         external=external,
         query_layer=query_layer,
     )
+
+
+def _answer_contract_calls(
+    question: str,
+    calls: list[dict[str, Any]],
+    observations: list[AgentObservation],
+    brand: str,
+    metric_brands: tuple[str, ...],
+    metrics: MetricsTool,
+    resolver: BrandResolver,
+    current_month: Callable[[], str] | None,
+    period_grounding,
+    news: DeepAnalysisNewsTool | None,
+    external: ExternalApiClient | None,
+    query_layer: StrategicQueryLayer | None,
+) -> list[dict[str, Any]]:
+    plans = answer_contract_backfill_tool_calls(question, brand, calls)
+    if not plans:
+        return []
+    facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, metric_brands, observations)
+    completed: list[dict[str, Any]] = []
+    for plan in plans:
+        execution = _execute_grounded(facade, plan)
+        call = dict(execution.call)
+        data = call.setdefault("render_data", {})
+        if isinstance(data, dict):
+            data["completion_reason"] = "answer_contract_requires_ranking_facts"
+        completed.append(call)
+    return completed
 
 
 def _has_sales_series(calls: list[dict[str, Any]], brand: str | None = None) -> bool:
