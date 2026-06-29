@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
@@ -40,7 +41,8 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
         )
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
-    return composer.compose(definition=definition, metrics=metrics)
+    result = composer.compose(definition=definition, metrics=metrics)
+    return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
 
 
 def _resolve_definition(payload: DynamicMarketRequest):

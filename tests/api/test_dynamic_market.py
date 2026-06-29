@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -21,6 +22,8 @@ from pipeline.scripts.api.dynamic_market.types import (
     MarketDefinition,
     PeriodRange,
 )
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
+from pipeline.scripts.api.routes import dynamic_market as dynamic_market_route
 
 
 def test_compute_hhi_when_brand_shares_are_known() -> None:
@@ -88,6 +91,44 @@ def test_compose_when_definition_and_metrics_are_ready() -> None:
 
     assert response["market_meta"]["view_source_id"] == "dynamic_general"
     assert response["data"]["market_size_series"][0]["value"] == 100.0
+
+
+def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypatch) -> None:
+    bare_payload = {
+        "brand": "리바로",
+        "source": "UBIST",
+        "measure": "sales",
+        "market_meta": {"market_id": "ml_005"},
+        "data": {"kpi": {"market_size_recent": 100.0}},
+    }
+
+    class FakeAggregator:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def aggregate(self, **_: object) -> object:
+            return object()
+
+    class FakeComposer:
+        def compose(self, **_: object) -> dict:
+            return dict(bare_payload)
+
+    definition = SimpleNamespace(
+        brands=(),
+        source="ubist",
+        measure="sales",
+        dimension_filters=(),
+        view="strategic_ml",
+        strategic_market_id="ml_005",
+    )
+    monkeypatch.setattr(dynamic_market_route, "_resolve_definition", lambda payload: definition)
+    monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FakeAggregator)
+    monkeypatch.setattr(dynamic_market_route, "ResponseComposer", FakeComposer)
+
+    response = dynamic_market_route.dynamic_market(DynamicMarketRequest())
+
+    assert response == {"status": "SUCCESS", "result": bare_payload}
+    assert "data" not in response
 
 
 def test_compose_emits_only_portal_read_cause_sections() -> None:
