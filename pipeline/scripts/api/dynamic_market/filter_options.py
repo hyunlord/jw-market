@@ -66,6 +66,7 @@ def build_filter_options(
     view: str,
     source: str,
     market_id: str | None = None,
+    brand: str | None = None,
     general_dimension_db: str | None = None,
     strategic_dimension_db: str | None = None,
 ) -> dict[str, object]:
@@ -80,16 +81,28 @@ def build_filter_options(
         market_id=market_id,
     )
     if cached_payload := _get_cached_filter_options(cache_key):
-        return cached_payload
-    payload = _build_filter_options_uncached(
-        mart_db=mart_db,
-        dimension_db=dimension_db,
-        view=normalized_view,
-        source=normalized_source,
-        market_id=market_id,
-    )
-    _set_cached_filter_options(cache_key, payload)
-    return deepcopy(payload)
+        payload = cached_payload
+    else:
+        payload = _build_filter_options_uncached(
+            mart_db=mart_db,
+            dimension_db=dimension_db,
+            view=normalized_view,
+            source=normalized_source,
+            market_id=market_id,
+        )
+        _set_cached_filter_options(cache_key, payload)
+        payload = deepcopy(payload)
+    normalized_brand = brand.strip() if brand else ""
+    if normalized_brand:
+        payload["brand"] = normalized_brand
+        payload["brand_matched"] = _load_brand_dimension_matches(
+            dimension_db=dimension_db,
+            brand=normalized_brand,
+            view=normalized_view,
+            source=normalized_source,
+            market_id=market_id,
+        )
+    return payload
 
 
 def clear_filter_option_cache() -> None:
@@ -197,28 +210,15 @@ def build_brand_option_check(
     values never leak back to the general ATC sidecar, and vice versa.
     """
 
-    payload = build_filter_options(
+    return build_filter_options(
         mart_db=mart_db,
         general_dimension_db=general_dimension_db,
         strategic_dimension_db=strategic_dimension_db,
+        brand=brand,
         view=view,
         source=source,
         market_id=market_id,
     )
-    normalized_view = str(payload["view"])
-    normalized_source = str(payload["source"])
-    dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
-    return {
-        **payload,
-        "brand": brand,
-        "brand_matched": _load_brand_dimension_matches(
-            dimension_db=dimension_db,
-            brand=brand,
-            view=normalized_view,
-            source=normalized_source,
-            market_id=market_id,
-        ),
-    }
 
 
 def build_filter_option_payload(

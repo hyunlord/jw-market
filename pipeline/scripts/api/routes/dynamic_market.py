@@ -9,7 +9,7 @@ from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.filter_options import build_brand_option_check, build_filter_options
+from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
@@ -92,12 +92,18 @@ def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
 
 
 @router.get("/api/dynamic-market/filter-options")
-def dynamic_market_filter_options(view: str = "general", source: str = "ubist", market_id: str | None = None) -> dict:
+def dynamic_market_filter_options(
+    view: str = "general",
+    source: str = "ubist",
+    market_id: str | None = None,
+    brand: str | None = None,
+) -> dict:
     try:
         return build_filter_options(
             mart_db=config.db_name,
             general_dimension_db=config.general_dimension_db_name,
             strategic_dimension_db=config.strategic_dimension_db_name,
+            brand=brand,
             view=view,
             source=source,
             market_id=market_id,
@@ -117,7 +123,7 @@ def dynamic_market_brand_option_check(brand: str, view: str = "general", source:
     """
 
     try:
-        return build_brand_option_check(
+        return build_filter_options(
             mart_db=config.db_name,
             general_dimension_db=config.general_dimension_db_name,
             strategic_dimension_db=config.strategic_dimension_db_name,
