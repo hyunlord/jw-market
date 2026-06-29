@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+import hashlib
+import os
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from jw_chat_agent_poc import genos_config
+from jw_chat_agent_poc.orchestrator.answer_contract import evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
+from jw_chat_agent_poc.orchestrator.provenance import number_tokens
+
+
+_UNKNOWN = "unknown"
+_MODEL_FAMILY_DEFAULT = "gemini-3-flash-preview"
+_BROKEN_RENDER_SENTINELS = (
+    "|| ---",
+    "|##",
+    "억원 |##",
+    '{"kind":"table"',
+    '"markdown":"',
+)
+_VERSIONED_FILES = {
+    "prompt_version": "service/genos_client.py",
+    "routing_registry_version": "agent_loop/population_specs.py",
+    "claim_policy_version": "orchestrator/claim_policy.py",
+    "surface_policy_version": "orchestrator/surface_policy.py",
+    "answer_contract_version": "orchestrator/answer_contract.py",
+    "render_validator_version": "service/sse_protocol.py",
+}
+
+
+def version_payload() -> dict[str, Any]:
+    """Return runtime provenance that can be exposed through /__version."""
+
+    return {
+        "release_id": _env("JW_CHAT_RELEASE_ID", "RELEASE_ID"),
+        "git_sha": _env("JW_CHAT_GIT_SHA", "GIT_SHA", "COMMIT_SHA"),
+        "image_digest": _env("JW_CHAT_IMAGE_DIGEST", "IMAGE_DIGEST"),
+        "built_at": _env("JW_CHAT_BUILT_AT", "BUILT_AT"),
+        "model_family": os.environ.get("JW_CHAT_MODEL_FAMILY", _MODEL_FAMILY_DEFAULT),
+        "serving_common_router": _serving_id(
+            genos_config.GENOS_SERVING_ID_ENV,
+            genos_config.DEFAULT_GENOS_SERVING_ID,
+        ),
+        "serving_final": _serving_id(
+            genos_config.GENOS_FINAL_SERVING_ID_ENV,
+            genos_config.DEFAULT_GENOS_FINAL_SERVING_ID,
+        ),
+        "serving_planner": _serving_id(
+            genos_config.GENOS_PLANNER_SERVING_ID_ENV,
+            genos_config.DEFAULT_GENOS_PLANNER_SERVING_ID,
+        ),
+        "policy_versions": _policy_versions(),
+    }
+
+
+def trace_envelope(
+    *,
+    question: str,
+    result: Mapping[str, Any],
+    answer: str,
+    charts: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    timing: Mapping[str, Any],
+    conversation_id: str | None,
+) -> dict[str, Any]:
+    """Build request-local trace metadata without changing the public answer body."""
+
+    markdown_response = result.get("markdown_response") if isinstance(result.get("markdown_response"), Mapping) else {}
+    fact_md = _markdown_field(markdown_response, "fact_md") or _markdown_field(markdown_response, "data_md")
+    claim_report = claim_policy_report(answer, fact_md)
+    return {
+        "trace_id": uuid4().hex,
+        "conversation_id": conversation_id,
+        "question": question,
+        "version": version_payload(),
+        "intent": _intent(result),
+        "route": _route(result),
+        "model_stages": {
+            "router_serving_id": _serving_id(genos_config.GENOS_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_SERVING_ID),
+            "final_serving_id": _serving_id(genos_config.GENOS_FINAL_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_FINAL_SERVING_ID),
+            "planner_serving_id": _serving_id(genos_config.GENOS_PLANNER_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_PLANNER_SERVING_ID),
+        },
+        "tools_called": _tools_called(result),
+        "facts_returned": _facts_returned(markdown_response),
+        "facts_surfaced": _facts_surfaced(answer),
+        "answer_contract_status": evaluate_answer_contract(question, answer, markdown_response),
+        "claim_policy_fact_types": claim_report["active_fact_types"],
+        "claim_policy_blocks": claim_report["forbidden_claims_remaining"],
+        "surface_policy_blocks": _surface_policy_blocks(result),
+        "render_status": _render_status(answer),
+        "ungrounded_numeric_spans": _ungrounded_numbers(answer, markdown_response),
+        "token_usage": {
+            "available": False,
+            "reason": "GenOS streaming responses are currently parsed as deltas only; usage is not retained in genos_client._stream_chat.",
+        },
+        "chart_count": len(charts),
+        "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
+    }
+
+
+def _env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return _UNKNOWN
+
+
+def _serving_id(env_name: str, default: str) -> str:
+    return os.environ.get(env_name) or os.environ.get(genos_config.GENOS_SERVING_ID_ENV) or default
+
+
+def _policy_versions() -> dict[str, str]:
+    return {name: _source_hash(relative_path) for name, relative_path in _VERSIONED_FILES.items()}
+
+
+def _source_hash(relative_path: str) -> str:
+    root = Path(__file__).resolve().parents[1]
+    path = root / relative_path
+    if not path.is_file():
+        return "missing"
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    return f"sha256:{digest}"
+
+
+def _intent(result: Mapping[str, Any]) -> dict[str, Any]:
+    decomposition = result.get("decomposition")
+    if not isinstance(decomposition, list):
+        return {"items": ()}
+    items: list[dict[str, Any]] = []
+    for item in decomposition:
+        if isinstance(item, Mapping):
+            items.append(
+                {
+                    "intent": item.get("intent"),
+                    "status": item.get("status"),
+                    "max_steps": item.get("max_steps"),
+                }
+            )
+    return {"items": tuple(items)}
+
+
+def _route(result: Mapping[str, Any]) -> dict[str, Any]:
+    diagnostics = result.get("router_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        return {"mode": _UNKNOWN}
+    route = {
+        "mode": diagnostics.get("mode", _UNKNOWN),
+        "deterministic_execution": diagnostics.get("deterministic_execution"),
+    }
+    if diagnostics.get("route") is not None:
+        route["route"] = diagnostics.get("route")
+    return route
+
+
+def _tools_called(result: Mapping[str, Any]) -> list[str]:
+    names: list[str] = []
+    tool_calls = result.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return names
+    for call in tool_calls:
+        if isinstance(call, Mapping) and isinstance(call.get("tool"), str):
+            names.append(_public_tool_name(call["tool"]))
+    return names
+
+
+def _public_tool_name(name: str) -> str:
+    if name == "get_market_landscape":
+        return "market_scope"
+    return name
+
+
+def _facts_returned(markdown_response: Mapping[str, Any]) -> dict[str, Any]:
+    fact_md = _markdown_field(markdown_response, "fact_md")
+    data_md = _markdown_field(markdown_response, "data_md")
+    evidence = markdown_response.get("evidence")
+    return {
+        "fact_md_chars": len(fact_md),
+        "data_md_chars": len(data_md),
+        "fact_table_count": fact_md.count("\n|"),
+        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+    }
+
+
+def _facts_surfaced(answer: str) -> dict[str, Any]:
+    return {
+        "answer_chars": len(answer),
+        "table_count": answer.count("\n|"),
+        "numeric_token_count": len(number_tokens(answer)),
+    }
+
+
+def _surface_policy_blocks(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    blocks: list[dict[str, Any]] = []
+    for call in result.get("tool_calls", []) if isinstance(result.get("tool_calls"), list) else []:
+        if not isinstance(call, Mapping):
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, Mapping):
+            continue
+        policy = data.get("surface_policy")
+        if isinstance(policy, Mapping):
+            for key, value in policy.items():
+                blocks.append({"tool": call.get("tool"), "field": key, "status": value})
+    return tuple(blocks)
+
+
+def _render_status(answer: str) -> dict[str, Any]:
+    issues = [f"sentinel:{marker}" for marker in _BROKEN_RENDER_SENTINELS if marker in answer]
+    issues.extend(_table_cell_count_issues(answer))
+    return {"status": "pass" if not issues else "fail", "issues": tuple(issues)}
+
+
+def _table_cell_count_issues(answer: str) -> list[str]:
+    issues: list[str] = []
+    lines = answer.replace("\r\n", "\n").splitlines()
+    index = 0
+    while index < len(lines):
+        if _is_table_start(lines, index):
+            expected = _cell_count(lines[index])
+            row_index = index + 1
+            while row_index < len(lines) and _is_table_row(lines[row_index]):
+                current = _cell_count(lines[row_index])
+                if current != expected:
+                    issues.append(f"table_cell_count:line={row_index + 1}:expected={expected}:actual={current}")
+                row_index += 1
+            index = row_index
+            continue
+        index += 1
+    return issues
+
+
+def _is_table_start(lines: list[str], index: int) -> bool:
+    return _is_table_row(lines[index]) and index + 1 < len(lines) and set(lines[index + 1].replace("|", "").strip()) <= {"-", ":", " "}
+
+
+def _is_table_row(line: str) -> bool:
+    return line.lstrip().startswith("|")
+
+
+def _cell_count(line: str) -> int:
+    stripped = line.strip().strip("|")
+    if not stripped:
+        return 0
+    return len(stripped.split("|"))
+
+
+def _ungrounded_numbers(answer: str, markdown_response: Mapping[str, Any]) -> tuple[str, ...]:
+    allowed = markdown_response.get("allowed_numbers")
+    if not isinstance(allowed, (list, tuple)):
+        return ()
+    allowed_set = {str(item) for item in allowed}
+    return tuple(sorted(token for token in number_tokens(answer) if token not in allowed_set))
+
+
+def _markdown_field(markdown_response: Mapping[str, Any], field: str) -> str:
+    value = markdown_response.get(field)
+    return value if isinstance(value, str) else ""

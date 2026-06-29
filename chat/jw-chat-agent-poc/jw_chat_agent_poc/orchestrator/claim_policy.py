@@ -104,6 +104,23 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
     return revised
 
 
+def claim_policy_report(answer: str, fact_md: str) -> dict[str, tuple[str, ...]]:
+    """Report active fact types and forbidden claims still present after policy application."""
+
+    body, _sources = _split_sources(answer)
+    active_fact_types = _active_fact_types(body, fact_md)
+    remaining: list[str] = []
+    for fact_type in active_fact_types:
+        for claim_type in FORBIDDEN_BY_FACT_TYPE.get(fact_type, ()):
+            pattern = _FORBIDDEN_PATTERNS_BY_CLAIM[claim_type]
+            if pattern.search(body):
+                remaining.append(claim_type)
+    return {
+        "active_fact_types": active_fact_types,
+        "forbidden_claims_remaining": tuple(dict.fromkeys(remaining)),
+    }
+
+
 def _is_channel_cross_section(fact_md: str) -> bool:
     if _CHANNEL_FACT_RE.search(fact_md):
         return True

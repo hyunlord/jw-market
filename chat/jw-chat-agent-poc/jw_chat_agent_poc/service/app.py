@@ -28,6 +28,7 @@ from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatRequest, HealthResponse
+from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.common.timing import ensure_timing, finish, stage
 from jw_chat_agent_poc.tools.metrics.market_scope import (
@@ -76,6 +77,10 @@ def create_app(
     @app.get("/healthz", response_model=HealthResponse)
     def healthz() -> HealthResponse:
         return HealthResponse(status="ok")
+
+    @app.get("/__version")
+    def version() -> dict:
+        return version_payload()
 
     @app.post("/chat", response_model=ChatAccepted)
     def chat(request: ChatRequest) -> ChatAccepted:
@@ -366,6 +371,17 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
     if charts:
         yield _sse_json_event("charts", charts)
     yield _sse_json_event("timing", timing_payload)
+    yield _sse_json_event(
+        "trace",
+        trace_envelope(
+            question=question,
+            result=result,
+            answer=safe_answer,
+            charts=charts,
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        ),
+    )
     yield "event: done\ndata: ok\n\n"
 
 

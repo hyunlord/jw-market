@@ -74,6 +74,44 @@ def enforce_answer_contract(question: str, answer: str, markdown_response: Mappi
     return answer
 
 
+def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the contract status for trace metadata without mutating the answer."""
+
+    intent = _intent(question)
+    if intent is None:
+        return {"intent": None, "status": "not_applicable"}
+    rule = ANSWER_CONTRACT[intent]
+    fact_md = _fact_markdown(markdown_response)
+    if not fact_md:
+        return {"intent": intent, "status": "missing_fact_set", "required_facts": rule.required_facts}
+    if intent == "ranking":
+        fact = _ranking_fact(fact_md)
+        if fact is None:
+            return {"intent": intent, "status": "missing_required_fact", "required_facts": rule.required_facts}
+        return {
+            "intent": intent,
+            "status": "pass" if _ranking_surface_ok(answer, fact, rule) else "surface_missing",
+            "required_facts": rule.required_facts,
+            "required_claims": rule.required_claims,
+            "forbidden_outputs": tuple(item for item in rule.forbidden_outputs if item in answer),
+        }
+    if intent == "trend":
+        fact = _trend_fact(fact_md)
+        if fact is None:
+            return {"intent": intent, "status": "missing_required_fact", "required_facts": rule.required_facts}
+        if len(fact.rows) < rule.min_rows:
+            return {"intent": intent, "status": "insufficient_rows", "min_rows": rule.min_rows, "row_count": len(fact.rows)}
+        return {
+            "intent": intent,
+            "status": "pass" if _trend_surface_ok(answer, fact, rule) else "surface_missing",
+            "required_facts": rule.required_facts,
+            "required_tables": rule.required_tables,
+            "required_claims": rule.required_claims,
+            "row_count": len(fact.rows),
+        }
+    return {"intent": intent, "status": "not_evaluated"}
+
+
 @dataclass(frozen=True, slots=True)
 class RankingFact:
     brand: str

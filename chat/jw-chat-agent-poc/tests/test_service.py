@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import requests
 from types import SimpleNamespace
@@ -162,7 +163,35 @@ def test_create_app_exposes_chat_routes() -> None:
 
     assert "/chat" in paths
     assert "/chat/stream" in paths
+    assert "/__version" in paths
     assert "/healthz" in paths
+
+
+def test_version_endpoint_reports_runtime_and_policy_provenance(monkeypatch) -> None:
+    monkeypatch.setenv("JW_CHAT_RELEASE_ID", "release-test")
+    monkeypatch.setenv("JW_CHAT_GIT_SHA", "abc123")
+    monkeypatch.setenv("JW_CHAT_IMAGE_DIGEST", "sha256:test")
+    monkeypatch.setenv("JW_CHAT_BUILT_AT", "2026-06-29T00:00:00Z")
+    monkeypatch.setenv("GENOS_SERVING_ID", "517")
+    monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "514")
+    monkeypatch.setenv("GENOS_PLANNER_SERVING_ID", "508")
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/__version")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["release_id"] == "release-test"
+    assert payload["git_sha"] == "abc123"
+    assert payload["image_digest"] == "sha256:test"
+    assert payload["model_family"] == "gemini-3-flash-preview"
+    assert payload["serving_common_router"] == "517"
+    assert payload["serving_final"] == "514"
+    assert payload["serving_planner"] == "508"
+    assert payload["policy_versions"]["claim_policy_version"].startswith("sha256:")
+    assert payload["policy_versions"]["answer_contract_version"].startswith("sha256:")
+    assert payload["policy_versions"]["routing_registry_version"].startswith("sha256:")
 
 
 def test_static_frontend_root_serves_same_origin_index() -> None:
@@ -411,6 +440,65 @@ def test_stream_endpoint_does_not_emit_charts_for_single_metric(monkeypatch) -> 
     assert "event: delta" in response.text
     assert "event: charts" not in response.text
     assert "event: done" in response.text
+
+
+def test_stream_endpoint_emits_trace_metadata_without_changing_answer(monkeypatch) -> None:
+    class TraceAgent:
+        def __init__(self, *, external_mode: str = "live") -> None:
+            self.external_mode = external_mode
+
+        def answer(self, _question: str, _documents=None) -> dict:
+            return {
+                "answer": "fallback",
+                "sources": ["cache"],
+                "router_diagnostics": {"mode": "agent_loop"},
+                "decomposition": [{"intent": "agent_loop", "status": "ok"}],
+                "tool_calls": [
+                    {
+                        "tool": "get_brand_metric",
+                        "source": "cache",
+                        "render_data": {
+                            "brand": "리바로",
+                            "metric": "market_share",
+                            "period": "2026-04",
+                            "sales_억원": 84.93,
+                            "ms_recent_pct": 3.76,
+                            "rank": 6,
+                            "total_brands_in_market": 470,
+                        },
+                    }
+                ],
+                "markdown_response": {
+                    "fact_md": (
+                        "## 확정 fact set\n\n"
+                        "### 필수 답변 fact\n\n"
+                        "| 항목 | 값 |\n"
+                        "| --- | --- |\n"
+                        "| 브랜드 핵심 지표 | 리바로 2026-04 매출 84.93억원 시장점유율 3.76% 순위 6/470 |"
+                    ),
+                    "sources_md": "## 출처\n\n- 데이터: UBIST (2026-04)",
+                },
+            }
+
+    def stream_answer(_self, _question, _result):
+        yield "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/470위입니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    app = create_app(agent_factory=lambda external_mode="live": TraceAgent(external_mode=external_mode))
+    client = TestClient(app)
+
+    response = client.get("/chat/stream", params={"question": "리바로 순위 알려줘"})
+
+    assert response.status_code == 200
+    assert "리바로는 2026-04 기준 매출 84.93억원" in response.text
+    trace_blocks = [block for block in response.text.split("\n\n") if block.startswith("event: trace\n")]
+    assert len(trace_blocks) == 1
+    trace = json.loads(trace_blocks[0].split("data: ", 1)[1])
+    assert trace["route"]["mode"] == "agent_loop"
+    assert trace["tools_called"] == ["get_brand_metric"]
+    assert trace["answer_contract_status"]["intent"] == "ranking"
+    assert trace["answer_contract_status"]["status"] == "pass"
+    assert trace["token_usage"]["available"] is False
 
 
 def test_stream_endpoint_emits_series_chart_from_verified_facts(monkeypatch) -> None:
