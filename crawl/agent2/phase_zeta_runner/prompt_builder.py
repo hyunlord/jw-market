@@ -76,4 +76,9 @@ available: {bool(forecast.get("available", False))}
 각 stage의 body는 6문장 이상 9문장 이하로 작성하고, 9문장 초과는 금지합니다. bullets는 4개를 유지하세요.
 prediction stage는 forecast_simulation.available=true이면 1년/3년/5년 전망을 모두 명시하고, bundle의 horizon_1y/horizon_3y/horizon_5y 값을 각각 반영하세요.
 95% 신뢰구간 등 CI 수치는 단독 bullet로 분리하지 말고, 해당 예측값과 같은 문장/field에 두어 compact tag(예: ML·UBIST·매출·2029-03)가 동반되게 작성하세요.
+prediction evidence는 FULL_BUNDLE_JSON_FOR_FORMATTER 안에 실제로 존재하는 source event 또는 forecast_simulation 수치 basis만 사용하세요. bundle에 없는 근거 제목, news_id, 시뮬레이션명을 새로 만들지 마세요.
+prediction stage에서는 forecast_simulation 수치, CI, 불확실성만 서술하세요. 임상/뉴스/급여/허가/출시/경쟁사/약가/정책 등 사건성 해석은 cause 또는 recommendation에 두고, prediction에서 그런 표현을 쓰는 경우에는 반드시 bundle의 실제 event를 prediction.evidence에 함께 넣으세요.
+forecast_simulation 수치는 bundle의 raw value와 단위를 그대로 사용하세요. 원 단위를 억/만/k/M 등으로 환산하거나 IQVIA 수량 단위를 임의로 KRW처럼 바꾸지 마세요.
+bundle 수치가 음수인 qoq_pct/yoy_pct/growth 계열 비율은 출력에서도 반드시 '-' 부호를 보존하세요. 감소/하락 문맥이라도 양수처럼 쓰지 말고, 부호가 확실하지 않으면 그 수치를 사용하지 마세요.
+prediction.evidence의 numeric basis는 본문에 쓴 forecast_simulation 또는 market_views의 실제 수치를 그대로 복사한 경우에만 넣으세요. 정확한 bundle 수치 basis를 못 고르면 generic '수치 근거'나 가공 숫자를 만들지 말고 evidence를 빈 배열로 두세요.
 """

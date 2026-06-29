@@ -10,6 +10,7 @@ and persist to zeta_analysis_runs/outputs, but it does not swap live cache.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -27,14 +28,15 @@ if str(PHASE_ZETA_ROOT) not in sys.path:
 
 from bundle_builder import BundleConfig, build_brand_bundle
 from bundle_builder.hash_util import compute_bundle_hash
-from phase_zeta_runner.config import RunnerConfig
+from phase_zeta_runner.config import RunnerConfig, ValidatorConfig
 from phase_zeta_runner.llm_runner import call_llm
 from phase_zeta_runner.output_composer import compose_and_persist
+from phase_zeta_runner.post_llm_repair import repair_post_llm_output
 from phase_zeta_runner.run_pipeline import FullValidationResult, run_full_validation
 
 
 STAGES = ("phenomenon", "cause", "prediction", "recommendation")
-DEFAULT_FORMATTER_VERSION = "wf217-order2-v10.3"
+DEFAULT_FORMATTER_VERSION = "wf217-order2-v10.4-repair"
 DEFAULT_WORKFLOW_REVISION_ID = 3727
 DUAL_SOURCE_BRANDS = frozenset({"가드렛", "가드메트", "엔커버"})
 
@@ -226,6 +228,8 @@ class Agent2RegenOrchestrator:
         formatter_version: str,
         run_store: JsonRunStore,
         ports: DependencyPorts,
+        repair_validator_config: ValidatorConfig | None = None,
+        failure_artifact_dir: Path | None = None,
         dry_run: bool = True,
         fail_threshold: int = 5,
     ):
@@ -233,6 +237,8 @@ class Agent2RegenOrchestrator:
         self.formatter_version = formatter_version
         self.run_store = run_store
         self.ports = ports
+        self.repair_validator_config = repair_validator_config or RunnerConfig.default_for_tests().validator
+        self.failure_artifact_dir = failure_artifact_dir or (self.run_store.path.parent / "failure_diagnostics")
         self.dry_run = dry_run
         self.fail_threshold = fail_threshold
 
@@ -289,11 +295,34 @@ class Agent2RegenOrchestrator:
 
             llm_result = self.ports.call_llm(bundle)
             if not llm_result.success:
-                return self._record_failure(brand, idempotency_key, bundle_hash, "llm_failed", llm_result.error)
+                artifact_paths = self._write_failure_artifacts(
+                    brand=brand,
+                    reason="llm_failed",
+                    bundle=bundle,
+                    llm_result=llm_result,
+                    parsed_before_repair=None,
+                    repair=None,
+                    formatter=None,
+                    validation=None,
+                )
+                return self._record_failure(brand, idempotency_key, bundle_hash, "llm_failed", llm_result.error, artifact_paths)
 
+            parsed_before_repair = copy.deepcopy(llm_result.parsed_output)
+            repair = repair_post_llm_output(llm_result.parsed_output, bundle, self.repair_validator_config)
+            llm_result.parsed_output = repair.parsed_output
             formatter = validate_formatter_contract(llm_result.parsed_output, brand)
             validation = self.ports.validate(llm_result.parsed_output, bundle)
             if not formatter.valid or not validation.valid:
+                artifact_paths = self._write_failure_artifacts(
+                    brand=brand,
+                    reason="validation_failed",
+                    bundle=bundle,
+                    llm_result=llm_result,
+                    parsed_before_repair=parsed_before_repair,
+                    repair=repair.to_dict(),
+                    formatter=formatter.to_dict(),
+                    validation=validation,
+                )
                 return self._record_failure(
                     brand,
                     idempotency_key,
@@ -302,7 +331,9 @@ class Agent2RegenOrchestrator:
                     {
                         "formatter": formatter.to_dict(),
                         "validation": validation.summary,
+                        "offending": _summarize_offending(validation.details),
                     },
+                    artifact_paths,
                 )
 
             composition = self.ports.compose(brand, bundle, llm_result, validation)
@@ -319,6 +350,7 @@ class Agent2RegenOrchestrator:
                 "retry_count": llm_result.retry_count,
                 "validation_summary": validation.summary,
                 "formatter_summary": formatter.summary,
+                "repair_summary": repair.to_dict(),
                 "composition": composition,
                 "started_at": started_at,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -329,12 +361,60 @@ class Agent2RegenOrchestrator:
             synthetic_key = compute_idempotency_key(brand, "bundle_hash_unavailable", self.workflow_revision_id, self.formatter_version)
             return self._record_failure(brand, synthetic_key, "bundle_hash_unavailable", "exception", f"{type(exc).__name__}: {exc}")
 
-    def _record_failure(self, brand: str, idempotency_key: str, bundle_hash: str, reason: str, detail: Any) -> dict[str, Any]:
+    def _write_failure_artifacts(
+        self,
+        *,
+        brand: str,
+        reason: str,
+        bundle: dict[str, Any],
+        llm_result: LLMCallResult | None,
+        parsed_before_repair: dict[str, Any] | None,
+        repair: dict[str, Any] | None,
+        formatter: dict[str, Any] | None,
+        validation: ValidationOutcome | None,
+    ) -> dict[str, str]:
+        safe_brand = re.sub(r"[^0-9A-Za-z가-힣_.-]+", "_", brand)
+        base_dir = self.failure_artifact_dir / safe_brand
+        paths: dict[str, str] = {}
+
+        def write(name: str, payload: Any) -> None:
+            path = base_dir / name
+            _write_json(path, payload)
+            paths[name.rsplit(".", 1)[0]] = str(path)
+
+        write("raw_response.json", {"raw_response": llm_result.raw_response if llm_result else ""})
+        write("parsed_before_repair.json", parsed_before_repair or (llm_result.parsed_output if llm_result else {}))
+        write("parsed_after_repair.json", llm_result.parsed_output if llm_result else {})
+        write("repair.json", repair or {})
+        write("formatter.json", formatter or {})
+        write("validation.json", validation.details if validation else {})
+        write(
+            "failure_summary.json",
+            {
+                "brand": brand,
+                "reason": reason,
+                "formatter_valid": formatter.get("valid") if isinstance(formatter, dict) else None,
+                "validation_summary": validation.summary if validation else {},
+                "offending": _summarize_offending(validation.details if validation else {}),
+            },
+        )
+        return paths
+
+    def _record_failure(
+        self,
+        brand: str,
+        idempotency_key: str,
+        bundle_hash: str,
+        reason: str,
+        detail: Any,
+        artifact_paths: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         record = {
             "brand": brand,
             "status": "failed",
             "reason": reason,
             "detail": detail,
+            "failure_artifacts": artifact_paths or {},
             "idempotency_key": idempotency_key,
             "bundle_hash": bundle_hash,
             "workflow_revision_id": self.workflow_revision_id,
@@ -449,6 +529,31 @@ def _load_brand_list(db_conn: Any, fallback: Iterable[str]) -> list[str]:
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json_dumps(payload) + "\n", encoding="utf-8")
+
+
+def _summarize_offending(validation_details: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return concise validator failures for manifests while full details stay on disk."""
+
+    if not isinstance(validation_details, dict):
+        return []
+    layer1 = validation_details.get("layers", {}).get("layer1_metric_validator", {})
+    unmatched = layer1.get("unmatched_numbers")
+    if unmatched is None:
+        unmatched = validation_details.get("unmatched_numbers", [])
+    summary: list[dict[str, Any]] = []
+    for item in unmatched or []:
+        summary.append(
+            {
+                "stage": item.get("stage"),
+                "context": item.get("context"),
+                "value": item.get("value"),
+                "raw_text": item.get("raw_text"),
+                "number_type": item.get("number_type"),
+                "matched_path": item.get("matched_path"),
+                "context_excerpt": str(item.get("context_text", ""))[:240],
+            }
+        )
+    return summary
 
 
 def make_real_ports(
@@ -583,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
             formatter_version=args.formatter_version,
             run_store=JsonRunStore(work_dir / "idempotency_manifest.json"),
             ports=ports,
+            repair_validator_config=runner_config.validator,
             dry_run=dry_run,
             fail_threshold=args.fail_threshold,
         )

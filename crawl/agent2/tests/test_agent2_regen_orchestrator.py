@@ -117,6 +117,119 @@ def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_pa
     assert second["swap_plan"]["mode"] == "dry-run"
 
 
+def test_orchestrator_repairs_zero_decimal_units_before_formatter_and_validator(tmp_path):
+    seen = {"validate_body": "", "compose_body": ""}
+
+    def build_bundle(brand: str):
+        return {
+            "bundle_meta": {"bundle_hash": "sha256:repair", "brand": brand},
+            "brand_context": {"brand_name": brand},
+            "market_views": [],
+        }
+
+    def call_llm(bundle):
+        return LLMCallResult(
+            success=True,
+            parsed_output=_parsed("매출은 1,234.0원(ML·UBIST·매출·2026-04)입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다."),
+            raw_response=json.dumps({"ok": True}),
+            tokens_in=1,
+            tokens_out=2,
+            duration_sec=0.1,
+            model_version="genos_workflow_217",
+            retry_count=0,
+            error=None,
+        )
+
+    def validate(parsed_output, bundle):
+        seen["validate_body"] = parsed_output["phenomenon"]["body"]
+        return ValidationOutcome(valid=True, summary={"verdict": "PASS"}, details={})
+
+    def compose(brand, bundle, llm_result, validation):
+        seen["compose_body"] = llm_result.parsed_output["phenomenon"]["body"]
+        return {"run_id": 1, "status": "ok", "cache_updated": False}
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle=build_bundle, call_llm=call_llm, validate=validate, compose=compose),
+        dry_run=True,
+    )
+
+    result = orchestrator.run(["리바로젯"])
+
+    assert result["brands"]["리바로젯"]["status"] == "validated"
+    assert "1,234원(ML·UBIST·매출·2026-04)" in seen["validate_body"]
+    assert "1,234원(ML·UBIST·매출·2026-04)" in seen["compose_body"]
+    assert result["brands"]["리바로젯"]["repair_summary"]["changes"][0]["type"] == "zero_decimal_unit"
+
+
+def test_orchestrator_writes_failure_artifacts_for_validation_failures(tmp_path):
+    def build_bundle(brand: str):
+        return {
+            "bundle_meta": {"bundle_hash": "sha256:failure", "brand": brand},
+            "brand_context": {"brand_name": brand},
+            "market_views": [],
+        }
+
+    def call_llm(bundle):
+        return LLMCallResult(
+            success=True,
+            parsed_output=_parsed("근거 없는 수치 99.9%(ML·UBIST·매출·2026-04)입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다."),
+            raw_response=json.dumps({"raw": "response"}),
+            tokens_in=1,
+            tokens_out=2,
+            duration_sec=0.1,
+            model_version="genos_workflow_217",
+            retry_count=0,
+            error=None,
+        )
+
+    def validate(parsed_output, bundle):
+        return ValidationOutcome(
+            valid=False,
+            summary={"layer1_valid": False, "verdict": "FAIL"},
+            details={
+                "layers": {
+                    "layer1_metric_validator": {
+                        "unmatched_numbers": [
+                            {
+                                "stage": "phenomenon",
+                                "context": "body",
+                                "value": 99.9,
+                                "raw_text": "99.9%",
+                                "number_type": "percent",
+                                "matched_path": None,
+                                "context_text": "근거 없는 수치 99.9%",
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    def compose(brand, bundle, llm_result, validation):
+        raise AssertionError("compose must not run for validation failures")
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle=build_bundle, call_llm=call_llm, validate=validate, compose=compose),
+        dry_run=True,
+    )
+
+    result = orchestrator.run(["리바로하이"])
+    record = result["brands"]["리바로하이"]
+
+    assert record["status"] == "failed"
+    assert record["detail"]["offending"][0]["raw_text"] == "99.9%"
+    artifacts = record["failure_artifacts"]
+    for key in ("raw_response", "parsed_before_repair", "parsed_after_repair", "validation", "failure_summary"):
+        assert artifacts[key]
+        assert (tmp_path / "failure_diagnostics" / "리바로하이" / f"{key}.json").exists()
+
+
 def test_upstream_freshness_requires_cache_tables_but_allows_missing_mart_tables():
     class Cursor:
         def __init__(self):
