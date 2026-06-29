@@ -415,6 +415,79 @@ def test_strategic_resolver_requires_view_specific_market_id() -> None:
         raise AssertionError("strategic market_landscape accepted a missing ml_id")
 
 
+def test_dynamic_route_resolves_brand_only_market_landscape_from_catalog(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStrategicResolver:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def resolve(self, **kwargs: object) -> MarketDefinition:
+            captured.update(kwargs)
+            return MarketDefinition(
+                view="strategic_ml",
+                filter_echo={"view": "strategic_ml", "ml_id": kwargs["ml_id"]},
+                source="ubist",
+                measure="sales",
+                strategic_market_kind="ml",
+                strategic_market_id=str(kwargs["ml_id"]),
+            )
+
+    monkeypatch.setattr(dynamic_market_route, "StrategicViewResolver", FakeStrategicResolver)
+    payload = DynamicMarketRequest.model_validate(
+        {
+            "filters": {
+                "view_kind": "market_landscape",
+                "focus_brand_key": "리바로",
+            },
+            "source": "ubist",
+            "measure": "sales",
+        }
+    )
+
+    definition = dynamic_market_route._resolve_definition(payload)
+
+    assert captured["ml_id"] == "ml_006"
+    assert definition.strategic_market_id == "ml_006"
+
+
+def test_dynamic_route_keeps_explicit_market_id_ahead_of_catalog(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStrategicResolver:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def resolve(self, **kwargs: object) -> MarketDefinition:
+            captured.update(kwargs)
+            return MarketDefinition(
+                view="strategic_ml",
+                filter_echo={"view": "strategic_ml", "ml_id": kwargs["ml_id"]},
+                source="ubist",
+                measure="sales",
+                strategic_market_kind="ml",
+                strategic_market_id=str(kwargs["ml_id"]),
+            )
+
+    monkeypatch.setattr(dynamic_market_route, "StrategicViewResolver", FakeStrategicResolver)
+    payload = DynamicMarketRequest.model_validate(
+        {
+            "filters": {
+                "view_kind": "market_landscape",
+                "ml_id": "ml_005",
+                "focus_brand_key": "리바로",
+            },
+            "source": "ubist",
+            "measure": "sales",
+        }
+    )
+
+    definition = dynamic_market_route._resolve_definition(payload)
+
+    assert captured["ml_id"] == "ml_005"
+    assert definition.strategic_market_id == "ml_005"
+
+
 def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) -> None:
     calls: list[str] = []
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
@@ -11,7 +12,7 @@ from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.filter_options import build_brand_option_check, build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
 
 
 router = APIRouter()
@@ -48,10 +49,11 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
 def _resolve_definition(payload: DynamicMarketRequest):
     filters = payload.filters
     analysis_level = filters.analysis_level.model_dump()
+    resolved_ml_id = _resolve_catalog_ml_id(filters)
     if filters.view_kind or filters.ml_id or filters.cd_market_id:
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
             view_kind=filters.view_kind,
-            ml_id=filters.ml_id,
+            ml_id=resolved_ml_id,
             cd_market_id=filters.cd_market_id,
             atc4=filters.atc4,
             molecule=filters.molecule,
@@ -68,6 +70,25 @@ def _resolve_definition(payload: DynamicMarketRequest):
         source=payload.source,
         measure=payload.measure,
     )
+
+
+def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
+    """Resolve strategic ML markets from the catalog only when callers omit ``ml_id``.
+
+    Existing explicit market ids stay authoritative.  Competitive-dynamics
+    requests are intentionally not inferred because the display catalog carries
+    the strategic ML id, not a CD market id.
+    """
+
+    if filters.ml_id or filters.cd_market_id or not filters.focus_brand_key:
+        return filters.ml_id
+    view_kind = (filters.view_kind or "").strip().lower()
+    if view_kind not in {"market_landscape", "strategic_ml", "ml"}:
+        return filters.ml_id
+    display_brand = get_display_brand(filters.focus_brand_key.strip())
+    if display_brand is None:
+        return filters.ml_id
+    return display_brand.ml_id
 
 
 @router.get("/api/dynamic-market/filter-options")
