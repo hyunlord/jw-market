@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesAmbiguousMarketError,
@@ -22,77 +21,17 @@ from pipeline.scripts.api.brand_activity_topics import (
     get_topic_payload,
     list_topic_payloads,
 )
+from pipeline.scripts.api.models.brand_activity import (
+    BrandActivityInterestRxRequest,
+    BrandActivityTopicsRequest,
+    CsdTimeseriesRequest,
+)
 
 
 router = APIRouter()
 
 
-class CsdTimeseriesWindow(BaseModel):
-    """Optional inclusive quarter window for Brand Activity CSD timeseries."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    start: str | None = None
-    end: str | None = None
-
-
-class CsdTimeseriesRequest(BaseModel):
-    """Request body for the Brand Activity integrated CSD timeseries route."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    view: str
-    market_id: str | None = None
-    selected_brand: str
-    filters: dict[str, JsonValue] = Field(default_factory=dict)
-    filter: dict[str, JsonValue] = Field(default_factory=dict)
-    mode: str = "absolute"
-    window: CsdTimeseriesWindow | None = None
-
-
-class BrandActivityTopicsRequest(BaseModel):
-    """Request body for the filtered Brand Activity topic route."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    view: str
-    market_id: str | None = None
-    selected_brand: str
-    filters: dict[str, JsonValue] = Field(default_factory=dict)
-    filter: dict[str, JsonValue] = Field(default_factory=dict)
-    visit_location: str = "전체"
-    specialty: str = "전체"
-    top_n: int = Field(default=5, ge=1, le=10)
-
-
-class InterestRxWeights(BaseModel):
-    """Optional score-weight overrides for interest/Rx matrix axes."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    interest: dict[str, float] = Field(default_factory=dict)
-    rx_frequency: dict[str, float] = Field(default_factory=dict)
-    prescription_evolution: dict[str, float] = Field(default_factory=dict)
-
-
-class BrandActivityInterestRxRequest(BaseModel):
-    """Request body for the Brand Activity interest/Rx matrix route."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    view: str
-    market_id: str | None = None
-    selected_brand: str
-    filters: dict[str, JsonValue] = Field(default_factory=dict)
-    filter: dict[str, JsonValue] = Field(default_factory=dict)
-    visit_location: str = "전체"
-    specialty: str = "전체"
-    period_start: str | None = None
-    period_end: str | None = None
-    weights: InterestRxWeights | None = None
-
-
-@router.get("/api/brand-activity/topics")
+@router.get("/api/brand-activity/topics", include_in_schema=False)
 def brand_activity_topics() -> dict[str, JsonValue]:
     """Return all Brand Activity topic market payloads."""
     try:
@@ -101,7 +40,7 @@ def brand_activity_topics() -> dict[str, JsonValue]:
         raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
 
 
-@router.get("/api/brand-activity/topics/{scope_id}")
+@router.get("/api/brand-activity/topics/{scope_id}", include_in_schema=False)
 def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
     """Return one Brand Activity topic market payload."""
     try:
@@ -156,13 +95,30 @@ def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -
     return {"data": result}
 
 
-def _service_payload(payload: BaseModel) -> dict[str, JsonValue]:
+def _service_payload(payload: CsdTimeseriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
     """Normalize mock v0.1.7 `filters` while preserving legacy `filter` input."""
 
     data = payload.model_dump()
-    filters = data.get("filters") if isinstance(data.get("filters"), dict) else {}
-    legacy_filter = data.get("filter") if isinstance(data.get("filter"), dict) else {}
+    filters = _compact_filter(data.get("filters")) if isinstance(data.get("filters"), dict) else {}
+    legacy_filter = _compact_filter(data.get("filter")) if isinstance(data.get("filter"), dict) else {}
     normalized = filters or legacy_filter
     data["filters"] = normalized
     data["filter"] = normalized
     return data
+
+
+def _compact_filter(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    compacted: dict[str, JsonValue] = {}
+    for key, item in value.items():
+        compacted_item = _compact_value(item)
+        if compacted_item not in ({}, [], None):
+            compacted[key] = compacted_item
+    return compacted
+
+
+def _compact_value(value: JsonValue) -> JsonValue:
+    if isinstance(value, dict):
+        return _compact_filter(value)
+    if isinstance(value, list):
+        return [item for item in (_compact_value(item) for item in value) if item not in ({}, [], None)]
+    return value

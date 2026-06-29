@@ -9,7 +9,7 @@ from pipeline.scripts.api import db
 router = APIRouter()
 
 
-@router.get("/api/health")
+@router.get("/api/health", include_in_schema=False)
 def health() -> dict:
     brands = db.fetch_one("SELECT JSON_LENGTH(response_json) AS c FROM cache_brands WHERE query_key='default'")
     market_status = db.fetch_one(
