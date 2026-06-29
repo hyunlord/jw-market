@@ -255,11 +255,23 @@
           sources.append(tag);
         });
       });
-      source.addEventListener("delta", (event) => {
-        if (!isActiveStream(source, streamId) || streamCompleted) return;
-        rawAnswer += event.data;
+      const appendMarkdown = (markdown) => {
+        rawAnswer += markdown;
         renderActiveAnswer(rawAnswer);
         scrollConversationToBottom();
+      };
+      source.addEventListener("delta", (event) => {
+        if (!isActiveStream(source, streamId) || streamCompleted) return;
+        appendMarkdown(event.data);
+      });
+      source.addEventListener("markdown_block", (event) => {
+        if (!isActiveStream(source, streamId) || streamCompleted) return;
+        try {
+          const payload = JSON.parse(event.data || "{}");
+          appendMarkdown(payload.markdown || "");
+        } catch {
+          appendMarkdown("");
+        }
       });
       source.addEventListener("charts", (event) => {
         if (!isActiveStream(source, streamId) || streamCompleted) return;

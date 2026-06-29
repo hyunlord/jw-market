@@ -23,7 +23,9 @@ def test_frontend_renders_charts_as_optional_layer() -> None:
     assert 'source.addEventListener("charts"' in html
     assert "function renderCharts" in html
     assert "if (!window.Chart)" in html
-    assert "rawAnswer += event.data" in html
+    assert "rawAnswer += markdown" in html
+    assert 'source.addEventListener("markdown_block"' in html
+    assert "appendMarkdown(event.data)" in html
     assert 'const externalMode = queryParams.get("external_mode") || "live"' in html
     assert "external_mode=${encodeURIComponent(externalMode)}" in html
 

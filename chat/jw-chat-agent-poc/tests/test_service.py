@@ -10,8 +10,9 @@ from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBui
 from jw_chat_agent_poc.service.answer_safety import chunk_text
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
-from jw_chat_agent_poc.service.app import SessionStore, _append_timing_before_sources, _sse_delta, create_app
+from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, create_app
 from jw_chat_agent_poc.service.conversation import PendingClarification
+from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
@@ -360,17 +361,6 @@ def test_chunked_sse_preserves_period_value_separators() -> None:
     assert "2025-125.14%" not in reconstructed
 
 
-def test_timing_insertion_recognizes_compact_source_heading() -> None:
-    answer = "본문입니다.\n\n##출처\n- 데이터: UBIST"
-    timing = "## 처리 시간\n- 총 소요: 1초"
-
-    revised = _append_timing_before_sources(answer, timing)
-
-    assert "##출처" not in revised
-    assert "## 출처" in revised
-    assert revised.find("## 처리 시간") < revised.find("## 출처")
-
-
 def test_markdown_timeout_fallback_keeps_causal_structure_and_deterministic_sources(monkeypatch) -> None:
     def timeout_chat(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
         raise requests.Timeout("simulated final generation timeout")
@@ -465,7 +455,7 @@ def test_stream_endpoint_emits_series_chart_from_verified_facts(monkeypatch) -> 
     assert "event: done" in response.text
 
 
-def test_stream_endpoint_emits_user_visible_timing(monkeypatch) -> None:
+def test_stream_endpoint_emits_timing_metadata_only(monkeypatch) -> None:
     class TimedAgent:
         def __init__(self, *, external_mode: str = "live") -> None:
             self.external_mode = external_mode
@@ -491,9 +481,14 @@ def test_stream_endpoint_emits_user_visible_timing(monkeypatch) -> None:
     response = client.get("/chat/stream", params={"question": "리바로 매출"})
 
     assert response.status_code == 200
-    assert "## 처리 시간" in response.text
-    assert "| query |" in response.text
     assert "event: timing" in response.text
+    assert '"query"' in response.text
+    answer_events = "\n\n".join(
+        block
+        for block in response.text.split("\n\n")
+        if block.startswith("event: delta\n") or block.startswith("event: markdown_block\n")
+    )
+    assert "## 처리 시간" not in answer_events
     assert "event: done" in response.text
 
 
@@ -527,12 +522,50 @@ def test_stream_endpoint_applies_channel_claim_policy_without_markdown_response(
     assert "event: done" in response.text
 
 
-def test_timing_block_stays_before_deterministic_sources() -> None:
-    answer = "본문\n\n## 출처\n- 데이터: UBIST (2026-04)"
-    result = _append_timing_before_sources(answer, "## 처리 시간\n\n- 총 소요: 1.00초")
+def test_markdown_table_blocks_are_sent_as_atomic_sse_events() -> None:
+    answer = "채널 표입니다.\n\n| 채널 | 매출 |\n| --- | --- |\n| 의원 | 41.93억원 |\n\n요약입니다."
 
-    assert result.index("## 처리 시간") < result.index("## 출처")
-    assert result.rstrip().endswith("- 데이터: UBIST (2026-04)")
+    encoded = "".join(iter_markdown_sse_events(answer))
+
+    assert "event: markdown_block" in encoded
+    assert '"markdown":"\\n\\n| 채널 | 매출 |\\n| --- | --- |\\n| 의원 | 41.93억원 |\\n\\n"' in encoded
+    assert "event: delta\ndata: | 채널" not in encoded
+
+
+def test_stream_endpoint_keeps_timing_out_of_answer_body(monkeypatch) -> None:
+    class TimedAgent:
+        def __init__(self, *, external_mode: str = "live") -> None:
+            self.external_mode = external_mode
+
+        def answer(self, _question: str, _documents=None) -> dict:
+            return {
+                "answer": "리바로 답변입니다.",
+                "sources": ["UBIST"],
+                "tool_calls": [],
+                "timing": {
+                    "started_at_monotonic": 1.0,
+                    "stages": [{"name": "query", "elapsed_ms": 12.34, "detail": "get_metric"}],
+                },
+            }
+
+    def stream_answer(_self, _question, _result):
+        yield "| 항목 | 값 |\n| --- | --- |\n| 매출 | 1억원 |"
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    app = create_app(agent_factory=lambda external_mode="live": TimedAgent(external_mode=external_mode))
+    client = TestClient(app)
+
+    response = client.get("/chat/stream", params={"question": "리바로 매출"})
+
+    assert response.status_code == 200
+    answer_events = "\n\n".join(
+        block
+        for block in response.text.split("\n\n")
+        if block.startswith("event: delta\n") or block.startswith("event: markdown_block\n")
+    )
+    assert "## 처리 시간" not in answer_events
+    assert "event: timing" in response.text
+    assert response.text.count("event: timing") == 1
 
 
 def test_stream_endpoint_emits_user_friendly_source_labels(monkeypatch) -> None:

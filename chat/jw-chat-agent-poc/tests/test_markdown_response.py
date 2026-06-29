@@ -281,7 +281,7 @@ def test_get_disease_stats_facade_reads_nested_hira_patient_counts() -> None:
     assert "| 외래 | I10 | 본태성 고혈압 | 2024 | 3769201 |" in fact_md
 
 
-def test_genos_default_base_url_coerces_existing_env_to_flash(monkeypatch) -> None:
+def test_genos_default_base_url_coerces_existing_env_to_gemini_three_flash(monkeypatch) -> None:
     monkeypatch.setenv("GENOS_BASE_URL", "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163")
     monkeypatch.delenv("GENOS_SERVING_ID", raising=False)
 
@@ -289,22 +289,22 @@ def test_genos_default_base_url_coerces_existing_env_to_flash(monkeypatch) -> No
     router = GenosBQDecomposer(token="dummy-token")
     planner = GenosToolPlanner(token="dummy-token")
 
-    assert client.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/76"
-    assert router.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/76"
-    assert planner.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/76"
+    assert client.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/514"
+    assert router.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/517"
+    assert planner.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/508"
 
 
 def test_genos_scoped_model_envs_allow_mixed_planner_and_final(monkeypatch) -> None:
-    monkeypatch.setenv("GENOS_BASE_URL", "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/76")
+    monkeypatch.setenv("GENOS_BASE_URL", "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/514")
     monkeypatch.setenv("GENOS_PLANNER_SERVING_ID", "163")
-    monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "76")
+    monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "514")
     monkeypatch.setenv("GENOS_PLANNER_BEARER_TOKEN", "planner-token")
     monkeypatch.setenv("GENOS_FINAL_BEARER_TOKEN", "final-token")
 
     client = GenosClient()
     planner = GenosToolPlanner()
 
-    assert client.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/76"
+    assert client.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/514"
     assert client.token == "final-token"
     assert planner.base_url == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163"
     assert planner.token == "planner-token"

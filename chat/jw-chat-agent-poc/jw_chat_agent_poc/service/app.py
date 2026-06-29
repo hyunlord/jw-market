@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from functools import lru_cache
 from collections.abc import Callable
 from pathlib import Path
@@ -20,7 +19,6 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
-    chunk_text,
     cleanup_markdown_answer,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
@@ -29,7 +27,8 @@ from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatRequest, HealthResponse
-from jw_chat_agent_poc.common.timing import ensure_timing, finish, markdown_block, stage
+from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
+from jw_chat_agent_poc.common.timing import ensure_timing, finish, stage
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
     detect_market_scope_intent,
@@ -359,32 +358,13 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
     except Exception:
         charts = []
     timing_payload = finish(timing)
-    safe_answer = cleanup_markdown_answer(_append_timing_before_sources(safe_answer, markdown_block(timing_payload)))
+    safe_answer = cleanup_markdown_answer(safe_answer)
     safe_answer = apply_claim_policy(question, safe_answer, fact_md)
-    for token in chunk_text(safe_answer):
-        yield _sse_delta(token)
+    yield from iter_markdown_sse_events(safe_answer)
     if charts:
         yield _sse_json_event("charts", charts)
     yield _sse_json_event("timing", timing_payload)
     yield "event: done\ndata: ok\n\n"
-
-
-def _append_timing_before_sources(answer: str, timing_markdown: str) -> str:
-    """Keep deterministic source citations as the final answer block."""
-    clean_answer = re.sub(r"(?m)^##\s*출처\s*$", "## 출처", (answer or "").strip())
-    clean_timing = (timing_markdown or "").strip()
-    if not clean_timing:
-        return clean_answer
-    if not clean_answer:
-        return clean_timing
-    matches = tuple(re.finditer(r"(?m)^##\s*출처\s*$", clean_answer))
-    source_index = matches[-1].start() if matches else -1
-    if source_index < 0:
-        return "\n\n".join((clean_answer, clean_timing))
-    before = clean_answer[:source_index].strip()
-    source_block = clean_answer[source_index:].strip()
-    blocks = [block for block in (before, clean_timing, source_block) if block]
-    return "\n\n".join(blocks)
 
 
 def _sse_delta(token: str) -> str:

@@ -198,6 +198,7 @@ def _trace_payload(qid: str, question: str, result: dict[str, Any], parsed: Any)
             "delta_count": parsed.delta_count,
             "done_count": parsed.done_count,
             "error_count": parsed.error_count,
+            "render_issues": parsed.render_issues,
             "sources": parsed.sources,
             "charts": parsed.charts,
         },
@@ -219,14 +220,20 @@ def _diff_question(qid: str, before: Path, after: Path) -> dict[str, Any]:
     fact_check = _fact_equivalent(before_trace, before_sse, after_trace, after_sse)
     answer_number_check = _answer_number_check(before_trace, before_sse, after_trace, after_sse)
     route_check = _route_equivalent(before_trace, after_trace)
+    render_check = not before_sse.render_issues and not after_sse.render_issues
     checks = {
-        "L0_sse": before_sse.error_count == after_sse.error_count == 0 and before_sse.done_count == after_sse.done_count == 1,
+        "L0_sse": before_sse.error_count == after_sse.error_count == 0 and before_sse.done_count == after_sse.done_count == 1 and render_check,
         "L1_route": route_check["pass"],
         "L2_fact": fact_check["pass"],
         "L3_answer": answer_number_check["pass"],
         "L4_numbers": answer_number_check["pass"],
     }
     detail: dict[str, Any] = {}
+    if not render_check:
+        detail["render_issues"] = {
+            "before": before_sse.render_issues,
+            "after": after_sse.render_issues,
+        }
     if not checks["L1_route"]:
         detail["route_diff"] = route_check["detail"]
     elif route_check["detail"]:

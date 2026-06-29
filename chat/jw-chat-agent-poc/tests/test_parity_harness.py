@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts.fact_scoreboard.sse import parse_sse_file
 from scripts.parity_harness import CHANNEL_PARAPHRASE_QUESTIONS, _capture_questions, diff_captures
 
 
@@ -101,3 +102,55 @@ def test_parity_harness_allows_extra_chart_presence_but_checks_common_values(tmp
     report = json.loads((tmp_path / "report_changed" / "parity_report.json").read_text(encoding="utf-8"))
     q01 = next(item for item in report["questions"] if item["qid"] == "Q01")
     assert q01["checks"]["L2_fact"] is False
+
+
+def test_sse_parser_appends_markdown_block_events(tmp_path: Path) -> None:
+    raw = (
+        "event: delta\n"
+        "data: 채널 표입니다.\n\n"
+        "event: markdown_block\n"
+        "data: {\"kind\":\"table\",\"markdown\":\"\\n\\n| 채널 | 매출 |\\n| --- | --- |\\n| 의원 | 41.93억원 |\\n\\n\"}\n\n"
+        "event: done\n"
+        "data: ok\n\n"
+    )
+    path = tmp_path / "block.sse"
+    path.write_text(raw, encoding="utf-8")
+
+    parsed = parse_sse_file(path)
+
+    assert "| 의원 | 41.93억원 |" in parsed.answer_markdown
+    assert parsed.render_issues == ()
+
+
+def test_sse_parser_flags_naive_table_join_breakage(tmp_path: Path) -> None:
+    raw = (
+        "event: delta\n"
+        "data: | 채널 | 시장점유율 | 매출 |\n"
+        "data: | --- | --- | --- |\n"
+        "data: | 의원 | 3.37% | 41.93억원 |\n\n"
+        "event: delta\n"
+        "data: ## 처리 시간\n\n"
+        "event: done\n"
+        "data: ok\n\n"
+    )
+    path = tmp_path / "broken.sse"
+    path.write_text(raw, encoding="utf-8")
+
+    parsed = parse_sse_file(path)
+
+    assert any(issue.startswith("naive_sse_table_join:") for issue in parsed.render_issues)
+
+
+def test_sse_parser_flags_table_cell_count_mismatch(tmp_path: Path) -> None:
+    raw = (
+        "event: markdown_block\n"
+        "data: {\"kind\":\"table\",\"markdown\":\"| 항목 | 값 |\\n| --- | --- |\\n| 매출 | 1억원 | 정상 |\\n\"}\n\n"
+        "event: done\n"
+        "data: ok\n\n"
+    )
+    path = tmp_path / "mismatch.sse"
+    path.write_text(raw, encoding="utf-8")
+
+    parsed = parse_sse_file(path)
+
+    assert any(issue.startswith("table_cell_count:") for issue in parsed.render_issues)
