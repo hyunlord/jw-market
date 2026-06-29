@@ -409,3 +409,60 @@ def test_prediction_simulation_evidence_rejects_basis_number_not_in_bundle():
 
     assert not result.valid
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_evidence_pool_policy_rejects_sparse_stage_evidence():
+    parsed_output = {
+        "evidence_pool": [],
+        "phenomenon": {
+            "title": "",
+            "body": "",
+            "bullets": [],
+            "evidence": [{"title": "현상 근거", "basis": "bundle 수치"}],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, {}, RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "evidence_pool_too_sparse" for item in result.unmatched_numbers)
+
+
+def test_evidence_pool_policy_passes_with_stage_evidence_and_bundle_supplement():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "",
+            "bullets": [],
+            "evidence": [{"title": "현상 근거", "basis": "bundle 수치"}],
+        },
+        "cause": {
+            "title": "",
+            "body": "",
+            "bullets": [],
+            "evidence": [{"title": "원인 근거", "source": "뉴스"}],
+        },
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {
+            "title": "",
+            "body": "",
+            "bullets": [],
+            "evidence": [{"title": "권고 근거", "basis": "시장 근거"}],
+        },
+    }
+    bundle = {
+        "event_bundle": {
+            "events_brand_centric": [
+                {"title": f"뉴스 {idx}", "source": "뉴스", "summary": f"요약 {idx}"}
+                for idx in range(1, 8)
+            ],
+        }
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert not any(item["pattern"].startswith("evidence_pool_") for item in result.unmatched_numbers)

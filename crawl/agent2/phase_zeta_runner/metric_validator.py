@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .config import ValidatorConfig
+from .evidence_pool import MIN_EVIDENCE_POOL_ITEMS, build_evidence_pool, source_evidence_count
 
 
 NUMBER_PATTERNS = [
@@ -539,6 +540,68 @@ def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, confi
     return issues
 
 
+def validate_evidence_pool_policy(parsed_output: dict, bundle: dict) -> list[dict[str, Any]]:
+    if not _evidence_pool_gate_applicable(parsed_output):
+        return []
+
+    source_count = source_evidence_count(parsed_output)
+    evidence_pool = build_evidence_pool(parsed_output, bundle)
+    issues: list[dict[str, Any]] = []
+
+    if source_count <= 0:
+        issues.append(
+            _policy_issue(
+                "evidence_pool",
+                "evidence_pool_policy",
+                "evidence_pool_missing",
+                "",
+                "stage evidence 또는 top-level evidence_pool이 없어 근거 풀을 만들 수 없습니다.",
+            )
+        )
+        return issues
+
+    if len(evidence_pool) < MIN_EVIDENCE_POOL_ITEMS:
+        issues.append(
+            _policy_issue(
+                "evidence_pool",
+                "evidence_pool_policy",
+                "evidence_pool_too_sparse",
+                str(len(evidence_pool)),
+                f"evidence_pool은 최소 {MIN_EVIDENCE_POOL_ITEMS}개 이상의 완결 근거가 필요합니다.",
+            )
+        )
+
+    incomplete = [
+        item
+        for item in evidence_pool
+        if not str(item.get("title") or "").strip()
+        or not (str(item.get("basis") or "").strip() or str(item.get("source") or "").strip())
+    ]
+    if incomplete:
+        issues.append(
+            _policy_issue(
+                "evidence_pool",
+                "evidence_pool_policy",
+                "evidence_pool_incomplete_item",
+                str(incomplete[0].get("title") or ""),
+                "evidence_pool 항목은 title과 basis/source 중 하나를 가져야 합니다.",
+            )
+        )
+
+    return issues
+
+
+def _evidence_pool_gate_applicable(parsed_output: dict) -> bool:
+    if parsed_output.get("evidence_pool") is not None:
+        return True
+    stages_with_evidence = sum(
+        1
+        for stage in ["phenomenon", "cause", "prediction", "recommendation"]
+        if "evidence" in (parsed_output.get(stage) or {})
+    )
+    return stages_with_evidence >= 2
+
+
 def validate_simulation_prediction_policy(
     parsed_output: dict,
     bundle: dict,
@@ -642,6 +705,7 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
     )
     policy_issues.extend(validate_view_label_policy(bundle, stage_results))
     policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle, config))
+    policy_issues.extend(validate_evidence_pool_policy(parsed_output, bundle))
 
     if policy_issues:
         prediction_result = stage_results.get("prediction")

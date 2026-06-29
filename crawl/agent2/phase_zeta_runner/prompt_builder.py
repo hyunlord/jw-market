@@ -74,6 +74,7 @@ available: {bool(forecast.get("available", False))}
 
 위 데이터를 활용해서 phenomenon, cause, prediction, recommendation 4단 분석을 한 번에 JSON 으로 생성하세요.
 각 stage의 body는 6문장 이상 9문장 이하로 작성하고, 9문장 초과는 금지합니다. bullets는 4개를 유지하세요.
+각 stage에는 evidence 배열을 포함하고, stage 본문에 실제로 사용한 bundle 수치 basis 또는 source event 근거를 최소 1개 이상 넣으세요. 근거가 불확실하면 새로 만들지 말고 해당 stage의 확실한 수치 basis를 우선 사용하세요.
 prediction stage는 forecast_simulation.available=true이면 1년/3년/5년 전망을 모두 명시하고, bundle의 horizon_1y/horizon_3y/horizon_5y 값을 각각 반영하세요.
 95% 신뢰구간 등 CI 수치는 단독 bullet로 분리하지 말고, 해당 예측값과 같은 문장/field에 두어 compact tag(예: ML·UBIST·매출·2029-03)가 동반되게 작성하세요.
 prediction evidence는 FULL_BUNDLE_JSON_FOR_FORMATTER 안에 실제로 존재하는 source event 또는 forecast_simulation 수치 basis만 사용하세요. bundle에 없는 근거 제목, news_id, 시뮬레이션명을 새로 만들지 마세요.

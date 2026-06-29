@@ -15,6 +15,8 @@ from typing import Any
 
 import pymysql
 
+from phase_zeta_runner.evidence_pool import build_evidence_pool
+
 
 JW25_BRANDS = [
     "가드렛",
@@ -73,6 +75,7 @@ class SelectedRun:
     model_version: str
     created_at: Any
     bundle_hash: str
+    input_bundle: dict[str, Any]
 
 
 def _json_default(value: Any) -> Any:
@@ -112,6 +115,19 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str] | N
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _json_default(row.get(key)) if row.get(key) is not None else "" for key in fieldnames})
+
+
+def _loads_json_maybe(value: Any, fallback: Any) -> Any:
+    if value is None:
+        return fallback
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return fallback
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
 
 
 def connect(args: argparse.Namespace) -> pymysql.connections.Connection:
@@ -176,7 +192,7 @@ def schema_matches(describe_rows: list[dict[str, Any]]) -> bool:
 def select_latest_runs(conn: pymysql.connections.Connection) -> dict[str, SelectedRun]:
     placeholders = ",".join(["%s"] * len(JW25_BRANDS))
     sql = f"""
-    SELECT run_id, brand, status, model_version, created_at, bundle_hash
+    SELECT run_id, brand, status, model_version, created_at, bundle_hash, input_bundle
     FROM zeta_analysis_runs
     WHERE brand IN ({placeholders})
       AND model_version = 'genos_workflow_217'
@@ -200,6 +216,7 @@ def select_latest_runs(conn: pymysql.connections.Connection) -> dict[str, Select
             model_version=str(row["model_version"]),
             created_at=row["created_at"],
             bundle_hash=str(row.get("bundle_hash") or ""),
+            input_bundle=_loads_json_maybe(row.get("input_bundle"), {}),
         )
     return selected
 
@@ -208,7 +225,7 @@ def load_parsed_output(conn: pymysql.connections.Connection, run: SelectedRun) -
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT stage, title, body, bullets
+            SELECT stage, title, body, bullets, raw_response
             FROM zeta_analysis_outputs
             WHERE run_id = %s
             ORDER BY FIELD(stage, 'phenomenon', 'cause', 'prediction', 'recommendation')
@@ -232,6 +249,11 @@ def load_parsed_output(conn: pymysql.connections.Connection, run: SelectedRun) -
             "body": row.get("body") or "",
             "bullets": bullets if isinstance(bullets, list) else [str(bullets)],
         }
+        raw_response = _loads_json_maybe(row.get("raw_response"), {})
+        if isinstance(raw_response, dict) and isinstance(raw_response.get("evidence"), list):
+            parsed[stage]["evidence"] = [
+                item for item in raw_response["evidence"] if isinstance(item, dict)
+            ]
     return parsed
 
 
@@ -275,6 +297,7 @@ def build_ai_analysis(run: SelectedRun, parsed: dict[str, Any]) -> dict[str, Any
             "Permanent insert into cache_deep_analysis_ai_analysis "
             "(separated from cache_deep_analysis). Source: zeta_analysis_outputs."
         ),
+        "evidence_pool": build_evidence_pool(parsed, run.input_bundle),
         "phenomenon": parsed["phenomenon"],
         "cause": parsed["cause"],
         "prediction": parsed["prediction"],
