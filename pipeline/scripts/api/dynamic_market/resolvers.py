@@ -419,7 +419,7 @@ def _api_dimension_names(source: str) -> dict[str, str]:
     return {
         "mfr_name_kor": "mfr",
         "molecule_type": "molecule_type",
-        "molecule_desc": "molecule",
+        "molecule_desc": "molecule_desc",
         "pack_desc": "pack",
         "strength": "strength",
         "nhi_type": "nhi",

@@ -12,7 +12,7 @@ from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, com
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
-from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
+from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver, build_dimension_filters
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
     BrandMetric,
@@ -300,6 +300,27 @@ def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:
         assert "disabled" in str(exc)
     else:
         raise AssertionError("disabled molecule dimension was accepted")
+
+
+def test_iqvia_molecule_desc_analysis_level_maps_to_iqvia_registry() -> None:
+    filters = build_dimension_filters(
+        analysis_level={"iqvia": {"molecule_desc": ["acarbose"]}},
+        source="iqvia_nsa",
+    )
+
+    assert filters == (DimensionFilter(dimension_type="molecule_desc", values=("acarbose",)),)
+
+
+def test_iqvia_disabled_analysis_level_is_rejected_without_keyerror() -> None:
+    try:
+        build_dimension_filters(
+            analysis_level={"iqvia": {"pack_desc": ["10T"]}},
+            source="iqvia_nsa",
+        )
+    except DynamicMarketInputError as exc:
+        assert "disabled" in str(exc)
+    else:
+        raise AssertionError("disabled IQVIA pack_desc dimension was accepted")
 
 
 def test_default_focus_brand_requires_one_unambiguous_atc4(monkeypatch) -> None:
