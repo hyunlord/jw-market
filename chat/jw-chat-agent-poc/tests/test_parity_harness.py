@@ -5,6 +5,7 @@ from pathlib import Path
 
 from scripts.fact_scoreboard.sse import parse_sse_file
 from scripts.parity_harness import CHANNEL_PARAPHRASE_QUESTIONS, _capture_questions, diff_captures
+from scripts.runtime_model_compare_runner import _parse_events
 
 
 def _write_capture(root: Path, answer: str, *, fact_value: str = "1억원", chart_value: int = 1) -> None:
@@ -154,3 +155,36 @@ def test_sse_parser_flags_table_cell_count_mismatch(tmp_path: Path) -> None:
     parsed = parse_sse_file(path)
 
     assert any(issue.startswith("table_cell_count:") for issue in parsed.render_issues)
+
+
+def test_sse_parser_flags_raw_markdown_block_json_exposure(tmp_path: Path) -> None:
+    raw = (
+        "event: delta\n"
+        "data: {\"kind\":\"table\",\"markdown\":\"| 기간 | 매출 |\\n| --- | --- |\\n| 2025-Q4 | 35.16억원 |\"}\n\n"
+        "event: done\n"
+        "data: ok\n\n"
+    )
+    path = tmp_path / "raw_json.sse"
+    path.write_text(raw, encoding="utf-8")
+
+    parsed = parse_sse_file(path)
+
+    assert any(issue == 'answer_table_join:{"kind":"table"' for issue in parsed.render_issues)
+    assert any(issue == 'answer_table_join:"markdown":"' for issue in parsed.render_issues)
+
+
+def test_runtime_model_compare_runner_decodes_markdown_block_events() -> None:
+    answer, counts = _parse_events(
+        [
+            "event: delta\ndata: 페린젝트 표입니다.\n\n",
+            (
+                "event: markdown_block\n"
+                "data: {\"kind\":\"table\",\"markdown\":\"\\n\\n| 기간 | 매출 | MS |\\n| --- | --- | --- |\\n| 2025-Q4 | 35.16억원 | 25.36% |\\n\\n\"}\n\n"
+            ),
+            "event: done\ndata: ok\n\n",
+        ]
+    )
+
+    assert "| 2025-Q4 | 35.16억원 | 25.36% |" in answer
+    assert '{"kind":"table"' not in answer
+    assert counts["done_count"] == 1

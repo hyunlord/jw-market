@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.fact_scoreboard.recal_runner import _is_degraded_answer
+from scripts.fact_scoreboard.sse import parse_sse_text
 
 from jw_chat_agent_poc.service.app import SessionStore, _answer_question, _default_agent_factory, _sse_events
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
@@ -49,32 +50,15 @@ def _token(name: str) -> str:
 
 
 def _parse_events(events: list[str]) -> tuple[str, dict[str, int]]:
-    answer_parts: list[str] = []
-    counts = {"delta_count": 0, "done_count": 0, "error_count": 0, "charts_count": 0, "timing_count": 0}
-    for chunk in events:
-        event_name = "message"
-        data_lines: list[str] = []
-        for line in chunk.splitlines():
-            if line.startswith("event:"):
-                event_name = line.split(":", 1)[1].strip()
-            elif line.startswith("data:"):
-                data_lines.append(line.split(":", 1)[1].lstrip())
-        data = "\n".join(data_lines)
-        match event_name:
-            case "delta":
-                counts["delta_count"] += 1
-                answer_parts.append(data)
-            case "done":
-                counts["done_count"] += 1
-            case "error":
-                counts["error_count"] += 1
-            case "charts":
-                counts["charts_count"] += 1
-            case "timing":
-                counts["timing_count"] += 1
-            case _:
-                pass
-    return "".join(answer_parts), counts
+    parsed = parse_sse_text("".join(events))
+    counts = {
+        "delta_count": parsed.delta_count,
+        "done_count": parsed.done_count,
+        "error_count": parsed.error_count,
+        "charts_count": len(parsed.charts),
+        "timing_count": 1 if parsed.timing else 0,
+    }
+    return parsed.answer_markdown, counts
 
 
 def _trace_payload(qid: str, question: str, result: dict[str, Any]) -> dict[str, Any]:

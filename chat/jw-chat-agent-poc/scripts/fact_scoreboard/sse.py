@@ -25,7 +25,12 @@ class SseCapture:
 def parse_sse_file(path: Path) -> SseCapture:
     """Parse a raw Server-Sent Events file emitted by /chat/stream."""
 
-    raw_text = path.read_text(encoding="utf-8")
+    return parse_sse_text(path.read_text(encoding="utf-8"))
+
+
+def parse_sse_text(raw_text: str) -> SseCapture:
+    """Parse raw Server-Sent Events text emitted by /chat/stream."""
+
     events = _events(raw_text)
     answer_parts: list[str] = []
     charts: list[dict[str, object]] = []
@@ -174,5 +179,11 @@ def _cell_count(line: str) -> int:
 _TABLE_DIVIDER_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|\s*$"
 )
-_BROKEN_TABLE_SENTINELS: Final[tuple[str, ...]] = ("|| ---", "|##", "억원 |##")
+_BROKEN_TABLE_SENTINELS: Final[tuple[str, ...]] = (
+    "|| ---",
+    "|##",
+    "억원 |##",
+    '{"kind":"table"',
+    '"markdown":"',
+)
 SSE_RAW_SUFFIX: Final = ".sse"
