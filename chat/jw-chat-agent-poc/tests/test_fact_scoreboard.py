@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from scripts.compose_ab_poc.questions import EvalQuestion
-from scripts.fact_scoreboard.answer_viz import _question_block
+from scripts.fact_scoreboard.answer_viz import _page, _question_block
 from scripts.fact_scoreboard.scoring import GoldFact, NumericMention, match_mentions
 from scripts.fact_scoreboard.text_numbers import extract_numeric_mentions
 from scripts.fact_scoreboard.gold import GoldStore, MartRow
@@ -255,3 +255,43 @@ def test_answer_viz_collapses_query_facts_as_scoring_evidence() -> None:
     assert "<h3>Query fact</h3>" not in html
     assert "-9.58" in html
     assert "-9.584321" not in html
+
+
+def test_answer_viz_surfaces_runtime_provenance() -> None:
+    """Given trace provenance, When rendering HTML, Then the capture source is visible."""
+
+    # Given
+    detail = {
+        "row": {"qid": "Q09", "question": "리바로 점유율 몇 위야"},
+        "answer_markdown": "리바로는 6위입니다.",
+        "trace": {
+            "trace_id": "trace-1",
+            "version": {
+                "release_id": "version-trace",
+                "git_sha": "abc123",
+                "image_digest": "sha256:deadbeef",
+                "model_family": "gemini-3-flash-preview",
+                "serving_common_router": "517",
+                "serving_final": "514",
+                "serving_planner": "508",
+                "policy_versions": {"answer_contract_version": "sha256:contract"},
+            },
+            "model_stages": {
+                "planner_serving_id": "508",
+                "final_serving_id": "514",
+                "router_serving_id": "517",
+            },
+            "route": {"service_path": "agent_loop"},
+        },
+    }
+
+    # When
+    html = _page([detail], {})
+
+    # Then
+    assert "Runtime provenance" in html
+    assert "version-trace" in html
+    assert "abc123" in html
+    assert "sha256:deadbeef" in html
+    assert "sha256:contract" in html
+    assert "trace-1" in html

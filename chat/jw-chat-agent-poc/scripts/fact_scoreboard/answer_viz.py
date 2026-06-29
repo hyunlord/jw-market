@@ -25,6 +25,7 @@ def _page(details: list[dict[str, Any]], summary: dict[str, Any]) -> str:
             "<body><main>",
             "<h1>Chat Answer Safety Visualization</h1>",
             _summary(summary),
+            _version_meta(summary, details),
             *(_question_block(detail) for detail in details),
             "</main></body></html>",
         )
@@ -49,6 +50,70 @@ def _summary(summary: dict[str, Any]) -> str:
     return _table(("항목", "값"), rows)
 
 
+def _version_meta(summary: dict[str, Any], details: list[dict[str, Any]]) -> str:
+    version = _version_from_summary(summary) or _first_detail_version(details)
+    if not version:
+        return ""
+    policy_versions = version.get("policy_versions") if isinstance(version.get("policy_versions"), dict) else {}
+    rows: list[tuple[Any, ...]] = [
+        ("release_id", version.get("release_id", "")),
+        ("git_sha", version.get("git_sha", "")),
+        ("image_digest", version.get("image_digest", "")),
+        ("built_at", version.get("built_at", "")),
+        ("model_family", version.get("model_family", "")),
+        ("serving_common_router", version.get("serving_common_router", "")),
+        ("serving_final", version.get("serving_final", "")),
+        ("serving_planner", version.get("serving_planner", "")),
+    ]
+    rows.extend((f"policy.{key}", value) for key, value in sorted(policy_versions.items()))
+    return "\n".join(("<section class=\"meta-card\"><h2>Runtime provenance</h2>", _table(("항목", "값"), rows), "</section>"))
+
+
+def _version_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    for key in ("version", "runtime_version", "provenance"):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            version = value.get("version") if isinstance(value.get("version"), dict) else value
+            if isinstance(version, dict):
+                return version
+    return {}
+
+
+def _first_detail_version(details: list[dict[str, Any]]) -> dict[str, Any]:
+    for detail in details:
+        version = _detail_version(detail)
+        if version:
+            return version
+    return {}
+
+
+def _detail_version(detail: dict[str, Any]) -> dict[str, Any]:
+    for key in ("trace", "trace_envelope", "runtime_trace"):
+        trace = detail.get(key)
+        if isinstance(trace, dict) and isinstance(trace.get("version"), dict):
+            return trace["version"]
+    return {}
+
+
+def _question_provenance(detail: dict[str, Any]) -> str:
+    trace = next((detail.get(key) for key in ("trace", "trace_envelope", "runtime_trace") if isinstance(detail.get(key), dict)), {})
+    if not isinstance(trace, dict):
+        return ""
+    version = trace.get("version") if isinstance(trace.get("version"), dict) else {}
+    stages = trace.get("model_stages") if isinstance(trace.get("model_stages"), dict) else {}
+    route = trace.get("route") if isinstance(trace.get("route"), dict) else {}
+    rows = (
+        ("trace_id", trace.get("trace_id", "")),
+        ("git_sha", version.get("git_sha", "")),
+        ("image_digest", version.get("image_digest", "")),
+        ("route", route.get("service_path", "") or route.get("mode", "")),
+        ("planner", stages.get("planner_serving_id", "")),
+        ("final", stages.get("final_serving_id", "")),
+        ("router", stages.get("router_serving_id", "")),
+    )
+    return "<details class=\"provenance\"><summary>Runtime provenance</summary>" + _table(("항목", "값"), rows) + "</details>"
+
+
 def _question_block(detail: dict[str, Any]) -> str:
     row = detail.get("row") if isinstance(detail.get("row"), dict) else {}
     answer = str(detail.get("answer_markdown") or "")
@@ -70,6 +135,7 @@ def _question_block(detail: dict[str, Any]) -> str:
             '<section class="question">',
             f"<h2>{html.escape(qid)} {html.escape(question)}</h2>",
             f'<div class="badges">{badges}</div>',
+            _question_provenance(detail),
             "<h3>최종 답변</h3>",
             f'<div class="answer">{render_markdown_fragment(answer)}</div>',
             "<details><summary>답변 markdown 원문</summary>",
@@ -196,6 +262,7 @@ def _head() -> str:
 body{margin:0;background:#f6f7f9;color:#172033;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1320px;margin:0 auto;padding:28px 18px 48px}h1{margin:0 0 8px;font-size:30px}h2{font-size:21px;margin-top:0}h3{font-size:17px;margin-top:18px}h4{font-size:14px;margin:14px 0 4px}
 p{line-height:1.55}.question{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:18px 0}.answer{border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#fbfdff}
+.meta-card{background:#eef6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px;margin:14px 0 20px}
 table{border-collapse:collapse;width:100%;font-size:13px;background:white;margin:10px 0}td,th{border:1px solid #e5e7eb;padding:7px;text-align:left;vertical-align:top}
 pre{white-space:pre-wrap;background:#111827;color:#f9fafb;border-radius:8px;padding:12px;overflow:auto;font-size:12px;line-height:1.45}
 .badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;margin:0 5px 5px 0;background:#e5e7eb}.ok{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}.na{background:#fef3c7;color:#854d0e}
