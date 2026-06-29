@@ -27,6 +27,60 @@ def _cd_metric_bundle():
     }
 
 
+def _forecast_bundle():
+    return {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.IQVIA.unit": {
+                    "source": "IQVIA",
+                    "measure": "unit",
+                    "horizon_1y": {
+                        "period": "2026-Q3",
+                        "base": 46012.98,
+                        "ci_lower_95": 38134.79,
+                        "ci_upper_95": 53282.74,
+                    },
+                    "horizon_3y": {
+                        "period": "2028-Q3",
+                        "base": 49346.94,
+                        "ci_lower_95": 35387.82,
+                        "ci_upper_95": 63012.55,
+                    },
+                    "horizon_5y": {
+                        "period": "2030-Q3",
+                        "base": 52549.86,
+                        "ci_lower_95": 34579.14,
+                        "ci_upper_95": 70724.93,
+                    },
+                },
+                "ML.IQVIA.counting_unit": {
+                    "source": "IQVIA",
+                    "measure": "counting_unit",
+                    "horizon_1y": {
+                        "period": "2026-Q3",
+                        "base": 338.49,
+                        "ci_lower_95": 275.99,
+                        "ci_upper_95": 499.68,
+                    },
+                    "horizon_3y": {
+                        "period": "2028-Q3",
+                        "base": 492.87,
+                        "ci_lower_95": 265.81,
+                        "ci_upper_95": 1177.49,
+                    },
+                    "horizon_5y": {
+                        "period": "2030-Q3",
+                        "base": 537.57,
+                        "ci_lower_95": 190.68,
+                        "ci_upper_95": 1696.47,
+                    },
+                },
+            },
+        }
+    }
+
+
 def test_repair_adds_existing_bundle_view_label_before_validation():
     parsed_output = {
         "phenomenon": {"title": "점유율", "body": "M/S는 58.82%입니다.", "bullets": []},
@@ -88,3 +142,130 @@ def test_repair_does_not_fabricate_prediction_evidence():
     assert repaired.changes == []
     assert not result.valid
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_repair_normalizes_korean_large_unit_numbers_before_validation():
+    parsed_output = {
+        "phenomenon": {
+            "title": "시장 성과",
+            "body": "매출은 25억 8720만 873원이고 처방은 4만 3707 unit입니다.",
+            "bullets": ["시장 규모는 525억 3099만 2,235원입니다."],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, {}, _config())
+
+    assert repaired.parsed_output["phenomenon"]["body"] == "매출은 2,587,200,873원이고 처방은 43,707 unit입니다."
+    assert repaired.parsed_output["phenomenon"]["bullets"][0] == "시장 규모는 52,530,992,235원입니다."
+    assert [change["type"] for change in repaired.changes] == [
+        "korean_large_unit_number",
+        "korean_large_unit_number",
+        "korean_large_unit_number",
+    ]
+
+
+def test_repair_does_not_treat_drug_class_or_news_title_as_large_unit_money():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "DPP-4 억제제와 SGLT-2 억제제는 유지하고 뉴스 '연처방 117억원 제품'도 제목 그대로 둔다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, {}, _config())
+
+    assert repaired.parsed_output == parsed_output
+    assert repaired.changes == []
+
+
+def test_repair_removes_decimal_krw_unit_when_compact_tag_preserves_measure():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "",
+            "body": "95% 신뢰구간은 6,516,895,172.28원(ML·UBIST·sales·2027-03)입니다.",
+            "bullets": [],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, {}, _config())
+
+    assert repaired.parsed_output["prediction"]["body"] == "95% 신뢰구간은 6,516,895,172.28(ML·UBIST·sales·2027-03)입니다."
+    assert repaired.changes == [
+        {
+            "type": "decimal_metric_unit_removed",
+            "path": "prediction.body",
+            "before": "6,516,895,172.28원",
+            "after": "6,516,895,172.28",
+        }
+    ]
+
+
+def test_repair_restores_forecast_tags_and_large_units_without_weakening_validator():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "향후 전망",
+            "body": (
+                "1년 뒤 4만 6012.98 unit(ML·IQVIA·counting_unit·2025-Q4), "
+                "3년 뒤 4만 9346.94 unit(ML·IQVIA·counting_unit·2025-Q4), "
+                "5년 뒤 5만 2549.86 unit(ML·IQVIA·counting_unit·2025-Q4)입니다. "
+                "95% 신뢰구간은 3만 8134.79 unit에서 5만 3282.74 unit입니다."
+            ),
+            "bullets": [],
+            "evidence": [{"title": "수치 근거", "basis": "4만 6012.98 unit(ML·IQVIA·counting_unit·2025-Q4)"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _forecast_bundle(), _config())
+    validation = validate_output(repaired.parsed_output, _forecast_bundle(), _config())
+
+    body = repaired.parsed_output["prediction"]["body"]
+    assert "46,012.98 unit(ML·IQVIA·unit·2026-Q3)" in body
+    assert "49,346.94 unit(ML·IQVIA·unit·2028-Q3)" in body
+    assert "52,549.86 unit(ML·IQVIA·unit·2030-Q3)" in body
+    assert "38,134.79 unit(ML·IQVIA·unit·2026-Q3)" in body
+    assert validation.valid
+
+
+def test_repair_converts_dotted_forecast_tags_to_compact_tags():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "향후 처방량",
+            "body": (
+                "1년 뒤 338.49(ML.IQVIA.counting_unit), "
+                "3년 뒤 492.87(ML.IQVIA.counting_unit), "
+                "5년 뒤 537.57(ML.IQVIA.counting_unit)입니다. "
+                "95% 신뢰구간은 275.99에서 499.68(ML.IQVIA.counting_unit)입니다."
+            ),
+            "bullets": [
+                "1년 뒤 처방량 338.49(ML.IQVIA.counting_unit)",
+                "3년 뒤 처방량 492.87(ML.IQVIA.counting_unit)",
+                "5년 뒤 처방량 537.57(ML.IQVIA.counting_unit)",
+            ],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _forecast_bundle(), _config())
+    validation = validate_output(repaired.parsed_output, _forecast_bundle(), _config())
+
+    body = repaired.parsed_output["prediction"]["body"]
+    assert "338.49(ML·IQVIA·counting_unit·2026-Q3)" in body
+    assert "492.87(ML·IQVIA·counting_unit·2028-Q3)" in body
+    assert "537.57(ML·IQVIA·counting_unit·2030-Q3)" in body
+    assert "275.99(ML·IQVIA·counting_unit·2026-Q3)" in body
+    assert validation.valid

@@ -33,6 +33,12 @@ NUMBER_PATTERNS = [
         "low_priority": False,
     },
     {
+        "name": "generic_decimal",
+        "pattern": re.compile(r"(?<![\d,.])(\d+\.\d+)(?![\d,.%])"),
+        "type": "float",
+        "low_priority": False,
+    },
+    {
         "name": "plain_int",
         "pattern": re.compile(r"(?<![\d,.])(\d{1,6})(?![\d,.])"),
         "type": "int",
