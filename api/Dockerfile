@@ -32,6 +32,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY pipeline/scripts/api /app/pipeline/scripts/api
 COPY pipeline/scripts/analysis /app/pipeline/scripts/analysis
+COPY pipeline/scripts/etl /app/pipeline/scripts/etl
+COPY pipeline/scripts/utils /app/pipeline/scripts/utils
 COPY pipeline/etl /app/pipeline/etl
 COPY docs/reference /app/static
 

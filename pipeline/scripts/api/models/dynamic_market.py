@@ -16,6 +16,8 @@ class UbistAnalysisLevel(BaseModel):
     form: list[str] = Field(default_factory=list)
     route: list[str] = Field(default_factory=list)
     reimbursement: list[str] = Field(default_factory=list)
+    atc3: list[str] = Field(default_factory=list)
+    atc4: list[str] = Field(default_factory=list)
 
 
 class IqviaAnalysisLevel(BaseModel):
@@ -29,6 +31,7 @@ class IqviaAnalysisLevel(BaseModel):
     pack_desc: list[str] = Field(default_factory=list, description="Disabled by PL policy for D-1.")
     strength: list[str] = Field(default_factory=list)
     nhi_type: list[str] = Field(default_factory=list)
+    audit_code: list[str] = Field(default_factory=list)
 
 
 class DynamicMarketAnalysisLevel(BaseModel):
@@ -42,6 +45,9 @@ class DynamicMarketAnalysisLevel(BaseModel):
 
     ubist: UbistAnalysisLevel = Field(default_factory=UbistAnalysisLevel)
     iqvia: IqviaAnalysisLevel = Field(default_factory=IqviaAnalysisLevel)
+
+
+DynamicMarketAnalysisLevelFilters = DynamicMarketAnalysisLevel
 
 
 class DynamicMarketFilters(BaseModel):
