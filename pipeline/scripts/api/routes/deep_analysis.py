@@ -61,7 +61,7 @@ def _load_ai_analysis_variants(brand: str) -> dict[str, dict]:
             """,
             [brand],
         )
-    except pymysql.err.ProgrammingError as exc:
+    except (pymysql.err.ProgrammingError, pymysql.err.OperationalError) as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
             return {}
         raise
