@@ -31,18 +31,26 @@ def _variant_instruction(analysis_variant: str) -> str:
 [analysis_variant: short — 단기 인사이트]
 이번 출력은 단기 인사이트입니다. forecast_simulation에서는 horizon_1y를 prediction의 주된 근거로 사용하세요.
 1년 내 변화, 최근 이벤트, 가까운 처방/경쟁 대응, 즉시 대응해야 할 실행 신호를 중심으로 4단을 작성하세요.
+phenomenon은 최근 1~2분기 매출·처방·점유율 변화와 바로 관찰되는 운영 신호를 먼저 해석하세요.
+cause는 가까운 이벤트가 지금 처방과 경쟁에 미치는 근접 원인을 중심으로 서술하세요.
+현상 제목에는 근접/즉시/최근 신호 뉘앙스를 반영하고, 원인 제목에는 단기 변동 요인을 드러내세요.
 recommendation은 다음 1~4개 분기 안에 실행 가능한 현장 메시지, 타깃 세그먼트, 모니터링 액션으로 제한하세요.
 prediction은 horizon_1y 수치와 1년 신뢰구간만 사용하고, 3년/5년 예측값이나 장기 구조 전망 수치를 쓰지 마세요.
 5년 구조 변화나 장기 포지셔닝을 prediction/recommendation의 주된 근거로 삼지 마세요.
+숫자와 뉴스 사실은 long과 공유해도 되지만, 왜 그것이 단기 관점에서 중요한지의 강조와 시간축을 다르게 쓰세요.
 """
     if analysis_variant == "long":
         return """
 [analysis_variant: long — 장기 인사이트]
 이번 출력은 장기 인사이트입니다. forecast_simulation에서는 horizon_5y를 prediction의 주된 근거로 사용하세요.
 5년 구조적 추세, 지속 성장/둔화, 시장 구조 변화, 경쟁 포지션, 전략 포지셔닝과 CI 폭의 장기 리스크를 중심으로 4단을 작성하세요.
+phenomenon은 다년 추세선, 현재 시장 내 구조적 위치, 장기 성장·방어의 출발점을 먼저 해석하세요.
+cause는 구조적 요인이 장기로 작용하는 메커니즘을 중심으로 서술하세요.
+현상 제목에는 구조/추세/장기 포지션 뉘앙스를 반영하고, 원인 제목에는 장기 작동 원리를 드러내세요.
 horizon_3y는 5년 전망으로 가는 중간 점검점으로만 사용하고, 단기 실행 체크리스트로 축소하지 마세요.
 5년 horizon_5y base가 0이거나 CI 하한이 0인 source/measure가 있으면 그 값을 임의 단위로 바꾸지 말고, 같은 brand bundle 안의 다른 source/measure에서 실제로 존재하는 non-zero horizon_5y 값을 우선 사용하세요. 0을 써야 한다면 forecast_simulation에 있는 source/measure/period compact tag를 정확히 그대로 붙이고, counting_unit/unit/dosage_unit을 서로 바꾸지 마세요.
 recommendation은 3~5년 관점의 포트폴리오, 메시지 자산, 투자/방어 전략으로 작성하세요.
+숫자와 뉴스 사실은 short와 공유해도 되지만, 왜 그것이 장기 관점에서 중요한지의 강조와 시간축을 다르게 쓰세요.
 """
     return """
 [analysis_variant: legacy]

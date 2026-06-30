@@ -91,6 +91,9 @@ def test_short_prompt_focuses_on_one_year_near_term_actions():
     assert "1년 내 변화" in question
     assert "가까운 처방" in question
     assert "즉시 대응" in question
+    assert "phenomenon은 최근 1~2분기" in question
+    assert "cause는 가까운 이벤트가 지금 처방과 경쟁에 미치는 근접 원인" in question
+    assert "현상 제목에는 근접/즉시/최근 신호" in question
     assert "3년/5년 예측값" in question
     assert "5년 구조 변화" in question
     assert "주된 근거로 삼지 마세요" in question
@@ -111,4 +114,7 @@ def test_long_prompt_focuses_on_five_year_structural_strategy():
     assert "전략 포지셔닝" in question
     assert "horizon_3y" in question
     assert "중간 점검점" in question
+    assert "phenomenon은 다년 추세선" in question
+    assert "cause는 구조적 요인이 장기로 작용하는 메커니즘" in question
+    assert "현상 제목에는 구조/추세/장기 포지션" in question
     assert "단기 실행 체크리스트로 축소하지 마세요" in question
