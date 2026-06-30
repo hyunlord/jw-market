@@ -21,6 +21,8 @@ class APIConfig:
     db_password: str
     db_name: str
     bridge_db_name: str
+    general_dimension_db_name: str
+    strategic_dimension_db_name: str
     brand_activity_db_name: str
     app_version: str
     external_path_prefix: str
@@ -42,6 +44,8 @@ def load_config() -> APIConfig:
         db_password=os.getenv("DB_PASSWORD", ""),
         db_name=os.getenv("DB_NAME", "jw_mart"),
         bridge_db_name=os.getenv("BRIDGE_DB_NAME", os.getenv("DB_NAME", "jw_mart")),
+        general_dimension_db_name=os.getenv("GENERAL_DIMENSION_DB_NAME", os.getenv("DB_NAME", "jw_mart")),
+        strategic_dimension_db_name=os.getenv("STRATEGIC_DIMENSION_DB_NAME", os.getenv("DB_NAME", "jw_mart")),
         brand_activity_db_name=os.getenv("BRAND_ACTIVITY_DB_NAME", "jw_brand_activity_stage"),
         app_version=os.getenv("APP_VERSION", "v0.1.0"),
         external_path_prefix=os.getenv("EXTERNAL_PATH_PREFIX", ""),
@@ -60,6 +64,8 @@ DB_USER = config.db_user
 DB_PASSWORD = config.db_password
 DB_NAME = config.db_name
 BRIDGE_DB_NAME = config.bridge_db_name
+GENERAL_DIMENSION_DB_NAME = config.general_dimension_db_name
+STRATEGIC_DIMENSION_DB_NAME = config.strategic_dimension_db_name
 BRAND_ACTIVITY_DB_NAME = config.brand_activity_db_name
 
 

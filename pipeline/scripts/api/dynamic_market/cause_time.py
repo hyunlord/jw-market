@@ -50,16 +50,27 @@ def market_size_series(metrics: AggregatedMetrics) -> list[dict[str, Any]]:
     return series
 
 
-def hhi_series(brands: tuple[BrandMetric, ...]) -> list[dict[str, Any]]:
-    """Compute yearly HHI as ``sum((brand MS%) ** 2)``."""
-
+def hhi_series(brands: tuple[BrandMetric, ...], *, source: str | None = None) -> list[dict[str, Any]]:
     by_year = year_totals_by_brand(brands)
+    complete_years = complete_calendar_years(_period_count_by_year(brands), source=source)
     rows: list[dict[str, Any]] = []
     for year, totals in sorted(by_year.items()):
+        if year not in complete_years:
+            continue
         market = sum(totals.values())
-        hhi = sum((value / market * 100) ** 2 for value in totals.values()) if market else None
+        hhi = sum((round(value / market * 100, 4)) ** 2 for value in totals.values()) if market else None
+        if hhi is not None:
+            hhi = round(hhi, 4)
         rows.append({"period": year, "period_full": year, "year": int(year), "hhi": hhi})
     return rows
+
+
+def complete_calendar_years(period_count_by_year: dict[str, int], *, source: str | None = None) -> set[str]:
+    source_key = str(source or "").lower()
+    expected = 12 if source_key == "ubist" else 4 if source_key == "iqvia_nsa" else None
+    if expected is None:
+        return set(period_count_by_year)
+    return {year for year, count in period_count_by_year.items() if count >= expected}
 
 
 def latest_hhi(brands: tuple[BrandMetric, ...]) -> float | None:
@@ -91,6 +102,14 @@ def year_totals_by_brand(brands: tuple[BrandMetric, ...]) -> dict[str, dict[str,
         for year, value in totals.items():
             years[year][brand.brand_key] = value
     return years
+
+
+def _period_count_by_year(brands: tuple[BrandMetric, ...]) -> dict[str, int]:
+    periods_by_year: dict[str, set[str]] = defaultdict(set)
+    for brand in brands:
+        for period in history(brand):
+            periods_by_year[period[:4]].add(period)
+    return {year: len(periods) for year, periods in periods_by_year.items()}
 
 
 def brand_cagr(values_by_period: dict[str, float]) -> float | None:

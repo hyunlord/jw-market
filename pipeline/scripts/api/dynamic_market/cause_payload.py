@@ -18,7 +18,6 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     avg_share,
     empty_analysis_levels,
     hhi_series,
-    join_unique,
     latest_hhi,
     latest_market_value,
     market_size_series,
@@ -35,7 +34,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
 
     source = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     market_id = _market_id(definition)
-    focus = _focus_brand(metrics.all_brands)
+    focus = _focus_brand(metrics.all_brands, definition.focus_brand_key)
     data = build_cause_data(definition=definition, metrics=metrics, focus=focus)
     meta = build_market_meta(definition=definition, metrics=metrics, market_id=market_id, data=data)
     payload = {
@@ -49,7 +48,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
         "measure": metrics.measure,
         "source": source,
         "unit_label": metrics.unit_label,
-        "view": "market_landscape",
+        "view": str(definition.filter_echo.get("view_kind") or "market_landscape"),
     }
     return normalize_portal_read_payload(payload)
 
@@ -65,12 +64,12 @@ def build_cause_data(
     del definition
     series = market_size_series(metrics)
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
-    hhi = hhi_series(metrics.all_brands)
+    hhi = hhi_series(metrics.all_brands, source=metrics.source)
     matrix = matrix_rows(metrics=metrics, focus=focus)
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     levels = empty_analysis_levels(series)
-    hhi_recent = latest_hhi(metrics.all_brands)
+    hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     data = {
         "analysis_level_market_status": levels,
         "analysis_levels": levels,
@@ -122,7 +121,7 @@ def build_cause_data(
 
 
 def normalize_portal_read_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Apply the audited portal-read cause contract without changing values."""
+    """Apply the audited portal-read cause contract without changing metric values."""
 
     data = payload.get("data")
     if isinstance(data, dict):
@@ -132,7 +131,7 @@ def normalize_portal_read_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_portal_read_data(data: dict[str, Any]) -> dict[str, Any]:
-    """Keep only portal-read data shape and split-class aliases."""
+    """Keep only portal-read data shape and add the split-class ``Class`` alias."""
 
     normalized = {key: value for key, value in data.items() if key not in PORTAL_UNUSED_DATA_KEYS}
     for key in ("analysis_levels", "analysis_level_market_status"):
@@ -143,7 +142,7 @@ def normalize_portal_read_data(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ensure_class_alias(section: dict[str, Any]) -> dict[str, Any]:
-    """Mirror cache builder's split-class ``Class`` alias."""
+    """Mirror the cache builder's split-class alias for portal chart compatibility."""
 
     data = section.get("data")
     if not isinstance(data, dict) or "Class" in data or "Class 1" not in data:
@@ -164,19 +163,20 @@ def build_market_meta(
     molecules = list(definition.normalized_molecules)
     source = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     label = _market_label(atc_codes=atc_codes, molecules=molecules)
-    atc_desc = join_unique(item.atc4_desc for item in metrics.all_brands if item.atc4_desc)
+    if definition.view.startswith("strategic_"):
+        label = f"전략 동적 시장: {market_id}"
     return {
         "strategic_market_id": market_id,
         "market_name": label,
         "market_name_short": "동적 시장",
         "market_label_kor": label,
         "market_definition_label": label,
-        "market_definition_full": f"ATC4={', '.join(atc_codes) or '-'}; molecule={', '.join(molecules) or '-'}",
+        "market_definition_full": _market_definition_full(definition=definition, atc_codes=atc_codes, molecules=molecules),
+        "filters": definition.filter_echo,
         "mkt_team": "Runtime",
         "brand_list": [item.brand_name for item in metrics.all_brands[:100]],
         "atc_codes": atc_codes,
-        "atc_desc": atc_desc,
-        "view_source_id": "dynamic_general",
+        "view_source_id": _view_source_id(definition),
         "atc_count": len(atc_codes) or None,
         "nhi_type": None,
         "sources": [source],
@@ -194,9 +194,21 @@ def build_market_meta(
 
 
 def _market_id(definition: MarketDefinition) -> str:
+    if definition.strategic_market_id:
+        return definition.strategic_market_id
     fingerprint = repr(sorted((key, value) for key, value in definition.filter_echo.items()))
     digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:10]
     return f"dynamic_general_{digest}"
+
+
+def _view_source_id(definition: MarketDefinition) -> str:
+    return definition.view if definition.view.startswith("strategic_") else "dynamic_general"
+
+
+def _market_definition_full(*, definition: MarketDefinition, atc_codes: list[str], molecules: list[str]) -> str:
+    if definition.view.startswith("strategic_"):
+        return f"strategic_view={definition.view}; market_id={definition.strategic_market_id}; narrowing=analysis_level"
+    return f"ATC4={', '.join(atc_codes) or '-'}; molecule={', '.join(molecules) or '-'}"
 
 
 def _market_label(*, atc_codes: list[str], molecules: list[str]) -> str:
@@ -212,5 +224,10 @@ def _valid_measures(source: str) -> set[str]:
     return {"sales", "volume"} if source == "ubist" else {"sales", "unit", "dosage_unit", "counting_unit"}
 
 
-def _focus_brand(brands: tuple[BrandMetric, ...]) -> BrandMetric | None:
+def _focus_brand(brands: tuple[BrandMetric, ...], focus_brand_key: str | None) -> BrandMetric | None:
+    if focus_brand_key:
+        requested = focus_brand_key.strip()
+        for brand in brands:
+            if brand.brand_key == requested:
+                return brand
     return brands[0] if brands else None

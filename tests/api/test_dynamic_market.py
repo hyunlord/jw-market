@@ -97,7 +97,6 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
                 "focus",
                 "포커스",
                 "C10B",
-                "",
                 200.0,
                 66.666667,
                 1,
@@ -109,7 +108,6 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
                 "other",
                 "경쟁",
                 "C10B",
-                "",
                 100.0,
                 33.333333,
                 2,
@@ -174,7 +172,7 @@ def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
             assert mart_db
             assert bridge_db
 
-        def resolve(self, *, atc4, molecule, source, measure):
+        def resolve(self, *, atc4, molecule, source, measure, **_kwargs):
             return MarketDefinition(
                 view="general",
                 filter_echo={
@@ -193,7 +191,7 @@ def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
         def __init__(self, *, mart_db: str) -> None:
             assert mart_db
 
-        def aggregate(self, *, brands, source, measure, period_range, top_n):
+        def aggregate(self, *, brands, source, measure, period_range, top_n, **_kwargs):
             return AggregatedMetrics(
                 source=source,
                 measure=measure,
