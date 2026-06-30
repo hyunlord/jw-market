@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-news-crawl-tier1-daily
+  namespace: llmops
+  labels:
+    app: jw-news-crawl
+    crawl-tier: "1"
+spec:
+  # Keep suspended until PL approves the first large production run.
+  suspend: true
+  schedule: "10 18 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: jw-news-crawl
+            crawl-tier: "1"
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:crawl-2tier-REPLACE_WITH_TAG
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+              env:
+                - name: DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: DB_PORT
+                  value: "3306"
+                - name: DB_USER
+                  value: llmops
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: galera-mariadb-galera
+                      key: mariadb-password
+                - name: DB_NAME
+                  value: jw_mart
+              command: ["/bin/sh", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+                  WORK=/tmp/jw-news-crawl/tier1/$(date +%Y%m%d)
+                  python -c 'import zipfile; from pathlib import Path; target=Path("/tmp/jw-news-crawl/drug_profiles"); target.mkdir(parents=True, exist_ok=True); zipfile.ZipFile("docs/crawl/drug_profiles.zip").extractall(target)'
+                  python -m pipeline.scripts.crawler.crawl_2tier \
+                    --tier 1 \
+                    --run-crawl \
+                    --months 60 \
+                    --concurrent-sites 4 \
+                    --delay-sec 5 \
+                    --output-dir "$WORK/raw" \
+                    --drug-profile-dir /tmp/jw-news-crawl/drug_profiles
+                  python -m pipeline.scripts.agent_2.score_v2 \
+                    "$WORK/raw" \
+                    --catalog docs/crawl/_catalog.json \
+                    --output-root "$WORK/scored" \
+                    --limit 2000 \
+                    --run-log "$WORK/score_run_log.json"
+                  python -m pipeline.scripts.agent_2.corpus_loader \
+                    --corpus "$WORK/scored" \
+                    --catalog docs/crawl/_catalog.json \
+                    --output "$WORK/load_summary.json" \
+                    --db-name jw_mart \
+                    --tier 1 \
+                    --processed-by workflow_196_optionB_score_v2
