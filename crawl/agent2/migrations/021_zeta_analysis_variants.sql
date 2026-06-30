@@ -1,18 +1,14 @@
--- Phase ζ short/long variant support.
--- Existing legacy rows remain analysis_variant='legacy'.
-
-ALTER TABLE zeta_analysis_runs
-  ADD COLUMN IF NOT EXISTS analysis_variant VARCHAR(16) NOT NULL DEFAULT 'legacy' AFTER snapshot_at;
-
-ALTER TABLE zeta_analysis_runs
-  DROP INDEX IF EXISTS uq_brand_snapshot,
-  ADD UNIQUE KEY IF NOT EXISTS uq_brand_snapshot_variant (brand, snapshot_at, analysis_variant);
-
-ALTER TABLE cache_deep_analysis_ai_analysis
-  ADD COLUMN IF NOT EXISTS ai_analysis_short_json LONGTEXT AFTER ai_analysis_json,
-  ADD COLUMN IF NOT EXISTS ai_analysis_long_json LONGTEXT AFTER ai_analysis_short_json;
-
--- Rollback (PL approval required; destructive for generated short/long payloads):
--- ALTER TABLE cache_deep_analysis_ai_analysis
---   DROP COLUMN ai_analysis_short_json,
---   DROP COLUMN ai_analysis_long_json;
+-- DEPRECATED: split into explicit target migrations.
+--
+-- Do not apply this file. It intentionally contains no DDL because the previous
+-- combined migration tried to alter zeta_analysis_runs before adding operational
+-- cache columns. Production jw_mart may not contain zeta_analysis_runs, causing
+-- the combined migration to fail before cache_deep_analysis_ai_analysis receives
+-- ai_analysis_short_json/ai_analysis_long_json.
+--
+-- Use instead:
+--   021a_cache_ai_variant_columns.sql
+--     Operational cache DB only; additive sibling JSON columns.
+--   021b_zeta_runs_variant.sql
+--     Agent2 generation DB only; requires zeta_analysis_runs to exist and a
+--     duplicate preflight on (brand, snapshot_at).
