@@ -173,25 +173,33 @@ def score_tier2_corpus(input_dir: Path, output_dir: Path, brands: list[Tier2Bran
     }
 
 
-def run_tier1_existing_flow(args: argparse.Namespace) -> int:
+def build_tier1_command(args: argparse.Namespace) -> list[str]:
+    sites = args.sites or ",".join(_import_crawler().SITE_CONFIGS.keys())
     command = [
         sys.executable,
         str(CRAWLER_DIR / "crawl_news_full_orchestrator.py"),
-        "--profile-dir",
+        "--drug-profile-dir",
         args.drug_profile_dir,
-        "--output-base-dir",
+        "--sites",
+        sites,
+        "--output-base",
         args.output_dir,
         "--months",
         str(args.months),
-        "--delay-sec",
+        "--delay",
         str(args.delay_sec),
         "--concurrent-sites",
         str(args.concurrent_sites),
+        "--max-pages",
+        str(args.max_pages_per_site),
     ]
-    if args.sites:
-        command.extend(["--sites", args.sites])
-    if args.max_articles:
-        command.extend(["--max-articles", str(args.max_articles)])
+    if args.unique_json_per_url:
+        command.append("--batch-by-month")
+    return command
+
+
+def run_tier1_existing_flow(args: argparse.Namespace) -> int:
+    command = build_tier1_command(args)
     completed = subprocess.run(command, check=False)
     return int(completed.returncode)
 
@@ -225,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drug-profile-dir", default=str(CRAWL_ROOT / "config" / "drug_profiles"))
     parser.add_argument("--db-host", default=os.getenv("DB_HOST", "127.0.0.1"))
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3306")))
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d1_stage_20260625_173115"))
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart"))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
     parser.add_argument("--db-password", default=os.getenv("DB_PASSWORD", ""))
     return parser
@@ -235,7 +243,17 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.tier == "1":
         if args.dry_run or not args.run_crawl:
-            print(json.dumps({"tier": 1, "mode": "existing_wf196_flow", "planned": True}, ensure_ascii=False))
+            print(
+                json.dumps(
+                    {
+                        "tier": 1,
+                        "mode": "existing_wf196_flow",
+                        "planned": True,
+                        "orchestrator_command": build_tier1_command(args),
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 0
         return run_tier1_existing_flow(args)
 

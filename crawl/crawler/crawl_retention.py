@@ -26,66 +26,68 @@ def connect(args: argparse.Namespace) -> Any:
     )
 
 
-def count_expired(conn: Any, retention_days: int) -> dict[str, int]:
+def count_expired(conn: Any) -> dict[str, int]:
     queries = {
         "event_brand_scores": """
             SELECT COUNT(*) AS n
             FROM event_brand_scores
-            WHERE tier = 2 AND collected_at < (CURRENT_TIMESTAMP - INTERVAL %s DAY)
+            WHERE expire_at IS NOT NULL
+              AND expire_at < CURRENT_TIMESTAMP
         """,
         "events": """
             SELECT COUNT(*) AS n
             FROM events e
             LEFT JOIN event_brand_scores s ON s.event_id = e.event_id
-            WHERE e.tier = 2
-              AND e.collected_at < (CURRENT_TIMESTAMP - INTERVAL %s DAY)
+            WHERE e.expire_at IS NOT NULL
+              AND e.expire_at < CURRENT_TIMESTAMP
               AND s.event_id IS NULL
         """,
         "news_raw": """
             SELECT COUNT(*) AS n
             FROM news_raw n
             LEFT JOIN events e ON e.news_id = n.news_id
-            WHERE n.tier = 2
-              AND n.collected_at < (CURRENT_TIMESTAMP - INTERVAL %s DAY)
+            WHERE n.expire_at IS NOT NULL
+              AND n.expire_at < CURRENT_TIMESTAMP
               AND e.news_id IS NULL
         """,
     }
     with conn.cursor() as cursor:
         counts: dict[str, int] = {}
         for table, sql in queries.items():
-            cursor.execute(sql, (retention_days,))
+            cursor.execute(sql)
             row = cursor.fetchone() or {"n": 0}
             counts[table] = int(row["n"] or 0)
         return counts
 
 
-def delete_expired(conn: Any, retention_days: int) -> dict[str, int]:
+def delete_expired(conn: Any) -> dict[str, int]:
     statements = {
         "event_brand_scores": """
             DELETE FROM event_brand_scores
-            WHERE tier = 2 AND collected_at < (CURRENT_TIMESTAMP - INTERVAL %s DAY)
+            WHERE expire_at IS NOT NULL
+              AND expire_at < CURRENT_TIMESTAMP
         """,
         "events": """
             DELETE e
             FROM events e
             LEFT JOIN event_brand_scores s ON s.event_id = e.event_id
-            WHERE e.tier = 2
-              AND e.collected_at < (CURRENT_TIMESTAMP - INTERVAL %s DAY)
+            WHERE e.expire_at IS NOT NULL
+              AND e.expire_at < CURRENT_TIMESTAMP
               AND s.event_id IS NULL
         """,
         "news_raw": """
             DELETE n
             FROM news_raw n
             LEFT JOIN events e ON e.news_id = n.news_id
-            WHERE n.tier = 2
-              AND n.collected_at < (CURRENT_TIMESTAMP - INTERVAL %s DAY)
+            WHERE n.expire_at IS NOT NULL
+              AND n.expire_at < CURRENT_TIMESTAMP
               AND e.news_id IS NULL
         """,
     }
     deleted: dict[str, int] = {}
     with conn.cursor() as cursor:
         for table, sql in statements.items():
-            cursor.execute(sql, (retention_days,))
+            cursor.execute(sql)
             deleted[table] = int(cursor.rowcount or 0)
     conn.commit()
     return deleted
@@ -93,7 +95,7 @@ def delete_expired(conn: Any, retention_days: int) -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--retention-days", type=int, default=365)
+    parser.add_argument("--retention-days", type=int, default=365, help="Deprecated; expire_at now carries the TTL.")
     parser.add_argument("--apply", action="store_true", help="Delete expired Tier2 rows. Omit for read-only dry-run.")
     parser.add_argument("--db-host", default=os.getenv("DB_HOST", "127.0.0.1"))
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3306")))
@@ -105,9 +107,9 @@ def main() -> int:
     conn = connect(args)
     try:
         if args.apply:
-            result = {"dry_run": False, "deleted": delete_expired(conn, args.retention_days)}
+            result = {"dry_run": False, "deleted": delete_expired(conn)}
         else:
-            result = {"dry_run": True, "expired": count_expired(conn, args.retention_days)}
+            result = {"dry_run": True, "expired": count_expired(conn)}
     finally:
         conn.close()
     print(json.dumps(result, ensure_ascii=False))
@@ -116,4 +118,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

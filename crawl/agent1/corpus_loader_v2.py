@@ -49,6 +49,14 @@ class BuiltRecords:
     source_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class RetentionMetadataError(Exception):
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
+
+
 class CatalogResolver:
     """Resolve workflow brand names against the JW25 catalog and optional marts."""
 
@@ -187,6 +195,35 @@ def mysql_datetime(value: Any) -> str | None:
 
 def now_mysql_utc() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_mysql_datetime(value: str) -> datetime:
+    normalized = value.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(normalized[:19], fmt)
+        except ValueError:
+            continue
+    raise RetentionMetadataError(f"invalid MySQL DATETIME: {value}")
+
+
+def add_years(value: datetime, years: int) -> datetime:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return value.replace(year=value.year + years, month=2, day=28)
+
+
+def expire_at_for_tier(tier: int, collected_at: str) -> str:
+    collected = parse_mysql_datetime(collected_at)
+    match tier:
+        case 1:
+            expires = add_years(collected, 5)
+        case 2:
+            expires = add_years(collected, 1)
+        case _:
+            raise RetentionMetadataError(f"unsupported crawl tier for expire_at: {tier}")
+    return expires.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def period_ubist(value: date | None) -> str | None:
@@ -341,10 +378,13 @@ def build_records(
         "search_keyword": news.get("search_keyword"),
     }
     if tier is not None:
+        expire_at = expire_at_for_tier(tier, collected)
         news_row["tier"] = tier
         news_row["collected_at"] = collected
+        news_row["expire_at"] = expire_at
         event_row["tier"] = tier
         event_row["collected_at"] = collected
+        event_row["expire_at"] = expire_at
 
     scores: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -384,8 +424,10 @@ def build_records(
             "generated_at": scored_at or now_mysql_utc(),
         }
         if tier is not None:
+            expire_at = expire_at_for_tier(tier, collected)
             score_row["tier"] = tier
             score_row["collected_at"] = collected
+            score_row["expire_at"] = expire_at
         scores.append(score_row)
     return BuiltRecords(news=news_row, event=event_row, scores=scores, scored_path=scored_path, source_path=source_path)
 
@@ -445,9 +487,9 @@ def load_records(cursor: Any, records: BuiltRecords, *, dry_run: bool) -> dict[s
         "llm_meta",
     ]
     if "tier" in records.news:
-        news_update_columns.extend(["tier", "collected_at"])
-        event_update_columns.extend(["tier", "collected_at"])
-        score_update_columns.extend(["tier", "collected_at"])
+        news_update_columns.extend(["tier", "collected_at", "expire_at"])
+        event_update_columns.extend(["tier", "collected_at", "expire_at"])
+        score_update_columns.extend(["tier", "collected_at", "expire_at"])
     news_rowcount = execute_insert(
         cursor,
         "news_raw",

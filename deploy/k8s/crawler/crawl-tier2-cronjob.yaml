@@ -47,7 +47,7 @@ spec:
                       name: galera-mariadb-galera
                       key: mariadb-password
                 - name: DB_NAME
-                  value: jw_mart_d1_stage_20260625_173115
+                  value: jw_mart
               command: ["/bin/sh", "-lc"]
               args:
                 - |
