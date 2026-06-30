@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import requests
@@ -27,7 +29,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
 from jw_chat_agent_poc.service.genos_client import GenosClient
-from jw_chat_agent_poc.service.models import ChatAccepted, ChatRequest, HealthResponse
+from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.common.timing import ensure_timing, finish, stage
@@ -39,6 +41,16 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
 
 
 AgentFactory = Callable[..., ChatAgent]
+
+
+@dataclass(frozen=True, slots=True)
+class FinalAnswer:
+    text: str
+    charts: list[dict[str, Any]]
+    timing: dict[str, Any]
+    trace: dict[str, Any]
+    sources: tuple[str, ...]
+    conversation_id: str | None
 
 
 class SessionStore:
@@ -100,6 +112,28 @@ def create_app(
             session_id=session_id,
             conversation_id=result["conversation_id"],
             sources=tuple(result["result"].get("sources", ())),
+        )
+
+    @app.post("/chat/answer", response_model=ChatAnswer)
+    def chat_answer(request: ChatRequest) -> ChatAnswer:
+        documents = tuple(Path(path) for path in request.document_paths)
+        item = _answer_question(
+            store,
+            resolver,
+            make_agent,
+            request.question,
+            request.external_mode,
+            request.conversation_id,
+            list(documents),
+            use_direct_agent_loop=use_direct_agent_loop,
+        )
+        final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+        return ChatAnswer(
+            text=final_answer.text,
+            charts=final_answer.charts,
+            trace=final_answer.trace,
+            sources=final_answer.sources,
+            conversation_id=final_answer.conversation_id,
         )
 
     @app.get("/chat/stream")
@@ -343,6 +377,16 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
     if conversation_id:
         yield f"event: conversation\ndata: {conversation_id}\n\n"
     yield f"event: sources\ndata: {','.join(source_labels(result.get('sources', [])))}\n\n"
+    final_answer = compute_final_answer(question, result, conversation_id)
+    yield from iter_markdown_sse_events(final_answer.text)
+    if final_answer.charts:
+        yield _sse_json_event("charts", final_answer.charts)
+    yield _sse_json_event("timing", final_answer.timing)
+    yield _sse_json_event("trace", final_answer.trace)
+    yield "event: done\ndata: ok\n\n"
+
+
+def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     client = GenosClient()
     timing = ensure_timing(result)
     try:
@@ -367,22 +411,22 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
     safe_answer = cleanup_markdown_answer(safe_answer)
     safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
     safe_answer = apply_claim_policy(question, safe_answer, fact_md)
-    yield from iter_markdown_sse_events(safe_answer)
-    if charts:
-        yield _sse_json_event("charts", charts)
-    yield _sse_json_event("timing", timing_payload)
-    yield _sse_json_event(
-        "trace",
-        trace_envelope(
-            question=question,
-            result=result,
-            answer=safe_answer,
-            charts=charts,
-            timing=timing_payload,
-            conversation_id=conversation_id,
-        ),
+    trace = trace_envelope(
+        question=question,
+        result=result,
+        answer=safe_answer,
+        charts=charts,
+        timing=timing_payload,
+        conversation_id=conversation_id,
     )
-    yield "event: done\ndata: ok\n\n"
+    return FinalAnswer(
+        text=safe_answer,
+        charts=charts,
+        timing=timing_payload,
+        trace=trace,
+        sources=tuple(result.get("sources", ())),
+        conversation_id=conversation_id,
+    )
 
 
 def _sse_delta(token: str) -> str:

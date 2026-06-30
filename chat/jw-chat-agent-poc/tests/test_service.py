@@ -51,6 +51,21 @@ def _market_scope_resolver() -> MarketScopeResolver:
     return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader)
 
 
+def _reconstruct_answer_from_sse(sse: str) -> str:
+    answer_parts: list[str] = []
+    for block in sse.split("\n\n"):
+        if block.startswith("event: delta\n"):
+            answer_parts.append("\n".join(line.removeprefix("data: ") for line in block.splitlines()[1:]))
+        elif block.startswith("event: markdown_block\n"):
+            payload = json.loads(block.split("data: ", 1)[1])
+            answer_parts.append(payload["markdown"])
+    return "".join(answer_parts)
+
+
+def _normalize_markdown_spacing(markdown: str) -> str:
+    return "\n\n".join(part.strip() for part in markdown.strip().split("\n\n") if part.strip())
+
+
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -162,6 +177,7 @@ def test_create_app_exposes_chat_routes() -> None:
     paths = {route.path for route in app.routes}
 
     assert "/chat" in paths
+    assert "/chat/answer" in paths
     assert "/chat/stream" in paths
     assert "/__version" in paths
     assert "/healthz" in paths
@@ -541,6 +557,55 @@ def test_stream_endpoint_emits_series_chart_from_verified_facts(monkeypatch) -> 
     assert '"title":"리바로 매출 추이"' in response.text
     assert "8711248139.54" in response.text
     assert "event: done" in response.text
+
+
+def test_chat_answer_returns_same_final_markdown_and_metadata_as_stream(monkeypatch) -> None:
+    class SeriesAgent:
+        def __init__(self, *, external_mode: str = "live") -> None:
+            self.external_mode = external_mode
+
+        def answer(self, _question: str, _documents=None) -> dict:
+            return {
+                "answer": "리바로 최근 매출 추이를 확인했습니다.",
+                "sources": ["cache"],
+                "tool_calls": [
+                    {
+                        "source": "cache",
+                        "tool": "get_brand_metric",
+                        "render_data": {
+                            "brand": "리바로",
+                            "metric": "series",
+                            "source_label": "UBIST",
+                            "brand_value_series_10pt": [
+                                {"period": "2026-03", "value_krw": 8_711_248_139.54},
+                                {"period": "2026-04", "value_krw": 8_493_234_217.11},
+                            ],
+                        },
+                    }
+                ],
+            }
+
+    def stream_answer(_self, _question, _result):
+        yield "리바로 최근 매출 추이입니다.\n\n| 기간 | 매출 |\n| --- | --- |\n| 2026-03 | 87.11억원 |"
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    app = create_app(agent_factory=lambda external_mode="live": SeriesAgent(external_mode=external_mode))
+    client = TestClient(app)
+    payload = {"question": "리바로 최근 매출 추이"}
+
+    answer_response = client.post("/chat/answer", json=payload)
+    stream_response = client.get("/chat/stream", params=payload)
+
+    assert answer_response.status_code == 200
+    assert stream_response.status_code == 200
+    body = answer_response.json()
+    assert _normalize_markdown_spacing(body["text"]) == _normalize_markdown_spacing(
+        _reconstruct_answer_from_sse(stream_response.text)
+    )
+    assert body["sources"] == ["cache"]
+    assert body["conversation_id"]
+    assert body["charts"][0]["title"] == "리바로 매출 추이"
+    assert body["trace"]["answer_contract_status"]["status"]
 
 
 def test_stream_endpoint_emits_timing_metadata_only(monkeypatch) -> None:
