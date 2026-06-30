@@ -88,6 +88,12 @@ COMPACT_TAGGED_BASIS_RE = re.compile(
     r"(?<![\d,.])(?P<number>[+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[+-]?\d+(?:\.\d+)?)"
     r"(?P<tag>\((?:ML|CD)·(?:IQVIA|UBIST)·[^)]{1,80}\))"
 )
+COMPACT_TAG_PARTS_RE = re.compile(
+    r"\((?P<view>ML|CD)·(?P<source>IQVIA|UBIST)·(?P<measure>[^)·]+)·(?P<period>\d{4}-Q\d|\d{4}-\d{2})\)"
+)
+FORECAST_HORIZON_PERIOD_PATH_RE = re.compile(
+    r"(?P<prefix>forecast_simulation\.by_view\.(?P<view>[A-Z]+)\.(?P<source>[A-Z]+)\.(?P<measure>[^.]+)\.horizon_(?:1y|3y|5y|10y))\.period::(?P<period>\d{4}-Q\d|\d{4}-\d{2})$"
+)
 STANDALONE_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 MARKET_METRIC_PATH_RE = re.compile(
     r"("
@@ -257,6 +263,8 @@ def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[di
                     "pattern": spec["name"],
                     "number_type": number_type,
                     "tolerance": _tolerance_for_type(number_type, config),
+                    "start": match.start(),
+                    "end": match.end(),
                     "low_priority": bool(spec.get("low_priority", False))
                     or _is_qualified_threshold(raw_text, text or ""),
                     "ci_confidence_literal": _is_ci_confidence_literal(raw_text, text or "", value),
@@ -328,6 +336,154 @@ def find_match_unit_aware(
     return best_path
 
 
+def _find_compact_tag_aware_match(
+    item: dict[str, Any],
+    context_text: str,
+    bundle: dict[str, Any],
+    bundle_index: dict[float, list[str]],
+    config: ValidatorConfig,
+) -> str | None:
+    tag_parts = _compact_tag_parts_after_number(context_text, int(item.get("end") or 0))
+    if tag_parts is None:
+        return None
+    return _find_path_for_compact_tagged_number(
+        float(item["value"]),
+        bundle_index,
+        str(item["number_type"]),
+        config,
+        tag_parts,
+        bundle,
+    )
+
+
+def _compact_tag_parts_after_number(text: str, number_end: int) -> dict[str, str] | None:
+    after = text[number_end : number_end + 96]
+    match = re.match(r"\s*(?:원|KRW|unit|개|정|캡슐|바이알|포|병|건|Rx|dosage unit|counting unit)?\s*", after, re.IGNORECASE)
+    offset = match.end() if match else 0
+    return _parse_compact_tag(after[offset:])
+
+
+def _parse_compact_tag(tag: str) -> dict[str, str] | None:
+    match = COMPACT_TAG_PARTS_RE.search(tag or "")
+    if match is None:
+        return None
+    return match.groupdict()
+
+
+def _find_path_for_compact_tagged_number(
+    value: float,
+    bundle_index: dict[float, list[str]],
+    number_type: str,
+    config: ValidatorConfig,
+    tag_parts: dict[str, str] | None,
+    bundle: dict[str, Any] | None = None,
+) -> str | None:
+    if tag_parts is None:
+        return None
+    period_prefixes = _forecast_period_prefixes(bundle_index, tag_parts, bundle)
+    candidates = _numeric_candidate_paths(value, bundle_index, number_type, config)
+
+    def score(path: str) -> tuple[int, int, int, str]:
+        period_score = 0 if any(path.startswith(prefix + ".") for prefix in period_prefixes) else 1
+        source_score = 0 if f".{tag_parts['source']}." in path else 1
+        measure_score = _compact_measure_score(path, tag_parts, number_type)
+        return (period_score, source_score, measure_score, path)
+
+    compatible = [path for path in candidates if str(path).startswith("forecast_simulation.by_view.")]
+    if not compatible:
+        return None
+    return min(compatible, key=score)
+
+
+def _numeric_candidate_paths(
+    value: float,
+    bundle_index: dict[float, list[str]],
+    number_type: str,
+    config: ValidatorConfig,
+) -> list[str]:
+    tolerance = _tolerance_for_type(number_type, config)
+    if number_type == "unit_pack" and value.is_integer():
+        tolerance = max(tolerance, 0.52)
+    relative_tolerance = float(getattr(config, "relative_tolerance", 0.001))
+    candidates: list[str] = []
+    for bundle_value, paths in bundle_index.items():
+        delta = abs(bundle_value - value)
+        matches_absolute = delta <= tolerance
+        matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= relative_tolerance
+        if not (matches_absolute or matches_relative):
+            continue
+        candidates.extend(path for path in paths if ".model." not in path and ".horizon_" in path)
+    return candidates
+
+
+def _forecast_period_prefixes(
+    bundle_index: dict[float, list[str]],
+    tag_parts: dict[str, str],
+    bundle: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    if bundle is not None:
+        bundle_prefixes = _forecast_period_prefixes_from_bundle(bundle, tag_parts)
+        if bundle_prefixes:
+            return bundle_prefixes
+
+    prefixes: list[str] = []
+    for paths in bundle_index.values():
+        for path in paths:
+            match = FORECAST_HORIZON_PERIOD_PATH_RE.fullmatch(path)
+            if match is None:
+                continue
+            if match.group("period") != tag_parts["period"]:
+                continue
+            if match.group("source") != tag_parts["source"]:
+                continue
+            if not _measure_compatible(match.group("measure"), tag_parts["measure"], "currency_krw"):
+                continue
+            prefixes.append(match.group("prefix"))
+    return tuple(prefixes)
+
+
+def _forecast_period_prefixes_from_bundle(bundle: dict[str, Any], tag_parts: dict[str, str]) -> tuple[str, ...]:
+    forecast = bundle.get("forecast_simulation") or {}
+    by_view = forecast.get("by_view") or {}
+    prefixes: list[str] = []
+    for key, payload in by_view.items():
+        parts = key.split(".")
+        if len(parts) != 3:
+            continue
+        view, source, measure = parts
+        if view != tag_parts["view"] or source != tag_parts["source"]:
+            continue
+        if not _measure_compatible(measure, tag_parts["measure"], "currency_krw"):
+            continue
+        for horizon in ("1y", "3y", "5y", "10y"):
+            horizon_payload = payload.get(f"horizon_{horizon}") or {}
+            if str(horizon_payload.get("period") or "") == tag_parts["period"]:
+                prefixes.append(f"forecast_simulation.by_view.{view}.{source}.{measure}.horizon_{horizon}")
+    return tuple(prefixes)
+
+
+def _compact_measure_score(path: str, tag_parts: dict[str, str], number_type: str) -> int:
+    forecast_match = FORECAST_VIEW_PATH_RE.search(path)
+    if forecast_match is None:
+        return 2
+    measure = forecast_match.group(3)
+    return 0 if _measure_compatible(measure, tag_parts["measure"], number_type) else 2
+
+
+def _measure_compatible(path_measure: str, tag_measure: str, number_type: str) -> bool:
+    if path_measure == tag_measure:
+        return True
+    if tag_measure in {"수량", "처방량"} and path_measure in {"unit", "dosage_unit", "counting_unit", "volume"}:
+        return True
+    if tag_measure in {"매출", "sales"} and path_measure == "sales":
+        return True
+    if number_type == "unit_pack" and path_measure in {"unit", "dosage_unit", "counting_unit", "volume"}:
+        return True
+    if number_type == "currency_krw" and path_measure == "sales":
+        return True
+    return False
+
+
 def _stage_contexts(stage_dict: dict[str, Any]) -> dict[str, str]:
     contexts = {
         "title": str(stage_dict.get("title", "")),
@@ -341,6 +497,7 @@ def _stage_contexts(stage_dict: dict[str, Any]) -> dict[str, str]:
 def validate_stage_output(
     stage: str,
     stage_dict: dict[str, Any],
+    bundle: dict[str, Any],
     bundle_index: dict[float, list[str]],
     config: ValidatorConfig,
 ) -> StageValidation:
@@ -350,7 +507,9 @@ def validate_stage_output(
 
     for context_name, text in _stage_contexts(stage_dict).items():
         for item in extract_numbers(text, config):
-            matched_path = find_match_unit_aware(item["value"], bundle_index, item["number_type"], config)
+            matched_path = _find_compact_tag_aware_match(item, text, bundle, bundle_index, config)
+            if matched_path is None:
+                matched_path = find_match_unit_aware(item["value"], bundle_index, item["number_type"], config)
             record = {
                 "stage": stage,
                 "context": context_name,
@@ -547,7 +706,7 @@ def _simulation_evidence_matches_bundle(item: dict[str, Any], bundle: dict, conf
     bundle_index = build_bundle_path_index(bundle)
     compact_matches = list(COMPACT_TAGGED_BASIS_RE.finditer(basis))
     if compact_matches:
-        return all(_compact_tagged_basis_matches(match, bundle_index, config) for match in compact_matches)
+        return all(_compact_tagged_basis_matches(match, bundle, bundle_index, config) for match in compact_matches)
 
     basis_numbers = [
         number
@@ -565,6 +724,7 @@ def _simulation_evidence_matches_bundle(item: dict[str, Any], bundle: dict, conf
 
 def _compact_tagged_basis_matches(
     match: re.Match[str],
+    bundle: dict[str, Any],
     bundle_index: dict[float, list[str]],
     config: ValidatorConfig,
 ) -> bool:
@@ -579,7 +739,10 @@ def _compact_tagged_basis_matches(
         number_type = "percent_signed" if match.group("number").startswith(("+", "-")) else "percent"
     else:
         number_type = "currency_krw"
-    matched_path = find_match_unit_aware(value, bundle_index, number_type, config)
+    tag_parts = _parse_compact_tag(tag)
+    matched_path = _find_path_for_compact_tagged_number(value, bundle_index, number_type, config, tag_parts, bundle)
+    if matched_path is None:
+        matched_path = find_match_unit_aware(value, bundle_index, number_type, config)
     return str(matched_path or "").startswith(("forecast_simulation.by_view.", "market_views["))
 
 
@@ -690,6 +853,7 @@ def validate_simulation_prediction_policy(
     parsed_output: dict,
     bundle: dict,
     prediction_result: StageValidation,
+    analysis_variant: str = "legacy",
 ) -> list[dict[str, Any]]:
     if not _forecast_simulation_available(bundle):
         return []
@@ -751,7 +915,12 @@ def validate_simulation_prediction_policy(
         )
 
     matched_paths = [str(item.get("matched_path") or "") for item in simulation_matches]
-    for horizon in ["1y", "3y", "5y"]:
+    required_horizons = {
+        "legacy": ("1y", "3y", "5y"),
+        "short": ("1y",),
+        "long": ("5y",),
+    }.get(analysis_variant, ("1y", "3y", "5y"))
+    for horizon in required_horizons:
         if not any(f"horizon_{horizon}" in path for path in matched_paths):
             issues.append(
                 _prediction_policy_issue(
@@ -760,6 +929,14 @@ def validate_simulation_prediction_policy(
                     f"prediction stage에서 forecast_simulation horizon_{horizon} 수치를 사용해야 합니다.",
                 )
             )
+    if analysis_variant == "short" and any("horizon_5y" in path for path in matched_paths):
+        issues.append(
+            _prediction_policy_issue(
+                "simulation_short_uses_horizon_5y",
+                "",
+                "short variant는 horizon_1y 중심이어야 하며 horizon_5y를 주된 prediction 근거로 쓰면 안 됩니다.",
+            )
+        )
 
     insight_count, numeric_list_count = _prediction_insight_counts(_prediction_body_text(parsed_output))
     insight_too_sparse = insight_count < MIN_PREDICTION_INSIGHT_SENTENCES and numeric_list_count >= 2
@@ -787,7 +964,7 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
     total_matched = 0
 
     for stage in ["phenomenon", "cause", "prediction", "recommendation"]:
-        stage_result = validate_stage_output(stage, parsed_output.get(stage, {}) or {}, bundle_index, config)
+        stage_result = validate_stage_output(stage, parsed_output.get(stage, {}) or {}, bundle, bundle_index, config)
         stage_results[stage] = stage_result
         all_unmatched.extend(stage_result.unmatched)
         all_warnings.extend(stage_result.warnings)
@@ -800,6 +977,7 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
             parsed_output,
             bundle,
             stage_results.get("prediction") or StageValidation(False, [], [], []),
+            config.analysis_variant,
         )
     )
     policy_issues.extend(validate_view_label_policy(bundle, stage_results))

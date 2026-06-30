@@ -63,6 +63,10 @@ def test_prompt_structure():
     assert "horizon_1y/horizon_3y/horizon_5y" in question
     assert "95% 신뢰구간" in question
     assert "단독 bullet" in question
+    assert "bundle에 없는 퍼센트" in question
+    assert "흐름/변동/증감/성장" in question
+    assert "(ML·정책·약가인상)" in question
+    assert "임의 compact tag" in question
 
 
 def test_prompt_determinism():
@@ -73,3 +77,38 @@ def test_prompt_determinism():
     p2 = build_question_string(bundle, config)
 
     assert p1 == p2
+
+
+def test_short_prompt_focuses_on_one_year_near_term_actions():
+    question = build_question_string(
+        sample_bundle(),
+        RunnerConfig.default_for_tests().with_analysis_variant("short"),
+    )
+
+    assert "analysis_variant: short" in question
+    assert "단기 인사이트" in question
+    assert "horizon_1y" in question
+    assert "1년 내 변화" in question
+    assert "가까운 처방" in question
+    assert "즉시 대응" in question
+    assert "3년/5년 예측값" in question
+    assert "5년 구조 변화" in question
+    assert "주된 근거로 삼지 마세요" in question
+    assert "recommendation도 bullet 요약으로 압축하지 말고" in question
+    assert "100위권 밖" in question
+
+
+def test_long_prompt_focuses_on_five_year_structural_strategy():
+    question = build_question_string(
+        sample_bundle(),
+        RunnerConfig.default_for_tests().with_analysis_variant("long"),
+    )
+
+    assert "analysis_variant: long" in question
+    assert "장기 인사이트" in question
+    assert "horizon_5y" in question
+    assert "5년 구조적 추세" in question
+    assert "전략 포지셔닝" in question
+    assert "horizon_3y" in question
+    assert "중간 점검점" in question
+    assert "단기 실행 체크리스트로 축소하지 마세요" in question

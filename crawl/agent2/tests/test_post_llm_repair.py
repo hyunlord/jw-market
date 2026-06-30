@@ -81,6 +81,28 @@ def _forecast_bundle():
     }
 
 
+def _zero_long_forecast_bundle():
+    bundle = _forecast_bundle()
+    bundle["event_bundle"] = {"events_brand_centric": [{"news_id": 0}], "events_market_trend": []}
+    bundle["forecast_simulation"]["by_view"]["ML.IQVIA.dosage_unit"] = {
+        "source": "IQVIA",
+        "measure": "dosage_unit",
+        "horizon_1y": {
+            "period": "2026-Q3",
+            "base": 869712.27,
+            "ci_lower_95": 322665.45,
+            "ci_upper_95": 1321878.14,
+        },
+        "horizon_5y": {
+            "period": "2030-Q3",
+            "base": 0.0,
+            "ci_lower_95": 0.0,
+            "ci_upper_95": 1178235.53,
+        },
+    }
+    return bundle
+
+
 def _negative_trend_bundle():
     return {
         "market_views": [
@@ -89,6 +111,23 @@ def _negative_trend_bundle():
                 "source": "IQVIA",
                 "target_brand_metric": {"history": {"2025-Q4": {"qoq_pct": -19.27}}},
             }
+        ]
+    }
+
+
+def _multi_view_negative_trend_bundle():
+    return {
+        "market_views": [
+            {
+                "view_id": "ML.UBIST.sales",
+                "source": "UBIST",
+                "target_brand_metric": {"history": {"2026-05": {"mom_pct": -15.07}}},
+            },
+            {
+                "view_id": "ML.UBIST.volume",
+                "source": "UBIST",
+                "target_brand_metric": {"history": {"2026-05": {"mom_pct": -16.121676369104875}}},
+            },
         ]
     }
 
@@ -208,11 +247,113 @@ def test_repair_restores_missing_negative_percent_sign_only_when_bundle_confirms
 
     assert "-19.27%(ML·IQVIA·sales·2025-Q4)" in repaired.parsed_output["phenomenon"]["body"]
     assert "-19.27%(ML·IQVIA·sales·2025-Q4)" in repaired.parsed_output["phenomenon"]["bullets"][0]
-    assert [change["type"] for change in repaired.changes] == [
-        "signed_percent_polarity",
-        "signed_percent_polarity",
-    ]
+    assert [change["type"] for change in repaired.changes].count("signed_percent_polarity") == 2
     assert result.valid
+
+
+def test_repair_restores_negative_percent_after_decimal_in_previous_sentence():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": (
+                "매출은 전월 대비 -15.07%(ML·UBIST·매출·2026-05) 감소했습니다. "
+                "처방량 또한 전월 대비 16.12%(ML·UBIST·처방량·2026-05) 줄어들었습니다."
+            ),
+            "bullets": ["핵심 처방처 이탈 방지 근거: 15.07%(ML·UBIST·매출·2026-05) 감소"],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _multi_view_negative_trend_bundle(), _config())
+
+    assert "-16.12%(ML·UBIST·처방량·2026-05)" in repaired.parsed_output["phenomenon"]["body"]
+    assert "-15.07%(ML·UBIST·매출·2026-05)" in repaired.parsed_output["phenomenon"]["bullets"][0]
+    assert [change["type"] for change in repaired.changes].count("signed_percent_polarity") == 2
+
+
+def test_repair_restores_negative_percent_in_numeric_basis_context():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "",
+            "bullets": ["핵심 처방처 이탈 방지를 위한 밀착 모니터링 강화 (근거: 15.07%(ML·UBIST·매출·2026-05))"],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _multi_view_negative_trend_bundle(), _config())
+
+    assert "-15.07%(ML·UBIST·매출·2026-05)" in repaired.parsed_output["phenomenon"]["bullets"][0]
+    assert [change["type"] for change in repaired.changes] == ["signed_percent_polarity"]
+
+
+def test_repair_restores_bare_negative_percent_sign_when_trend_metric_confirms_it():
+    bundle = _multi_view_negative_trend_bundle()
+    bundle["market_views"][0]["target_brand_metric"]["history"]["2026-05"]["raw_value"] = 8038598794
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "최근 월간 매출은 8,038,598,794(ML·UBIST·매출·2026-05)로 전월 대비 15.07% 감소했습니다.",
+            "bullets": ["최근 월간 매출은 전월 대비 15.07% 감소"],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, bundle, _config())
+    result = validate_output(repaired.parsed_output, bundle, _config())
+
+    assert "전월 대비 -15.07% 감소" in repaired.parsed_output["phenomenon"]["body"]
+    assert "전월 대비 -15.07% 감소" in repaired.parsed_output["phenomenon"]["bullets"][0]
+    assert [change["type"] for change in repaired.changes].count("signed_percent_polarity") == 2
+    assert result.valid
+
+
+def test_repair_removes_artificial_out_of_range_rank_number():
+    parsed_output = {
+        "phenomenon": {
+            "title": "",
+            "body": "처방 순위가 100위권 밖으로 밀려났습니다.",
+            "bullets": ["처방 순위 100위권 밖으로 밀려나며 경쟁 브랜드 대비 열위"],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, {}, _config())
+
+    assert repaired.parsed_output["phenomenon"]["body"] == "처방 순위가 순위권 밖으로 밀려났습니다."
+    assert repaired.parsed_output["phenomenon"]["bullets"][0] == "처방 순위권 밖으로 밀려나며 경쟁 브랜드 대비 열위"
+    assert [change["type"] for change in repaired.changes] == ["out_of_range_rank", "out_of_range_rank"]
+
+
+def test_repair_removes_invalid_compact_like_event_tags_without_changing_the_value():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {
+            "title": "약가 정책",
+            "body": "정책 변화로 12.20%(ML·정책·약가인상)의 가격 조정이 언급됐습니다.",
+            "bullets": ["약가 이벤트 12.20%(ML·정책·약가인상)"],
+        },
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, {}, _config())
+
+    assert "12.20%(ML·정책·약가인상)" not in repaired.parsed_output["cause"]["body"]
+    assert "12.20%의 가격 조정" in repaired.parsed_output["cause"]["body"]
+    assert repaired.parsed_output["cause"]["bullets"][0] == "약가 이벤트 12.20%"
+    assert [change["type"] for change in repaired.changes] == [
+        "invalid_compact_tag_removed",
+        "invalid_compact_tag_removed",
+    ]
 
 
 def test_repair_keeps_positive_percent_when_bundle_has_positive_value():
@@ -371,3 +512,82 @@ def test_repair_converts_dotted_forecast_tags_to_compact_tags():
     assert "537.57(ML·IQVIA·counting_unit·2030-Q3)" in body
     assert "275.99(ML·IQVIA·counting_unit·2026-Q3)" in body
     assert validation.valid
+
+
+def test_repair_zero_forecast_tag_uses_variant_horizon_in_prediction_context():
+    config = RunnerConfig.default_for_tests().validator
+    config = type(config)(**{**config.__dict__, "analysis_variant": "long"})
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "장기 전망",
+            "body": (
+                "5년 후 기준 예측값은 0(ML·IQVIA·수량·2026-Q1)입니다. "
+                "1년 후 기준 예측값은 869,712(ML·IQVIA·수량·2026-Q1)입니다. "
+                "95% 신뢰구간은 322,665.45에서 1,321,878.14 사이입니다. "
+                "장기 처방 방향성은 하향 압박이 유지될 가능성을 시사합니다. "
+                "CI 폭이 넓어 5년 구조 전망은 불확실성 관리가 필요합니다."
+            ),
+            "bullets": [],
+            "evidence": [{"title": "수치 근거", "basis": "0.00(ML·IQVIA·수량·2026-Q1)"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, _zero_long_forecast_bundle(), config)
+    validation = validate_output(repaired.parsed_output, _zero_long_forecast_bundle(), config)
+
+    assert "0(ML·IQVIA·dosage_unit·2030-Q3)" in repaired.parsed_output["prediction"]["body"]
+    assert "869,712(ML·IQVIA·dosage_unit·2026-Q3)" in repaired.parsed_output["prediction"]["body"]
+    assert repaired.parsed_output["prediction"]["evidence"][0]["basis"] == "0.00(ML·IQVIA·dosage_unit·2030-Q3)"
+    assert validation.valid
+
+
+def test_repair_rounds_forecast_compact_tag_numbers_to_formatter_safe_precision():
+    bundle = _forecast_bundle()
+    bundle["forecast_simulation"]["by_view"]["ML.IQVIA.counting_unit"]["horizon_1y"]["ci_lower_95"] = 113329.52015617631
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "단기 처방량 전망",
+            "body": (
+                "1년 뒤 기준 예측값은 123,572(ML·IQVIA·counting_unit·2026-Q3)입니다. "
+                "95% 신뢰구간은 113,329.52015617631(ML·IQVIA·counting_unit·2026-Q3)에서 "
+                "189,354(ML·IQVIA·counting_unit·2026-Q3) 범위입니다. "
+                "단기 처방 기반은 완만히 확대될 가능성을 시사합니다."
+            ),
+            "bullets": [
+                "95% 신뢰구간 113,329.52015617631(ML·IQVIA·counting_unit·2026-Q3) ~ 189,354(ML·IQVIA·counting_unit·2026-Q3)"
+            ],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, bundle, _config())
+
+    assert "113,329.52(ML·IQVIA·counting_unit·2026-Q3)" in repaired.parsed_output["prediction"]["body"]
+    assert "113,329.52015617631" not in repaired.parsed_output["prediction"]["body"]
+    assert repaired.changes[0]["type"] == "forecast_compact_tag"
+
+
+def test_repair_retains_integer_rounded_forecast_unit_with_correct_compact_period():
+    bundle = _forecast_bundle()
+    bundle["forecast_simulation"]["by_view"]["ML.IQVIA.unit"]["horizon_1y"]["base"] = 338.49
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "단기 처방량 전망",
+            "body": "1년 후 처방량 예측값은 339(ML·IQVIA·unit·2026-Q1)으로 단기 성장 방향성을 시사합니다.",
+            "bullets": ["1년 후 처방량 예측값 339(ML·IQVIA·unit·2026-Q1)"],
+            "evidence": [{"title": "수치 근거", "basis": "339(ML·IQVIA·unit·2026-Q1)", "stage": "prediction"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    repaired = repair_post_llm_output(parsed_output, bundle, _config())
+
+    assert "339(ML·IQVIA·unit·2026-Q3)" in repaired.parsed_output["prediction"]["body"]
+    assert repaired.parsed_output["prediction"]["evidence"][0]["basis"] == "339(ML·IQVIA·unit·2026-Q3)"

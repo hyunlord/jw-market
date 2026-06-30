@@ -38,16 +38,25 @@ FORECAST_NUMBER_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 VALID_COMPACT_TAG_RE = re.compile(r"\((?:ML|CD)·(?:IQVIA|UBIST)·[^)·]+·(?:\d{4}-Q\d|\d{4}-\d{2})\)")
+COMPACT_TAG_PARTS_RE = re.compile(
+    r"\((?P<view>ML|CD)·(?P<source>IQVIA|UBIST)·(?P<measure>[^)·]+)·(?P<period>\d{4}-Q\d|\d{4}-\d{2})\)"
+)
 SIGNLESS_PERCENT_WITH_COMPACT_TAG_RE = re.compile(
     r"(?<![+-])(?P<number>\d+(?:\.\d+)?)%(?P<tag>\((?:ML|CD)·(?:IQVIA|UBIST)·[^)]{1,80}\))"
 )
+BARE_SIGNLESS_PERCENT_RE = re.compile(r"(?<![+-])(?P<number>\d+(?:\.\d+)?)%(?!\()")
+INVALID_COMPACT_LIKE_TAG_RE = re.compile(
+    r"(?P<number>\d+(?:\.\d+)?)%(?P<tag>\((?!(?:ML|CD)·(?:IQVIA|UBIST)·)[^)]*·[^)]*\))"
+)
+OUT_OF_RANGE_RANK_RE = re.compile(r"(?:순위\s*)?100위권\s*밖")
 FORECAST_BASIS_RE = re.compile(
     r"(?<![\d,.])(?P<number>[+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[+-]?\d+(?:\.\d+)?)"
     r"(?P<tag>\((?:ML|CD)·(?:IQVIA|UBIST)·[^)]{1,80}\))"
 )
-NEGATIVE_TREND_CONTEXT_RE = re.compile(r"(감소|하락|축소|둔화|역성장|마이너스|악화)")
+NEGATIVE_TREND_CONTEXT_RE = re.compile(r"(감소|하락|축소|둔화|역성장|마이너스|악화|줄어들|줄었|줄어)")
+EVIDENCE_BASIS_CONTEXT_RE = re.compile(r"(근거|basis)", re.IGNORECASE)
 PERIOD_CHANGE_CONTEXT_RE = re.compile(
-    r"(전\s*분기\s*대비|전\s*년\s*동기\s*대비|전년\s*대비|\d{4}\s*년\s*\d+\s*분기\s*대비|QoQ|YoY)",
+    r"(전\s*월\s*대비|전\s*분기\s*대비|전\s*년\s*동기\s*대비|전년\s*대비|\d{4}\s*년\s*\d+\s*분기\s*대비|MoM|QoQ|YoY)",
     re.IGNORECASE,
 )
 SIGNED_TREND_METRIC_PATH_RE = re.compile(r"(qoq_pct|yoy_pct|growth|mom_pct|mat_yoy_pct)")
@@ -84,6 +93,8 @@ def repair_post_llm_output(
             repaired_text = _repair_decimal_metric_units(repaired_text, path, bundle_index, config, changes)
             repaired_text = _repair_forecast_compact_tags(repaired_text, path, bundle, bundle_index, config, changes)
             repaired_text = _repair_signed_percent_polarity(repaired_text, path, bundle_index, config, changes)
+            repaired_text = _repair_invalid_compact_like_tags(repaired_text, path, changes)
+            repaired_text = _repair_out_of_range_rank(repaired_text, path, changes)
             if STAGE_TEXT_PATH_RE.match(path):
                 return _repair_view_labels(repaired_text, path, bundle, bundle_index, config, changes)
             return repaired_text
@@ -212,17 +223,28 @@ def _repair_forecast_compact_tags(
         except ValueError:
             return before
 
-        matched_path = find_match_unit_aware(value, bundle_index, _forecast_number_type(raw_number, unit + tag), config)
+        number_type = _forecast_number_type(raw_number, unit + tag)
+        matched_path = _find_rendered_forecast_match(
+            value,
+            bundle_index,
+            number_type,
+            config,
+            tag,
+            prefer_variant_horizon=path.startswith("prediction."),
+        )
+        if matched_path is None:
+            matched_path = find_match_unit_aware(value, bundle_index, number_type, config)
         if not str(matched_path or "").startswith("forecast_simulation.by_view."):
             return before
 
         compact_tag = _compact_forecast_tag(bundle, str(matched_path))
         if compact_tag is None:
             return before
-        if tag and VALID_COMPACT_TAG_RE.fullmatch(tag.strip()) and tag.strip() == compact_tag:
+        rendered_number = _format_forecast_number(raw_number)
+        if tag and VALID_COMPACT_TAG_RE.fullmatch(tag.strip()) and tag.strip() == compact_tag and rendered_number == raw_number:
             return before
 
-        after = f"{raw_number}{unit}{compact_tag}"
+        after = f"{rendered_number}{unit}{compact_tag}"
         if after == before:
             return before
         changes.append(
@@ -239,12 +261,134 @@ def _repair_forecast_compact_tags(
     return FORECAST_NUMBER_TAG_RE.sub(replace, text)
 
 
+def _format_forecast_number(raw_number: str) -> str:
+    if "." not in raw_number or len(raw_number.rsplit(".", 1)[1]) <= 2:
+        return raw_number
+    value = Decimal(raw_number.replace(",", ""))
+    quantized = value.quantize(Decimal("0.01"))
+    return _format_decimal_number(quantized)
+
+
 def _forecast_number_type(raw_number: str, tag: str) -> str:
-    if re.search(r"(unit|counting|dosage|처방|개|정|캡슐)", tag or "", re.IGNORECASE):
+    if re.search(r"(unit|counting|dosage|처방|수량|개|정|캡슐)", tag or "", re.IGNORECASE):
         return "unit_pack"
     if "." in raw_number and float(raw_number.replace(",", "")) < 1000:
         return "unit_pack"
     return "currency_krw"
+
+
+def _find_rendered_forecast_match(
+    value: float,
+    bundle_index: dict[float, list[str]],
+    number_type: str,
+    config: ValidatorConfig,
+    tag: str,
+    *,
+    prefer_variant_horizon: bool,
+) -> str | None:
+    """Resolve rendered forecast numbers without letting unrelated zero-valued paths win."""
+
+    if not tag and not prefer_variant_horizon:
+        return None
+
+    candidates = _forecast_candidate_paths(value, bundle_index, number_type, config)
+    if not candidates:
+        return None
+
+    tag_parts = _compact_tag_parts(tag)
+    required_horizons = _variant_horizon_priority(config.analysis_variant) if prefer_variant_horizon else ()
+
+    def score(path: str) -> tuple[int, int, int, int, str]:
+        horizon_score = _horizon_score(path, required_horizons)
+        source_score = _source_score(path, tag_parts)
+        measure_score = _measure_score(path, tag_parts, number_type)
+        base_score = 0 if path.endswith(".base") else 1
+        return (horizon_score, source_score, measure_score, base_score, path)
+
+    return min(candidates, key=score)
+
+
+def _forecast_candidate_paths(
+    value: float,
+    bundle_index: dict[float, list[str]],
+    number_type: str,
+    config: ValidatorConfig,
+) -> list[str]:
+    tolerance = config.tolerance_by_type.get(number_type, config.tolerance_default)
+    if number_type == "unit_pack" and value.is_integer():
+        tolerance = max(tolerance, 0.52)
+    relative_tolerance = float(getattr(config, "relative_tolerance", 0.001))
+    candidates: list[str] = []
+    for bundle_value, paths in bundle_index.items():
+        delta = abs(bundle_value - value)
+        matches_absolute = delta <= tolerance
+        matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= relative_tolerance
+        if not (matches_absolute or matches_relative):
+            continue
+        for candidate in paths:
+            if (
+                candidate.startswith("forecast_simulation.by_view.")
+                and ".model." not in candidate
+                and ".horizon_" in candidate
+            ):
+                candidates.append(candidate)
+    return candidates
+
+
+def _compact_tag_parts(tag: str) -> dict[str, str] | None:
+    match = COMPACT_TAG_PARTS_RE.search(tag or "")
+    if match is None:
+        return None
+    return match.groupdict()
+
+
+def _variant_horizon_priority(analysis_variant: str) -> tuple[str, ...]:
+    if analysis_variant == "short":
+        return ("1y",)
+    if analysis_variant == "long":
+        return ("5y",)
+    return ()
+
+
+def _horizon_score(path: str, required_horizons: tuple[str, ...]) -> int:
+    if not required_horizons:
+        return 0
+    for index, horizon in enumerate(required_horizons):
+        if f".horizon_{horizon}." in path:
+            return index
+    return len(required_horizons)
+
+
+def _source_score(path: str, tag_parts: dict[str, str] | None) -> int:
+    if tag_parts is None:
+        return 0
+    return 0 if f".{tag_parts['source']}." in path else 1
+
+
+def _measure_score(path: str, tag_parts: dict[str, str] | None, number_type: str) -> int:
+    path_measure = _measure_from_forecast_path(path)
+    if path_measure is None:
+        return 2
+    if tag_parts is not None:
+        tag_measure = tag_parts["measure"]
+        if path_measure == tag_measure:
+            return 0
+        if tag_measure in {"수량", "처방량"} and path_measure in {"unit", "dosage_unit", "counting_unit", "volume"}:
+            return 0
+        if tag_measure in {"매출", "sales"} and path_measure == "sales":
+            return 0
+    if number_type == "unit_pack" and path_measure in {"unit", "dosage_unit", "counting_unit", "volume"}:
+        return 1
+    if number_type == "currency_krw" and path_measure == "sales":
+        return 1
+    return 2
+
+
+def _measure_from_forecast_path(path: str) -> str | None:
+    match = FORECAST_VIEW_PATH_RE.search(path)
+    if match is None:
+        return None
+    return match.group(3)
 
 
 def _repair_signed_percent_polarity(
@@ -254,22 +398,33 @@ def _repair_signed_percent_polarity(
     config: ValidatorConfig,
     changes: list[dict[str, Any]],
 ) -> str:
-    def replace(match: re.Match[str]) -> str:
-        before = match.group(0)
+    def replacement_for(match: re.Match[str], *, keep_tag: bool) -> tuple[str, str] | None:
         sentence = _sentence_around(text, match.start(), match.end())
-        if not (NEGATIVE_TREND_CONTEXT_RE.search(sentence) or PERIOD_CHANGE_CONTEXT_RE.search(sentence)):
-            return before
+        if not (
+            NEGATIVE_TREND_CONTEXT_RE.search(sentence)
+            or PERIOD_CHANGE_CONTEXT_RE.search(sentence)
+            or EVIDENCE_BASIS_CONTEXT_RE.search(sentence)
+        ):
+            return None
         try:
             value = float(match.group("number"))
         except ValueError:
-            return before
+            return None
         positive_path = find_match_unit_aware(value, bundle_index, "percent", config)
         negative_path = find_match_unit_aware(-value, bundle_index, "percent_signed", config)
         if positive_path is not None and SIGNED_TREND_METRIC_PATH_RE.search(str(positive_path)):
-            return before
+            return None
         if negative_path is None or not SIGNED_TREND_METRIC_PATH_RE.search(str(negative_path)):
+            return None
+        tag = match.groupdict().get("tag") if keep_tag else ""
+        return f"-{match.group('number')}%{tag or ''}", str(negative_path)
+
+    def replace_tagged(match: re.Match[str]) -> str:
+        before = match.group(0)
+        replacement = replacement_for(match, keep_tag=True)
+        if replacement is None:
             return before
-        after = f"-{match.group('number')}%{match.group('tag')}"
+        after, negative_path = replacement
         changes.append(
             {
                 "type": "signed_percent_polarity",
@@ -281,15 +436,66 @@ def _repair_signed_percent_polarity(
         )
         return after
 
-    return SIGNLESS_PERCENT_WITH_COMPACT_TAG_RE.sub(replace, text)
+    def replace_bare(match: re.Match[str]) -> str:
+        before = match.group(0)
+        replacement = replacement_for(match, keep_tag=False)
+        if replacement is None:
+            return before
+        after, negative_path = replacement
+        changes.append(
+            {
+                "type": "signed_percent_polarity",
+                "path": path,
+                "before": before,
+                "after": after,
+                "matched_path": negative_path,
+            }
+        )
+        return after
+
+    tagged_repaired = SIGNLESS_PERCENT_WITH_COMPACT_TAG_RE.sub(replace_tagged, text)
+    return BARE_SIGNLESS_PERCENT_RE.sub(replace_bare, tagged_repaired)
+
+
+def _repair_invalid_compact_like_tags(text: str, path: str, changes: list[dict[str, Any]]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        before = match.group(0)
+        after = f"{match.group('number')}%"
+        changes.append({"type": "invalid_compact_tag_removed", "path": path, "before": before, "after": after})
+        return after
+
+    return INVALID_COMPACT_LIKE_TAG_RE.sub(replace, text)
 
 
 def _sentence_around(text: str, start: int, end: int) -> str:
-    left_candidates = [text.rfind(delim, 0, start) for delim in (".", "!", "?", "\n")]
-    left = max(left_candidates)
-    right_candidates = [idx for idx in (text.find(delim, end) for delim in (".", "!", "?", "\n")) if idx >= 0]
-    right = min(right_candidates) if right_candidates else len(text)
+    left = max(_sentence_delimiters(text, 0, start), default=-1)
+    right = min(_sentence_delimiters(text, end, len(text)), default=len(text))
     return text[left + 1 : right + 1]
+
+
+def _sentence_delimiters(text: str, start: int, end: int) -> list[int]:
+    delimiters: list[int] = []
+    for idx in range(start, end):
+        char = text[idx]
+        if char in "!?。！？\n":
+            delimiters.append(idx)
+        elif char == "." and not _is_decimal_point(text, idx):
+            delimiters.append(idx)
+    return delimiters
+
+
+def _is_decimal_point(text: str, idx: int) -> bool:
+    return idx > 0 and idx + 1 < len(text) and text[idx - 1].isdigit() and text[idx + 1].isdigit()
+
+
+def _repair_out_of_range_rank(text: str, path: str, changes: list[dict[str, Any]]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        before = match.group(0)
+        after = "순위권 밖"
+        changes.append({"type": "out_of_range_rank", "path": path, "before": before, "after": after})
+        return after
+
+    return OUT_OF_RANGE_RANK_RE.sub(replace, text)
 
 
 def _repair_prediction_numeric_evidence(

@@ -61,10 +61,17 @@ CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
     brand VARCHAR(255) NOT NULL,
     market_id VARCHAR(20),
     ai_analysis_json LONGTEXT,
+    ai_analysis_short_json LONGTEXT,
+    ai_analysis_long_json LONGTEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (brand)
 );
 """
+
+ADD_VARIANT_COLUMNS_SQL = [
+    f"ALTER TABLE {TARGET_TABLE} ADD COLUMN ai_analysis_short_json LONGTEXT AFTER ai_analysis_json",
+    f"ALTER TABLE {TARGET_TABLE} ADD COLUMN ai_analysis_long_json LONGTEXT AFTER ai_analysis_short_json",
+]
 
 
 @dataclass
@@ -76,6 +83,7 @@ class SelectedRun:
     created_at: Any
     bundle_hash: str
     input_bundle: dict[str, Any]
+    analysis_variant: str = "legacy"
 
 
 def _json_default(value: Any) -> Any:
@@ -153,6 +161,12 @@ def create_and_describe_table(conn: pymysql.connections.Connection) -> dict[str,
     existed_before = target_table_exists(conn)
     with conn.cursor() as cursor:
         cursor.execute(CREATE_TABLE_SQL)
+        cursor.execute(f"SHOW COLUMNS FROM {TARGET_TABLE}")
+        fields = {str(row["Field"]) for row in cursor.fetchall()}
+        for sql in ADD_VARIANT_COLUMNS_SQL:
+            column = sql.split(" ADD COLUMN ", 1)[1].split()[0]
+            if column not in fields:
+                cursor.execute(sql)
         cursor.execute(f"SHOW CREATE TABLE {TARGET_TABLE}")
         show_create = cursor.fetchone()
         cursor.execute(f"DESCRIBE {TARGET_TABLE}")
@@ -174,10 +188,19 @@ def schema_matches(describe_rows: list[dict[str, Any]]) -> bool:
         "brand": {"Null": "NO", "Key": "PRI"},
         "market_id": {"Null": "YES"},
         "ai_analysis_json": {"Null": "YES"},
+        "ai_analysis_short_json": {"Null": "YES"},
+        "ai_analysis_long_json": {"Null": "YES"},
         "updated_at": {"Null": "YES"},
     }
     by_field = {str(row["Field"]): row for row in describe_rows}
-    if list(by_field) != ["brand", "market_id", "ai_analysis_json", "updated_at"]:
+    if list(by_field) != [
+        "brand",
+        "market_id",
+        "ai_analysis_json",
+        "ai_analysis_short_json",
+        "ai_analysis_long_json",
+        "updated_at",
+    ]:
         return False
     for field, checks in expected.items():
         row = by_field.get(field)
@@ -186,22 +209,38 @@ def schema_matches(describe_rows: list[dict[str, Any]]) -> bool:
         for key, expected_value in checks.items():
             if str(row.get(key)) != expected_value:
                 return False
-    return "varchar(255)" in str(by_field["brand"]["Type"]).lower() and "longtext" in str(by_field["ai_analysis_json"]["Type"]).lower()
+    return (
+        "varchar(255)" in str(by_field["brand"]["Type"]).lower()
+        and "longtext" in str(by_field["ai_analysis_json"]["Type"]).lower()
+        and "longtext" in str(by_field["ai_analysis_short_json"]["Type"]).lower()
+        and "longtext" in str(by_field["ai_analysis_long_json"]["Type"]).lower()
+    )
 
 
-def select_latest_runs(conn: pymysql.connections.Connection) -> dict[str, SelectedRun]:
+def table_has_column(conn: pymysql.connections.Connection, table: str, column: str) -> bool:
+    with conn.cursor() as cursor:
+        cursor.execute(f"SHOW COLUMNS FROM {table} LIKE %s", (column,))
+        return cursor.fetchone() is not None
+
+
+def select_latest_runs(conn: pymysql.connections.Connection, analysis_variant: str = "legacy") -> dict[str, SelectedRun]:
     placeholders = ",".join(["%s"] * len(JW25_BRANDS))
+    has_variant_column = table_has_column(conn, "zeta_analysis_runs", "analysis_variant")
+    variant_select = "analysis_variant" if has_variant_column else "'legacy' AS analysis_variant"
+    variant_filter = "AND analysis_variant = %s" if has_variant_column else ""
     sql = f"""
-    SELECT run_id, brand, status, model_version, created_at, bundle_hash, input_bundle
+    SELECT run_id, brand, status, model_version, created_at, bundle_hash, input_bundle, {variant_select}
     FROM zeta_analysis_runs
     WHERE brand IN ({placeholders})
       AND model_version = 'genos_workflow_217'
       AND created_at >= '2026-05-25 00:00:00'
       AND status IN ('ok', 'partial')
+      {variant_filter}
     ORDER BY brand, run_id DESC
     """
     with conn.cursor() as cursor:
-        cursor.execute(sql, JW25_BRANDS)
+        params = [*JW25_BRANDS, analysis_variant] if has_variant_column else JW25_BRANDS
+        cursor.execute(sql, params)
         rows = cursor.fetchall()
 
     selected: dict[str, SelectedRun] = {}
@@ -217,6 +256,7 @@ def select_latest_runs(conn: pymysql.connections.Connection) -> dict[str, Select
             created_at=row["created_at"],
             bundle_hash=str(row.get("bundle_hash") or ""),
             input_bundle=_loads_json_maybe(row.get("input_bundle"), {}),
+            analysis_variant=str(row.get("analysis_variant") or analysis_variant),
         )
     return selected
 
@@ -297,7 +337,7 @@ def build_ai_analysis(run: SelectedRun, parsed: dict[str, Any]) -> dict[str, Any
             "Permanent insert into cache_deep_analysis_ai_analysis "
             "(separated from cache_deep_analysis). Source: zeta_analysis_outputs."
         ),
-        "evidence_pool": build_evidence_pool(parsed, run.input_bundle),
+        "evidence_pool": build_evidence_pool(parsed, run.input_bundle, analysis_variant=run.analysis_variant),
         "phenomenon": parsed["phenomenon"],
         "cause": parsed["cause"],
         "prediction": parsed["prediction"],
@@ -308,30 +348,79 @@ def build_ai_analysis(run: SelectedRun, parsed: dict[str, Any]) -> dict[str, Any
     return ai_analysis
 
 
+def build_variant_ai_analysis(run: SelectedRun, parsed: dict[str, Any], analysis_variant: str) -> dict[str, Any]:
+    payload = build_ai_analysis(
+        SelectedRun(
+            brand=run.brand,
+            run_id=run.run_id,
+            status=run.status,
+            model_version=run.model_version,
+            created_at=run.created_at,
+            bundle_hash=run.bundle_hash,
+            input_bundle=run.input_bundle,
+            analysis_variant=analysis_variant,
+        ),
+        parsed,
+    )
+    payload["analysis_variant"] = analysis_variant
+    return payload
+
+
 def insert_ai_analysis(
     conn: pymysql.connections.Connection,
     payloads: dict[str, dict[str, Any]],
     market_ids: dict[str, str | None],
+    short_payloads: dict[str, dict[str, Any]] | None = None,
+    long_payloads: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    sql = f"""
-    INSERT INTO {TARGET_TABLE}
-        (brand, market_id, ai_analysis_json)
-    VALUES (%s, %s, %s)
-    ON DUPLICATE KEY UPDATE
-        ai_analysis_json = VALUES(ai_analysis_json),
-        market_id = VALUES(market_id)
-    """
+    include_variants = short_payloads is not None or long_payloads is not None
+    if include_variants:
+        sql = f"""
+        INSERT INTO {TARGET_TABLE}
+            (brand, market_id, ai_analysis_json, ai_analysis_short_json, ai_analysis_long_json)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            ai_analysis_json = VALUES(ai_analysis_json),
+            ai_analysis_short_json = VALUES(ai_analysis_short_json),
+            ai_analysis_long_json = VALUES(ai_analysis_long_json),
+            market_id = VALUES(market_id)
+        """
+    else:
+        sql = f"""
+        INSERT INTO {TARGET_TABLE}
+            (brand, market_id, ai_analysis_json)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            ai_analysis_json = VALUES(ai_analysis_json),
+            market_id = VALUES(market_id)
+        """
     rows: list[dict[str, Any]] = []
     with conn.cursor() as cursor:
         for brand in JW25_BRANDS:
             payload = payloads[brand]
+            short_payload = short_payloads.get(brand) if short_payloads else None
+            long_payload = long_payloads.get(brand) if long_payloads else None
             market_id = market_ids.get(brand)
-            cursor.execute(sql, (brand, market_id, _json_dumps(payload)))
+            if include_variants:
+                cursor.execute(
+                    sql,
+                    (
+                        brand,
+                        market_id,
+                        _json_dumps(payload),
+                        _json_dumps(short_payload) if short_payload else None,
+                        _json_dumps(long_payload) if long_payload else None,
+                    ),
+                )
+            else:
+                cursor.execute(sql, (brand, market_id, _json_dumps(payload)))
             rows.append(
                 {
                     "brand": brand,
                     "market_id": market_id,
                     "run_id": payload["run_id_phase_zeta"],
+                    "short_run_id": short_payload.get("run_id_phase_zeta") if short_payload else None,
+                    "long_run_id": long_payload.get("run_id_phase_zeta") if long_payload else None,
                     "phase_zeta_stage": payload["phase_zeta_stage"],
                     "affected_rows": int(cursor.rowcount),
                 }
@@ -348,6 +437,8 @@ def verify_insert(conn: pymysql.connections.Connection) -> list[dict[str, Any]]:
             SELECT
                 brand,
                 JSON_LENGTH(ai_analysis_json) AS analysis_size,
+                JSON_LENGTH(ai_analysis_short_json) AS short_analysis_size,
+                JSON_LENGTH(ai_analysis_long_json) AS long_analysis_size,
                 JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_json, '$.phase_zeta_stage')) AS stage,
                 JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_json, '$.phenomenon.title')) AS phenomenon_title,
                 market_id,
@@ -444,6 +535,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart"))
     parser.add_argument("--audit-dir", default=None)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--include-variants", action="store_true", help="Also assemble ai_analysis_short_json and ai_analysis_long_json from variant runs.")
     return parser.parse_args()
 
 
@@ -471,10 +563,16 @@ def main() -> int:
     _write_text(audit_dir / "new_table_setup" / "initial_row_count.txt", f"{table_info['initial_row_count']}\n")
 
     selected_runs = select_latest_runs(conn)
+    selected_short_runs = select_latest_runs(conn, "short") if args.include_variants else {}
+    selected_long_runs = select_latest_runs(conn, "long") if args.include_variants else {}
     market_ids, market_id_source = load_market_ids(conn)
     missing_runs = [brand for brand in JW25_BRANDS if brand not in selected_runs]
+    missing_short_runs = [brand for brand in JW25_BRANDS if args.include_variants and brand not in selected_short_runs]
+    missing_long_runs = [brand for brand in JW25_BRANDS if args.include_variants and brand not in selected_long_runs]
     parsed_by_brand: dict[str, dict[str, Any]] = {}
     payloads: dict[str, dict[str, Any]] = {}
+    short_payloads: dict[str, dict[str, Any]] = {}
+    long_payloads: dict[str, dict[str, Any]] = {}
     run_rows: list[dict[str, Any]] = []
     incomplete: list[dict[str, Any]] = []
 
@@ -504,15 +602,36 @@ def main() -> int:
         payloads[brand] = build_ai_analysis(run, parsed)
         _write_json(audit_dir / "parsed_outputs_used" / f"{brand}_parsed_output.json", {"run": run_rows[-1], "parsed_output": parsed})
         _write_text(audit_dir / "narrative_previews" / f"{brand}.html", render_html(brand, run, parsed))
+        if args.include_variants:
+            short_run = selected_short_runs.get(brand)
+            long_run = selected_long_runs.get(brand)
+            if short_run is not None:
+                short_parsed = load_parsed_output(conn, short_run)
+                if all(stage in short_parsed for stage in STAGES):
+                    short_payloads[brand] = build_variant_ai_analysis(short_run, short_parsed, "short")
+            if long_run is not None:
+                long_parsed = load_parsed_output(conn, long_run)
+                if all(stage in long_parsed for stage in STAGES):
+                    long_payloads[brand] = build_variant_ai_analysis(long_run, long_parsed, "long")
 
     _write_json(audit_dir / "parsed_outputs_used" / "selected_runs.json", run_rows)
     _write_json(audit_dir / "parsed_outputs_used" / "market_id_mapping.json", {"source": market_id_source, "market_ids": market_ids})
 
     insert_rows: list[dict[str, Any]] = []
     if args.apply:
-        if missing_runs or incomplete:
-            raise SystemExit(f"Cannot insert with missing/incomplete outputs: missing={missing_runs}, incomplete={incomplete}")
-        insert_rows = insert_ai_analysis(conn, payloads, market_ids)
+        missing_short_payloads = [brand for brand in JW25_BRANDS if args.include_variants and brand not in short_payloads]
+        missing_long_payloads = [brand for brand in JW25_BRANDS if args.include_variants and brand not in long_payloads]
+        if missing_runs or missing_short_runs or missing_long_runs or missing_short_payloads or missing_long_payloads or incomplete:
+            raise SystemExit(
+                "Cannot insert with missing/incomplete outputs: "
+                f"missing={missing_runs}, missing_short={missing_short_runs}, "
+                f"missing_long={missing_long_runs}, missing_short_payloads={missing_short_payloads}, "
+                f"missing_long_payloads={missing_long_payloads}, incomplete={incomplete}"
+            )
+        if args.include_variants:
+            insert_rows = insert_ai_analysis(conn, payloads, market_ids, short_payloads, long_payloads)
+        else:
+            insert_rows = insert_ai_analysis(conn, payloads, market_ids)
     _write_csv(audit_dir / "insert_results" / "insert_log_per_brand.csv", insert_rows)
 
     verification = verify_insert(conn) if args.apply else []

@@ -60,8 +60,12 @@ def compute_idempotency_key(
     bundle_hash: str,
     workflow_revision_id: int | str,
     formatter_version: str,
+    analysis_variant: str = "legacy",
 ) -> str:
-    return f"{brand}|{bundle_hash}|rev:{workflow_revision_id}|formatter:{formatter_version}"
+    key = f"{brand}|{bundle_hash}|rev:{workflow_revision_id}|formatter:{formatter_version}"
+    if analysis_variant != "legacy":
+        key = f"{key}|variant:{analysis_variant}"
+    return key
 
 
 @dataclass
@@ -232,6 +236,7 @@ class Agent2RegenOrchestrator:
         failure_artifact_dir: Path | None = None,
         dry_run: bool = True,
         fail_threshold: int = 5,
+        analysis_variant: str = "legacy",
     ):
         self.workflow_revision_id = workflow_revision_id
         self.formatter_version = formatter_version
@@ -241,6 +246,7 @@ class Agent2RegenOrchestrator:
         self.failure_artifact_dir = failure_artifact_dir or (self.run_store.path.parent / "failure_diagnostics")
         self.dry_run = dry_run
         self.fail_threshold = fail_threshold
+        self.analysis_variant = analysis_variant
 
     def run(self, brands: list[str]) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc).isoformat()
@@ -280,6 +286,7 @@ class Agent2RegenOrchestrator:
                 bundle_hash,
                 self.workflow_revision_id,
                 self.formatter_version,
+                self.analysis_variant,
             )
             previous = self.run_store.get_success(idempotency_key)
             if previous:
@@ -344,6 +351,7 @@ class Agent2RegenOrchestrator:
                 "bundle_hash": bundle_hash,
                 "workflow_revision_id": self.workflow_revision_id,
                 "formatter_version": self.formatter_version,
+                "analysis_variant": self.analysis_variant,
                 "tokens_in": llm_result.tokens_in,
                 "tokens_out": llm_result.tokens_out,
                 "model_version": llm_result.model_version,
@@ -358,7 +366,13 @@ class Agent2RegenOrchestrator:
             self.run_store.record(idempotency_key, record, success=True)
             return record
         except Exception as exc:
-            synthetic_key = compute_idempotency_key(brand, "bundle_hash_unavailable", self.workflow_revision_id, self.formatter_version)
+            synthetic_key = compute_idempotency_key(
+                brand,
+                "bundle_hash_unavailable",
+                self.workflow_revision_id,
+                self.formatter_version,
+                self.analysis_variant,
+            )
             return self._record_failure(brand, synthetic_key, "bundle_hash_unavailable", "exception", f"{type(exc).__name__}: {exc}")
 
     def _write_failure_artifacts(
@@ -419,6 +433,7 @@ class Agent2RegenOrchestrator:
             "bundle_hash": bundle_hash,
             "workflow_revision_id": self.workflow_revision_id,
             "formatter_version": self.formatter_version,
+            "analysis_variant": self.analysis_variant,
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
         self.run_store.record(idempotency_key, record, success=False)
@@ -487,9 +502,9 @@ def check_upstream_freshness(db_conn: Any) -> dict[str, Any]:
     required_tables = (
         "cache_cause",
         "cache_deep_analysis",
-        "cache_deep_analysis_ai_analysis",
     )
     optional_tables = (
+        "cache_deep_analysis_ai_analysis",
         "mart_strategic_ml_brand_metric",
         "mart_strategic_cd_brand_metric",
     )
@@ -651,6 +666,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workflow-revision-id", type=int, default=DEFAULT_WORKFLOW_REVISION_ID)
     parser.add_argument("--formatter-version", default=DEFAULT_FORMATTER_VERSION)
     parser.add_argument("--fail-threshold", type=int, default=5)
+    parser.add_argument("--analysis-variant", choices=["legacy", "short", "long"], default="legacy")
     return parser.parse_args(argv)
 
 
@@ -660,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     bundle_config = BundleConfig.from_yaml(args.bundle_config)
-    runner_config = RunnerConfig.from_yaml(args.runner_config)
+    runner_config = RunnerConfig.from_yaml(args.runner_config).with_analysis_variant(args.analysis_variant)
     snapshot_at = datetime.fromisoformat(args.snapshot_at) if args.snapshot_at else datetime.now()
 
     ports, close, diagnostics = make_real_ports(
@@ -691,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
             repair_validator_config=runner_config.validator,
             dry_run=dry_run,
             fail_threshold=args.fail_threshold,
+            analysis_variant=args.analysis_variant,
         )
         manifest = orchestrator.run(list(brands))
         manifest["diagnostics"] = diagnostics

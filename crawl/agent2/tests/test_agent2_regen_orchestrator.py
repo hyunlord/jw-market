@@ -40,6 +40,12 @@ def test_idempotency_key_includes_brand_hash_revision_and_formatter():
     assert key == "리바로젯|sha256:abc|rev:3727|formatter:wf217-order2-v10.3"
 
 
+def test_idempotency_key_includes_variant_when_not_legacy():
+    key = compute_idempotency_key("리바로젯", "sha256:abc", 3727, "wf217-order2-v10.3", "short")
+
+    assert key == "리바로젯|sha256:abc|rev:3727|formatter:wf217-order2-v10.3|variant:short"
+
+
 def test_formatter_contract_rejects_damaged_dates_and_double_formatting():
     parsed = _parsed("HHI 지수는 2,026.00-04 기준 570.86(ML·UBIST·매출·2026-04)입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다.")
 
@@ -230,18 +236,18 @@ def test_orchestrator_writes_failure_artifacts_for_validation_failures(tmp_path)
         assert (tmp_path / "failure_diagnostics" / "리바로하이" / f"{key}.json").exists()
 
 
-def test_upstream_freshness_requires_cache_tables_but_allows_missing_mart_tables():
+def test_upstream_freshness_requires_source_cache_but_allows_missing_ai_and_mart_tables():
     class Cursor:
         def __init__(self):
             self.table = ""
 
         def execute(self, sql):
             self.table = sql.split("FROM ", 1)[1].strip()
-            if self.table.startswith("mart_"):
+            if self.table == "cache_deep_analysis_ai_analysis" or self.table.startswith("mart_"):
                 raise Exception(f"Table jw_mart.{self.table} doesn't exist")
 
         def fetchone(self):
-            return {"c": 25 if self.table == "cache_deep_analysis_ai_analysis" else 100}
+            return {"c": 100}
 
     class Conn:
         def cursor(self):
@@ -252,5 +258,5 @@ def test_upstream_freshness_requires_cache_tables_but_allows_missing_mart_tables
     assert result["valid"] is True
     assert result["tables"]["cache_cause"]["row_count"] == 100
     assert result["tables"]["cache_deep_analysis"]["row_count"] == 100
-    assert result["tables"]["cache_deep_analysis_ai_analysis"]["row_count"] == 25
+    assert result["tables"]["cache_deep_analysis_ai_analysis"]["required"] is False
     assert result["tables"]["mart_strategic_ml_brand_metric"]["required"] is False

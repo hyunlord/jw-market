@@ -90,6 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--update-cache", action="store_true", default=False)
     parser.add_argument("--audit-dir", default=None)
     parser.add_argument("--use-cached-run-id", type=int, default=None)
+    parser.add_argument("--analysis-variant", choices=["legacy", "short", "long"], default="legacy")
     return parser.parse_args()
 
 
@@ -143,7 +144,10 @@ def _load_cached_result(db_conn, run_id: int) -> LLMResult:
 
 def main() -> int:
     args = parse_args()
-    config = _override_cache_setting(RunnerConfig.from_yaml(args.config), args.update_cache)
+    config = _override_cache_setting(
+        RunnerConfig.from_yaml(args.config).with_analysis_variant(args.analysis_variant),
+        args.update_cache,
+    )
     bundle_path = Path(args.bundle_path)
     bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
     audit_dir = Path(args.audit_dir) if args.audit_dir else Path("outputs/phase_zeta_stage3c/dry_test")

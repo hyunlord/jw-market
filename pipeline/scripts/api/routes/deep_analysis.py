@@ -50,6 +50,41 @@ def _load_ai_analysis(brand: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_ai_analysis_variants(brand: str) -> dict[str, dict]:
+    try:
+        row = db.fetch_one(
+            """
+            SELECT ai_analysis_short_json, ai_analysis_long_json
+            FROM cache_deep_analysis_ai_analysis
+            WHERE brand = %s
+            LIMIT 1
+            """,
+            [brand],
+        )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] in {1054, 1146}:
+            return {}
+        raise
+    if not row:
+        return {}
+
+    variants: dict[str, dict] = {}
+    for key, column in (
+        ("ai_analysis_short", "ai_analysis_short_json"),
+        ("ai_analysis_long", "ai_analysis_long_json"),
+    ):
+        raw = row.get(column)
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            variants[key] = payload
+    return variants
+
+
 def _format_generated_at(value: object) -> str:
     if isinstance(value, datetime):
         generated_at = value
@@ -153,4 +188,5 @@ def deep_analysis(brand_name: str) -> dict:
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
         data["ai_analysis"] = _load_ai_analysis(brand)
+        data.update(_load_ai_analysis_variants(brand))
     return payload

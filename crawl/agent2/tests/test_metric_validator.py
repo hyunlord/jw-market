@@ -194,6 +194,43 @@ def test_simulation_prediction_rejects_number_listing_without_insight():
     assert any(item["pattern"] == "prediction_insight_too_sparse" for item in result.unmatched_numbers)
 
 
+def test_short_variant_requires_one_year_and_rejects_five_year_forecast_focus():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW)로 예측됩니다. "
+        "5년 후 5,000 KRW (95% 신뢰구간 4,000~6,000 KRW)도 함께 제시됩니다. "
+        "1년 구간의 기준 예측값은 가까운 처방 대응의 방향성을 보여줍니다. "
+        "CI 폭은 단기 실행에서 변동성 리스크를 같이 봐야 한다는 의미입니다. "
+        "현재 지표와 연결하면 단기 시장 대응의 우선순위를 조정할 필요가 있습니다."
+    )
+
+    config = RunnerConfig.default_for_tests().with_analysis_variant("short")
+    result = validate_output(parsed_output, _simulation_bundle(), config.validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "simulation_short_uses_horizon_5y" for item in result.unmatched_numbers)
+    assert not any(item["pattern"] == "simulation_missing_horizon_3y" for item in result.unmatched_numbers)
+
+
+def test_long_variant_requires_five_year_and_allows_three_year_bridge():
+    parsed_output = _parsed_with_prediction(
+        "3년 후 3,000 KRW(ML·UBIST·매출·2029-03, 95% 신뢰구간 2,400~3,600 KRW)는 중간 점검점입니다. "
+        "5년 후 5,000 KRW(ML·UBIST·매출·2031-03, 95% 신뢰구간 4,000~6,000 KRW)로 예측됩니다. "
+        "5년 구간의 기준 예측값은 장기 시장 구조 변화의 방향성을 보여줍니다. "
+        "CI 폭 확대는 구조적 불확실성 리스크가 커진다는 의미입니다. "
+        "현재 지표와 연결하면 장기 포지셔닝과 경쟁력 관리가 중요해집니다."
+    )
+
+    config = RunnerConfig.default_for_tests().with_analysis_variant("long")
+    result = validate_output(parsed_output, _simulation_bundle(), config.validator)
+
+    assert result.valid
+    assert any(
+        item.get("matched_path", "").startswith("forecast_simulation.by_view.ML.UBIST.sales.horizon_5y")
+        for item in result.stage_results["prediction"].extracted
+    )
+    assert not any(item["pattern"] == "simulation_missing_horizon_1y" for item in result.unmatched_numbers)
+
+
 def test_simulation_prediction_rejects_numeric_heavy_sparse_insight():
     parsed_output = _parsed_with_prediction(
         "1년 후 1,000 KRW (95% 신뢰구간 800~1,200 KRW)입니다. "
@@ -458,6 +495,34 @@ def test_prediction_simulation_evidence_accepts_compact_tagged_integer_basis():
         "신뢰구간 폭 확대는 장기 전망의 불확실성 리스크가 함께 커진다는 의미입니다."
     )
     parsed_output["prediction"]["evidence"] = [{"title": "수치 근거", "basis": "1,000(ML·UBIST·sales·2027-03)"}]
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert not any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_prediction_simulation_evidence_accepts_integer_rounded_unit_forecast_basis():
+    bundle = {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.IQVIA.unit": {
+                    "horizon_1y": {
+                        "period": "2026-Q3",
+                        "base": 338.49,
+                        "ci_lower_95": 275.99,
+                        "ci_upper_95": 499.68,
+                    }
+                }
+            },
+        }
+    }
+    parsed_output = _parsed_with_prediction(
+        "1년 후 처방량은 339(ML·IQVIA·unit·2026-Q3)으로 예측됩니다. "
+        "현재 대비 단기 처방 기반이 확대될 가능성을 시사합니다. "
+        "CI 폭은 실제 처방 변동성 리스크를 함께 봐야 한다는 의미입니다."
+    )
+    parsed_output["prediction"]["evidence"] = [{"title": "수치 근거", "basis": "339(ML·IQVIA·unit·2026-Q3)"}]
 
     result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
 

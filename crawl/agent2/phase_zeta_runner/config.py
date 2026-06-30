@@ -1,9 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Final
 
 import yaml
+
+
+ANALYSIS_VARIANTS: Final = frozenset({"legacy", "short", "long"})
+
+
+class InvalidAnalysisVariantError(ValueError):
+    """Raised when a runner variant is outside the supported policy set."""
+
+
+def require_analysis_variant(value: str) -> str:
+    variant = value.strip().lower()
+    if variant not in ANALYSIS_VARIANTS:
+        raise InvalidAnalysisVariantError(f"Unsupported analysis_variant: {value}")
+    return variant
 
 
 @dataclass(frozen=True)
@@ -40,6 +55,7 @@ class ValidatorConfig:
     narrative_event_check_enabled: bool = True
     narrative_event_warning_only: bool = True
     bundle_invariant_fail_action: str = "fail"
+    analysis_variant: str = "legacy"
 
 
 @dataclass(frozen=True)
@@ -61,6 +77,7 @@ class RetryConfig:
 class RunnerConfig:
     config_version: str
     builder_version: str
+    analysis_variant: str
     genos: GenOSConfig
     validator: ValidatorConfig
     composer: ComposerConfig
@@ -74,9 +91,11 @@ class RunnerConfig:
         validator_raw = root["validator"]
         composer_raw = root["composer"]
         retry_raw = root["retry"]
+        analysis_variant = require_analysis_variant(str(root.get("analysis_variant", validator_raw.get("analysis_variant", "legacy"))))
         return cls(
             config_version=str(root["config_version"]),
             builder_version=str(root["builder_version"]),
+            analysis_variant=analysis_variant,
             genos=GenOSConfig(
                 workflow_id=int(genos_raw["workflow_id"]),
                 admin_api_url=str(genos_raw["admin_api_url"]).rstrip("/"),
@@ -112,6 +131,7 @@ class RunnerConfig:
                 narrative_event_check_enabled=bool(validator_raw.get("narrative_event_check_enabled", True)),
                 narrative_event_warning_only=bool(validator_raw.get("narrative_event_warning_only", True)),
                 bundle_invariant_fail_action=str(validator_raw.get("bundle_invariant_fail_action", "fail")),
+                analysis_variant=analysis_variant,
             ),
             composer=ComposerConfig(
                 update_cache_deep_analysis=bool(composer_raw.get("update_cache_deep_analysis", False)),
@@ -131,6 +151,7 @@ class RunnerConfig:
         return cls(
             config_version="phase_zeta_runner_genos_test",
             builder_version="test",
+            analysis_variant="legacy",
             genos=GenOSConfig(
                 workflow_id=217,
                 admin_api_url="http://llmops-admin-api-service.llmops.svc.cluster.local:8080",
@@ -149,4 +170,13 @@ class RunnerConfig:
                 db_name="jw_mart",
             ),
             retry=RetryConfig(max_attempts=2, backoff_sec=0),
+        )
+
+    def with_analysis_variant(self, analysis_variant: str) -> "RunnerConfig":
+        variant = require_analysis_variant(analysis_variant)
+        return replace(
+            self,
+            analysis_variant=variant,
+            config_version=f"{self.config_version}:{variant}" if variant != "legacy" else self.config_version,
+            validator=replace(self.validator, analysis_variant=variant),
         )

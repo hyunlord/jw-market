@@ -22,6 +22,7 @@ def build_evidence_pool(
     bundle: dict[str, Any],
     *,
     min_items: int = TARGET_EVIDENCE_POOL_ITEMS,
+    analysis_variant: str = "legacy",
 ) -> list[dict[str, Any]]:
     """Build the production evidence_pool from stage evidence plus bundle-backed facts.
 
@@ -44,7 +45,7 @@ def build_evidence_pool(
             break
         _append_unique(pool, seen, item)
 
-    for item in _bundle_metric_evidence(bundle):
+    for item in _bundle_metric_evidence(bundle, analysis_variant=analysis_variant):
         if len(pool) >= min_items:
             break
         _append_unique(pool, seen, item)
@@ -138,7 +139,15 @@ def _bundle_event_evidence(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _bundle_metric_evidence(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+def _forecast_horizons_for_variant(analysis_variant: str) -> tuple[str, ...]:
+    if analysis_variant == "short":
+        return ("horizon_1y",)
+    if analysis_variant == "long":
+        return ("horizon_5y", "horizon_3y")
+    return ("horizon_1y", "horizon_3y", "horizon_5y")
+
+
+def _bundle_metric_evidence(bundle: dict[str, Any], *, analysis_variant: str = "legacy") -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for view in bundle.get("market_views", []) or []:
         if not isinstance(view, dict):
@@ -163,7 +172,7 @@ def _bundle_metric_evidence(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     for view_key, by_horizon in (forecast.get("by_view") or {}).items():
         if not isinstance(by_horizon, dict):
             continue
-        for horizon in ("horizon_1y", "horizon_3y", "horizon_5y"):
+        for horizon in _forecast_horizons_for_variant(analysis_variant):
             point = by_horizon.get(horizon) or {}
             if point.get("base") is None:
                 continue
