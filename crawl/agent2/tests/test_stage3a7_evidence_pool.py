@@ -9,14 +9,14 @@ from stage3a7_create_and_insert_ai_analysis import (
     build_ai_analysis,
     build_variant_ai_analysis,
     insert_ai_analysis,
+    update_variant_ai_analysis_only,
 )
 
 
 class _RecordingCursor:
-    rowcount = 1
-
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.rowcount = 1
 
     def __enter__(self) -> "_RecordingCursor":
         return self
@@ -31,12 +31,17 @@ class _RecordingCursor:
 class _RecordingConnection:
     def __init__(self) -> None:
         self.cursor_obj = _RecordingCursor()
+        self.commits = 0
+        self.rollbacks = 0
 
     def cursor(self) -> _RecordingCursor:
         return self.cursor_obj
 
     def commit(self) -> None:
-        return None
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def test_build_ai_analysis_preserves_stage_evidence_as_evidence_pool():
@@ -178,3 +183,57 @@ def test_insert_ai_analysis_writes_variant_columns_when_variant_payloads_are_pre
     assert "ai_analysis_short_json" in sql
     assert "ai_analysis_long_json" in sql
     assert len(params) == 5
+
+
+def test_update_variant_ai_analysis_only_never_sets_legacy_analysis_json():
+    conn = _RecordingConnection()
+    payloads = {
+        brand: {
+            "run_id_phase_zeta": idx,
+            "phase_zeta_stage": "stage3a7",
+        }
+        for idx, brand in enumerate(JW25_BRANDS, start=1)
+    }
+    expected_hashes = {brand: f"hash-{idx}" for idx, brand in enumerate(JW25_BRANDS, start=1)}
+
+    rows = update_variant_ai_analysis_only(
+        conn,
+        short_payloads=payloads,
+        long_payloads=payloads,
+        expected_ai_hashes=expected_hashes,
+    )
+
+    sql, params = conn.cursor_obj.calls[0]
+    set_clause = sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    assert "ai_analysis_json" not in set_clause
+    assert "ai_analysis_short_json" in set_clause
+    assert "ai_analysis_long_json" in set_clause
+    assert "MD5(COALESCE(ai_analysis_json,'')) = %s" in sql
+    assert params[-2:] == (JW25_BRANDS[0], "hash-1")
+    assert rows[0]["affected_rows"] == 1
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+
+
+def test_update_variant_ai_analysis_only_rolls_back_on_hash_mismatch():
+    conn = _RecordingConnection()
+    conn.cursor_obj.rowcount = 0
+    payloads = {
+        brand: {
+            "run_id_phase_zeta": idx,
+            "phase_zeta_stage": "stage3a7",
+        }
+        for idx, brand in enumerate(JW25_BRANDS, start=1)
+    }
+    expected_hashes = {brand: f"hash-{idx}" for idx, brand in enumerate(JW25_BRANDS, start=1)}
+
+    rows = update_variant_ai_analysis_only(
+        conn,
+        short_payloads=payloads,
+        long_payloads=payloads,
+        expected_ai_hashes=expected_hashes,
+    )
+
+    assert rows[0]["affected_rows"] == 0
+    assert conn.commits == 0
+    assert conn.rollbacks == 1

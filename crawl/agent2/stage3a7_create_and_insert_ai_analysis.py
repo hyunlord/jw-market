@@ -429,6 +429,87 @@ def insert_ai_analysis(
     return rows
 
 
+def update_variant_ai_analysis_only(
+    conn: pymysql.connections.Connection,
+    *,
+    short_payloads: dict[str, dict[str, Any]],
+    long_payloads: dict[str, dict[str, Any]],
+    expected_ai_hashes: dict[str, str],
+    update_timestamp: bool = True,
+) -> list[dict[str, Any]]:
+    timestamp_set = ",\n            updated_at = NOW()" if update_timestamp else ""
+    sql = f"""
+    UPDATE {TARGET_TABLE}
+    SET ai_analysis_short_json = %s,
+        ai_analysis_long_json = %s{timestamp_set}
+    WHERE brand = %s
+      AND MD5(COALESCE(ai_analysis_json,'')) = %s
+    """
+    rows: list[dict[str, Any]] = []
+    with conn.cursor() as cursor:
+        for brand in JW25_BRANDS:
+            short_payload = short_payloads[brand]
+            long_payload = long_payloads[brand]
+            expected_hash = expected_ai_hashes[brand]
+            cursor.execute(
+                sql,
+                (
+                    _json_dumps(short_payload),
+                    _json_dumps(long_payload),
+                    brand,
+                    expected_hash,
+                ),
+            )
+            rows.append(
+                {
+                    "brand": brand,
+                    "short_run_id": short_payload.get("run_id_phase_zeta"),
+                    "long_run_id": long_payload.get("run_id_phase_zeta"),
+                    "expected_ai_analysis_hash": expected_hash,
+                    "affected_rows": int(cursor.rowcount),
+                }
+            )
+    skipped = [row for row in rows if int(row["affected_rows"]) == 0]
+    if skipped:
+        rollback = getattr(conn, "rollback", None)
+        if callable(rollback):
+            rollback()
+        return rows
+    conn.commit()
+    return rows
+
+
+def load_ai_analysis_hashes(conn: pymysql.connections.Connection) -> dict[str, str]:
+    placeholders = ",".join(["%s"] * len(JW25_BRANDS))
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT brand, MD5(COALESCE(ai_analysis_json,'')) AS ai_analysis_hash
+            FROM {TARGET_TABLE}
+            WHERE brand IN ({placeholders})
+            ORDER BY brand
+            """,
+            JW25_BRANDS,
+        )
+        rows = cursor.fetchall()
+    return {str(row["brand"]): str(row["ai_analysis_hash"]) for row in rows}
+
+
+def load_expected_ai_hashes(path: str | None) -> dict[str, str]:
+    if not path:
+        return {}
+    data = _loads_json_maybe(Path(path).read_text(encoding="utf-8"), {})
+    if not isinstance(data, dict):
+        raise SystemExit(f"Expected hash file must contain an object: {path}")
+    hashes: dict[str, str] = {}
+    for brand in JW25_BRANDS:
+        value = data.get(brand)
+        if not isinstance(value, str) or not value:
+            raise SystemExit(f"Missing expected ai_analysis hash for brand: {brand}")
+        hashes[brand] = value
+    return hashes
+
+
 def verify_insert(conn: pymysql.connections.Connection) -> list[dict[str, Any]]:
     placeholders = ",".join(["%s"] * len(JW25_BRANDS))
     with conn.cursor() as cursor:
@@ -536,6 +617,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audit-dir", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--include-variants", action="store_true", help="Also assemble ai_analysis_short_json and ai_analysis_long_json from variant runs.")
+    parser.add_argument("--variants-only", action="store_true", help="Only update short/long variant columns; never SET ai_analysis_json.")
+    parser.add_argument("--expected-ai-analysis-hashes", default=None, help="JSON object mapping brand to expected MD5(COALESCE(ai_analysis_json,'')) for --variants-only.")
+    parser.add_argument("--preserve-updated-at", action="store_true", help="For --variants-only, leave updated_at unchanged.")
     return parser.parse_args()
 
 
@@ -547,6 +631,8 @@ def main() -> int:
     audit_dir.mkdir(parents=True, exist_ok=True)
 
     conn = connect(args)
+    if args.variants_only and not args.include_variants:
+        raise SystemExit("--variants-only requires --include-variants")
     table_info = create_and_describe_table(conn) if args.apply else {
         "existed_before": target_table_exists(conn),
         "table_created_or_existed": "dry_run",
@@ -566,6 +652,10 @@ def main() -> int:
     selected_short_runs = select_latest_runs(conn, "short") if args.include_variants else {}
     selected_long_runs = select_latest_runs(conn, "long") if args.include_variants else {}
     market_ids, market_id_source = load_market_ids(conn)
+    current_ai_hashes = load_ai_analysis_hashes(conn) if target_table_exists(conn) else {}
+    expected_ai_hashes = load_expected_ai_hashes(args.expected_ai_analysis_hashes)
+    if args.apply and args.variants_only and not expected_ai_hashes:
+        raise SystemExit("--variants-only --apply requires --expected-ai-analysis-hashes")
     missing_runs = [brand for brand in JW25_BRANDS if brand not in selected_runs]
     missing_short_runs = [brand for brand in JW25_BRANDS if args.include_variants and brand not in selected_short_runs]
     missing_long_runs = [brand for brand in JW25_BRANDS if args.include_variants and brand not in selected_long_runs]
@@ -614,21 +704,50 @@ def main() -> int:
                 if all(stage in long_parsed for stage in STAGES):
                     long_payloads[brand] = build_variant_ai_analysis(long_run, long_parsed, "long")
 
+    if args.include_variants:
+        for brand in JW25_BRANDS:
+            if brand not in short_payloads:
+                short_run = selected_short_runs.get(brand)
+                if short_run is not None:
+                    short_parsed = load_parsed_output(conn, short_run)
+                    if all(stage in short_parsed for stage in STAGES):
+                        short_payloads[brand] = build_variant_ai_analysis(short_run, short_parsed, "short")
+            if brand not in long_payloads:
+                long_run = selected_long_runs.get(brand)
+                if long_run is not None:
+                    long_parsed = load_parsed_output(conn, long_run)
+                    if all(stage in long_parsed for stage in STAGES):
+                        long_payloads[brand] = build_variant_ai_analysis(long_run, long_parsed, "long")
+
     _write_json(audit_dir / "parsed_outputs_used" / "selected_runs.json", run_rows)
     _write_json(audit_dir / "parsed_outputs_used" / "market_id_mapping.json", {"source": market_id_source, "market_ids": market_ids})
+    _write_json(audit_dir / "insert_results" / "pre_insert_ai_analysis_hashes.json", current_ai_hashes)
 
     insert_rows: list[dict[str, Any]] = []
     if args.apply:
         missing_short_payloads = [brand for brand in JW25_BRANDS if args.include_variants and brand not in short_payloads]
         missing_long_payloads = [brand for brand in JW25_BRANDS if args.include_variants and brand not in long_payloads]
-        if missing_runs or missing_short_runs or missing_long_runs or missing_short_payloads or missing_long_payloads or incomplete:
+        blocking_missing_runs = [] if args.variants_only else missing_runs
+        blocking_incomplete = [] if args.variants_only else incomplete
+        if blocking_missing_runs or missing_short_runs or missing_long_runs or missing_short_payloads or missing_long_payloads or blocking_incomplete:
             raise SystemExit(
                 "Cannot insert with missing/incomplete outputs: "
-                f"missing={missing_runs}, missing_short={missing_short_runs}, "
+                f"missing={blocking_missing_runs}, missing_short={missing_short_runs}, "
                 f"missing_long={missing_long_runs}, missing_short_payloads={missing_short_payloads}, "
-                f"missing_long_payloads={missing_long_payloads}, incomplete={incomplete}"
+                f"missing_long_payloads={missing_long_payloads}, incomplete={blocking_incomplete}"
             )
-        if args.include_variants:
+        if args.variants_only:
+            insert_rows = update_variant_ai_analysis_only(
+                conn,
+                short_payloads=short_payloads,
+                long_payloads=long_payloads,
+                expected_ai_hashes=expected_ai_hashes,
+                update_timestamp=not args.preserve_updated_at,
+            )
+            skipped = [row for row in insert_rows if int(row["affected_rows"]) == 0]
+            if skipped:
+                raise SystemExit(f"Variant-only update skipped brands because ai_analysis hash did not match or row was missing: {skipped}")
+        elif args.include_variants:
             insert_rows = insert_ai_analysis(conn, payloads, market_ids, short_payloads, long_payloads)
         else:
             insert_rows = insert_ai_analysis(conn, payloads, market_ids)
