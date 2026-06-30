@@ -34,15 +34,32 @@ class BrandRef:
 
 
 @dataclass(frozen=True, slots=True)
+class DimensionFilter:
+    """One normalized product-level sidecar filter.
+
+    Values are normalized with the same rules as the ETL sidecar builder. A
+    single ``DimensionFilter`` is an OR set; multiple filters are ANDed by the
+    sidecar aggregation path.
+    """
+
+    dimension_type: str
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MarketDefinition:
     """Resolved market scope produced by a view-specific resolver."""
 
     view: str
-    filter_echo: dict[str, list[str] | str | None]
+    filter_echo: dict[str, object]
     source: str
     measure: str
     normalized_molecules: tuple[str, ...] = ()
     brands: tuple[BrandRef, ...] = ()
+    dimension_filters: tuple[DimensionFilter, ...] = ()
+    focus_brand_key: str | None = None
+    strategic_market_kind: str | None = None
+    strategic_market_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +69,6 @@ class BrandMetric:
     brand_key: str
     brand_name: str
     atc4_code: str
-    atc4_desc: str
     total_value: float
     market_share_pct: float
     rank: int
