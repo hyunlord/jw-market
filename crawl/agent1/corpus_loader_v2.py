@@ -285,6 +285,9 @@ def build_records(
     catalog: CatalogResolver,
     *,
     workflow_id: int,
+    processed_by: str = SOURCE_PROCESSOR,
+    tier: int | None = None,
+    collected_at: str | None = None,
 ) -> BuiltRecords:
     scored = read_json(scored_path)
     if not isinstance(scored, dict):
@@ -302,6 +305,7 @@ def build_records(
     url = source.get("url") or news.get("article_url") or news.get("url")
     source_name = source.get("source") or news.get("source_name") or news.get("crawl_site") or source_name_from_path(source_path)
     content = news.get("content") or news.get("article_text") or ""
+    collected = collected_at or now_mysql_utc()
 
     news_row = {
         "news_id": news_id,
@@ -332,10 +336,15 @@ def build_records(
         "source_url": url,
         "period_ubist": period_ubist(published),
         "period_iqvia": period_iqvia(published),
-        "processed_by": SOURCE_PROCESSOR,
+        "processed_by": processed_by,
         "processed_at": scored_at,
         "search_keyword": news.get("search_keyword"),
     }
+    if tier is not None:
+        news_row["tier"] = tier
+        news_row["collected_at"] = collected
+        event_row["tier"] = tier
+        event_row["collected_at"] = collected
 
     scores: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -352,30 +361,32 @@ def build_records(
             continue
         seen.add(canonical_key)
         score = normalize_score(match.get("score", match.get("importance", 0)))
-        scores.append(
-            {
-                "event_id": news_id,
-                "news_id": news_id,
-                "brand_name": brand,
-                "brand_canonical": resolution.brand_canonical or brand,
-                "brand_id": resolution.brand_id,
-                "ml_id": resolution.ml_id,
-                "cd_id": resolution.cd_id,
-                "is_jw": 1,
-                "score": score,
-                "score_tier": score_to_tier(score),
-                "reason": match.get("reason") or "",
-                "derivation": "llm_direct",
-                "mirrored_from_jw_brands": None,
-                "tag": scored.get("tag"),
-                "summary": scored.get("summary") or "",
-                "workflow_id": scored.get("workflow_id") or workflow_id,
-                "catalog_version": scored.get("catalog_version") or catalog.catalog_version,
-                "llm_meta": json_dumps(scored.get("llm_meta") or {}),
-                "source_processor": SOURCE_PROCESSOR,
-                "generated_at": scored_at or now_mysql_utc(),
-            }
-        )
+        score_row = {
+            "event_id": news_id,
+            "news_id": news_id,
+            "brand_name": brand,
+            "brand_canonical": resolution.brand_canonical or brand,
+            "brand_id": resolution.brand_id,
+            "ml_id": resolution.ml_id,
+            "cd_id": resolution.cd_id,
+            "is_jw": 1,
+            "score": score,
+            "score_tier": score_to_tier(score),
+            "reason": match.get("reason") or "",
+            "derivation": "llm_direct",
+            "mirrored_from_jw_brands": None,
+            "tag": scored.get("tag"),
+            "summary": scored.get("summary") or "",
+            "workflow_id": scored.get("workflow_id") or workflow_id,
+            "catalog_version": scored.get("catalog_version") or catalog.catalog_version,
+            "llm_meta": json_dumps(scored.get("llm_meta") or {}),
+            "source_processor": processed_by,
+            "generated_at": scored_at or now_mysql_utc(),
+        }
+        if tier is not None:
+            score_row["tier"] = tier
+            score_row["collected_at"] = collected
+        scores.append(score_row)
     return BuiltRecords(news=news_row, event=event_row, scores=scores, scored_path=scored_path, source_path=source_path)
 
 
@@ -396,24 +407,58 @@ def load_records(cursor: Any, records: BuiltRecords, *, dry_run: bool) -> dict[s
         return {"news_written": 0, "events_written": 0, "scores_written": 0}
     cursor.execute("SELECT 1 FROM news_raw WHERE news_id = %s LIMIT 1", (records.news["news_id"],))
     news_exists = cursor.fetchone() is not None
+    news_update_columns = [
+        "matched_search_keywords",
+        "matched_jw_search_contexts",
+        "news_source_file",
+        "scored",
+        "scored_at",
+        "corpus_file_path",
+    ]
+    event_update_columns = [
+        "category",
+        "category_label",
+        "summary",
+        "body_full",
+        "processed_by",
+        "processed_at",
+        "search_keyword",
+    ]
+    score_update_columns = [
+        "news_id",
+        "brand_name",
+        "brand_id",
+        "ml_id",
+        "cd_id",
+        "is_jw",
+        "score",
+        "score_tier",
+        "reason",
+        "source_processor",
+        "generated_at",
+        "derivation",
+        "mirrored_from_jw_brands",
+        "tag",
+        "summary",
+        "workflow_id",
+        "catalog_version",
+        "llm_meta",
+    ]
+    if "tier" in records.news:
+        news_update_columns.extend(["tier", "collected_at"])
+        event_update_columns.extend(["tier", "collected_at"])
+        score_update_columns.extend(["tier", "collected_at"])
     news_rowcount = execute_insert(
         cursor,
         "news_raw",
         records.news,
-        [
-            "matched_search_keywords",
-            "matched_jw_search_contexts",
-            "news_source_file",
-            "scored",
-            "scored_at",
-            "corpus_file_path",
-        ],
+        news_update_columns,
     )
     event_rowcount = execute_insert(
         cursor,
         "events",
         records.event,
-        ["category", "category_label", "summary", "body_full", "processed_by", "processed_at", "search_keyword"],
+        event_update_columns,
     )
     score_rowcount = 0
     for score in records.scores:
@@ -421,26 +466,7 @@ def load_records(cursor: Any, records: BuiltRecords, *, dry_run: bool) -> dict[s
             cursor,
             "event_brand_scores",
             score,
-            [
-                "news_id",
-                "brand_name",
-                "brand_id",
-                "ml_id",
-                "cd_id",
-                "is_jw",
-                "score",
-                "score_tier",
-                "reason",
-                "source_processor",
-                "generated_at",
-                "derivation",
-                "mirrored_from_jw_brands",
-                "tag",
-                "summary",
-                "workflow_id",
-                "catalog_version",
-                "llm_meta",
-            ],
+            score_update_columns,
         )
     return {
         "news_written": 0 if news_exists else min(news_rowcount, 1),
@@ -492,7 +518,15 @@ def load_batch(args: argparse.Namespace, catalog: CatalogResolver) -> dict[str, 
     try:
         for scored_path in found:
             try:
-                records = build_records(batch_dir, scored_path, catalog, workflow_id=args.workflow_id)
+                records = build_records(
+                    batch_dir,
+                    scored_path,
+                catalog,
+                workflow_id=args.workflow_id,
+                processed_by=args.processed_by,
+                tier=args.tier,
+                collected_at=args.collected_at,
+            )
                 tag_counter[str(records.event["category_label"])] += 1
                 for score in records.scores:
                     tier_counter[str(score["score_tier"])] += 1
@@ -550,6 +584,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--processed-by", default=SOURCE_PROCESSOR)
+    parser.add_argument("--tier", type=int, choices=(1, 2), help="Optional crawl tier metadata; requires migration columns.")
+    parser.add_argument("--collected-at", help="Optional MySQL DATETIME value for tiered retention metadata.")
     return parser.parse_args()
 
 

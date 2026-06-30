@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-news-crawl-tier2-daily-slice
+  namespace: llmops
+  labels:
+    app: jw-news-crawl
+    crawl-tier: "2"
+spec:
+  # Keep suspended until PL approves the first large production run.
+  suspend: true
+  schedule: "40 18 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: jw-news-crawl
+            crawl-tier: "2"
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:crawl-2tier-REPLACE_WITH_TAG
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+              env:
+                - name: DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: DB_PORT
+                  value: "3306"
+                - name: DB_USER
+                  value: llmops
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: galera-mariadb-galera
+                      key: mariadb-password
+                - name: DB_NAME
+                  value: jw_mart_d1_stage_20260625_173115
+              command: ["/bin/sh", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+                  WORK=/tmp/jw-news-crawl/tier2/$(date +%Y%m%d)
+                  WEEKDAY=$(python -c 'from datetime import datetime; print(datetime.now().weekday())')
+                  python crawl/crawler/crawl_2tier.py \
+                    --tier 2 \
+                    --run-crawl \
+                    --score \
+                    --weekday-slice "$WEEKDAY" \
+                    --days 7 \
+                    --max-pages-per-site 3 \
+                    --max-links-per-page 80 \
+                    --delay-sec 2 \
+                    --output-dir "$WORK/raw" \
+                    --processed-dir "$WORK/processed" \
+                    --brand-plan-output "$WORK/tier2_brand_plan.json"
+                  python crawl/agent1/corpus_loader_v2.py \
+                    --batch-dir "$WORK/raw" \
+                    --scored-dir "$WORK/processed" \
+                    --catalog crawl/config/_catalog.json \
+                    --output "$WORK/load_summary.json" \
+                    --db-name jw_mart \
+                    --tier 2 \
+                    --processed-by tier2_exact_rule_v1
+                  python crawl/crawler/crawl_retention.py \
+                    --db-name jw_mart \
+                    --retention-days 365 \
+                    --apply
