@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+# noqa: SIZE_OK - Existing broad auto-topic regression suite; split outside this scoped DB-backed market-group load.
+
 import json
 from pathlib import Path
 
 from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import expected_markets
-from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import apply_csd_market_names, build_market_group_map, scope_metadata_from_group_map
+from pipeline.etl.io.catalog.master.market_definition import iter_market_definition_rows
+from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import (
+    _read_target_sheet,
+    _records_from_market_definition_rows,
+    _target_records,
+    apply_csd_market_names,
+    build_market_group_map,
+    resolve_mi_master_path,
+    scope_metadata_from_group_map,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.models import KeywordRow, TopicDefinition
 from pipeline.scripts.analysis.brand_activity.auto_topic.quality import (
     dictionary_cross_check,
@@ -113,6 +124,16 @@ def test_mi_master_group_map_groups_livalo_and_gardlet() -> None:
     assert group_map["atc4_map"]["A10N1"]["group_id"] == group_map["atc4_map"]["A10N3"]["group_id"]
     assert set(group_map["group_scope_ids"]) == {"group:livalo_family", "group:gardlet_family"}
     assert "V03G2" in set(group_map["mi_master_missing_atc4"])
+
+
+def test_db_market_definition_rows_match_workbook_target_records() -> None:
+    master_path = resolve_mi_master_path()
+    assert master_path is not None
+    sheet_names, target_rows = _read_target_sheet(master_path)
+    workbook_records = _target_records(target_rows, sheet_names)
+    db_records = _records_from_market_definition_rows(list(iter_market_definition_rows(master_path)))
+
+    assert db_records == workbook_records
 
 
 def test_scope_metadata_uses_mi_master_market_scopes_and_drops_csd_missing() -> None:
