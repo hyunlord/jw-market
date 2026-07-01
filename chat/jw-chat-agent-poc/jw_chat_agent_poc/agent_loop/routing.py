@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 
 
@@ -28,6 +29,8 @@ _COMPLEX_TOKENS = (
 
 
 def should_use_agent_loop(question: str) -> bool:
+    if is_portfolio_decline_question(question):
+        return True
     if strict_query_plan(question, "리바로") is not None:
         return True
     if not any(token in question for token in (*_METRIC_TOKENS, *_EXTERNAL_TOKENS, *_DRUG_INFO_TOKENS)):

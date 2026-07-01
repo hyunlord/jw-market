@@ -36,6 +36,38 @@ def test_llm_router_accepts_structured_multi_bq_output() -> None:
     assert router.last_diagnostics.fallback_used is False
 
 
+def test_llm_router_preserves_portfolio_scope_from_structured_output() -> None:
+    router = LLMFirstBQRouter(
+        decomposer=FakeDecomposer(
+            '{"bq_ids":["Q2"],"tools":["metrics"],"brands":[],'
+            '"scope":"portfolio","no_data_flag":false,"confidence":0.91,"reason":"자사 브랜드 집합 하락 분석"}'
+        )
+    )
+
+    routes = router.route("JW 주요 브랜드 중 하락한 거 원인 분석")
+
+    assert routes[0].scope == "portfolio"
+    assert routes[0].sources == ("metrics",)
+    assert router.last_diagnostics.mode == "llm"
+
+
+def test_keyword_router_classifies_short_portfolio_decline_variants() -> None:
+    router = LLMFirstBQRouter(decomposer=FailingDecomposer())
+
+    questions = [
+        "JW 주요 브랜드 중 하락한 거 원인 분석",
+        "JW 주요 브랜드 중 떨어진 브랜드 원인 분석",
+        "부진한 자사 제품 알려줘",
+        "우리 제품 중 밀리는 거 원인 분석",
+        "JW 포트폴리오에서 하락한 브랜드 원인 분석",
+    ]
+
+    for question in questions:
+        routes = router.route(question)
+        assert routes[0].scope == "portfolio"
+        assert routes[0].sources == ("metrics",)
+
+
 def test_llm_router_falls_back_on_invalid_json() -> None:
     router = LLMFirstBQRouter(decomposer=FakeDecomposer("not json"))
 

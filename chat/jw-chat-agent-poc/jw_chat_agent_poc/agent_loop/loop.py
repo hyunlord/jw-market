@@ -9,7 +9,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
-from jw_chat_agent_poc.agent_loop.portfolio_scope import is_portfolio_decline_question
+from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution

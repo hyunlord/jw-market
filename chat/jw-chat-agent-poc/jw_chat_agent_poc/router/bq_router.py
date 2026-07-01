@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+from jw_chat_agent_poc.portfolio_scope import portfolio_scope_for_question
 from jw_chat_agent_poc.agentic import FilterEntry, extract_metric_filter_entries, extract_news_filter_entries
 
 
@@ -56,6 +57,7 @@ class BQSubQuestion:
     reason: str
     filters: tuple[FilterEntry, ...] = ()
     brands: tuple[str, ...] = ()
+    scope: str = "single_brand"
 
 
 class BQRouter:
@@ -75,7 +77,9 @@ class BQRouter:
                 )
             ]
 
-        if any(k in question for k in ("포트폴리오", "사업성")):
+        scope = portfolio_scope_for_question(question)
+
+        if any(k in question for k in ("포트폴리오", "사업성")) and scope != "portfolio":
             return [
                 BQSubQuestion(
                     bq="Q5",
@@ -139,10 +143,15 @@ class BQRouter:
                     sources=tuple(sources),
                     reason="Q1 maps market size/growth to IQVIA·UBIST metrics and optional documents.",
                     filters=metric_filters,
+                    scope=scope,
                 )
             )
 
-        if any(k in question for k in ("경쟁", "차별", "점유율", "처방요인", "상위", "위협", "unmet")) or any(k in lower for k in ("ms", "m/s")):
+        if (
+            scope == "portfolio"
+            or any(k in question for k in ("경쟁", "차별", "점유율", "처방요인", "상위", "위협", "unmet"))
+            or any(k in lower for k in ("ms", "m/s"))
+        ):
             sources = ["metrics"]
             if has_documents:
                 sources.append("document")
@@ -153,6 +162,7 @@ class BQRouter:
                     sources=tuple(sources),
                     reason="Q2 maps competitive context to metrics plus optional RAG/external sources.",
                     filters=metric_filters,
+                    scope=scope,
                 )
             )
 
@@ -208,10 +218,10 @@ class BQRouter:
 
     @staticmethod
     def _dedupe(routes: Iterable[BQSubQuestion]) -> list[BQSubQuestion]:
-        seen: set[tuple[str, str, tuple[str, ...], tuple[FilterEntry, ...], tuple[str, ...]]] = set()
+        seen: set[tuple[str, str, tuple[str, ...], tuple[FilterEntry, ...], tuple[str, ...], str]] = set()
         out: list[BQSubQuestion] = []
         for route in routes:
-            key = (route.bq, route.question, route.sources, route.filters, route.brands)
+            key = (route.bq, route.question, route.sources, route.filters, route.brands, route.scope)
             if key in seen:
                 continue
             seen.add(key)

@@ -7,6 +7,7 @@ from typing import Any
 
 VALID_BQ_IDS = frozenset({"Q1", "Q2", "Q2.5", "Q3", "Q4", "Q5", "Q1/Q5"})
 VALID_SOURCES = frozenset({"metrics", "external_api", "document", "none", "resolver", "deep_analysis_events"})
+VALID_SCOPES = frozenset({"single_brand", "portfolio"})
 
 
 def parse_json_object(raw: str) -> Mapping[str, Any]:
@@ -52,6 +53,10 @@ def string_items(value: Any) -> tuple[str, ...]:
     if not isinstance(value, Iterable):
         return ()
     return tuple(str(item) for item in value if isinstance(item, str))
+
+
+def valid_scope(value: Any) -> str:
+    return value if isinstance(value, str) and value in VALID_SCOPES else "single_brand"
 
 
 def confidence(data: Mapping[str, Any]) -> float | None:

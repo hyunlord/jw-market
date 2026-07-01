@@ -8,6 +8,7 @@ from typing import Any, Mapping, Protocol
 import requests
 
 from jw_chat_agent_poc.genos_config import DEFAULT_GENOS_BASE_URL, resolve_genos_base_url
+from jw_chat_agent_poc.portfolio_scope import portfolio_scope_for_question
 from .bq_router import BQRouter, BQSubQuestion, BQ_SYSTEM_PROMPT
 from .llm_filter_entries import filters_for_sources
 from .llm_route_helpers import (
@@ -18,6 +19,7 @@ from .llm_route_helpers import (
     question_label,
     string_items,
     valid_bq_ids,
+    valid_scope,
     valid_sources,
 )
 from .llm_router_prompts import build_system_prompt
@@ -165,7 +167,7 @@ class LLMFirstBQRouter:
                     reason="LLM-first guard preserves Q4 데이터 없음 boundary.",
                 )
             ]
-        if any(token in question for token in ("포트폴리오", "사업성", "신사업", "사업 타당성")):
+        if any(token in question for token in ("포트폴리오", "사업성", "신사업", "사업 타당성")) and portfolio_scope_for_question(question) != "portfolio":
             return [
                 BQSubQuestion(
                     bq="Q5",
@@ -201,6 +203,7 @@ class LLMFirstBQRouter:
         reason = str(data.get("reason") or "LLM BQ decomposition")
         filters = filters_for_sources(data, question, sources)
         brands = string_items(data.get("brands"))
+        scope = valid_scope(data.get("scope"))
         return (
             [
                 BQSubQuestion(
@@ -210,6 +213,7 @@ class LLMFirstBQRouter:
                     reason=reason,
                     filters=filters,
                     brands=brands,
+                    scope=scope,
                 )
                 for bq in bq_ids
             ],

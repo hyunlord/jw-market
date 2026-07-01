@@ -501,6 +501,39 @@ def test_portfolio_decline_question_uses_deterministic_decline_analysis() -> Non
 @pytest.mark.parametrize(
     "question",
     [
+        "JW 주요 브랜드 중 하락한 거 원인 분석",
+        "JW 주요 브랜드 중 떨어진 브랜드 원인 분석",
+        "부진한 자사 제품 알려줘",
+        "우리 제품 중 밀리는 거 원인 분석",
+    ],
+)
+def test_portfolio_decline_variants_use_deterministic_analysis(question: str) -> None:
+    """Given a short company-scope variant, the agent must not require one brand."""
+
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+    )
+    planner = ScriptedPlanner((AgentDecision(final_answer="planner should not run"),))
+    agent = ToolUseAgent(
+        metrics=_metrics_tool(),
+        resolver=resolver,
+        planner=planner,
+        query_layer=_portfolio_query_layer(),
+    )
+
+    result = agent.answer(question)
+
+    assert result["resolution"] == {"canonical_brand": "JW 주요 브랜드", "scope": "portfolio"}
+    assert result["agent_trace"] == []
+    assert result["tool_calls"][0]["tool"] == "portfolio_decline_analysis"
+    assert "직접 인과" in result["answer"]
+    assert "단정" in result["answer"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
         "리바로와 아토젯의 채널별 점유율 차이",
         "리바로 시장 오리지널 vs 제네릭 비중",
         "리바로 제형별 매출 추이(최근 1년)",

@@ -10,7 +10,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_tool_use_agent,
     unsupported_brand_result,
 )
-from jw_chat_agent_poc.agent_loop.portfolio_scope import is_portfolio_decline_question
+from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agentic import relevance_filter_entries, relevance_question_text, validate_metric_filters
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.orchestrator.external_notices import (
@@ -77,7 +77,7 @@ class ChatAgent:
         docs = documents or []
         routes = self.router.route(question, has_documents=bool(docs))
         requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
-        portfolio_scope = not docs and is_portfolio_decline_question(question) and should_use_agent_loop(question)
+        portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
         try:
             resolution = self.resolver.resolve(question, allow_default=portfolio_scope or bool(docs) or not requires_brand_flag)
         except UnsupportedBrandError:
