@@ -25,7 +25,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: crawler
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:crawl-2tier-REPLACE_WITH_TAG
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:b7751229ee62639cefc0ee39f3641d660060235639d48140a61065b082b49bbc
               imagePullPolicy: IfNotPresent
               resources:
                 requests:
@@ -54,6 +54,8 @@ spec:
                   set -euo pipefail
                   WORK=/tmp/jw-news-crawl/tier1/$(date +%Y%m%d)
                   python -c 'import zipfile; from pathlib import Path; target=Path("/tmp/jw-news-crawl/drug_profiles"); target.mkdir(parents=True, exist_ok=True); zipfile.ZipFile("crawl/config/drug_profiles.zip").extractall(target)'
+                  # First production one-shot should override this to --months 1
+                  # until crawl history is confirmed pre-seeded.
                   python crawl/crawler/crawl_2tier.py \
                     --tier 1 \
                     --run-crawl \

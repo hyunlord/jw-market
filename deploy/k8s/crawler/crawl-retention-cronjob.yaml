@@ -1,15 +1,15 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: jw-news-crawl-tier2-daily-slice
+  name: jw-news-crawl-retention-daily
   namespace: llmops
   labels:
     app: jw-news-crawl
-    crawl-tier: "2"
+    crawl-maintenance: retention
 spec:
-  # Keep suspended until PL approves the first large production run.
+  # Keep suspended until PL approves retention execution.
   suspend: true
-  schedule: "40 18 * * *"
+  schedule: "0 19 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -20,20 +20,20 @@ spec:
         metadata:
           labels:
             app: jw-news-crawl
-            crawl-tier: "2"
+            crawl-maintenance: retention
         spec:
           restartPolicy: Never
           containers:
-            - name: crawler
+            - name: retention
               image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:b7751229ee62639cefc0ee39f3641d660060235639d48140a61065b082b49bbc
               imagePullPolicy: IfNotPresent
               resources:
                 requests:
+                  cpu: "250m"
+                  memory: "512Mi"
+                limits:
                   cpu: "500m"
                   memory: "1Gi"
-                limits:
-                  cpu: "1"
-                  memory: "2Gi"
               env:
                 - name: DB_HOST
                   value: llmops-mariadb-service.llmops.svc.cluster.local
@@ -52,25 +52,6 @@ spec:
               args:
                 - |
                   set -euo pipefail
-                  WORK=/tmp/jw-news-crawl/tier2/$(date +%Y%m%d)
-                  WEEKDAY=$(python -c 'from datetime import datetime; print(datetime.now().weekday())')
-                  python crawl/crawler/crawl_2tier.py \
-                    --tier 2 \
-                    --run-crawl \
-                    --score \
-                    --weekday-slice "$WEEKDAY" \
-                    --days 7 \
-                    --max-pages-per-site 3 \
-                    --max-links-per-page 80 \
-                    --delay-sec 2 \
-                    --output-dir "$WORK/raw" \
-                    --processed-dir "$WORK/processed" \
-                    --brand-plan-output "$WORK/tier2_brand_plan.json"
-                  python crawl/agent1/corpus_loader_v2.py \
-                    --batch-dir "$WORK/raw" \
-                    --scored-dir "$WORK/processed" \
-                    --catalog crawl/config/_catalog.json \
-                    --output "$WORK/load_summary.json" \
+                  python crawl/crawler/crawl_retention.py \
                     --db-name jw_mart \
-                    --tier 2 \
-                    --processed-by tier2_exact_rule_v1
+                    --apply
