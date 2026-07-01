@@ -105,6 +105,8 @@ class ToolUseAgent:
             trace.append(_trace_step(step, decision, tuple(batch)))
             if duplicate:
                 break
+            if _observation_is_sufficient_for_final_answer(question, tuple(observations), tuple(batch)):
+                break
         else:
             status = "budget_exceeded"
             notices.append("agent loop step 예산을 초과해 확인된 도구 결과만 표시했습니다.")
@@ -1480,6 +1482,82 @@ def _step_allowed_brands(base_allowed_brands: tuple[str, ...], observations: tup
         if isinstance(members, tuple | list):
             brands.extend(str(member) for member in members)
     return tuple(dict.fromkeys(brands))
+
+
+_SUFFICIENT_METRIC_TOOLS = {
+    "get_metric",
+    "get_brand_sales",
+    "get_brand_share",
+    "get_brand_series",
+    "compare_brands_series",
+    "get_top_brands",
+    "query",
+}
+_FOLLOWUP_CONTEXT_TOKENS = (
+    "뉴스",
+    "이슈",
+    "소식",
+    "환자수",
+    "환자 수",
+    "질병",
+    "질환",
+    "HIRA",
+    "임상",
+    "clinical",
+    "특허",
+    "독점권",
+    "라벨",
+    "FDA",
+    "허가",
+    "식약처",
+    "MFDS",
+    "의약품정보",
+    "디테일링",
+    "연구",
+    "결과",
+    "같은 시장",
+    "대비",
+)
+
+
+def _observation_is_sufficient_for_final_answer(
+    question: str,
+    observations: tuple[AgentObservation, ...],
+    batch: tuple[AgentObservation, ...],
+) -> bool:
+    """Skip an extra LLM stop-decision when verified metric facts are enough."""
+    if not observations or not batch:
+        return False
+    if any(token in question for token in _FOLLOWUP_CONTEXT_TOKENS):
+        return False
+    return any(_metric_observation_has_answer_fact(item) for item in batch)
+
+
+def _metric_observation_has_answer_fact(item: AgentObservation) -> bool:
+    if item.status != "ok":
+        return False
+    if item.tool_name not in _SUFFICIENT_METRIC_TOOLS:
+        return False
+    call = item.call if isinstance(item.call, dict) else {}
+    if str(call.get("tool") or "") not in {"", "get_brand_metric"}:
+        return False
+    data = call.get("render_data")
+    if not isinstance(data, dict):
+        return bool(call.get("summary_text"))
+    return any(
+        key in data and data.get(key) not in (None, "", [], ())
+        for key in (
+            "sales_억원",
+            "ms_recent_pct",
+            "rank",
+            "brand_value_series_10pt",
+            "rows",
+            "query_result_id",
+            "market_size_억원",
+            "sales_delta_억원",
+            "share_delta_pct",
+        )
+    )
 
 
 def _sources(calls: list[dict[str, Any]]) -> list[str]:

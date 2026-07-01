@@ -3319,8 +3319,8 @@ def test_market_member_snapshot_mandatory_fact_requires_sales_number(monkeypatch
         )
     )
 
-    assert "아토젯은 시장점유율 5.16%입니다." in answer
     assert "비교 브랜드 지표: 아토젯 최신 시장 멤버 지표" in answer
+    assert "5.16%" in answer
     assert "116.48억원" in answer
 
 
@@ -3525,7 +3525,7 @@ def test_hira_required_patient_facts_dedupe_same_label_and_disease() -> None:
     assert "외래: 3769201명" in mandatory
 
 
-def test_genos_markdown_retries_when_mandatory_fact_is_missing(monkeypatch) -> None:
+def test_genos_markdown_appends_mandatory_fact_without_retry(monkeypatch) -> None:
     calls = [
         {
             "tool": "unsupported_metric",
@@ -3551,8 +3551,7 @@ def test_genos_markdown_retries_when_mandatory_fact_is_missing(monkeypatch) -> N
     monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
     answer = "".join(GenosClient(token="dummy-token").stream_answer("리바로 뉴스에서 아토젯 이슈", {"markdown_response": response.to_dict()}))
 
-    assert len(prompts) == 2
-    assert "누락된 필수 fact" in prompts[1]
+    assert len(prompts) == 1
     assert "확정하지 못했습니다" in answer
 
 

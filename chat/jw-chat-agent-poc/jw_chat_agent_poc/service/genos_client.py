@@ -38,7 +38,6 @@ from jw_chat_agent_poc.service.answer_safety import (
     has_mandatory_numeric_mismatch,
     mandatory_fact_block,
     mandatory_fact_lines,
-    mandatory_retry_messages,
     missing_mandatory_lines,
     needs_safe_news_summary,
     presentable_mandatory_lines,
@@ -577,28 +576,17 @@ class GenosClient:
         if not raw_interpretation:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
             return _apply_final_claim_controls(question, fallback, fact_md)
+        # Fast final path: the primary markdown prompt already receives trend_fact_md
+        # and explicitly asks for trend prose. Avoid a second pre-safety LLM call;
+        # deterministic guards below keep verified facts and numeric safety.
         trend_prose_candidate = ""
-        if trend_fact_md and _needs_trend_fact_prose(question, raw_interpretation, trend_fact_md):
-            try:
-                with stage(timing, "trend_llm_prose", "trend fact prose generation"):
-                    trend_prose = self._chat_text(self._trend_prose_messages(question, trend_fact_md, raw_interpretation))
-            except requests.RequestException:
-                trend_prose = ""
-            if trend_prose:
-                if not _needs_trend_fact_prose(question, trend_prose, trend_fact_md):
-                    trend_prose_candidate = cleanup_markdown_answer(trend_prose)
-                raw_interpretation = _insert_before_first_table(raw_interpretation, trend_prose)
         mandatory_lines = mandatory_fact_lines(fact_md)
+        raw_has_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
         missing_mandatory = missing_mandatory_lines(raw_interpretation, mandatory_lines)
-        if missing_mandatory:
-            try:
-                with stage(timing, "final_llm_retry", "missing mandatory facts"):
-                    raw_interpretation = self._chat_text(
-                        mandatory_retry_messages(question, fact_md, raw_interpretation, missing_mandatory)
-                    )
-            except requests.RequestException:
-                fallback = finalized_fallback_fact_answer(question, markdown_response)
-                return _apply_final_claim_controls(question, fallback, fact_md)
+        if missing_mandatory and not raw_has_unverified_number:
+            raw_interpretation = cleanup_markdown_answer(
+                "\n\n".join((raw_interpretation, "\n".join(presentable_mandatory_lines(missing_mandatory))))
+            )
         with stage(timing, "answer_safety", "fact-number validation"):
             removed_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
             answer = _sanitize_preserving_analysis(raw_interpretation, strict_numbers)
@@ -648,39 +636,13 @@ class GenosClient:
                     answer = ensure_hira_sales_link_analysis(question, answer, fact_md)
                     answer = dedupe_repeated_hira_patient_counts(answer, mandatory_lines)
                     answer = remove_raw_fact_residue(answer, fact_md)
-        if trend_fact_md and _needs_trend_fact_prose(question, answer, trend_fact_md):
-            try:
-                with stage(timing, "trend_llm_prose_after_safety", "trend fact prose after safety cleanup"):
-                    trend_prose = self._chat_text(self._trend_prose_messages(question, trend_fact_md, answer))
-            except requests.RequestException:
-                trend_prose = ""
-            if trend_prose:
-                candidate = cleanup_markdown_answer(remove_supported_series_contradictions(_insert_before_first_table(answer, trend_prose), fact_md))
-                if answer_has_only_fact_numbers(candidate, strict_numbers):
-                    if not _needs_trend_fact_prose(question, trend_prose, trend_fact_md):
-                        trend_prose_candidate = cleanup_markdown_answer(trend_prose)
-                    answer = _remove_endpoint_only_trend_sentence(remove_raw_fact_residue(candidate, fact_md), trend_fact_md)
-                else:
-                    sanitized_candidate = cleanup_markdown_answer(_sanitize_preserving_analysis(candidate, strict_numbers))
-                    if not _needs_trend_fact_prose(question, sanitized_candidate, trend_fact_md):
-                        trend_prose_candidate = _trend_analysis_prose(sanitized_candidate)
-                        answer = _remove_endpoint_only_trend_sentence(
-                            remove_raw_fact_residue(sanitized_candidate, fact_md),
-                            trend_fact_md,
-                        )
+        # Keep answer_safety as the only post-generation fact/number gate here.
+        # Do not perform post-safety trend regeneration; deterministic trend/table
+        # guards below decide whether verified trend material can be kept.
         if removed_unverified_number and fail_closed:
             answer = cleanup_markdown_answer("\n\n".join((FAIL_CLOSED_TEXT, verification_notice())))
         answer = _remove_endpoint_only_trend_sentence(remove_raw_fact_residue(answer, fact_md), trend_fact_md)
         answer = _ensure_trend_prose_fail_closed(question, answer, trend_fact_md, trend_prose_candidate)
-        if trend_fact_md and _needs_trend_fact_prose(question, answer, trend_fact_md):
-            try:
-                with stage(timing, "trend_llm_prose_final_fail_closed", "trend fact prose final fail-closed"):
-                    final_trend_prose = self._chat_text(self._trend_prose_messages(question, trend_fact_md, answer))
-            except requests.RequestException:
-                final_trend_prose = ""
-            if final_trend_prose:
-                sanitized_trend_prose = _sanitize_preserving_analysis(final_trend_prose, strict_numbers)
-                answer = _ensure_trend_prose_fail_closed(question, answer, trend_fact_md, sanitized_trend_prose)
         answer = _ensure_direct_metric_fact_answer(question, answer, fact_md)
         answer = _ensure_code_rendered_trend_table(answer, fact_lookup_md, trend_fact_md)
         answer = ensure_top_brand_trend_table(answer, fact_md)

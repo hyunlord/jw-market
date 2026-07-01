@@ -48,10 +48,11 @@ class GenosToolPlanner:
                 headers={"Authorization": f"Bearer {self.token}"},
                 json={
                     "messages": _messages(question, observations, allowed_brands, allowed_periods),
-                    "tools": list(schemas),
+                    "tools": list(_planner_schemas(question, schemas, observations)),
                     "tool_choice": "auto",
                     "stream": False,
                     "temperature": 0.0,
+                    "max_tokens": _planner_max_tokens(),
                 },
                 timeout=self.timeout_s,
             )
@@ -128,8 +129,265 @@ def _messages(
             ),
         },
         {"role": "user", "content": question},
-        {"role": "assistant", "content": json.dumps([item.to_dict() for item in observations], ensure_ascii=False)},
+        {"role": "assistant", "content": json.dumps(_summarize_observations(observations), ensure_ascii=False)},
     ]
+
+
+_METRIC_TOOL_NAMES = (
+    "get_brand_series",
+    "get_brand_sales",
+    "get_brand_share",
+    "get_metric",
+    "query",
+    "compare_brands_series",
+    "get_top_brands",
+)
+_MARKET_TOOL_NAMES = ("get_market_scope",)
+_RELATIVE_DATE_TOOL_NAMES = ("resolve_relative_date",)
+_NEWS_TOOL_NAMES = ("search_news",)
+_HIRA_TOOL_NAMES = ("get_disease_stats",)
+_CLINICAL_TOOL_NAMES = ("search_clinical",)
+_PATENT_TOOL_NAMES = ("search_patent",)
+_DRUG_INFO_TOOL_NAMES = ("search_drug_info",)
+_CORE_OBSERVATION_KEYS = (
+    "brand",
+    "metric",
+    "period",
+    "source_label",
+    "sales_억원",
+    "sales_delta_억원",
+    "sales_delta_pct",
+    "ms_recent_pct",
+    "share_delta_pct",
+    "rank",
+    "market_size_억원",
+    "query_result_id",
+    "data_scope",
+    "status",
+    "message",
+)
+_SERIES_OBSERVATION_KEYS = (
+    "brand_value_series_10pt",
+    "level_top5_trend_series",
+    "rows",
+    "series",
+)
+
+
+def _planner_max_tokens() -> int:
+    try:
+        return int(os.environ.get("GENOS_PLANNER_MAX_TOKENS", "512"))
+    except ValueError:
+        return 512
+
+
+def _planner_schemas(
+    question: str,
+    schemas: tuple[dict[str, Any], ...],
+    observations: tuple[AgentObservation, ...],
+) -> tuple[dict[str, Any], ...]:
+    selected = select_candidate_tools(question, schemas, observations)
+    return tuple(compact_tool_schema(schema) for schema in selected)
+
+
+def select_candidate_tools(
+    question: str,
+    schemas: tuple[dict[str, Any], ...],
+    observations: tuple[AgentObservation, ...],
+) -> tuple[dict[str, Any], ...]:
+    """Return a conservative tool subset for the planner prompt.
+
+    The planner still decides which tool to call; this only removes clearly
+    unrelated schema prose. When the intent is ambiguous, keep the full set.
+    """
+    by_name = {_schema_name(schema): schema for schema in schemas if _schema_name(schema)}
+    if not by_name:
+        return schemas
+
+    names: list[str] = []
+    if _asks_news(question):
+        names.extend(_NEWS_TOOL_NAMES)
+    if _asks_hira(question):
+        names.extend(_HIRA_TOOL_NAMES)
+    if _asks_clinical(question):
+        names.extend(_CLINICAL_TOOL_NAMES)
+    if _asks_patent(question):
+        names.extend(_PATENT_TOOL_NAMES)
+    if _asks_drug_info(question):
+        names.extend(_DRUG_INFO_TOOL_NAMES)
+    if _asks_market_scope(question):
+        names.extend(_MARKET_TOOL_NAMES)
+    if _asks_relative_date(question):
+        names.extend(_RELATIVE_DATE_TOOL_NAMES)
+    if _asks_metric_or_analysis(question) or not names:
+        names.extend(_METRIC_TOOL_NAMES)
+
+    if observations and _has_successful_metric_observation(observations) and not _needs_external_context(question):
+        names = [name for name in names if name in {*_METRIC_TOOL_NAMES, "query"}]
+
+    deduped = tuple(dict.fromkeys(name for name in names if name in by_name))
+    if len(deduped) < 2:
+        return schemas
+    return tuple(by_name[name] for name in deduped)
+
+
+def compact_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
+    name = str(function.get("name") or "")
+    compact: dict[str, Any] = {
+        "type": schema.get("type", "function"),
+        "function": {
+            "name": name,
+            "description": _shorten(str(function.get("description") or ""), 360),
+        },
+    }
+    parameters = function.get("parameters")
+    if isinstance(parameters, dict):
+        compact["function"]["parameters"] = _compact_parameters(parameters)
+    return compact
+
+
+def truncate_observation_message(observations: tuple[AgentObservation, ...]) -> list[dict[str, Any]]:
+    return _summarize_observations(observations)
+
+
+def _summarize_observations(observations: tuple[AgentObservation, ...]) -> list[dict[str, Any]]:
+    return [_summarize_observation(item) for item in observations]
+
+
+def _summarize_observation(item: AgentObservation) -> dict[str, Any]:
+    call = item.call if isinstance(item.call, dict) else {}
+    summary: dict[str, Any] = {
+        "step": item.step,
+        "tool_name": item.tool_name,
+        "status": item.status,
+        "arguments": dict(item.arguments),
+        "preview": _shorten(item.preview, 240),
+    }
+    if call:
+        compact_call: dict[str, Any] = {
+            "tool": call.get("tool"),
+            "source": call.get("source"),
+            "summary_text": _shorten(str(call.get("summary_text") or ""), 360),
+        }
+        render_data = call.get("render_data")
+        if isinstance(render_data, dict):
+            compact_call["render_data"] = _compact_render_data(render_data)
+        summary["call"] = compact_call
+    return summary
+
+
+def _compact_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {"type": parameters.get("type", "object")}
+    properties = parameters.get("properties")
+    if isinstance(properties, dict):
+        compact["properties"] = {
+            str(name): _compact_property(prop)
+            for name, prop in properties.items()
+            if isinstance(prop, dict)
+        }
+    if isinstance(parameters.get("required"), list):
+        compact["required"] = parameters["required"]
+    if parameters.get("additionalProperties") is False:
+        compact["additionalProperties"] = False
+    return compact
+
+
+def _compact_property(prop: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key in ("type", "enum", "items", "default"):
+        if key in prop:
+            compact[key] = prop[key]
+    if "description" in prop:
+        compact["description"] = _shorten(str(prop.get("description") or ""), 160)
+    return compact
+
+
+def _compact_render_data(data: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {key: data[key] for key in _CORE_OBSERVATION_KEYS if key in data}
+    for key in _SERIES_OBSERVATION_KEYS:
+        value = data.get(key)
+        if isinstance(value, list):
+            compact[key] = _compact_sequence(value)
+        elif isinstance(value, tuple):
+            compact[key] = _compact_sequence(list(value))
+    return compact
+
+
+def _compact_sequence(items: list[Any]) -> dict[str, Any]:
+    if len(items) <= 4:
+        sample = items
+    else:
+        sample = [items[0], items[1], items[-2], items[-1]]
+    return {"count": len(items), "sample": sample}
+
+
+def _schema_name(schema: dict[str, Any]) -> str:
+    function = schema.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name") or "")
+    return ""
+
+
+def _shorten(text: str, limit: int) -> str:
+    stripped = " ".join(text.split())
+    return stripped if len(stripped) <= limit else stripped[: limit - 1].rstrip() + "…"
+
+
+def _asks_metric_or_analysis(question: str) -> bool:
+    return any(
+        token in question
+        for token in (
+            "매출",
+            "점유율",
+            "MS",
+            "순위",
+            "시장",
+            "추이",
+            "변화",
+            "증감",
+            "하락",
+            "상승",
+            "impact",
+            "Impact",
+            "영업활동",
+            "상기 콜",
+            "채널",
+            "Class",
+            "Molecule",
+            "브랜드",
+            "용량",
+            "제형",
+        )
+    )
+
+
+def _asks_news(question: str) -> bool:
+    return any(token in question for token in ("뉴스", "이슈", "소식", "출시", "정책", "약가"))
+
+
+def _asks_hira(question: str) -> bool:
+    return any(token in question for token in ("환자수", "환자 수", "질병", "질환", "HIRA"))
+
+
+def _asks_clinical(question: str) -> bool:
+    return any(token in question for token in ("임상", "clinical", "연구", "study", "결과"))
+
+
+def _asks_patent(question: str) -> bool:
+    return any(token in question for token in ("특허", "독점권", "patent", "Orange", "orange", "라벨", "FDA"))
+
+
+def _asks_market_scope(question: str) -> bool:
+    return any(token in question for token in ("같은 시장", "경쟁제품", "경쟁 제품", "경쟁품", "경쟁 구도", "상위"))
+
+
+def _asks_relative_date(question: str) -> bool:
+    return "전" in question and "대비" in question
+
+
+def _needs_external_context(question: str) -> bool:
+    return _asks_news(question) or _asks_hira(question) or _asks_clinical(question) or _asks_patent(question) or _asks_drug_info(question)
 
 
 def _decision_from_payload(payload: Mapping[str, Any]) -> AgentDecision:
@@ -271,7 +529,14 @@ def _has_tool(schemas: tuple[dict[str, Any], ...], name: str) -> bool:
 
 
 def _has_metric_observation(observations: tuple[AgentObservation, ...]) -> bool:
-    return any(item.tool_name == "get_metric" for item in observations)
+    return _has_successful_metric_observation(observations)
+
+
+def _has_successful_metric_observation(observations: tuple[AgentObservation, ...]) -> bool:
+    return any(
+        item.status == "ok" and item.tool_name in {"get_metric", "get_brand_metric"}
+        for item in observations
+    )
 
 
 def _has_date_observation(observations: tuple[AgentObservation, ...]) -> bool:
