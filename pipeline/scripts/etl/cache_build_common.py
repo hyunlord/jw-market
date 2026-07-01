@@ -12,8 +12,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from layer3_compute_general_v3 import dumps, json_ready, mariadb_connect, safe_float
@@ -37,7 +35,7 @@ MEASURES_BY_SOURCE = {
 def optional_float(value: Any) -> float | None:
     """Parse a numeric value while preserving missing/uncomputable values as None."""
     try:
-        if value is None or pd.isna(value):
+        if value is None:
             return None
         number = float(str(value).replace(",", ""))
     except (TypeError, ValueError):
@@ -260,7 +258,17 @@ def parser(description: str) -> argparse.ArgumentParser:
     return p
 
 
-def load_catalog(name: str) -> pd.DataFrame:
+def load_catalog(name: str) -> Any:
+    """Read a parquet catalog only for offline cache-build commands.
+
+    API runtimes import this module for shared JSON/number helpers, but the
+    slim backend image intentionally does not ship pandas or parquet files.
+    Keeping pandas local to the catalog reader preserves the old offline
+    builder behavior without reintroducing a runtime pandas dependency.
+    """
+
+    import pandas as pd
+
     return pd.read_parquet(CATALOG_DIR / name / f"{name}.parquet")
 
 
