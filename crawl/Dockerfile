@@ -20,6 +20,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     PyMySQL \
     beautifulsoup4 \
+    pandas \
     python-dotenv \
     requests \
     trafilatura
