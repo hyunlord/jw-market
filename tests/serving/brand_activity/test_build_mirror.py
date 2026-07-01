@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline.scripts.deploy.brand_activity_307.build_mirror import build_mirror
+from pipeline.scripts.deploy.brand_activity_307.build_mirror import build_mirror, verify_mirror_imports
 
 
 def test_build_mirror_contains_topic_server_and_requirements(tmp_path: Path) -> None:
@@ -16,3 +16,13 @@ def test_build_mirror_contains_topic_server_and_requirements(tmp_path: Path) -> 
     assert (output / "pipeline/scripts/serving/brand_activity/topic_server.py").is_file()
     assert (output / "pipeline/scripts/etl/brand_activity/brand_activity_replay.py").is_file()
     assert (output / "pipeline/scripts/analysis/brand_activity/auto_topic/run_auto_topic.py").is_file()
+
+
+def test_build_mirror_is_importable_without_source_repo(tmp_path: Path) -> None:
+    """Given a fresh mirror, When imports run in isolation, Then transitive local deps are present."""
+    output = tmp_path / "llmops_307"
+
+    build_mirror(output)
+
+    assert (output / "pipeline/etl/io/catalog/_lib/common.py").is_file()
+    verify_mirror_imports(output)
