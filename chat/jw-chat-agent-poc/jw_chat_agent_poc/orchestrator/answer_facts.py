@@ -155,6 +155,8 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
     tool = str(call.get("tool") or "")
     if tool == "agent_calculation":
         return _agent_calculation_axis_facts(data)
+    if tool == "portfolio_decline_analysis":
+        return _portfolio_decline_axis_facts(data)
     if tool == "get_brand_metric":
         return _brand_metric_axis_facts(data)
     if _is_hira_disease_call(call):
@@ -359,6 +361,32 @@ def _brand_trend_comparison_axis_facts(data: RenderData, brand: str) -> tuple[Ax
 
 def _competitive_insight_axis_facts(data: RenderData, _brand: str) -> tuple[AxisFact, ...]:
     return tuple(AxisFact(RequiredAxis.MARKET_STRUCTURE, label, content) for label, content in _required_competitive_insight_rows(data))
+
+
+def _portfolio_decline_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    rows: list[AxisFact] = []
+    for item in data.get("decliners", [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        brand = str(item.get("brand") or "")
+        if not brand:
+            continue
+        period = _comparison_period(item)
+        top_gainers = _portfolio_gainer_text(item.get("top_gainers"))
+        content = " ".join(
+            part
+            for part in (
+                f"{brand} {period}",
+                f"MS {pct_value(item.get('from_ms_pct'))} → {pct_value(item.get('to_ms_pct'))}",
+                f"변화 {_pct_point_delta(item.get('share_delta_pctp'))}",
+                f"최신 매출 {eok_value(None, item.get('to_sales_krw'))}",
+                f"동시장 상승 후보 {top_gainers}" if top_gainers else "",
+                "직접 인과/처방 이동 단정 불가",
+            )
+            if part
+        )
+        rows.append(AxisFact(RequiredAxis.MARKET_STRUCTURE, "포트폴리오 MS 하락", content))
+    return tuple(rows)
 
 
 def _market_member_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
@@ -579,6 +607,39 @@ def _numeric(value: Any) -> float:
         return 0.0
 
 
+def _pct_point_delta(value: Any) -> str:
+    rendered = pct_value(value)
+    return f"{rendered}p" if rendered else ""
+
+
+def _pct_path(data: dict[str, Any]) -> str:
+    start = pct_value(data.get("from_ms_pct"))
+    end = pct_value(data.get("to_ms_pct"))
+    if start and end:
+        return f"{start} → {end}"
+    return end or start
+
+
+def _portfolio_gainer_text(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value[:3]:
+        if not isinstance(item, dict) or not item.get("brand"):
+            continue
+        parts.append(
+            " ".join(
+                part
+                for part in (
+                    str(item.get("brand") or ""),
+                    _pct_point_delta(item.get("share_delta_pctp")),
+                )
+                if part
+            )
+        )
+    return ", ".join(part for part in parts if part)
+
+
 def _required_top_trend_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     for item in data.get("level_top5_trend_series", [])[:5]:
@@ -793,6 +854,8 @@ def _call_fact_block(
     tool = str(call.get("tool") or "")
     if tool == "deep_analysis_related_news":
         return _news_facts(data)
+    if tool == "portfolio_decline_analysis":
+        return _portfolio_decline_facts(data)
     if tool in {"get_brand_metric", "get_market_landscape", "agent_calculation", "unsupported_metric"}:
         return _metric_facts(tool, data, detail=detail)
     if _is_hira_disease_call(call):
@@ -821,6 +884,37 @@ def _news_facts(data: dict[str, Any]) -> str:
         message = data.get("message") or "관련 뉴스 없음"
         return table("### 인사이트 근거 fact - 뉴스/이슈", ("항목", "값"), (("상태", message),))
     return table("### 인사이트 근거 fact - 뉴스/이슈", ("날짜", "제목", "출처", "URL", "요약", "매칭 발췌"), tuple(rows))
+
+
+def _portfolio_decline_facts(data: dict[str, Any]) -> str:
+    rows: list[tuple[Any, Any, Any, Any, Any, Any, Any]] = []
+    for item in data.get("decliners", [])[:TABLE_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            (
+                item.get("brand"),
+                item.get("market_name") or item.get("market_id"),
+                _comparison_period(item),
+                _pct_path(item),
+                _pct_point_delta(item.get("share_delta_pctp")),
+                eok_value(None, item.get("to_sales_krw")),
+                _portfolio_gainer_text(item.get("top_gainers")),
+            )
+        )
+    if not rows:
+        return table("### JW 주요 브랜드 포트폴리오 fact", ("상태",), (("하락 브랜드 미확인",),))
+    blocks = [
+        table(
+            "### JW 주요 브랜드 포트폴리오 fact",
+            ("브랜드", "시장", "기간", "MS 경로", "MS 변화", "최신 매출", "동시장 상승 후보"),
+            tuple(rows),
+        )
+    ]
+    guardrail = data.get("interpretation_guardrail")
+    if guardrail:
+        blocks.append(table("### 포트폴리오 해석 가드레일", ("항목", "값"), (("주의", guardrail),)))
+    return "\n\n".join(blocks)
 
 
 def _metric_facts(

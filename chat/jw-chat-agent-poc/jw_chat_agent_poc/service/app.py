@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
@@ -303,11 +304,12 @@ def _answer_without_pending(
 
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     dependencies = build_chat_agent_dependencies(external_mode=external_mode)
-    try:
-        dependencies.resolver.resolve(question, allow_default=False)
-    except UnsupportedBrandError:
-        routes = dependencies.router.route(question, has_documents=False)
-        return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
+    if not is_portfolio_decline_question(question):
+        try:
+            dependencies.resolver.resolve(question, allow_default=False)
+        except UnsupportedBrandError:
+            routes = dependencies.router.route(question, has_documents=False)
+            return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
     return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
 
 

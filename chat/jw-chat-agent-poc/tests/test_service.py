@@ -171,6 +171,45 @@ def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(
     assert "지원하지 않는 브랜드" in result["answer"]
 
 
+def test_answer_question_direct_agent_loop_allows_portfolio_scope_without_single_brand_resolution(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Resolver:
+        def resolve(self, _question: str, *, allow_default: bool = False):
+            raise UnsupportedBrandError("portfolio scope is not a single brand")
+
+    class Dependencies:
+        router = BQRouter()
+        resolver = Resolver()
+
+        def agent_loop_dependencies(self):
+            captured["loop_dependencies"] = True
+            return "portfolio-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            captured["loop_question"] = question
+            return {"answer": "portfolio-loop", "sources": ["cache"], "tool_calls": [{"tool": "portfolio_decline_analysis"}]}
+
+    monkeypatch.setattr(service_app, "build_chat_agent_dependencies", lambda *, external_mode="fixture": Dependencies())
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda dependencies: Loop())
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "JW 주요 브랜드 중 최근 시장점유율이 하락한 게 있으면 어떤 브랜드인지 분석해줘",
+        "live",
+        None,
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["answer"] == "portfolio-loop"
+    assert item["result"]["tool_calls"] == [{"tool": "portfolio_decline_analysis"}]
+    assert captured["loop_dependencies"] is True
+    assert captured["loop_question"] == "JW 주요 브랜드 중 최근 시장점유율이 하락한 게 있으면 어떤 브랜드인지 분석해줘"
+
+
 def test_create_app_exposes_chat_routes() -> None:
     app = create_app()
 

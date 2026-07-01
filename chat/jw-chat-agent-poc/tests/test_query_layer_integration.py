@@ -468,6 +468,36 @@ def test_top_brand_questions_enter_agent_loop() -> None:
     assert should_use_agent_loop("리바로 시장에서 상위 브랜드 뭐 있어")
 
 
+def test_portfolio_decline_question_uses_deterministic_decline_analysis() -> None:
+    """Given a company-scope decline question, the agent analyzes the portfolio before LLM planning."""
+
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+    )
+    planner = ScriptedPlanner((AgentDecision(final_answer="planner should not run"),))
+    agent = ToolUseAgent(
+        metrics=_metrics_tool(),
+        resolver=resolver,
+        planner=planner,
+        query_layer=_portfolio_query_layer(),
+    )
+
+    result = agent.answer("JW 주요 브랜드 중 최근 시장점유율이 하락한 게 있으면 어떤 브랜드인지, 그 시장에서 누가 점유율을 가져갔는지 원인을 분석해줘")
+
+    assert result["resolution"] == {"canonical_brand": "JW 주요 브랜드", "scope": "portfolio"}
+    assert result["agent_trace"] == []
+    assert result["tool_calls"][0]["tool"] == "portfolio_decline_analysis"
+    data = result["tool_calls"][0]["render_data"]
+    decliners = {row["brand"]: row for row in data["decliners"]}
+    assert "페린젝트" in decliners
+    assert decliners["페린젝트"]["share_delta_pctp"] < 0
+    assert decliners["페린젝트"]["top_gainers"][0]["brand"] == "베노훼럼"
+    assert "JW 주요 브랜드 포트폴리오 fact" in result["markdown_response"]["fact_md"]
+    assert "직접 인과/처방 이동 단정 불가" in result["markdown_response"]["fact_md"]
+    assert "베노훼럼" in result["answer"]
+
+
 @pytest.mark.parametrize(
     "question",
     [
@@ -495,6 +525,10 @@ def _query_layer() -> StrategicQueryLayer:
     return StrategicQueryLayer(reader=StaticStrategicMartReader(_records()))
 
 
+def _portfolio_query_layer() -> StrategicQueryLayer:
+    return StrategicQueryLayer(reader=StaticStrategicMartReader(_portfolio_records()))
+
+
 def _metrics_tool() -> MetricsTool:
     return MetricsTool(
         mode="cache",
@@ -517,7 +551,22 @@ def _records() -> tuple[MartRecord, ...]:
     return tuple(_record(brand, series, periods, totals) for brand, series in values.items())
 
 
+def _portfolio_records() -> tuple[MartRecord, ...]:
+    periods = ("2026-01", "2026-02", "2026-03", "2026-04")
+    values = {
+        "페린젝트": (4_000_000_000.0, 3_800_000_000.0, 3_500_000_000.0, 3_200_000_000.0),
+        "베노훼럼": (2_000_000_000.0, 2_300_000_000.0, 2_600_000_000.0, 3_100_000_000.0),
+        "경쟁철분": (4_000_000_000.0, 3_900_000_000.0, 3_900_000_000.0, 3_700_000_000.0),
+    }
+    totals = [sum(series[index] for series in values.values()) for index in range(len(periods))]
+    return tuple(_record_with_market("ml_012", brand, series, periods, totals) for brand, series in values.items())
+
+
 def _record(brand: str, values: tuple[float, ...], periods: tuple[str, ...], totals: list[float]) -> MartRecord:
+    return _record_with_market("ml_006", brand, values, periods, totals)
+
+
+def _record_with_market(ml_id: str, brand: str, values: tuple[float, ...], periods: tuple[str, ...], totals: list[float]) -> MartRecord:
     history = {
         period: {"raw_value": values[index], "ms": values[index] / totals[index] * 100}
         for index, period in enumerate(periods)
@@ -535,7 +584,7 @@ def _record(brand: str, values: tuple[float, ...], periods: tuple[str, ...], tot
     dosage_form = "정제" if brand in {"리바로", "리피토"} else "복합정"
     ox_gx = "Original" if brand in {"리바로", "리피토"} else "Generic"
     return MartRecord(
-        ml_id="ml_006",
+        ml_id=ml_id,
         brand_name=brand,
         source="ubist",
         measure="sales",

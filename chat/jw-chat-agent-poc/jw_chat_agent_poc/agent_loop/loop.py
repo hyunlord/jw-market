@@ -9,6 +9,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
+from jw_chat_agent_poc.agent_loop.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
@@ -40,6 +41,28 @@ class ToolUseAgent:
         with stage(timing, "agent_pre_resolve", "brand and period grounding"):
             base_allowed_brands = _pre_resolved_brands(question, self.resolver)
             period_grounding = build_period_grounding(question, self.current_month)
+        portfolio_call = _portfolio_decline_call(question, self.resolver, self.query_layer)
+        if portfolio_call is not None:
+            with stage(timing, "fact_assembly", "portfolio markdown fact set build"):
+                markdown = MarkdownResponseBuilder().build(brand="JW 주요 브랜드", calls=[portfolio_call], sources=[portfolio_call.get("source") or "cache"])
+            return {
+                "question": question,
+                "resolution": {"canonical_brand": "JW 주요 브랜드", "scope": "portfolio"},
+                "decomposition": [{"intent": "portfolio_decline_analysis", "status": "ok", "max_steps": 0}],
+                "router_diagnostics": {"mode": "agent_loop", "deterministic_execution": True, "scope": "portfolio"},
+                "agent_trace": [],
+                "agent_loop_metrics": {
+                    "status": "ok",
+                    "steps": 0,
+                    "tool_calls": 1,
+                    "selected_tools": ["portfolio_decline_analysis"],
+                },
+                "tool_calls": [portfolio_call],
+                "answer": markdown.markdown,
+                "markdown_response": markdown.to_dict(),
+                "sources": [portfolio_call.get("source") or "cache"],
+                "timing": timing,
+            }
         observations: list[AgentObservation] = []
         calls: list[dict[str, Any]] = []
         trace: list[AgentTraceStep] = []
@@ -175,6 +198,24 @@ def _execute_grounded(facade: AgentToolFacade, plan: ToolCallPlan) -> ToolExecut
     except (LookupError, TypeError, ValueError, UnsupportedBrandError):
         return facade.execute(plan.name, plan.arguments)
     return facade.execute(plan.name, grounded_arguments)
+
+
+def _portfolio_decline_call(
+    question: str,
+    resolver: BrandResolver,
+    query_layer: StrategicQueryLayer | None,
+) -> dict[str, Any] | None:
+    if query_layer is None or not is_portfolio_decline_question(question):
+        return None
+    brands = tuple(
+        {
+            "brand": item.canonical_brand,
+            "market_id": item.market_id,
+            "market_name": item.market_name,
+        }
+        for item in resolver.portfolio_brands()
+    )
+    return query_layer.portfolio_decline_analysis(brands)
 
 
 def _trace_step(step: int, decision: AgentDecision, observations: tuple[AgentObservation, ...]) -> AgentTraceStep:

@@ -103,6 +103,11 @@ class BrandResolver:
     def supported_brand_count(self) -> int:
         return len(self._items())
 
+    def portfolio_brands(self) -> tuple[BrandResolution, ...]:
+        """Return the supported strategic brand catalog for company-scope analysis."""
+
+        return tuple(self._to_resolution(item) for item in self._items())
+
     def _items(self) -> list[dict[str, Any]]:
         if self._mode != "cache":
             return list(self._fixture_items)

@@ -26,6 +26,8 @@ def call_data_md(call: dict[str, Any]) -> str:
         return ""
     if tool == "deep_analysis_related_news":
         return news_md(render_data)
+    if tool == "portfolio_decline_analysis":
+        return portfolio_decline_md(render_data)
     if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
         return metrics_md(tool, render_data)
     if tool.startswith("hira_disease") or str(call.get("source")) == "hira_disease":
@@ -93,6 +95,74 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     if filter_rows:
         blocks.append(table("### 지표 필터", ("구분", "값"), filter_rows))
     return "\n\n".join(blocks)
+
+
+def portfolio_decline_md(data: dict[str, Any]) -> str:
+    rows: list[tuple[Any, Any, Any, Any, Any, Any, Any]] = []
+    for item in data.get("decliners", [])[:TABLE_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            (
+                item.get("brand"),
+                item.get("market_name") or item.get("market_id"),
+                _period_range(item),
+                _pct_point_path(item),
+                _pct_point_delta(item.get("share_delta_pctp")),
+                eok_value(None, item.get("to_sales_krw")),
+                _gainer_summary(item.get("top_gainers")),
+            )
+        )
+    if not rows:
+        return table(
+            "### JW 주요 브랜드 점유율 하락 분석",
+            ("상태", "근거"),
+            (("하락 브랜드 미확인", data.get("interpretation_guardrail") or "확정 mart 기준으로 하락 브랜드가 확인되지 않았습니다."),),
+        )
+    blocks = [
+        table(
+            "### JW 주요 브랜드 점유율 하락 분석",
+            ("브랜드", "시장", "기간", "MS 경로", "MS 변화", "최신 매출", "동시장 상승 후보"),
+            tuple(rows),
+        )
+    ]
+    guardrail = data.get("interpretation_guardrail")
+    if guardrail:
+        blocks.append(table("### 해석 범위", ("항목", "값"), (("주의", guardrail),)))
+    return "\n\n".join(blocks)
+
+
+def _period_range(item: dict[str, Any]) -> str:
+    start = str(item.get("period_from") or "")
+    end = str(item.get("period_to") or "")
+    return f"{start}→{end}" if start and end else start or end
+
+
+def _pct_point_path(item: dict[str, Any]) -> str:
+    start = pct_value(item.get("from_ms_pct"))
+    end = pct_value(item.get("to_ms_pct"))
+    if start and end:
+        return f"{start} → {end}"
+    return end or start
+
+
+def _pct_point_delta(value: Any) -> str:
+    rendered = pct_value(value)
+    return f"{rendered}p" if rendered else ""
+
+
+def _gainer_summary(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value[:3]:
+        if not isinstance(item, dict) or not item.get("brand"):
+            continue
+        delta = _pct_point_delta(item.get("share_delta_pctp"))
+        rank = rank_value(item.get("rank"), None)
+        rank_label = f"{rank}위 " if rank else ""
+        parts.append(f"{rank_label}{item['brand']} {delta}".strip())
+    return ", ".join(parts)
 
 
 def _metric_scalar_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
