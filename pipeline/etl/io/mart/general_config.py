@@ -45,7 +45,7 @@ JSON_INSERT_COLUMNS = {
     "market_size_series", "hhi_series", "hhi_series_5y", "brand_ranking", "brand_ranking_stacked",
     "company_ranking_stacked", "company_concentration_trend", "ei_ms_matrix", "growth_contribution_ms_matrix",
     "growth_contribution", "analysis_levels", "level_top5_trend", "target_customer_competition",
-    "overlay_data", "cd_overlay", "payload",
+    "overlay_data", "cd_overlay", "payload", "ubist_channel_by_display", "ubist_channel_by_code",
 }
 SKU_DIMENSION_COLUMNS = ("nhi_type", "molecule", "dosage_form", "strength_pack", "ox_gx", "fish_oil")
 

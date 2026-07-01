@@ -272,6 +272,8 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
             "extended_metric_history": json.dumps({}),
             "raw_value_history": json.dumps({"2026-04": 100.0}),
             "by_dimension": json.dumps({"seller": "JW중외제약", "atc4_code": "C10C"}),
+            "ubist_channel_by_display": json.dumps({"종합병원 순환기": {"2026-04": 50.0}}),
+            "ubist_channel_by_code": json.dumps({"GH Cardio": {"2026-04": 50.0}}),
         },
         {
             "id": 11,
@@ -287,6 +289,8 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
             "extended_metric_history": json.dumps({}),
             "raw_value_history": json.dumps({"2026-04": 200.0}),
             "by_dimension": json.dumps({"seller": "경쟁사", "atc4_code": "C10C"}),
+            "ubist_channel_by_display": json.dumps({"종합병원 순환기": {"2026-04": 75.0}}),
+            "ubist_channel_by_code": json.dumps({"GH Cardio": {"2026-04": 75.0}}),
         },
     ]
     captured: dict[str, object] = {}
@@ -302,7 +306,13 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
         return market_row
 
     def fake_build_response(**kwargs):
+        channel_context = strategic_runtime.cause_builder.resolve_market_channels(
+            rows=kwargs["sibling_rows"],
+            market={"target_ubist_1": "GH Cardio"},
+            measure=kwargs["measure"],
+        )
         captured.update(kwargs)
+        captured["channel_context"] = channel_context
         return {
             "brand": kwargs["brand_row"]["brand_name"],
             "source": kwargs["source"],
@@ -342,30 +352,4 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
     assert captured["brand_row"]["brand_name"] == "리바로젯"
     assert captured["market_id"] == "strategy_006"
     assert captured["source"] == "UBIST"
-
-
-def test_runtime_channel_resolver_falls_back_to_mart_specialty_data() -> None:
-    rows = [
-        {
-            "brand_name": "리바로젯",
-            "specialty_data": json.dumps(
-                {
-                    "종합병원 순환기": {"2026-04": {"raw_value": 50.0}},
-                    "의원 IGF": {"2026-04": {"raw_value": 20.0}},
-                    "Others(병원,보건기관, 그 외 요양기관)": {"2026-04": {"raw_value": 999.0}},
-                }
-            ),
-        }
-    ]
-
-    def empty_original_resolver(*, rows, market, measure, max_channels):
-        return {
-            "channels": ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"],
-            "specialty_channels": ["전체"],
-        }
-
-    resolver = strategic_runtime._runtime_resolve_market_channels(empty_original_resolver)
-    result = resolver(rows=rows, market={}, measure="sales", max_channels=4)
-
-    assert result["specialty_channels"] == ["전체", "종합병원 순환기", "의원 IGF"]
-    assert rows[0]["__ubist_specialty_channel_data"]["종합병원 순환기"]["2026-04"]["raw_value"] == 50.0
+    assert captured["channel_context"]["specialty_channels"] == ["전체", "종합병원 순환기"]

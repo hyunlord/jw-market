@@ -48,7 +48,7 @@ from cache_build_common import (
 )
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
-from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels
+from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
 
 period_key = lru_cache(maxsize=None)(period_key)
 
@@ -2682,11 +2682,10 @@ def build_response(
     catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
     analysis_view_id = view_source_id
     analysis_cache_key = (analysis_view_id, source_api, measure)
-    ubist_channel_context = (
-        resolve_market_channels(rows=sibling_rows, market=market_catalog_row, measure=measure)
-        if source_api == "UBIST"
-        else None
-    )
+    ubist_channel_context = None
+    if source_api == "UBIST":
+        with strategic_channel_totals_context(sibling_rows):
+            ubist_channel_context = resolve_market_channels(rows=sibling_rows, market=market_catalog_row, measure=measure)
     channels_override = (
         ubist_channel_context.get("channels")
         if isinstance(ubist_channel_context, dict) and ubist_channel_context.get("channels")

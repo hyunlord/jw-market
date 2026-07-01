@@ -117,7 +117,16 @@ def collapse_same_rows(rows: list[dict[str, Any]], key_fields: tuple[str, str]) 
             continue
         base = deepcopy(members[0])
         base["raw_value_history"] = sum_raw_histories(members)
-        for column in ("channel_data", "specialty_data", "dimension_data", "dimension_channel_data", "dimension_specialty_data", "channel_specialty_matrix"):
+        for column in (
+            "channel_data",
+            "specialty_data",
+            "dimension_data",
+            "dimension_channel_data",
+            "dimension_specialty_data",
+            "channel_specialty_matrix",
+            "ubist_channel_by_display",
+            "ubist_channel_by_code",
+        ):
             merged: Any = {}
             for member in members:
                 merged = merge_numeric_json_values(merged, member.get(column) or {})

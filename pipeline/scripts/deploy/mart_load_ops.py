@@ -56,6 +56,8 @@ STRATEGIC_BRAND_REQUIRED_COLUMNS = (
 STRATEGIC_BRAND_OPTIONAL_JSON_COLUMNS = (
     "dimension_specialty_data",
     "channel_specialty_matrix",
+    "ubist_channel_by_display",
+    "ubist_channel_by_code",
 )
 STRATEGIC_BRAND_JSON_COLUMNS = frozenset(
     {
@@ -71,6 +73,8 @@ STRATEGIC_BRAND_JSON_COLUMNS = frozenset(
         "overlay_data",
         "payload",
         "channel_specialty_matrix",
+        "ubist_channel_by_display",
+        "ubist_channel_by_code",
     }
 )
 
@@ -517,6 +521,8 @@ def _fetch_strategic_ml_brand_rows(conn: pymysql.connections.Connection, source_
             row[column] = _decode_json(row.get(column))
         row.setdefault("dimension_specialty_data", {})
         row.setdefault("channel_specialty_matrix", {})
+        row.setdefault("ubist_channel_by_display", {})
+        row.setdefault("ubist_channel_by_code", {})
     if not rows:
         raise RuntimeError(f"{source_db}.{STRATEGIC_BRAND_TABLE} returned no rows")
     return rows

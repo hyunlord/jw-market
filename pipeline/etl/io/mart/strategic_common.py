@@ -167,7 +167,8 @@ def fetch_general_rows_from_db(source: str | None = None, atc4_codes: set[str] |
         for col in GENERAL_BRAND_INSERT_COLUMNS:
             if col in json_columns:
                 row[col] = json.loads(row[col]) if row.get(col) else {}
-        row["channel_specialty_matrix"] = {}
+        # Strategic UBIST rows derive their runtime channel contract from this
+        # verified general mart facility-specialty matrix; do not clear it here.
     return rows
 
 

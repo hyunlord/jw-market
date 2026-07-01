@@ -11,7 +11,6 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import sys
-from threading import RLock
 from typing import Any
 
 from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
@@ -27,10 +26,10 @@ if str(ETL_DIR) not in sys.path:
     sys.path.insert(0, str(ETL_DIR))
 
 from pipeline.scripts.etl import build_cache_cause as cause_builder  # noqa: E402
+from pipeline.scripts.etl.ubist_channel_resolver import strategic_channel_totals_context  # noqa: E402
 
 
 JsonRow = dict[str, Any]
-_CAUSE_BUILDER_LOCK = RLock()
 
 
 def build_strategic_payload(
@@ -92,26 +91,21 @@ def build_strategic_payload(
     strategic_brand = _strategic_brand_catalog()
     if has_runtime_filter:
         _clear_cause_builder_runtime_caches()
-    with _CAUSE_BUILDER_LOCK:
-        original_resolver = cause_builder.resolve_market_channels
-        cause_builder.resolve_market_channels = _runtime_resolve_market_channels(original_resolver)
-        try:
-            raw_payload = cause_builder.build_response(
-                brand_row=brand_row,
-                market_row=market_row,
-                sibling_rows=filtered_rows,
-                view_type=_view_type(market_kind),
-                market_id=_response_market_id(market_kind, view_source_id),
-                source=source_api,
-                measure=measure,
-                view_source_id=view_source_id,
-                market_name=_market_name(market_row, market_catalog_row),
-                market_sources=_market_sources(market_catalog_row, source_api),
-                market_catalog_row=market_catalog_row,
-                strategic_brand=strategic_brand,
-            )
-        finally:
-            cause_builder.resolve_market_channels = original_resolver
+    with strategic_channel_totals_context(filtered_rows):
+        raw_payload = cause_builder.build_response(
+            brand_row=brand_row,
+            market_row=market_row,
+            sibling_rows=filtered_rows,
+            view_type=_view_type(market_kind),
+            market_id=_response_market_id(market_kind, view_source_id),
+            source=source_api,
+            measure=measure,
+            view_source_id=view_source_id,
+            market_name=_market_name(market_row, market_catalog_row),
+            market_sources=_market_sources(market_catalog_row, source_api),
+            market_catalog_row=market_catalog_row,
+            strategic_brand=strategic_brand,
+        )
     composed = compose_cached_json(raw_payload, measure=measure)
     if not isinstance(composed, dict):
         raise DynamicMarketInputError("strategic payload composition did not return an object")
@@ -301,64 +295,6 @@ def _decode_object(value: Any) -> dict[str, Any]:
             return {}
         return decoded if isinstance(decoded, dict) else {}
     return {}
-
-
-def _runtime_resolve_market_channels(original_resolver: Any) -> Any:
-    def resolve(*, rows: list[JsonRow], market: JsonRow | None, measure: str, max_channels: int = 4) -> JsonRow:
-        resolved = original_resolver(rows=rows, market=market, measure=measure, max_channels=max_channels)
-        specialty_channels = resolved.get("specialty_channels") if isinstance(resolved, dict) else None
-        if isinstance(specialty_channels, list) and len(specialty_channels) > 1:
-            return resolved
-        fallback = _specialty_channels_from_mart_rows(rows, max_channels=max_channels)
-        return fallback or resolved
-
-    return resolve
-
-
-def _specialty_channels_from_mart_rows(rows: list[JsonRow], *, max_channels: int) -> JsonRow | None:
-    totals: dict[str, float] = {}
-    per_row_series: list[tuple[JsonRow, dict[str, Any]]] = []
-    for row in rows:
-        specialty_data = _decode_object(row.get("specialty_data"))
-        if not specialty_data:
-            continue
-        per_row_series.append((row, specialty_data))
-        for channel, series in specialty_data.items():
-            channel_text = str(channel).strip()
-            if not channel_text or channel_text == "전체":
-                continue
-            if channel_text.lower().startswith("others("):
-                continue
-            if isinstance(series, dict):
-                totals[channel_text] = totals.get(channel_text, 0.0) + sum(
-                    _history_item_value(item) for item in series.values()
-                )
-    selected = [channel for channel, _ in sorted(totals.items(), key=lambda item: item[1], reverse=True)[:max_channels]]
-    if not selected:
-        return None
-    for row, specialty_data in per_row_series:
-        selected_series = {channel: specialty_data.get(channel, {}) for channel in selected}
-        row["__ubist_dual_channel_data"] = selected_series
-        row["__ubist_specialty_channel_data"] = selected_series
-    target_channels = [{"code": channel, "display_name": channel} for channel in selected]
-    return {
-        "channels": ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"],
-        "specialty_channels": ["전체", *selected],
-        "target_channels": target_channels,
-        "specialty_target_channels": target_channels,
-        "fallback_codes": selected,
-        "series_brand_count": len(per_row_series),
-        "raw_brand_count": len(rows),
-        "fallback_source": "mart_specialty_data",
-    }
-
-
-def _history_item_value(item: Any) -> float:
-    raw = item.get("raw_value", item.get("value", 0.0)) if isinstance(item, Mapping) else item
-    try:
-        return float(raw or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 @lru_cache(maxsize=4)
