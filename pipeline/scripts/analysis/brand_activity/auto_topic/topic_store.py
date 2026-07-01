@@ -96,7 +96,6 @@ def build_topic_records(artifacts: TopicArtifacts) -> list[TopicRecord]:
             "brands": brands,
             "quality": {
                 "grade": market.get("quality_grade"),
-                "avg_etc_pct": market.get("avg_etc_pct"),
                 "reasons": market.get("reasons") or [],
             },
             "generated_from": artifacts.viz_payload.get("generated_from"),

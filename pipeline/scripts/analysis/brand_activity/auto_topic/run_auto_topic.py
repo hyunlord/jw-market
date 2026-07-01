@@ -235,7 +235,6 @@ def run_pipeline(
         "executed_call_count": len(execution.call_logs),
         "large_markets": list(large_markets),
         "quality_grade_distribution": quality.get("grade_distribution"),
-        "average_etc_pct": quality.get("average_etc_pct"),
         "complex_label_count": _dict(quality.get("label_quality")).get("complex_label_count"),
         "brand_specific_duplicate_pair_count": _dict(quality.get("label_quality")).get("brand_specific_duplicate_pair_count"),
         "group_sanity_checks": group_map.get("sanity_checks"),
@@ -436,7 +435,7 @@ def _open_questions(alias_source: dict[str, JsonValue], executed: bool) -> list[
     if alias_source.get("status") == "fallback_found":
         questions.append("alias 산출물이 docs/design 경로에 있어 요청 경로(docs/research)와 다른 점을 PL 확인 필요.")
     if not executed:
-        questions.append("dry-run 산출물은 품질 등급/기타비율 실측이 아니므로 GenOS execute 결과로 대체 필요.")
+        questions.append("dry-run 산출물은 품질 등급 실측이 아니므로 GenOS execute 결과로 대체 필요.")
     return questions
 
 

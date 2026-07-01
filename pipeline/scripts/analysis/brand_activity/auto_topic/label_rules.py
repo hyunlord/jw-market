@@ -89,12 +89,9 @@ def _matching_topic_index(rows: list[dict[str, JsonValue]], label: str) -> int |
 
 
 def _merge_topic(left: dict[str, JsonValue], right: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    """Merge duplicate brand-specific topic percentages and row counts."""
-    return {
-        **left,
-        "share_pct": round(float(left.get("share_pct") or 0.0) + float(right.get("share_pct") or 0.0), 1),
-        "row_count": int(left.get("row_count") or 0) + int(right.get("row_count") or 0),
-    }
+    """Merge duplicate brand-specific topics by affected row counts."""
+    merged = int(left.get("affected_row_count") or left.get("row_count") or 0) + int(right.get("affected_row_count") or right.get("row_count") or 0)
+    return {**left, "affected_row_count": merged}
 
 
 def _renumber_brand_topics(rows: list[dict[str, JsonValue]]) -> list[dict[str, JsonValue]]:
