@@ -57,7 +57,7 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
             return [{"atc4_code": "A10X9"}]
         if "FROM `jw_mart`.mart_general_brand_metric" in sql:
             assert params == ["iqvia_nsa"]
-            return [{"atc4_code": "A10X9"}, {"atc4_code": "C10A1"}]
+            return [{"atc4_code": "A10X9"}, {"atc4_code": "A1A2"}, {"atc4_code": "C10A1"}]
         raise AssertionError(sql)
 
     monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
@@ -67,8 +67,10 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
     assert payload["source"] == "iqvia"
     assert payload["market_id"] == "A10X9"
     assert payload["flagged_atc4"] == ["A10X9"]
-    assert payload["atc"]["atc4"][0]["flag"] is True
-    assert payload["atc"]["atc4"][1]["flag"] is False
+    atc4_by_key = {option["key"]: option for option in payload["atc"]["atc4"]}
+    assert atc4_by_key["A10X9"]["flag"] is True
+    assert atc4_by_key["A01A2"] == {"key": "A01A2", "level": "atc4", "parent": "A01A", "flag": False}
+    assert atc4_by_key["C10A1"]["flag"] is False
     assert any("SELECT DISTINCT atc4_code" in sql and "brand_key" not in sql for sql, _ in calls)
 
 

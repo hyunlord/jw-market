@@ -169,9 +169,15 @@ def _canonical_atc4_code(value: str) -> str:
     """Normalize ATC3-shaped mart values when they appear in ATC4 fields."""
 
     tokens = ATC_TOKEN_RE.findall(value)
+    if not tokens:
+        return value
+    canonical_tokens = list(tokens)
+    if len(canonical_tokens) >= 2 and canonical_tokens[1].isdigit() and len(canonical_tokens[1]) == 1:
+        canonical_tokens[1] = canonical_tokens[1].zfill(2)
+    canonical = "".join(canonical_tokens)
     if len(tokens) == 3 and tokens[0].isalpha() and tokens[1].isdigit() and tokens[2].isalpha():
-        return f"{value}0"
-    return value
+        return f"{canonical}0"
+    return canonical
 
 
 def _build_flagged_atc_hierarchy(atc4_values: Iterable[str], flagged_atc4: Sequence[str]) -> dict[str, list[dict[str, object]]]:
