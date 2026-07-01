@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_hhi
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
+from pipeline.scripts.api.dynamic_market import resolvers
+from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, expand_atc4_for_source
 from pipeline.scripts.api.dynamic_market import strategic_runtime
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
@@ -166,6 +168,47 @@ def test_request_accepts_strategic_frontend_filters() -> None:
     assert request.filters.ml_id == "ml_006"
     assert request.filters.focus_brand_key == "리바로젯"
     assert request.filters.analysis_level.ubist.seller == ["JW중외제약"]
+
+
+def test_ubist_atc4_alias_expansion_reverses_canonical_padding() -> None:
+    assert expand_atc4_for_source(("C10C0", "A02B1", "A02X0", "C10A1"), source="ubist") == (
+        "C10C0",
+        "C10C",
+        "A02B1",
+        "A2B1",
+        "A02X0",
+        "A2X0",
+        "A02X",
+        "A2X",
+        "C10A1",
+    )
+
+
+def test_iqvia_atc4_alias_expansion_keeps_canonical_codes() -> None:
+    assert expand_atc4_for_source(("C10C0", "A02B1"), source="iqvia_nsa") == ("C10C0", "A02B1")
+
+
+def test_general_resolver_expands_ubist_canonical_atc4_for_source_native_rows(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [{"brand_key": "rosuzet", "brand_name": "로수젯", "atc4_code": "C10C"}]
+
+    monkeypatch.setattr(resolvers.db, "fetch_all", fake_fetch_all)
+
+    definition = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart").resolve(
+        atc4=["C10C0"],
+        molecule=[],
+        source="ubist",
+        measure="sales",
+    )
+
+    assert "atc4_code IN (%s, %s)" in str(captured["sql"])
+    assert captured["params"] == ["ubist", "sales", "C10C0", "C10C"]
+    assert definition.filter_echo["atc4"] == ["C10C0"]
+    assert [brand.atc4_code for brand in definition.brands] == ["C10C"]
 
 
 def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:

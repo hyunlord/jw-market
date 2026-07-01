@@ -58,12 +58,13 @@ class GeneralViewResolver:
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
         normalized_atc4 = normalize_atc4_list(atc4)
+        query_atc4 = expand_atc4_for_source(normalized_atc4, source=normalized_source)
         normalized_molecules = normalize_molecule_list(molecule)
         if not normalized_atc4 and not normalized_molecules:
             raise DynamicMarketInputError("at least one ATC4 or molecule filter is required")
 
         brands = self._resolve_brands(
-            atc4=normalized_atc4,
+            atc4=query_atc4,
             molecules=normalized_molecules,
             source=normalized_source,
             measure=normalized_measure,
@@ -226,6 +227,44 @@ def normalize_atc4_list(values: list[str]) -> tuple[str, ...]:
             seen.add(item)
             normalized.append(item)
     return tuple(normalized)
+
+
+def expand_atc4_for_source(values: tuple[str, ...], *, source: str) -> tuple[str, ...]:
+    """Expand canonical ATC4 filters to source-native mart aliases for UBIST only."""
+
+    if source != "ubist":
+        return values
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for candidate in _ubist_atc4_candidates(value):
+            if candidate not in seen:
+                seen.add(candidate)
+                expanded.append(candidate)
+    return tuple(expanded)
+
+
+def _ubist_atc4_candidates(value: str) -> tuple[str, ...]:
+    """Return canonical plus source-native UBIST ATC4 code candidates."""
+
+    candidates = [value]
+    if len(value) == 5:
+        leading_zero_removed = value[0] + value[2:] if value[1] == "0" and value[2].isdigit() else None
+        trailing_zero_removed = value[:-1] if value.endswith("0") else None
+        if leading_zero_removed:
+            candidates.append(leading_zero_removed)
+        if trailing_zero_removed:
+            candidates.append(trailing_zero_removed)
+        if leading_zero_removed and trailing_zero_removed:
+            candidates.append(leading_zero_removed[:-1])
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return tuple(deduped)
 
 
 def normalize_molecule_list(values: list[str]) -> tuple[str, ...]:
