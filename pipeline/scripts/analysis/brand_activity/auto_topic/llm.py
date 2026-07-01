@@ -26,7 +26,7 @@ DEFAULT_CALL_PACING_MS = 750
 DIRECT_SERVING_BACKEND: Final = "direct_serving"
 DEFAULT_DIRECT_BASE_URL: Final = "https://jwai-dev.jwhealthcare.com"
 DEFAULT_DIRECT_MAX_TOKENS = 4096
-GATEWAY_CHAT_PATH_TEMPLATE: Final = "/api/gateway/rep/serving/{serving_id}/chat/completions"
+DEFAULT_GATEWAY_CHAT_PATH_TEMPLATE: Final = "/api/gateway/rep/serving/{serving_id}/chat/completions"
 DIRECT_MODEL_ENV_BY_KEY: Final = {
     "pro": "GENOS_DIRECT_MODEL_PRO",
     "flash": "GENOS_DIRECT_MODEL_FLASH",
@@ -368,7 +368,12 @@ def _backend_from_env(spec: ModelSpec) -> LlmBackendConfig:
 
 def _gateway_chat_path(serving_id: str) -> str:
     """Return the GenOS Gateway OpenAI-compatible chat path for one serving."""
-    return GATEWAY_CHAT_PATH_TEMPLATE.format(serving_id=serving_id)
+    return _gateway_chat_path_template().format(serving_id=serving_id)
+
+
+def _gateway_chat_path_template() -> str:
+    """Return the environment-selectable chat path template for internal or external Gateway use."""
+    return os.environ.get("GENOS_GATEWAY_CHAT_PATH_TEMPLATE", DEFAULT_GATEWAY_CHAT_PATH_TEMPLATE)
 
 
 def _chat_with_process_watchdog(*, backend: LlmBackendConfig, token: str, messages: list[dict[str, str]], timeouts: GenosTimeouts) -> dict[str, JsonValue]:

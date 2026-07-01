@@ -5,6 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from pipeline.scripts.analysis.brand_activity.auto_topic import llm
+from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
+    MissingMariaDbPasswordError,
+    _mariadb_password,
+    read_env_file,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import expected_markets
 from pipeline.etl.io.catalog.master.market_definition import iter_market_definition_rows
 from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import (
@@ -124,6 +132,29 @@ def test_mi_master_group_map_groups_livalo_and_gardlet() -> None:
     assert group_map["atc4_map"]["A10N1"]["group_id"] == group_map["atc4_map"]["A10N3"]["group_id"]
     assert set(group_map["group_scope_ids"]) == {"group:livalo_family", "group:gardlet_family"}
     assert "V03G2" in set(group_map["mi_master_missing_atc4"])
+
+
+def test_gateway_chat_path_template_supports_external_and_internal_wf(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GENOS_GATEWAY_CHAT_PATH_TEMPLATE", raising=False)
+    assert llm._gateway_chat_path("163") == "/api/gateway/rep/serving/163/chat/completions"
+
+    monkeypatch.setenv("GENOS_GATEWAY_CHAT_PATH_TEMPLATE", "/rep/serving/{serving_id}/chat/completions")
+
+    assert llm._gateway_chat_path("163") == "/rep/serving/163/chat/completions"
+
+
+def test_data_source_accepts_env_only_without_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    missing_env = tmp_path / ".env"
+
+    assert read_env_file(missing_env) == {}
+
+    monkeypatch.delenv("MARIADB_ROOT_PASSWORD", raising=False)
+    with pytest.raises(MissingMariaDbPasswordError):
+        _mariadb_password({})
+
+    monkeypatch.setenv("MARIADB_ROOT_PASSWORD", "env-placeholder")
+
+    assert _mariadb_password({}) == "env-placeholder"
 
 
 def test_db_market_definition_rows_match_workbook_target_records() -> None:

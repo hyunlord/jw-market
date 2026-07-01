@@ -23,9 +23,15 @@ FALLBACK_ALIAS_PATH = REPO_ROOT / "docs/design/brand_activity/alias/ALIAS_01_MAP
 DICTIONARY_PATH = REPO_ROOT / "docs/research/brand_activity/topic_redesign/REDESIGN_03_DICTIONARY_DRAFT.json"
 
 
+class MissingMariaDbPasswordError(RuntimeError):
+    """Raised when neither environment variables nor .env provide a MariaDB password."""
+
+
 def read_env_file(path: Path = ENV_PATH) -> dict[str, str]:
     """Read local MariaDB credentials without printing or exporting them."""
     values: dict[str, str] = {}
+    if not path.exists():
+        return values
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -34,17 +40,26 @@ def read_env_file(path: Path = ENV_PATH) -> dict[str, str]:
     return values
 
 
-def connect_mariadb(env: dict[str, str]) -> pymysql.connections.Connection:
-    """Open the local MariaDB connection used only for read-only transactions."""
+def connect_mariadb(env: dict[str, str] | None = None) -> pymysql.connections.Connection:
+    """Open the MariaDB connection from env vars first, with optional .env fallback."""
+    env_values = env or {}
     return pymysql.connect(
         host=os.environ.get("MARIADB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("MARIADB_PORT", env.get("HOST_PORT", "3308"))),
+        port=int(os.environ.get("MARIADB_PORT", env_values.get("HOST_PORT", "3308"))),
         user=os.environ.get("MARIADB_USER", "root"),
-        password=os.environ.get("MARIADB_ROOT_PASSWORD", env["MARIADB_ROOT_PASSWORD"]),
+        password=_mariadb_password(env_values),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True,
     )
+
+
+def _mariadb_password(env: dict[str, str]) -> str:
+    """Resolve the MariaDB password without requiring a local .env file."""
+    password = os.environ.get("MARIADB_ROOT_PASSWORD") or env.get("MARIADB_ROOT_PASSWORD")
+    if not password:
+        raise MissingMariaDbPasswordError("MARIADB_ROOT_PASSWORD not set in environment or .env")
+    return password
 
 
 def fetch_snapshot(connection: pymysql.connections.Connection, *, schema: str = SCHEMA) -> dict[str, JsonValue]:
