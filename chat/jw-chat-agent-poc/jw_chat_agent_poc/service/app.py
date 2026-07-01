@@ -106,6 +106,7 @@ def create_app(
             request.external_mode,
             request.conversation_id,
             list(documents),
+            request.file_context,
             use_direct_agent_loop=use_direct_agent_loop,
         )
         session_id = store.put({"question": request.question, "result": result["result"]})
@@ -126,6 +127,7 @@ def create_app(
             request.external_mode,
             request.conversation_id,
             list(documents),
+            request.file_context,
             use_direct_agent_loop=use_direct_agent_loop,
         )
         final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
@@ -209,6 +211,7 @@ def _answer_question(
     external_mode: str,
     conversation_id: str | None,
     documents: list[Path] | None = None,
+    file_context: str | None = None,
     *,
     use_direct_agent_loop: bool = False,
 ) -> dict:
@@ -223,8 +226,22 @@ def _answer_question(
         documents,
         use_direct_agent_loop=use_direct_agent_loop,
     )
+    result = _attach_file_context(result, file_context)
     store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
     return {"question": question, "result": result, "conversation_id": state.conversation_id}
+
+
+def _attach_file_context(result: dict, file_context: str | None) -> dict:
+    context = (file_context or "").strip()
+    if not context:
+        return result
+    copied = dict(result)
+    copied["file_context"] = context
+    sources = [str(source) for source in copied.get("sources", []) if source]
+    if "document" not in sources:
+        sources.append("document")
+    copied["sources"] = sources
+    return copied
 
 
 def _answer_with_conversation(

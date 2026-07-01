@@ -485,6 +485,23 @@ def _deterministic_external_relay_answer(markdown_response: dict[str, Any]) -> s
     return cleanup_markdown_answer("\n\n".join(parts))
 
 
+def _uploaded_file_context(agent_result: dict[str, Any]) -> str:
+    value = agent_result.get("file_context")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _append_uploaded_file_source(answer: str, file_context: str) -> str:
+    if not file_context.strip():
+        return answer
+    source_line = "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과"
+    if source_line in answer:
+        return answer
+    if re.search(r"(?m)^##\s*출처\b", answer):
+        return cleanup_markdown_answer("\n".join((answer, source_line)))
+    source_block = f"## 출처\n\n{source_line}"
+    return cleanup_markdown_answer("\n\n".join((answer, source_block)))
+
+
 @dataclass(frozen=True, slots=True)
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
@@ -494,6 +511,7 @@ class GenosClient:
     def stream_answer(self, question: str, agent_result: dict[str, Any]) -> Iterator[str]:
         markdown_response = agent_result.get("markdown_response")
         timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
+        file_context = _uploaded_file_context(agent_result)
         if self.token and isinstance(markdown_response, dict):
             tool_calls = agent_result.get("tool_calls")
             if _requires_deterministic_external_relay(tool_calls if isinstance(tool_calls, list) else None):
@@ -506,6 +524,7 @@ class GenosClient:
                         markdown_response,
                         timing,
                         tool_calls if isinstance(tool_calls, list) else None,
+                        file_context,
                     )
                 )
             )
@@ -522,6 +541,7 @@ class GenosClient:
                     "cache metric summary_text에 포함된 매출, MS, 순위, 시장규모 숫자는 "
                     "사용자 질문이 해당 지표를 묻는 경우 생략하지 말고 그대로 포함하라. "
                     "metric_facts가 있으면 그것이 정답 숫자이므로 질문과 관련된 필드는 반드시 답변에 반영하라. "
+                    "uploaded_file_context가 있으면 내부 mart fact와 구분해 업로드 파일 기준으로 답하라. "
                     "notice_count가 1 이상이어도 주의/면책 문구를 작성하지 말라. "
                     "사용자에게 필요한 결론만 남기고 내부 처리 기준은 숨겨라. "
                     "출처 섹션이나 출처 줄은 작성하지 말라. 출처는 시스템이 별도로 붙인다."
@@ -539,14 +559,15 @@ class GenosClient:
         markdown_response: dict[str, Any],
         timing: dict[str, Any] | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        file_context: str = "",
     ) -> str:
         allowed_numbers = tuple(str(value) for value in markdown_response.get("allowed_numbers", ()) if value is not None)
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
         fact_lookup_md = _fact_lookup_markdown(markdown_response)
         trend_fact_md = single_brand_trend_fact_markdown(fact_lookup_md, tool_calls) if _question_wants_trend_output(question) else ""
-        fact_for_safety = "\n\n".join(part for part in (fact_md, trend_fact_md) if part)
+        fact_for_safety = "\n\n".join(part for part in (fact_md, trend_fact_md, file_context) if part)
         strict_numbers = strict_allowed_numbers(fact_for_safety, allowed_numbers)
-        messages = self._markdown_messages(question, markdown_response, trend_fact_md)
+        messages = self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
         try:
             with stage(timing, "final_llm_expression", "GenOS markdown generation"):
                 raw_interpretation = self._chat_text(messages)
@@ -664,21 +685,25 @@ class GenosClient:
         answer = _ensure_code_rendered_trend_table(answer, fact_lookup_md, trend_fact_md)
         answer = ensure_top_brand_trend_table(answer, fact_md)
         answer = _apply_final_claim_controls(question, answer, fact_md)
-        return append_deterministic_source_block(answer, fact_md)
+        answer = append_deterministic_source_block(answer, fact_md)
+        return _append_uploaded_file_source(answer, file_context)
 
     @staticmethod
     def _markdown_messages(
         question: str,
         markdown_response: dict[str, Any],
         trend_fact_md: str = "",
+        file_context: str = "",
     ) -> list[dict[str, str]]:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
         mandatory_md = mandatory_fact_block(fact_md)
+        uploaded_md = file_context.strip() or "- 없음"
         return [
             {
                 "role": "system",
                 "content": (
                     "너는 JW 시장분석 채팅 에이전트다. 제공된 확정 fact만 근거로 답변 전체를 자연스러운 한국어 Markdown으로 작성한다. "
+                    "업로드 파일 컨텍스트가 있으면 내부 mart fact와 구분해 '업로드 파일 기준'이라고 밝히고, 그 내용은 현재 세션 첨부 파일 근거로만 사용한다. "
                     "확정 fact set 안에 '필수 답변 fact'가 있으면 각 행을 답변 본문에 반드시 반영한다. "
                     "특히 데이터 미보유/미지원 행과 조회 실패 행은 별도 문장으로 명확히 쓰고, 비교 브랜드가 있으면 그 한계를 생략하지 않는다. "
                     "반대로 상위 브랜드 월별 MS fact에 있는 브랜드는 시계열 데이터가 있는 것이므로 미지원, 확인 안 됨, 데이터 없음이라고 쓰지 않는다. "
@@ -719,6 +744,7 @@ class GenosClient:
                     f"질문: {question}\n\n"
                     f"필수 답변 fact (각 행을 본문에 반영):\n{mandatory_md or '- 없음'}\n\n"
                     f"단일 브랜드 추이 산문용 trend fact:\n{trend_fact_md or '- 없음'}\n\n"
+                    f"업로드 파일 컨텍스트 (현재 세션 첨부 파일 검색 결과, 내부 mart fact와 별도):\n{uploaded_md}\n\n"
                     "확정 fact set:\n"
                     f"{fact_md}\n\n"
                     "작성 형식: 결론을 먼저 쓰고, 질문 의도별 핵심 근거와 시사점/한계를 fact 범위 안에서 설명한 뒤 필요한 표를 최소화한다. "
@@ -836,6 +862,7 @@ class GenosClient:
             "decomposition": agent_result.get("decomposition"),
             "sources": source_labels(agent_result.get("sources", [])),
             "tool_summaries": compact_calls,
+            "uploaded_file_context": _uploaded_file_context(agent_result) or None,
             "notice_count": len(policy_notices),
             "fallback_answer": agent_result.get("answer"),
         }
@@ -857,6 +884,8 @@ class GenosClient:
 
     @staticmethod
     def _is_cache_only(agent_result: dict[str, Any]) -> bool:
+        if _uploaded_file_context(agent_result):
+            return False
         sources = agent_result.get("sources")
         return isinstance(sources, list) and set(sources).issubset({"cache", "deep_analysis_events"})
 

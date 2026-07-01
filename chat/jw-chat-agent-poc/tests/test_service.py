@@ -140,6 +140,74 @@ def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypat
     assert FakeAgent.calls == [("리바로 경쟁 구도 변화", "live")]
 
 
+def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class AgentWithBasicResult:
+        def __init__(self, *, external_mode: str = "live") -> None:
+            self.external_mode = external_mode
+
+        def answer(self, _question: str, _documents=None) -> dict:
+            return {
+                "answer": "fallback",
+                "sources": ["cache"],
+                "tool_calls": [],
+            }
+
+    def stream_answer(_self: GenosClient, question: str, result: dict):
+        captured["question"] = question
+        captured["result"] = result
+        yield "업로드 파일 기준 답변입니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    app = create_app(agent_factory=lambda external_mode="live": AgentWithBasicResult(external_mode=external_mode))
+    client = TestClient(app)
+
+    response = client.post(
+        "/chat/answer",
+        json={
+            "question": "업로드 파일에서 CodexA 값을 알려줘",
+            "file_context": "파일: sample.xlsx\nCodexA=123.45",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["text"] == "업로드 파일 기준 답변입니다."
+    result = captured["result"]
+    assert isinstance(result, dict)
+    assert result["file_context"] == "파일: sample.xlsx\nCodexA=123.45"
+    assert "document" in result["sources"]
+    assert body["sources"] == ["cache", "document"]
+
+
+def test_genos_final_answer_uses_uploaded_file_context_numbers(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def chat_text(self: GenosClient, messages: list[dict[str, str]]) -> str:
+        captured["messages"] = messages
+        return "업로드 파일 기준 CodexA 값은 123.45입니다."
+
+    monkeypatch.setattr(GenosClient, "_chat_text", chat_text)
+    client = GenosClient(base_url="http://unused", token="token")
+    result = {
+        "answer": "fallback",
+        "sources": ["cache", "document"],
+        "tool_calls": [],
+        "markdown_response": {"fact_md": "", "allowed_numbers": ()},
+        "file_context": "업로드 파일 sample.xlsx 검색 결과: CodexA 값 123.45",
+    }
+
+    text = "".join(client.stream_answer("업로드 파일에서 CodexA 값을 알려줘", result))
+
+    assert "123.45" in text
+    assert "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과" in text
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    assert "업로드 파일 컨텍스트" in messages[1]["content"]
+    assert "CodexA 값 123.45" in messages[1]["content"]
+
+
 def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(monkeypatch) -> None:
     class Resolver:
         def resolve(self, _question: str, *, allow_default: bool = False):

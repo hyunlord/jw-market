@@ -10,6 +10,7 @@ class ChatRequest(BaseModel):
 
     question: str = Field(min_length=1)
     document_paths: tuple[str, ...] = ()
+    file_context: str | None = None
     external_mode: str = "live"
     conversation_id: str | None = None
 
