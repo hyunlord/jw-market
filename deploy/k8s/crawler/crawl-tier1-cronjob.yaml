@@ -57,28 +57,171 @@ spec:
               command: ["/bin/sh", "-lc"]
               args:
                 - |
+                  export WORK RAW SCORED SCORED_NEW SITES
                   set -euo pipefail
                   WORK=/tmp/jw-news-crawl/tier1/$(date +%Y%m%d)
+                  RAW="$WORK/raw"
+                  SCORED="$WORK/scored"
+                  SCORED_NEW="$WORK/scored_new"
+                  SITES="바이오스펙테이터 히트뉴스 약업신문 데일리팜 메디칼타임즈 팜뉴스 의학신문 한경바이오인사이트 메디칼업저버 약사공론 의약뉴스 메디파나뉴스"
+                  mkdir -p "$RAW" "$SCORED" "$SCORED_NEW" /tmp/jw-news-crawl/drug_profiles
                   python -c 'import zipfile; from pathlib import Path; target=Path("/tmp/jw-news-crawl/drug_profiles"); target.mkdir(parents=True, exist_ok=True); zipfile.ZipFile("crawl/config/drug_profiles.zip").extractall(target)'
-                  # First production one-shot should override this to --months 1
-                  # until crawl history is confirmed pre-seeded.
+                  python - <<'PY_PRESEED'
+                  import os
+                  from pathlib import Path
+                  import pymysql
+
+                  raw = Path(os.environ["RAW"])
+                  sites = os.environ["SITES"].split()
+                  conn = pymysql.connect(
+                      host=os.environ["DB_HOST"],
+                      port=int(os.environ.get("DB_PORT", "3306")),
+                      user=os.environ["DB_USER"],
+                      password=os.environ["DB_PASSWORD"],
+                      database=os.environ.get("DB_NAME", "jw_mart"),
+                      charset="utf8mb4",
+                      cursorclass=pymysql.cursors.Cursor,
+                  )
+                  try:
+                      with conn.cursor() as cur:
+                          cur.execute("SELECT DISTINCT article_url FROM news_raw WHERE article_url IS NOT NULL AND article_url <> ''")
+                          urls = [row[0] for row in cur.fetchall() if row and row[0]]
+                  finally:
+                      conn.close()
+                  for site in sites:
+                      hist_dir = raw / site / f"news_5years_{site}"
+                      hist_dir.mkdir(parents=True, exist_ok=True)
+                      (hist_dir / "scraped_urls.txt").write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+                  print(f"PRESEED_URL_COUNT={len(urls)}")
+                  print(f"PRESEED_SITE_COUNT={len(sites)}")
+                  PY_PRESEED
                   python crawl/crawler/crawl_2tier.py \
                     --tier 1 \
                     --run-crawl \
-                    --months 60 \
+                    --months 1 \
                     --concurrent-sites 4 \
                     --delay-sec 5 \
-                    --output-dir "$WORK/raw" \
+                    --output-dir "$RAW" \
                     --drug-profile-dir /tmp/jw-news-crawl/drug_profiles/drug_profiles
+                  python - <<'PY_CRAWL_COUNT'
+                  import json, os
+                  from pathlib import Path
+
+                  raw = Path(os.environ["RAW"])
+                  report_path = raw / "orchestrator_report.json"
+                  total_news = 0
+                  if report_path.exists():
+                      report = json.loads(report_path.read_text(encoding="utf-8"))
+                      total_news = int(report.get("total_news") or (report.get("summary") or {}).get("total_news") or 0)
+                  article_files = []
+                  for path in raw.rglob("*.json"):
+                      if path.name in {"orchestrator_report.json", "crawl_summary.json", "score_run_log.json"}:
+                          continue
+                      try:
+                          obj = json.loads(path.read_text(encoding="utf-8"))
+                      except Exception:
+                          continue
+                      if isinstance(obj, dict) and (obj.get("url") or obj.get("article_url")) and (obj.get("title") or obj.get("body") or obj.get("content")):
+                          article_files.append(str(path.relative_to(raw)))
+                  print(f"CRAWL_ARTICLE_FILE_COUNT={len(article_files)}")
+                  print(f"CRAWL_REPORT_TOTAL_NEWS={total_news}")
+                  if not article_files and total_news <= 0:
+                      print("NO_NEW_RAW=1")
+                      Path(os.environ["WORK"], "NO_NEW_RAW").write_text("1\n", encoding="utf-8")
+                      raise SystemExit(0)
+                  PY_CRAWL_COUNT
+                  if [ -f "$WORK/NO_NEW_RAW" ]; then
+                    echo "TIER1_DAILY_NOOP=no new raw articles"
+                    exit 0
+                  fi
                   python crawl/agent1/score_v2.py \
-                    "$WORK/raw" \
+                    "$RAW" \
                     --catalog crawl/config/_catalog.json \
-                    --output-root "$WORK/scored" \
+                    --output-root "$SCORED" \
                     --limit 2000 \
                     --run-log "$WORK/score_run_log.json"
+                  python - <<'PY_DUP_GATE'
+                  import json
+                  import os
+                  import shutil
+                  import sys
+                  from pathlib import Path
+                  import pymysql
+
+                  sys.path[:0] = ["/app/crawl/agent1"]
+                  from corpus_loader_v2 import generate_news_id, read_json, resolve_news_path, scored_files
+
+                  raw = Path(os.environ["RAW"])
+                  scored = Path(os.environ["SCORED"])
+                  scored_new = Path(os.environ["SCORED_NEW"])
+                  files = scored_files(raw, scored)
+                  items = []
+                  seen = {}
+                  duplicate_within = []
+                  for scored_path in files:
+                      scored_json = read_json(scored_path)
+                      source_path = resolve_news_path(raw, scored_path, scored_json)
+                      news = read_json(source_path)
+                      news_id = generate_news_id(news, source_path, scored_json)
+                      rel = scored_path.relative_to(scored)
+                      if news_id in seen:
+                          duplicate_within.append({"news_id": news_id, "first": str(seen[news_id]), "second": str(rel)})
+                      else:
+                          seen[news_id] = rel
+                      items.append({"news_id": news_id, "rel": str(rel), "scored_path": str(scored_path)})
+                  if duplicate_within:
+                      raise SystemExit("ABORT: duplicate candidate IDs within batch: " + json.dumps(duplicate_within[:10], ensure_ascii=False))
+                  existing = set()
+                  conn = pymysql.connect(
+                      host=os.environ["DB_HOST"],
+                      port=int(os.environ.get("DB_PORT", "3306")),
+                      user=os.environ["DB_USER"],
+                      password=os.environ["DB_PASSWORD"],
+                      database=os.environ.get("DB_NAME", "jw_mart"),
+                      charset="utf8mb4",
+                      cursorclass=pymysql.cursors.DictCursor,
+                  )
+                  try:
+                      with conn.cursor() as cur:
+                          for i in range(0, len(items), 200):
+                              batch = [item["news_id"] for item in items[i:i + 200]]
+                              if not batch:
+                                  continue
+                              placeholders = ",".join(["%s"] * len(batch))
+                              cur.execute(f"SELECT news_id FROM news_raw WHERE news_id IN ({placeholders})", batch)
+                              existing.update(row["news_id"] for row in cur.fetchall())
+                  finally:
+                      conn.close()
+                  new_count = 0
+                  for item in items:
+                      if item["news_id"] in existing:
+                          continue
+                      src = Path(item["scored_path"])
+                      dst = scored_new / item["rel"]
+                      dst.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(src, dst)
+                      new_count += 1
+                  summary = {
+                      "candidate_count": len(items),
+                      "candidate_unique_count": len(seen),
+                      "existing_count": len(existing),
+                      "new_count": new_count,
+                      "filtered_scored_dir": str(scored_new),
+                  }
+                  Path(os.environ["WORK"], "candidate_gate.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                  print("CANDIDATE_GATE=" + json.dumps(summary, ensure_ascii=False, sort_keys=True))
+                  if new_count <= 0:
+                      print("NO_NEW_CANDIDATES_AFTER_GATE=1")
+                      Path(os.environ["WORK"], "NO_NEW_CANDIDATES_AFTER_GATE").write_text("1\n", encoding="utf-8")
+                      raise SystemExit(0)
+                  PY_DUP_GATE
+                  if [ -f "$WORK/NO_NEW_CANDIDATES_AFTER_GATE" ]; then
+                    echo "TIER1_DAILY_NOOP=no new candidates after duplicate gate"
+                    exit 0
+                  fi
                   python crawl/agent1/corpus_loader_v2.py \
-                    --batch-dir "$WORK/raw" \
-                    --scored-dir "$WORK/scored" \
+                    --batch-dir "$RAW" \
+                    --scored-dir "$SCORED_NEW" \
                     --catalog crawl/config/_catalog.json \
                     --output "$WORK/load_summary.json" \
                     --db-name jw_mart \
