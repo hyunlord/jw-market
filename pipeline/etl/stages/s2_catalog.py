@@ -7,10 +7,12 @@ from typing import Any
 
 from pipeline.etl.io.catalog.dim.base_dimensions import run_base_dimensions
 from pipeline.etl.io.catalog.brand.brand_product_catalog import run_brand_product_catalog
+from pipeline.etl.io.catalog.db_sync import sync_catalog_tables
 from pipeline.etl.io.catalog.postfix.catalog_postfix import run_postfix
 from pipeline.etl.io.catalog.master.extracts import run_master_extracts
 from pipeline.etl.io.catalog.market.catalog import run_market_catalog
 from pipeline.etl.io.catalog.target.target_priority import run_target_priority
+from pipeline.etl.io.iqvia_loader import connect
 
 STAGE = "s2 catalog"
 
@@ -46,7 +48,12 @@ def run(params: dict[str, Any]) -> int:
     inputs_dir = _path_param(params, "inputs_dir")
     ubist_dir = _path_param(params, "ubist_dir")
     iqvia_nsa_dir = _path_param(params, "iqvia_nsa_dir")
+    catalog_root = _path_param(params, "catalog_root") or output_root / "output" / "catalog"
     ingested_at = _str_param(params, "ingested_at")
+    sync_catalog_db = bool(params.get("sync_catalog_db"))
+    target_db = _str_param(params, "target_db")
+    dry_run = bool(params.get("dry_run"))
+    batch_size = int(params.get("batch_size") or 200)
     try:
         _copy_if_needed(
             cache_dir,
@@ -83,6 +90,31 @@ def run(params: dict[str, Any]) -> int:
             ingested_at=ingested_at,
         )
         postfix_results = run_postfix(output_root=output_root, inputs_dir=inputs_dir, ubist_dir=ubist_dir)
+        catalog_sync_results = []
+        if sync_catalog_db:
+            if not target_db:
+                raise ValueError("--target-db is required with --sync-catalog-db")
+            if dry_run:
+                catalog_sync_results = list(
+                    sync_catalog_tables(
+                        None,
+                        target_db=target_db,
+                        catalog_root=catalog_root,
+                        batch_size=batch_size,
+                        dry_run=True,
+                    )
+                )
+            else:
+                with connect(target_db) as conn:
+                    catalog_sync_results = list(
+                        sync_catalog_tables(
+                            conn,
+                            target_db=target_db,
+                            catalog_root=catalog_root,
+                            batch_size=batch_size,
+                            dry_run=False,
+                        )
+                    )
     except Exception as exc:
         print(f"[{STAGE}] catalog 생성 실패: {exc}")
         return 1
@@ -99,6 +131,12 @@ def run(params: dict[str, Any]) -> int:
             f"[{STAGE}] {result.name}: rows={result.rows} "
             f"columns={len(result.columns)} path={result.output_path}"
         )
+    for result in catalog_sync_results:
+        mode = "dry-run" if result.dry_run else "upsert"
+        print(
+            f"[{STAGE}] catalog_db {result.table_name}: mode={mode} rows={result.rows} "
+            f"batch={result.batch_size} checksum={result.source_checksum} path={result.parquet_path}"
+        )
     return 0
 
 
@@ -111,7 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inputs-dir", type=Path, default=None)
     parser.add_argument("--ubist-dir", type=Path, default=None)
     parser.add_argument("--iqvia-nsa-dir", type=Path, default=None)
+    parser.add_argument("--catalog-root", type=Path, default=None)
     parser.add_argument("--ingested-at", default=None)
+    parser.add_argument("--sync-catalog-db", action="store_true")
+    parser.add_argument("--target-db", default=None)
+    parser.add_argument("--batch-size", type=int, default=200)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     return run(
         {
@@ -122,7 +165,12 @@ def main(argv: list[str] | None = None) -> int:
             "inputs_dir": args.inputs_dir,
             "ubist_dir": args.ubist_dir,
             "iqvia_nsa_dir": args.iqvia_nsa_dir,
+            "catalog_root": args.catalog_root,
             "ingested_at": args.ingested_at,
+            "sync_catalog_db": args.sync_catalog_db,
+            "target_db": args.target_db,
+            "batch_size": args.batch_size,
+            "dry_run": args.dry_run,
         }
     )
 
