@@ -265,6 +265,26 @@ def _append_file_context_source(answer: str, file_context_fact: str) -> str:
     return cleanup_markdown_answer("\n\n".join((answer, "## 출처\n\n" + source_line)))
 
 
+def _looks_like_empty_file_context_answer(answer: str) -> bool:
+    stripped = answer.strip()
+    if not stripped:
+        return True
+    empty_markers = (
+        "표시할 검증 fact가 제한적",
+        "표시할 확정 fact가 없습니다",
+        "검증 fact가 제한적입니다",
+    )
+    return any(marker in stripped for marker in empty_markers)
+
+
+def _file_context_fallback_answer(file_context_fact: str) -> str:
+    context = file_context_fact.removeprefix("## 업로드 파일 컨텍스트").strip()
+    return cleanup_markdown_answer(
+        "업로드 파일 기준으로 확인된 내용입니다.\n\n"
+        + context
+    )
+
+
 def _answer_with_conversation(
     store: SessionStore,
     market_scope_resolver: MarketScopeResolver,
@@ -453,6 +473,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = cleanup_markdown_answer(safe_answer)
     safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
     safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+    if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
+        safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = _append_file_context_source(safe_answer, file_context_fact)
     trace = trace_envelope(
         question=question,
