@@ -48,6 +48,8 @@ spec:
                       key: mariadb-password
                 - name: DB_NAME
                   value: jw_mart
+                - name: WF196_DIRECT_RUN_URL
+                  value: http://workflow-196.llmops.svc.cluster.local:8080/run/v2
               command: ["/bin/sh", "-lc"]
               args:
                 - |

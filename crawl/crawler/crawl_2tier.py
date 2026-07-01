@@ -178,6 +178,8 @@ def build_tier1_command(args: argparse.Namespace) -> list[str]:
     command = [
         sys.executable,
         str(CRAWLER_DIR / "crawl_news_full_orchestrator.py"),
+        "--crawler",
+        str(CRAWLER_DIR / "crawl_news_v2.py"),
         "--drug-profile-dir",
         args.drug_profile_dir,
         "--sites",
