@@ -12,6 +12,7 @@ from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market import resolvers
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, expand_atc4_for_source
 from pipeline.scripts.api.dynamic_market import strategic_runtime
+from pipeline.scripts.etl import build_cache_cause as cause_builder
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
 from pipeline.scripts.api.routes import dynamic_market as dynamic_market_route
@@ -394,3 +395,99 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
     assert captured["market_id"] == "strategy_006"
     assert captured["source"] == "UBIST"
     assert captured["channel_context"]["specialty_channels"] == ["전체", "종합병원 순환기"]
+
+
+def test_strategic_runtime_catalog_reads_from_db(monkeypatch) -> None:
+    strategic_runtime._ml_market_catalog.cache_clear()
+    strategic_runtime._cd_market_catalog.cache_clear()
+    strategic_runtime._strategic_brand_catalog.cache_clear()
+    queries: list[tuple[str, object]] = []
+
+    def fail_load_catalog(name: str):
+        raise AssertionError(f"runtime must not read parquet catalog: {name}")
+
+    def fake_fetch_all(sql, params=None):
+        queries.append((sql, params))
+        if "catalog_ml_market" in sql:
+            return [
+                {
+                    "ml_id": "ml_006",
+                    "name": "리바로 리바로젯",
+                    "data_source": "ubist",
+                    "atc_codes_json": json.dumps(["C10A1", "C10C"]),
+                    "analyze_class": 1,
+                    "analyze_molecule": 1,
+                    "analyze_strength_pack": 1,
+                    "analyze_ox_gx": 1,
+                }
+            ]
+        if "catalog_cd_market" in sql:
+            return [
+                {
+                    "cd_id": "cd_006",
+                    "ml_id": "ml_006",
+                    "name": "리바로 CD",
+                    "data_source": "ubist",
+                }
+            ]
+        if "catalog_strategic_brand" in sql:
+            return [
+                {
+                    "brand_id": "sb_006_리바로",
+                    "ml_id": "ml_006",
+                    "cd_id": "cd_006",
+                    "canonical_name": "리바로",
+                    "name": "리바로",
+                    "is_jw": 1,
+                    "판매사": "JW중외제약",
+                }
+            ]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(strategic_runtime.cause_builder, "load_catalog", fail_load_catalog)
+    monkeypatch.setattr(strategic_runtime.db, "fetch_all", fake_fetch_all)
+
+    ml_catalog = strategic_runtime._ml_market_catalog()
+    cd_catalog = strategic_runtime._cd_market_catalog()
+    strategic_brand = strategic_runtime._strategic_brand_catalog()
+
+    assert ml_catalog["ml_006"]["analyze_class"] == 1
+    assert cd_catalog["cd_006"]["cd_market_id"] == "cd_006"
+    assert strategic_brand == [
+        {
+            "brand_id": "sb_006_리바로",
+            "ml_id": "ml_006",
+            "cd_id": "cd_006",
+            "canonical_name": "리바로",
+            "name": "리바로",
+            "is_jw": 1,
+            "판매사": "JW중외제약",
+        }
+    ]
+    assert len(queries) == 3
+
+
+def test_catalog_members_for_market_accepts_db_rows() -> None:
+    members = cause_builder._catalog_members_for_market(
+        [
+            {
+                "ml_id": "ml_006",
+                "cd_id": "cd_006",
+                "canonical_name": "리바로",
+                "name": "리바로",
+                "is_jw": 1,
+                "판매사": "JW중외제약",
+            },
+            {
+                "ml_id": "ml_003",
+                "cd_id": "cd_003",
+                "canonical_name": "가드렛",
+                "name": "가드렛",
+                "is_jw": 1,
+                "판매사": "JW중외제약",
+            },
+        ],
+        "ml_006",
+    )
+
+    assert members == [{"name": "리바로", "is_jw": True, "company": "JW중외제약"}]

@@ -3,41 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import lru_cache
 from typing import Any
+
+from pipeline.scripts.api.dynamic_market import strategic_runtime
 
 
 JsonRow = dict[str, Any]
 
 
-@lru_cache(maxsize=4)
 def ml_market_catalog(cause_builder: Any) -> Mapping[str, JsonRow]:
-    try:
-        frame = cause_builder.load_catalog("ml_market")
-    except Exception:
-        return {}
-    return {str(row["ml_id"]): row.to_dict() for _, row in frame.iterrows() if row.get("ml_id") is not None}
+    return strategic_runtime._ml_market_catalog()
 
 
-@lru_cache(maxsize=4)
 def cd_market_catalog(cause_builder: Any) -> Mapping[str, JsonRow]:
-    try:
-        frame = cause_builder.load_catalog("cd_market").rename(columns={"cd_id": "cd_market_id"})
-    except Exception:
-        return {}
-    return {
-        str(row["cd_market_id"]): row.to_dict()
-        for _, row in frame.iterrows()
-        if row.get("cd_market_id") is not None
-    }
+    return strategic_runtime._cd_market_catalog()
 
 
-@lru_cache(maxsize=2)
 def strategic_brand_catalog(cause_builder: Any) -> Any:
-    try:
-        return cause_builder.load_catalog("strategic_brand")
-    except Exception:
-        return None
+    return strategic_runtime._strategic_brand_catalog()
 
 
 def catalog_row(cause_builder: Any, market_kind: str, view_source_id: str) -> JsonRow:

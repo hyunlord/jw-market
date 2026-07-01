@@ -2563,8 +2563,14 @@ def _level_top5_trend(
     }
 
 
-def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> list[dict[str, Any]]:
+def _catalog_member_rows(strategic_brand: Any, view_source_id: str) -> list[dict[str, Any]]:
     if strategic_brand is None:
+        return []
+    if isinstance(strategic_brand, list):
+        if view_source_id.startswith("ml_"):
+            return [dict(row) for row in strategic_brand if str(row.get("ml_id") or "") == view_source_id]
+        if view_source_id.startswith("cd_"):
+            return [dict(row) for row in strategic_brand if str(row.get("cd_id") or "") == view_source_id]
         return []
     if view_source_id.startswith("ml_"):
         sub = strategic_brand[strategic_brand["ml_id"].astype(str) == view_source_id]
@@ -2572,8 +2578,13 @@ def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> li
         sub = strategic_brand[strategic_brand["cd_id"].astype(str) == view_source_id]
     else:
         return []
+    return [row.to_dict() for _, row in sub.iterrows()]
+
+
+def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> list[dict[str, Any]]:
+    rows = _catalog_member_rows(strategic_brand, view_source_id)
     members = []
-    for _, row in sub.iterrows():
+    for row in rows:
         name = str(row.get("canonical_name") or row.get("name") or "")
         if name:
             members.append({"name": name, "is_jw": bool(row.get("is_jw")), "company": row.get("판매사")})

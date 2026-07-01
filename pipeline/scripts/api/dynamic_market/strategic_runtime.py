@@ -301,32 +301,45 @@ def _decode_object(value: Any) -> dict[str, Any]:
 
 @lru_cache(maxsize=4)
 def _ml_market_catalog() -> Mapping[str, JsonRow]:
-    try:
-        frame = cause_builder.load_catalog("ml_market")
-    except Exception:
-        return {}
-    return {str(row["ml_id"]): row.to_dict() for _, row in frame.iterrows() if row.get("ml_id") is not None}
+    rows = db.fetch_all(
+        """
+        SELECT *
+        FROM catalog_ml_market
+        ORDER BY ml_id
+        """
+    )
+    return {str(row["ml_id"]): dict(row) for row in rows if row.get("ml_id") is not None}
 
 
 @lru_cache(maxsize=4)
 def _cd_market_catalog() -> Mapping[str, JsonRow]:
-    try:
-        frame = cause_builder.load_catalog("cd_market").rename(columns={"cd_id": "cd_market_id"})
-    except Exception:
-        return {}
-    return {
-        str(row["cd_market_id"]): row.to_dict()
-        for _, row in frame.iterrows()
-        if row.get("cd_market_id") is not None
-    }
+    rows = db.fetch_all(
+        """
+        SELECT *
+        FROM catalog_cd_market
+        ORDER BY cd_id
+        """
+    )
+    catalog: dict[str, JsonRow] = {}
+    for row in rows:
+        cd_id = row.get("cd_id")
+        if cd_id is None:
+            continue
+        record = dict(row)
+        record["cd_market_id"] = cd_id
+        catalog[str(cd_id)] = record
+    return catalog
 
 
 @lru_cache(maxsize=2)
-def _strategic_brand_catalog() -> Any:
-    try:
-        return cause_builder.load_catalog("strategic_brand")
-    except Exception:
-        return None
+def _strategic_brand_catalog() -> list[JsonRow]:
+    return db.fetch_all(
+        """
+        SELECT *
+        FROM catalog_strategic_brand
+        ORDER BY brand_id
+        """
+    )
 
 
 def _catalog_row(market_kind: str, view_source_id: str) -> JsonRow:
