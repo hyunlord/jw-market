@@ -8,6 +8,17 @@ The gitea `llmops/307` deployment repo is generated from this repository with:
 python -m pipeline.scripts.deploy.brand_activity_307.build_mirror --output /tmp/llmops_307_mirror
 ```
 
+Image preparation:
+
+```bash
+docker load -i /tmp/market_apis.tar
+docker image inspect mnc/template-code-serving:market_apis
+```
+
+`Dockerfile` intentionally keeps the template code-serving entrypoint and installs
+only runtime dependencies from `requirements.txt`. `uv` is required because the
+topic replay path invokes `uv run --script` for `run_auto_topic.py`.
+
 Code-serving env:
 
 ```bash
