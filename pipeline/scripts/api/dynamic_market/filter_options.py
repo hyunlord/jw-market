@@ -12,6 +12,7 @@ from threading import RLock
 from time import monotonic
 
 from pipeline.scripts.api import db
+from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 
@@ -70,15 +71,30 @@ def build_filter_options(
     general_dimension_db: str | None = None,
     strategic_dimension_db: str | None = None,
 ) -> dict[str, object]:
+    """Return filter options for one source/view, resolving brand-only markets.
+
+    ``market_id`` is kept as a backward-compatible explicit override.  New
+    callers should send ``brand`` with ``view`` and ``source``; strategic views
+    resolve the catalog ML id, while general views resolve the brand's ATC4
+    bucket from the mart and echo that resolved id in the response.
+    """
+
     normalized_view = normalize_view(view)
     normalized_source = normalize_source(source)
+    resolved_market_id = resolve_filter_option_market_id(
+        mart_db=mart_db,
+        view=normalized_view,
+        source=normalized_source,
+        brand=brand,
+        market_id=market_id,
+    )
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
     cache_key = _filter_option_cache_key(
         mart_db=mart_db,
         dimension_db=dimension_db,
         view=normalized_view,
         source=normalized_source,
-        market_id=market_id,
+        market_id=resolved_market_id,
     )
     if cached_payload := _get_cached_filter_options(cache_key):
         payload = cached_payload
@@ -88,7 +104,7 @@ def build_filter_options(
             dimension_db=dimension_db,
             view=normalized_view,
             source=normalized_source,
-            market_id=market_id,
+            market_id=resolved_market_id,
         )
         _set_cached_filter_options(cache_key, payload)
         payload = deepcopy(payload)
@@ -100,9 +116,40 @@ def build_filter_options(
             brand=normalized_brand,
             view=normalized_view,
             source=normalized_source,
-            market_id=market_id,
+            market_id=resolved_market_id,
         )
     return payload
+
+
+def resolve_filter_option_market_id(
+    *,
+    mart_db: str,
+    view: str,
+    source: str,
+    brand: str | None,
+    market_id: str | None,
+) -> str | None:
+    """Resolve the optional market id hidden behind the filter-options API.
+
+    Explicit ``market_id`` stays authoritative for old callers.  Without it,
+    strategic views use the 25-brand display catalog and general views use the
+    general mart's brand-to-ATC4 mapping.  Missing or unknown brands fall back
+    to the source-wide option universe instead of failing the option list.
+    """
+
+    explicit_market_id = market_id.strip() if market_id else ""
+    if explicit_market_id:
+        return explicit_market_id.upper() if view == "general" else explicit_market_id
+
+    normalized_brand = brand.strip() if brand else ""
+    if not normalized_brand:
+        return None
+
+    if view == "strategic":
+        display_brand = get_display_brand(normalized_brand)
+        return display_brand.ml_id if display_brand else None
+
+    return _general_market_id_for_brand(mart_db=mart_db, source=source, brand=normalized_brand)
 
 
 def clear_filter_option_cache() -> None:
@@ -435,6 +482,28 @@ def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | Non
         params,
     )
     return tuple(rows)
+
+
+def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> str | None:
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT atc4_code
+        FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+        WHERE source = %s
+          AND (
+              brand_name = %s
+              OR brand_key = %s
+              OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
+              OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
+          )
+        ORDER BY atc4_code
+        """,
+        [source, brand, brand, brand, brand],
+    )
+    for row in rows:
+        if atc4_code := str(row.get("atc4_code") or "").strip().upper():
+            return atc4_code
+    return None
 
 
 def _general_atc_prefix(market_id: str | None) -> str | None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
@@ -115,9 +115,20 @@ def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
 def dynamic_market_filter_options(
     view: str = "general",
     source: str = "ubist",
-    market_id: str | None = None,
-    brand: str | None = None,
+    brand: str | None = Query(
+        default=None,
+        description="[입력] 선택 브랜드명. market_id는 이 브랜드로 내부 조회되어 응답에 echo됩니다.",
+        examples=["리바로"],
+    ),
+    market_id: str | None = Query(default=None, include_in_schema=False, deprecated=True),
 ) -> dict:
+    """Return dynamic filter options using brand-based market resolution.
+
+    New portal callers should send only ``brand``, ``view``, and ``source``.
+    ``market_id`` remains accepted as a hidden compatibility override for old
+    scripts, but it is not part of the public Swagger contract.
+    """
+
     try:
         return build_filter_options(
             mart_db=config.db_name,
