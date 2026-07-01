@@ -65,7 +65,7 @@ spec:
                     --concurrent-sites 4 \
                     --delay-sec 5 \
                     --output-dir "$WORK/raw" \
-                    --drug-profile-dir /tmp/jw-news-crawl/drug_profiles
+                    --drug-profile-dir /tmp/jw-news-crawl/drug_profiles/drug_profiles
                   python crawl/agent1/score_v2.py \
                     "$WORK/raw" \
                     --catalog crawl/config/_catalog.json \
