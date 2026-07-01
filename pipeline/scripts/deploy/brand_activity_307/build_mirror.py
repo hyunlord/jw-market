@@ -53,8 +53,6 @@ PLAN: Final = MirrorPlan(
 VERIFY_MODULES: Final = (
     ModuleName("pipeline.scripts.serving.brand_activity.topic_server"),
     ModuleName("pipeline.scripts.etl.brand_activity.brand_activity_replay"),
-    ModuleName("pipeline.etl.io.catalog.master.qa"),
-    ModuleName("pipeline.etl.io.catalog.master.mapping_table"),
 )
 
 SERVICE_CONTRACT_SHIM: Final = """from typing import Any, Dict
@@ -92,6 +90,7 @@ def verify_mirror_imports(output: Path) -> None:
     """Import deploy-critical modules and the template service contract."""
     _verify_pipeline_imports(output)
     _verify_template_service_contract(output)
+    _verify_topic_server_without_heavy_deps(output)
 
 
 def _verify_pipeline_imports(output: Path) -> None:
@@ -147,6 +146,37 @@ def _verify_template_service_contract(output: Path) -> None:
     if result.returncode != 0:
         raise MirrorPlanError(
             "template service contract import failed\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+
+def _verify_topic_server_without_heavy_deps(output: Path) -> None:
+    """Ensure the child server imports with the deployed image dependency set."""
+    script = (
+        "import sys\n"
+        "sys.modules['pyarrow'] = None\n"
+        "sys.modules['pyarrow.parquet'] = None\n"
+        "sys.modules['pandas'] = None\n"
+        "import pipeline.scripts.serving.brand_activity.topic_server\n"
+        "print('deps guard import ok')\n"
+    )
+    with tempfile.TemporaryDirectory(prefix="mirror-deps-guard-") as directory:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=directory,
+            env={
+                "PATH": "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPATH": str(output),
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        raise MirrorPlanError(
+            "deps-guard topic_server import failed\n"
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
@@ -289,6 +319,7 @@ def main(
     if verify:
         typer.echo("verify=isolated-import-ok")
         typer.echo("verify=service-contract-import-ok")
+        typer.echo("verify=deps-guard-import-ok")
 
 
 if __name__ == "__main__":

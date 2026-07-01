@@ -24,7 +24,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Final, TypeAlias
+from typing import TYPE_CHECKING, Final, TypeAlias
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
@@ -32,10 +32,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from pipeline.scripts.analysis.brand_activity.auto_topic.models import JsonValue  # noqa: E402
 from pipeline.scripts.etl.brand_activity import load_raw_staging  # noqa: E402
-from pipeline.scripts.etl.brand_activity.master_market_group_load import load as load_market_groups  # noqa: E402
-from pipeline.scripts.etl.brand_activity.raw_db import DbConfig, SourceRows, load_sources, quote_stage_name  # noqa: E402
-from pipeline.scripts.etl.brand_activity.raw_stage_refresh import refresh_stage  # noqa: E402
-from pipeline.scripts.etl.brand_activity.raw_staging import recent_month_window  # noqa: E402
+
+if TYPE_CHECKING:
+    from pipeline.scripts.etl.brand_activity.raw_db import DbConfig
 
 MonthWindow: TypeAlias = tuple[str, str]
 STAGES: Final = ("raw", "stage", "master", "topic")
@@ -124,6 +123,9 @@ def _planned_stages(start: Stage, only: Stage | None) -> tuple[Stage, ...]:
 
 def _run_raw(options: ReplayOptions) -> dict[str, JsonValue]:
     """Parse source workbooks and optionally load raw plus derived stage tables."""
+    from pipeline.scripts.etl.brand_activity.raw_db import load_sources
+    from pipeline.scripts.etl.brand_activity.raw_staging import recent_month_window
+
     roots = load_raw_staging.resolve_source_roots(options.raw_source)
     files = load_raw_staging.discover_combined_source_files(roots, options.legacy_raw_source)
     source_rows = load_raw_staging.read_all_sources(files)
@@ -146,6 +148,8 @@ def _run_raw(options: ReplayOptions) -> dict[str, JsonValue]:
 
 def _run_stage(options: ReplayOptions) -> dict[str, JsonValue]:
     """Optionally rebuild derived stage tables from existing raw tables."""
+    from pipeline.scripts.etl.brand_activity.raw_stage_refresh import refresh_stage
+
     window = options.window or _raw_window(options)
     result: dict[str, JsonValue] = {
         "stage": "stage",
@@ -183,6 +187,8 @@ def _run_stage(options: ReplayOptions) -> dict[str, JsonValue]:
 
 def _run_master(options: ReplayOptions) -> dict[str, JsonValue]:
     """Load or dry-run MI Master market-group staging tables."""
+    from pipeline.scripts.etl.brand_activity.master_market_group_load import load as load_market_groups
+
     summary = load_market_groups(_resolve_xlsx(options.xlsx), schema=options.stage_schema, save=options.execute)
     return {
         "stage": "master",
@@ -271,6 +277,8 @@ def _parse_json_stdout(stdout: str) -> JsonValue:
 
 def _db_config(options: ReplayOptions) -> DbConfig:
     """Build a raw DB config from environment and validated schemas."""
+    from pipeline.scripts.etl.brand_activity.raw_db import DbConfig, quote_stage_name
+
     env_values = load_raw_staging.parse_env_file(REPO_ROOT / "pipeline/docker/.env")
     password = os.environ.get("MARIADB_ROOT_PASSWORD") or env_values.get("MARIADB_ROOT_PASSWORD", "")
     if not password:
@@ -288,6 +296,7 @@ def _db_config(options: ReplayOptions) -> DbConfig:
 def _raw_window(options: ReplayOptions) -> MonthWindow:
     """Infer the stage window from raw table max periods."""
     import pymysql
+    from pipeline.scripts.etl.brand_activity.raw_staging import recent_month_window
 
     config = _db_config(options)
     connection = pymysql.connect(
