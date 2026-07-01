@@ -24,8 +24,9 @@ DEFAULT_READ_TIMEOUT_S = 120.0
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_CALL_PACING_MS = 750
 DIRECT_SERVING_BACKEND: Final = "direct_serving"
-DEFAULT_DIRECT_BASE_URL: Final = "http://127.0.0.1:19080"
+DEFAULT_DIRECT_BASE_URL: Final = "https://jwai-dev.jwhealthcare.com"
 DEFAULT_DIRECT_MAX_TOKENS = 4096
+GATEWAY_CHAT_PATH_TEMPLATE: Final = "/api/gateway/rep/serving/{serving_id}/chat/completions"
 DIRECT_MODEL_ENV_BY_KEY: Final = {
     "pro": "GENOS_DIRECT_MODEL_PRO",
     "flash": "GENOS_DIRECT_MODEL_FLASH",
@@ -36,10 +37,11 @@ DIRECT_MODEL_DEFAULT_BY_KEY: Final = {
     "flash": "genos-flash",
     "lite": "genos-flash",
 }
+_LITE_SERVING: Final = "163"
 MODEL_SPECS = {
-    "pro": ModelSpec("pro", "145", "GenOS Pro / serving 145"),
-    "flash": ModelSpec("flash", "76", "GenOS Flash / serving 76"),
-    "lite": ModelSpec("lite", "163", "GenOS Lite / serving 163"),
+    "pro": ModelSpec("pro", _LITE_SERVING, "GenOS flash-lite / serving 163 (unified)"),
+    "flash": ModelSpec("flash", _LITE_SERVING, "GenOS flash-lite / serving 163 (unified)"),
+    "lite": ModelSpec("lite", _LITE_SERVING, "GenOS flash-lite / serving 163"),
 }
 
 
@@ -77,7 +79,10 @@ class DirectServingClient:
     def chat(self, messages: list[dict[str, str]]) -> dict[str, JsonValue]:
         """Call the direct serving endpoint and return sanitized metadata."""
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        path = _gateway_chat_path(self.serving_id)
+        endpoint = f"{self.base_url.rstrip('/')}{path}"
         payload: dict[str, JsonValue] = {
+            # GenOS Gateway selects the model from the serving_id path and may overwrite this field.
             "model": self.model_id,
             "messages": messages,
             "stream": False,
@@ -92,7 +97,7 @@ class DirectServingClient:
         read_ms = 0
         try:
             with _direct_http_client(self.base_url, self.timeout_s, self.connect_timeout_s, headers) as client:
-                with client.stream("POST", "/v1/chat/completions", json=payload) as response:
+                with client.stream("POST", path, json=payload) as response:
                     ttfb_ms = int((time.perf_counter() - start) * 1000)
                     phase = "ttfb"
                     response.raise_for_status()
@@ -106,7 +111,7 @@ class DirectServingClient:
                 "status": "error",
                 "serving_id": self.serving_id,
                 "backend": DIRECT_SERVING_BACKEND,
-                "endpoint": f"{self.base_url.rstrip('/')}/v1/chat/completions",
+                "endpoint": endpoint,
                 "model_id": self.model_id,
                 "latency_ms": int((time.perf_counter() - start) * 1000),
                 "ttfb_ms": ttfb_ms,
@@ -121,7 +126,7 @@ class DirectServingClient:
             "status": "ok",
             "serving_id": self.serving_id,
             "backend": DIRECT_SERVING_BACKEND,
-            "endpoint": f"{self.base_url.rstrip('/')}/v1/chat/completions",
+            "endpoint": endpoint,
             "model_id": self.model_id,
             "latency_ms": int((time.perf_counter() - start) * 1000),
             "ttfb_ms": ttfb_ms,
@@ -357,8 +362,13 @@ def _backend_from_env(spec: ModelSpec) -> LlmBackendConfig:
         base_url=base_url,
         serving_id=spec.serving_id,
         model_id=model_id,
-        endpoint=f"{base_url}/v1/chat/completions",
+        endpoint=f"{base_url}{_gateway_chat_path(spec.serving_id)}",
     )
+
+
+def _gateway_chat_path(serving_id: str) -> str:
+    """Return the GenOS Gateway OpenAI-compatible chat path for one serving."""
+    return GATEWAY_CHAT_PATH_TEMPLATE.format(serving_id=serving_id)
 
 
 def _chat_with_process_watchdog(*, backend: LlmBackendConfig, token: str, messages: list[dict[str, str]], timeouts: GenosTimeouts) -> dict[str, JsonValue]:

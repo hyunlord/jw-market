@@ -54,13 +54,11 @@ def build_call_plan(
         rows.extend(_share_plan_rows("brand_share", "flash", scope_key, atc4, brand, sample_rows, f"{_scope_id(scope_key, metadata)}:new", metadata, token_budget=brand_batch_token_budget))
     for scope_key in large_markets:
         sample_rows = axis_samples[scope_key]
-        rows.extend(_axis_plan_rows("market_axis_tier_recheck", "pro", scope_key, sample_rows, f"{_scope_id(scope_key, metadata)}:tier", metadata, token_budget=axis_chunk_token_budget))
         rows.extend(_axis_plan_rows("market_axis_tier_recheck", "lite", scope_key, sample_rows, f"{_scope_id(scope_key, metadata)}:tier", metadata, token_budget=axis_chunk_token_budget))
         first_brand_key = _first_brand_key_for_scope(brand_samples, scope_key)
         if first_brand_key:
             _source_scope, atc4, brand = source_scope_key_from_brand_sample_key(first_brand_key)
             brand_rows = brand_samples[first_brand_key]
-            rows.extend(_share_plan_rows("brand_share_tier_recheck", "pro", scope_key, atc4, brand, brand_rows, f"{_scope_id(scope_key, metadata)}:tier", metadata, token_budget=brand_batch_token_budget))
             rows.extend(_share_plan_rows("brand_share_tier_recheck", "lite", scope_key, atc4, brand, brand_rows, f"{_scope_id(scope_key, metadata)}:tier", metadata, token_budget=brand_batch_token_budget))
     for scope_key in large_markets[:2]:
         rows.extend(_axis_plan_rows("market_axis_repeat_for_stability", "flash", scope_key, axis_samples[scope_key], f"{_scope_id(scope_key, metadata)}:repeat", metadata, token_budget=axis_chunk_token_budget))
@@ -446,9 +444,9 @@ def _first_cross_insights(batches: list[dict[str, JsonValue]]) -> dict[str, Json
 
 
 def _tier_axis_recheck(token: str, dictionary: dict[str, JsonValue], scope_key: str, scope_metadata: dict[str, dict[str, JsonValue]], rows: list[KeywordRow], call_logs: list[CallLog], *, token_budget: int) -> dict[str, JsonValue]:
-    """Run Pro/Lite axis recheck for one large market."""
+    """Run the flash-lite axis recheck for one large market."""
     results: dict[str, JsonValue] = {}
-    for model_key in ("pro", "lite"):
+    for model_key in ("lite",):
         payload, logs = _call_axis_map_reduce(token, dictionary, scope_key, scope_metadata, rows, task="market_axis_tier_recheck", model_key=model_key, token_budget=token_budget)
         call_logs.extend(logs)
         results[f"{scope_key}:{model_key}"] = normalize_axis_payload(payload, scope_id=_scope_id(scope_key, scope_metadata), fallback_label=_display_name(scope_key, scope_metadata), minimum_topics=3)
@@ -469,9 +467,9 @@ def _tier_share_recheck(
     *,
     token_budget: int,
 ) -> dict[str, JsonValue]:
-    """Run Pro/Lite brand-share recheck for the first sampled large-market brand."""
+    """Run the flash-lite brand-share recheck for the first sampled large-market brand."""
     results: dict[str, JsonValue] = {}
-    for model_key in ("pro", "lite"):
+    for model_key in ("lite",):
         payload, logs = _call_share_batches(token, scope_key, scope_metadata, atc4, brand, rows, description, topics, model_key, task="brand_share_tier_recheck", token_budget=token_budget)
         call_logs.extend(logs)
         results[f"{sample_key}:{model_key}"] = payload

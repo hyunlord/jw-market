@@ -52,7 +52,7 @@ def _log(task: str, atc4: str, brand: str, status: str = "ok") -> CallLog:
     return CallLog(
         task=task,
         model_key="flash",
-        serving_id="76",
+        serving_id="163",
         scope_id=f"atc4:{atc4}",
         atc4=atc4,
         brand=brand,
@@ -90,7 +90,7 @@ def test_call_genos_json_watchdog_returns_error_when_client_stalls(monkeypatch) 
 
     payload, log = llm.call_genos_json(
         token="",
-        spec=ModelSpec("flash", "76", "Flash"),
+        spec=ModelSpec("flash", "163", "Flash Lite"),
         task="market_axis",
         scope_id="atc4:A",
         atc4="A",
@@ -114,7 +114,7 @@ def test_call_genos_json_retries_429_and_logs_attempts(monkeypatch) -> None:
         if calls["count"] == 1:
             return {
                 "status": "error",
-                "serving_id": "76",
+                "serving_id": "163",
                 "latency_ms": 1,
                 "ttfb_ms": 1,
                 "read_ms": 0,
@@ -126,7 +126,7 @@ def test_call_genos_json_retries_429_and_logs_attempts(monkeypatch) -> None:
             }
         return {
             "status": "ok",
-            "serving_id": "76",
+            "serving_id": "163",
             "latency_ms": 2,
             "ttfb_ms": 1,
             "read_ms": 1,
@@ -144,7 +144,7 @@ def test_call_genos_json_retries_429_and_logs_attempts(monkeypatch) -> None:
 
     payload, log = llm.call_genos_json(
         token="",
-        spec=ModelSpec("flash", "76", "Flash"),
+        spec=ModelSpec("flash", "163", "Flash Lite"),
         task="market_axis",
         scope_id="atc4:A",
         atc4="A",
@@ -167,7 +167,7 @@ def test_call_genos_json_uses_direct_serving_backend_alias(monkeypatch) -> None:
         captured.update(kwargs)
         return {
             "status": "ok",
-            "serving_id": "76",
+            "serving_id": "163",
             "latency_ms": 2,
             "ttfb_ms": 1,
             "read_ms": 1,
@@ -179,14 +179,14 @@ def test_call_genos_json_uses_direct_serving_backend_alias(monkeypatch) -> None:
         }
 
     monkeypatch.setenv("GENOS_LLM_BACKEND", "direct_serving")
-    monkeypatch.setenv("GENOS_DIRECT_BASE_URL", "http://127.0.0.1:19080")
+    monkeypatch.setenv("GENOS_DIRECT_BASE_URL", "https://jwai-dev.jwhealthcare.com")
     monkeypatch.setenv("GENOS_DIRECT_MODEL_FLASH", "genos-flash")
     monkeypatch.setenv("GENOS_CALL_PACING_MS", "0")
     monkeypatch.setattr(llm, "_chat_with_process_watchdog", fake_watchdog)
 
     payload, log = llm.call_genos_json(
         token="transient-token",
-        spec=ModelSpec("flash", "76", "Flash"),
+        spec=ModelSpec("flash", "163", "Flash Lite"),
         task="market_axis",
         scope_id="atc4:A",
         atc4="A",
@@ -200,9 +200,9 @@ def test_call_genos_json_uses_direct_serving_backend_alias(monkeypatch) -> None:
 
     assert payload["status"] == "ok"
     assert backend.backend_key == "direct_serving"
-    assert backend.base_url == "http://127.0.0.1:19080"
+    assert backend.base_url == "https://jwai-dev.jwhealthcare.com"
     assert backend.model_id == "genos-flash"
-    assert backend.serving_id == "76"
+    assert backend.serving_id == "163"
     assert log.backend == "direct_serving"
     assert log.model_id == "genos-flash"
 
@@ -226,14 +226,14 @@ def test_call_log_to_json_includes_direct_serving_metadata() -> None:
         output_sha256=log.output_sha256,
         output_length=log.output_length,
         backend="direct_serving",
-        endpoint="http://127.0.0.1:19080/v1/chat/completions",
+        endpoint="https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163/chat/completions",
         model_id="genos-flash",
     )
 
     serialized = llm.call_log_to_json(direct_log)
 
     assert serialized["backend"] == "direct_serving"
-    assert serialized["endpoint"] == "http://127.0.0.1:19080/v1/chat/completions"
+    assert serialized["endpoint"] == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163/chat/completions"
     assert serialized["model_id"] == "genos-flash"
 
 
