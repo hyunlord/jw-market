@@ -158,11 +158,20 @@ def _unique_atc4(values: Iterable[Any]) -> tuple[str, ...]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
-        item = str(value or "").strip().upper()
+        item = _canonical_atc4_code(str(value or "").strip().upper())
         if item and item not in seen:
             seen.add(item)
             result.append(item)
     return tuple(result)
+
+
+def _canonical_atc4_code(value: str) -> str:
+    """Normalize ATC3-shaped mart values when they appear in ATC4 fields."""
+
+    tokens = ATC_TOKEN_RE.findall(value)
+    if len(tokens) == 3 and tokens[0].isalpha() and tokens[1].isdigit() and tokens[2].isalpha():
+        return f"{value}0"
+    return value
 
 
 def _build_flagged_atc_hierarchy(atc4_values: Iterable[str], flagged_atc4: Sequence[str]) -> dict[str, list[dict[str, object]]]:

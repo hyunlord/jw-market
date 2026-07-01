@@ -19,7 +19,7 @@ def test_market_filter_atc_options_flags_brand_atc_in_strategic_view(monkeypatch
     def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
         if "mart_strategic_ml_brand_metric" in sql and "brand_key" not in sql:
             assert params == ["ubist", "ml_006"]
-            return [{"atc4_code": "C10A1"}, {"atc4_code": "C10C0"}]
+            return [{"atc4_code": "C10A1"}, {"atc4_code": "C10C"}]
         if "mart_strategic_ml_brand_metric" in sql and "brand_key" in sql:
             assert params == ["ubist", "리바로", "리바로", "리바로", "ml_006"]
             return [{"atc4_code": "C10A1"}]
@@ -93,3 +93,20 @@ def test_market_filter_atc_options_is_get_only_and_exposed_in_openapi() -> None:
 def test_market_filter_atc_options_rejects_internal_iqvia_source() -> None:
     with pytest.raises(DynamicMarketInputError, match="unsupported market filter source"):
         build_market_filter_atc_options(brand_name="가드렛", view="general", source="iqvia_nsa")
+
+
+def test_market_filter_atc_options_canonicalizes_atc3_shaped_atc4_codes(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        if "mart_strategic_ml_brand_metric" in sql and "brand_key" not in sql:
+            return [{"atc4_code": "C10C"}]
+        if "mart_strategic_ml_brand_metric" in sql and "brand_key" in sql:
+            return [{"atc4_code": "C10C"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    payload = build_market_filter_atc_options(brand_name="리바로", view="strategic", source="ubist")
+
+    assert payload["flagged_atc4"] == ["C10C0"]
+    assert payload["atc"]["atc3"] == [{"key": "C10C", "level": "atc3", "parent": "C10", "flag": True}]
+    assert payload["atc"]["atc4"] == [{"key": "C10C0", "level": "atc4", "parent": "C10C", "flag": True}]
