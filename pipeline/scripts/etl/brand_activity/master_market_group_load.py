@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 from collections.abc import Iterable, Sequence
@@ -61,11 +62,16 @@ class MarketGroupLoadError(RuntimeError):
     """Raised when MI Master market-group loading would violate the contract."""
 
 
-def load(xlsx_path: Path, *, schema: str = SCHEMA, save: bool = True) -> LoadSummary:
+def load(xlsx_path: Path, *, schema: str = SCHEMA, save: bool = True, ingested_at: str | None = None) -> LoadSummary:
     """Build MI Master records and optionally replace the isolated stage tables."""
     safe_schema = _validated_schema(schema)
-    market_definition_rows = list(iter_market_definition_rows(xlsx_path))
-    mapping_records, mapping_stats = load_mapping_records(xlsx_path, _resolve_catalog_path())
+    stable_ingested_at = ingested_at or _source_ingested_at(xlsx_path)
+    market_definition_rows = list(iter_market_definition_rows(xlsx_path, ingested_at=stable_ingested_at))
+    mapping_records, mapping_stats = load_mapping_records(
+        xlsx_path,
+        _resolve_catalog_path(),
+        ingested_at=stable_ingested_at,
+    )
     validate_mapping_records(mapping_records, mapping_stats)
     if len(market_definition_rows) != EXPECTED_MARKET_DEFINITION_ROW_COUNT:
         raise MarketGroupLoadError(
@@ -191,17 +197,30 @@ def _resolve_catalog_path() -> Path:
     raise FileNotFoundError(f"master column mapping catalog not found: {DEFAULT_CATALOG_PATH} or {CONFIG_CATALOG_PATH}")
 
 
+def _source_ingested_at(xlsx_path: Path) -> str:
+    """Return a deterministic load marker for reproducible replay runs."""
+    digest = hashlib.sha256()
+    with xlsx_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"source_sha256:{digest.hexdigest()[:16]}"
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load MI Master market-group tables into jw_brand_activity_stage.")
     parser.add_argument("--xlsx", required=True, help="MI Master workbook path or glob.")
     parser.add_argument("--schema", default=SCHEMA)
+    parser.add_argument(
+        "--ingested-at",
+        help="Optional explicit ingested_at marker. Defaults to a deterministic source workbook hash.",
+    )
     parser.add_argument("--no-save", action="store_true", help="Build and validate records without writing DB tables.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    summary = load(_resolve_xlsx(args.xlsx), schema=args.schema, save=not args.no_save)
+    summary = load(_resolve_xlsx(args.xlsx), schema=args.schema, save=not args.no_save, ingested_at=args.ingested_at)
     print(
         json.dumps(
             {
