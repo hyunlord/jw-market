@@ -19,6 +19,8 @@ The bridge imports already-preprocessed Temp VDB chunks into registered Shared V
 - `POST /commit`
 - `POST /search`
 - `GET /documents`
+- `POST /documents/delete`
+- `DELETE /documents/delete`
 - `GET /quota/check`
 
 ## Runtime Configuration

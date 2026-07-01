@@ -37,6 +37,11 @@ class SearchRequest(SessionRequest):
     limit: int | None = None
 
 
+class DeleteDocumentRequest(SessionRequest):
+    document_id: int | None = None
+    temp_document_id: int | None = None
+
+
 class PlannedDocumentRow(BaseModel):
     vdb_id: int
     org_file_name: str
@@ -181,4 +186,18 @@ class SearchResponse(BaseModel):
     result_count: int
     file_context: str
     file_sources: list[FileSource]
+    errors: list[str] = Field(default_factory=list)
+
+
+class DeleteDocumentResponse(BaseModel):
+    target_vdb_id: int
+    workflow_id: int
+    app_session_id: str
+    session_id: str
+    document_id: int | None = None
+    temp_document_id: int | None = None
+    status: str
+    write_count: int = 0
+    deleted_weaviate_object_ids: list[str] = Field(default_factory=list)
+    rollback_hint: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

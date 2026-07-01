@@ -204,3 +204,45 @@ def search_target_chunks(
     if body.get("errors"):
         raise RuntimeError(f"weaviate search errors: {body['errors'][:1]}")
     return (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
+
+
+def list_target_object_ids(client: httpx.Client, *, document_id: int) -> list[str]:
+    query = {
+        "query": (
+            "{ Get { %s(where:{path:[\"doc_id\"],operator:Equal,valueNumber:%d})"
+            "{ _additional { id } } } }"
+            % (settings.TARGET_VDB_COLLECTION, document_id)
+        )
+    }
+    response = client.post(
+        f"{settings.WEAVIATE_BASE}/v1/graphql",
+        json=query,
+        timeout=settings.HTTP_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("errors"):
+        raise RuntimeError(f"weaviate object lookup errors: {body['errors'][:1]}")
+    rows = (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
+    object_ids: list[str] = []
+    for row in rows:
+        additional = row.get("_additional") or {}
+        object_id = additional.get("id")
+        if isinstance(object_id, str) and object_id:
+            object_ids.append(object_id)
+    return object_ids
+
+
+def delete_target_objects(client: httpx.Client, *, object_ids: list[str]) -> list[str]:
+    deleted: list[str] = []
+    for object_id in object_ids:
+        response = client.delete(
+            f"{settings.WEAVIATE_BASE}/v1/objects/{settings.TARGET_VDB_COLLECTION}/{object_id}",
+            timeout=settings.HTTP_TIMEOUT_S,
+        )
+        if response.status_code == 404:
+            deleted.append(object_id)
+            continue
+        response.raise_for_status()
+        deleted.append(object_id)
+    return deleted

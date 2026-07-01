@@ -15,12 +15,14 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
-from . import ledger, settings, weaviate_ops
+from . import delete_ops, ledger, settings, weaviate_ops
 from .logging_utils import safe_log
 from .models import (
     BridgeRequest,
     CommitDocumentResult,
     CommitResponse,
+    DeleteDocumentRequest,
+    DeleteDocumentResponse,
     DocumentPlan,
     DocumentsResponse,
     FileSource,
@@ -166,7 +168,15 @@ def health() -> dict[str, Any]:
         "commit_enabled": settings.COMMIT_ENABLED,
         "db_configured": bool(settings.DB_PASSWORD),
         "target_vdb_id": settings.TARGET_VDB_ID,
-        "paths": ["/health", "/dry-run", "/commit", "/documents", "/quota/check", "/search"],
+        "paths": [
+            "/health",
+            "/dry-run",
+            "/commit",
+            "/documents",
+            "/documents/delete",
+            "/quota/check",
+            "/search",
+        ],
         "ttl_days": settings.TTL_DAYS,
         "quota": _quota_limits().model_dump(),
     }
@@ -508,6 +518,27 @@ def documents(
         app_session_id=app_session_id,
         session_id=session_id,
         documents=_documents_from_rows(rows),
+    )
+
+
+@app.post("/documents/delete", response_model=DeleteDocumentResponse)
+@app.delete("/documents/delete", response_model=DeleteDocumentResponse)
+def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
+    errors = _session_guard(req)
+    session_id = _session_id(req)
+    if req.document_id is None and req.temp_document_id is None:
+        errors.append("document_id or temp_document_id is required")
+    if errors:
+        return delete_ops.error_response(
+            req,
+            session_id=session_id,
+            status="rejected",
+            errors=errors,
+        )
+    return delete_ops.delete_session_document(
+        req,
+        session_id=session_id,
+        user_id=req.user_id or settings.DEFAULT_USER_ID,
     )
 
 
