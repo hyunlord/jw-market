@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi.testclient import TestClient
 
+import pytest
+
+from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError
 from pipeline.scripts.api.market_filter_atc_options import build_market_filter_atc_options
 from pipeline.scripts.api.main import app
 
@@ -28,14 +31,16 @@ def test_market_filter_atc_options_flags_brand_atc_in_strategic_view(monkeypatch
 
     assert payload["market_id"] == "ml_006"
     assert payload["flagged_atc4"] == ["C10A1"]
-    assert payload["atc"]["atc1"] == [{"key": "C", "value": "C", "label": "C", "level": "atc1", "flag": True}]
+    assert payload["source"] == "ubist"
+    assert payload["atc"]["atc1"] == [{"key": "C", "level": "atc1", "parent": None, "flag": True}]
+    assert payload["atc"]["atc2"] == [{"key": "C10", "level": "atc2", "parent": "C", "flag": True}]
     assert payload["atc"]["atc3"] == [
-        {"key": "C10A", "value": "C10A", "label": "C10A", "level": "atc3", "flag": True},
-        {"key": "C10C", "value": "C10C", "label": "C10C", "level": "atc3", "flag": False},
+        {"key": "C10A", "level": "atc3", "parent": "C10", "flag": True},
+        {"key": "C10C", "level": "atc3", "parent": "C10", "flag": False},
     ]
     assert payload["atc"]["atc4"] == [
-        {"key": "C10A1", "value": "C10A1", "label": "C10A1", "level": "atc4", "flag": True},
-        {"key": "C10C0", "value": "C10C0", "label": "C10C0", "level": "atc4", "flag": False},
+        {"key": "C10A1", "level": "atc4", "parent": "C10A", "flag": True},
+        {"key": "C10C0", "level": "atc4", "parent": "C10C", "flag": False},
     ]
 
 
@@ -59,7 +64,7 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
 
     payload = build_market_filter_atc_options(brand_name="가드렛", view="general", source="iqvia")
 
-    assert payload["source"] == "iqvia_nsa"
+    assert payload["source"] == "iqvia"
     assert payload["market_id"] == "A10X9"
     assert payload["flagged_atc4"] == ["A10X9"]
     assert payload["atc"]["atc4"][0]["flag"] is True
@@ -67,11 +72,24 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
     assert any("SELECT DISTINCT atc4_code" in sql and "brand_key" not in sql for sql, _ in calls)
 
 
-def test_market_filter_atc_options_is_exposed_in_openapi() -> None:
+def test_market_filter_atc_options_is_get_only_and_exposed_in_openapi() -> None:
     schema = app.openapi()
 
-    operation = schema["paths"]["/api/market-filter/atc-options"]["post"]
+    path = schema["paths"]["/api/market-filter/atc-options"]
+    assert sorted(path) == ["get"]
+    operation = path["get"]
     assert operation["summary"] == "시장필터 1단계 ATC 옵션"
-    assert "MarketFilterAtcOptionsRequest" in str(operation)
     assert "MarketFilterAtcOptionsResponse" in str(operation)
-    assert "flag" in schema["components"]["schemas"]["MarketFilterAtcOption"]["properties"]
+    option_properties = schema["components"]["schemas"]["MarketFilterAtcOption"]["properties"]
+    assert sorted(option_properties) == ["flag", "key", "level", "parent"]
+    source_param = next(param for param in operation["parameters"] if param["name"] == "source")
+    assert source_param["schema"]["enum"] == ["ubist", "iqvia"]
+
+    client = TestClient(app)
+    response = client.post("/api/market-filter/atc-options", json={"brand_name": "리바로", "view": "strategic", "source": "ubist"})
+    assert response.status_code == 405
+
+
+def test_market_filter_atc_options_rejects_internal_iqvia_source() -> None:
+    with pytest.raises(DynamicMarketInputError, match="unsupported market filter source"):
+        build_market_filter_atc_options(brand_name="가드렛", view="general", source="iqvia_nsa")

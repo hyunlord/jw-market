@@ -12,16 +12,22 @@ from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, q
 
 
 ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
+PUBLIC_SOURCES = {"ubist", "iqvia"}
 
 
 def build_market_filter_atc_options(*, brand_name: str, view: str, source: str) -> dict[str, object]:
-    """Return ATC1~4 option lists with brand-membership flags for market filter step 1."""
+    """Return ATC1~4 key-only option lists for market filter step 1.
+
+    The public contract accepts and echoes only ``ubist`` or ``iqvia``; IQVIA's
+    internal ``iqvia_nsa`` source value is resolved behind this boundary.
+    """
 
     normalized_brand = brand_name.strip()
     if not normalized_brand:
         raise DynamicMarketInputError("brand_name is required")
     normalized_view = normalize_view(view)
-    normalized_source = normalize_source(source)
+    public_source = normalize_public_source(source)
+    normalized_source = normalize_source(public_source)
     market_id = _resolve_market_id(brand=normalized_brand, view=normalized_view, source=normalized_source)
     flagged_atc4 = _load_brand_atc4_values(
         brand=normalized_brand,
@@ -33,7 +39,7 @@ def build_market_filter_atc_options(*, brand_name: str, view: str, source: str) 
     return {
         "brand_name": normalized_brand,
         "view": normalized_view,
-        "source": normalized_source,
+        "source": public_source,
         "market_id": market_id,
         "flagged_atc4": list(flagged_atc4),
         "atc": _build_flagged_atc_hierarchy(atc_rows, flagged_atc4),
@@ -44,6 +50,13 @@ def normalize_view(value: str) -> str:
     normalized = value.strip().lower()
     if normalized not in {"general", "strategic"}:
         raise DynamicMarketInputError(f"unsupported market filter view: {value}")
+    return normalized
+
+
+def normalize_public_source(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in PUBLIC_SOURCES:
+        raise DynamicMarketInputError(f"unsupported market filter source: {value}")
     return normalized
 
 
@@ -174,14 +187,30 @@ def _build_flagged_atc_hierarchy(atc4_values: Iterable[str], flagged_atc4: Seque
         hierarchy[level] = [
             {
                 "key": value,
-                "value": value,
-                "label": value,
                 "level": level,
+                "parent": _parent_for_atc_level(level, value),
                 "flag": value in flagged_by_level[level],
             }
             for value in sorted(buckets[level])
         ]
     return hierarchy
+
+
+def _parent_for_atc_level(level: str, value: str) -> str | None:
+    parsed = parse_atc_code(value)
+    if parsed is None:
+        return None
+    match level:
+        case "atc1":
+            return None
+        case "atc2":
+            return parsed.get("atc1")
+        case "atc3":
+            return parsed.get("atc2")
+        case "atc4":
+            return parsed.get("atc3")
+        case _:
+            raise DynamicMarketInputError(f"unsupported ATC level: {level}")
 
 
 def parse_atc_code(code: str) -> dict[str, str] | None:
