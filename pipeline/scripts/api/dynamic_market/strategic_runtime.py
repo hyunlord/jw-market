@@ -16,7 +16,7 @@ from typing import Any
 from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
-from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
+from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
 
@@ -219,6 +219,8 @@ def _selected_filters(*, source: str, analysis_level: DynamicMarketAnalysisLevel
     for key, values in source_filters.model_dump().items():
         clean = tuple(str(value).strip() for value in values if str(value).strip())
         if clean:
+            if key == "atc4":
+                clean = expand_atc4_for_source(clean, source=source)
             selected[key] = clean
     return selected
 

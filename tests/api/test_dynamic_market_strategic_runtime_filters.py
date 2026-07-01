@@ -65,3 +65,38 @@ def test_strategic_runtime_filters_ubist_sidecar_aliases() -> None:
     )
 
     assert [row["brand_key"] for row in filtered] == ["match"]
+
+
+def test_strategic_runtime_matches_ubist_atc4_source_native_aliases() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "filters": {
+                "analysis_level": {
+                    "ubist": {"atc4": ["C10C0"]},
+                    "iqvia": {},
+                }
+            },
+        }
+    )
+    rows = [
+        {
+            "brand_key": "source-native",
+            "brand_name": "로수젯",
+            "by_dimension": json.dumps({"atc4_code": "C10C"}),
+        },
+        {
+            "brand_key": "other",
+            "brand_name": "리바로",
+            "by_dimension": json.dumps({"atc4_code": "C10A1"}),
+        },
+    ]
+
+    filtered = strategic_runtime._filter_rows_by_analysis_level(
+        rows=rows,
+        source="ubist",
+        analysis_level=request.filters.analysis_level,
+    )
+
+    assert [row["brand_key"] for row in filtered] == ["source-native"]
