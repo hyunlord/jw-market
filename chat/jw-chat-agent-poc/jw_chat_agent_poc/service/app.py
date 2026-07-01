@@ -244,6 +244,27 @@ def _attach_file_context(result: dict, file_context: str | None) -> dict:
     return copied
 
 
+def _file_context_fact(result: dict) -> str:
+    value = result.get("file_context")
+    if not isinstance(value, str):
+        return ""
+    context = value.strip()
+    if not context:
+        return ""
+    return "## 업로드 파일 컨텍스트\n" + context
+
+
+def _append_file_context_source(answer: str, file_context_fact: str) -> str:
+    if not file_context_fact:
+        return answer
+    source_line = "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과"
+    if source_line in answer:
+        return answer
+    if "## 출처" in answer:
+        return cleanup_markdown_answer("\n".join((answer, source_line)))
+    return cleanup_markdown_answer("\n\n".join((answer, "## 출처\n\n" + source_line)))
+
+
 def _answer_with_conversation(
     store: SessionStore,
     market_scope_resolver: MarketScopeResolver,
@@ -408,6 +429,7 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     client = GenosClient()
     timing = ensure_timing(result)
+    file_context_fact = _file_context_fact(result)
     try:
         with stage(timing, "answer_generation_total", "GenOS expression plus safety"):
             generated_answer = "".join(client.stream_answer(question, result))
@@ -420,7 +442,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         if isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             safe_answer = ensure_top_brand_trend_table(safe_answer, fact_md)
-        safe_answer = apply_claim_policy(question, safe_answer, fact_md)
+        policy_fact_md = "\n\n".join(part for part in (fact_md, file_context_fact) if part)
+        safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
     try:
         with stage(timing, "chart_generation", "fact-backed chart spec"):
             charts = build_charts(result, question=question, answer=safe_answer)
@@ -429,7 +452,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
     safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
-    safe_answer = apply_claim_policy(question, safe_answer, fact_md)
+    safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+    safe_answer = _append_file_context_source(safe_answer, file_context_fact)
     trace = trace_envelope(
         question=question,
         result=result,

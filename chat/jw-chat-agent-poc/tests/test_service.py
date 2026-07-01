@@ -157,7 +157,7 @@ def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> No
     def stream_answer(_self: GenosClient, question: str, result: dict):
         captured["question"] = question
         captured["result"] = result
-        yield "업로드 파일 기준 답변입니다."
+        yield "업로드 파일 기준 CodexA 값은 123.45입니다."
 
     monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
     app = create_app(agent_factory=lambda external_mode="live": AgentWithBasicResult(external_mode=external_mode))
@@ -173,7 +173,8 @@ def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> No
 
     assert response.status_code == 200
     body = response.json()
-    assert body["text"] == "업로드 파일 기준 답변입니다."
+    assert "123.45" in body["text"]
+    assert "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과" in body["text"]
     result = captured["result"]
     assert isinstance(result, dict)
     assert result["file_context"] == "파일: sample.xlsx\nCodexA=123.45"
