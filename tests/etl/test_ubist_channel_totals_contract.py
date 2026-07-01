@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pipeline.etl.io.mart.strategic_ubist_channels import build_ubist_channel_totals
 from pipeline.scripts.etl import ubist_channel_resolver
+from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
 
 
 def test_build_ubist_channel_totals_when_general_matrix_has_raw_pairs() -> None:
@@ -52,6 +53,13 @@ def test_resolver_uses_strategic_channel_totals_context_when_available() -> None
             measure="sales",
         )
 
-    assert result["specialty_channels"] == ["전체", "종합병원 순환기", "의원 IGF"]
-    assert rows[0]["__ubist_dual_channel_data"]["종합병원 순환기"]["2026-04"] == 25.0
+    assert result["specialty_channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
+    assert result["target_channels"][0]["code"] == "TGH Cardio"
+    assert result["target_channels"][0]["facility_raw_values"] == ["상급종합병원", "종합병원"]
+    assert rows[0]["__ubist_dual_channel_data"]["주요고객 종합병원 순환기"]["2026-04"] == 25.0
     assert rows[0]["__ubist_specialty_channel_data"]["의원 IGF"]["2026-04"] == 12.0
+
+    general_channel = parse_channel_code("GH Cardio")
+    assert general_channel is not None
+    assert general_channel.display_name == "종합병원 순환기"
+    assert general_channel.facility_raw_values == ("상급종합병원", "종합병원", "병원")

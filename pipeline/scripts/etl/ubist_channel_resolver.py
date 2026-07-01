@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+from pipeline.scripts.utils.ubist_target_channel_mapping import parse_target_channel_code
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -159,7 +160,10 @@ def _load_market_raw_totals_from_strategic_rows(
             continue
         by_display = _decode_object(row.get(UBIST_CHANNEL_BY_DISPLAY_COLUMN))
         by_code = _decode_object(row.get(UBIST_CHANNEL_BY_CODE_COLUMN))
-        if by_display:
+        target_display = _normalize_target_channel_series(by_code)
+        if target_display:
+            by_brand[brand] = target_display
+        elif by_display:
             by_brand[brand] = _normalize_channel_series(by_display)
         for code, series in by_code.items():
             if not isinstance(series, dict):
@@ -195,6 +199,31 @@ def _normalize_channel_series(payload: dict[str, Any]) -> dict[str, dict[str, fl
     return normalized
 
 
+def _normalize_target_channel_series(payload: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Expose strategic channel series using MI Master target labels.
+
+    The mart contract stores reusable UBIST channel totals with the general
+    parser keys.  Strategic views need the target-channel vocabulary only at
+    read time, so this adapter keeps the global GH/general parser unchanged.
+    """
+
+    normalized: dict[str, dict[str, float]] = {}
+    for code, series in payload.items():
+        if not isinstance(series, dict):
+            continue
+        parsed = parse_target_channel_code(str(code))
+        if parsed is None:
+            continue
+        bucket = normalized.setdefault(parsed.display_name, {})
+        for period, value in series.items():
+            numeric = _history_value(value)
+            if numeric <= 0.0:
+                continue
+            period_text = str(period)
+            bucket[period_text] = bucket.get(period_text, 0.0) + numeric
+    return normalized
+
+
 def _history_value(value: Any) -> float:
     raw = value.get("raw_value", value.get("value", 0.0)) if isinstance(value, dict) else value
     try:
@@ -216,24 +245,24 @@ def resolve_market_channels(
 
     channels = []
     used_codes: set[str] = set()
+    target_codes: set[str] = set()
     for target in _targets_from_market(market):
-        parsed = parse_channel_code(target)
+        parsed = parse_target_channel_code(target)
         if parsed is None or parsed.code in used_codes:
             continue
         channels.append(parsed)
         used_codes.add(parsed.code)
+        target_codes.add(parsed.code)
 
     if len(channels) < max_channels:
         for code, _ in sorted(totals_by_code.items(), key=lambda item: item[1], reverse=True):
             if len(channels) >= max_channels:
                 break
-            if code in used_codes:
-                continue
-            parsed = parse_channel_code(code)
-            if parsed is None:
+            parsed = parse_target_channel_code(code)
+            if parsed is None or parsed.code in used_codes:
                 continue
             channels.append(parsed)
-            used_codes.add(code)
+            used_codes.add(parsed.code)
 
     display_names = [channel.display_name for channel in channels]
     for row in rows:
@@ -246,7 +275,7 @@ def resolve_market_channels(
         "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
         "target_channels": [channel.as_dict() for channel in channels],
         "specialty_target_channels": [channel.as_dict() for channel in channels],
-        "fallback_codes": [channel.code for channel in channels if channel.code not in set(_targets_from_market(market))],
+        "fallback_codes": [channel.code for channel in channels if channel.code not in target_codes],
         "series_brand_count": len(series_by_brand),
         "raw_brand_count": len(brand_names),
     }

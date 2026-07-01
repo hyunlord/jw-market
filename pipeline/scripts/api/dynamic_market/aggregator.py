@@ -210,7 +210,8 @@ class MetricAggregator:
         scope_sql, scope_params = brand_scope_predicate(brands)
         return db.fetch_all(
             f"""
-            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history
+            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
+                   ubist_channel_by_display, ubist_channel_by_code
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -296,6 +297,8 @@ class MetricAggregator:
                     latest_period=latest_period,
                     latest_value=filtered.get(latest_period) if latest_period else None,
                     monthly_series=tuple({"period": period, "value": value} for period, value in sorted(filtered.items())),
+                    ubist_channel_by_display=parse_channel_series(row.get("ubist_channel_by_display")),
+                    ubist_channel_by_code=parse_channel_series(row.get("ubist_channel_by_code")),
                 )
             )
         return brand_metrics, monthly_totals
@@ -306,6 +309,25 @@ def parse_history(raw: str) -> dict[str, float]:
 
     payload = json.loads(raw)
     return {str(period): float(value or 0.0) for period, value in payload.items()}
+
+
+def parse_channel_series(raw: object) -> dict[str, dict[str, float]]:
+    """Parse optional UBIST mart channel JSON into channel -> period -> value."""
+
+    if isinstance(raw, dict):
+        payload = raw
+    elif isinstance(raw, str) and raw.strip():
+        payload = json.loads(raw)
+    else:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    parsed: dict[str, dict[str, float]] = {}
+    for channel, series in payload.items():
+        if not isinstance(series, dict):
+            continue
+        parsed[str(channel)] = {str(period): float(value or 0.0) for period, value in series.items()}
+    return parsed
 
 
 def filter_periods(history: dict[str, float], period_range: PeriodRange) -> dict[str, float]:

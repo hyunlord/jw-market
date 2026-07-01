@@ -106,6 +106,7 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
                 "2026-01",
                 150.0,
                 ({"period": "2025-01", "value": 50.0}, {"period": "2026-01", "value": 150.0}),
+                ubist_channel_by_code={"GH Cardio": {"2026-01": 120.0}, "CL IGF": {"2026-01": 30.0}},
             ),
             BrandMetric(
                 "other",
@@ -117,6 +118,7 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
                 "2026-01",
                 50.0,
                 ({"period": "2025-01", "value": 50.0}, {"period": "2026-01", "value": 50.0}),
+                ubist_channel_by_code={"GH Cardio": {"2026-01": 50.0}, "GH Endo": {"2026-01": 25.0}},
             ),
         ),
     )
@@ -142,6 +144,10 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     assert isinstance(data["ei_ms_matrix"]["data"], list)
     assert isinstance(data["growth_contribution_ms_matrix"]["data"], list)
     assert "targets" in data["target_customer_competition"]
+    assert response["markets"] == [{"market_id": response["market_id"], "is_primary": True}]
+    assert data["ubist_specialty_channels"] == ["전체", "종합병원 순환기", "의원 IGF", "종합병원 내분비"]
+    assert data["ubist_specialty_target_channels"][0]["code"] == "GH Cardio"
+    assert data["ubist_specialty_target_channels"][0]["facility_raw_values"] == ["상급종합병원", "종합병원", "병원"]
 
 
 def test_request_accepts_strategic_frontend_filters() -> None:
@@ -394,7 +400,7 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
     assert captured["brand_row"]["brand_name"] == "리바로젯"
     assert captured["market_id"] == "strategy_006"
     assert captured["source"] == "UBIST"
-    assert captured["channel_context"]["specialty_channels"] == ["전체", "종합병원 순환기"]
+    assert captured["channel_context"]["specialty_channels"] == ["전체", "주요고객 종합병원 순환기"]
 
 
 def test_strategic_runtime_catalog_reads_from_db(monkeypatch) -> None:
