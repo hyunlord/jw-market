@@ -57,6 +57,17 @@ VERIFY_MODULES: Final = (
     ModuleName("pipeline.etl.io.catalog.master.mapping_table"),
 )
 
+SERVICE_CONTRACT_SHIM: Final = """from typing import Any, Dict
+
+
+async def service(config: Dict[str, Any], data: Dict[str, Any]):
+    data.update(config=config)
+    return {
+        "status": "ok",
+        "message": "brand-activity topic runner is exposed through the MCP relay",
+    }
+"""
+
 
 def build_mirror(output: Path, *, verify: bool = False) -> dict[str, int]:
     """Copy the code-serving 307 source subset into an output directory."""
@@ -70,13 +81,21 @@ def build_mirror(output: Path, *, verify: bool = False) -> dict[str, int]:
     for file_path in PLAN.source_files:
         _copy_file(REPO_ROOT / file_path, output / _mirror_file_name(file_path))
         copied += 1
+    _write_service_contract_shim(output)
+    copied += 1
     if verify:
         verify_mirror_imports(output)
     return {"files": copied}
 
 
 def verify_mirror_imports(output: Path) -> None:
-    """Import deploy-critical modules with only the mirror on PYTHONPATH."""
+    """Import deploy-critical modules and the template service contract."""
+    _verify_pipeline_imports(output)
+    _verify_template_service_contract(output)
+
+
+def _verify_pipeline_imports(output: Path) -> None:
+    """Import deploy-critical pipeline modules with only the mirror on PYTHONPATH."""
     imports = "\n".join(f"import {module}" for module in VERIFY_MODULES)
     script = f"{imports}\nprint('isolated import ok')\n"
     with tempfile.TemporaryDirectory(prefix="mirror-import-") as directory:
@@ -95,6 +114,39 @@ def verify_mirror_imports(output: Path) -> None:
     if result.returncode != 0:
         raise MirrorPlanError(
             "isolated mirror import failed\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+
+def _verify_template_service_contract(output: Path) -> None:
+    """Recreate the template `/app/src/service` layout and import its shim."""
+    script = (
+        "from service import service\n"
+        "import inspect\n"
+        "assert hasattr(service, 'service')\n"
+        "assert inspect.iscoroutinefunction(service.service)\n"
+        "print('service contract import ok')\n"
+    )
+    with tempfile.TemporaryDirectory(prefix="mirror-template-contract-") as directory:
+        root = Path(directory)
+        service_root = root / "src" / "service"
+        shutil.copytree(output, service_root)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=root,
+            env={
+                "PATH": "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPATH": str(root / "src"),
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        raise MirrorPlanError(
+            "template service contract import failed\n"
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
@@ -213,6 +265,11 @@ def _copy_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _write_service_contract_shim(output: Path) -> None:
+    """Write the root module expected by template-code-serving."""
+    (output / "service.py").write_text(SERVICE_CONTRACT_SHIM, encoding="utf-8")
+
+
 def _mirror_file_name(path: Path) -> Path:
     if path.name == "requirements.txt":
         return Path("requirements.txt")
@@ -231,6 +288,7 @@ def main(
     typer.echo(f"files={summary['files']}")
     if verify:
         typer.echo("verify=isolated-import-ok")
+        typer.echo("verify=service-contract-import-ok")
 
 
 if __name__ == "__main__":
