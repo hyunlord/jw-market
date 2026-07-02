@@ -897,6 +897,10 @@ def _apply_option_state(
         brand_atc4=set(brand_matched.get("atc4", ())),
     )
     default_selections.update(atc_defaults)
+    selected_by_level = _atc_values_by_level(atc4_codes)
+    for level, values in selected_by_level.items():
+        if values:
+            applied_selections.setdefault(level, sorted(values))
     payload["default_selections"] = default_selections
     payload["applied_selections"] = applied_selections
 

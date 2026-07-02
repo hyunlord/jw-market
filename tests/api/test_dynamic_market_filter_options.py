@@ -144,6 +144,7 @@ def test_general_filter_options_scope_dimensions_to_selected_atc4(monkeypatch) -
         {"key": "C10A1", "value": "C10A1", "label": "C10A1", "level": "atc4", "parent": "C10A", "default": False, "selected": True, "flag": False},
         {"key": "C10C0", "value": "C10C0", "label": "C10C0", "level": "atc4", "parent": "C10C", "default": False, "selected": True, "flag": False},
     ]
+    assert payload["applied_selections"]["atc4"] == ["C10A1", "C10C0"]
 
 
 def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monkeypatch) -> None:
