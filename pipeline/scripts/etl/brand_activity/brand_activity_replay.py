@@ -204,9 +204,7 @@ def _run_topic(options: ReplayOptions) -> dict[str, JsonValue]:
     """Delegate topic extraction and mart upsert behavior to auto_topic."""
     tag = f"brand_activity_replay_{_timestamp_tag()}"
     command = [
-        "uv",
-        "run",
-        "--script",
+        sys.executable,
         str(REPO_ROOT / "pipeline/scripts/analysis/brand_activity/auto_topic/run_auto_topic.py"),
         "--execute" if options.execute else "--dry-run",
         "--save-to-db" if options.save_to_db else "--no-save-to-db",

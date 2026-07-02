@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 from pipeline.scripts.etl.brand_activity import brand_activity_replay as replay
 
@@ -85,3 +87,37 @@ def test_replay_only_raw_does_not_run_later_stages(monkeypatch, tmp_path: Path) 
 
     assert result["plan"] == ["raw"]
     assert calls == [replay.Stage.RAW]
+
+
+def test_topic_stage_uses_current_python_without_uv_network_resolution(monkeypatch, tmp_path: Path) -> None:
+    """Given topic dry-run, When replay delegates to auto_topic, Then it avoids uv runtime resolution."""
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(replay.subprocess, "run", fake_run)
+    options = replay.ReplayOptions(
+        start=replay.Stage.TOPIC,
+        only=replay.Stage.TOPIC,
+        execute=False,
+        save_to_db=False,
+        raw_source=tmp_path / "raw",
+        legacy_raw_source=tmp_path / "legacy",
+        xlsx=tmp_path / "master.xlsx",
+        raw_schema="jw_brand_activity_raw_stage",
+        stage_schema="jw_brand_activity_stage",
+        window=None,
+        audit_dir=tmp_path / "audit",
+        topic=replay.TopicOptions(max_real_calls=0),
+    )
+
+    result = replay._run_topic(options)
+
+    assert captured["command"][:2] == [
+        sys.executable,
+        str(replay.REPO_ROOT / "pipeline/scripts/analysis/brand_activity/auto_topic/run_auto_topic.py"),
+    ]
+    assert "uv" not in captured["command"][:3]
+    assert result["summary"] == {"ok": True}
