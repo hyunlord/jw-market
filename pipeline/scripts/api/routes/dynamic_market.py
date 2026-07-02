@@ -115,10 +115,19 @@ def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
 def dynamic_market_filter_options(
     view: str = "general",
     source: str = "ubist",
+    measure: str = "sales",
     brand: str | None = Query(
         default=None,
         description="[입력] 선택 브랜드명. market_id는 이 브랜드로 내부 조회되어 응답에 echo됩니다.",
         examples=["리바로"],
+    ),
+    atc4_codes: list[str] | None = Query(
+        default=None,
+        description="[입력] 일반뷰 2단계에서 선택된 ATC4 코드 목록. 여러 값을 보내면 OR 범위로 옵션을 재산출합니다.",
+    ),
+    selections: str | None = Query(
+        default=None,
+        description="[입력] 이미 선택된 차원 필터 JSON. 차원 내 OR, 차원 간 AND로 남은 옵션을 좁힙니다.",
     ),
     market_id: str | None = Query(default=None, include_in_schema=False, deprecated=True),
 ) -> dict:
@@ -137,7 +146,10 @@ def dynamic_market_filter_options(
             brand=brand,
             view=view,
             source=source,
+            measure=measure,
             market_id=market_id,
+            atc4_codes=atc4_codes,
+            selections=selections,
         )
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_filter_options_request", "message": str(exc)}) from exc

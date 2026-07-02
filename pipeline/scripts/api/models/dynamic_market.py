@@ -8,11 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field
 class UbistAnalysisLevel(BaseModel):
     """UBIST product-level dynamic filters from the mock OpenAPI contract."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    class_: list[str] = Field(default_factory=list, alias="class")
     seller: list[str] = Field(default_factory=list)
     molecule: list[str] = Field(default_factory=list, description="Disabled by PL policy for D-1.")
     molecule_strength: list[str] = Field(default_factory=list)
+    strength_pack: list[str] = Field(default_factory=list)
+    ox_gx: list[str] = Field(default_factory=list)
     form: list[str] = Field(default_factory=list)
     route: list[str] = Field(default_factory=list)
     reimbursement: list[str] = Field(default_factory=list)
@@ -25,11 +28,13 @@ class IqviaAnalysisLevel(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    mfr: list[str] = Field(default_factory=list)
     mfr_name_kor: list[str] = Field(default_factory=list)
     molecule_type: list[str] = Field(default_factory=list)
     molecule_desc: list[str] = Field(default_factory=list, description="IQVIA MOLECULE DESC ingredient filters.")
     pack_desc: list[str] = Field(default_factory=list, description="Disabled by PL policy for D-1.")
     strength: list[str] = Field(default_factory=list)
+    nhi: list[str] = Field(default_factory=list)
     nhi_type: list[str] = Field(default_factory=list)
     audit_code: list[str] = Field(default_factory=list)
 

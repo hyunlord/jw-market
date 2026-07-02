@@ -226,7 +226,7 @@ def _filter_rows_by_analysis_level(
 def _selected_filters(*, source: str, analysis_level: DynamicMarketAnalysisLevelFilters) -> dict[str, tuple[str, ...]]:
     source_filters = analysis_level.ubist if source == "ubist" else analysis_level.iqvia
     selected: dict[str, tuple[str, ...]] = {}
-    for key, values in source_filters.model_dump().items():
+    for key, values in source_filters.model_dump(by_alias=True).items():
         clean = tuple(str(value).strip() for value in values if str(value).strip())
         if clean:
             if key == "atc4":
@@ -250,12 +250,18 @@ def _row_matches_dimension(dimensions: Mapping[str, Any], key: str, selected_val
 def _dimension_candidates(dimensions: Mapping[str, Any], key: str) -> tuple[Any, ...]:
     aliases = {
         "seller": ("seller", "mfr", "manufacturer", "company_name"),
+        "class": ("class", "class_name", "market_class"),
         "mfr_name_kor": ("mfr_name_kor", "mfr", "manufacturer", "company_name"),
+        "mfr": ("mfr", "mfr_name_kor", "manufacturer", "company_name"),
         "molecule": ("molecule", "molecule_desc"),
         "molecule_strength": ("molecule_strength", "strength_pack", "성분용량"),
+        "strength_pack": ("strength_pack", "molecule_strength", "성분용량"),
+        "ox_gx": ("ox_gx", "oxgx"),
         "form": ("form", "dosage_form", "제형"),
         "route": ("route", "투여경로"),
         "reimbursement": ("reimbursement", "nhi_type", "nhi", "급여구분"),
+        "nhi": ("nhi", "nhi_type", "급여구분"),
+        "nhi_type": ("nhi_type", "nhi", "급여구분"),
         "atc3": ("atc3", "atc3_code"),
         "atc4": ("atc4", "atc4_code"),
     }

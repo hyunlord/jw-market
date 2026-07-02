@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+import json
 import os
 import re
 from threading import RLock
@@ -36,10 +37,26 @@ DIMENSION_LABELS: dict[str, str] = {
     "strength": "STRENGTH",
     "nhi": "NHI TYPE",
 }
-DIMENSION_ORDER_BY_SOURCE: dict[str, tuple[str, ...]] = {
-    "ubist": ("seller", "molecule_strength", "form", "route", "reimbursement"),
-    "iqvia_nsa": ("mfr", "molecule_type", "molecule_desc", "strength", "nhi"),
-}
+DIMENSION_ORDER_HINTS: tuple[str, ...] = (
+    "class",
+    "molecule",
+    "molecule_strength",
+    "strength_pack",
+    "ox_gx",
+    "seller",
+    "form",
+    "route",
+    "reimbursement",
+    "mfr",
+    "mfr_name_kor",
+    "molecule_type",
+    "molecule_desc",
+    "pack_desc",
+    "strength",
+    "nhi",
+    "nhi_type",
+    "audit_code",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +85,9 @@ def build_filter_options(
     source: str,
     market_id: str | None = None,
     brand: str | None = None,
+    measure: str = "sales",
+    atc4_codes: Sequence[str] | None = None,
+    selections: Mapping[str, Sequence[str]] | str | None = None,
     general_dimension_db: str | None = None,
     strategic_dimension_db: str | None = None,
 ) -> dict[str, object]:
@@ -81,6 +101,7 @@ def build_filter_options(
 
     normalized_view = normalize_view(view)
     normalized_source = normalize_source(source)
+    normalized_measure = measure.strip().lower() or "sales"
     resolved_market_id = resolve_filter_option_market_id(
         mart_db=mart_db,
         view=normalized_view,
@@ -89,35 +110,50 @@ def build_filter_options(
         market_id=market_id,
     )
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
-    cache_key = _filter_option_cache_key(
+    parsed_atc4_codes = _parse_atc4_codes(resolved_market_id, atc4_codes)
+    parsed_selections = _parse_selection_map(selections)
+    payload = _build_filter_options_uncached(
         mart_db=mart_db,
         dimension_db=dimension_db,
         view=normalized_view,
         source=normalized_source,
         market_id=resolved_market_id,
+        measure=normalized_measure,
+        atc4_codes=parsed_atc4_codes,
+        selections=parsed_selections,
     )
-    if cached_payload := _get_cached_filter_options(cache_key):
-        payload = cached_payload
-    else:
-        payload = _build_filter_options_uncached(
-            mart_db=mart_db,
-            dimension_db=dimension_db,
-            view=normalized_view,
-            source=normalized_source,
-            market_id=resolved_market_id,
-        )
-        _set_cached_filter_options(cache_key, payload)
-        payload = deepcopy(payload)
     normalized_brand = brand.strip() if brand else ""
+    brand_matched: dict[str, list[str]] = {}
     if normalized_brand:
         payload["brand"] = normalized_brand
-        payload["brand_matched"] = _load_brand_dimension_matches(
+        brand_matched = _load_brand_dimension_matches(
             dimension_db=dimension_db,
             brand=normalized_brand,
             view=normalized_view,
             source=normalized_source,
             market_id=resolved_market_id,
+            measure=normalized_measure,
         )
+        if normalized_view == "strategic":
+            brand_matched.update(
+                _load_strategic_brand_by_dimension_matches(
+                    mart_db=mart_db,
+                    brand=normalized_brand,
+                    source=normalized_source,
+                    market_id=resolved_market_id,
+                    measure=normalized_measure,
+                )
+            )
+        if normalized_view == "general" and parsed_atc4_codes:
+            brand_matched.setdefault("atc4", [parsed_atc4_codes[0]])
+        payload["brand_matched"] = brand_matched
+    _apply_option_state(
+        payload=payload,
+        view=normalized_view,
+        atc4_codes=parsed_atc4_codes,
+        selections=parsed_selections,
+        brand_matched=brand_matched,
+    )
     return payload
 
 
@@ -221,14 +257,27 @@ def _build_filter_options_uncached(
     view: str,
     source: str,
     market_id: str | None,
+    measure: str,
+    atc4_codes: Sequence[str],
+    selections: Mapping[str, Sequence[str]],
 ) -> dict[str, object]:
     dimensions = _load_dimension_options(
+        mart_db=mart_db,
         dimension_db=dimension_db,
         view=view,
         source=source,
         market_id=market_id,
+        measure=measure,
+        atc4_codes=atc4_codes,
+        selections=selections,
     )
-    atc_rows = _load_atc_rows(mart_db=mart_db, view=view, source=source, market_id=market_id)
+    atc_rows = _load_atc_rows(
+        mart_db=mart_db,
+        view=view,
+        source=source,
+        market_id=market_id,
+        atc4_codes=atc4_codes,
+    )
     return build_filter_option_payload(
         view=view,
         source=source,
@@ -280,7 +329,7 @@ def build_filter_option_payload(
     for row in dimensions:
         grouped[row.dimension_type].append(row)
     ordered_dimensions: list[dict[str, object]] = []
-    for dimension_type in DIMENSION_ORDER_BY_SOURCE.get(source, ()):
+    for dimension_type in sorted(grouped, key=_dimension_sort_key):
         rows = sorted(grouped.get(dimension_type, ()), key=lambda item: item.dimension_value)
         ordered_dimensions.append(
             {
@@ -314,7 +363,13 @@ def build_atc_hierarchy(rows: Iterable[Mapping[str, object]]) -> dict[str, objec
     return {
         **{
             level: [
-                {"key": value, "value": value, "label": value}
+                {
+                    "key": value,
+                    "value": value,
+                    "label": value,
+                    "level": level,
+                    "parent": _parent_for_atc_level(level, value),
+                }
                 for value in sorted(values)
             ]
             for level, values in buckets.items()
@@ -348,6 +403,23 @@ def parse_atc_code(code: str) -> dict[str, str] | None:
     return {level: value for level, value in levels.items() if value}
 
 
+def _parent_for_atc_level(level: str, value: str) -> str | None:
+    parsed = parse_atc_code(value)
+    if parsed is None:
+        return None
+    match level:
+        case "atc1":
+            return None
+        case "atc2":
+            return parsed.get("atc1")
+        case "atc3":
+            return parsed.get("atc2")
+        case "atc4":
+            return parsed.get("atc3")
+        case _:
+            raise DynamicMarketInputError(f"unsupported ATC level: {level}")
+
+
 def normalize_view(value: str) -> str:
     normalized = value.strip().lower()
     if normalized not in {"general", "strategic"}:
@@ -355,43 +427,70 @@ def normalize_view(value: str) -> str:
     return normalized
 
 
-def _load_dimension_options(*, dimension_db: str, view: str, source: str, market_id: str | None) -> tuple[DimensionOptionRow, ...]:
+def _load_dimension_options(
+    *,
+    mart_db: str,
+    dimension_db: str,
+    view: str,
+    source: str,
+    market_id: str | None,
+    measure: str,
+    atc4_codes: Sequence[str],
+    selections: Mapping[str, Sequence[str]],
+) -> tuple[DimensionOptionRow, ...]:
     table = GENERAL_DIMENSION_TABLE if view == "general" else STRATEGIC_DIMENSION_TABLE
-    where = ["source = %s"]
-    params: list[str] = [source]
+    where = ["base.source = %s", "base.measure = %s"]
+    params: list[object] = [source, measure]
     if view == "general":
-        # General view dimensions are raw ATC-sidecar values, so the option
-        # universe intentionally spans the whole source.  The default checked
-        # values stay market-scoped in _load_brand_dimension_matches.
+        if atc4_codes:
+            where.append(f"base.atc4_code IN ({', '.join(['%s'] * len(atc4_codes))})")
+            params.extend(atc4_codes)
+        _append_selection_exists_filters(
+            where=where,
+            params=params,
+            dimension_db=dimension_db,
+            table=table,
+            selections=selections,
+        )
         rows = db.fetch_all(
             f"""
-            SELECT dimension_type,
-                   MIN(dimension_value) AS dimension_value,
-                   MIN(dimension_value_norm) AS dimension_value_norm,
+            SELECT base.dimension_type AS dimension_type,
+                   MIN(base.dimension_value) AS dimension_value,
+                   MIN(base.dimension_value_norm) AS dimension_value_norm,
                    COUNT(*) AS row_count
-            FROM {quote_identifier(dimension_db)}.{table} FORCE INDEX (idx_general_option_universe)
-            WHERE source = %s
-            GROUP BY dimension_type, dimension_value_hash
-            ORDER BY dimension_type, dimension_value_hash
+            FROM {quote_identifier(dimension_db)}.{table} AS base
+            WHERE {" AND ".join(where)}
+            GROUP BY base.dimension_type, base.dimension_value_hash
+            ORDER BY base.dimension_type, base.dimension_value_hash
             """,
             params,
         )
         return _dimension_option_rows(rows)
     elif market_id:
         market_kind, normalized_market_id = _strategic_market_filter(market_id)
-        where.extend(["market_kind = %s", "market_id = %s"])
+        where.extend(["base.market_kind = %s", "base.market_id = %s"])
         params.extend([market_kind, normalized_market_id])
     rows = db.fetch_all(
         f"""
-        SELECT dimension_type, dimension_value, dimension_value_norm, COUNT(*) AS row_count
-        FROM {quote_identifier(dimension_db)}.{table}
+        SELECT base.dimension_type AS dimension_type,
+               base.dimension_value AS dimension_value,
+               base.dimension_value_norm AS dimension_value_norm,
+               COUNT(*) AS row_count
+        FROM {quote_identifier(dimension_db)}.{table} AS base
         WHERE {" AND ".join(where)}
-        GROUP BY dimension_type, dimension_value, dimension_value_norm
-        ORDER BY dimension_type, dimension_value
+        GROUP BY base.dimension_type, base.dimension_value, base.dimension_value_norm
+        ORDER BY base.dimension_type, base.dimension_value
         """,
         params,
     )
-    return _dimension_option_rows(rows)
+    sidecar_rows = _dimension_option_rows(rows)
+    by_dimension_rows = _load_strategic_by_dimension_options(
+        mart_db=mart_db,
+        source=source,
+        market_id=market_id,
+        measure=measure,
+    )
+    return _merge_dimension_rows(sidecar_rows, by_dimension_rows)
 
 
 def _dimension_option_rows(rows: Sequence[Mapping[str, object]]) -> tuple[DimensionOptionRow, ...]:
@@ -406,6 +505,170 @@ def _dimension_option_rows(rows: Sequence[Mapping[str, object]]) -> tuple[Dimens
     )
 
 
+def _merge_dimension_rows(*groups: Sequence[DimensionOptionRow]) -> tuple[DimensionOptionRow, ...]:
+    merged: dict[tuple[str, str], DimensionOptionRow] = {}
+    for rows in groups:
+        for row in rows:
+            key = (row.dimension_type, row.dimension_value_norm)
+            current = merged.get(key)
+            if current is None:
+                merged[key] = row
+                continue
+            merged[key] = DimensionOptionRow(
+                dimension_type=current.dimension_type,
+                dimension_value=current.dimension_value,
+                dimension_value_norm=current.dimension_value_norm,
+                row_count=current.row_count + row.row_count,
+            )
+    return tuple(merged.values())
+
+
+def _load_strategic_by_dimension_options(
+    *,
+    mart_db: str,
+    source: str,
+    market_id: str | None,
+    measure: str,
+) -> tuple[DimensionOptionRow, ...]:
+    if not market_id:
+        return ()
+    dimension_keys = _load_strategic_analysis_dimension_keys(
+        mart_db=mart_db,
+        source=source,
+        market_id=market_id,
+        measure=measure,
+    )
+    if not dimension_keys:
+        return ()
+    brand_table, id_column = _strategic_atc_table(market_id)
+    _, normalized_market_id = _strategic_market_filter(market_id)
+    rows = db.fetch_all(
+        f"""
+        SELECT by_dimension
+        FROM {quote_identifier(mart_db)}.{brand_table}
+        WHERE {id_column} = %s
+          AND source = %s
+          AND measure = %s
+        """,
+        [normalized_market_id, source, measure],
+    )
+    grouped: dict[tuple[str, str], dict[str, object]] = {}
+    for row in rows:
+        dimensions = _decode_json_object(row.get("by_dimension"))
+        for dimension_type in dimension_keys:
+            for display_value in _dimension_values(dimensions.get(dimension_type)):
+                option_key = _dimension_option_key(display_value)
+                if not option_key:
+                    continue
+            entry = grouped.setdefault(
+                (dimension_type, option_key),
+                {
+                    "dimension_type": dimension_type,
+                    "dimension_value": display_value,
+                    "dimension_value_norm": option_key,
+                    "row_count": 0,
+                },
+            )
+            entry["row_count"] = int(entry["row_count"]) + 1
+    return _dimension_option_rows(tuple(grouped.values()))
+
+
+def _load_strategic_brand_by_dimension_matches(
+    *,
+    mart_db: str,
+    brand: str,
+    source: str,
+    market_id: str | None,
+    measure: str,
+) -> dict[str, list[str]]:
+    if not market_id:
+        return {}
+    dimension_keys = _load_strategic_analysis_dimension_keys(
+        mart_db=mart_db,
+        source=source,
+        market_id=market_id,
+        measure=measure,
+    )
+    if not dimension_keys:
+        return {}
+    brand_table, id_column = _strategic_atc_table(market_id)
+    _, normalized_market_id = _strategic_market_filter(market_id)
+    rows = db.fetch_all(
+        f"""
+        SELECT by_dimension
+        FROM {quote_identifier(mart_db)}.{brand_table}
+        WHERE {id_column} = %s
+          AND source = %s
+          AND measure = %s
+          AND (
+              brand_name = %s
+              OR brand_key = %s
+              OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
+              OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
+          )
+        """,
+        [normalized_market_id, source, measure, brand, brand, brand, brand],
+    )
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        dimensions = _decode_json_object(row.get("by_dimension"))
+        for dimension_type in dimension_keys:
+            for display_value in _dimension_values(dimensions.get(dimension_type)):
+                option_key = _dimension_option_key(display_value)
+                if option_key:
+                    grouped.setdefault(dimension_type, []).append(option_key)
+    return {dimension_type: list(dict.fromkeys(values)) for dimension_type, values in grouped.items()}
+
+
+def _load_strategic_analysis_dimension_keys(
+    *,
+    mart_db: str,
+    source: str,
+    market_id: str,
+    measure: str,
+) -> tuple[str, ...]:
+    market_table, id_column = _strategic_market_table(market_id)
+    _, normalized_market_id = _strategic_market_filter(market_id)
+    rows = db.fetch_all(
+        f"""
+        SELECT analysis_levels
+        FROM {quote_identifier(mart_db)}.{market_table}
+        WHERE {id_column} = %s
+          AND source = %s
+          AND measure = %s
+        LIMIT 1
+        """,
+        [normalized_market_id, source, measure],
+    )
+    row = rows[0] if rows else None
+    analysis_levels = _decode_json_object(row.get("analysis_levels") if row else None)
+    return tuple(key for key in analysis_levels if key not in {"atc3", "atc4"})
+
+
+def _decode_json_object(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _dimension_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    if value in (None, ""):
+        return ()
+    return (str(value).strip(),)
+
+
+def _dimension_option_key(value: str) -> str:
+    return value.strip().lower()
+
+
 def _load_brand_dimension_matches(
     *,
     dimension_db: str,
@@ -413,17 +676,15 @@ def _load_brand_dimension_matches(
     view: str,
     source: str,
     market_id: str | None,
+    measure: str,
 ) -> dict[str, list[str]]:
     table = GENERAL_DIMENSION_TABLE if view == "general" else STRATEGIC_DIMENSION_TABLE
-    allowed_dimensions = DIMENSION_ORDER_BY_SOURCE.get(source, ())
-    if not allowed_dimensions:
-        return {}
-
     where = [
         "source = %s",
+        "measure = %s",
         "(brand_name = %s OR brand_key = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')) OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))",
     ]
-    params: list[object] = [source, brand, brand, brand, brand]
+    params: list[object] = [source, measure, brand, brand, brand, brand]
     if view == "general":
         if atc_prefix := _general_atc_prefix(market_id):
             where.append("atc4_code LIKE %s")
@@ -443,16 +704,23 @@ def _load_brand_dimension_matches(
         """,
         params,
     )
-    grouped: dict[str, list[str]] = {dimension_type: [] for dimension_type in allowed_dimensions}
+    grouped: dict[str, list[str]] = {}
     for row in rows:
         dimension_type = str(row["dimension_type"])
         value = str(row["dimension_value_norm"])
-        if dimension_type in grouped and value:
-            grouped[dimension_type].append(value)
+        if value:
+            grouped.setdefault(dimension_type, []).append(value)
     return {dimension_type: values for dimension_type, values in grouped.items() if values}
 
 
-def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | None) -> tuple[dict[str, object], ...]:
+def _load_atc_rows(
+    *,
+    mart_db: str,
+    view: str,
+    source: str,
+    market_id: str | None,
+    atc4_codes: Sequence[str],
+) -> tuple[dict[str, object], ...]:
     if view == "strategic":
         table, id_column = _strategic_atc_table(market_id)
         where = ["source = %s"]
@@ -469,8 +737,9 @@ def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | Non
         return tuple(db.fetch_all(sql, params))
     where = ["source = %s"]
     params: list[str] = [source]
-    # General ATC choices follow the same all-source universe as the general
-    # dimension options.  Strategic ATC rows remain market-scoped above.
+    if atc4_codes:
+        where.append(f"atc4_code IN ({', '.join(['%s'] * len(atc4_codes))})")
+        params.extend(atc4_codes)
     rows = db.fetch_all(
         f"""
         SELECT atc4_code
@@ -482,6 +751,197 @@ def _load_atc_rows(*, mart_db: str, view: str, source: str, market_id: str | Non
         params,
     )
     return tuple(rows)
+
+
+def _append_selection_exists_filters(
+    *,
+    where: list[str],
+    params: list[object],
+    dimension_db: str,
+    table: str,
+    selections: Mapping[str, Sequence[str]],
+) -> None:
+    for dimension_type, values in sorted(selections.items()):
+        if dimension_type in {"atc1", "atc2", "atc3", "atc4", "atc4_code"}:
+            continue
+        normalized_values = _clean_values(values)
+        if not normalized_values:
+            continue
+        where.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM {quote_identifier(dimension_db)}.{table} AS selected
+                WHERE selected.source = base.source
+                  AND selected.measure = base.measure
+                  AND COALESCE(selected.product_code, selected.brand_key) = COALESCE(base.product_code, base.brand_key)
+                  AND selected.dimension_type = %s
+                  AND selected.dimension_value_norm IN ({', '.join(['%s'] * len(normalized_values))})
+            )
+            """
+        )
+        params.append(dimension_type)
+        params.extend(normalized_values)
+
+
+def _parse_atc4_codes(market_id: str | None, atc4_codes: Sequence[str] | None) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            _canonical_general_atc4(value)
+            for value in [*(_split_list_values(market_id) if market_id else []), *list(atc4_codes or [])]
+            if _canonical_general_atc4(value)
+        )
+    )
+
+
+def _canonical_general_atc4(value: str) -> str:
+    return value.strip().upper()
+
+
+def _parse_selection_map(selections: Mapping[str, Sequence[str]] | str | None) -> dict[str, tuple[str, ...]]:
+    if selections is None:
+        return {}
+    if isinstance(selections, str):
+        raw_text = selections.strip()
+        if not raw_text:
+            return {}
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise DynamicMarketInputError("invalid filter option selections JSON") from exc
+        if not isinstance(parsed, dict):
+            raise DynamicMarketInputError("filter option selections must be a JSON object")
+        selections = {
+            str(key): _coerce_selection_sequence(value)
+            for key, value in parsed.items()
+        }
+    return {
+        _canonical_selection_key(key): tuple(values)
+        for key, raw_values in selections.items()
+        if (values := _clean_values(raw_values))
+    }
+
+
+def _coerce_selection_sequence(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return tuple(_split_list_values(value))
+    if isinstance(value, Sequence):
+        return tuple(str(item) for item in value)
+    return ()
+
+
+def _split_list_values(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _clean_values(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _canonical_selection_key(key: str) -> str:
+    normalized = key.strip()
+    if normalized == "atc4_code":
+        return "atc4"
+    return normalized
+
+
+def _dimension_sort_key(dimension_type: str) -> tuple[int, str]:
+    try:
+        return (DIMENSION_ORDER_HINTS.index(dimension_type), dimension_type)
+    except ValueError:
+        return (len(DIMENSION_ORDER_HINTS), dimension_type)
+
+
+def _apply_option_state(
+    *,
+    payload: dict[str, object],
+    view: str,
+    atc4_codes: Sequence[str],
+    selections: Mapping[str, Sequence[str]],
+    brand_matched: Mapping[str, Sequence[str]],
+) -> None:
+    default_selections: dict[str, list[str]] = {}
+    applied_selections: dict[str, list[str]] = {key: list(values) for key, values in selections.items()}
+    dimensions = payload.get("dimensions")
+    if not isinstance(dimensions, list):
+        return
+    for dimension in dimensions:
+        if not isinstance(dimension, dict):
+            continue
+        dimension_type = str(dimension.get("dimension_type") or "")
+        values = dimension.get("values")
+        if not dimension_type or not isinstance(values, list):
+            continue
+        if view == "strategic":
+            default_selections[dimension_type] = [
+                str(value.get("key") or "")
+                for value in values
+                if isinstance(value, dict) and value.get("key")
+            ]
+            applied_selections.setdefault(dimension_type, list(default_selections[dimension_type]))
+        flagged_values = set(brand_matched.get(dimension_type, ()))
+        default_values = set(default_selections.get(dimension_type, ()))
+        selected_values = set(applied_selections.get(dimension_type, ()))
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            option_key = str(value.get("key") or "")
+            option_label = str(value.get("value") or "")
+            value["default"] = option_key in default_values or option_label in default_values
+            value["selected"] = option_key in selected_values or option_label in selected_values
+            value["flag"] = option_key in flagged_values or option_label in flagged_values
+    atc_defaults = _mark_atc_state(
+        payload=payload,
+        view=view,
+        atc4_codes=atc4_codes,
+        brand_atc4=set(brand_matched.get("atc4", ())),
+    )
+    default_selections.update(atc_defaults)
+    payload["default_selections"] = default_selections
+    payload["applied_selections"] = applied_selections
+
+
+def _mark_atc_state(
+    *,
+    payload: dict[str, object],
+    view: str,
+    atc4_codes: Sequence[str],
+    brand_atc4: set[str],
+) -> dict[str, list[str]]:
+    atc = payload.get("atc")
+    if not isinstance(atc, dict):
+        return {}
+    selected_by_level = _atc_values_by_level(atc4_codes)
+    brand_by_level = _atc_values_by_level(tuple(brand_atc4))
+    defaults: dict[str, list[str]] = {}
+    for level in ("atc1", "atc2", "atc3", "atc4"):
+        options = atc.get(level)
+        if not isinstance(options, list):
+            continue
+        if view == "strategic":
+            default_values = {str(option.get("key")) for option in options if isinstance(option, dict)}
+        else:
+            default_values = brand_by_level[level]
+        defaults[level] = sorted(value for value in default_values if value)
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            key = str(option.get("key") or "")
+            option["default"] = key in default_values
+            option["selected"] = key in selected_by_level[level] or key in default_values
+            option["flag"] = key in brand_by_level[level]
+    return defaults
+
+
+def _atc_values_by_level(atc4_codes: Sequence[str]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {"atc1": set(), "atc2": set(), "atc3": set(), "atc4": set()}
+    for code in atc4_codes:
+        parsed = parse_atc_code(code)
+        if parsed is None:
+            continue
+        for level, value in parsed.items():
+            values[level].add(value)
+    return values
 
 
 def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> str | None:
@@ -530,3 +990,9 @@ def _strategic_atc_table(market_id: str | None) -> tuple[str, str]:
     if market_id and market_id.strip().startswith("cd_"):
         return "mart_strategic_cd_brand_metric", "cd_market_id"
     return "mart_strategic_ml_brand_metric", "ml_id"
+
+
+def _strategic_market_table(market_id: str | None) -> tuple[str, str]:
+    if market_id and market_id.strip().startswith("cd_"):
+        return "mart_strategic_cd_market_metric", "cd_market_id"
+    return "mart_strategic_ml_market_metric", "ml_id"
