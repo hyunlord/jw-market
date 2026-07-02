@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store
+from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store_db
 from pipeline.scripts.analysis.brand_activity.auto_topic import verification
 from pipeline.scripts.analysis.brand_activity.auto_topic.audit import write_json
 
@@ -14,6 +15,7 @@ def _artifact_payload() -> topic_store.TopicArtifacts:
     return topic_store.TopicArtifacts(
         run_summary={
             "tag": "serving_direct_singleconcept_top7_exec_20260620_143124",
+            "input_fingerprint": "fp-current",
             "market_count": 1,
             "sampled_brand_count": 2,
             "quality_grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0},
@@ -89,6 +91,21 @@ def test_build_topic_records_keeps_primary_payload_only() -> None:
     assert all("pro 제외" not in str(record.payload) for record in records)
 
 
+def test_topic_payload_sample_uses_stored_axis_and_brand_topic_shapes() -> None:
+    """Given stored mart payload JSON, When sampled for audit, Then real topics are not reported empty."""
+    records = topic_store.build_topic_records(_artifact_payload())
+
+    sample = topic_store.topic_payload_sample(records[0].payload)
+
+    assert sample["axis_topics"] == [{"topic_id": "T1", "label": "효능"}]
+    assert sample["brand_topics"][0]["topic_shares"] == [
+        {"topic_id": "T1", "label": "효능", "share_pct": 91.0}
+    ]
+    assert sample["brand_topics"][0]["brand_specific_topics"] == [
+        {"topic_id": "B1", "label": "보험", "share_pct": 4.0}
+    ]
+
+
 def test_build_run_record_uses_measured_verification_totals() -> None:
     """Given verification evidence, When run metadata is built, Then token and quality totals survive."""
     artifacts = _artifact_payload()
@@ -107,12 +124,45 @@ def test_build_run_record_uses_measured_verification_totals() -> None:
     assert run.brand_count == 2
     assert run.axis_compound_count == 0
     assert run.brand_specific_dup_count == 0
+    assert run.input_fingerprint == "fp-current"
+
+
+def test_build_run_record_parses_replay_tag_timestamp_and_db_snapshot_fingerprint() -> None:
+    """Given recovery artifacts, When run metadata is built, Then created_at and guard seed survive."""
+    artifacts = _artifact_payload()
+    artifacts.run_summary.pop("input_fingerprint")
+    artifacts.run_summary["tag"] = "brand_activity_replay_20260702_160109"
+    artifacts.db_snapshot.update(
+        {
+            "before": {
+                "stage_hash_fingerprint": "ecb7c06943b7d44fffde4e8761f281546237148d1f10ed088017d96e584fb135"
+            }
+        }
+    )
+
+    run = topic_store.build_run_record(
+        artifacts,
+        artifact_sha256="18d57e3071f046527570e4ee6667426e76df58fc0c29557bb8a03d67b87d8ebc",
+    )
+
+    assert run.created_at == "2026-07-02 16:01:09"
+    assert run.input_fingerprint == "ecb7c06943b7d44fffde4e8761f281546237148d1f10ed088017d96e584fb135"
 
 
 def test_validate_stage_schema_rejects_non_isolated_schema() -> None:
     """Given a non-stage schema, When schema is validated, Then writes are refused."""
     with pytest.raises(topic_store.TopicStoreError):
         topic_store.validated_stage_schema("prod_mart")
+
+
+def test_run_table_ddl_and_upsert_include_input_fingerprint() -> None:
+    """Given topic run storage SQL, When generated, Then the fingerprint column is carried."""
+    _, runs_ddl = topic_store_db.topic_table_ddl()
+    upsert = topic_store_db._run_upsert_sql(topic_store_db.SCHEMA)
+
+    assert "input_fingerprint CHAR(64)" in runs_ddl
+    assert "input_fingerprint" in upsert
+    assert "VALUES (schema_stage_hash)" not in upsert
 
 
 def test_load_artifacts_requires_existing_audit_files(tmp_path: Path) -> None:

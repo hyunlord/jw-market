@@ -16,8 +16,10 @@ docker image inspect mnc/template-code-serving:market_apis
 ```
 
 `Dockerfile` intentionally keeps the template code-serving entrypoint and installs
-only runtime dependencies from `requirements.txt`. `uv` is required because the
-topic replay path invokes `uv run --script` for `run_auto_topic.py`.
+only runtime dependencies from `requirements.txt`. `uv` remains available for
+operator convenience, but the deployed topic replay path uses the current Python
+interpreter so the airgapped container never resolves PEP 723 dependencies at
+runtime.
 
 Code-serving env:
 
@@ -38,3 +40,15 @@ The child server exposes MCP-compatible JSON-RPC tools on `/mcp`:
 - `run_topic_extraction`
 - `get_status`
 - `get_result`
+
+Monthly scheduler:
+
+```bash
+kubectl -n llmops apply -f pipeline/scripts/deploy/brand_activity_307/cronjob_topic_monthly.yaml
+```
+
+The CronJob is created with `suspend: true`. It computes the current
+`km_keyword_event_stage` fingerprint before calling code-serving 238. If the
+fingerprint matches the latest successful `mart_brand_activity_topic_runs`
+record, it exits with `no-op: input unchanged` and spends zero GenOS calls. If
+there is no stored seed, it fails closed instead of starting a first run.

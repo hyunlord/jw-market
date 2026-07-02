@@ -159,6 +159,7 @@ def run_pipeline(
 ) -> dict[str, JsonValue]:
     """Run read-only data collection, optional bounded GenOS calls, reports, and packaging."""
     _safety_preflight(stage_schema)
+    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     docs_dir.mkdir(parents=True, exist_ok=True)
     run_audit_dir = _audit_run_dir(audit_dir, tag)
     run_audit_dir.mkdir(parents=True, exist_ok=True)
@@ -226,8 +227,11 @@ def run_pipeline(
     zip_result = create_zip_package(generated_files(docs_dir, run_audit_dir), tag=tag)
     run_summary = {
         "tag": tag,
+        "started_at": started_at,
         "execution_mode": payload["execution_mode"],
         "auth_mode": auth_mode,
+        "input_fingerprint": before_snapshot.get("stage_hash_fingerprint"),
+        "input_row_count": before_snapshot.get("row_count"),
         "market_count": len(axis_samples),
         "scope_count": len(axis_samples),
         "group_scope_count": len([row for row in scope_metadata.values() if isinstance(row, dict) and row.get("scope_type") == "market_group"]),

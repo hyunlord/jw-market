@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 import json
+import re
 from typing import Final
 
 from .data_source import FALLBACK_ALIAS_PATH, PRIMARY_ALIAS_PATH, SCHEMA
@@ -27,6 +28,7 @@ class TopicArtifacts:
     axis_results: dict[str, JsonValue]
     call_log: list[JsonValue] = field(default_factory=list)
     alias_payload: dict[str, JsonValue] = field(default_factory=dict)
+    db_snapshot: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,7 @@ class RunRecord:
     axis_compound_count: int
     brand_specific_dup_count: int
     sha256: str
+    input_fingerprint: str
 
 
 def load_artifacts(audit_dir: Path) -> TopicArtifacts:
@@ -70,6 +73,7 @@ def load_artifacts(audit_dir: Path) -> TopicArtifacts:
         axis_results=_read_json_object(audit_dir / "axis_results_sanitized.json"),
         call_log=_read_json_array(audit_dir / "call_log_sanitized.json"),
         alias_payload=_load_alias_payload(),
+        db_snapshot=_read_optional_json_object(audit_dir / "db_snapshot.json"),
     )
 
 
@@ -121,7 +125,7 @@ def build_run_record(artifacts: TopicArtifacts, *, artifact_sha256: str) -> RunR
     model_id = _text(_dict(artifacts.verification.get("serving_route")).get("model_id")) or _first_call_text(artifacts.call_log, "model_id")
     return RunRecord(
         run_id=run_id,
-        created_at=_created_at_from_run_id(run_id),
+        created_at=_created_at_from_summary(artifacts.run_summary, run_id),
         model_id=model_id,
         serving_id=_first_call_text(artifacts.call_log, "serving_id") or _serving_id(model_id),
         route=route,
@@ -133,7 +137,31 @@ def build_run_record(artifacts: TopicArtifacts, *, artifact_sha256: str) -> RunR
         axis_compound_count=_int_value(artifacts.verification.get("complex_label_count")),
         brand_specific_dup_count=_int_value(artifacts.verification.get("brand_specific_duplicate_pair_count")),
         sha256=artifact_sha256,
+        input_fingerprint=_input_fingerprint(artifacts),
     )
+
+
+def topic_payload_sample(payload: dict[str, JsonValue], *, brand_limit: int = 2, topic_limit: int = 3) -> dict[str, JsonValue]:
+    """Extract non-sensitive topic labels and shares from the stored mart payload shape."""
+    axis = _dict(payload.get("axis"))
+    brands = _list(payload.get("brands"))[:brand_limit]
+    return {
+        "axis_topics": [_topic_label_share(_dict(topic)) for topic in _list(axis.get("topics"))[:topic_limit]],
+        "brand_topics": [
+            {
+                "brand": _text(_dict(brand).get("brand")),
+                "topic_shares": [
+                    _topic_label_share(_dict(topic))
+                    for topic in _list(_dict(brand).get("topic_shares"))[:topic_limit]
+                ],
+                "brand_specific_topics": [
+                    _topic_label_share(_dict(topic))
+                    for topic in _list(_dict(brand).get("brand_specific_topics"))[:topic_limit]
+                ],
+            }
+            for brand in brands
+        ],
+    }
 
 
 def validated_stage_schema(schema: str) -> str:
@@ -202,13 +230,62 @@ def _read_json_array(path: Path) -> list[JsonValue]:
     return value if isinstance(value, list) else []
 
 
+def _read_optional_json_object(path: Path) -> dict[str, JsonValue]:
+    """Read an optional JSON object with empty-object fallback."""
+    if not path.exists():
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return value if isinstance(value, dict) else {}
+
+
+def _created_at_from_summary(run_summary: dict[str, JsonValue], run_id: str) -> str:
+    """Prefer measured start time, then parse the timestamp suffix in run tags."""
+    for key in ("started_at", "created_at"):
+        value = _text(run_summary.get(key))
+        if _parse_datetime(value) != DEFAULT_CREATED_AT:
+            return _parse_datetime(value)
+    return _created_at_from_run_id(run_id)
+
+
 def _created_at_from_run_id(run_id: str) -> str:
-    """Parse the timestamp suffix in run tags into a SQL DATETIME string."""
-    suffix = run_id.rsplit("_exec_", 1)[-1]
+    """Parse the final timestamp token in run tags into a SQL DATETIME string."""
+    match = re.search(r"(\d{8}_\d{6})$", run_id)
+    suffix = match.group(1) if match else run_id.rsplit("_exec_", 1)[-1]
+    return _parse_datetime(suffix)
+
+
+def _parse_datetime(value: str) -> str:
+    """Parse supported audit timestamp strings into SQL DATETIME format."""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y%m%d_%H%M%S"):
+        candidate = value.rstrip("Z")
+        try:
+            return datetime.strptime(candidate, fmt).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
     try:
-        return datetime.strptime(suffix, "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
         return DEFAULT_CREATED_AT
+
+
+def _input_fingerprint(artifacts: TopicArtifacts) -> str:
+    """Return the stage input fingerprint used by the scheduler no-op guard."""
+    from_summary = _text(artifacts.run_summary.get("input_fingerprint"))
+    if from_summary:
+        return from_summary
+    before = _dict(artifacts.db_snapshot.get("before"))
+    return _text(before.get("stage_hash_fingerprint"))
+
+
+def _topic_label_share(topic: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Keep only topic metadata safe for audit samples."""
+    sample: dict[str, JsonValue] = {
+        "topic_id": topic.get("topic_id"),
+        "label": topic.get("label"),
+    }
+    if "share_pct" in topic:
+        sample["share_pct"] = topic.get("share_pct")
+    return sample
 
 
 def _first_call_text(call_log: list[JsonValue], key: str) -> str:

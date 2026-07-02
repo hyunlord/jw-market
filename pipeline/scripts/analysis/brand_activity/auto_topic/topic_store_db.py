@@ -39,12 +39,25 @@ def ensure_topic_tables(connection: pymysql.connections.Connection, *, schema: s
     with connection.cursor() as cursor:
         for statement in topic_table_ddl(safe_schema):
             cursor.execute(statement)
+        for statement in topic_table_migration_ddl(safe_schema):
+            cursor.execute(statement)
 
 
 def topic_table_ddl(schema: str = SCHEMA) -> tuple[str, str]:
     """Return DDL for the topic payload and run metadata tables."""
     safe_schema = validated_stage_schema(schema)
     return (_topics_ddl(safe_schema), _runs_ddl(safe_schema))
+
+
+def topic_table_migration_ddl(schema: str = SCHEMA) -> tuple[str, ...]:
+    """Return idempotent schema evolution statements for existing topic marts."""
+    safe_schema = validated_stage_schema(schema)
+    return (
+        f"""
+        ALTER TABLE `{safe_schema}`.`{RUNS_TABLE}`
+        ADD COLUMN IF NOT EXISTS input_fingerprint CHAR(64) NULL AFTER sha256
+        """,
+    )
 
 
 def upsert_topic_results(
@@ -132,6 +145,7 @@ def _runs_ddl(schema: str) -> str:
             axis_compound_count INT NOT NULL,
             brand_specific_dup_count INT NOT NULL,
             sha256 CHAR(64) NOT NULL,
+            input_fingerprint CHAR(64) NULL,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """
@@ -142,8 +156,9 @@ def _run_upsert_sql(schema: str) -> str:
     return f"""
         INSERT INTO `{schema}`.`{RUNS_TABLE}`
         (run_id, created_at, model_id, serving_id, route, total_prompt_tokens, total_completion_tokens,
-         est_cost_usd, market_count, brand_count, axis_compound_count, brand_specific_dup_count, sha256)
-        VALUES ({", ".join(["%s"] * 13)})
+         est_cost_usd, market_count, brand_count, axis_compound_count, brand_specific_dup_count, sha256,
+         input_fingerprint)
+        VALUES ({", ".join(["%s"] * 14)})
         ON DUPLICATE KEY UPDATE
             created_at=VALUES(created_at),
             model_id=VALUES(model_id),
@@ -156,7 +171,8 @@ def _run_upsert_sql(schema: str) -> str:
             brand_count=VALUES(brand_count),
             axis_compound_count=VALUES(axis_compound_count),
             brand_specific_dup_count=VALUES(brand_specific_dup_count),
-            sha256=VALUES(sha256)
+            sha256=VALUES(sha256),
+            input_fingerprint=VALUES(input_fingerprint)
     """
 
 
@@ -192,6 +208,7 @@ def _run_tuple(run: RunRecord) -> tuple[JsonValue, ...]:
         run.axis_compound_count,
         run.brand_specific_dup_count,
         run.sha256,
+        run.input_fingerprint,
     )
 
 
