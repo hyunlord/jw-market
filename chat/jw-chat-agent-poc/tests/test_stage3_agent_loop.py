@@ -882,6 +882,22 @@ def test_genos_planner_uses_deterministic_external_tools_before_llm() -> None:
     assert [call.name for call in procedure_decision.tool_calls] == ["get_procedure_stats"]
 
 
+def test_genos_planner_routes_explicit_web_search_words_before_llm() -> None:
+    class FallbackBomb:
+        def decide(self, *_args, **_kwargs):
+            raise AssertionError("fallback should not be called for explicit web search intent")
+
+    planner = GenosToolPlanner(fallback=FallbackBomb(), token=None)
+
+    for question in (
+        "리바로 시장동향을 웹 검색 결과(미검증) 섹션으로 URL과 snippet만 분리해서 보여줘",
+        "리바로 경쟁제품 최근 동향 검색해줘",
+    ):
+        decision = planner.decide(question, (), (), ("리바로",), ("2026-04",))
+
+        assert [call.name for call in decision.tool_calls] == ["web_search"]
+
+
 def test_hira_procedure_and_web_search_fixture_tools_render_payloads() -> None:
     planner = Stage3ScriptedPlanner(
         (

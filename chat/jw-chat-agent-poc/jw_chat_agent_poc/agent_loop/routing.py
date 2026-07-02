@@ -26,6 +26,12 @@ _EXTERNAL_TOKENS = (
     "상기되는",
     "KOL",
     "시장동향",
+    "웹검색",
+    "웹 검색",
+    "검색해줘",
+    "검색 결과",
+    "최신 동향",
+    "최근 동향",
 )
 _DRUG_INFO_TOKENS = ("허가", "품목", "식약처", "MFDS", "의약품정보", "의약품 정보")
 _COMPLEX_TOKENS = (
@@ -93,6 +99,12 @@ def _external_question_needs_agent_loop(question: str) -> bool:
             "상기되는",
             "KOL",
             "시장동향",
+            "웹검색",
+            "웹 검색",
+            "검색해줘",
+            "검색 결과",
+            "최신 동향",
+            "최근 동향",
         )
     )
 

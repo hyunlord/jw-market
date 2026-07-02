@@ -420,6 +420,8 @@ def _asks_hira_procedure(question: str) -> bool:
 
 
 def _asks_clinical(question: str) -> bool:
+    if _has_explicit_web_search_cue(question):
+        return False
     return any(token in question for token in ("임상", "clinical", "연구", "study", "결과"))
 
 
@@ -440,7 +442,11 @@ def _needs_external_context(question: str) -> bool:
 
 
 def _asks_web_search(question: str) -> bool:
-    if _asks_patent(question) or _asks_clinical(question) or _asks_drug_info(question) or _asks_hira(question) or _asks_hira_procedure(question):
+    if _asks_patent(question) or _asks_drug_info(question) or _asks_hira(question) or _asks_hira_procedure(question):
+        return False
+    if _has_explicit_web_search_cue(question):
+        return True
+    if _asks_clinical(question):
         return False
     return any(
         token in question
@@ -457,6 +463,22 @@ def _asks_web_search(question: str) -> bool:
             "프로모션",
             "학회",
             "가이드라인",
+        )
+    )
+
+
+def _has_explicit_web_search_cue(question: str) -> bool:
+    return any(
+        token in question
+        for token in (
+            "웹검색",
+            "웹 검색",
+            "검색해줘",
+            "검색 결과",
+            "URL",
+            "snippet",
+            "최신 동향",
+            "최근 동향",
         )
     )
 
@@ -538,7 +560,7 @@ def _needs_expanded_tools(question: str) -> bool:
         return True
     if _asks_drug_info(question):
         return True
-    return any(token in question for token in ("뉴스", "이슈", "환자", "질병", "질환", "HIRA", "진료행위", "행위코드", "수가코드", "검사", "수술", "임상", "특허", "라벨", "FDA", "디테일링", "KOL", "시장동향"))
+    return any(token in question for token in ("뉴스", "이슈", "환자", "질병", "질환", "HIRA", "진료행위", "행위코드", "수가코드", "검사", "수술", "임상", "특허", "라벨", "FDA", "디테일링", "KOL", "시장동향", "웹검색", "웹 검색", "검색해줘", "검색 결과", "최신 동향", "최근 동향"))
 
 
 def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...]) -> tuple[ToolCallPlan, ...]:
