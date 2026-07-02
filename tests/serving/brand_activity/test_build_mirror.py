@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline.scripts.deploy.brand_activity_307.build_mirror import build_mirror, verify_mirror_imports
+import pytest
+
+from pipeline.scripts.deploy.brand_activity_307.build_mirror import (
+    MirrorPlanError,
+    build_mirror,
+    verify_mirror_imports,
+)
 
 
 def test_build_mirror_contains_topic_server_and_requirements(tmp_path: Path) -> None:
@@ -36,3 +42,25 @@ def test_build_mirror_satisfies_template_service_contract(tmp_path: Path) -> Non
     build_mirror(output)
 
     verify_mirror_imports(output)
+
+
+def test_build_mirror_rejects_appledouble_python_files(tmp_path: Path) -> None:
+    """Given macOS AppleDouble metadata, When verified, Then the mirror fails before deploy."""
+    output = tmp_path / "llmops_307"
+    build_mirror(output)
+    metadata = output / "pipeline/scripts/analysis/brand_activity/auto_topic/._run_auto_topic.py"
+    metadata.write_bytes(b"\x00\x05metadata\xa3")
+
+    with pytest.raises(MirrorPlanError, match="appledouble_files"):
+        verify_mirror_imports(output)
+
+
+def test_build_mirror_rejects_non_utf8_python_sources(tmp_path: Path) -> None:
+    """Given a non-UTF-8 Python file, When verified, Then the file is reported."""
+    output = tmp_path / "llmops_307"
+    build_mirror(output)
+    bad_source = output / "pipeline/scripts/analysis/brand_activity/auto_topic/non_utf8_probe.py"
+    bad_source.write_bytes(b"VALUE = '\xa3'\n")
+
+    with pytest.raises(MirrorPlanError, match="non_utf8_files"):
+        verify_mirror_imports(output)

@@ -88,9 +88,31 @@ def build_mirror(output: Path, *, verify: bool = False) -> dict[str, int]:
 
 def verify_mirror_imports(output: Path) -> None:
     """Import deploy-critical modules and the template service contract."""
+    _verify_utf8_python_sources(output)
     _verify_pipeline_imports(output)
     _verify_template_service_contract(output)
     _verify_topic_server_without_heavy_deps(output)
+
+
+def _verify_utf8_python_sources(output: Path) -> None:
+    """Reject non-source AppleDouble files and non-UTF-8 Python sources."""
+    appledouble_files: list[str] = []
+    non_utf8_files: list[str] = []
+    for file in sorted(output.rglob("*.py")):
+        relative = str(file.relative_to(output))
+        if file.name.startswith("._"):
+            appledouble_files.append(relative)
+            continue
+        try:
+            file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            non_utf8_files.append(relative)
+    if appledouble_files or non_utf8_files:
+        details = {
+            "appledouble_files": appledouble_files,
+            "non_utf8_files": non_utf8_files,
+        }
+        raise MirrorPlanError(f"mirror Python UTF-8 check failed: {details}")
 
 
 def _verify_pipeline_imports(output: Path) -> None:
@@ -317,6 +339,7 @@ def main(
     typer.echo(f"mirror={output}")
     typer.echo(f"files={summary['files']}")
     if verify:
+        typer.echo("verify=utf8-check-ok")
         typer.echo("verify=isolated-import-ok")
         typer.echo("verify=service-contract-import-ok")
         typer.echo("verify=deps-guard-import-ok")
