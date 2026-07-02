@@ -363,7 +363,7 @@ def test_web_search_facade_renders_nested_results_as_unverified_external_section
     assert "URL/snippet 기반 미검증 웹 검색 결과" in response.markdown
 
 
-def test_genos_final_prompt_excludes_web_results_and_appends_unverified_section(monkeypatch) -> None:
+def test_genos_web_only_answer_skips_final_llm_and_appends_unverified_section(monkeypatch) -> None:
     response = MarkdownResponseBuilder().build(
         brand="리바로",
         calls=[
@@ -385,11 +385,8 @@ def test_genos_final_prompt_excludes_web_results_and_appends_unverified_section(
         ],
         sources=["web_search"],
     )
-    captured_prompts: list[str] = []
-
-    def stream_chat(_self: GenosClient, messages: list[dict[str, str]]):
-        captured_prompts.append(messages[-1]["content"])
-        yield "웹 검색 결과는 하단 미검증 섹션을 참조하세요."
+    def stream_chat(_self: GenosClient, _messages: list[dict[str, str]]):
+        raise AssertionError("web-only answers should not call the final LLM")
 
     monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
 
@@ -416,12 +413,10 @@ def test_genos_final_prompt_excludes_web_results_and_appends_unverified_section(
         )
     )
 
-    prompt = captured_prompts[0]
     body, web_section = answer.split("### 웹 검색 결과(미검증)", maxsplit=1)
-    assert "경쟁제품 디테일링 웹 스니펫" not in prompt
-    assert "https://example.com/livalo-detailing" not in prompt
     assert "경쟁제품 디테일링 웹 스니펫" not in body
     assert "https://example.com/livalo-detailing" not in body
+    assert "웹 검색 결과는 하단 웹 검색 결과(미검증) 섹션을 참조하세요." in body
     assert "경쟁제품 디테일링 웹 스니펫" in web_section
     assert "https://example.com/livalo-detailing" in web_section
 

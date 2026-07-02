@@ -555,6 +555,20 @@ def _web_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _has_web_search_rows(tool_calls: list[dict[str, Any]] | None) -> bool:
+    return bool(_web_search_unverified_section(tool_calls))
+
+
+def _is_web_search_only(tool_calls: list[dict[str, Any]] | None) -> bool:
+    calls = [call for call in tool_calls or [] if isinstance(call, dict)]
+    if not calls:
+        return False
+    for call in calls:
+        if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
+            return False
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
@@ -617,6 +631,8 @@ class GenosClient:
         allowed_numbers = tuple(str(value) for value in markdown_response.get("allowed_numbers", ()) if value is not None)
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
         fact_lookup_md = _fact_lookup_markdown(markdown_response)
+        if _is_web_search_only(tool_calls) and _has_web_search_rows(tool_calls):
+            return _append_web_search_section("", tool_calls)
         trend_fact_md = single_brand_trend_fact_markdown(fact_lookup_md, tool_calls) if _question_wants_trend_output(question) else ""
         fact_for_safety = "\n\n".join(part for part in (fact_md, trend_fact_md, file_context) if part)
         strict_numbers = strict_allowed_numbers(fact_for_safety, allowed_numbers)

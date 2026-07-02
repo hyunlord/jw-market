@@ -28,6 +28,8 @@ MFDS_PATENT_QUERY_ALIASES = {
 HIRA_DISEASE_SOURCE = "hira_disease"
 HIRA_PROCEDURE_SOURCE = "hira_procedure"
 WEB_SEARCH_SOURCE = "web_search"
+WEB_SEARCH_MAX_RESULTS = 5
+TAVILY_TIMEOUT_CAP_S = 5
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,7 @@ class ExternalApiClient:
         return self._with_source(call, HIRA_PROCEDURE_SOURCE)
 
     def web_search(self, query: str, max_results: int = 5) -> ExternalCall:
+        max_results = _bounded_web_results(max_results)
         if self.mode != "live":
             call = self._fixture_or_live("web_search", {"query": query, "max_results": str(max_results)})
             return self._with_source(call, WEB_SEARCH_SOURCE)
@@ -276,13 +279,14 @@ class ExternalApiClient:
         key = os.environ.get(TAVILY_API_KEY_ENV)
         if not key:
             return _missing_web_key("tavily", TAVILY_API_KEY_ENV, query)
+        max_results = _bounded_web_results(max_results)
         start = time.monotonic()
         try:
             response = requests.post(
                 "https://api.tavily.com/search",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"query": query, "max_results": max(1, min(max_results, 5)), "search_depth": "basic", "include_answer": False},
-                timeout=min(self.timeout_s, 10),
+                json={"query": query, "max_results": max_results, "search_depth": "basic", "include_answer": False},
+                timeout=min(self.timeout_s, TAVILY_TIMEOUT_CAP_S),
             )
             elapsed = round((time.monotonic() - start) * 1000, 1)
             response.raise_for_status()
@@ -540,6 +544,10 @@ def _int_or_none(value: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _bounded_web_results(max_results: int) -> int:
+    return max(1, min(max_results, WEB_SEARCH_MAX_RESULTS))
 
 
 def _missing_web_key(provider: str, key_env: str, query: str) -> ExternalCall:

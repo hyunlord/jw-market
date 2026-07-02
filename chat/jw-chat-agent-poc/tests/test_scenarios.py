@@ -311,6 +311,61 @@ def test_live_hira_response_preserves_request_year(monkeypatch):
     assert call.render_data["items"][0]["ptntCnt"] == "3769201"
 
 
+def test_tavily_web_search_uses_five_second_timeout_and_caps_results(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "SECRETKEY")
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
+
+    captured: dict[str, object] = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "results": [
+                        {"title": f"title-{index}", "url": f"https://example.test/{index}", "content": f"snippet-{index}"}
+                        for index in range(7)
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.post", fake_post)
+
+    call = ExternalApiClient(mode="live", timeout_s=12).web_search("리바로 pitavastatin 제약", max_results=9)
+
+    assert captured["url"] == "https://api.tavily.com/search"
+    assert captured["timeout"] == 5
+    assert captured["json"] == {"query": "리바로 pitavastatin 제약", "max_results": 5, "search_depth": "basic", "include_answer": False}
+    assert call.status == "live"
+    assert len(call.render_data["items"]) == 5
+    assert call.render_data["items"][-1]["url"] == "https://example.test/4"
+
+
+def test_tavily_web_search_timeout_is_graceful(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "SECRETKEY")
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
+
+    def fake_post(url, headers, json, timeout):
+        raise requests.Timeout("simulated web timeout")
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.post", fake_post)
+
+    call = ExternalApiClient(mode="live", timeout_s=12).web_search("리바로 pitavastatin 제약")
+
+    assert call.status == "error"
+    assert call.render_data["items"] == []
+    assert call.render_data["external_claim_policy"] == "web_results_unverified"
+    assert "simulated web timeout" in call.summary_text
+
+
 def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
     def fake_post(url, json, headers, timeout):
         assert url == "http://ct-mcp/json"
