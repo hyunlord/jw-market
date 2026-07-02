@@ -14,7 +14,13 @@ from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, S
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
-from pipeline.scripts.api.openapi_docs import DYNAMIC_MARKET_REQUEST_EXAMPLE, DYNAMIC_MARKET_RESPONSES, DYNAMIC_MARKET_TAG, FILTER_OPTIONS_RESPONSES
+from pipeline.scripts.api.openapi_docs import (
+    COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
+    DYNAMIC_MARKET_REQUEST_EXAMPLE,
+    DYNAMIC_MARKET_RESPONSES,
+    DYNAMIC_MARKET_TAG,
+    FILTER_OPTIONS_RESPONSES,
+)
 
 
 router = APIRouter()
@@ -27,10 +33,25 @@ router = APIRouter()
     description=(
         "전략뷰 ml_id/cd_market_id 또는 일반뷰 ATC4/molecule 범위를 입력받아 cache 없이 실시간으로 "
         "원인분석 payload를 재계산합니다. 응답 result는 /api/cause와 같은 root/data 구조입니다. "
-        "analysis_level의 각 차원은 차원 내 OR, 차원 간 AND로 적용됩니다."
+        "analysis_level의 각 차원은 차원 내 OR, 차원 간 AND로 적용됩니다. "
+        "전략뷰는 market_landscape(ml_id)와 competitive_dynamics(cd_market_id)를 모두 지원합니다."
     ),
     response_model=None,
-    openapi_extra={"requestBody": {"content": {"application/json": {"example": DYNAMIC_MARKET_REQUEST_EXAMPLE}}}},
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "market_landscape": {"summary": "전략 시장조망 ml_id", "value": DYNAMIC_MARKET_REQUEST_EXAMPLE},
+                        "competitive_dynamics": {
+                            "summary": "전략 경쟁구도 cd_market_id",
+                            "value": COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
+                        },
+                    }
+                }
+            }
+        }
+    },
     responses=DYNAMIC_MARKET_RESPONSES,
 )
 def dynamic_market(payload: DynamicMarketRequest) -> dict:

@@ -13,6 +13,9 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
     schema = app.openapi()
 
     assert sorted(schema["paths"]) == [
+        "/api/brand-activity/csd-timeseries",
+        "/api/brand-activity/interest-rx-matrix",
+        "/api/brand-activity/topics",
         "/api/brands",
         "/api/cause/{brand_name}",
         "/api/deep-analysis/{brand_name}",
@@ -29,9 +32,6 @@ def test_openapi_hides_internal_legacy_and_experimental_routes() -> None:
     paths = schema["paths"]
 
     hidden_paths = {
-        "/api/brand-activity/csd-timeseries",
-        "/api/brand-activity/interest-rx-matrix",
-        "/api/brand-activity/topics",
         "/api/brand-activity/topics/{scope_id}",
         "/api/dynamic-market/brand-option-check",
         "/api/market-scope/cause",
@@ -60,6 +60,45 @@ def test_shared_dynamic_routes_document_without_response_model_trimming() -> Non
         path = getattr(route, "path", "")
         if path in {"/api/cause/{brand_name}", "/api/dynamic-market", "/api/dynamic-market/filter-options"}:
             assert getattr(route, "response_model", None) is None
+
+
+def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
+    schema = app.openapi()
+
+    topics = schema["paths"]["/api/brand-activity/topics"]["post"]
+    timeseries = schema["paths"]["/api/brand-activity/csd-timeseries"]["post"]
+    matrix = schema["paths"]["/api/brand-activity/interest-rx-matrix"]["post"]
+
+    assert topics["tags"] == ["Brand-Activity"]
+    assert timeseries["tags"] == ["Brand-Activity"]
+    assert matrix["tags"] == ["Brand-Activity"]
+    assert "브랜드별 토픽 그리드" in topics["summary"]
+    assert "region=TOTAL" in timeseries["description"]
+    assert "interest×처방빈도" in matrix["summary"]
+    assert "topic_shares" in str(topics["responses"]["200"])
+    assert "market_totals" in str(timeseries["responses"]["200"])
+    assert "market_average" in str(matrix["responses"]["200"])
+
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set())
+        if "POST" in methods and path in {
+            "/api/brand-activity/topics",
+            "/api/brand-activity/csd-timeseries",
+            "/api/brand-activity/interest-rx-matrix",
+        }:
+            assert getattr(route, "response_model", None) is None
+
+
+def test_dynamic_market_documents_competitive_dynamics_contract() -> None:
+    schema = app.openapi()
+
+    operation = schema["paths"]["/api/dynamic-market"]["post"]
+    payload = str(operation)
+
+    assert "competitive_dynamics" in payload
+    assert "cd_market_id" in payload
+    assert "cd_001" in payload
 
 
 def test_market_filter_atc_options_keeps_existing_response_model_and_docs() -> None:

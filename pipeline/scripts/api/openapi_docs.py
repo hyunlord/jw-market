@@ -15,6 +15,7 @@ from typing import Final
 
 PORTAL_CORE_TAG: Final = "Portal-Core"
 DYNAMIC_MARKET_TAG: Final = "Dynamic-Market"
+BRAND_ACTIVITY_TAG: Final = "Brand-Activity"
 META_TAG: Final = "Meta"
 
 
@@ -108,6 +109,19 @@ DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
 }
 
 
+COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
+    "source": "ubist",
+    "measure": "sales",
+    "filters": {
+        "focus_brand_key": "리바로",
+        "cd_market_id": "cd_001",
+        "view_kind": "competitive_dynamics",
+        "analysis_level": {"ubist": {"atc4": ["C10A1"]}},
+    },
+    "options": {"top_n": 20},
+}
+
+
 DYNAMIC_MARKET_RESPONSES: Final = {
     200: {
         "description": (
@@ -123,11 +137,274 @@ DYNAMIC_MARKET_RESPONSES: Final = {
                         "result": CAUSE_RESPONSE_SCHEMA,
                     },
                 },
-                "example": {"status": "SUCCESS", "result": CAUSE_RESPONSE_EXAMPLE},
+                "examples": {
+                    "market_landscape": {"summary": "전략 시장조망", "value": {"status": "SUCCESS", "result": CAUSE_RESPONSE_EXAMPLE}},
+                    "competitive_dynamics": {
+                        "summary": "전략 경쟁구도",
+                        "value": {
+                            "status": "SUCCESS",
+                            "result": {
+                                **CAUSE_RESPONSE_EXAMPLE,
+                                "view": "competitive_dynamics",
+                                "market_id": "cd_001",
+                                "markets": [{"market_id": "cd_001", "is_primary": True}],
+                            },
+                        },
+                    },
+                },
             }
         },
     },
     400: {"description": "필터 조합, source, measure, market id가 유효하지 않음"},
+}
+
+
+BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
+    "atc4": ["C10A1"],
+    "molecule": ["PITAVASTATIN"],
+    "channel": ["TOTAL"],
+}
+
+
+BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE: Final = {
+    "view": "general",
+    "market_id": "C10A1",
+    "selected_brand": "리바로",
+    "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
+    "visit_location": "전체",
+    "specialty": "전체",
+    "top_n": 5,
+}
+
+
+BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
+    "view": "general",
+    "market_id": "C10A1",
+    "selected_brand": "리바로",
+    "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
+    "mode": "absolute",
+    "window": {"start": "2024Q1", "end": "2025Q4"},
+}
+
+
+BRAND_ACTIVITY_INTEREST_RX_REQUEST_EXAMPLE: Final = {
+    "view": "general",
+    "market_id": "C10A1",
+    "selected_brand": "리바로",
+    "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
+    "visit_location": "전체",
+    "specialty": "전체",
+    "period_start": "2024-01",
+    "period_end": "2025-12",
+    "weights": {
+        "interest": {"VERY USEFUL": 1.0, "SOMEWHAT USEFUL": 0.5, "NOT AT ALL": 0.0},
+        "rx_frequency": {"frequently": 1.0, "occasionally": 0.5},
+    },
+}
+
+
+BRAND_ACTIVITY_SCOPE_SCHEMA: Final = {
+    "type": "object",
+    "description": "요청 view/시장/필터를 서버가 해석한 결과입니다. 화면의 적용 필터 칩과 차트 캡션에 사용합니다.",
+    "properties": {
+        "view": {"type": "string", "description": "general 또는 strategic_ml. 현재 CSD 서비스는 strategic_cd를 런타임에서 지원하지 않습니다."},
+        "market_id": {"type": "string", "description": "해석된 시장 id. 일반뷰는 ATC4, 전략뷰는 ml_id입니다."},
+        "market_name": {"type": "string", "description": "시장 표시명."},
+        "resolved_market": {"type": "object", "description": "type/market_id/market_label/source로 구성된 resolved market echo."},
+        "selected_brand": {"description": "선택 브랜드 또는 선택 브랜드 메타."},
+        "applied_filter": {"type": "object", "description": "서버가 실제 적용한 필터."},
+        "applied_filters": {"type": "object", "description": "applied_filter와 동일한 포탈 호환 alias."},
+    },
+}
+
+
+BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
+    200: {
+        "description": "브랜드별 토픽 그리드. mock v0.1.7의 topics 계약을 운영 backend에 포팅한 공유 API입니다.",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["data"],
+                    "properties": {
+                        "data": {
+                            "type": ["object", "null"],
+                            "description": "data.scope + data.brands. 시장 미해석 시 data=null과 reason을 반환할 수 있습니다.",
+                            "properties": {
+                                "scope": BRAND_ACTIVITY_SCOPE_SCHEMA,
+                                "brands": {
+                                    "type": "array",
+                                    "description": "브랜드 카드 목록. topic_shares 합 + etc_pct = 100입니다.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "brand_key": {"type": "string", "description": "브랜드 식별 키."},
+                                            "brand_name": {"type": "string", "description": "브랜드 표시명."},
+                                            "is_jw": {"type": "boolean", "description": "JW 자사 브랜드 여부."},
+                                            "is_selected": {"type": "boolean", "description": "선택 브랜드 여부."},
+                                            "event_count": {"type": "integer", "description": "키워드 설문 응답 행 수 N."},
+                                            "topic_shares": {"type": "array", "description": "상위 토픽 막대 목록(label/share_pct/topic_id/rank)."},
+                                            "topics": {"type": "array", "description": "topic_shares와 같은 포탈 호환 alias."},
+                                            "etc_pct": {"type": "number", "description": "상위 토픽 외 기타 비율."},
+                                            "brand_specific_topics": {"type": "array", "description": "토픽 정의/근거 행 수를 포함한 상세 목록."},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
+                    },
+                },
+                "example": {
+                    "data": {
+                        "scope": {"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "top_n": 5},
+                        "brands": [
+                            {
+                                "brand_key": "리바로",
+                                "brand_name": "리바로",
+                                "is_jw": True,
+                                "is_selected": True,
+                                "event_count": 128,
+                                "topic_shares": [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성/NODM", "share_pct": 62.5}],
+                                "topics": [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성/NODM", "share_pct": 62.5}],
+                                "etc_pct": 37.5,
+                                "brand_specific_topics": [
+                                    {
+                                        "topic_id": "T01",
+                                        "label": "당뇨 안전성/NODM",
+                                        "definition": "피타바스타틴 안전성 메시지",
+                                        "share_pct": 62.5,
+                                        "row_count": 80,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        },
+    },
+    400: {"description": "view/market_id/selected_brand/filter 조합이 유효하지 않음"},
+}
+
+
+BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
+    200: {
+        "description": (
+            "활동·처방 추세. CSD 활동량은 csd_channel_dynamics_stage에서 jw_channel='TOTAL'(region=TOTAL)만 사용하며, "
+            "처방 지표는 IQVIA mart의 unit/counting_unit/dosage_unit을 같은 분기축으로 맞춥니다."
+        ),
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["data"],
+                    "properties": {
+                        "data": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "scope": {
+                                    **BRAND_ACTIVITY_SCOPE_SCHEMA,
+                                    "properties": {
+                                        **BRAND_ACTIVITY_SCOPE_SCHEMA["properties"],
+                                        "csd_market": {"type": "string", "description": "mart product code overlap으로 결정한 CSD 시장 표시명."},
+                                        "quarters": {"type": "array", "items": {"type": "string"}, "description": "분기축. 예: 2025Q4."},
+                                        "mode": {"type": "string", "description": "absolute 또는 share."},
+                                    },
+                                },
+                                "brands": {
+                                    "type": "array",
+                                    "description": "브랜드별 activity/Rx series. is_selected 브랜드는 굵게, is_jw는 강조 표시 대상입니다.",
+                                },
+                                "market_totals": {"type": "object", "description": "activity와 Rx measure별 시장 총합 series."},
+                            },
+                        },
+                        "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
+                    },
+                },
+                "example": {
+                    "data": {
+                        "scope": {
+                            "view": "general",
+                            "market_id": "C10A1",
+                            "csd_market": "LIVALO",
+                            "quarters": ["2025Q1", "2025Q2"],
+                            "mode": "absolute",
+                        },
+                        "brands": [
+                            {
+                                "brand_key": "리바로",
+                                "brand_name": "리바로",
+                                "is_selected": True,
+                                "is_jw": True,
+                                "csd_matched": True,
+                                "series": {
+                                    "activity": {"source": "csd", "absolute": {"2025Q1": 120.0}, "ratio": {"2025Q1": 44.1}},
+                                    "unit": {"source": "iqvia_nsa", "absolute": {"2025Q1": 1000.0}, "ratio": {"2025Q1": 20.5}},
+                                },
+                            }
+                        ],
+                        "market_totals": {"activity": {"2025Q1": 272.0}},
+                    }
+                },
+            }
+        },
+    },
+    400: {"description": "view/market_id/selected_brand/filter/window 조합이 유효하지 않음"},
+}
+
+
+BRAND_ACTIVITY_INTEREST_RX_RESPONSES: Final = {
+    200: {
+        "description": (
+            "interest×처방빈도 버블. X=rx_frequency_score, Y=interest_score, 버블 면적=event_count. "
+            "market_average는 차트 점선 십자 기준선입니다."
+        ),
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["data"],
+                    "properties": {
+                        "data": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "scope": BRAND_ACTIVITY_SCOPE_SCHEMA,
+                                "filters_applied": {"type": "object", "description": "visit_location/specialty/period window 적용 결과."},
+                                "period": {"type": "object", "description": "키워드·CSD 공통 사용 가능 기간."},
+                                "levels": {"type": "object", "description": "interest/rx_frequency/prescription_evolution 레벨 목록."},
+                                "weights": {"type": "object", "description": "score 계산에 사용한 가중치. 미지정 시 서버 기본값."},
+                                "brands": {"type": "array", "description": "브랜드별 distribution과 score."},
+                                "market_average": {"type": "object", "description": "시장 평균 interest/rx score."},
+                            },
+                        },
+                        "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
+                    },
+                },
+                "example": {
+                    "data": {
+                        "scope": {"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "csd_market": "LIVALO"},
+                        "period": {"start": "2024-01", "end": "2025-12", "source": "keyword_and_csd"},
+                        "brands": [
+                            {
+                                "brand_key": "리바로",
+                                "brand_name": "리바로",
+                                "is_selected": True,
+                                "is_jw": True,
+                                "event_count": 42,
+                                "interest_distribution": {"VERY USEFUL": 20, "SOMEWHAT USEFUL": 18, "NOT AT ALL": 4},
+                                "rx_frequency_distribution": {"frequently": 12, "occasionally": 25},
+                                "interest_score": 0.69,
+                                "rx_frequency_score": 0.55,
+                            }
+                        ],
+                        "market_average": {"interest_score": 0.58, "rx_frequency_score": 0.47},
+                    }
+                },
+            }
+        },
+    },
+    400: {"description": "view/market_id/selected_brand/filter/period 조합이 유효하지 않음"},
 }
 
 
