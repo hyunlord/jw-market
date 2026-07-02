@@ -89,6 +89,9 @@ class MetricAggregator:
                 latest_period=item.latest_period,
                 latest_value=item.latest_value,
                 monthly_series=item.monthly_series,
+                ubist_channel_by_display=item.ubist_channel_by_display,
+                ubist_channel_by_code=item.ubist_channel_by_code,
+                channel_specialty_matrix=item.channel_specialty_matrix,
             )
             for index, item in enumerate(sorted(brand_metrics, key=lambda row: (-row.total_value, row.brand_key)), start=1)
         )
@@ -211,7 +214,7 @@ class MetricAggregator:
         return db.fetch_all(
             f"""
             SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
-                   ubist_channel_by_display, ubist_channel_by_code, channel_specialty_matrix
+                   channel_specialty_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s

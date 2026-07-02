@@ -14,7 +14,7 @@ from pipeline.scripts.api.dynamic_market import resolvers
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, expand_atc4_for_source
 from pipeline.scripts.api.dynamic_market import strategic_runtime
 from pipeline.scripts.etl import build_cache_cause as cause_builder
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, BrandRef, MarketDefinition, PeriodRange
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
 from pipeline.scripts.api.routes import dynamic_market as dynamic_market_route
 
@@ -51,6 +51,47 @@ def test_aggregate_rows_when_period_range_limits_history() -> None:
 
     assert monthly_totals == {"2026-02": 40.0, "2026-03": 50.0}
     assert [item.total_value for item in brand_metrics] == [60.0, 30.0]
+
+
+def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        assert "ubist_channel_by_display" not in sql
+        assert "ubist_channel_by_code" not in sql
+        return [
+            {
+                "brand_key": "a",
+                "brand_name": "A",
+                "atc4_code": "C10A1",
+                "source": "ubist",
+                "measure": "sales",
+                "unit_label": "KRW",
+                "raw_value_history": json.dumps({"2026-05": 100.0}),
+                "channel_specialty_matrix": json.dumps(
+                    {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
+                    ensure_ascii=False,
+                ),
+            }
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("a", "A", "C10A1"),),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+    )
+
+    assert "channel_specialty_matrix" in str(captured["sql"])
+    assert captured["params"] == ("ubist", "sales", "a", "C10A1")
+    assert metrics.all_brands[0].channel_specialty_matrix == {
+        "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}
+    }
 
 
 def test_compose_when_definition_and_metrics_are_ready() -> None:
