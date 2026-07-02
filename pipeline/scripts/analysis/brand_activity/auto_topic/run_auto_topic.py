@@ -84,6 +84,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store_db import (
     save_artifacts,
     store_summary_json,
 )
+from pipeline.scripts.analysis.brand_activity.auto_topic.verification import write_verification_file  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.viz import build_viz_payload, render_html  # noqa: E402
 
 
@@ -251,6 +252,7 @@ def run_pipeline(
         "open_questions": len(_open_questions(alias_source, should_execute)),
     }
     write_json(run_audit_dir / "run_summary.json", run_summary)
+    write_verification_file(run_audit_dir)
     if should_execute and save_to_db:
         db_summary = _save_run_to_db(run_audit_dir, stage_schema, zip_result.sha256)
         write_json(run_audit_dir / "db_save_summary.json", db_summary)

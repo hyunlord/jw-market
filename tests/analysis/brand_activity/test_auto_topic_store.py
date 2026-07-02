@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store
+from pipeline.scripts.analysis.brand_activity.auto_topic import verification
+from pipeline.scripts.analysis.brand_activity.auto_topic.audit import write_json
 
 
 def _artifact_payload() -> topic_store.TopicArtifacts:
@@ -117,3 +119,110 @@ def test_load_artifacts_requires_existing_audit_files(tmp_path: Path) -> None:
     """Given an incomplete audit directory, When loading artifacts, Then the missing file is explicit."""
     with pytest.raises(topic_store.TopicStoreError, match="run_summary.json"):
         topic_store.load_artifacts(tmp_path)
+
+
+def test_build_verification_uses_measured_call_log_tokens() -> None:
+    """Given current audit files, When verification is built, Then measured route and token totals survive."""
+    run_summary = {
+        "tag": "brand_activity_replay_20260702_160109",
+        "executed_call_count": 2,
+        "raw_text_leak_count": 0,
+        "quality_grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0},
+        "complex_label_count": 0,
+        "brand_specific_duplicate_pair_count": 0,
+    }
+    call_log = [
+        {
+            "status": "ok",
+            "backend": "direct_serving",
+            "endpoint": "http://llmops-gateway-api-service:8080/rep/serving/163/chat/completions",
+            "model_id": "genos-flash",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            "retry": {"retry_count": 1},
+        },
+        {
+            "status": "ok",
+            "backend": "direct_serving",
+            "endpoint": "http://llmops-gateway-api-service:8080/rep/serving/163/chat/completions",
+            "model_id": "genos-flash",
+            "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+            "retry": {"retry_count": 0},
+        },
+    ]
+
+    payload = verification.build_verification(
+        run_summary=run_summary,
+        call_log=call_log,
+        quality_summary={"grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0}},
+        label_quality_summary={"complex_label_count": 0, "brand_specific_duplicate_pair_count": 0},
+    )
+
+    assert payload["executed_call_count"] == 2
+    assert payload["prompt_tokens"] == 30
+    assert payload["completion_tokens"] == 5
+    assert payload["estimated_usd_vertex_flash_proxy"] == 0.0
+    assert payload["backend_counts"] == {"direct_serving": 2}
+    assert payload["model_counts"] == {"genos-flash": 2}
+    assert payload["status_counts"] == {"ok": 2}
+    assert payload["retry_count"] == 1
+    assert payload["serving_route"] == {
+        "backend": "direct_serving",
+        "gateway_used": True,
+        "manual_hosts_used": False,
+        "model_id": "genos-flash",
+    }
+
+
+def test_derive_verification_file_unblocks_artifact_loading(tmp_path: Path) -> None:
+    """Given a current audit dir without legacy verification, When derived, Then store loading works."""
+    write_json(
+        tmp_path / "run_summary.json",
+        {
+            "tag": "brand_activity_replay_20260702_160109",
+            "executed_call_count": 1,
+            "raw_text_leak_count": 0,
+            "quality_grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0},
+        },
+    )
+    write_json(
+        tmp_path / "call_log_sanitized.json",
+        [
+            {
+                "status": "ok",
+                "backend": "direct_serving",
+                "model_id": "genos-flash",
+                "serving_id": "163",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 25},
+                "retry": {"retry_count": 0},
+            }
+        ],
+    )
+    write_json(tmp_path / "quality_summary.json", {"grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0}})
+    write_json(tmp_path / "label_quality_summary.json", {"complex_label_count": 0, "brand_specific_duplicate_pair_count": 0})
+    write_json(tmp_path / "brand_results_sanitized.json", {})
+    write_json(
+        tmp_path / "viz_payload.json",
+        {
+            "markets": [
+                {
+                    "scope_id": "atc4:A02B2",
+                    "scope_key": "A02B2",
+                    "display_name": "PPI Market",
+                    "atc4_values": ["A02B2"],
+                    "quality_grade": "A",
+                    "axis_row_count": 10,
+                }
+            ],
+            "brand_results": [],
+        },
+    )
+    write_json(tmp_path / "axis_results_sanitized.json", {"A02B2": {"scope_id": "atc4:A02B2", "source_row_count": 10, "topics": []}})
+
+    verification.write_verification_file(tmp_path, derived_post_hoc=True)
+    artifacts = topic_store.load_artifacts(tmp_path)
+    run = topic_store.build_run_record(artifacts, artifact_sha256="18d57e3071f046527570e4ee6667426e76df58fc0c29557bb8a03d67b87d8ebc")
+
+    assert artifacts.verification["derived_post_hoc"] is True
+    assert run.total_prompt_tokens == 100
+    assert run.total_completion_tokens == 25
+    assert run.route == "direct_serving"
