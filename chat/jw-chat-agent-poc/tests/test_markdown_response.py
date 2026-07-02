@@ -867,8 +867,7 @@ def test_source_block_renders_data_period_from_call_series() -> None:
 
     assert "- 데이터: UBIST (2025-07~2026-04)" in block
     assert (
-        "- 데이터 상세: UBIST — 기간 2025-07~2026-04, market_id C10A1, "
-        "market_name 이상지질혈증, view market_landscape, denominator_basis market_landscape rows 470개"
+        "- 데이터 상세: UBIST — 기간 2025-07~2026-04, 시장: 이상지질혈증 (market_landscape, 분모 470)"
     ) in block
 
 
@@ -904,9 +903,105 @@ def test_source_block_renders_trend_data_detail_from_render_metadata() -> None:
 
     assert "- 데이터: UBIST (2023-Q3~2025-Q4)" in block
     assert (
-        "- 데이터 상세: UBIST — 기간 2023-Q3~2025-Q4, market_id B03A, "
-        "market_name 철분제, view market_landscape, denominator_basis market_landscape rows 516개"
+        "- 데이터 상세: UBIST — 기간 2023-Q3~2025-Q4, 시장: 철분제 (market_landscape, 분모 516)"
     ) in block
+
+
+def test_source_block_uses_confirmed_view_mapping_for_strategy_cache_market() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "brand": "리바로",
+                    "metric": "sales",
+                    "period": "2026-04",
+                    "market_id": "strategy_006",
+                    "market_name": "리바로 리바로젯",
+                    "total_brands_in_market": 516,
+                    "sales_억원": 84.93,
+                },
+            }
+        ],
+        ["cache"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (market_landscape, 분모 516)" in block
+    assert "view strategic" not in block
+
+
+def test_source_block_uses_confirmed_view_mapping_for_market_landscape_query_market() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_market_scope",
+                "source": "UBIST",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "period": "2026-04",
+                    "market_id": "ml_006",
+                    "market_name": "리바로 리바로젯",
+                    "total_brands_in_market": 470,
+                },
+            }
+        ],
+        ["UBIST"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (market_landscape, 분모 470)" in block
+
+
+def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_market() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_market_scope",
+                "source": "UBIST",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "period": "2026-04",
+                    "market_id": "cd_006",
+                    "market_name": "리바로 리바로젯",
+                    "total_brands_in_market": 104,
+                },
+            }
+        ],
+        ["UBIST"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (competitive_dynamics, 분모 104)" in block
+
+
+def test_source_block_omits_view_name_for_unconfirmed_market() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "period": "2026-04",
+                    "market_id": "unknown_999",
+                    "market_name": "미확정 시장",
+                    "total_brands_in_market": 17,
+                },
+            }
+        ],
+        ["UBIST"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 미확정 시장 (분모 17)" in block
+    assert "market_landscape" not in block
 
 
 def test_completion_series_call_does_not_render_per_call_brand_series_table() -> None:

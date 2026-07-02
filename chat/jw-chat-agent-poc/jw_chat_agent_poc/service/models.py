@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ChatRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=0)
     document_paths: tuple[str, ...] = ()
     file_context: str | None = None
     external_mode: str = "live"

@@ -98,6 +98,8 @@ def create_app(
     @app.post("/chat", response_model=ChatAccepted)
     def chat(request: ChatRequest) -> ChatAccepted:
         documents = tuple(Path(path) for path in request.document_paths)
+        if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
+            raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
         result = _answer_question(
             store,
             resolver,
@@ -119,6 +121,8 @@ def create_app(
     @app.post("/chat/answer", response_model=ChatAnswer)
     def chat_answer(request: ChatRequest) -> ChatAnswer:
         documents = tuple(Path(path) for path in request.document_paths)
+        if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
+            raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
         item = _answer_question(
             store,
             resolver,
@@ -216,19 +220,45 @@ def _answer_question(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     state = store.conversations.get_or_create(conversation_id)
-    result = _answer_with_conversation(
-        store,
-        market_scope_resolver,
-        agent_factory,
-        state.conversation_id,
-        question,
-        external_mode,
-        documents,
-        use_direct_agent_loop=use_direct_agent_loop,
-    )
-    result = _attach_file_context(result, file_context)
+    if not question.strip() and _has_file_signal(documents, file_context):
+        result = _file_only_ready_result(documents, file_context)
+    else:
+        result = _answer_with_conversation(
+            store,
+            market_scope_resolver,
+            agent_factory,
+            state.conversation_id,
+            question,
+            external_mode,
+            documents,
+            use_direct_agent_loop=use_direct_agent_loop,
+        )
+        result = _attach_file_context(result, file_context)
     store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
     return {"question": question, "result": result, "conversation_id": state.conversation_id}
+
+
+def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
+    return bool(documents) or bool((file_context or "").strip())
+
+
+def _file_only_ready_result(documents: list[Path] | None, file_context: str | None) -> dict:
+    file_names = [path.name for path in documents or []]
+    count = len(file_names)
+    count_text = f"{count}개" if count else ""
+    subject = f"파일 {count_text}".strip()
+    answer = f"{subject} 저장 완료했습니다. 이 세션에서 질문하면 업로드한 파일을 참조해 답변합니다."
+    if file_names:
+        answer = f"{answer}\n\n" + "\n".join(f"- {name}" for name in file_names)
+    if file_context and not file_names:
+        answer = f"{answer}\n\n- 업로드 파일"
+    return {
+        "answer": cleanup_markdown_answer(answer),
+        "sources": ["file_upload"],
+        "tool_calls": [],
+        "file_only_ready": True,
+        "file_names": file_names,
+    }
 
 
 def _attach_file_context(result: dict, file_context: str | None) -> dict:
@@ -449,6 +479,25 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None)
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     client = GenosClient()
     timing = ensure_timing(result)
+    if result.get("file_only_ready"):
+        timing_payload = finish(timing)
+        answer = cleanup_markdown_answer(str(result.get("answer") or ""))
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=[],
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=[],
+            timing=timing_payload,
+            trace=trace,
+            sources=tuple(result.get("sources", ())),
+            conversation_id=conversation_id,
+        )
     file_context_fact = _file_context_fact(result)
     try:
         with stage(timing, "answer_generation_total", "GenOS expression plus safety"):

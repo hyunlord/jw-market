@@ -30,6 +30,19 @@ RenderData = dict[str, Any]
 RequiredFactCollector = Callable[[RenderData, str], tuple["AxisFact", ...]]
 HiraRow = tuple[Any, Any, Any, Any, str]
 TOP_TREND_DELTA_WITHHELD: Final[str] = "점유율 변화 표시 보류(시작/최신 MS 또는 반올림 정합 미확인)"
+CONFIRMED_MARKET_VIEW_BY_ID: Final[dict[str, str]] = {
+    **{f"strategy_{idx:03d}": "market_landscape" for idx in range(1, 17)},
+    **{f"ml_{idx:03d}": "market_landscape" for idx in range(1, 17)},
+    **{f"cd_{idx:03d}": "competitive_dynamics" for idx in range(1, 20)},
+}
+VIEW_NAME_BY_INTERNAL_LABEL: Final[dict[str, str]] = {
+    "market_landscape": "market_landscape",
+    "strategic_ml": "market_landscape",
+    "competitive_dynamics": "competitive_dynamics",
+    "strategic_cd": "competitive_dynamics",
+    "general": "general",
+    "general_view": "general",
+}
 
 
 class RequiredAxis(StrEnum):
@@ -1642,21 +1655,13 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
         details.append(f"기간 {periods}")
     query_specs = tuple(_query_specs(calls))
     market = next((str(spec.get("market") or spec.get("market_id")) for spec in query_specs if spec.get("market") or spec.get("market_id")), "")
-    view = next((str(spec.get("view") or spec.get("view_type")) for spec in query_specs if spec.get("view") or spec.get("view_type")), "")
-    if not view:
-        view = _view_from_market_code(market)
     market_name = _first_market_scope_value(calls, query_specs, "market_name")
-    market_definition = _first_market_scope_value(calls, query_specs, "market_definition")
+    view = _market_view_name(query_specs, market)
     denominator = _first_market_scope_value(calls, query_specs, "total_brands_in_market")
-    if market:
-        extra_details.append(f"market_id {market}")
-    if market_name:
-        extra_details.append(f"market_name {market_name}")
-    if view:
-        extra_details.append(f"view {view}")
-    denominator_basis = _denominator_basis(view, market, denominator) if market or view else ""
-    if denominator_basis:
-        extra_details.append(f"denominator_basis {denominator_basis}")
+    market_detail = _market_detail_text(market=market, market_name=market_name, view=view, denominator=denominator)
+    if market_detail:
+        extra_details.append(market_detail)
+    market_definition = _first_market_scope_value(calls, query_specs, "market_definition")
     if market_definition:
         extra_details.append(f"market_definition {market_definition}")
     if not extra_details:
@@ -1666,14 +1671,25 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
     return [("데이터 상세", f"{' / '.join(data_labels)}{suffix}")]
 
 
-def _view_from_market_code(market: str) -> str:
-    if market.startswith(("ml_", "strategy_")):
-        return "market_landscape"
-    if market.startswith("cd_"):
-        return "competitive_dynamics"
-    if market.startswith("general_"):
-        return "general_view"
-    return ""
+def _market_view_name(query_specs: tuple[dict[str, Any], ...], market: str) -> str:
+    explicit = next((str(spec.get("view") or spec.get("view_type")) for spec in query_specs if spec.get("view") or spec.get("view_type")), "")
+    if explicit:
+        return VIEW_NAME_BY_INTERNAL_LABEL.get(explicit, explicit)
+    return CONFIRMED_MARKET_VIEW_BY_ID.get(market, "")
+
+
+def _market_detail_text(*, market: str, market_name: str, view: str, denominator: Any) -> str:
+    label = market_name or market
+    if not label:
+        return ""
+    qualifiers: list[str] = []
+    if view:
+        qualifiers.append(view)
+    if denominator:
+        qualifiers.append(f"분모 {denominator}")
+    if qualifiers:
+        return f"시장: {label} ({', '.join(qualifiers)})"
+    return f"시장: {label}"
 
 
 def _first_market_scope_value(calls: list[dict[str, Any]], specs: tuple[dict[str, Any], ...], key: str) -> Any:
@@ -1960,6 +1976,11 @@ def _query_specs(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "source": data.get("source_label") or call.get("source"),
                     "view": data.get("view") or data.get("view_type"),
                     "market": data.get("market") or data.get("market_id"),
+                    "market_name": data.get("market_name"),
+                    "total_brands_in_market": data.get("total_brands_in_market")
+                    or data.get("denominator")
+                    or data.get("rank_denominator")
+                    or data.get("market_brand_count"),
                 }.items()
                 if value
             }

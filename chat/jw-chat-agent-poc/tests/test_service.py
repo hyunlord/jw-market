@@ -140,6 +140,61 @@ def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypat
     assert FakeAgent.calls == [("리바로 경쟁 구도 변화", "live")]
 
 
+def test_answer_question_returns_deterministic_file_only_ready_without_agent() -> None:
+    def fail_factory(*, external_mode: str = "live"):
+        raise AssertionError("file-only empty questions must not enter embedding or planner paths")
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        fail_factory,
+        "   ",
+        "live",
+        None,
+        documents=[Path("/tmp/A.pdf"), Path("/tmp/B.xlsx")],
+        use_direct_agent_loop=True,
+    )
+
+    result = item["result"]
+    assert result["file_only_ready"] is True
+    assert result["file_names"] == ["A.pdf", "B.xlsx"]
+    assert "파일 2개 저장 완료" in result["answer"]
+    assert "A.pdf" in result["answer"]
+    assert "B.xlsx" in result["answer"]
+
+
+def test_chat_rejects_empty_question_without_files() -> None:
+    client = TestClient(create_app(agent_factory=_fake_agent_factory))
+
+    response = client.post("/chat", json={"question": "   "})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "질문 또는 파일 업로드가 필요합니다."
+
+
+def test_chat_answer_accepts_empty_question_when_files_exist(monkeypatch) -> None:
+    def fail_factory(*, external_mode: str = "live"):
+        raise AssertionError("file-only empty questions must not call the agent")
+
+    def fail_stream(*_args, **_kwargs):
+        raise AssertionError("file-only ready message must not call GenOS final synthesis")
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", fail_stream)
+    client = TestClient(create_app(agent_factory=fail_factory))
+
+    response = client.post(
+        "/chat/answer",
+        json={"question": "   ", "document_paths": ["/tmp/A.pdf", "/tmp/B.xlsx"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sources"] == ["file_upload"]
+    assert "파일 2개 저장 완료" in body["text"]
+    assert "A.pdf" in body["text"]
+    assert "B.xlsx" in body["text"]
+
+
 def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
