@@ -99,13 +99,14 @@ def build_strategic_payload(
     strategic_brand = _strategic_brand_catalog()
     if has_runtime_filter:
         _clear_cause_builder_runtime_caches()
+    response_market_id = _response_market_id(market_kind, view_source_id)
     with strategic_channel_totals_context(filtered_rows):
         raw_payload = cause_builder.build_response(
             brand_row=brand_row,
             market_row=market_row,
             sibling_rows=filtered_rows,
             view_type=_view_type(market_kind),
-            market_id=_response_market_id(market_kind, view_source_id),
+            market_id=response_market_id,
             source=source_api,
             measure=measure,
             view_source_id=view_source_id,
@@ -117,6 +118,7 @@ def build_strategic_payload(
     composed = compose_cached_json(raw_payload, measure=measure)
     if not isinstance(composed, dict):
         raise DynamicMarketInputError("strategic payload composition did not return an object")
+    composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
     return composed
 
 

@@ -494,6 +494,7 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
 
     assert result["data"]["analysis_levels"]["levels"] == ["Class"]
     assert result["data"]["kpi"]["target_rank"] == 3
+    assert result["markets"] == [{"market_id": "strategy_006", "is_primary": True}]
     assert captured["brand_row"]["brand_name"] == "리바로젯"
     assert captured["market_id"] == "strategy_006"
     assert captured["source"] == "UBIST"
