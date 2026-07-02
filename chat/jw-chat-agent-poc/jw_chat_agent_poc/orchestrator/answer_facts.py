@@ -906,7 +906,7 @@ def _call_fact_block(
     if "patent" in tool or "orangebook" in tool:
         return _patent_facts(data)
     if tool == "web_search" or str(call.get("source") or "") == "web_search":
-        return _web_search_facts(data)
+        return ""
     return _generic_facts(tool, data)
 
 
@@ -1617,7 +1617,6 @@ def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
     rows.extend(_hira_source_rows(calls))
     rows.extend(_hira_procedure_source_rows(calls))
     rows.extend(_external_source_rows(calls))
-    rows.extend(_web_search_source_rows(calls))
     rows.extend(_fallback_source_rows(sources, rows))
     if not rows:
         return ""

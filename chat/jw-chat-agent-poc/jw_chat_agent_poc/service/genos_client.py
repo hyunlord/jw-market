@@ -11,7 +11,7 @@ import requests
 
 from jw_chat_agent_poc.genos_config import resolve_final_genos_base_url, resolve_final_genos_token
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
-from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels
+from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels, table
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
@@ -502,6 +502,59 @@ def _append_uploaded_file_source(answer: str, file_context: str) -> str:
     return cleanup_markdown_answer("\n\n".join((answer, source_block)))
 
 
+def _append_web_search_section(answer: str, tool_calls: list[dict[str, Any]] | None) -> str:
+    section = _web_search_unverified_section(tool_calls)
+    if not section:
+        return answer
+    body = _ensure_web_search_reference(answer)
+    return cleanup_markdown_answer("\n\n".join((body, section)))
+
+
+def _ensure_web_search_reference(answer: str) -> str:
+    reference = "웹 검색 결과는 하단 웹 검색 결과(미검증) 섹션을 참조하세요."
+    if reference in answer:
+        return answer
+    marker = re.search(r"\n##\s*출처\b", answer)
+    if marker:
+        before = answer[: marker.start()].rstrip()
+        after = answer[marker.start() :].lstrip()
+        return cleanup_markdown_answer(f"{before}\n\n{reference}\n\n{after}")
+    return cleanup_markdown_answer("\n\n".join((answer, reference)))
+
+
+def _web_search_unverified_section(tool_calls: list[dict[str, Any]] | None) -> str:
+    rows: list[tuple[str, str, str]] = []
+    for call in tool_calls or []:
+        if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        for item in _web_search_items(data):
+            rows.append((str(item.get("title") or "-"), str(item.get("url") or "-"), str(item.get("snippet") or "-")))
+    if not rows:
+        return ""
+    return table("### 웹 검색 결과(미검증)", ("제목", "URL", "스니펫"), tuple(rows[:5]))
+
+
+def _web_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    direct = data.get("items")
+    if isinstance(direct, list):
+        return [item for item in direct if isinstance(item, dict)]
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for call in calls:
+        render_data = call.get("render_data") if isinstance(call, dict) else None
+        if not isinstance(render_data, dict):
+            continue
+        nested = render_data.get("items")
+        if isinstance(nested, list):
+            rows.extend(item for item in nested if isinstance(item, dict))
+    return rows
+
+
 @dataclass(frozen=True, slots=True)
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
@@ -650,7 +703,8 @@ class GenosClient:
         answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_deterministic_source_block(answer, fact_md)
-        return _append_uploaded_file_source(answer, file_context)
+        answer = _append_uploaded_file_source(answer, file_context)
+        return _append_web_search_section(answer, tool_calls)
 
     @staticmethod
     def _markdown_messages(

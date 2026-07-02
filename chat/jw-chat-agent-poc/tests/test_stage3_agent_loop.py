@@ -10,7 +10,7 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
-from jw_chat_agent_poc.agent_loop.external_tools import clinical_call
+from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.router import BQRouter
@@ -896,6 +896,18 @@ def test_genos_planner_routes_explicit_web_search_words_before_llm() -> None:
         decision = planner.decide(question, (), (), ("리바로",), ("2026-04",))
 
         assert [call.name for call in decision.tool_calls] == ["web_search"]
+
+
+def test_web_search_query_adds_pharma_brand_and_molecule_context() -> None:
+    @dataclass(frozen=True, slots=True)
+    class Resolution:
+        canonical_brand: str
+        molecule_en: tuple[str, ...]
+        is_combo: bool = False
+
+    query = _web_search_query("경쟁제품 최근 동향 검색해줘", Resolution("리바로", ("pitavastatin",)))
+
+    assert query == "리바로 pitavastatin 제약 의약품 경쟁제품 최근 동향 검색해줘"
 
 
 def test_hira_procedure_and_web_search_fixture_tools_render_payloads() -> None:

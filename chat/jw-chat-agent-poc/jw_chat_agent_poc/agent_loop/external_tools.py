@@ -130,9 +130,14 @@ def _procedure_year(question: str) -> str:
 
 
 def _web_search_query(question: str, resolution: AgentLoopResolution) -> str:
-    if resolution.canonical_brand and resolution.canonical_brand not in question:
-        return f"{resolution.canonical_brand} {question}".strip()
-    return question.strip()
+    terms: list[str] = []
+    if resolution.canonical_brand:
+        terms.append(resolution.canonical_brand)
+    terms.extend(molecule for molecule in resolution.molecule_en if molecule)
+    terms.extend(("제약", "의약품"))
+    terms.append(question)
+    deduped = tuple(dict.fromkeys(term.strip() for term in terms if term.strip()))
+    return " ".join(deduped)
 
 
 def _clinical_calls(resolution: AgentLoopResolution, external: ExternalApiClient) -> list[ExternalCall]:

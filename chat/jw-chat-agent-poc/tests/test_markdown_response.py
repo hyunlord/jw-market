@@ -357,8 +357,73 @@ def test_web_search_facade_renders_nested_results_as_unverified_external_section
 
     assert "### 웹 검색 결과(미검증)" in response.markdown
     assert "https://example.com/livalo-detailing" in response.markdown
-    assert "### 웹 검색 결과 fact(미검증)" in response.fact_md
+    assert "### 웹 검색 결과 fact(미검증)" not in response.fact_md
+    assert "https://example.com/livalo-detailing" not in response.fact_md
+    assert "웹 검색 snippet" not in response.fact_md
     assert "URL/snippet 기반 미검증 웹 검색 결과" in response.markdown
+
+
+def test_genos_final_prompt_excludes_web_results_and_appends_unverified_section(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "web_search",
+                "source": "web_search",
+                "render_data": {
+                    "provider": "fixture",
+                    "query": "리바로 경쟁제품 동향",
+                    "items": [
+                        {
+                            "title": "리바로 경쟁제품 디테일링 동향",
+                            "url": "https://example.com/livalo-detailing",
+                            "snippet": "경쟁제품 디테일링 웹 스니펫",
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["web_search"],
+    )
+    captured_prompts: list[str] = []
+
+    def stream_chat(_self: GenosClient, messages: list[dict[str, str]]):
+        captured_prompts.append(messages[-1]["content"])
+        yield "웹 검색 결과는 하단 미검증 섹션을 참조하세요."
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            "리바로 경쟁제품 최근 동향 검색해줘",
+            {"markdown_response": response.to_dict(), "tool_calls": [
+                {
+                    "tool": "web_search",
+                    "source": "web_search",
+                    "render_data": {
+                        "provider": "fixture",
+                        "query": "리바로 경쟁제품 동향",
+                        "items": [
+                            {
+                                "title": "리바로 경쟁제품 디테일링 동향",
+                                "url": "https://example.com/livalo-detailing",
+                                "snippet": "경쟁제품 디테일링 웹 스니펫",
+                            }
+                        ],
+                    },
+                }
+            ]},
+        )
+    )
+
+    prompt = captured_prompts[0]
+    body, web_section = answer.split("### 웹 검색 결과(미검증)", maxsplit=1)
+    assert "경쟁제품 디테일링 웹 스니펫" not in prompt
+    assert "https://example.com/livalo-detailing" not in prompt
+    assert "경쟁제품 디테일링 웹 스니펫" not in body
+    assert "https://example.com/livalo-detailing" not in body
+    assert "경쟁제품 디테일링 웹 스니펫" in web_section
+    assert "https://example.com/livalo-detailing" in web_section
 
 
 def test_genos_default_base_url_coerces_existing_env_to_gemini_three_flash(monkeypatch) -> None:
