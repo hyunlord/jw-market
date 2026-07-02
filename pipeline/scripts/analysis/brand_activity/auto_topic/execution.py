@@ -105,16 +105,20 @@ def execute_calls(
     for sample_key, sample_rows in brand_samples.items():
         scope_key, atc4, brand = source_scope_key_from_brand_sample_key(sample_key)
         if scope_key in failed_scopes:
+            description = descriptions[f"{atc4}:{brand}"]
             brand_results[sample_key] = brand_axis_quarantine(atc4=atc4, brand=brand, scope_id=_scope_id(scope_key, metadata), axis_version=f"{_scope_id(scope_key, metadata)}:{PROMPT_VERSION}", row_count=len(sample_rows), axis_payload=axis_results[scope_key])
             brand_results[sample_key]["scope_key"] = scope_key
             brand_results[sample_key]["display_name"] = _display_name(scope_key, metadata)
+            brand_results[sample_key].update(_brand_metadata(description))
             continue
-        normalized, logs = _call_share_batches(token, scope_key, metadata, atc4, brand, sample_rows, descriptions[f"{atc4}:{brand}"], axis_topics[scope_key], "flash", task="brand_share", token_budget=brand_batch_token_budget)
+        description = descriptions[f"{atc4}:{brand}"]
+        normalized, logs = _call_share_batches(token, scope_key, metadata, atc4, brand, sample_rows, description, axis_topics[scope_key], "flash", task="brand_share", token_budget=brand_batch_token_budget)
         call_logs.extend(logs)
         valid_ids = {topic.topic_id for topic in axis_topics[scope_key]}
         normalized["scope_key"] = scope_key
         normalized["display_name"] = _display_name(scope_key, metadata)
         normalized["atc4_values"] = _scope_atc4_values(scope_key, metadata)
+        normalized.update(_brand_metadata(description))
         normalized["qc"] = {
             "guard": mechanical_guard(normalized, valid_topic_ids=valid_ids, brand_total_rows=int(normalized.get("row_count") or 0)),
             "drift": drift_check(normalized, None),
@@ -460,6 +464,15 @@ def _tier_axis_recheck(token: str, dictionary: dict[str, JsonValue], scope_key: 
     return results
 
 
+def _brand_metadata(description: BrandDescription) -> dict[str, JsonValue]:
+    """Return non-sensitive source brand metadata stored with measured payloads."""
+    return {
+        "is_jw": description.is_jw,
+        "kr_canonical": description.kr_canonical,
+        "representing_company": list(description.representing_company),
+    }
+
+
 def _tier_share_recheck(
     token: str,
     scope_key: str,
@@ -478,6 +491,7 @@ def _tier_share_recheck(
     results: dict[str, JsonValue] = {}
     for model_key in ("lite",):
         payload, logs = _call_share_batches(token, scope_key, scope_metadata, atc4, brand, rows, description, topics, model_key, task="brand_share_tier_recheck", token_budget=token_budget)
+        payload.update(_brand_metadata(description))
         call_logs.extend(logs)
         results[f"{sample_key}:{model_key}"] = payload
     return results

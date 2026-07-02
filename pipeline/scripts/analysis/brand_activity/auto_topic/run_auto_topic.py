@@ -170,7 +170,7 @@ def run_pipeline(
     alias_path, alias_source = resolve_alias_source()
     alias_payload = load_json_file(alias_path) if alias_path else {}
     before_snapshot, rows, csd_bridge, after_snapshot = _load_stage_rows(markets, stage_schema)
-    descriptions = load_alias_descriptions(alias_payload, _all_brand_keys(rows))
+    descriptions = load_alias_descriptions(alias_payload, rows)
     group_map = apply_csd_market_names(build_market_group_map(markets), csd_bridge)
     if _dict(group_map.get("sanity_checks")).get("status") != "pass":
         raise SafetyError(f"MI Master group sanity failed: {group_map.get('sanity_checks')}")
@@ -407,11 +407,6 @@ def _render_design_tokens() -> str:
             "",
         ]
     )
-
-
-def _all_brand_keys(rows: list[KeywordRow]) -> list[tuple[str, str]]:
-    """Return unique ATC4/brand keys observed in source rows."""
-    return sorted({(row.atc4, row.brand) for row in rows})
 
 
 def _all_sampled_rows(axis_samples: dict[str, list[KeywordRow]], brand_samples: dict[str, list[KeywordRow]]) -> list[KeywordRow]:
