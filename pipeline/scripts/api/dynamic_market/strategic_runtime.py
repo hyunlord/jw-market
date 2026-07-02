@@ -88,6 +88,14 @@ def build_strategic_payload(
         market_row = _market_row_for_filtered_rows(market_row, filtered_rows)
 
     market_catalog_row = _catalog_row(market_kind, view_source_id)
+    if mart_source == "ubist":
+        filtered_rows = _with_channel_specialty_matrices(
+            mart_db=mart_db,
+            rows=filtered_rows,
+            source=mart_source,
+            measure=measure,
+            market_catalog_row=market_catalog_row,
+        )
     strategic_brand = _strategic_brand_catalog()
     if has_runtime_filter:
         _clear_cause_builder_runtime_caches()
@@ -270,6 +278,149 @@ def _market_row_for_filtered_rows(market_row: JsonRow, rows: Sequence[JsonRow]) 
     filtered["company_ranking_stacked"] = None
     filtered["hhi_series_5y"] = None
     return filtered
+
+
+def _with_channel_specialty_matrices(
+    *,
+    mart_db: str,
+    rows: Sequence[JsonRow],
+    source: str,
+    measure: str,
+    market_catalog_row: Mapping[str, Any],
+) -> list[JsonRow]:
+    """Attach raw UBIST facility-specialty matrices for real-time channel fill.
+
+    Strategic brand rows keep market metrics, while the raw channel grain lives
+    in the general mart at brand×ATC4. Joining by brand alone can leak adjacent
+    ATC4 rows for brands that appear in multiple markets, so this loader scopes
+    the matrix by the selected row dimensions and the MI Master ATC4 catalog.
+    """
+
+    copied = [dict(row) for row in rows]
+    if not copied:
+        return copied
+    brand_keys = tuple(sorted({str(row.get("brand_key") or "").strip() for row in copied if row.get("brand_key")}))
+    if not brand_keys:
+        return copied
+    atc4_codes = _matrix_scope_atc4(rows=copied, market_catalog_row=market_catalog_row)
+    matrices = _fetch_channel_specialty_matrices(
+        mart_db=mart_db,
+        brand_keys=brand_keys,
+        atc4_codes=atc4_codes,
+        source=source,
+        measure=measure,
+    )
+    if not matrices:
+        return copied
+    for row in copied:
+        brand_key = str(row.get("brand_key") or "").strip()
+        matrix = matrices.get(brand_key)
+        if matrix:
+            row["channel_specialty_matrix"] = matrix
+    return copied
+
+
+def _matrix_scope_atc4(*, rows: Sequence[Mapping[str, Any]], market_catalog_row: Mapping[str, Any]) -> tuple[str, ...]:
+    row_codes: set[str] = set()
+    for row in rows:
+        row_codes.update(_dimension_text_values(_decode_object(row.get("by_dimension")), "atc4_code", "atc4"))
+    catalog_codes = _catalog_atc4_codes(market_catalog_row)
+    if row_codes and catalog_codes:
+        scoped = row_codes & set(catalog_codes)
+        if scoped:
+            return tuple(sorted(scoped))
+    if row_codes:
+        return tuple(sorted(row_codes))
+    return catalog_codes
+
+
+def _catalog_atc4_codes(row: Mapping[str, Any]) -> tuple[str, ...]:
+    for key in ("atc_codes_json", "atc4_codes", "atc4_code"):
+        value = row.get(key)
+        if isinstance(value, list):
+            values = value
+        elif isinstance(value, str) and value.strip():
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                values = [item.strip() for item in value.split(",")]
+            else:
+                values = decoded if isinstance(decoded, list) else [decoded]
+        else:
+            values = []
+        clean = tuple(sorted({str(item).strip().upper() for item in values if str(item).strip()}))
+        if clean:
+            return clean
+    return ()
+
+
+def _dimension_text_values(dimensions: Mapping[str, Any], *keys: str) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        raw = dimensions.get(key)
+        if isinstance(raw, list):
+            values.update(str(item).strip().upper() for item in raw if str(item).strip())
+        elif raw not in (None, ""):
+            values.add(str(raw).strip().upper())
+    return values
+
+
+def _fetch_channel_specialty_matrices(
+    *,
+    mart_db: str,
+    brand_keys: tuple[str, ...],
+    atc4_codes: tuple[str, ...],
+    source: str,
+    measure: str,
+) -> dict[str, dict[str, Any]]:
+    if not brand_keys:
+        return {}
+    brand_placeholders = ", ".join(["%s"] * len(brand_keys))
+    params: list[Any] = [source, measure, *brand_keys]
+    atc4_where = ""
+    if atc4_codes:
+        atc4_where = "AND atc4_code IN (" + ", ".join(["%s"] * len(atc4_codes)) + ")"
+        params.extend(atc4_codes)
+    rows = db.fetch_all(
+        f"""
+        SELECT brand_key, channel_specialty_matrix
+        FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+        WHERE source = %s
+          AND measure = %s
+          AND brand_key IN ({brand_placeholders})
+          {atc4_where}
+        """,
+        params,
+    )
+    matrices: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        brand_key = str(row.get("brand_key") or "").strip()
+        matrix = _decode_object(row.get("channel_specialty_matrix"))
+        if brand_key and matrix:
+            _merge_channel_specialty_matrix(matrices.setdefault(brand_key, {}), matrix)
+    return matrices
+
+
+def _merge_channel_specialty_matrix(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    for facility, specialties in source.items():
+        if not isinstance(specialties, Mapping):
+            continue
+        target_facility = target.setdefault(str(facility), {})
+        if not isinstance(target_facility, dict):
+            continue
+        for specialty, series in specialties.items():
+            if not isinstance(series, Mapping):
+                continue
+            target_series = target_facility.setdefault(str(specialty), {})
+            if not isinstance(target_series, dict):
+                continue
+            for period, value in series.items():
+                try:
+                    numeric = float(value or 0.0)
+                except (TypeError, ValueError):
+                    numeric = 0.0
+                period_text = str(period)
+                target_series[period_text] = float(target_series.get(period_text) or 0.0) + numeric
 
 
 def _history_values(row: Mapping[str, Any]) -> dict[str, float]:

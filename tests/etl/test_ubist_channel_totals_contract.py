@@ -63,3 +63,61 @@ def test_resolver_uses_strategic_channel_totals_context_when_available() -> None
     assert general_channel is not None
     assert general_channel.display_name == "종합병원 순환기"
     assert general_channel.facility_raw_values == ("상급종합병원", "종합병원", "병원")
+
+
+def test_resolver_fills_from_latest_raw_matrix_with_others_and_catalog_exclusion() -> None:
+    rows = [
+        {
+            "brand_name": "시그마트",
+            "channel_specialty_matrix": {
+                "상급종합병원": {
+                    "순환기(Cardiology IM)": {"2026-05": 20.0},
+                    "신장(Nephrology IM)": {"2025-01": 10_000.0, "2026-05": 50.0},
+                },
+                "종합병원": {
+                    "순환기(Cardiology IM)": {"2026-05": 30.0},
+                    "신경과(NR)": {"2026-05": 40.0},
+                },
+                "병원": {
+                    "Others(병원,보건기관, 그 외 요양기관)": {"2026-05": 80.0},
+                },
+                "의원": {
+                    "분리되지 않은 내과": {"2026-05": 70.0},
+                },
+            },
+            "ubist_channel_by_code": {
+                "TGH Nephro": {"2025-01": 10_000.0, "2026-05": 50.0},
+                "TGH Cardio": {"2026-05": 50.0},
+                "CL IGF": {"2026-05": 70.0},
+            },
+        },
+        {
+            "brand_name": "경쟁품",
+            "channel_specialty_matrix": {
+                "종합병원": {
+                    "순환기(Cardiology IM)": {"2026-05": 10.0},
+                },
+                "병원": {
+                    "Others(병원,보건기관, 그 외 요양기관)": {"2026-05": 20.0},
+                },
+            },
+        },
+    ]
+
+    with ubist_channel_resolver.strategic_channel_totals_context(rows):
+        result = ubist_channel_resolver.resolve_market_channels(
+            rows=rows,
+            market={"target_ubist_1": "GH Cardio", "target_ubist_2": "CL IGF"},
+            measure="sales",
+        )
+
+    assert result["specialty_channels"] == [
+        "전체",
+        "주요고객 종합병원 순환기",
+        "의원 IGF",
+        "병원",
+        "주요고객 종합병원 신장",
+    ]
+    assert result["fallback_codes"] == ["Semi Others", "TGH Nephro"]
+    assert rows[0]["__ubist_specialty_channel_data"]["병원"]["2026-05"] == 80.0
+    assert rows[1]["__ubist_specialty_channel_data"]["병원"]["2026-05"] == 20.0

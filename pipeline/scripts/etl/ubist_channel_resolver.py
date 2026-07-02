@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
-from pipeline.scripts.utils.ubist_target_channel_mapping import parse_target_channel_code
+from pipeline.scripts.utils.ubist_target_channel_mapping import (
+    TargetUbistChannel,
+    parse_target_channel_code,
+    raw_pair_to_target_channel_code,
+    translate_target_channel_to_raw_labels,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -20,6 +25,7 @@ UBIST_PARQUET_GLOB = PROJECT_ROOT / "output" / "ubist" / "year=*" / "month=*" / 
 SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
 UBIST_CHANNEL_BY_DISPLAY_COLUMN = "ubist_channel_by_display"
 UBIST_CHANNEL_BY_CODE_COLUMN = "ubist_channel_by_code"
+CHANNEL_SPECIALTY_MATRIX_COLUMN = "channel_specialty_matrix"
 _STRATEGIC_CHANNEL_ROWS: ContextVar[tuple[dict[str, Any], ...] | None] = ContextVar(
     "strategic_channel_rows",
     default=None,
@@ -224,6 +230,155 @@ def _normalize_target_channel_series(payload: dict[str, Any]) -> dict[str, dict[
     return normalized
 
 
+def _raw_matrices_available(rows: list[dict[str, Any]]) -> bool:
+    return any(bool(_decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))) for row in rows)
+
+
+def _parse_target_label(label: str | None) -> tuple[str, str]:
+    if not label:
+        return "", ""
+    text = str(label)
+    if " " not in text:
+        return text, ""
+    channel, specialty = text.split(" ", 1)
+    return channel, specialty
+
+
+def _iter_raw_matrix(row: dict[str, Any]) -> Iterator[tuple[str, str, dict[str, Any]]]:
+    matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
+    for facility, specialties in matrix.items():
+        if not isinstance(specialties, dict):
+            continue
+        for specialty, series in specialties.items():
+            if isinstance(series, dict):
+                yield str(facility), str(specialty), series
+
+
+def _raw_periods(rows: list[dict[str, Any]]) -> list[str]:
+    periods: set[str] = set()
+    for row in rows:
+        for _facility, _specialty, series in _iter_raw_matrix(row):
+            periods.update(str(period) for period in series)
+    return sorted(periods)
+
+
+def _raw_combo_total(rows: list[dict[str, Any]], facility: str, specialty: str) -> float:
+    total = 0.0
+    for row in rows:
+        for matrix_facility, matrix_specialty, series in _iter_raw_matrix(row):
+            if matrix_facility != facility or matrix_specialty != specialty:
+                continue
+            total += sum(_history_value(value) for value in series.values())
+    return total
+
+
+def _raw_combo_values_for_period(rows: list[dict[str, Any]], period: str) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for row in rows:
+        for facility, specialty, series in _iter_raw_matrix(row):
+            value = _history_value(series.get(period))
+            if value <= 0.0:
+                continue
+            key = (facility, specialty)
+            values[key] = values.get(key, 0.0) + value
+    return values
+
+
+def _largest_raw_label(raw_labels: list[str], rows: list[dict[str, Any]]) -> str | None:
+    if not raw_labels:
+        return None
+    return max(raw_labels, key=lambda label: _raw_combo_total(rows, *_parse_target_label(label)))
+
+
+def _target_series_for_row(row: dict[str, Any], channel: TargetUbistChannel) -> dict[str, float]:
+    series_by_period: dict[str, float] = {}
+    facilities = set(channel.facility_raw_values)
+    specialties = set(channel.specialty_raw_values)
+    for facility, specialty, series in _iter_raw_matrix(row):
+        if facility not in facilities or specialty not in specialties:
+            continue
+        for period, value in series.items():
+            numeric = _history_value(value)
+            if numeric <= 0.0:
+                continue
+            period_text = str(period)
+            series_by_period[period_text] = series_by_period.get(period_text, 0.0) + numeric
+    return dict(sorted(series_by_period.items()))
+
+
+def _resolve_channels_from_raw_matrix(
+    *,
+    rows: list[dict[str, Any]],
+    market: dict[str, Any] | None,
+    max_channels: int,
+) -> tuple[list[TargetUbistChannel], set[str]]:
+    """Resolve target/fill channels with the ETL target-competition algorithm.
+
+    The dynamic runtime must mirror ``market_target_competition.py`` instead of
+    ranking precomputed mart channel totals: catalog slots keep their rank,
+    catalog codes are expanded to raw candidates for exclusion, and remaining
+    slots are filled from the latest-period raw facility-specialty matrix.
+    """
+
+    channels: list[TargetUbistChannel] = []
+    used_codes: set[str] = set()
+    target_codes: set[str] = set()
+    used_raw_labels: set[str] = set()
+
+    for target in _targets_from_market(market):
+        parsed = parse_target_channel_code(target)
+        if parsed is None or parsed.code in used_codes:
+            continue
+        raw_candidates = translate_target_channel_to_raw_labels(target)
+        chosen_raw = _largest_raw_label(raw_candidates, rows)
+        if raw_candidates:
+            used_raw_labels.update(raw_candidates)
+        if chosen_raw is None:
+            continue
+        channels.append(parsed)
+        used_codes.add(parsed.code)
+        target_codes.add(parsed.code)
+
+    periods = _raw_periods(rows)
+    latest_period = periods[-1] if periods else None
+    if latest_period and len(channels) < max_channels:
+        combo_values = _raw_combo_values_for_period(rows, latest_period)
+        for (facility, specialty), _value in sorted(combo_values.items(), key=lambda item: item[1], reverse=True):
+            if len(channels) >= max_channels:
+                break
+            raw_label = f"{facility} {specialty}"
+            if raw_label in used_raw_labels:
+                continue
+            code = raw_pair_to_target_channel_code(facility, specialty)
+            if not code:
+                continue
+            parsed = parse_target_channel_code(code)
+            if parsed is None or parsed.code in used_codes:
+                continue
+            channels.append(parsed)
+            used_codes.add(parsed.code)
+            used_raw_labels.update(translate_target_channel_to_raw_labels(parsed.code))
+
+    return channels, target_codes
+
+
+def _attach_raw_matrix_channel_series(rows: list[dict[str, Any]], channels: list[TargetUbistChannel]) -> dict[str, dict[str, dict[str, float]]]:
+    series_by_brand: dict[str, dict[str, dict[str, float]]] = {}
+    for row in rows:
+        brand = str(row.get("brand_name") or row.get("brand_key") or "").strip()
+        if not brand:
+            continue
+        channel_series: dict[str, dict[str, float]] = {}
+        for channel in channels:
+            series = _target_series_for_row(row, channel)
+            if series:
+                channel_series[channel.display_name] = series
+        series_by_brand[brand] = channel_series
+        row["__ubist_dual_channel_data"] = channel_series
+        row["__ubist_specialty_channel_data"] = channel_series
+    return series_by_brand
+
+
 def _history_value(value: Any) -> float:
     raw = value.get("raw_value", value.get("value", 0.0)) if isinstance(value, dict) else value
     try:
@@ -240,6 +395,24 @@ def resolve_market_channels(
     max_channels: int = 4,
 ) -> dict[str, Any]:
     """Resolve UBIST target channels and attach raw series to mart rows."""
+    if _raw_matrices_available(rows):
+        channels, target_codes = _resolve_channels_from_raw_matrix(
+            rows=rows,
+            market=market,
+            max_channels=max_channels,
+        )
+        series_by_brand = _attach_raw_matrix_channel_series(rows, channels)
+        display_names = [channel.display_name for channel in channels]
+        return {
+            "channels": list(SCREEN_FACILITY_CHANNELS),
+            "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
+            "target_channels": [channel.as_dict() for channel in channels],
+            "specialty_target_channels": [channel.as_dict() for channel in channels],
+            "fallback_codes": [channel.code for channel in channels if channel.code not in target_codes],
+            "series_brand_count": len(series_by_brand),
+            "raw_brand_count": len(_brand_names(rows)),
+        }
+
     brand_names = _brand_names(rows)
     series_by_brand, totals_by_code = _load_market_raw_totals(brand_names, measure)
 

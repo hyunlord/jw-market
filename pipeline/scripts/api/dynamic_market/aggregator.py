@@ -211,7 +211,7 @@ class MetricAggregator:
         return db.fetch_all(
             f"""
             SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
-                   ubist_channel_by_display, ubist_channel_by_code
+                   ubist_channel_by_display, ubist_channel_by_code, channel_specialty_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -299,6 +299,7 @@ class MetricAggregator:
                     monthly_series=tuple({"period": period, "value": value} for period, value in sorted(filtered.items())),
                     ubist_channel_by_display=parse_channel_series(row.get("ubist_channel_by_display")),
                     ubist_channel_by_code=parse_channel_series(row.get("ubist_channel_by_code")),
+                    channel_specialty_matrix=parse_channel_specialty_matrix(row.get("channel_specialty_matrix")),
                 )
             )
         return brand_metrics, monthly_totals
@@ -327,6 +328,34 @@ def parse_channel_series(raw: object) -> dict[str, dict[str, float]]:
         if not isinstance(series, dict):
             continue
         parsed[str(channel)] = {str(period): float(value or 0.0) for period, value in series.items()}
+    return parsed
+
+
+def parse_channel_specialty_matrix(raw: object) -> dict[str, dict[str, dict[str, float]]]:
+    """Parse raw UBIST facility-specialty-period matrix from the general mart."""
+
+    if isinstance(raw, dict):
+        payload = raw
+    elif isinstance(raw, str) and raw.strip():
+        payload = json.loads(raw)
+    else:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    parsed: dict[str, dict[str, dict[str, float]]] = {}
+    for facility, specialties in payload.items():
+        if not isinstance(specialties, dict):
+            continue
+        facility_bucket: dict[str, dict[str, float]] = {}
+        for specialty, series in specialties.items():
+            if not isinstance(series, dict):
+                continue
+            facility_bucket[str(specialty)] = {
+                str(period): float(value or 0.0)
+                for period, value in series.items()
+            }
+        if facility_bucket:
+            parsed[str(facility)] = facility_bucket
     return parsed
 
 

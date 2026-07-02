@@ -77,6 +77,7 @@ class BrandMetric:
     monthly_series: tuple[dict[str, float | str], ...] = field(default_factory=tuple)
     ubist_channel_by_display: dict[str, dict[str, float]] = field(default_factory=dict)
     ubist_channel_by_code: dict[str, dict[str, float]] = field(default_factory=dict)
+    channel_specialty_matrix: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

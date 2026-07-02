@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_hhi
+from pipeline.scripts.api.dynamic_market import cause_payload
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market import resolvers
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, expand_atc4_for_source
@@ -148,6 +149,43 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     assert data["ubist_specialty_channels"] == ["전체", "종합병원 순환기", "의원 IGF", "종합병원 내분비"]
     assert data["ubist_specialty_target_channels"][0]["code"] == "GH Cardio"
     assert data["ubist_specialty_target_channels"][0]["facility_raw_values"] == ["상급종합병원", "종합병원", "병원"]
+
+
+def test_general_ubist_channels_rank_latest_raw_matrix_before_legacy_totals() -> None:
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=0.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=(),
+        brands=(),
+        all_brands=(
+            BrandMetric(
+                brand_key="a",
+                brand_name="A",
+                atc4_code="C10C0",
+                total_value=0.0,
+                market_share_pct=0.0,
+                rank=1,
+                latest_period="2026-05",
+                latest_value=0.0,
+                channel_specialty_matrix={
+                    "종합병원": {
+                        "신장(Nephrology IM)": {"2025-01": 10_000.0, "2026-05": 10.0},
+                        "순환기(Cardiology IM)": {"2026-05": 90.0},
+                    },
+                    "의원": {"분리되지 않은 내과": {"2026-05": 80.0}},
+                },
+                ubist_channel_by_code={"GH Nephro": {"2025-01": 10_000.0, "2026-05": 10.0}},
+            ),
+        ),
+    )
+
+    channels = cause_payload._general_ubist_channels(metrics, max_channels=2)
+
+    assert channels["specialty_channels"] == ["전체", "종합병원 순환기", "의원 IGF"]
 
 
 def test_request_accepts_strategic_frontend_filters() -> None:
@@ -344,6 +382,24 @@ def test_strategic_runtime_reuses_cache_cause_builder(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_fetch_all(sql, params):
+        if "mart_general_brand_metric" in sql:
+            assert params == ["ubist", "sales", "경쟁", "리바로젯", "C10C"]
+            return [
+                {
+                    "brand_key": "리바로젯",
+                    "channel_specialty_matrix": json.dumps(
+                        {"종합병원": {"순환기(Cardiology IM)": {"2026-04": 50.0}}},
+                        ensure_ascii=False,
+                    ),
+                },
+                {
+                    "brand_key": "경쟁",
+                    "channel_specialty_matrix": json.dumps(
+                        {"종합병원": {"순환기(Cardiology IM)": {"2026-04": 75.0}}},
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
         assert "mart_strategic_ml_brand_metric" in sql
         assert params == ["ml_006", "ubist", "sales"]
         return brand_rows
