@@ -52,6 +52,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     strip_generated_source_sections,
 )
 from jw_chat_agent_poc.common.timing import stage
+from jw_chat_agent_poc.service.portfolio_decline_render import ensure_portfolio_decline_summary
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
@@ -646,6 +647,7 @@ class GenosClient:
         answer = _ensure_direct_metric_fact_answer(question, answer, fact_md)
         answer = _ensure_code_rendered_trend_table(answer, fact_lookup_md, trend_fact_md)
         answer = ensure_top_brand_trend_table(answer, fact_md)
+        answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_deterministic_source_block(answer, fact_md)
         return _append_uploaded_file_source(answer, file_context)

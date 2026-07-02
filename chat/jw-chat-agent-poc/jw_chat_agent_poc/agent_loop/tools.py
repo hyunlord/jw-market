@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Mapping
 
-from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, search_news_call
+from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, procedure_stats_call, search_news_call, web_search_call
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding, display_period, require_available_period, resolve_relative_expression
 from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, query_spec, top_brands
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
@@ -71,12 +71,16 @@ class AgentToolFacade:
                 return self._search_news(grounded_arguments)
             if name == "get_disease_stats":
                 return self._disease_stats(grounded_arguments)
+            if name == "get_procedure_stats":
+                return self._procedure_stats(grounded_arguments)
             if name == "search_clinical":
                 return self._clinical(grounded_arguments)
             if name == "search_patent":
                 return self._patent(grounded_arguments)
             if name == "search_drug_info":
                 return self._drug_info(grounded_arguments)
+            if name == "web_search":
+                return self._web_search(grounded_arguments)
             if name == "get_brand_sales":
                 return self._query_metric(grounded_arguments, "sales")
             if name == "get_brand_share":
@@ -199,6 +203,14 @@ class AgentToolFacade:
         call["render_data"]["brand"] = brand
         return ToolExecution("ok", f"{brand} HIRA disease stats", call, arguments)
 
+    def _procedure_stats(self, arguments: Mapping[str, str]) -> ToolExecution:
+        brand = self._brand(arguments)
+        resolution = self._resolver.resolve(brand, allow_default=False)
+        question = arguments.get("query") or ""
+        call = procedure_stats_call(question, resolution, self._external)
+        call["render_data"]["brand"] = brand
+        return ToolExecution("ok", f"{brand} HIRA procedure stats", call, arguments)
+
     def _clinical(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
         resolution = self._resolver.resolve(brand, allow_default=False)
@@ -219,6 +231,14 @@ class AgentToolFacade:
         call = drug_info_call(resolution, self._external)
         call["render_data"]["brand"] = brand
         return ToolExecution("ok", f"{brand} MFDS permission", call, arguments)
+
+    def _web_search(self, arguments: Mapping[str, str]) -> ToolExecution:
+        brand = self._brand(arguments)
+        resolution = self._resolver.resolve(brand, allow_default=False)
+        question = arguments.get("query") or ""
+        call = web_search_call(question, resolution, self._external)
+        call["render_data"]["brand"] = brand
+        return ToolExecution(call.get("status", "ok"), f"{brand} web search", call, arguments)
 
     def _query_metric(self, arguments: Mapping[str, str], metric: str) -> ToolExecution:
         brand = self._brand(arguments)

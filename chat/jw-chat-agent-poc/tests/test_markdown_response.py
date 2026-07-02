@@ -281,6 +281,86 @@ def test_get_disease_stats_facade_reads_nested_hira_patient_counts() -> None:
     assert "| 외래 | I10 | 본태성 고혈압 | 2024 | 3769201 |" in fact_md
 
 
+def test_get_procedure_stats_facade_reads_nested_hira_procedure_counts() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "get_procedure_stats",
+                "source": "hira_procedure",
+                "render_data": {
+                    "facade_tool": "get_procedure_stats",
+                    "calls": [
+                        {
+                            "tool": "hira_procedure_gender_ipat_opat_stats",
+                            "source": "hira_procedure",
+                            "render_data": {
+                                "request": {"st5Cd": "MM302", "year": "2024"},
+                                "items": [
+                                    {
+                                        "inpatOpat": "외래",
+                                        "st5Cd": "MM302",
+                                        "st5Nm": "기관절개술",
+                                        "ptntCnt": "1234",
+                                        "specCnt": "1300",
+                                        "useQty": "1400",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["hira_procedure"],
+    )
+
+    assert "### HIRA 진료행위통계" in response.markdown
+    assert "| 외래 | MM302 | 기관절개술 | 2024 | 1234 | 1300 | 1400 |" in response.markdown
+    assert "### HIRA 진료행위통계 fact" in response.fact_md
+    assert "| 외래 | MM302 | 기관절개술 | 2024 | 1234 |" in response.fact_md
+    assert "HIRA 진료행위정보서비스" in response.markdown
+
+
+def test_web_search_facade_renders_nested_results_as_unverified_external_section() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "web_search",
+                "source": "web_search",
+                "render_data": {
+                    "facade_tool": "web_search",
+                    "query": "리바로 경쟁제품 디테일링",
+                    "calls": [
+                        {
+                            "tool": "web_search",
+                            "source": "web_search",
+                            "render_data": {
+                                "provider": "fixture",
+                                "request": {"query": "리바로 경쟁제품 디테일링"},
+                                "items": [
+                                    {
+                                        "title": "리바로 경쟁제품 디테일링 동향",
+                                        "url": "https://example.com/livalo-detailing",
+                                        "snippet": "웹 검색 snippet",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["web_search"],
+    )
+
+    assert "### 웹 검색 결과(미검증)" in response.markdown
+    assert "https://example.com/livalo-detailing" in response.markdown
+    assert "### 웹 검색 결과 fact(미검증)" in response.fact_md
+    assert "URL/snippet 기반 미검증 웹 검색 결과" in response.markdown
+
+
 def test_genos_default_base_url_coerces_existing_env_to_gemini_three_flash(monkeypatch) -> None:
     monkeypatch.setenv("GENOS_BASE_URL", "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163")
     monkeypatch.delenv("GENOS_SERVING_ID", raising=False)
@@ -715,6 +795,8 @@ def test_source_block_renders_data_period_from_call_series() -> None:
                         "market": "C10A1",
                         "filters": {"brand": "리바로"},
                     },
+                    "market_name": "이상지질혈증",
+                    "total_brands_in_market": 470,
                 },
             }
         ],
@@ -724,7 +806,10 @@ def test_source_block_renders_data_period_from_call_series() -> None:
     block = deterministic_source_block(fact_md)
 
     assert "- 데이터: UBIST (2025-07~2026-04)" in block
-    assert "- 데이터 상세: UBIST — 기간 2025-07~2026-04, 시장 C10A1, view market_landscape" in block
+    assert (
+        "- 데이터 상세: UBIST — 기간 2025-07~2026-04, market_id C10A1, "
+        "market_name 이상지질혈증, view market_landscape, denominator_basis market_landscape rows 470개"
+    ) in block
 
 
 def test_source_block_renders_trend_data_detail_from_render_metadata() -> None:
@@ -739,6 +824,8 @@ def test_source_block_renders_trend_data_detail_from_render_metadata() -> None:
                     "metric": "series",
                     "market_id": "B03A",
                     "view": "market_landscape",
+                    "market_name": "철분제",
+                    "total_brands_in_market": 516,
                     "brand_value_series_10pt": [
                         {"period": "2023-Q3", "value_억원": 41.53, "ms_pct": 29.34},
                         {"period": "2025-Q4", "value_억원": 35.16, "ms_pct": 25.36},
@@ -756,7 +843,10 @@ def test_source_block_renders_trend_data_detail_from_render_metadata() -> None:
     block = deterministic_source_block(fact_md)
 
     assert "- 데이터: UBIST (2023-Q3~2025-Q4)" in block
-    assert "- 데이터 상세: UBIST — 기간 2023-Q3~2025-Q4, 시장 B03A, view market_landscape" in block
+    assert (
+        "- 데이터 상세: UBIST — 기간 2023-Q3~2025-Q4, market_id B03A, "
+        "market_name 철분제, view market_landscape, denominator_basis market_landscape rows 516개"
+    ) in block
 
 
 def test_completion_series_call_does_not_render_per_call_brand_series_table() -> None:
@@ -2113,6 +2203,42 @@ def test_answer_facts_prefer_top_trend_when_snapshot_segments_are_zero() -> None
     assert "점유율 변화 표시 보류" in fact_md
 
 
+def test_top_trend_fact_uses_actual_axis_label_for_dosage_form() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "리바로",
+                    "level": "dosage_form",
+                    "level_top5_trend_series": [
+                        {
+                            "rank": 1,
+                            "brand": "Statin/EZE",
+                            "name": "Statin/EZE",
+                            "ms_recent_pct": 59.05,
+                            "share_delta_pctp": 1.05,
+                            "value_recent_억원": 330.0,
+                            "value_delta_억원": 10.0,
+                            "series": [
+                                {"period": "2025-07", "ms_pct": 58.0, "value_억원": 320.0, "rank": 1},
+                                {"period": "2026-04", "ms_pct": 59.05, "value_억원": 330.0, "rank": 1},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+        ["cache"],
+    )
+
+    assert "| 상위 제형 추이 | 1위 Statin/EZE 2025-07 MS 58.00% → 2026-04 MS 59.05%" in fact_md
+    assert "상위 브랜드 추이 | 1위 Statin/EZE" not in fact_md
+    assert "### 상위 제형 점유율 추이 fact" in fact_md
+    assert "| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |" in fact_md
+
+
 def test_top_brand_trend_fact_surfaces_reproducible_start_latest_and_delta() -> None:
     fact_md = answer_fact_markdown(
         [
@@ -2264,6 +2390,25 @@ def test_top_brand_trend_table_replaces_raw_mandatory_completion_line() -> None:
 
     assert raw_line not in revised
     assert "| 3 | 리바로젯 | 2025-07 4.79% | 2026-04 5.32% | 0.53%p | 120.09억원 | 16.46억원 |" in revised
+
+
+def test_top_trend_table_uses_dynamic_axis_label_for_non_brand_dimensions() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 내용 |
+| --- | --- |
+| 상위 제형 추이 | 1위 Statin/EZE 2025-07 MS 58.00% → 2026-04 MS 59.05% 2025-07→2026-04 점유율 변화 1.05%p 최신 매출 330.00억원 매출 변화 10.00억원 |
+"""
+    raw_line = (
+        "- 상위 제형 추이: 1위 Statin/EZE 2025-07 MS 58.00% → 2026-04 MS 59.05% "
+        "2025-07→2026-04 점유율 변화 1.05%p 최신 매출 330.00억원 매출 변화 10.00억원"
+    )
+
+    revised = ensure_top_brand_trend_table(f"요약\n\n{raw_line}", fact_md)
+
+    assert "### 상위 제형 추이" in revised
+    assert "| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |" in revised
+    assert "| 최신 순위 | 브랜드 |" not in revised
+    assert raw_line not in revised
 
 
 def test_model_compare_config_sets_bounded_runtime_timeouts(monkeypatch) -> None:
@@ -3645,6 +3790,8 @@ def test_external_aggregate_nested_calls_are_rendered_as_answer_facts() -> None:
                                 "items": [
                                     {
                                         "GOODS_NAME": "CJ-20001",
+                                        "CLINC_EXAM_TITLE": "리바로 안전성 연구",
+                                        "CLINC_EXAM_STTUS": "완료",
                                         "CLINIC_STEP_NAME": "2상",
                                         "CLNC_TEST_SN": "201002160",
                                     }
@@ -3665,8 +3812,11 @@ def test_external_aggregate_nested_calls_are_rendered_as_answer_facts() -> None:
                                 "items": [
                                     {
                                         "ITEM_NAME": "리바로정2밀리그램",
+                                        "INGR_NAME": "피타바스타틴칼슘",
                                         "DOMESTIC_PATENT_NO": "10-0777553",
+                                        "DOMESTIC_PATENT_STATUS": "소멸",
                                         "DOMESTIC_END_DATE": "2010-11-12",
+                                        "PATENTEE": "닛산 가가쿠",
                                     }
                                 ]
                             },
@@ -3679,9 +3829,72 @@ def test_external_aggregate_nested_calls_are_rendered_as_answer_facts() -> None:
     )
 
     assert "조회 결과 없음" not in response.fact_md
+    assert "### 임상시험 fact" in response.fact_md
     assert "NCT01764178" in response.fact_md
-    assert "CJ-20001" in response.fact_md
+    assert "201002160" in response.fact_md
+    assert "리바로 안전성 연구" in response.fact_md
+    assert "### 특허 fact" in response.fact_md
     assert "10-0777553" in response.fact_md
+    assert "소멸" in response.fact_md
+    assert "2010-11-12" in response.fact_md
+    assert "닛산 가가쿠" in response.fact_md
+
+
+def test_external_patent_fact_table_uses_actual_api_fields() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "search_patent",
+                "source": "external_api",
+                "render_data": {
+                    "calls": [
+                        {
+                            "tool": "mfds_patent",
+                            "render_data": {
+                                "items": [
+                                    {
+                                        "ITEM_NAME": "리바로정2밀리그램",
+                                        "INGR_NAME": "피타바스타틴칼슘",
+                                        "DOMESTIC_PATENT_NO": "10-0777553",
+                                        "DOMESTIC_PATENT_STATUS": "소멸",
+                                        "DOMESTIC_END_DATE": "2010-11-12",
+                                        "PATENTEE": "다이셀 | 닛산",
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "tool": "mfds_fda_orangebook",
+                            "render_data": {
+                                "items": [
+                                    {
+                                        "PRT_NAME": "LIVALO",
+                                        "INGR_NAME": "Pitavastatin Calcium",
+                                        "KOR_PAT_NO": "8557993",
+                                        "KOR_STATUS": "소멸",
+                                        "KOR_EXP_DATE": "2024-02-02 00:00:00",
+                                        "KOR_APPLICANT": "NISSAN CHEMICAL CORPORATION",
+                                    }
+                                ]
+                            },
+                        },
+                    ]
+                },
+            }
+        ],
+        sources=["external_api"],
+    )
+
+    assert "| 출처 | 제품/성분 | 특허번호 | 상태 | 만료일 | 권리자/출원인 |" in response.fact_md
+    assert "mfds_patent" in response.fact_md
+    assert "리바로정2밀리그램 / 피타바스타틴칼슘" in response.fact_md
+    assert "10-0777553" in response.fact_md
+    assert "2010-11-12" in response.fact_md
+    assert "다이셀" in response.fact_md
+    assert "mfds_fda_orangebook" in response.fact_md
+    assert "8557993" in response.fact_md
+    assert "2024-02-02" in response.fact_md
 
 
 def test_markdown_cells_escape_raw_html() -> None:
@@ -4039,3 +4252,73 @@ def test_genos_final_answer_applies_channel_claim_policy(monkeypatch) -> None:
     assert "| 의원 | 3.37% | 41.93억원 |" in body
     assert "| 종합병원 | 4.22% | 20.57억원 |" in body
     assert "| 상급종합병원 | 4.49% | 17.64억원 |" in body
+
+
+def test_genos_final_answer_renders_portfolio_declines_as_table(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="JW 주요 브랜드",
+        calls=[
+            {
+                "tool": "portfolio_decline_analysis",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "JW 주요 브랜드",
+                    "metric": "portfolio_market_share_decline",
+                    "period": "2024-Q4→2025-Q4",
+                    "source_label": "UBIST",
+                    "decliners": [
+                        {
+                            "brand": "위너프",
+                            "market_name": "수액",
+                            "period_from": "2024-Q4",
+                            "period_to": "2025-Q4",
+                            "from_ms_pct": 6.84,
+                            "to_ms_pct": 5.08,
+                            "share_delta_pctp": -1.75,
+                            "to_sales_krw": 3_376_000_000,
+                            "top_gainers": [{"brand": "오마프플러스원페리", "share_delta_pctp": 3.95}],
+                        },
+                        {
+                            "brand": "리바로",
+                            "market_name": "이상지질혈증",
+                            "period_from": "2024-Q4",
+                            "period_to": "2025-Q4",
+                            "from_ms_pct": 3.93,
+                            "to_ms_pct": 3.76,
+                            "share_delta_pctp": -0.17,
+                            "to_sales_krw": 8_493_000_000,
+                            "top_gainers": [{"brand": "리바로젯", "share_delta_pctp": 0.53}],
+                        },
+                    ],
+                    "interpretation_guardrail": "시장점유율 이동 후보이며 처방 이동 또는 인과를 직접 단정하지 않습니다.",
+                },
+            }
+        ],
+        sources=["UBIST"],
+    )
+
+    def stream_chat(_self: GenosClient, _messages: list[dict[str, str]]):
+        yield (
+            "- 포트폴리오 MS 하락: 위너프 2024-Q4→2025-Q4 MS 6.84% → 5.08% 변화 -1.75%p "
+            "최신 매출 33.76억원 동시장 상승 후보 오마프플러스원페리 3.95%p 직접 인과/처방 이동 단정 불가\n"
+            "- 포트폴리오 MS 하락: 리바로 2024-Q4→2025-Q4 MS 3.93% → 3.76% 변화 -0.17%p "
+            "최신 매출 84.93억원 동시장 상승 후보 리바로젯 0.53%p 직접 인과/처방 이동 단정 불가"
+        )
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            "JW 주요 브랜드 중 최근 시장점유율이 하락한 게 있으면 어떤 브랜드인지, 그 시장에서 누가 점유율을 가져갔는지 원인을 분석해줘",
+            {"markdown_response": response.to_dict()},
+        )
+    )
+
+    body = answer.split("## 출처", maxsplit=1)[0]
+    assert "포트폴리오 MS 하락:" not in body
+    assert "### JW 주요 브랜드 MS 하락 요약" in body
+    assert "| 브랜드 | 기간 | MS 변화 | 최신 매출 | 동시장 상승 후보 |" in body
+    assert "| 위너프 | 2024-Q4→2025-Q4 | 6.84% → 5.08% (-1.75%p) | 33.76억원 | 오마프플러스원페리 3.95%p |" in body
+    assert "| 리바로 | 2024-Q4→2025-Q4 | 3.93% → 3.76% (-0.17%p) | 84.93억원 | 리바로젯 0.53%p |" in body
+    assert "위너프가 -1.75%p로 가장 크게 하락했습니다" in body
+    assert "직접 인과나 처방 이동은 단정하지 않습니다" in body

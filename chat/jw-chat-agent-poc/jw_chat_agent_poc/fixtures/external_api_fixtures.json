@@ -387,5 +387,149 @@
         "medTp": "1"
       }
     }
+  },
+  "hira_procedure_gender_ipat_opat_stats": {
+    "summary_text": "HIRA 행위성별입원외래별통계에서 2024년 MM302 행위코드 분포를 확인했습니다.",
+    "render_data": {
+      "totalCount": "4",
+      "items": [
+        {
+          "inpatOpat": "외래",
+          "sex": "남",
+          "st5Cd": "MM302",
+          "st5Nm": "진료행위 예시",
+          "ptntCnt": "1234",
+          "specCnt": "1567",
+          "useQty": "1789"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderIpatOpatStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderIpatOpatStats",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "year": "2024",
+        "stdType": "1"
+      }
+    }
+  },
+  "hira_procedure_gender_age_stats": {
+    "summary_text": "HIRA 행위성별연령별통계에서 2024년 MM302 행위코드 분포를 확인했습니다.",
+    "render_data": {
+      "totalCount": "18",
+      "items": [
+        {
+          "age": "50_59세",
+          "sex": "남",
+          "st5Cd": "MM302",
+          "st5Nm": "진료행위 예시",
+          "ptntCnt": "321",
+          "specCnt": "456",
+          "useQty": "789"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderAgeStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderAgeStats",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "year": "2024",
+        "stdType": "1"
+      }
+    }
+  },
+  "hira_procedure_institution_class_stats": {
+    "summary_text": "HIRA 행위요양기관종별통계에서 2024년 MM302 행위코드 분포를 확인했습니다.",
+    "render_data": {
+      "totalCount": "5",
+      "items": [
+        {
+          "grade": "종합병원",
+          "st5Cd": "MM302",
+          "st5Nm": "진료행위 예시",
+          "ptntCnt": "234",
+          "specCnt": "345",
+          "useQty": "456"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByClassesStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByClassesStats",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "year": "2024",
+        "stdType": "1"
+      }
+    }
+  },
+  "hira_procedure_area_stats": {
+    "summary_text": "HIRA 행위요양기관소재지별통계에서 2024년 MM302 행위코드 분포를 확인했습니다.",
+    "render_data": {
+      "totalCount": "17",
+      "items": [
+        {
+          "lcName": "서울",
+          "st5Cd": "MM302",
+          "st5Nm": "진료행위 예시",
+          "ptntCnt": "678",
+          "specCnt": "789",
+          "useQty": "890"
+        }
+      ],
+      "year": "2024"
+    },
+    "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByAreaStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+    "live": {
+      "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByAreaStats",
+      "requires_service_key": true,
+      "format": "xml",
+      "default_params": {
+        "numOfRows": "10",
+        "pageNo": "1",
+        "year": "2024",
+        "stdType": "1"
+      }
+    }
+  },
+  "web_search": {
+    "summary_text": "fixture 웹 검색 결과 2건을 확인했습니다.",
+    "render_data": {
+      "provider": "fixture",
+      "query": "리바로 경쟁제품 디테일링",
+      "items": [
+        {
+          "title": "리바로 경쟁제품 디테일링 사례",
+          "url": "https://example.com/livalo-detailing",
+          "snippet": "경쟁제품 디테일링 메시지를 설명하는 fixture snippet입니다."
+        },
+        {
+          "title": "스타틴 시장 동향",
+          "url": "https://example.com/statin-market",
+          "snippet": "시장 동향을 요약한 fixture snippet입니다."
+        }
+      ],
+      "external_claim_policy": "web_results_unverified"
+    },
+    "safe_url": "fixture://web_search",
+    "live": {
+      "url": "https://api.tavily.com/search",
+      "requires_service_key": false,
+      "format": "json"
+    }
   }
 }

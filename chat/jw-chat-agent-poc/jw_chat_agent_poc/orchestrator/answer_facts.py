@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 import re
@@ -24,6 +24,7 @@ from jw_chat_agent_poc.orchestrator.surface_policy import (
     request_value,
     surface_year,
 )
+from jw_chat_agent_poc.tools.query_layer.spec import display_level_name
 
 RenderData = dict[str, Any]
 RequiredFactCollector = Callable[[RenderData, str], tuple["AxisFact", ...]]
@@ -89,6 +90,7 @@ _REQUIRED_METRIC_AXES: Final[dict[str, tuple[RequiredAxis, ...]]] = {
     "share": (RequiredAxis.MARKET_STRUCTURE, RequiredAxis.BRAND_POSITION),
     "rank": (RequiredAxis.BRAND_POSITION,),
     "hira_disease": (RequiredAxis.PATIENT_VOLUME,),
+    "hira_procedure": (RequiredAxis.PATIENT_VOLUME,),
 }
 
 
@@ -161,6 +163,8 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
         return _brand_metric_axis_facts(data)
     if _is_hira_disease_call(call):
         return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_rows(data))
+    if _is_hira_procedure_call(call):
+        return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_procedure_rows(data))
     return ()
 
 
@@ -168,6 +172,12 @@ def _is_hira_disease_call(call: dict[str, Any]) -> bool:
     tool = str(call.get("tool") or "")
     source = str(call.get("source") or "")
     return source == "hira_disease" or tool == "get_disease_stats" or tool.startswith("hira_disease")
+
+
+def _is_hira_procedure_call(call: dict[str, Any]) -> bool:
+    tool = str(call.get("tool") or "")
+    source = str(call.get("source") or "")
+    return source == "hira_procedure" or tool == "get_procedure_stats" or tool.startswith("hira_procedure")
 
 
 def _agent_calculation_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
@@ -247,7 +257,7 @@ def _prioritized_axis_facts(axis: RequiredAxis, facts: tuple[AxisFact, ...]) -> 
 
 
 def _is_snapshot_rank_fact(fact: AxisFact) -> bool:
-    return fact.label.endswith("상위") or fact.label == "상위 브랜드 추이"
+    return fact.label.endswith("상위") or (fact.label.startswith("상위 ") and fact.label.endswith(" 추이"))
 
 
 def _metric_fact_detail(call: dict[str, Any], calls: list[dict[str, Any]]) -> MetricFactDetail:
@@ -642,11 +652,12 @@ def _portfolio_gainer_text(value: Any) -> str:
 
 def _required_top_trend_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
+    axis_label = display_level_name(data.get("level") or "Brand")
     for item in data.get("level_top5_trend_series", [])[:5]:
         if not isinstance(item, dict):
             continue
-        brand = item.get("brand")
-        if not brand:
+        group_value = item.get("name") or item.get("brand")
+        if not group_value:
             continue
         rank = rank_value(item.get("rank"), None)
         share_delta = _top_trend_share_delta(item)
@@ -657,16 +668,16 @@ def _required_top_trend_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
         delta_text = _top_trend_delta_text(share_delta, period)
         parts = [
             f"{rank}위" if rank else "",
-            str(brand),
+            str(group_value),
             ms_path,
             delta_text,
             f"최신 매출 {sales}" if sales else "",
             f"매출 변화 {sales_delta}" if sales_delta else "",
         ]
-        rows.append(("상위 브랜드 추이", " ".join(part for part in parts if part)))
+        rows.append((f"상위 {axis_label} 추이", " ".join(part for part in parts if part)))
         monthly_ms = _top_trend_monthly_ms_summary(item)
         if monthly_ms:
-            rows.append(("상위 브랜드 월별 MS", monthly_ms))
+            rows.append((f"상위 {axis_label} 월별 MS", monthly_ms))
     return rows
 
 
@@ -779,6 +790,34 @@ def _required_hira_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
     return _required_hira_unavailable_rows(data)
 
 
+def _required_hira_procedure_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    procedure_rows = _hira_procedure_rows(data)
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if isinstance(render_data, dict):
+                procedure_rows.extend(_hira_procedure_rows(render_data))
+    rows: list[tuple[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for label, code, procedure_name, patient_count, year in procedure_rows:
+        if not can_surface_derived_value(patient_count, required_period=year):
+            continue
+        key = (str(label or ""), str(code or ""), str(year or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(("HIRA 진료행위", f"{procedure_name}({code}) {year}년 {label}: {patient_count}명"))
+        if len(rows) >= 3:
+            break
+    if rows:
+        return rows
+    message = data.get("message")
+    if message:
+        return [("HIRA 진료행위", str(message))]
+    return [("HIRA 진료행위", "행위코드 기준 진료행위 통계 수치 미반환")]
+
+
 def _required_hira_unavailable_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
     calls = data.get("calls")
     nested_calls = [call for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
@@ -860,10 +899,14 @@ def _call_fact_block(
         return _metric_facts(tool, data, detail=detail)
     if _is_hira_disease_call(call):
         return _hira_facts(tool, data)
+    if _is_hira_procedure_call(call):
+        return _hira_procedure_facts(data)
     if "clinical" in tool:
-        return _external_items_facts("임상시험", data, ("NCTId", "CLNC_TEST_SN", "briefTitle", "overallStatus", "GOODS_NAME"))
+        return _clinical_trial_facts(data)
     if "patent" in tool or "orangebook" in tool:
-        return _external_items_facts("특허/라벨", data, ("DOMESTIC_PATENT_NO", "KOR_PAT_NO", "ITEM_NAME", "PRT_NAME", "DOMESTIC_END_DATE"))
+        return _patent_facts(data)
+    if tool == "web_search" or str(call.get("source") or "") == "web_search":
+        return _web_search_facts(data)
     return _generic_facts(tool, data)
 
 
@@ -1018,6 +1061,7 @@ def _top_brand_trends(data: dict[str, Any]) -> str:
     trends = data.get("level_top5_trend_series")
     if not isinstance(trends, list):
         return ""
+    axis_label = display_level_name(data.get("level") or "Brand")
     summary_rows: list[tuple[Any, Any, Any, Any, Any, Any, Any]] = []
     for item in trends[:TABLE_LIMIT]:
         if not isinstance(item, dict):
@@ -1027,7 +1071,7 @@ def _top_brand_trends(data: dict[str, Any]) -> str:
         summary_rows.append(
             (
                 rank_value(item.get("rank"), None),
-                item.get("brand"),
+                item.get("name") or item.get("brand"),
                 _top_trend_ms_cell(share_delta.from_period, share_delta.from_ms_pct),
                 _top_trend_ms_cell(share_delta.to_period, share_delta.to_ms_pct),
                 _top_trend_delta_cell(share_delta, period),
@@ -1037,14 +1081,14 @@ def _top_brand_trends(data: dict[str, Any]) -> str:
         )
     blocks = [
         table(
-            "### 상위 브랜드 점유율 추이 fact",
-            ("최신 순위", "브랜드", "시작 MS", "최신 MS", "MS 변화", "최신 매출", "매출 변화"),
+            f"### 상위 {cell(axis_label)} 점유율 추이 fact",
+            ("최신 순위", axis_label, "시작 MS", "최신 MS", "MS 변화", "최신 매출", "매출 변화"),
             tuple(summary_rows),
         )
     ]
     monthly_rows = _top_brand_monthly_rows(trends)
     if monthly_rows:
-        blocks.append(table("### 상위 브랜드 월별 MS fact", ("브랜드", "기간", "MS", "매출", "순위"), tuple(monthly_rows)))
+        blocks.append(table(f"### 상위 {cell(axis_label)} 월별 MS fact", (axis_label, "기간", "MS", "매출", "순위"), tuple(monthly_rows)))
     return "\n\n".join(blocks)
 
 
@@ -1070,7 +1114,8 @@ def _top_brand_monthly_trends(data: dict[str, Any]) -> str:
     monthly_rows = _top_brand_monthly_rows(trends)
     if not monthly_rows:
         return ""
-    return table("### 상위 브랜드 월별 MS fact", ("브랜드", "기간", "MS", "매출", "순위"), tuple(monthly_rows))
+    axis_label = display_level_name(data.get("level") or "Brand")
+    return table(f"### 상위 {cell(axis_label)} 월별 MS fact", (axis_label, "기간", "MS", "매출", "순위"), tuple(monthly_rows))
 
 
 def _top_brand_monthly_rows(trends: list[Any]) -> list[tuple[Any, Any, Any, Any, Any]]:
@@ -1078,7 +1123,7 @@ def _top_brand_monthly_rows(trends: list[Any]) -> list[tuple[Any, Any, Any, Any,
     for item in trends[:5]:
         if not isinstance(item, dict):
             continue
-        brand = item.get("brand")
+        brand = item.get("name") or item.get("brand")
         series = item.get("series")
         if not brand or not isinstance(series, list):
             continue
@@ -1218,6 +1263,61 @@ def _hira_rows(data: dict[str, Any]) -> list[HiraRow]:
     return rows
 
 
+def _hira_procedure_facts(data: dict[str, Any]) -> str:
+    rows = _hira_procedure_rows(data)
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if isinstance(render_data, dict):
+                rows.extend(_hira_procedure_rows(render_data))
+    deduped = _dedupe_hira_procedure_rows(rows)
+    if deduped:
+        return table(
+            "### HIRA 진료행위통계 fact",
+            ("구분", "행위코드", "행위명", "기준연도", "환자수"),
+            tuple((label, code, name, year, patient_count) for label, code, name, patient_count, year in deduped[:TABLE_LIMIT]),
+        )
+    return table("### HIRA 진료행위통계 fact", ("내용",), ((data.get("message") or "조회 결과 없음",),))
+
+
+def _hira_procedure_rows(data: dict[str, Any]) -> list[HiraRow]:
+    rows: list[HiraRow] = []
+    for item in items(data):
+        label = (
+            item.get("inpatOpat")
+            or item.get("ipatOpat")
+            or item.get("ipatOpatDgsTpCdNm")
+            or item.get("sexCdNm")
+            or item.get("ageCdNm")
+            or item.get("diagCdNm")
+            or item.get("ykihoCdNm")
+            or item.get("sex")
+            or item.get("age")
+            or item.get("grade")
+            or item.get("lcName")
+            or item.get("locNm")
+        )
+        code = item.get("st5Cd") or item.get("ST5_CD") or item.get("itemCd") or item.get("mdlrtActCd") or _request_value(data, "st5Cd")
+        name = item.get("st5Nm") or item.get("st5CdNm") or item.get("ST5_NM") or item.get("itemNm") or item.get("mdlrtActNm") or item.get("korNm") or "-"
+        patient_count = item.get("ptntCnt") or item.get("PTNT_CNT") or "-"
+        year = surface_year(data, item)
+        rows.append((label, code, name, patient_count, year))
+    return rows
+
+
+def _dedupe_hira_procedure_rows(rows: list[HiraRow]) -> list[HiraRow]:
+    seen: set[tuple[str, str, str]] = set()
+    out: list[HiraRow] = []
+    for label, code, name, patient_count, year in rows:
+        key = (str(label or ""), str(code or ""), str(year or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((label, code, name, patient_count, year))
+    return out
+
+
 def _dedupe_hira_rows(
     rows: list[HiraRow],
     *,
@@ -1256,6 +1356,147 @@ def _external_fact_rows(data: dict[str, Any], keys: tuple[str, ...]) -> list[tup
             elif isinstance(call.get("summary_text"), str):
                 rows.append((str(call["summary_text"]),))
     return _dedupe_external_rows(rows)[:TABLE_LIMIT]
+
+
+def _patent_facts(data: dict[str, Any]) -> str:
+    rows = _patent_rows(data)
+    if not rows:
+        return table("### 특허 fact", ("내용",), ((data.get("message") or data.get("summary_text") or "조회 결과 없음",),))
+    return table(
+        "### 특허 fact",
+        ("출처", "제품/성분", "특허번호", "상태", "만료일", "권리자/출원인"),
+        tuple(rows[:TABLE_LIMIT]),
+    )
+
+
+def _clinical_trial_facts(data: dict[str, Any]) -> str:
+    rows = _clinical_trial_rows(data)
+    if not rows:
+        return table("### 임상시험 fact", ("내용",), ((data.get("message") or data.get("summary_text") or "조회 결과 없음",),))
+    return table(
+        "### 임상시험 fact",
+        ("출처", "시험/식별자", "제목/제품", "상태", "단계"),
+        tuple(rows[:TABLE_LIMIT]),
+    )
+
+
+def _web_search_facts(data: dict[str, Any]) -> str:
+    rows = []
+    for item in _web_search_items(data):
+        rows.append((item.get("title") or "-", item.get("url") or "-", item.get("snippet") or "-"))
+    if not rows:
+        return table("### 웹 검색 결과 fact(미검증)", ("내용",), ((data.get("message") or "조회 결과 없음",),))
+    return table("### 웹 검색 결과 fact(미검증)", ("제목", "URL", "스니펫"), tuple(rows[:TABLE_LIMIT]))
+
+
+def _web_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    direct = list(items(data))
+    if direct:
+        return direct[:TABLE_LIMIT]
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return []
+    nested: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        render_data = call.get("render_data")
+        if isinstance(render_data, dict):
+            nested.extend(items(render_data))
+    return nested[:TABLE_LIMIT]
+
+
+def _iter_external_items(data: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    source = str(data.get("tool") or data.get("source") or "external")
+    for item in items(data):
+        yield source, item
+    payload = data.get("payload")
+    if isinstance(payload, dict):
+        for item in _payload_items(payload):
+            if isinstance(item, dict):
+                yield source, item
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        call_source = str(call.get("tool") or call.get("source") or "external")
+        render_data = call.get("render_data")
+        if not isinstance(render_data, dict):
+            continue
+        for item in items(render_data):
+            yield call_source, item
+        nested_payload = render_data.get("payload")
+        if isinstance(nested_payload, dict):
+            for item in _payload_items(nested_payload):
+                if isinstance(item, dict):
+                    yield call_source, item
+
+
+def _patent_rows(data: dict[str, Any]) -> list[tuple[str, str, str, str, str, str]]:
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for source, item in _iter_external_items(data):
+        patent_no = item.get("DOMESTIC_PATENT_NO") or item.get("KOR_PAT_NO")
+        if not patent_no:
+            continue
+        product = _join_external_values(item.get("ITEM_NAME") or item.get("PRT_NAME"), item.get("INGR_NAME") or item.get("INGR_ENG_NAME"))
+        status = str(item.get("DOMESTIC_PATENT_STATUS") or item.get("KOR_STATUS") or "-")
+        end_date = str(item.get("DOMESTIC_END_DATE") or item.get("KOR_EXP_DATE") or "-")
+        owner = str(item.get("PATENTEE") or item.get("KOR_APPLICANT") or "-")
+        rows.append((source, product or "-", str(patent_no), status, end_date, owner))
+    return _dedupe_external_rows(rows)
+
+
+def _clinical_trial_rows(data: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
+    rows: list[tuple[str, str, str, str, str]] = []
+    rows.extend(_clinical_trial_direct_rows(data))
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            render_data = call.get("render_data")
+            if isinstance(render_data, dict):
+                rows.extend(_clinical_trial_direct_rows(render_data))
+    for source, item in _iter_external_items(data):
+        row = _clinical_trial_item_row(source, item)
+        if row:
+            rows.append(row)
+    return _dedupe_external_rows(rows)
+
+
+def _clinical_trial_direct_rows(data: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
+    nct_ids = data.get("nct_ids")
+    if not isinstance(nct_ids, list) or not nct_ids:
+        return []
+    title = str(data.get("briefTitle") or data.get("title") or "-")
+    status = str(data.get("overallStatus") or data.get("status") or "-")
+    return [(str(data.get("tool") or data.get("source") or "external"), ", ".join(str(value) for value in nct_ids[:3]), title, status, "-")]
+
+
+def _clinical_trial_item_row(source: str, item: dict[str, Any]) -> tuple[str, str, str, str, str] | None:
+    protocol = item.get("protocolSection")
+    protocol_data = protocol if isinstance(protocol, dict) else {}
+    identification = protocol_data.get("identificationModule")
+    identification_data = identification if isinstance(identification, dict) else {}
+    status = protocol_data.get("statusModule")
+    status_data = status if isinstance(status, dict) else {}
+    design = protocol_data.get("designModule")
+    design_data = design if isinstance(design, dict) else {}
+    trial_id = item.get("NCTId") or identification_data.get("nctId") or item.get("CLNC_TEST_SN")
+    title = item.get("briefTitle") or identification_data.get("briefTitle") or identification_data.get("officialTitle") or item.get("CLINC_EXAM_TITLE") or item.get("GOODS_NAME")
+    if not trial_id and not title:
+        return None
+    phase = item.get("phase") or item.get("CLINIC_STEP_NAME") or design_data.get("phases") or "-"
+    if isinstance(phase, list):
+        phase = ", ".join(str(value) for value in phase)
+    trial_status = item.get("overallStatus") or status_data.get("overallStatus") or item.get("CLINC_EXAM_STTUS") or "-"
+    return (source, str(trial_id or "-"), str(title or "-"), str(trial_status), str(phase))
+
+
+def _join_external_values(*values: Any) -> str:
+    return " / ".join(str(value) for value in values if value)
 
 
 def _external_rows_from_data(data: dict[str, Any], keys: tuple[str, ...]) -> list[tuple[str]]:
@@ -1348,15 +1589,15 @@ def _clinical_study_text(item: dict[str, Any]) -> str:
     return " / ".join(part for part in parts if part)
 
 
-def _dedupe_external_rows(rows: list[tuple[str]]) -> list[tuple[str]]:
-    out: list[tuple[str]] = []
-    seen: set[str] = set()
+def _dedupe_external_rows(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    out: list[tuple[Any, ...]] = []
+    seen: set[tuple[str, ...]] = set()
     for row in rows:
-        value = str(row[0]).strip() if row else ""
-        if not value or value in seen:
+        key = tuple(str(value).strip() for value in row)
+        if not any(key) or key in seen:
             continue
-        seen.add(value)
-        out.append((value,))
+        seen.add(key)
+        out.append(row)
     return out
 
 
@@ -1374,7 +1615,9 @@ def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
     rows = _data_source_rows(calls, sources)
     rows.extend(_news_source_rows(calls))
     rows.extend(_hira_source_rows(calls))
+    rows.extend(_hira_procedure_source_rows(calls))
     rows.extend(_external_source_rows(calls))
+    rows.extend(_web_search_source_rows(calls))
     rows.extend(_fallback_source_rows(sources, rows))
     if not rows:
         return ""
@@ -1403,10 +1646,20 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
     view = next((str(spec.get("view") or spec.get("view_type")) for spec in query_specs if spec.get("view") or spec.get("view_type")), "")
     if not view:
         view = _view_from_market_code(market)
+    market_name = _first_market_scope_value(calls, query_specs, "market_name")
+    market_definition = _first_market_scope_value(calls, query_specs, "market_definition")
+    denominator = _first_market_scope_value(calls, query_specs, "total_brands_in_market")
     if market:
-        extra_details.append(f"시장 {market}")
+        extra_details.append(f"market_id {market}")
+    if market_name:
+        extra_details.append(f"market_name {market_name}")
     if view:
         extra_details.append(f"view {view}")
+    denominator_basis = _denominator_basis(view, market, denominator) if market or view else ""
+    if denominator_basis:
+        extra_details.append(f"denominator_basis {denominator_basis}")
+    if market_definition:
+        extra_details.append(f"market_definition {market_definition}")
     if not extra_details:
         return []
     details.extend(extra_details)
@@ -1415,11 +1668,45 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
 
 
 def _view_from_market_code(market: str) -> str:
-    if market.startswith("strategy_"):
-        return "strategic"
+    if market.startswith(("ml_", "strategy_")):
+        return "market_landscape"
+    if market.startswith("cd_"):
+        return "competitive_dynamics"
     if market.startswith("general_"):
-        return "general"
+        return "general_view"
     return ""
+
+
+def _first_market_scope_value(calls: list[dict[str, Any]], specs: tuple[dict[str, Any], ...], key: str) -> Any:
+    for spec in specs:
+        value = spec.get(key)
+        if value not in (None, ""):
+            return value
+    for call in calls:
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _denominator_basis(view: str, market: str, denominator: Any) -> str:
+    count = str(denominator)
+    if view == "market_landscape":
+        basis = "market_landscape rows"
+    elif view == "competitive_dynamics":
+        basis = "competitive_dynamics filtered rows"
+    elif view == "general_view":
+        basis = "ATC4 general view"
+    elif market.startswith("strategy_"):
+        basis = "strategy direct competition set"
+    else:
+        basis = "market scope"
+    if denominator in (None, ""):
+        return basis
+    return f"{basis} {count}개"
 
 
 def _news_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -1452,6 +1739,34 @@ def _hira_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
         else:
             source_calls = [call]
         rows.extend(_hira_source_rows_from_calls(source_calls, facade_tool))
+    return _dedupe_rows(rows)
+
+
+def _hira_procedure_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for call in calls:
+        if str(call.get("source")) != "hira_procedure" and str(call.get("tool") or "") != "get_procedure_stats":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        source_calls = data.get("calls") if isinstance(data.get("calls"), list) else [call]
+        seen: set[tuple[str, str]] = set()
+        for nested in source_calls:
+            nested_data = nested.get("render_data") if isinstance(nested, dict) else None
+            if not isinstance(nested_data, dict):
+                continue
+            tool = str(nested.get("tool") or call.get("tool") or "get_procedure_stats")
+            st5_cd = str(_request_value(nested_data, "st5Cd") or "").strip()
+            year = str(_request_value(nested_data, "year") or nested_data.get("year") or "").strip()
+            detail = f"HIRA 진료행위정보서비스 · {tool}"
+            suffix = ", ".join(part for part in (f"st5Cd {st5_cd}" if st5_cd else "", f"{year}년" if year else "") if part)
+            if suffix:
+                detail += f" — {suffix}"
+            row = ("외부 HIRA", detail)
+            if row not in seen:
+                rows.append(row)
+                seen.add(row)
     return _dedupe_rows(rows)
 
 
@@ -1536,6 +1851,29 @@ def _external_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
                 if request_text:
                     detail += f" — {request_text}"
                 rows.append(("외부 API", f"{tool} · {detail}"))
+    return _dedupe_rows(rows)
+
+
+def _web_search_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for call in calls:
+        if str(call.get("source")) != "web_search" and str(call.get("tool") or "") != "web_search":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        provider = str(data.get("provider") or "web_search")
+        query = str(data.get("query") or _request_value(data, "query") or "").strip()
+        detail = f"{provider} 웹 검색 결과(미검증)"
+        if query:
+            detail += f" — query={query}"
+        for item in _web_search_items(data):
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if url:
+                rows.append(("웹 검색", f"{detail} — {title} {url}".strip()))
+        if not rows:
+            rows.append(("웹 검색", detail))
     return _dedupe_rows(rows)
 
 

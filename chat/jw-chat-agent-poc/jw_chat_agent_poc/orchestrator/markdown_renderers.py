@@ -32,6 +32,10 @@ def call_data_md(call: dict[str, Any]) -> str:
         return metrics_md(tool, render_data)
     if tool.startswith("hira_disease") or str(call.get("source")) == "hira_disease":
         return hira_md(tool, render_data)
+    if tool.startswith("hira_procedure") or tool == "get_procedure_stats" or str(call.get("source")) == "hira_procedure":
+        return hira_procedure_md(render_data)
+    if tool == "web_search" or str(call.get("source")) == "web_search":
+        return web_search_md(render_data)
     if "clinical" in tool:
         return clinical_md(render_data)
     if "patent" in tool or "orangebook" in tool:
@@ -299,6 +303,103 @@ def _has_unsurfaced_hira_patient_counts(data: dict[str, Any]) -> bool:
         if isinstance(render_data, dict) and _has_unsurfaced_hira_patient_counts(render_data):
             return True
     return False
+
+
+def hira_procedure_md(data: dict[str, Any]) -> str:
+    rows = _hira_procedure_rows(data)
+    if rows:
+        return table(
+            "### HIRA 진료행위통계",
+            ("구분", "행위코드", "행위명", "기준연도", "환자수", "명세서", "총사용량"),
+            tuple(rows[:TABLE_LIMIT]),
+        )
+    message = data.get("message") or _nested_status_message(data) or "HIRA 진료행위 통계 조회 결과 없음"
+    return table("### HIRA 진료행위통계", ("상태",), ((message,),))
+
+
+def _hira_procedure_rows(data: dict[str, Any]) -> list[tuple[Any, Any, Any, Any, Any, Any, Any]]:
+    rows = [_hira_procedure_item_row(item, data) for item in items(data)]
+    visible = [row for row in rows if row is not None]
+    if visible:
+        return visible
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return []
+    nested_rows: list[tuple[Any, Any, Any, Any, Any, Any, Any]] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        render_data = call.get("render_data")
+        if not isinstance(render_data, dict):
+            continue
+        nested_rows.extend(row for item in items(render_data) if (row := _hira_procedure_item_row(item, render_data)) is not None)
+    return nested_rows[:TABLE_LIMIT]
+
+
+def _hira_procedure_item_row(item: dict[str, Any], data: dict[str, Any] | None = None) -> tuple[Any, Any, Any, Any, Any, Any, Any] | None:
+    source = data or {}
+    label = (
+        item.get("inpatOpat")
+        or item.get("ipatOpat")
+        or item.get("ipatOpatDgsTpCdNm")
+        or item.get("sexCdNm")
+        or item.get("ageCdNm")
+        or item.get("diagCdNm")
+        or item.get("ykihoCdNm")
+        or item.get("sex")
+        or item.get("age")
+        or item.get("grade")
+        or item.get("lcName")
+        or item.get("locNm")
+    )
+    code = item.get("st5Cd") or item.get("ST5_CD") or item.get("itemCd") or item.get("mdlrtActCd") or _request_st5_cd(source)
+    name = item.get("st5Nm") or item.get("st5CdNm") or item.get("ST5_NM") or item.get("itemNm") or item.get("mdlrtActNm") or item.get("korNm") or "-"
+    patient_count = item.get("ptntCnt") or item.get("PTNT_CNT") or "-"
+    spec_count = item.get("specCnt") or item.get("SPEC_CNT") or "-"
+    use_qty = item.get("useQty") or item.get("USE_QTY") or item.get("totUseQty") or "-"
+    year = surface_year(source, item)
+    if not can_surface_derived_value(patient_count, required_period=year):
+        return None
+    return (label or "-", code or "-", name, year, patient_count, spec_count, use_qty)
+
+
+def _request_st5_cd(data: dict[str, Any]) -> str:
+    request = data.get("request")
+    if isinstance(request, dict):
+        return str(request.get("st5Cd") or "")
+    return ""
+
+
+def web_search_md(data: dict[str, Any]) -> str:
+    rows = tuple(
+        (
+            item.get("title") or "-",
+            item.get("url") or "-",
+            item.get("snippet") or "-",
+        )
+        for item in _web_search_rows(data)
+    )
+    if rows:
+        return table("### 웹 검색 결과(미검증)", ("제목", "URL", "스니펫"), rows)
+    message = data.get("message") or _nested_status_message(data) or "웹 검색 결과 없음"
+    return table("### 웹 검색 결과(미검증)", ("상태", "설명"), ((data.get("provider") or "web_search", message),))
+
+
+def _web_search_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = list(items(data))
+    if rows:
+        return rows[:TABLE_LIMIT]
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return []
+    nested_rows: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        render_data = call.get("render_data")
+        if isinstance(render_data, dict):
+            nested_rows.extend(items(render_data))
+    return nested_rows[:TABLE_LIMIT]
 
 
 def clinical_md(data: dict[str, Any]) -> str:

@@ -390,7 +390,7 @@ def _parse_top_brand_line(line: str) -> dict[str, str]:
 
 def _parse_top_trend_line(line: str) -> dict[str, str]:
     start_latest_match = re.search(
-        r"상위 브랜드 추이:\s*(?P<rank>\d+)위\s+(?P<brand>.+?)\s+"
+        r"상위 (?P<axis_label>[^:]+?) 추이:\s*(?P<rank>\d+)위\s+(?P<brand>.+?)\s+"
         r"(?P<from_period>[12]\d{3}(?:-\d{2}|-Q\d))\s+MS\s+(?P<from_share>-?\d+(?:\.\d+)?)%\s+→\s+"
         r"(?P<to_period>[12]\d{3}(?:-\d{2}|-Q\d))\s+MS\s+(?P<to_share>-?\d+(?:\.\d+)?)%\s+"
         r"(?P<period>[12]\d{3}(?:-\d{2}|-Q\d)→[12]\d{3}(?:-\d{2}|-Q\d))\s+점유율 변화\s+"
@@ -404,7 +404,7 @@ def _parse_top_trend_line(line: str) -> dict[str, str]:
         data["share"] = data["to_share"]
         return data
     match = re.search(
-        r"상위 브랜드 추이:\s*(?P<rank>\d+)위\s+(?P<brand>.+?)\s+최신 시장점유율\s+"
+        r"상위 (?P<axis_label>[^:]+?) 추이:\s*(?P<rank>\d+)위\s+(?P<brand>.+?)\s+최신 시장점유율\s+"
         r"(?P<share>-?\d+(?:\.\d+)?)%\s+점유율 변화\s+(?P<share_delta>[+-]?\d+(?:\.\d+)?)%p"
         r"(?:\s+최신 매출\s+(?P<sales>-?\d+(?:\.\d+)?)억원)?"
         r"(?:\s+매출 변화\s+(?P<sales_delta>[+-]?\d+(?:\.\d+)?)억원)?",
@@ -413,7 +413,7 @@ def _parse_top_trend_line(line: str) -> dict[str, str]:
     if match:
         return match.groupdict()
     perioded_match = re.search(
-        r"상위 브랜드 추이:\s*(?P<rank>\d+)위\s+(?P<brand>.+?)\s+최신 시장점유율\s+"
+        r"상위 (?P<axis_label>[^:]+?) 추이:\s*(?P<rank>\d+)위\s+(?P<brand>.+?)\s+최신 시장점유율\s+"
         r"(?P<share>-?\d+(?:\.\d+)?)%\s+"
         r"(?P<period>[12]\d{3}(?:-\d{2}|-Q\d)→[12]\d{3}(?:-\d{2}|-Q\d))\s+점유율 변화\s+"
         r"(?P<share_delta>[+-]?\d+(?:\.\d+)?)%p"
@@ -426,31 +426,40 @@ def _parse_top_trend_line(line: str) -> dict[str, str]:
 
 def ensure_top_brand_trend_table(answer: str, fact_md: str) -> str:
     mandatory = mandatory_fact_lines(fact_md)
-    trend_lines = tuple(line for line in mandatory if line.startswith("- 상위 브랜드 추이:"))
+    trend_lines = tuple(line for line in mandatory if re.match(r"-\s*상위\s+[^:]+?\s+추이:", line))
     if not trend_lines:
         return answer
-    has_table = "| 최신 순위 | 브랜드 | 시작 MS | 최신 MS | MS 변화 |" in answer
     raw_lines = set(trend_lines)
     has_raw_lines = any(line.strip() in raw_lines for line in answer.splitlines())
-    if has_table and not has_raw_lines:
-        return answer
     if not has_raw_lines and not missing_mandatory_lines(answer, trend_lines):
         return answer
     rows = tuple(row for line in trend_lines if (row := _parse_top_trend_line(line)))
     rows_with_operands = tuple(row for row in rows if row.get("from_share") and row.get("to_share"))
     if not rows_with_operands:
         return answer
-    table = _top_brand_trend_table(rows_with_operands)
+    axis_label = _top_trend_axis_label(rows_with_operands)
+    has_table = f"| 최신 순위 | {axis_label} | 시작 MS | 최신 MS | MS 변화 |" in answer
+    if has_table and not has_raw_lines:
+        return answer
+    table = _top_brand_trend_table(rows_with_operands, axis_label)
     if not table:
         return answer
     kept = [line for line in answer.splitlines() if line.strip() not in raw_lines]
     return cleanup_markdown_answer("\n\n".join(("\n".join(kept).strip(), table)))
 
 
-def _top_brand_trend_table(rows: tuple[dict[str, str], ...]) -> str:
+def _top_trend_axis_label(rows: tuple[dict[str, str], ...]) -> str:
+    for row in rows:
+        label = str(row.get("axis_label") or "").strip()
+        if label:
+            return label
+    return "브랜드"
+
+
+def _top_brand_trend_table(rows: tuple[dict[str, str], ...], axis_label: str = "브랜드") -> str:
     table = [
-        "### 상위 브랜드 추이",
-        "| 최신 순위 | 브랜드 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |",
+        f"### 상위 {axis_label} 추이",
+        f"| 최신 순위 | {axis_label} | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:

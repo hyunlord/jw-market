@@ -25,6 +25,9 @@ class GenosToolPlanner:
         allowed_brands: tuple[str, ...] = (),
         allowed_periods: tuple[str, ...] = (),
     ) -> AgentDecision:
+        deterministic_external = _deterministic_external_decision(question, observations, allowed_brands, allowed_periods)
+        if deterministic_external is not None:
+            return deterministic_external
         if not self.token:
             return self._fallback(question, observations, schemas, allowed_brands, allowed_periods)
         try:
@@ -107,6 +110,36 @@ class HeuristicToolPlanner:
         return AgentDecision(final_answer="도구 결과로 답변하세요.")
 
 
+def _deterministic_external_decision(
+    question: str,
+    observations: tuple[AgentObservation, ...],
+    allowed_brands: tuple[str, ...],
+    allowed_periods: tuple[str, ...],
+) -> AgentDecision | None:
+    """Run explicit external/API intents instead of letting the planner skip them.
+
+    The LLM planner is useful for ambiguous metric decomposition, but for
+    external source questions the safe default is to call the explicit source
+    tool and render only returned payload fields. This keeps metric fallback
+    from replacing unsupported external questions.
+    """
+    if observations:
+        return None
+    external_intent = _asks_clinical(question) or _asks_patent(question) or _asks_web_search(question) or _asks_hira_procedure(question)
+    if not external_intent:
+        return None
+    calls = _expanded_tool_calls(question, allowed_brands, allowed_periods)
+    external_calls = tuple(
+        call
+        for call in calls
+        if call.name in {"search_clinical", "search_patent", "web_search", "get_procedure_stats"}
+        or (call.name in {"get_metric", "get_brand_sales", "get_brand_share", "get_brand_series"} and _asks_explicit_metric(question))
+    )
+    if not external_calls:
+        return None
+    return AgentDecision(tool_calls=external_calls)
+
+
 def _messages(
     question: str,
     observations: tuple[AgentObservation, ...],
@@ -146,9 +179,11 @@ _MARKET_TOOL_NAMES = ("get_market_scope",)
 _RELATIVE_DATE_TOOL_NAMES = ("resolve_relative_date",)
 _NEWS_TOOL_NAMES = ("search_news",)
 _HIRA_TOOL_NAMES = ("get_disease_stats",)
+_HIRA_PROCEDURE_TOOL_NAMES = ("get_procedure_stats",)
 _CLINICAL_TOOL_NAMES = ("search_clinical",)
 _PATENT_TOOL_NAMES = ("search_patent",)
 _DRUG_INFO_TOOL_NAMES = ("search_drug_info",)
+_WEB_SEARCH_TOOL_NAMES = ("web_search",)
 _CORE_OBSERVATION_KEYS = (
     "brand",
     "metric",
@@ -209,24 +244,30 @@ def select_candidate_tools(
         names.extend(_NEWS_TOOL_NAMES)
     if _asks_hira(question):
         names.extend(_HIRA_TOOL_NAMES)
+    if _asks_hira_procedure(question):
+        names.extend(_HIRA_PROCEDURE_TOOL_NAMES)
     if _asks_clinical(question):
         names.extend(_CLINICAL_TOOL_NAMES)
     if _asks_patent(question):
         names.extend(_PATENT_TOOL_NAMES)
     if _asks_drug_info(question):
         names.extend(_DRUG_INFO_TOOL_NAMES)
+    if _asks_web_search(question):
+        names.extend(_WEB_SEARCH_TOOL_NAMES)
     if _asks_market_scope(question):
         names.extend(_MARKET_TOOL_NAMES)
     if _asks_relative_date(question):
         names.extend(_RELATIVE_DATE_TOOL_NAMES)
-    if _asks_metric_or_analysis(question) or not names:
+    external_intent = _asks_clinical(question) or _asks_patent(question) or _asks_web_search(question) or _asks_hira_procedure(question)
+    metric_context_allowed = not external_intent or _asks_explicit_metric(question)
+    if (metric_context_allowed and _asks_metric_or_analysis(question)) or not names:
         names.extend(_METRIC_TOOL_NAMES)
 
     if observations and _has_successful_metric_observation(observations) and not _needs_external_context(question):
         names = [name for name in names if name in {*_METRIC_TOOL_NAMES, "query"}]
 
     deduped = tuple(dict.fromkeys(name for name in names if name in by_name))
-    if len(deduped) < 2:
+    if len(deduped) < 2 and not external_intent:
         return schemas
     return tuple(by_name[name] for name in deduped)
 
@@ -362,12 +403,20 @@ def _asks_metric_or_analysis(question: str) -> bool:
     )
 
 
+def _asks_explicit_metric(question: str) -> bool:
+    return any(token in question for token in ("매출", "점유율", "MS", "순위", "시장규모", "시장 규모"))
+
+
 def _asks_news(question: str) -> bool:
     return any(token in question for token in ("뉴스", "이슈", "소식", "출시", "정책", "약가"))
 
 
 def _asks_hira(question: str) -> bool:
     return any(token in question for token in ("환자수", "환자 수", "질병", "질환", "HIRA"))
+
+
+def _asks_hira_procedure(question: str) -> bool:
+    return any(token in question for token in ("진료행위", "행위코드", "수가코드", "검사", "수술", "입원외래", "기관종별", "요양기관종별"))
 
 
 def _asks_clinical(question: str) -> bool:
@@ -387,7 +436,29 @@ def _asks_relative_date(question: str) -> bool:
 
 
 def _needs_external_context(question: str) -> bool:
-    return _asks_news(question) or _asks_hira(question) or _asks_clinical(question) or _asks_patent(question) or _asks_drug_info(question)
+    return _asks_news(question) or _asks_hira(question) or _asks_hira_procedure(question) or _asks_clinical(question) or _asks_patent(question) or _asks_drug_info(question) or _asks_web_search(question)
+
+
+def _asks_web_search(question: str) -> bool:
+    if _asks_patent(question) or _asks_clinical(question) or _asks_drug_info(question) or _asks_hira(question) or _asks_hira_procedure(question):
+        return False
+    return any(
+        token in question
+        for token in (
+            "디테일링",
+            "상기되는",
+            "KOL",
+            "자문",
+            "시장동향",
+            "시장 동향",
+            "트렌드",
+            "경쟁제품의 최근",
+            "경쟁 제품의 최근",
+            "프로모션",
+            "학회",
+            "가이드라인",
+        )
+    )
 
 
 def _decision_from_payload(payload: Mapping[str, Any]) -> AgentDecision:
@@ -467,7 +538,7 @@ def _needs_expanded_tools(question: str) -> bool:
         return True
     if _asks_drug_info(question):
         return True
-    return any(token in question for token in ("뉴스", "이슈", "환자", "질병", "질환", "HIRA", "임상", "특허", "라벨", "FDA"))
+    return any(token in question for token in ("뉴스", "이슈", "환자", "질병", "질환", "HIRA", "진료행위", "행위코드", "수가코드", "검사", "수술", "임상", "특허", "라벨", "FDA", "디테일링", "KOL", "시장동향"))
 
 
 def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...]) -> tuple[ToolCallPlan, ...]:
@@ -477,12 +548,16 @@ def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed
         calls.append(ToolCallPlan("search_news", {"brand": brand, "query": _news_query(question)}, "뉴스/이슈 확인"))
     if any(token in question for token in ("환자", "질병", "질환", "HIRA")):
         calls.append(ToolCallPlan("get_disease_stats", {"brand": brand}, "HIRA 질병 통계 확인"))
-    if "임상" in question:
+    if _asks_hira_procedure(question):
+        calls.append(ToolCallPlan("get_procedure_stats", {"brand": brand, "query": question}, "HIRA 진료행위 통계 확인"))
+    if _asks_clinical(question):
         calls.append(ToolCallPlan("search_clinical", {"brand": brand}, "임상 근거 확인"))
     if _asks_drug_info(question):
         calls.append(ToolCallPlan("search_drug_info", {"brand": brand}, "식약처 허가정보 확인"))
-    if any(token in question for token in ("특허", "라벨", "FDA")):
+    if _asks_patent(question):
         calls.append(ToolCallPlan("search_patent", {"brand": brand}, "특허/라벨 근거 확인"))
+    if _asks_web_search(question):
+        calls.append(ToolCallPlan("web_search", {"brand": brand, "query": question}, "웹 검색 결과 확인"))
     if _asks_series_metric(question) or any(token in question for token in ("매출", "점유율", "순위", "시장")):
         measure = (
             "series"

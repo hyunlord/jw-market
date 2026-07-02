@@ -17,11 +17,17 @@ from jw_chat_agent_poc.tools.external.response_parsing import parse_response, re
 
 DATA_GO_KR_KEY_ENV = "DATA_GO_KR_KEY"
 CLINICAL_TRIALS_MCP_URL_ENV = "CLINICAL_TRIALS_MCP_URL"
+WEB_SEARCH_PROVIDER_ENV = "WEB_SEARCH_PROVIDER"
+TAVILY_API_KEY_ENV = "TAVILY_API_KEY"
+SERPER_API_KEY_ENV = "SERPER_API_KEY"
+BRAVE_SEARCH_API_KEY_ENV = "BRAVE_SEARCH_API_KEY"
 MFDS_PATENT_QUERY_ALIASES = {
     "pitavastatin": "리바로",
     "ezetimibe": "리바로젯",
 }
 HIRA_DISEASE_SOURCE = "hira_disease"
+HIRA_PROCEDURE_SOURCE = "hira_procedure"
+WEB_SEARCH_SOURCE = "web_search"
 
 
 @dataclass(frozen=True)
@@ -130,6 +136,44 @@ class ExternalApiClient:
         call = self._fixture_or_live("hira_disease_area_stats", {"sickCd": sick_cd, "year": year}, xml=True)
         return self._with_source(call, HIRA_DISEASE_SOURCE)
 
+    def hira_procedure_gender_ipat_opat_stats(self, st5_cd: str, year: str = "2024", std_type: str = "1") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_procedure_gender_ipat_opat_stats",
+            {"st5Cd": st5_cd, "year": year, "stdType": std_type},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_PROCEDURE_SOURCE)
+
+    def hira_procedure_gender_age_stats(self, st5_cd: str, year: str = "2024", std_type: str = "1") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_procedure_gender_age_stats",
+            {"st5Cd": st5_cd, "year": year, "stdType": std_type},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_PROCEDURE_SOURCE)
+
+    def hira_procedure_institution_class_stats(self, st5_cd: str, year: str = "2024", std_type: str = "1") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_procedure_institution_class_stats",
+            {"st5Cd": st5_cd, "year": year, "stdType": std_type},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_PROCEDURE_SOURCE)
+
+    def hira_procedure_area_stats(self, st5_cd: str, year: str = "2024", std_type: str = "1") -> ExternalCall:
+        call = self._fixture_or_live(
+            "hira_procedure_area_stats",
+            {"st5Cd": st5_cd, "year": year, "stdType": std_type},
+            xml=True,
+        )
+        return self._with_source(call, HIRA_PROCEDURE_SOURCE)
+
+    def web_search(self, query: str, max_results: int = 5) -> ExternalCall:
+        if self.mode != "live":
+            call = self._fixture_or_live("web_search", {"query": query, "max_results": str(max_results)})
+            return self._with_source(call, WEB_SEARCH_SOURCE)
+        return self._live_web_search(query, max_results=max_results)
+
     @staticmethod
     def _with_source(call: ExternalCall, source: str) -> ExternalCall:
         return ExternalCall(
@@ -210,6 +254,99 @@ class ExternalApiClient:
             safe_url=url,
             elapsed_ms=elapsed,
         )
+
+    def _live_web_search(self, query: str, max_results: int = 5) -> ExternalCall:
+        provider = os.environ.get(WEB_SEARCH_PROVIDER_ENV, "tavily").strip().lower()
+        if provider == "tavily":
+            return self._live_tavily_search(query, max_results)
+        if provider == "serper":
+            return self._live_serper_search(query, max_results)
+        if provider == "brave":
+            return self._live_brave_search(query, max_results)
+        return ExternalCall(
+            tool="web_search",
+            source=WEB_SEARCH_SOURCE,
+            status="unsupported",
+            summary_text=f"지원하지 않는 web search provider: {provider}",
+            render_data={"query": query, "provider": provider, "items": [], "external_claim_policy": "web_results_unverified"},
+            elapsed_ms=0.0,
+        )
+
+    def _live_tavily_search(self, query: str, max_results: int) -> ExternalCall:
+        key = os.environ.get(TAVILY_API_KEY_ENV)
+        if not key:
+            return _missing_web_key("tavily", TAVILY_API_KEY_ENV, query)
+        start = time.monotonic()
+        try:
+            response = requests.post(
+                "https://api.tavily.com/search",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"query": query, "max_results": max(1, min(max_results, 5)), "search_depth": "basic", "include_answer": False},
+                timeout=min(self.timeout_s, 10),
+            )
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            return _web_error("tavily", query, exc, elapsed)
+        items = [
+            {"title": item.get("title"), "url": item.get("url"), "snippet": item.get("content") or item.get("snippet")}
+            for item in payload.get("results", [])[:max_results]
+            if isinstance(item, dict)
+        ]
+        return _web_call("tavily", query, items, elapsed)
+
+    def _live_serper_search(self, query: str, max_results: int) -> ExternalCall:
+        key = os.environ.get(SERPER_API_KEY_ENV)
+        if not key:
+            return _missing_web_key("serper", SERPER_API_KEY_ENV, query)
+        start = time.monotonic()
+        try:
+            response = requests.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                json={"q": query, "num": max(1, min(max_results, 10)), "gl": "kr", "hl": "ko"},
+                timeout=min(self.timeout_s, 10),
+            )
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            return _web_error("serper", query, exc, elapsed)
+        items = [
+            {"title": item.get("title"), "url": item.get("link"), "snippet": item.get("snippet")}
+            for item in payload.get("organic", [])[:max_results]
+            if isinstance(item, dict)
+        ]
+        return _web_call("serper", query, items, elapsed)
+
+    def _live_brave_search(self, query: str, max_results: int) -> ExternalCall:
+        key = os.environ.get(BRAVE_SEARCH_API_KEY_ENV)
+        if not key:
+            return _missing_web_key("brave", BRAVE_SEARCH_API_KEY_ENV, query)
+        start = time.monotonic()
+        try:
+            response = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={"X-Subscription-Token": key, "Accept": "application/json"},
+                params={"q": query, "count": max(1, min(max_results, 5)), "country": "KR", "search_lang": "ko"},
+                timeout=min(self.timeout_s, 10),
+            )
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            return _web_error("brave", query, exc, elapsed)
+        web = payload.get("web") if isinstance(payload.get("web"), dict) else {}
+        items = [
+            {"title": item.get("title"), "url": item.get("url"), "snippet": item.get("description")}
+            for item in web.get("results", [])[:max_results]
+            if isinstance(item, dict)
+        ]
+        return _web_call("brave", query, items, elapsed)
 
     @staticmethod
     def _clinicaltrials_fail_closed(
@@ -403,3 +540,57 @@ def _int_or_none(value: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _missing_web_key(provider: str, key_env: str, query: str) -> ExternalCall:
+    return ExternalCall(
+        tool="web_search",
+        source=WEB_SEARCH_SOURCE,
+        status="missing_key",
+        summary_text=f"{provider} 웹검색 API 키({key_env})가 없어 웹 검색을 실행하지 않았습니다.",
+        render_data={
+            "provider": provider,
+            "query": query,
+            "items": [],
+            "message": f"{key_env} 미설정",
+            "external_claim_policy": "web_results_unverified",
+        },
+        elapsed_ms=0.0,
+    )
+
+
+def _web_error(provider: str, query: str, exc: Exception, elapsed: float) -> ExternalCall:
+    return ExternalCall(
+        tool="web_search",
+        source=WEB_SEARCH_SOURCE,
+        status="error",
+        summary_text=f"{provider} 웹검색 실패: {str(exc)}",
+        render_data={
+            "provider": provider,
+            "query": query,
+            "items": [],
+            "message": "웹검색 실패",
+            "error": str(exc),
+            "external_claim_policy": "web_results_unverified",
+        },
+        elapsed_ms=elapsed,
+    )
+
+
+def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: float) -> ExternalCall:
+    status = "live" if items else "no_data"
+    summary = f"{provider} 웹검색 결과 {len(items)}건을 확인했습니다." if items else f"{provider} 웹검색 결과가 없습니다."
+    return ExternalCall(
+        tool="web_search",
+        source=WEB_SEARCH_SOURCE,
+        status=status,
+        summary_text=summary,
+        render_data={
+            "provider": provider,
+            "query": query,
+            "items": items,
+            "external_claim_policy": "web_results_unverified",
+            "verification_notice": "웹 검색 결과(미검증): URL과 snippet을 출처로 분리 표시하고 내부 fact로 승격하지 않습니다.",
+        },
+        elapsed_ms=elapsed,
+    )

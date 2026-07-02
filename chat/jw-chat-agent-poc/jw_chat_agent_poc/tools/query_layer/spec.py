@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 from jw_chat_agent_poc.tools.query_layer.catalog import QueryCatalog
 from jw_chat_agent_poc.tools.query_layer.store import MartRecord
@@ -63,6 +63,29 @@ def level_name(spec: Mapping[str, Any]) -> str:
     if key == "molecule":
         return "Molecule"
     return key
+
+
+_LEVEL_DISPLAY_NAMES: Final[dict[str, str]] = {
+    "Brand": "브랜드",
+    "brand": "브랜드",
+    "product": "브랜드",
+    "Molecule": "성분",
+    "molecule": "성분",
+    "dosage_form": "제형",
+    "channel": "채널",
+    "specialty": "진료과",
+    "company": "회사",
+    "nhi_type": "급여유형",
+    "ox_gx": "오리지널/제네릭",
+}
+
+
+def display_level_name(level: Any) -> str:
+    """Return the Korean display label for a query-layer grouping axis."""
+    text = str(level or "").strip()
+    if not text:
+        return "분석 기준"
+    return _LEVEL_DISPLAY_NAMES.get(text, text)
 
 
 def dimension_value(record: MartRecord, key: str) -> str:

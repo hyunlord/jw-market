@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 
 
@@ -55,6 +56,26 @@ RANKING_FACT_MD = """## 확정 fact set
 """
 
 
+AXIS_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 상위 제형 추이 | 1위 Statin/EZE 2025-05 MS 55.63% → 2026-04 MS 59.05%, 점유율 변화 +3.42%p |
+
+### 월별 MS fact
+| 기간 | 리바로 MS | 시장 |
+| --- | --- | --- |
+| 2025-05 | 3.92% | ml_006 |
+| 2026-04 | 3.76% | ml_006 |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2025-05~2026-04, 시장 ml_006, view market_landscape, denominator_basis market_landscape rows 470개 |
+"""
+
+
 def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell() -> None:
     # Given: verified trend facts exist, but final 514 returned a source-only shell.
     empty_shell = "확정 데이터 기준으로 정리하면 다음과 같습니다.\n\n## 출처\n- 데이터: UBIST / IQVIA NSA"
@@ -91,3 +112,97 @@ def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> Non
     assert "시장점유율 3.76%" in revised
     assert "순위 6/470" in revised
     assert "## 출처" in revised
+
+
+def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
+    answer = "매출 추이는 확인됩니다. 최신 값은 저점 이후 회복 흐름을 보여줍니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "[리바로] 영업활동의 Impact level에 변화가 있는가? 매출 추이와 영업 활동(상기 콜)의 연계성 파악",
+        answer,
+        {"fact_md": TREND_FACT_MD},
+    )
+
+    assert "## 영업-매출 연계 분석 설계" in revised
+    assert "영업활동 데이터 보유 여부" in revised
+    assert "1. 미보유 데이터" in revised
+    assert "3. 해석 가능한 상한선" in revised
+    assert "CSD 영업활동" in revised
+    assert "콜 수" in revised
+    assert "활동 전후 1~3개월" in revised
+    assert "회복 흐름" not in revised
+    assert "MS는 29.34%에서 25.36%로 낮아졌습니다" in revised
+    assert revised.index("## 영업-매출 연계 분석 설계") < revised.index("## 출처")
+
+
+def test_trend_support_contract_adds_axis_support_matrix() -> None:
+    answer = "제형 축 변화는 확인됩니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "[리바로] Weekly 및 Monthly 별로 추이 변화는 어떠하며, Class/Molecule/브랜드/용량 및 제형 단에서의 추이의 변화가 있는가?",
+        answer,
+        {"fact_md": AXIS_FACT_MD},
+    )
+
+    assert "## 추이 지원 범위" in revised
+    assert "| Weekly | 미지원 |" in revised
+    assert "| Monthly | 지원 |" in revised
+    assert "| Form | 지원 |" in revised
+    assert "| Dose | 미지원 |" in revised
+    assert "### 지원 축 so-what" in revised
+    assert "Statin/EZE(제형)" in revised
+
+
+def test_change_drivers_contract_adds_external_internal_table() -> None:
+    answer = "보유 proxy 기준으로만 설명합니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "[리바로] 목표 시장에서의 향후 예상되는 시장 변화 요인이 있는가? - External: 타사 경쟁품 출시,  Market expansion, 보건 정책 변화(약가인하 등) - Internal: 자사 Line extension, 영업/채널 (타겟 Segment)",
+        answer,
+        {"fact_md": TREND_FACT_MD},
+    )
+
+    assert "## 변화요인 분석 설계" in revised
+    assert "| External |" in revised
+    assert "| Internal |" in revised
+    assert "### 미보유 데이터 처리" in revised
+    assert "해석 가능한 상한선" in revised
+    assert "이벤트 전후 1~3개월" in revised
+
+
+def test_change_drivers_contract_can_be_reapplied_after_channel_claim_policy() -> None:
+    question = "[리바로] 목표 시장에서의 향후 예상되는 시장 변화 요인이 있는가? - External: 타사 경쟁품 출시,  Market expansion, 보건 정책 변화(약가인하 등) - Internal: 자사 Line extension, 영업/채널 (타겟 Segment)"
+    channel_fact_md = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| channel 상위 | 1위 의원 시장점유율 3.37% 매출 41.93억원 |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2026-04, market_id ml_006 |
+"""
+    answer = "채널별 현황입니다.\n\n| 채널 | 시장점유율 | 매출 |\n| --- | --- | --- |\n| 의원 | 3.37% | 41.93억원 |\n\n## 출처\n- 데이터: UBIST"
+
+    with_contract = enforce_answer_contract(question, answer, {"fact_md": channel_fact_md})
+    policy_rewritten = apply_claim_policy(question, with_contract, channel_fact_md)
+    revised = enforce_answer_contract(question, policy_rewritten, {"fact_md": channel_fact_md})
+
+    assert "## 변화요인 분석 설계" in revised
+    assert "| External |" in revised
+    assert "| Internal |" in revised
+    assert "## 출처" in revised
+
+
+def test_simple_lookup_contract_does_not_expand_answer() -> None:
+    answer = "리바로는 2026-04 기준 매출 84.93억원, 순위 6/516입니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "[리바로] 매출 알려줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert revised == answer

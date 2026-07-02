@@ -5,7 +5,28 @@ from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 
 
 _METRIC_TOKENS = ("매출", "점유율", "순위", "시장", "경쟁사", "경쟁", "상위", "위협")
-_EXTERNAL_TOKENS = ("뉴스", "이슈", "HIRA", "환자", "질병", "질환", "임상", "특허", "라벨", "FDA")
+_EXTERNAL_TOKENS = (
+    "뉴스",
+    "이슈",
+    "HIRA",
+    "환자",
+    "질병",
+    "질환",
+    "임상",
+    "특허",
+    "라벨",
+    "FDA",
+    "진료행위",
+    "행위코드",
+    "수가코드",
+    "입원외래",
+    "기관종별",
+    "요양기관종별",
+    "디테일링",
+    "상기되는",
+    "KOL",
+    "시장동향",
+)
 _DRUG_INFO_TOKENS = ("허가", "품목", "식약처", "MFDS", "의약품정보", "의약품 정보")
 _COMPLEX_TOKENS = (
     "같은 시장에서",
@@ -37,6 +58,8 @@ def should_use_agent_loop(question: str) -> bool:
         return False
     if any(token in question for token in _DRUG_INFO_TOKENS):
         return True
+    if _external_question_needs_agent_loop(question):
+        return True
     if _issue_question_needs_quant_context(question):
         return True
     if _patient_sales_question(question):
@@ -54,6 +77,24 @@ def _issue_question_needs_quant_context(question: str) -> bool:
 
 def _patient_sales_question(question: str) -> bool:
     return "매출" in question and any(token in question for token in ("환자", "환자수", "환자 수", "질병", "질환", "HIRA"))
+
+
+def _external_question_needs_agent_loop(question: str) -> bool:
+    return any(
+        token in question
+        for token in (
+            "진료행위",
+            "행위코드",
+            "수가코드",
+            "입원외래",
+            "기관종별",
+            "요양기관종별",
+            "디테일링",
+            "상기되는",
+            "KOL",
+            "시장동향",
+        )
+    )
 
 
 def _segment_metric_question(question: str) -> bool:

@@ -10,7 +10,8 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
-from jw_chat_agent_poc.agent_loop.planner import HeuristicToolPlanner
+from jw_chat_agent_poc.agent_loop.external_tools import clinical_call
+from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.router import BQRouter
 from jw_chat_agent_poc.tools.deep_analysis.news import DeepAnalysisNewsTool, StaticDeepAnalysisNewsReader
@@ -49,6 +50,50 @@ class Stage3ScriptedPlanner:
         decision = self.decisions[min(self.index, len(self.decisions) - 1)]
         self.index += 1
         return decision
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalResolution:
+    canonical_brand: str
+    molecule_en: tuple[str, ...]
+    is_combo: bool = False
+
+
+class _ClinicalBroadExternal:
+    def clinicaltrials_v2_search(self, query_intr: str) -> ExternalCall:
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="live",
+            summary_text=f"ClinicalTrials MCP matched {query_intr}",
+            render_data={
+                "payload": {
+                    "studies": [
+                        {
+                            "protocolSection": {
+                                "identificationModule": {"nctId": "NCT05537948", "briefTitle": "Pitavastatin liver transplant study"},
+                                "statusModule": {"overallStatus": "ACTIVE_NOT_RECRUITING"},
+                                "designModule": {"phases": ["PHASE4"]},
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+
+    def mfds_clinical_trial_kr(self, _keyword: str) -> ExternalCall:
+        return ExternalCall(
+            tool="mfds_clinical_trial_kr",
+            source="external_api",
+            status="live",
+            summary_text="mfds_clinical_trial_kr returned HTTP 200, totalCount=14039",
+            render_data={
+                "items": [
+                    {"GOODS_NAME": "CJ-20001", "CLINC_EXAM_TITLE": "급성 위염 임상", "CLNC_TEST_SN": "201002160"},
+                    {"GOODS_NAME": "GSK2402968", "CLINC_EXAM_TITLE": "DMD 임상", "CLNC_TEST_SN": "201101010"},
+                ]
+            },
+        )
 
 
 def _metrics_tool() -> MetricsTool:
@@ -769,6 +814,125 @@ def test_clinical_and_patent_facade_tools_return_policy_scoped_facts() -> None:
     assert {"search_clinical", "search_patent"}.issubset(set(_tool_names(result)))
     assert "external_api" in result["sources"]
     assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
+
+
+def test_external_intent_schema_filter_does_not_add_metric_fallback() -> None:
+    schemas = (
+        {"type": "function", "function": {"name": "search_patent", "description": "", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "search_clinical", "description": "", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "get_procedure_stats", "description": "", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "get_metric", "description": "", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "get_market_scope", "description": "", "parameters": {"type": "object"}}},
+    )
+
+    patent_selected = select_candidate_tools("[리바로] 경쟁 성분의 특허, 독점권은 어떠한가?", schemas, ())
+    patent_names = [item["function"]["name"] for item in patent_selected]
+
+    assert "search_patent" in patent_names
+    assert "get_metric" not in patent_names
+
+    mixed_selected = select_candidate_tools("[리바로] 특허와 매출을 같이 알려줘", schemas, ())
+    mixed_names = [item["function"]["name"] for item in mixed_selected]
+
+    assert "search_patent" in mixed_names
+    assert "get_metric" in mixed_names
+
+    procedure_selected = select_candidate_tools("[리바로] MM302 진료행위 성별 입원외래 통계 알려줘", schemas, ())
+    procedure_names = [item["function"]["name"] for item in procedure_selected]
+
+    assert "get_procedure_stats" in procedure_names
+    assert "get_metric" not in procedure_names
+
+    web_selected = select_candidate_tools("[리바로] 경쟁제품의 최근 상기되는 디테일링 주요 내용은 무엇인가?", schemas, ())
+    web_names = [item["function"]["name"] for item in web_selected]
+
+    assert "web_search" in web_names
+    assert "search_patent" not in web_names
+
+
+def test_agent_loop_routing_includes_hira_procedure_and_web_search_intents() -> None:
+    assert should_use_agent_loop("[리바로] MM302 진료행위 성별 입원외래 통계 알려줘")
+    assert should_use_agent_loop("[리바로] 경쟁제품의 최근 상기되는 디테일링 주요 내용은 무엇인가?")
+
+
+def test_genos_planner_uses_deterministic_external_tools_before_llm() -> None:
+    class FallbackBomb:
+        def decide(self, *_args, **_kwargs):
+            raise AssertionError("fallback should not be called for explicit external intents")
+
+    decision = GenosToolPlanner(fallback=FallbackBomb(), token=None).decide(
+        "[리바로] 경쟁제품의 최근 상기되는 디테일링 주요 내용은 무엇인가?",
+        (),
+        (),
+        ("리바로",),
+        ("2026-04",),
+    )
+
+    assert [call.name for call in decision.tool_calls] == ["web_search"]
+
+    procedure_decision = GenosToolPlanner(fallback=FallbackBomb(), token=None).decide(
+        "[리바로] MM302 진료행위 성별 입원외래 통계 알려줘",
+        (),
+        (),
+        ("리바로",),
+        ("2026-04",),
+    )
+
+    assert [call.name for call in procedure_decision.tool_calls] == ["get_procedure_stats"]
+
+
+def test_hira_procedure_and_web_search_fixture_tools_render_payloads() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        name="get_procedure_stats",
+                        arguments={"brand": "리바로", "query": "MM302 진료행위 성별 입원외래 통계"},
+                        reason="진료행위 통계 확인",
+                    ),
+                    ToolCallPlan(
+                        name="web_search",
+                        arguments={"brand": "리바로", "query": "리바로 경쟁제품 디테일링 주요 내용"},
+                        reason="외부 웹 검색 확인",
+                    ),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, external=ExternalApiClient(mode="fixture")),
+    )
+
+    result = agent.answer("리바로 MM302 진료행위와 경쟁제품 디테일링을 같이 확인해줘")
+
+    tool_names = _tool_names(result)
+    assert "get_procedure_stats" in tool_names
+    assert "web_search" in tool_names
+    assert {"hira_procedure", "web_search"}.issubset(set(result["sources"]))
+    assert "HIRA 진료행위통계" in result["markdown_response"]["data_md"]
+    assert "MM302" in result["markdown_response"]["data_md"]
+    assert "웹 검색 결과(미검증)" in result["markdown_response"]["data_md"]
+    assert "https://example.com/livalo-detailing" in result["markdown_response"]["data_md"]
+
+
+def test_mfds_clinical_broad_rows_are_filtered_from_evidence() -> None:
+    result = clinical_call(_ExternalResolution(canonical_brand="리바로", molecule_en=("pitavastatin",)), _ClinicalBroadExternal())
+    calls = result["render_data"]["calls"]
+    mfds_call = next(call for call in calls if call["tool"] == "mfds_clinical_trial_kr")
+    clinicaltrials_call = next(call for call in calls if call["tool"] == "clinicaltrials_v2_search")
+
+    assert clinicaltrials_call["status"] == "live"
+    assert "NCT05537948" in str(clinicaltrials_call["render_data"])
+    assert mfds_call["status"] == "no_data"
+    assert mfds_call["render_data"]["items"] == []
+    assert mfds_call["render_data"]["filtered_from_count"] == 2
+    assert "CJ-20001" not in str(result)
 
 
 def test_mfds_drug_info_facade_relays_permission_detail_without_easy_drug() -> None:

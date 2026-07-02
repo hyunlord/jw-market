@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, Protocol
 
 from jw_chat_agent_poc.agentic import FilterEntry
@@ -62,8 +62,40 @@ def disease_stats_call(question: str, resolution: AgentLoopResolution, external:
     )
 
 
+def procedure_stats_call(question: str, resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
+    st5_cd = _procedure_code(question)
+    if not st5_cd:
+        call = ExternalCall(
+            tool="hira_procedure_code_unresolved",
+            source="hira_procedure",
+            status="unsupported",
+            summary_text="진료행위 통계 조회에는 HIRA 5단 행위코드(st5Cd)가 필요합니다.",
+            render_data={
+                "brand": resolution.canonical_brand,
+                "message": "HIRA 5단 행위코드(st5Cd) 미확인",
+                "required_fields": ["st5Cd", "year", "stdType"],
+            },
+        )
+        calls = [call]
+    else:
+        year = _procedure_year(question)
+        calls = [
+            external.hira_procedure_gender_ipat_opat_stats(st5_cd, year=year),
+            external.hira_procedure_gender_age_stats(st5_cd, year=year),
+            external.hira_procedure_institution_class_stats(st5_cd, year=year),
+            external.hira_procedure_area_stats(st5_cd, year=year),
+        ]
+    return _aggregate_call(
+        facade_tool="get_procedure_stats",
+        source="hira_procedure",
+        status=_aggregate_status(calls),
+        calls=calls,
+        summary_prefix=f"{resolution.canonical_brand} HIRA 진료행위 통계",
+    )
+
+
 def clinical_call(resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
-    calls = _clinical_calls(resolution, external)
+    calls = _filter_clinical_calls_to_resolution(_clinical_calls(resolution, external), resolution)
     return _aggregate_call("search_clinical", "external_api", _aggregate_status(calls), calls, f"{resolution.canonical_brand} 임상 근거")
 
 
@@ -75,6 +107,32 @@ def patent_call(resolution: AgentLoopResolution, external: ExternalApiClient) ->
 def drug_info_call(resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
     calls = _drug_info_calls(resolution, external)
     return _aggregate_call("search_drug_info", "external_api", _aggregate_status(calls), calls, f"{resolution.canonical_brand} MFDS 허가정보")
+
+
+def web_search_call(question: str, resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
+    query = _web_search_query(question, resolution)
+    call = external.web_search(query)
+    return _aggregate_call("web_search", "web_search", call.status, [call], f"{resolution.canonical_brand} 웹 검색 결과")
+
+
+def _procedure_code(question: str) -> str:
+    import re
+
+    match = re.search(r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{2,5})(?![A-Za-z0-9])", question.upper())
+    return match.group(1) if match else ""
+
+
+def _procedure_year(question: str) -> str:
+    import re
+
+    match = re.search(r"(20\d{2})", question)
+    return match.group(1) if match else "2024"
+
+
+def _web_search_query(question: str, resolution: AgentLoopResolution) -> str:
+    if resolution.canonical_brand and resolution.canonical_brand not in question:
+        return f"{resolution.canonical_brand} {question}".strip()
+    return question.strip()
 
 
 def _clinical_calls(resolution: AgentLoopResolution, external: ExternalApiClient) -> list[ExternalCall]:
@@ -115,6 +173,48 @@ def _clinical_calls(resolution: AgentLoopResolution, external: ExternalApiClient
     if needs_seeded_false_positive_filter(resolution.canonical_brand):
         calls.append(seeded_false_positive_notice(resolution))
     return calls
+
+
+def _filter_clinical_calls_to_resolution(calls: list[ExternalCall], resolution: AgentLoopResolution) -> list[ExternalCall]:
+    return [_filter_mfds_clinical_call(call, resolution) for call in calls]
+
+
+def _filter_mfds_clinical_call(call: ExternalCall, resolution: AgentLoopResolution) -> ExternalCall:
+    if call.tool != "mfds_clinical_trial_kr":
+        return call
+    raw_items = call.render_data.get("items")
+    if not isinstance(raw_items, list):
+        return call
+    tokens = _clinical_match_tokens(resolution)
+    filtered = [item for item in raw_items if isinstance(item, dict) and _clinical_item_matches(item, tokens)]
+    if filtered:
+        data = dict(call.render_data)
+        data["items"] = filtered
+        data["filtered_from_count"] = len(raw_items)
+        return replace(call, render_data=data, summary_text=f"{resolution.canonical_brand} MFDS 임상시험 {len(filtered)}건을 근거로 사용합니다.")
+    data = {
+        "status": "no_data",
+        "brand": resolution.canonical_brand,
+        "items": [],
+        "filtered_from_count": len(raw_items),
+        "message": f"{resolution.canonical_brand} 또는 성분 기준으로 매칭되는 MFDS 임상 row 없음",
+    }
+    return replace(
+        call,
+        status="no_data",
+        summary_text=f"{resolution.canonical_brand} MFDS 임상시험은 broad 결과 {len(raw_items)}건을 제외해 근거 생성 안 함.",
+        render_data=data,
+    )
+
+
+def _clinical_match_tokens(resolution: AgentLoopResolution) -> tuple[str, ...]:
+    values = [resolution.canonical_brand, *resolution.molecule_en]
+    return tuple(value.casefold() for value in values if value)
+
+
+def _clinical_item_matches(item: dict[str, Any], tokens: tuple[str, ...]) -> bool:
+    text = " ".join(str(value) for value in item.values() if isinstance(value, str)).casefold()
+    return any(token in text for token in tokens)
 
 
 def _patent_calls(resolution: AgentLoopResolution, external: ExternalApiClient) -> list[ExternalCall]:

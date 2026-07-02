@@ -473,6 +473,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = cleanup_markdown_answer(safe_answer)
     safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
     safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = _append_file_context_source(safe_answer, file_context_fact)
