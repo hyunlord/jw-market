@@ -60,6 +60,8 @@ def first_positive_period(history: dict[str, float]) -> str | None:
 
 
 def stable_weekday_slice(brand_key: str, *, modulo: int = 7) -> int:
+    if modulo <= 0:
+        raise ValueError("modulo must be positive")
     digest = hashlib.sha256(brand_key.encode("utf-8")).hexdigest()
     return int(digest[:8], 16) % modulo
 
@@ -185,15 +187,16 @@ def load_jw_brand_names(path: Path | None) -> set[str]:
     return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
 
 
-def brands_for_weekday(brands: list[Tier2Brand], weekday: int) -> list[Tier2Brand]:
-    return [brand for brand in brands if stable_weekday_slice(brand.brand_key) == weekday]
+def brands_for_weekday(brands: list[Tier2Brand], weekday: int, *, modulo: int = 7) -> list[Tier2Brand]:
+    return [brand for brand in brands if stable_weekday_slice(brand.brand_key, modulo=modulo) == weekday]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--jw-catalog", type=Path)
-    parser.add_argument("--weekday", type=int, choices=range(7))
+    parser.add_argument("--weekday", type=int)
+    parser.add_argument("--slice-mod", type=int, default=7)
     parser.add_argument("--sales-threshold-krw", type=int, default=DEFAULT_SALES_THRESHOLD_KRW)
     parser.add_argument("--recent-new-months", type=int, default=DEFAULT_RECENT_NEW_MONTHS)
     parser.add_argument("--recent-new-min-sales-krw", type=int, default=DEFAULT_RECENT_NEW_MIN_SALES_KRW)
@@ -203,6 +206,10 @@ def main() -> int:
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
     parser.add_argument("--db-password", default=os.getenv("DB_PASSWORD", ""))
     args = parser.parse_args()
+    if args.slice_mod <= 0:
+        parser.error("--slice-mod must be positive")
+    if args.weekday is not None and not 0 <= args.weekday < args.slice_mod:
+        parser.error("--weekday must satisfy 0 <= weekday < --slice-mod")
 
     rows = load_metric_rows_from_db(
         db_host=args.db_host,
@@ -219,8 +226,16 @@ def main() -> int:
         jw_brand_names=load_jw_brand_names(args.jw_catalog),
     )
     if args.weekday is not None:
-        selected = brands_for_weekday(selected, args.weekday)
-    payload = [brand.__dict__ | {"weekday_slice": stable_weekday_slice(brand.brand_key)} for brand in selected]
+        selected = brands_for_weekday(selected, args.weekday, modulo=args.slice_mod)
+    payload = [
+        brand.__dict__
+        | {
+            "weekday_slice": stable_weekday_slice(brand.brand_key),
+            "slice_mod": args.slice_mod,
+            "slice_index": stable_weekday_slice(brand.brand_key, modulo=args.slice_mod),
+        }
+        for brand in selected
+    ]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"tier2_brand_count": len(payload), "output": str(args.output)}, ensure_ascii=False))

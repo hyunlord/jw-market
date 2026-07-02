@@ -74,18 +74,20 @@ def load_tier2_brands(args: argparse.Namespace) -> list[Tier2Brand]:
             jw_brand_names=load_jw_brand_names(Path(args.jw_catalog)) if args.jw_catalog else set(),
         )
     if args.weekday_slice is not None:
-        brands = brands_for_weekday(brands, args.weekday_slice)
+        brands = brands_for_weekday(brands, args.weekday_slice, modulo=args.slice_mod)
     if args.limit_brands:
         brands = brands[: args.limit_brands]
     return brands
 
 
-def write_brand_plan(brands: list[Tier2Brand], output: Path) -> None:
+def write_brand_plan(brands: list[Tier2Brand], output: Path, *, slice_mod: int = 7) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     payload = [
         {
             **brand.__dict__,
             "weekday_slice": stable_weekday_slice(brand.brand_key),
+            "slice_mod": slice_mod,
+            "slice_index": stable_weekday_slice(brand.brand_key, modulo=slice_mod),
         }
         for brand in brands
     ]
@@ -217,7 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--brand-plan-output", type=Path, default=Path("/tmp/tier2_brand_plan.json"))
     parser.add_argument("--brand-file")
     parser.add_argument("--jw-catalog", default=str(CRAWL_ROOT / "config" / "_catalog.json"))
-    parser.add_argument("--weekday-slice", type=int, choices=range(7), default=_today_weekday())
+    parser.add_argument("--weekday-slice", type=int, default=_today_weekday())
+    parser.add_argument("--slice-mod", type=int, default=7)
     parser.add_argument("--limit-brands", type=int, default=0)
     parser.add_argument("--sales-threshold-krw", type=int, default=3_000_000_000)
     parser.add_argument("--recent-new-months", type=int, default=6)
@@ -243,6 +246,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.slice_mod <= 0:
+        raise SystemExit("--slice-mod must be positive")
+    if args.weekday_slice is not None and not 0 <= args.weekday_slice < args.slice_mod:
+        raise SystemExit("--weekday-slice must satisfy 0 <= weekday-slice < --slice-mod")
     if args.tier == "1":
         if args.dry_run or not args.run_crawl:
             print(
@@ -260,11 +267,12 @@ def main() -> int:
         return run_tier1_existing_flow(args)
 
     brands = load_tier2_brands(args)
-    write_brand_plan(brands, args.brand_plan_output)
+    write_brand_plan(brands, args.brand_plan_output, slice_mod=args.slice_mod)
     summary: dict[str, Any] = {
         "tier": 2,
         "brand_count": len(brands),
         "weekday_slice": args.weekday_slice,
+        "slice_mod": args.slice_mod,
         "excluded_sites": sorted(EXCLUDED_TIER2_SITES),
         "site_count": len(tier2_sites(args.sites)),
         "brand_plan_output": str(args.brand_plan_output),
