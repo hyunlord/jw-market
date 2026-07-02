@@ -188,6 +188,13 @@ def resolve_alias_source() -> tuple[Path | None, dict[str, JsonValue]]:
     return None, {"status": "missing", "path": str(PRIMARY_ALIAS_PATH), "fallback": str(FALLBACK_ALIAS_PATH)}
 
 
+def resolve_dictionary_source() -> tuple[Path | None, dict[str, JsonValue]]:
+    """Resolve the optional REDESIGN dictionary used for baseline cross-checks."""
+    if DICTIONARY_PATH.exists():
+        return DICTIONARY_PATH, {"status": "found", "path": str(DICTIONARY_PATH)}
+    return None, {"status": "missing", "path": str(DICTIONARY_PATH)}
+
+
 def market_stats(rows: Sequence[KeywordRow]) -> dict[str, dict[str, JsonValue]]:
     """Summarize measured Keyword rows by ATC4 for audit and reports."""
     grouped: defaultdict[str, list[KeywordRow]] = defaultdict(list)

@@ -12,6 +12,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
     MissingMariaDbPasswordError,
     _mariadb_password,
     read_env_file,
+    resolve_dictionary_source,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import expected_markets
 from pipeline.etl.io.catalog.master.market_definition import iter_market_definition_rows
@@ -155,6 +156,31 @@ def test_data_source_accepts_env_only_without_dotenv(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("MARIADB_ROOT_PASSWORD", "env-placeholder")
 
     assert _mariadb_password({}) == "env-placeholder"
+
+
+def test_dictionary_source_reports_missing_without_loading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from pipeline.scripts.analysis.brand_activity.auto_topic import data_source
+
+    missing_path = tmp_path / "missing_dictionary.json"
+    monkeypatch.setattr(data_source, "DICTIONARY_PATH", missing_path)
+
+    path, source = resolve_dictionary_source()
+
+    assert path is None
+    assert source == {"status": "missing", "path": str(missing_path)}
+
+
+def test_dictionary_source_reports_found_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from pipeline.scripts.analysis.brand_activity.auto_topic import data_source
+
+    dictionary_path = tmp_path / "dictionary.json"
+    dictionary_path.write_text('{"A02B2": {}}', encoding="utf-8")
+    monkeypatch.setattr(data_source, "DICTIONARY_PATH", dictionary_path)
+
+    path, source = resolve_dictionary_source()
+
+    assert path == dictionary_path
+    assert source == {"status": "found", "path": str(dictionary_path)}
 
 
 def test_db_market_definition_rows_match_workbook_target_records() -> None:

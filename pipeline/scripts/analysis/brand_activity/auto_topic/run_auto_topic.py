@@ -38,7 +38,6 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.audit import (  # noqa:
     write_text,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (  # noqa: E402
-    DICTIONARY_PATH,
     SCHEMA,
     connect_mariadb,
     fetch_csd_market_bridge,
@@ -49,6 +48,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (  #
     market_stats,
     read_env_file,
     resolve_alias_source,
+    resolve_dictionary_source,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.execution import (  # noqa: E402
     build_call_plan,
@@ -162,7 +162,8 @@ def run_pipeline(
     run_audit_dir = _audit_run_dir(audit_dir, tag)
     run_audit_dir.mkdir(parents=True, exist_ok=True)
     markets = expected_markets()
-    dictionary = load_json_file(DICTIONARY_PATH)
+    dictionary_path, dictionary_source = resolve_dictionary_source()
+    dictionary = load_json_file(dictionary_path) if dictionary_path else {}
     alias_path, alias_source = resolve_alias_source()
     alias_payload = load_json_file(alias_path) if alias_path else {}
     before_snapshot, rows, csd_bridge, after_snapshot = _load_stage_rows(markets, stage_schema)
@@ -186,7 +187,7 @@ def run_pipeline(
         raise SafetyError(f"missing serving-direct bearer token env: {token_env}")
     auth_mode = "bearer" if token else "dry_run_no_token"
     plan_summary = _plan_summary(call_plan)
-    _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge)
+    _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, dictionary_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge)
     if should_execute:
         execution = execute_calls(token=token, dictionary=dictionary, axis_samples=axis_samples, brand_samples=brand_samples, descriptions=descriptions, markets=markets, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
     else:
@@ -287,6 +288,7 @@ def _write_pre_execution_audit(
     rows: list[KeywordRow],
     markets: tuple[str, ...],
     alias_source: dict[str, JsonValue],
+    dictionary_source: dict[str, JsonValue],
     samples: dict[str, JsonValue],
     call_plan: list[dict[str, JsonValue]],
     plan_summary: dict[str, JsonValue],
@@ -308,7 +310,7 @@ def _write_pre_execution_audit(
             "dropped_atc4_csd_missing": group_map.get("dropped_atc4_csd_missing"),
             "csd_markets_without_keyword_data": group_map.get("csd_markets_without_keyword_data"),
             "alias_source": alias_source,
-            "dictionary_path": str(DICTIONARY_PATH),
+            "dictionary_path": dictionary_source,
             "read_only_equal": before_snapshot == after_snapshot,
             "sampled_brands_per_market": {market: len(brands) for market, brands in _dict(samples.get("selected_brands")).items()},
         },
