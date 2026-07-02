@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -103,8 +105,58 @@ def tier2_sites(selected_sites: str | None) -> list[str]:
     return [site for site in requested if site in available]
 
 
-def run_tier2_crawl(args: argparse.Namespace, brands: list[Tier2Brand]) -> int:
+def effective_tier2_concurrent_sites(args: argparse.Namespace) -> int:
+    return max(1, int(args.tier2_concurrent_sites))
+
+
+def _seed_site_history(parent_history: Path, site_history: Path) -> None:
+    site_history.parent.mkdir(parents=True, exist_ok=True)
+    if parent_history.exists():
+        site_history.write_text(parent_history.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _run_tier2_site(
+    args: argparse.Namespace,
+    site: str,
+    keywords: list[str],
+    contexts: dict[str, list[dict]],
+    parent_history: Path,
+) -> dict[str, Any]:
     crawl_news_v2 = _import_crawler()
+    output_dir = Path(args.output_dir)
+    site_dir = output_dir / site
+    site_dir.mkdir(parents=True, exist_ok=True)
+    site_history = site_dir / "scraped_urls.txt"
+    _seed_site_history(parent_history, site_history)
+    started = time.time()
+    saved = int(
+        crawl_news_v2.crawl_once(
+            months=None,
+            days=args.days,
+            output_dir=str(site_dir),
+            max_pages_per_site=args.max_pages_per_site,
+            max_links_per_page=args.max_links_per_page,
+            delay_sec=args.delay_sec,
+            sites=[site],
+            keywords=keywords,
+            history_file=str(site_history),
+            continue_listing_after_old_page=False,
+            skip_similar_merge=args.no_similar_merge,
+            unique_json_per_url=args.unique_json_per_url,
+            keyword_contexts=contexts,
+            max_articles=args.max_articles or None,
+        )
+    )
+    elapsed = time.time() - started
+    return {
+        "site": site,
+        "saved_articles": saved,
+        "elapsed_sec": elapsed,
+        "exit_code": 0,
+    }
+
+
+def run_tier2_crawl(args: argparse.Namespace, brands: list[Tier2Brand]) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     keywords = [brand.brand_name for brand in brands]
@@ -119,24 +171,45 @@ def run_tier2_crawl(args: argparse.Namespace, brands: list[Tier2Brand]) -> int:
         ]
         for brand in brands
     }
-    return int(
-        crawl_news_v2.crawl_once(
-            months=None,
-            days=args.days,
-            output_dir=str(output_dir),
-            max_pages_per_site=args.max_pages_per_site,
-            max_links_per_page=args.max_links_per_page,
-            delay_sec=args.delay_sec,
-            sites=tier2_sites(args.sites),
-            keywords=keywords,
-            history_file=str(output_dir / "scraped_urls.txt"),
-            continue_listing_after_old_page=False,
-            skip_similar_merge=args.no_similar_merge,
-            unique_json_per_url=args.unique_json_per_url,
-            keyword_contexts=contexts,
-            max_articles=args.max_articles or None,
-        )
+    sites = tier2_sites(args.sites)
+    parent_history = output_dir / "scraped_urls.txt"
+    concurrent_sites = effective_tier2_concurrent_sites(args)
+    if concurrent_sites == 1 or len(sites) <= 1:
+        report = [
+            _run_tier2_site(args, site, keywords, contexts, parent_history)
+            for site in sites
+        ]
+    else:
+        report = []
+        with ThreadPoolExecutor(max_workers=concurrent_sites) as executor:
+            futures = {
+                executor.submit(_run_tier2_site, args, site, keywords, contexts, parent_history): site
+                for site in sites
+            }
+            for future in as_completed(futures):
+                site = futures[future]
+                try:
+                    report.append(future.result())
+                except Exception as exc:  # noqa: BLE001 - persisted in report for handoff.
+                    report.append({"site": site, "error": str(exc), "saved_articles": 0, "exit_code": -1})
+    report = sorted(report, key=lambda item: str(item.get("site", "")))
+    (output_dir / "tier2_site_report.json").write_text(
+        json.dumps(
+            {
+                "concurrent_sites": concurrent_sites,
+                "sites": sites,
+                "results": report,
+                "total_news": sum(int(item.get("saved_articles", 0)) for item in report),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
+    failures = [item for item in report if int(item.get("exit_code", 0)) != 0]
+    if failures:
+        raise SystemExit("Tier2 site crawl failed: " + json.dumps(failures, ensure_ascii=False))
+    return sum(int(item.get("saved_articles", 0)) for item in report)
 
 
 def _article_json_files(input_dir: Path) -> list[Path]:
@@ -233,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-articles", type=int, default=0)
     parser.add_argument("--delay-sec", type=float, default=2.0)
     parser.add_argument("--concurrent-sites", type=int, default=4)
+    parser.add_argument("--tier2-concurrent-sites", type=int, default=1)
     parser.add_argument("--no-similar-merge", action="store_true")
     parser.add_argument("--unique-json-per-url", action="store_true")
     parser.add_argument("--drug-profile-dir", default=str(CRAWL_ROOT / "config" / "drug_profiles"))
