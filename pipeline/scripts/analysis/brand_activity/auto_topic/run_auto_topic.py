@@ -81,6 +81,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.sampling import (  # no
 from pipeline.scripts.analysis.brand_activity.auto_topic.static_quality import inspect_package  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store import load_artifacts  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store_db import (  # noqa: E402
+    ensure_store_summary_nonzero,
     save_artifacts,
     store_summary_json,
 )
@@ -462,6 +463,7 @@ def _save_run_to_db(audit_dir: Path, stage_schema: str, artifact_sha256: str) ->
             artifacts=load_artifacts(audit_dir),
             artifact_sha256=artifact_sha256,
         )
+        ensure_store_summary_nonzero(summary)
     finally:
         connection.close()
     return store_summary_json(summary)

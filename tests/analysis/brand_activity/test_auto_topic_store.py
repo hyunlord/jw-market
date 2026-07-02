@@ -165,6 +165,33 @@ def test_run_table_ddl_and_upsert_include_input_fingerprint() -> None:
     assert "VALUES (schema_stage_hash)" not in upsert
 
 
+def test_store_summary_validation_rejects_zero_row_save() -> None:
+    """Given built records, When persistence evidence is zero, Then the save must fail loudly."""
+    summary = topic_store_db.StoreSummary(
+        run_id="brand_activity_replay_20260703_000739",
+        topic_record_count=11,
+        topic_brand_count=115,
+        stored_topic_rows=0,
+        stored_run_rows=0,
+    )
+
+    with pytest.raises(topic_store.TopicStoreError, match="zero-row DB save"):
+        topic_store_db.ensure_store_summary_nonzero(summary)
+
+
+def test_store_summary_validation_accepts_persisted_rows() -> None:
+    """Given stored rows matching a measured run, When validated, Then no error is raised."""
+    summary = topic_store_db.StoreSummary(
+        run_id="brand_activity_replay_20260703_000739",
+        topic_record_count=11,
+        topic_brand_count=115,
+        stored_topic_rows=11,
+        stored_run_rows=1,
+    )
+
+    topic_store_db.ensure_store_summary_nonzero(summary)
+
+
 def test_load_artifacts_requires_existing_audit_files(tmp_path: Path) -> None:
     """Given an incomplete audit directory, When loading artifacts, Then the missing file is explicit."""
     with pytest.raises(topic_store.TopicStoreError, match="run_summary.json"):

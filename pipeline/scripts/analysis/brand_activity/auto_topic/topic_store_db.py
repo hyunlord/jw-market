@@ -12,6 +12,7 @@ from .topic_store import (
     RunRecord,
     TopicArtifacts,
     TopicRecord,
+    TopicStoreError,
     build_run_record,
     build_topic_records,
     validated_stage_schema,
@@ -73,6 +74,8 @@ def upsert_topic_results(
     with connection.cursor() as cursor:
         cursor.execute(_run_upsert_sql(safe_schema), _run_tuple(run))
         cursor.executemany(_topic_upsert_sql(safe_schema), [_topic_tuple(record, run.run_id) for record in records])
+    connection.commit()
+    with connection.cursor() as cursor:
         stored_run_rows = _count_rows(cursor, safe_schema, RUNS_TABLE, "run_id", run.run_id)
         stored_topic_rows = _count_rows(cursor, safe_schema, TOPICS_TABLE, "run_id", run.run_id)
     return StoreSummary(
@@ -82,6 +85,18 @@ def upsert_topic_results(
         stored_topic_rows=stored_topic_rows,
         stored_run_rows=stored_run_rows,
     )
+
+
+def ensure_store_summary_nonzero(summary: StoreSummary) -> None:
+    """Raise when a measured save produced records but no persisted row evidence."""
+    if summary.topic_record_count > 0 and (summary.stored_run_rows < 1 or summary.stored_topic_rows < 1):
+        raise TopicStoreError(
+            "zero-row DB save for "
+            f"{summary.run_id}: built topics={summary.topic_record_count}, "
+            f"built brands={summary.topic_brand_count}, "
+            f"stored_run_rows={summary.stored_run_rows}, "
+            f"stored_topic_rows={summary.stored_topic_rows}"
+        )
 
 
 def save_artifacts(

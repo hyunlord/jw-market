@@ -78,6 +78,26 @@ def test_run_topic_rpc_extracts_run_id_before_polling(monkeypatch: pytest.Monkey
     assert result.executed_call_count == 88
 
 
+def test_default_config_uses_full_brand_monthly_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Given no overrides, When config is built, Then monthly runs target full-brand mode."""
+    for key in ("TOPIC_MAX_REAL_CALLS", "TOPIC_BRANDS_PER_MARKET", "TOPIC_LARGE_MARKET_LIMIT"):
+        monkeypatch.delenv(key, raising=False)
+
+    config = topic_monthly_job._config_from_env()
+
+    assert config.max_real_calls == 250
+    assert config.brands_per_market == 10000
+    assert config.large_market_limit == 0
+
+
+def test_config_rejects_call_cap_above_full_brand_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Given an unsafe call cap, When config is built, Then the job refuses to start."""
+    monkeypatch.setenv("TOPIC_MAX_REAL_CALLS", "251")
+
+    with pytest.raises(topic_monthly_job.SchedulerError, match="may not exceed 250"):
+        topic_monthly_job._config_from_env()
+
+
 def _mcp_payload(payload: dict[str, object]) -> dict[str, object]:
     """Return the MCP text-content response shape emitted by code-serving."""
     return {
