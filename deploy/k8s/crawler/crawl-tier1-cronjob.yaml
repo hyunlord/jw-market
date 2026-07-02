@@ -226,4 +226,4 @@ spec:
                     --output "$WORK/load_summary.json" \
                     --db-name jw_mart \
                     --tier 1 \
-                    --processed-by workflow_196_optionB_score_v2
+                    --processed-by workflow_196_optionB
