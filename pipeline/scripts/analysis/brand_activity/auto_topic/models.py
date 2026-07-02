@@ -25,6 +25,7 @@ class KeywordRow:
     specialty: str
     visit_location: str
     stage_row_sha256: str
+    representing_company: str = ""
 
 
 @dataclass(frozen=True, slots=True)

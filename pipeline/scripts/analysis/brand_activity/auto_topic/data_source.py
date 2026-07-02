@@ -21,11 +21,18 @@ CSD_TABLE = "csd_channel_dynamics_stage"
 PRIMARY_ALIAS_PATH = REPO_ROOT / "docs/research/brand_activity/alias/ALIAS_01_MAPPING.json"
 FALLBACK_ALIAS_PATH = REPO_ROOT / "docs/design/brand_activity/alias/ALIAS_01_MAPPING.json"
 DICTIONARY_PATH = REPO_ROOT / "docs/research/brand_activity/topic_redesign/REDESIGN_03_DICTIONARY_DRAFT.json"
+JW_COMPANY_PREFIX = "JW"
+
+
+class MissingMariaDbPasswordError(RuntimeError):
+    """Raised when neither environment variables nor .env provide a MariaDB password."""
 
 
 def read_env_file(path: Path = ENV_PATH) -> dict[str, str]:
     """Read local MariaDB credentials without printing or exporting them."""
     values: dict[str, str] = {}
+    if not path.exists():
+        return values
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -34,17 +41,26 @@ def read_env_file(path: Path = ENV_PATH) -> dict[str, str]:
     return values
 
 
-def connect_mariadb(env: dict[str, str]) -> pymysql.connections.Connection:
-    """Open the local MariaDB connection used only for read-only transactions."""
+def connect_mariadb(env: dict[str, str] | None = None) -> pymysql.connections.Connection:
+    """Open the MariaDB connection from env vars first, with optional .env fallback."""
+    env_values = env or {}
     return pymysql.connect(
         host=os.environ.get("MARIADB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("MARIADB_PORT", env.get("HOST_PORT", "3308"))),
+        port=int(os.environ.get("MARIADB_PORT", env_values.get("HOST_PORT", "3308"))),
         user=os.environ.get("MARIADB_USER", "root"),
-        password=os.environ.get("MARIADB_ROOT_PASSWORD", env["MARIADB_ROOT_PASSWORD"]),
+        password=_mariadb_password(env_values),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True,
     )
+
+
+def _mariadb_password(env: dict[str, str]) -> str:
+    """Resolve the MariaDB password without requiring a local .env file."""
+    password = os.environ.get("MARIADB_ROOT_PASSWORD") or env.get("MARIADB_ROOT_PASSWORD")
+    if not password:
+        raise MissingMariaDbPasswordError("MARIADB_ROOT_PASSWORD not set in environment or .env")
+    return password
 
 
 def fetch_snapshot(connection: pymysql.connections.Connection, *, schema: str = SCHEMA) -> dict[str, JsonValue]:
@@ -173,6 +189,13 @@ def resolve_alias_source() -> tuple[Path | None, dict[str, JsonValue]]:
     return None, {"status": "missing", "path": str(PRIMARY_ALIAS_PATH), "fallback": str(FALLBACK_ALIAS_PATH)}
 
 
+def resolve_dictionary_source() -> tuple[Path | None, dict[str, JsonValue]]:
+    """Resolve the optional REDESIGN dictionary used for baseline cross-checks."""
+    if DICTIONARY_PATH.exists():
+        return DICTIONARY_PATH, {"status": "found", "path": str(DICTIONARY_PATH)}
+    return None, {"status": "missing", "path": str(DICTIONARY_PATH)}
+
+
 def market_stats(rows: Sequence[KeywordRow]) -> dict[str, dict[str, JsonValue]]:
     """Summarize measured Keyword rows by ATC4 for audit and reports."""
     grouped: defaultdict[str, list[KeywordRow]] = defaultdict(list)
@@ -215,8 +238,8 @@ def rows_for_brand(rows: Sequence[KeywordRow], atc4: str, brand: str) -> list[Ke
     return [row for row in rows if row.atc4 == atc4 and row.brand == brand]
 
 
-def load_alias_descriptions(alias_payload: dict[str, JsonValue], brand_keys: Iterable[tuple[str, str]]) -> dict[str, BrandDescription]:
-    """Map sampled brands to alias metadata without requiring every competitor to be canonicalized."""
+def load_alias_descriptions(alias_payload: dict[str, JsonValue], rows: Iterable[KeywordRow]) -> dict[str, BrandDescription]:
+    """Map sampled brands to alias and source-company metadata."""
     records = alias_payload.get("records")
     by_brand: dict[str, dict[str, JsonValue]] = {}
     if isinstance(records, list):
@@ -224,18 +247,27 @@ def load_alias_descriptions(alias_payload: dict[str, JsonValue], brand_keys: Ite
             if isinstance(item, dict) and isinstance(item.get("iqvia_en"), str):
                 by_brand[str(item["iqvia_en"])] = item
     result: dict[str, BrandDescription] = {}
-    for atc4, brand in brand_keys:
+    source_companies = _source_companies_by_brand(rows)
+    for atc4, brand in sorted(source_companies):
         record = by_brand.get(brand, {})
+        companies = source_companies[(atc4, brand)]
+        alias_companies = _string_tuple(record.get("representing_company"))
         result[f"{atc4}:{brand}"] = BrandDescription(
             brand=brand,
             atc4=atc4,
             kr_canonical=_optional_str(record.get("kr_canonical")),
-            is_jw=bool(record.get("is_jw")),
+            is_jw=bool(record.get("is_jw")) or any(is_jw_representing_company(company) for company in companies),
             molecule=_string_tuple(record.get("molecule")),
             manufacturer=_string_tuple(record.get("manufacturer")),
-            representing_company=_string_tuple(record.get("representing_company")),
+            representing_company=alias_companies or companies,
         )
     return result
+
+
+def is_jw_representing_company(value: str) -> bool:
+    """Return whether the source company column marks a JW-owned product."""
+    normalized = " ".join(value.upper().split())
+    return normalized == JW_COMPANY_PREFIX or normalized.startswith(f"{JW_COMPANY_PREFIX} ")
 
 
 def _keyword_row(record: dict[str, JsonValue]) -> KeywordRow:
@@ -255,7 +287,19 @@ def _keyword_row(record: dict[str, JsonValue]) -> KeywordRow:
         specialty=str(record["specialty"] or ""),
         visit_location=str(record["visit_location"] or ""),
         stage_row_sha256=str(record["stage_row_sha256"] or ""),
+        representing_company=str(record["representing_company"] or ""),
     )
+
+
+def _source_companies_by_brand(rows: Iterable[KeywordRow]) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Group source representing-company values by ATC4/product."""
+    grouped: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for row in rows:
+        if row.representing_company:
+            grouped[(row.atc4, row.brand)].add(row.representing_company)
+        else:
+            grouped.setdefault((row.atc4, row.brand), set())
+    return {key: tuple(sorted(values)) for key, values in grouped.items()}
 
 
 def _string_tuple(value: JsonValue) -> tuple[str, ...]:

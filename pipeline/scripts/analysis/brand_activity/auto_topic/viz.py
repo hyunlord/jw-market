@@ -91,7 +91,7 @@ def render_html(viz_payload: dict[str, JsonValue]) -> str:
       <div class="metrics">
         <div class="metric"><span>품질 등급</span><b id="gradeBox"></b></div>
         <div class="metric"><span>분류 브랜드</span><b id="brandCount"></b></div>
-        <div class="metric"><span>평균 기타</span><b id="etcAvg"></b></div>
+        <div class="metric"><span>비중 모델</span><b>독립</b></div>
         <div class="metric"><span>실측 모델</span><b id="modelCount"></b></div>
       </div>
       <div class="panel" id="brandPanel"></div>
@@ -126,17 +126,15 @@ def render_html(viz_payload: dict[str, JsonValue]) -> str:
       document.getElementById('scopeLabel').textContent = data.execution_mode || '';
       document.getElementById('gradeBox').innerHTML = `<span class="grade ${{market.quality_grade || 'D'}}">${{market.quality_grade || 'D'}}</span>`;
       document.getElementById('brandCount').textContent = brands.length;
-      document.getElementById('etcAvg').textContent = (market.avg_etc_pct ?? '-') + '%';
       document.getElementById('modelCount').textContent = data.models.length;
       document.getElementById('brandPanel').innerHTML = brands.map(renderBrand).join('') || '<p>이 시장은 분류 브랜드 실측값이 없습니다.</p>';
       document.getElementById('marketRows').innerHTML = visibleMarkets().map(m => `<tr><td>${{m.display_name || m.atc4}}</td><td>${{m.scope_id || m.scope_key || m.atc4}}</td><td><span class="grade ${{m.quality_grade}}">${{m.quality_grade}}</span></td><td>${{(m.reasons || []).join(', ') || '-'}}</td></tr>`).join('');
     }}
     function renderBrand(brand) {{
       const shares = (brand.topic_shares || []).concat((brand.brand_specific_topics || []).map(s => ({{...s, label:`특화: ${{s.label}}`}})));
-      const total = shares.reduce((sum, s) => sum + Number(s.share_pct || 0), 0) + Number(brand.etc_pct || 0);
-      const segs = shares.concat([{{label:'기타', share_pct:brand.etc_pct || 0}}]).map((s, i) => `<div class="seg" title="${{s.label}} ${{s.share_pct}}%" style="width:${{Math.max(0, Number(s.share_pct || 0))}}%; background:${{colors[i % colors.length]}}"></div>`).join('');
-      const legend = shares.concat([{{label:'기타', share_pct:brand.etc_pct || 0}}]).map((s, i) => `<span><i class="dot" style="background:${{colors[i % colors.length]}}"></i>${{s.label}} ${{s.share_pct}}%</span>`).join('');
-      return `<div class="brand"><h3>${{brand.brand}} <span style="color:#607080;font-weight:500">n=${{brand.row_count || 0}}, total=${{Math.round(total * 10) / 10}}%</span></h3><div class="bar">${{segs}}</div><div class="legend">${{legend}}</div></div>`;
+      const bars = shares.map((s, i) => `<div class="bar" title="${{s.label}} ${{s.share_pct}}%"><div class="seg" style="width:${{Math.max(0, Math.min(100, Number(s.share_pct || 0)))}}%; background:${{colors[i % colors.length]}}"></div></div>`).join('');
+      const legend = shares.map((s, i) => `<span><i class="dot" style="background:${{colors[i % colors.length]}}"></i>${{s.label}} ${{s.share_pct}}% (${{s.affected_row_count || 0}}행)</span>`).join('');
+      return `<div class="brand"><h3>${{brand.brand}} <span style="color:#607080;font-weight:500">n=${{brand.row_count || 0}}, 독립 비중</span></h3>${{bars}}<div class="legend">${{legend}}</div></div>`;
     }}
     marketSelect.addEventListener('change', render);
     scopeTypeSelect.addEventListener('change', render);

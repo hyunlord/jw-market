@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+import json
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -11,6 +13,9 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
+import pymysql
+
+from .data_source import SCHEMA, connect_mariadb, read_env_file
 from .market_scope import scope_id
 from .models import JsonValue
 
@@ -18,6 +23,7 @@ from .models import JsonValue
 REPO_ROOT = Path(__file__).resolve().parents[5]
 MI_MASTER_GLOB = "MI*Master*.xlsx"
 TARGET_SHEET = "시장정의 & Target"
+MARKET_DEFINITION_TABLE = "stg_master_market_definition"
 GROUP_ID_BY_SHEET = {
     "가드렛 가드메트": "gardlet_family",
     "리바로 리바로젯": "livalo_family",
@@ -45,21 +51,34 @@ FALLBACK_NAMES = {
 
 def build_market_group_map(markets: Sequence[str]) -> dict[str, JsonValue]:
     """Build the MI Master-derived market group map for the requested ATC4 markets."""
-    master_path = resolve_mi_master_path()
-    if master_path is None:
-        return _fallback_group_map(markets)
-    sheet_names, target_rows = _read_target_sheet(master_path)
-    records = _target_records(target_rows, sheet_names)
-    groups = _groups_from_records(records, set(markets))
-    atc4_map = _atc4_map(markets, groups)
-    return {
-        "source": {
+    records = None if _force_workbook_source() else _records_from_db()
+    source: dict[str, JsonValue]
+    if records is None:
+        master_path = resolve_mi_master_path()
+        if master_path is None:
+            return _fallback_group_map(markets)
+        sheet_names, target_rows = _read_target_sheet(master_path)
+        records = _target_records(target_rows, sheet_names)
+        source = {
             "type": "mi_master_xlsx",
             "path": str(master_path),
             "target_sheet": TARGET_SHEET,
             "product_row_label": "PRODUCT NAME KOR",
             "atc4_row_label": "ATC 4 CODE",
-        },
+        }
+    else:
+        source = {
+            "type": "db",
+            "schema": os.environ.get("MARKET_GROUP_SCHEMA", SCHEMA),
+            "table": MARKET_DEFINITION_TABLE,
+            "target_sheet": TARGET_SHEET,
+            "product_row_label": "PRODUCT NAME KOR",
+            "atc4_row_label": "ATC 4 CODE",
+        }
+    groups = _groups_from_records(records, set(markets))
+    atc4_map = _atc4_map(markets, groups)
+    return {
+        "source": source,
         "rule": "MI Master sheet grouping is additive metadata; source ATC4 and CSD market remain unchanged per row.",
         "atc4_map": atc4_map,
         "groups": groups,
@@ -259,6 +278,77 @@ def _target_records(target_rows: list[dict[int, str]], sheet_names: list[str]) -
         sheet_name = _best_sheet_name(product_label, market_sheet_names)
         records.append({"column": _column_name(column), "product_label": product_label, "atc4_values": list(atc4_values), "sheet_name": sheet_name})
     return records
+
+
+def _force_workbook_source() -> bool:
+    """Return true when verification needs the legacy workbook path."""
+    value = os.environ.get("MARKET_GROUP_FORCE_WORKBOOK", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _records_from_db() -> list[dict[str, JsonValue]] | None:
+    """Read MI Master market definition rows from the local stage DB when available."""
+    schema = os.environ.get("MARKET_GROUP_SCHEMA", SCHEMA)
+    sql = f"""
+        SELECT strategic_market_id, market_name, market_atc_codes_json,
+               full_market_atc4_codes_json, raw_row_json, source_sheet, source_file_version
+        FROM `{schema}`.`{MARKET_DEFINITION_TABLE}`
+        WHERE source_sheet = %s
+        ORDER BY strategic_market_id
+    """
+    try:
+        connection = connect_mariadb(read_env_file())
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("START TRANSACTION READ ONLY")
+                cursor.execute(sql, (TARGET_SHEET,))
+                rows = cursor.fetchall()
+                cursor.execute("COMMIT")
+        finally:
+            connection.close()
+    except (OSError, KeyError, pymysql.MySQLError):
+        return None
+    records = _records_from_market_definition_rows(rows)
+    return records or None
+
+
+def _records_from_market_definition_rows(rows: Sequence[dict[str, JsonValue]]) -> list[dict[str, JsonValue]]:
+    """Convert DB master rows back to the workbook target-record shape."""
+    records: list[dict[str, JsonValue]] = []
+    for row in rows:
+        market_name = str(row.get("market_name") or "")
+        raw_row_json = row.get("raw_row_json")
+        if not market_name or not isinstance(raw_row_json, str):
+            continue
+        try:
+            raw_payload = json.loads(raw_row_json)
+        except json.JSONDecodeError:
+            continue
+        for column in _list(_dict(raw_payload).get("columns")):
+            item = _dict(column)
+            product_label = _clean(_raw_value(item, "PRODUCT NAME KOR"))
+            atc4_values = _atc4_values(_raw_value(item, "ATC 4 CODE"))
+            column_id = item.get("column_id")
+            if not isinstance(column_id, int) or not product_label or not atc4_values:
+                continue
+            records.append(
+                {
+                    "column": _column_name(column_id - 1),
+                    "product_label": product_label,
+                    "atc4_values": list(atc4_values),
+                    "sheet_name": market_name,
+                }
+            )
+    return records
+
+
+def _raw_value(column: dict[str, JsonValue], label: str) -> str:
+    """Return one labeled value from a raw_row_json column payload."""
+    for value in _list(column.get("values")):
+        item = _dict(value)
+        if item.get("label") == label:
+            return _clean(str(item.get("value") or ""))
+    return ""
 
 
 def _groups_from_records(records: list[dict[str, JsonValue]], current_markets: set[str]) -> list[dict[str, JsonValue]]:

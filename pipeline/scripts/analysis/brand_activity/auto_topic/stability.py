@@ -53,7 +53,7 @@ def max_share_delta_pp(first: dict[str, JsonValue], second: dict[str, JsonValue]
 
 
 def share_map(payload: dict[str, JsonValue]) -> dict[str, float]:
-    """Extract topic share percentages including 기타 from a normalized payload."""
+    """Extract independent topic share percentages from a normalized payload."""
     result: dict[str, float] = {}
     shares = payload.get("topic_shares")
     if isinstance(shares, list):
@@ -65,9 +65,6 @@ def share_map(payload: dict[str, JsonValue]) -> dict[str, float]:
         for item in brand_topics:
             if isinstance(item, dict):
                 result[str(item.get("topic_id") or item.get("label") or "")] = float(item.get("share_pct") or 0.0)
-    etc = payload.get("etc_pct")
-    if isinstance(etc, int | float):
-        result["기타"] = float(etc)
     return result
 
 

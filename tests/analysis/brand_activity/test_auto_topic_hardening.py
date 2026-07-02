@@ -52,7 +52,7 @@ def _log(task: str, atc4: str, brand: str, status: str = "ok") -> CallLog:
     return CallLog(
         task=task,
         model_key="flash",
-        serving_id="76",
+        serving_id="163",
         scope_id=f"atc4:{atc4}",
         atc4=atc4,
         brand=brand,
@@ -90,7 +90,7 @@ def test_call_genos_json_watchdog_returns_error_when_client_stalls(monkeypatch) 
 
     payload, log = llm.call_genos_json(
         token="",
-        spec=ModelSpec("flash", "76", "Flash"),
+        spec=ModelSpec("flash", "163", "Flash Lite"),
         task="market_axis",
         scope_id="atc4:A",
         atc4="A",
@@ -114,7 +114,7 @@ def test_call_genos_json_retries_429_and_logs_attempts(monkeypatch) -> None:
         if calls["count"] == 1:
             return {
                 "status": "error",
-                "serving_id": "76",
+                "serving_id": "163",
                 "latency_ms": 1,
                 "ttfb_ms": 1,
                 "read_ms": 0,
@@ -126,7 +126,7 @@ def test_call_genos_json_retries_429_and_logs_attempts(monkeypatch) -> None:
             }
         return {
             "status": "ok",
-            "serving_id": "76",
+            "serving_id": "163",
             "latency_ms": 2,
             "ttfb_ms": 1,
             "read_ms": 1,
@@ -144,7 +144,7 @@ def test_call_genos_json_retries_429_and_logs_attempts(monkeypatch) -> None:
 
     payload, log = llm.call_genos_json(
         token="",
-        spec=ModelSpec("flash", "76", "Flash"),
+        spec=ModelSpec("flash", "163", "Flash Lite"),
         task="market_axis",
         scope_id="atc4:A",
         atc4="A",
@@ -167,7 +167,7 @@ def test_call_genos_json_uses_direct_serving_backend_alias(monkeypatch) -> None:
         captured.update(kwargs)
         return {
             "status": "ok",
-            "serving_id": "76",
+            "serving_id": "163",
             "latency_ms": 2,
             "ttfb_ms": 1,
             "read_ms": 1,
@@ -179,14 +179,14 @@ def test_call_genos_json_uses_direct_serving_backend_alias(monkeypatch) -> None:
         }
 
     monkeypatch.setenv("GENOS_LLM_BACKEND", "direct_serving")
-    monkeypatch.setenv("GENOS_DIRECT_BASE_URL", "http://127.0.0.1:19080")
+    monkeypatch.setenv("GENOS_DIRECT_BASE_URL", "https://jwai-dev.jwhealthcare.com")
     monkeypatch.setenv("GENOS_DIRECT_MODEL_FLASH", "genos-flash")
     monkeypatch.setenv("GENOS_CALL_PACING_MS", "0")
     monkeypatch.setattr(llm, "_chat_with_process_watchdog", fake_watchdog)
 
     payload, log = llm.call_genos_json(
         token="transient-token",
-        spec=ModelSpec("flash", "76", "Flash"),
+        spec=ModelSpec("flash", "163", "Flash Lite"),
         task="market_axis",
         scope_id="atc4:A",
         atc4="A",
@@ -200,9 +200,9 @@ def test_call_genos_json_uses_direct_serving_backend_alias(monkeypatch) -> None:
 
     assert payload["status"] == "ok"
     assert backend.backend_key == "direct_serving"
-    assert backend.base_url == "http://127.0.0.1:19080"
+    assert backend.base_url == "https://jwai-dev.jwhealthcare.com"
     assert backend.model_id == "genos-flash"
-    assert backend.serving_id == "76"
+    assert backend.serving_id == "163"
     assert log.backend == "direct_serving"
     assert log.model_id == "genos-flash"
 
@@ -226,14 +226,14 @@ def test_call_log_to_json_includes_direct_serving_metadata() -> None:
         output_sha256=log.output_sha256,
         output_length=log.output_length,
         backend="direct_serving",
-        endpoint="http://127.0.0.1:19080/v1/chat/completions",
+        endpoint="https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163/chat/completions",
         model_id="genos-flash",
     )
 
     serialized = llm.call_log_to_json(direct_log)
 
     assert serialized["backend"] == "direct_serving"
-    assert serialized["endpoint"] == "http://127.0.0.1:19080/v1/chat/completions"
+    assert serialized["endpoint"] == "https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163/chat/completions"
     assert serialized["model_id"] == "genos-flash"
 
 
@@ -258,8 +258,7 @@ def test_execute_calls_quarantines_market_when_axis_call_errors(monkeypatch) -> 
             "status": "ok",
             "brand": brand,
             "atc4": atc4,
-            "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 100.0}],
-            "etc_pct": 0.0,
+            "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": len(_rows)}],
         }, _log(task, atc4, brand, "ok")
 
     monkeypatch.setattr(execution, "_call_axis", fake_axis)
@@ -280,7 +279,7 @@ def test_execute_calls_quarantines_market_when_axis_call_errors(monkeypatch) -> 
     assert result.brand_results["A:A_BRAND"]["status"] == "quarantined_axis_failed"
 
 
-def test_aggregate_share_batches_renormalizes_successful_batches_only() -> None:
+def test_aggregate_share_batches_sums_affected_rows_without_normalizing() -> None:
     topics = [
         execution.TopicDefinition("T1", "효능", "효능 메시지", ()),
         execution.TopicDefinition("T2", "안전성", "안전성 메시지", ()),
@@ -288,21 +287,18 @@ def test_aggregate_share_batches_renormalizes_successful_batches_only() -> None:
     successful_left = {
         "status": "ok",
         "row_count": 100,
-        "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 60.0, "row_count": 60}],
-        "etc_pct": 40.0,
+        "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 60}],
     }
     failed_middle = {
         "status": "error",
         "row_count": 200,
         "reason": "ReadTimeout",
         "topic_shares": [],
-        "etc_pct": 0.0,
     }
     successful_right = {
         "status": "ok",
         "row_count": 100,
-        "topic_shares": [{"topic_id": "T2", "label": "안전성", "share_pct": 50.0, "row_count": 50}],
-        "etc_pct": 50.0,
+        "topic_shares": [{"topic_id": "T2", "label": "안전성", "affected_row_count": 50}],
     }
 
     aggregate = execution._aggregate_share_batches(
@@ -315,15 +311,16 @@ def test_aggregate_share_batches_renormalizes_successful_batches_only() -> None:
         token_budget=8000,
     )
 
-    total_pct = round(sum(float(row["share_pct"]) for row in aggregate["topic_shares"]) + float(aggregate["etc_pct"]), 1)
-    guard = execution.mechanical_guard(aggregate, valid_topic_ids={"T1", "T2"})
+    total_pct = round(sum(float(row["share_pct"]) for row in aggregate["topic_shares"]), 1)
+    guard = execution.mechanical_guard(aggregate, valid_topic_ids={"T1", "T2"}, brand_total_rows=aggregate["row_count"])
 
     assert aggregate["status"] == "ok"
     assert aggregate["partial_failure"] is True
-    assert aggregate["classified_row_count"] == 200
-    assert aggregate["excluded_row_count"] == 200
-    assert aggregate["denominator"] == "classified_brand_row_count_primary_topic"
-    assert total_pct == 100.0
+    assert aggregate["row_count"] == 400
+    assert aggregate["source_row_count"] == 400
+    assert aggregate["denominator"] == "brand_total_row_count"
+    assert total_pct == 27.5
+    assert "etc_pct" not in aggregate
     assert guard["status"] == "pass"
 
 
@@ -336,10 +333,9 @@ def test_aggregate_share_batches_backfills_missing_topic_id_from_label() -> None
         "status": "ok",
         "row_count": 100,
         "topic_shares": [
-            {"topic_id": "", "label": " 효 능 ", "share_pct": 60.0, "row_count": 60},
-            {"topic_id": None, "label": "안전성", "share_pct": 25.0, "row_count": 25},
+            {"topic_id": "", "label": " 효 능 ", "affected_row_count": 60},
+            {"topic_id": None, "label": "안전성", "affected_row_count": 25},
         ],
-        "etc_pct": 15.0,
     }
 
     aggregate = execution._aggregate_share_batches(
@@ -351,7 +347,7 @@ def test_aggregate_share_batches_backfills_missing_topic_id_from_label() -> None
         topics=topics,
         token_budget=5000,
     )
-    guard = execution.mechanical_guard(aggregate, valid_topic_ids={"T1", "T2"})
+    guard = execution.mechanical_guard(aggregate, valid_topic_ids={"T1", "T2"}, brand_total_rows=aggregate["row_count"])
 
     assert [row["topic_id"] for row in aggregate["topic_shares"]] == ["T1", "T2"]
     assert aggregate["topic_id_backfill_count"] == 2
@@ -363,20 +359,18 @@ def test_aggregate_share_batches_keeps_top_two_brand_specific_topics() -> None:
     left = {
         "status": "ok",
         "row_count": 50,
-        "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 40.0, "row_count": 20}],
-        "brand_specific_topics": [{"topic_id": "B1", "label": "제형 편의", "share_pct": 30.0, "row_count": 15}],
-        "etc_pct": 30.0,
+        "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 20}],
+        "brand_specific_topics": [{"topic_id": "B1", "label": "제형 편의", "affected_row_count": 15}],
     }
     right = {
         "status": "ok",
         "row_count": 50,
-        "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 20.0, "row_count": 10}],
+        "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 10}],
         "brand_specific_topics": [
-            {"topic_id": "B1", "label": "제형 편의", "share_pct": 20.0, "row_count": 10},
-            {"topic_id": "B2", "label": "보험 메시지", "share_pct": 10.0, "row_count": 5},
-            {"topic_id": "B3", "label": "초과 특화", "share_pct": 10.0, "row_count": 5},
+            {"topic_id": "B1", "label": "제형 편의", "affected_row_count": 10},
+            {"topic_id": "B2", "label": "보험 메시지", "affected_row_count": 5},
+            {"topic_id": "B3", "label": "초과 특화", "affected_row_count": 5},
         ],
-        "etc_pct": 40.0,
     }
 
     aggregate = execution._aggregate_share_batches(
@@ -388,15 +382,10 @@ def test_aggregate_share_batches_keeps_top_two_brand_specific_topics() -> None:
         topics=topics,
         token_budget=5000,
     )
-    total_pct = round(
-        sum(float(row["share_pct"]) for row in aggregate["topic_shares"])
-        + sum(float(row["share_pct"]) for row in aggregate["brand_specific_topics"])
-        + float(aggregate["etc_pct"]),
-        1,
-    )
 
     assert [row["label"] for row in aggregate["brand_specific_topics"]] == ["제형 편의", "보험 메시지"]
-    assert total_pct == 100.0
+    assert aggregate["brand_specific_topics"][0]["affected_row_count"] == 25
+    assert aggregate["brand_specific_topics"][0]["share_pct"] == 25.0
 
 
 def test_aggregate_share_batches_merges_duplicate_brand_specific_before_top_two() -> None:
@@ -404,13 +393,12 @@ def test_aggregate_share_batches_merges_duplicate_brand_specific_before_top_two(
     batch = {
         "status": "ok",
         "row_count": 100,
-        "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 55.0, "row_count": 55}],
+        "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 55}],
         "brand_specific_topics": [
-            {"topic_id": "B1", "label": "국산 신약 브랜드 가치", "share_pct": 12.0, "row_count": 12},
-            {"topic_id": "B2", "label": "국산 신약 가치", "share_pct": 8.0, "row_count": 8},
-            {"topic_id": "B3", "label": "제형 편의", "share_pct": 7.0, "row_count": 7},
+            {"topic_id": "B1", "label": "국산 신약 브랜드 가치", "affected_row_count": 12},
+            {"topic_id": "B2", "label": "국산 신약 가치", "affected_row_count": 8},
+            {"topic_id": "B3", "label": "제형 편의", "affected_row_count": 7},
         ],
-        "etc_pct": 18.0,
     }
 
     aggregate = execution._aggregate_share_batches(
@@ -428,14 +416,13 @@ def test_aggregate_share_batches_merges_duplicate_brand_specific_before_top_two(
     assert aggregate["brand_specific_dedup_log"][0]["dropped_label"] == "국산 신약 가치"
 
 
-def test_normalize_share_payload_renormalizes_topic_and_etc_total() -> None:
+def test_normalize_share_payload_keeps_independent_topic_totals() -> None:
     payload = {
         "status": "ok",
         "topic_shares": [
-            {"topic_id": "T1", "label": "효능", "share_pct": 60.0},
-            {"topic_id": "T2", "label": "편의", "share_pct": 40.0},
+            {"topic_id": "T1", "label": "효능", "affected_row_count": 60},
+            {"topic_id": "T2", "label": "편의", "affected_row_count": 25},
         ],
-        "etc_pct": 6.6,
     }
 
     normalized = normalize_share_payload(
@@ -447,20 +434,20 @@ def test_normalize_share_payload_renormalizes_topic_and_etc_total() -> None:
         row_count=100,
     )
 
-    total_pct = round(sum(float(row["share_pct"]) for row in normalized["topic_shares"]) + float(normalized["etc_pct"]), 1)
+    total_pct = round(sum(float(row["share_pct"]) for row in normalized["topic_shares"]), 1)
 
-    assert total_pct == 100.0
+    assert total_pct == 85.0
+    assert "etc_pct" not in normalized
 
 
-def test_normalize_share_payload_balances_rounding_overage_to_exact_100() -> None:
+def test_normalize_share_payload_allows_sum_above_100_for_overlapping_topics() -> None:
     payload = {
         "status": "ok",
         "topic_shares": [
-            {"topic_id": "T1", "label": "효능", "share_pct": 33.4},
-            {"topic_id": "T2", "label": "안전성", "share_pct": 33.4},
-            {"topic_id": "T3", "label": "편의", "share_pct": 33.3},
+            {"topic_id": "T1", "label": "효능", "affected_row_count": 70},
+            {"topic_id": "T2", "label": "안전성", "affected_row_count": 50},
+            {"topic_id": "T3", "label": "편의", "affected_row_count": 20},
         ],
-        "etc_pct": 0.0,
     }
 
     normalized = normalize_share_payload(
@@ -471,6 +458,7 @@ def test_normalize_share_payload_balances_rounding_overage_to_exact_100() -> Non
         axis_version="v1",
         row_count=100,
     )
-    total_pct = round(sum(float(row["share_pct"]) for row in normalized["topic_shares"]) + float(normalized["etc_pct"]), 1)
+    total_pct = round(sum(float(row["share_pct"]) for row in normalized["topic_shares"]), 1)
 
-    assert total_pct == 100.0
+    assert total_pct == 140.0
+    assert "etc_pct" not in normalized

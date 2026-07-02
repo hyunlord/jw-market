@@ -1,10 +1,30 @@
 from __future__ import annotations
 
+# noqa: SIZE_OK - Existing broad auto-topic regression suite; split outside this scoped DB-backed market-group load.
+
 import json
 from pathlib import Path
 
+import pytest
+
+from pipeline.scripts.analysis.brand_activity.auto_topic import llm
+from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
+    MissingMariaDbPasswordError,
+    _mariadb_password,
+    read_env_file,
+    resolve_dictionary_source,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import expected_markets
-from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import apply_csd_market_names, build_market_group_map, scope_metadata_from_group_map
+from pipeline.etl.io.catalog.master.market_definition import iter_market_definition_rows
+from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import (
+    _read_target_sheet,
+    _records_from_market_definition_rows,
+    _target_records,
+    apply_csd_market_names,
+    build_market_group_map,
+    resolve_mi_master_path,
+    scope_metadata_from_group_map,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.models import KeywordRow, TopicDefinition
 from pipeline.scripts.analysis.brand_activity.auto_topic.quality import (
     dictionary_cross_check,
@@ -113,6 +133,64 @@ def test_mi_master_group_map_groups_livalo_and_gardlet() -> None:
     assert group_map["atc4_map"]["A10N1"]["group_id"] == group_map["atc4_map"]["A10N3"]["group_id"]
     assert set(group_map["group_scope_ids"]) == {"group:livalo_family", "group:gardlet_family"}
     assert "V03G2" in set(group_map["mi_master_missing_atc4"])
+
+
+def test_gateway_chat_path_template_supports_external_and_internal_wf(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GENOS_GATEWAY_CHAT_PATH_TEMPLATE", raising=False)
+    assert llm._gateway_chat_path("163") == "/api/gateway/rep/serving/163/chat/completions"
+
+    monkeypatch.setenv("GENOS_GATEWAY_CHAT_PATH_TEMPLATE", "/rep/serving/{serving_id}/chat/completions")
+
+    assert llm._gateway_chat_path("163") == "/rep/serving/163/chat/completions"
+
+
+def test_data_source_accepts_env_only_without_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    missing_env = tmp_path / ".env"
+
+    assert read_env_file(missing_env) == {}
+
+    monkeypatch.delenv("MARIADB_ROOT_PASSWORD", raising=False)
+    with pytest.raises(MissingMariaDbPasswordError):
+        _mariadb_password({})
+
+    monkeypatch.setenv("MARIADB_ROOT_PASSWORD", "env-placeholder")
+
+    assert _mariadb_password({}) == "env-placeholder"
+
+
+def test_dictionary_source_reports_missing_without_loading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from pipeline.scripts.analysis.brand_activity.auto_topic import data_source
+
+    missing_path = tmp_path / "missing_dictionary.json"
+    monkeypatch.setattr(data_source, "DICTIONARY_PATH", missing_path)
+
+    path, source = resolve_dictionary_source()
+
+    assert path is None
+    assert source == {"status": "missing", "path": str(missing_path)}
+
+
+def test_dictionary_source_reports_found_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from pipeline.scripts.analysis.brand_activity.auto_topic import data_source
+
+    dictionary_path = tmp_path / "dictionary.json"
+    dictionary_path.write_text('{"A02B2": {}}', encoding="utf-8")
+    monkeypatch.setattr(data_source, "DICTIONARY_PATH", dictionary_path)
+
+    path, source = resolve_dictionary_source()
+
+    assert path == dictionary_path
+    assert source == {"status": "found", "path": str(dictionary_path)}
+
+
+def test_db_market_definition_rows_match_workbook_target_records() -> None:
+    master_path = resolve_mi_master_path()
+    assert master_path is not None
+    sheet_names, target_rows = _read_target_sheet(master_path)
+    workbook_records = _target_records(target_rows, sheet_names)
+    db_records = _records_from_market_definition_rows(list(iter_market_definition_rows(master_path)))
+
+    assert db_records == workbook_records
 
 
 def test_scope_metadata_uses_mi_master_market_scopes_and_drops_csd_missing() -> None:
@@ -245,12 +323,14 @@ def test_chunk_rows_by_token_budget_keeps_calls_bounded() -> None:
 
 def test_response_normalization_and_guard_accepts_valid_share() -> None:
     topics = [TopicDefinition("T1", "효능", "효능 메시지", ("LDL",)), TopicDefinition("T2", "안전성", "안전성 메시지", ("당뇨",))]
-    payload = {"topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 60}, {"topic_id": "T2", "label": "안전성", "share_pct": 25}], "etc_pct": 15}
+    payload = {"topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 12}, {"topic_id": "T2", "label": "안전성", "affected_row_count": 5}]}
 
     normalized = normalize_share_payload(payload, brand="LIVALOZET", atc4="C10C0", scope_id="atc4:C10C0", axis_version="v1", row_count=20)
-    guard = mechanical_guard(normalized, valid_topic_ids={"T1", "T2"})
+    guard = mechanical_guard(normalized, valid_topic_ids={"T1", "T2"}, brand_total_rows=20)
 
-    assert normalized["etc_pct"] == 15.0
+    assert "etc_pct" not in normalized
+    assert normalized["topic_shares"][0]["share_pct"] == 60.0
+    assert normalized["topic_shares"][1]["share_pct"] == 25.0
     assert guard["status"] == "pass"
 
 
@@ -258,10 +338,9 @@ def test_share_normalization_backfills_missing_topic_id_from_axis_label() -> Non
     topics = [TopicDefinition("T1", "효능", "효능 메시지", ("LDL",)), TopicDefinition("T2", "안전성", "안전성 메시지", ("당뇨",))]
     payload = {
         "topic_shares": [
-            {"topic_id": None, "label": " 효능 ", "share_pct": 60},
-            {"topic_id": "", "label": "안 전 성", "share_pct": 25},
+            {"topic_id": None, "label": " 효능 ", "affected_row_count": 12},
+            {"topic_id": "", "label": "안 전 성", "affected_row_count": 5},
         ],
-        "etc_pct": 15,
     }
 
     normalized = normalize_share_payload(
@@ -273,7 +352,7 @@ def test_share_normalization_backfills_missing_topic_id_from_axis_label() -> Non
         row_count=20,
         axis_topics=topics,
     )
-    guard = mechanical_guard(normalized, valid_topic_ids={"T1", "T2"})
+    guard = mechanical_guard(normalized, valid_topic_ids={"T1", "T2"}, brand_total_rows=20)
 
     assert [row["topic_id"] for row in normalized["topic_shares"]] == ["T1", "T2"]
     assert normalized["topic_id_backfill_count"] == 2
@@ -282,7 +361,7 @@ def test_share_normalization_backfills_missing_topic_id_from_axis_label() -> Non
 
 def test_share_normalization_keeps_unmatched_missing_topic_id_unknown() -> None:
     topics = [TopicDefinition("T1", "효능", "효능 메시지", ("LDL",))]
-    payload = {"topic_shares": [{"topic_id": "", "label": "미정 토픽", "share_pct": 80}], "etc_pct": 20}
+    payload = {"topic_shares": [{"topic_id": "", "label": "미정 토픽", "affected_row_count": 16}]}
 
     normalized = normalize_share_payload(
         payload,
@@ -293,7 +372,7 @@ def test_share_normalization_keeps_unmatched_missing_topic_id_unknown() -> None:
         row_count=20,
         axis_topics=topics,
     )
-    guard = mechanical_guard(normalized, valid_topic_ids={"T1"})
+    guard = mechanical_guard(normalized, valid_topic_ids={"T1"}, brand_total_rows=20)
 
     assert normalized["topic_shares"][0]["topic_id"] == ""
     assert normalized["topic_id_backfill_count"] == 0
@@ -316,15 +395,14 @@ def test_axis_normalization_caps_topics_at_seven() -> None:
     assert len(normalized["topics"]) == 7
 
 
-def test_share_normalization_adds_brand_specific_topics_and_computes_etc_post_parse() -> None:
+def test_share_normalization_adds_brand_specific_topics_without_etc() -> None:
     payload = {
-        "topic_shares": [{"topic_id": "T1", "label": "시장 효능", "share_pct": 55.0}],
+        "topic_shares": [{"topic_id": "T1", "label": "시장 효능", "affected_row_count": 55}],
         "brand_specific_topics": [
-            {"topic_id": "B1", "label": "브랜드 특화 근거", "share_pct": 20.0},
-            {"topic_id": "B2", "label": "브랜드 특화 편의", "share_pct": 10.0},
-            {"topic_id": "B3", "label": "초과 특화", "share_pct": 9.0},
+            {"topic_id": "B1", "label": "브랜드 특화 근거", "affected_row_count": 20},
+            {"topic_id": "B2", "label": "브랜드 특화 편의", "affected_row_count": 10},
+            {"topic_id": "B3", "label": "초과 특화", "affected_row_count": 9},
         ],
-        "etc_pct": 99.0,
     }
 
     normalized = normalize_share_payload(
@@ -335,27 +413,21 @@ def test_share_normalization_adds_brand_specific_topics_and_computes_etc_post_pa
         axis_version="v1",
         row_count=100,
     )
-    guard = mechanical_guard(normalized, valid_topic_ids={"T1"})
-    total_pct = round(
-        sum(float(row["share_pct"]) for row in normalized["topic_shares"])
-        + sum(float(row["share_pct"]) for row in normalized["brand_specific_topics"])
-        + float(normalized["etc_pct"]),
-        1,
-    )
+    guard = mechanical_guard(normalized, valid_topic_ids={"T1"}, brand_total_rows=100)
 
     assert len(normalized["brand_specific_topics"]) == 2
-    assert normalized["etc_pct"] == 15.0
-    assert total_pct == 100.0
+    assert "etc_pct" not in normalized
+    assert sum(float(row["share_pct"]) for row in [*normalized["topic_shares"], *normalized["brand_specific_topics"]]) == 85.0
     assert guard["status"] == "pass"
 
 
 def test_share_normalization_merges_near_duplicate_brand_specific_topics() -> None:
     payload = {
-        "topic_shares": [{"topic_id": "T1", "label": "시장 효능", "share_pct": 55.0}],
+        "topic_shares": [{"topic_id": "T1", "label": "시장 효능", "affected_row_count": 55}],
         "brand_specific_topics": [
-            {"topic_id": "B1", "label": "국산 신약 브랜드 가치", "share_pct": 12.0, "row_count": 12},
-            {"topic_id": "B2", "label": "국산 신약 가치", "share_pct": 8.0, "row_count": 8},
-            {"topic_id": "B3", "label": "제형 편의", "share_pct": 7.0, "row_count": 7},
+            {"topic_id": "B1", "label": "국산 신약 브랜드 가치", "affected_row_count": 12},
+            {"topic_id": "B2", "label": "국산 신약 가치", "affected_row_count": 8},
+            {"topic_id": "B3", "label": "제형 편의", "affected_row_count": 7},
         ],
     }
 
@@ -367,17 +439,12 @@ def test_share_normalization_merges_near_duplicate_brand_specific_topics() -> No
         axis_version="v1",
         row_count=100,
     )
-    total_pct = round(
-        sum(float(row["share_pct"]) for row in normalized["topic_shares"])
-        + sum(float(row["share_pct"]) for row in normalized["brand_specific_topics"])
-        + float(normalized["etc_pct"]),
-        1,
-    )
 
     assert [row["label"] for row in normalized["brand_specific_topics"]] == ["국산 신약 브랜드 가치", "제형 편의"]
+    assert normalized["brand_specific_topics"][0]["affected_row_count"] == 20
+    assert normalized["brand_specific_topics"][0]["share_pct"] == 20.0
     assert normalized["brand_specific_dedup_count"] == 1
     assert normalized["brand_specific_dedup_log"][0]["dropped_label"] == "국산 신약 가치"
-    assert total_pct == 100.0
 
 
 def test_label_quality_summary_counts_complex_labels_and_brand_specific_duplicates() -> None:
@@ -405,18 +472,19 @@ def test_label_quality_summary_counts_complex_labels_and_brand_specific_duplicat
     assert summary["brand_specific_duplicate_pair_count"] == 1
 
 
-def test_mechanical_guard_rejects_unknown_topic_and_bad_sum() -> None:
+def test_mechanical_guard_rejects_unknown_topic_and_bad_affected_count() -> None:
     payload = {
         "status": "ok",
-        "topic_shares": [{"topic_id": "T999", "label": "환각", "share_pct": 80.0, "row_count": 8}],
-        "etc_pct": 30.0,
+        "row_count": 10,
+        "topic_shares": [{"topic_id": "T999", "label": "환각", "share_pct": 120.0, "affected_row_count": 12}],
     }
 
-    guard = mechanical_guard(payload, valid_topic_ids={"T1"})
+    guard = mechanical_guard(payload, valid_topic_ids={"T1"}, brand_total_rows=10)
 
     assert guard["status"] == "fail"
     assert "unknown_topic_id" in guard["reasons"]
-    assert "share_sum_out_of_range" in guard["reasons"]
+    assert "share_pct_out_of_bounds" in guard["reasons"]
+    assert "affected_row_count_out_of_bounds" in guard["reasons"]
 
 
 def test_stabilize_axis_keeps_previous_when_similarity_is_high() -> None:
@@ -453,7 +521,7 @@ def test_stabilize_axis_keeps_previous_when_similarity_is_high() -> None:
 
 
 def test_dictionary_cross_check_flags_large_top_topic_mismatch() -> None:
-    share_payload = {"topic_shares": [{"label": "효능", "share_pct": 70.0}], "etc_pct": 30.0}
+    share_payload = {"topic_shares": [{"label": "효능", "affected_row_count": 14, "share_pct": 70.0}]}
     dict_payload = {"topics": [{"label": "안전성", "share_pct": 80.0}]}
 
     result = dictionary_cross_check(share_payload, dict_payload, min_overlap=0.2)
@@ -462,27 +530,27 @@ def test_dictionary_cross_check_flags_large_top_topic_mismatch() -> None:
     assert result["layer"] == "dict_xcheck"
 
 
-def test_quality_summary_counts_grades_and_average_etc() -> None:
+def test_quality_summary_counts_grades_without_etc_average() -> None:
     axis_results = {
         "A": {"status": "ok", "scope_id": "atc4:A", "topics": [{"topic_id": "T1", "label": "효능"}, {"topic_id": "T2", "label": "안전성"}, {"topic_id": "T3", "label": "편의"}, {"topic_id": "T4", "label": "근거"}, {"topic_id": "T5", "label": "기타"}]},
         "B": {"status": "ok", "scope_id": "atc4:B", "topics": [{"topic_id": "T1", "label": "효능"} for _ in range(5)]},
     }
     brand_results = {
-        "A:BRAND1": {"atc4": "A", "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 90.0}], "etc_pct": 10.0, "qc": {"guard": {"status": "pass"}}},
-        "B:BRAND2": {"atc4": "B", "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 60.0}], "etc_pct": 40.0, "qc": {"guard": {"status": "pass"}}},
+        "A:BRAND1": {"atc4": "A", "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 90, "share_pct": 90.0}], "qc": {"guard": {"status": "pass"}}},
+        "B:BRAND2": {"atc4": "B", "topic_shares": [], "qc": {"guard": {"status": "pass"}}},
     }
 
     summary = quality_summary(axis_results, brand_results, large_markets=("A",))
 
     assert summary["grade_distribution"]["A"] == 1
     assert summary["grade_distribution"]["C"] == 1
-    assert summary["average_etc_pct"] == 25.0
+    assert "average_etc_pct" not in summary
 
 
 def test_auto_topic_html_uses_embedded_measured_json(tmp_path: Path) -> None:
     from pipeline.scripts.analysis.brand_activity.auto_topic.viz import render_html
 
-    html = render_html({"markets": [{"atc4": "C10C0", "quality_grade": "A"}], "brand_results": [{"brand": "LIVALOZET", "etc_pct": 6.7}], "models": ["flash"]})
+    html = render_html({"markets": [{"atc4": "C10C0", "quality_grade": "A"}], "brand_results": [{"brand": "LIVALOZET", "row_count": 20, "topic_shares": [{"label": "효능", "affected_row_count": 10, "share_pct": 50.0}]}], "models": ["flash"]})
     output = tmp_path / "viz.html"
     output.write_text(html, encoding="utf-8")
 

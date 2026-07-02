@@ -38,7 +38,6 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.audit import (  # noqa:
     write_text,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (  # noqa: E402
-    DICTIONARY_PATH,
     SCHEMA,
     connect_mariadb,
     fetch_csd_market_bridge,
@@ -49,6 +48,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (  #
     market_stats,
     read_env_file,
     resolve_alias_source,
+    resolve_dictionary_source,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.execution import (  # noqa: E402
     build_call_plan,
@@ -81,9 +81,11 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.sampling import (  # no
 from pipeline.scripts.analysis.brand_activity.auto_topic.static_quality import inspect_package  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store import load_artifacts  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store_db import (  # noqa: E402
+    ensure_store_summary_nonzero,
     save_artifacts,
     store_summary_json,
 )
+from pipeline.scripts.analysis.brand_activity.auto_topic.verification import write_verification_file  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.viz import build_viz_payload, render_html  # noqa: E402
 
 
@@ -158,15 +160,17 @@ def run_pipeline(
 ) -> dict[str, JsonValue]:
     """Run read-only data collection, optional bounded GenOS calls, reports, and packaging."""
     _safety_preflight(stage_schema)
+    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     docs_dir.mkdir(parents=True, exist_ok=True)
     run_audit_dir = _audit_run_dir(audit_dir, tag)
     run_audit_dir.mkdir(parents=True, exist_ok=True)
     markets = expected_markets()
-    dictionary = load_json_file(DICTIONARY_PATH)
+    dictionary_path, dictionary_source = resolve_dictionary_source()
+    dictionary = load_json_file(dictionary_path) if dictionary_path else {}
     alias_path, alias_source = resolve_alias_source()
     alias_payload = load_json_file(alias_path) if alias_path else {}
     before_snapshot, rows, csd_bridge, after_snapshot = _load_stage_rows(markets, stage_schema)
-    descriptions = load_alias_descriptions(alias_payload, _all_brand_keys(rows))
+    descriptions = load_alias_descriptions(alias_payload, rows)
     group_map = apply_csd_market_names(build_market_group_map(markets), csd_bridge)
     if _dict(group_map.get("sanity_checks")).get("status") != "pass":
         raise SafetyError(f"MI Master group sanity failed: {group_map.get('sanity_checks')}")
@@ -186,7 +190,7 @@ def run_pipeline(
         raise SafetyError(f"missing serving-direct bearer token env: {token_env}")
     auth_mode = "bearer" if token else "dry_run_no_token"
     plan_summary = _plan_summary(call_plan)
-    _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge)
+    _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, dictionary_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge)
     if should_execute:
         execution = execute_calls(token=token, dictionary=dictionary, axis_samples=axis_samples, brand_samples=brand_samples, descriptions=descriptions, markets=markets, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
     else:
@@ -224,8 +228,11 @@ def run_pipeline(
     zip_result = create_zip_package(generated_files(docs_dir, run_audit_dir), tag=tag)
     run_summary = {
         "tag": tag,
+        "started_at": started_at,
         "execution_mode": payload["execution_mode"],
         "auth_mode": auth_mode,
+        "input_fingerprint": before_snapshot.get("stage_hash_fingerprint"),
+        "input_row_count": before_snapshot.get("row_count"),
         "market_count": len(axis_samples),
         "scope_count": len(axis_samples),
         "group_scope_count": len([row for row in scope_metadata.values() if isinstance(row, dict) and row.get("scope_type") == "market_group"]),
@@ -235,7 +242,6 @@ def run_pipeline(
         "executed_call_count": len(execution.call_logs),
         "large_markets": list(large_markets),
         "quality_grade_distribution": quality.get("grade_distribution"),
-        "average_etc_pct": quality.get("average_etc_pct"),
         "complex_label_count": _dict(quality.get("label_quality")).get("complex_label_count"),
         "brand_specific_duplicate_pair_count": _dict(quality.get("label_quality")).get("brand_specific_duplicate_pair_count"),
         "group_sanity_checks": group_map.get("sanity_checks"),
@@ -251,6 +257,7 @@ def run_pipeline(
         "open_questions": len(_open_questions(alias_source, should_execute)),
     }
     write_json(run_audit_dir / "run_summary.json", run_summary)
+    write_verification_file(run_audit_dir)
     if should_execute and save_to_db:
         db_summary = _save_run_to_db(run_audit_dir, stage_schema, zip_result.sha256)
         write_json(run_audit_dir / "db_save_summary.json", db_summary)
@@ -288,6 +295,7 @@ def _write_pre_execution_audit(
     rows: list[KeywordRow],
     markets: tuple[str, ...],
     alias_source: dict[str, JsonValue],
+    dictionary_source: dict[str, JsonValue],
     samples: dict[str, JsonValue],
     call_plan: list[dict[str, JsonValue]],
     plan_summary: dict[str, JsonValue],
@@ -309,7 +317,7 @@ def _write_pre_execution_audit(
             "dropped_atc4_csd_missing": group_map.get("dropped_atc4_csd_missing"),
             "csd_markets_without_keyword_data": group_map.get("csd_markets_without_keyword_data"),
             "alias_source": alias_source,
-            "dictionary_path": str(DICTIONARY_PATH),
+            "dictionary_path": dictionary_source,
             "read_only_equal": before_snapshot == after_snapshot,
             "sampled_brands_per_market": {market: len(brands) for market, brands in _dict(samples.get("selected_brands")).items()},
         },
@@ -401,11 +409,6 @@ def _render_design_tokens() -> str:
     )
 
 
-def _all_brand_keys(rows: list[KeywordRow]) -> list[tuple[str, str]]:
-    """Return unique ATC4/brand keys observed in source rows."""
-    return sorted({(row.atc4, row.brand) for row in rows})
-
-
 def _all_sampled_rows(axis_samples: dict[str, list[KeywordRow]], brand_samples: dict[str, list[KeywordRow]]) -> list[KeywordRow]:
     """Flatten sampled rows for exact raw-text leakage scanning."""
     rows: list[KeywordRow] = []
@@ -436,7 +439,7 @@ def _open_questions(alias_source: dict[str, JsonValue], executed: bool) -> list[
     if alias_source.get("status") == "fallback_found":
         questions.append("alias 산출물이 docs/design 경로에 있어 요청 경로(docs/research)와 다른 점을 PL 확인 필요.")
     if not executed:
-        questions.append("dry-run 산출물은 품질 등급/기타비율 실측이 아니므로 GenOS execute 결과로 대체 필요.")
+        questions.append("dry-run 산출물은 품질 등급 실측이 아니므로 GenOS execute 결과로 대체 필요.")
     return questions
 
 
@@ -455,6 +458,7 @@ def _save_run_to_db(audit_dir: Path, stage_schema: str, artifact_sha256: str) ->
             artifacts=load_artifacts(audit_dir),
             artifact_sha256=artifact_sha256,
         )
+        ensure_store_summary_nonzero(summary)
     finally:
         connection.close()
     return store_summary_json(summary)

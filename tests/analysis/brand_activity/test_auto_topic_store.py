@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store
+from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store_db
+from pipeline.scripts.analysis.brand_activity.auto_topic import verification
+from pipeline.scripts.analysis.brand_activity.auto_topic.audit import write_json
 
 
 def _artifact_payload() -> topic_store.TopicArtifacts:
@@ -12,6 +15,7 @@ def _artifact_payload() -> topic_store.TopicArtifacts:
     return topic_store.TopicArtifacts(
         run_summary={
             "tag": "serving_direct_singleconcept_top7_exec_20260620_143124",
+            "input_fingerprint": "fp-current",
             "market_count": 1,
             "sampled_brand_count": 2,
             "quality_grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0},
@@ -43,9 +47,8 @@ def _artifact_payload() -> topic_store.TopicArtifacts:
                     "brand": "JAQBO",
                     "atc4": "A02B2",
                     "row_count": 100,
-                    "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 91.0}],
-                    "brand_specific_topics": [{"topic_id": "B1", "label": "보험", "share_pct": 4.0}],
-                    "etc_pct": 5.0,
+                    "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 91, "share_pct": 91.0}],
+                    "brand_specific_topics": [{"topic_id": "B1", "label": "보험", "affected_row_count": 4, "share_pct": 4.0}],
                 },
                 {
                     "sample_key": "A02B2:RABEKHAN",
@@ -54,9 +57,8 @@ def _artifact_payload() -> topic_store.TopicArtifacts:
                     "brand": "RABEKHAN",
                     "atc4": "A02B2",
                     "row_count": 20,
-                    "topic_shares": [{"topic_id": "T1", "label": "효능", "share_pct": 100.0}],
+                    "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": 20, "share_pct": 100.0}],
                     "brand_specific_topics": [],
-                    "etc_pct": 0.0,
                 },
             ],
         },
@@ -89,6 +91,21 @@ def test_build_topic_records_keeps_primary_payload_only() -> None:
     assert all("pro 제외" not in str(record.payload) for record in records)
 
 
+def test_topic_payload_sample_uses_stored_axis_and_brand_topic_shapes() -> None:
+    """Given stored mart payload JSON, When sampled for audit, Then real topics are not reported empty."""
+    records = topic_store.build_topic_records(_artifact_payload())
+
+    sample = topic_store.topic_payload_sample(records[0].payload)
+
+    assert sample["axis_topics"] == [{"topic_id": "T1", "label": "효능"}]
+    assert sample["brand_topics"][0]["topic_shares"] == [
+        {"topic_id": "T1", "label": "효능", "share_pct": 91.0}
+    ]
+    assert sample["brand_topics"][0]["brand_specific_topics"] == [
+        {"topic_id": "B1", "label": "보험", "share_pct": 4.0}
+    ]
+
+
 def test_build_run_record_uses_measured_verification_totals() -> None:
     """Given verification evidence, When run metadata is built, Then token and quality totals survive."""
     artifacts = _artifact_payload()
@@ -107,6 +124,29 @@ def test_build_run_record_uses_measured_verification_totals() -> None:
     assert run.brand_count == 2
     assert run.axis_compound_count == 0
     assert run.brand_specific_dup_count == 0
+    assert run.input_fingerprint == "fp-current"
+
+
+def test_build_run_record_parses_replay_tag_timestamp_and_db_snapshot_fingerprint() -> None:
+    """Given recovery artifacts, When run metadata is built, Then created_at and guard seed survive."""
+    artifacts = _artifact_payload()
+    artifacts.run_summary.pop("input_fingerprint")
+    artifacts.run_summary["tag"] = "brand_activity_replay_20260702_160109"
+    artifacts.db_snapshot.update(
+        {
+            "before": {
+                "stage_hash_fingerprint": "ecb7c06943b7d44fffde4e8761f281546237148d1f10ed088017d96e584fb135"
+            }
+        }
+    )
+
+    run = topic_store.build_run_record(
+        artifacts,
+        artifact_sha256="18d57e3071f046527570e4ee6667426e76df58fc0c29557bb8a03d67b87d8ebc",
+    )
+
+    assert run.created_at == "2026-07-02 16:01:09"
+    assert run.input_fingerprint == "ecb7c06943b7d44fffde4e8761f281546237148d1f10ed088017d96e584fb135"
 
 
 def test_validate_stage_schema_rejects_non_isolated_schema() -> None:
@@ -115,7 +155,151 @@ def test_validate_stage_schema_rejects_non_isolated_schema() -> None:
         topic_store.validated_stage_schema("prod_mart")
 
 
+def test_run_table_ddl_and_upsert_include_input_fingerprint() -> None:
+    """Given topic run storage SQL, When generated, Then the fingerprint column is carried."""
+    _, runs_ddl = topic_store_db.topic_table_ddl()
+    upsert = topic_store_db._run_upsert_sql(topic_store_db.SCHEMA)
+
+    assert "input_fingerprint CHAR(64)" in runs_ddl
+    assert "input_fingerprint" in upsert
+    assert "VALUES (schema_stage_hash)" not in upsert
+
+
+def test_store_summary_validation_rejects_zero_row_save() -> None:
+    """Given built records, When persistence evidence is zero, Then the save must fail loudly."""
+    summary = topic_store_db.StoreSummary(
+        run_id="brand_activity_replay_20260703_000739",
+        topic_record_count=11,
+        topic_brand_count=115,
+        stored_topic_rows=0,
+        stored_run_rows=0,
+    )
+
+    with pytest.raises(topic_store.TopicStoreError, match="zero-row DB save"):
+        topic_store_db.ensure_store_summary_nonzero(summary)
+
+
+def test_store_summary_validation_accepts_persisted_rows() -> None:
+    """Given stored rows matching a measured run, When validated, Then no error is raised."""
+    summary = topic_store_db.StoreSummary(
+        run_id="brand_activity_replay_20260703_000739",
+        topic_record_count=11,
+        topic_brand_count=115,
+        stored_topic_rows=11,
+        stored_run_rows=1,
+    )
+
+    topic_store_db.ensure_store_summary_nonzero(summary)
+
+
 def test_load_artifacts_requires_existing_audit_files(tmp_path: Path) -> None:
     """Given an incomplete audit directory, When loading artifacts, Then the missing file is explicit."""
     with pytest.raises(topic_store.TopicStoreError, match="run_summary.json"):
         topic_store.load_artifacts(tmp_path)
+
+
+def test_build_verification_uses_measured_call_log_tokens() -> None:
+    """Given current audit files, When verification is built, Then measured route and token totals survive."""
+    run_summary = {
+        "tag": "brand_activity_replay_20260702_160109",
+        "executed_call_count": 2,
+        "raw_text_leak_count": 0,
+        "quality_grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0},
+        "complex_label_count": 0,
+        "brand_specific_duplicate_pair_count": 0,
+    }
+    call_log = [
+        {
+            "status": "ok",
+            "backend": "direct_serving",
+            "endpoint": "http://llmops-gateway-api-service:8080/rep/serving/163/chat/completions",
+            "model_id": "genos-flash",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            "retry": {"retry_count": 1},
+        },
+        {
+            "status": "ok",
+            "backend": "direct_serving",
+            "endpoint": "http://llmops-gateway-api-service:8080/rep/serving/163/chat/completions",
+            "model_id": "genos-flash",
+            "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+            "retry": {"retry_count": 0},
+        },
+    ]
+
+    payload = verification.build_verification(
+        run_summary=run_summary,
+        call_log=call_log,
+        quality_summary={"grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0}},
+        label_quality_summary={"complex_label_count": 0, "brand_specific_duplicate_pair_count": 0},
+    )
+
+    assert payload["executed_call_count"] == 2
+    assert payload["prompt_tokens"] == 30
+    assert payload["completion_tokens"] == 5
+    assert payload["estimated_usd_vertex_flash_proxy"] == 0.0
+    assert payload["backend_counts"] == {"direct_serving": 2}
+    assert payload["model_counts"] == {"genos-flash": 2}
+    assert payload["status_counts"] == {"ok": 2}
+    assert payload["retry_count"] == 1
+    assert payload["serving_route"] == {
+        "backend": "direct_serving",
+        "gateway_used": True,
+        "manual_hosts_used": False,
+        "model_id": "genos-flash",
+    }
+
+
+def test_derive_verification_file_unblocks_artifact_loading(tmp_path: Path) -> None:
+    """Given a current audit dir without legacy verification, When derived, Then store loading works."""
+    write_json(
+        tmp_path / "run_summary.json",
+        {
+            "tag": "brand_activity_replay_20260702_160109",
+            "executed_call_count": 1,
+            "raw_text_leak_count": 0,
+            "quality_grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0},
+        },
+    )
+    write_json(
+        tmp_path / "call_log_sanitized.json",
+        [
+            {
+                "status": "ok",
+                "backend": "direct_serving",
+                "model_id": "genos-flash",
+                "serving_id": "163",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 25},
+                "retry": {"retry_count": 0},
+            }
+        ],
+    )
+    write_json(tmp_path / "quality_summary.json", {"grade_distribution": {"A": 1, "B": 0, "C": 0, "D": 0}})
+    write_json(tmp_path / "label_quality_summary.json", {"complex_label_count": 0, "brand_specific_duplicate_pair_count": 0})
+    write_json(tmp_path / "brand_results_sanitized.json", {})
+    write_json(
+        tmp_path / "viz_payload.json",
+        {
+            "markets": [
+                {
+                    "scope_id": "atc4:A02B2",
+                    "scope_key": "A02B2",
+                    "display_name": "PPI Market",
+                    "atc4_values": ["A02B2"],
+                    "quality_grade": "A",
+                    "axis_row_count": 10,
+                }
+            ],
+            "brand_results": [],
+        },
+    )
+    write_json(tmp_path / "axis_results_sanitized.json", {"A02B2": {"scope_id": "atc4:A02B2", "source_row_count": 10, "topics": []}})
+
+    verification.write_verification_file(tmp_path, derived_post_hoc=True)
+    artifacts = topic_store.load_artifacts(tmp_path)
+    run = topic_store.build_run_record(artifacts, artifact_sha256="18d57e3071f046527570e4ee6667426e76df58fc0c29557bb8a03d67b87d8ebc")
+
+    assert artifacts.verification["derived_post_hoc"] is True
+    assert run.total_prompt_tokens == 100
+    assert run.total_completion_tokens == 25
+    assert run.route == "direct_serving"

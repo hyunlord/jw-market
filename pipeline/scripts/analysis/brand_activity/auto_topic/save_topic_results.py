@@ -33,6 +33,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store import (  #
     load_artifacts,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store_db import (  # noqa: E402
+    ensure_store_summary_nonzero,
     save_artifacts,
     store_summary_json,
     topic_table_ddl,
@@ -74,6 +75,7 @@ def main(
                 artifacts=artifacts,
                 artifact_sha256=sha256,
             )
+            ensure_store_summary_nonzero(summary)
         finally:
             connection.close()
         result = {"dry_run": False, **store_summary_json(summary)}

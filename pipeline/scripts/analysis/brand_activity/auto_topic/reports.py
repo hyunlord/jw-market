@@ -29,7 +29,6 @@ def render_quality_md(payload: dict[str, JsonValue]) -> str:
             "",
             _table(["등급", "시장 수"], [[grade, str(count)] for grade, count in _dict(quality.get("grade_distribution")).items()]),
             "",
-            f"기타비율 평균: {_string(quality.get('average_etc_pct'))}%",
             f"복합 라벨 수(및/슬래시/쉼표): {_string(_dict(quality.get('label_quality')).get('complex_label_count'))}",
             f"특화 근접중복 쌍 수: {_string(_dict(quality.get('label_quality')).get('brand_specific_duplicate_pair_count'))}",
             "",
@@ -44,7 +43,7 @@ def render_quality_md(payload: dict[str, JsonValue]) -> str:
             "",
             "시장별 품질",
             "",
-            _table(["시장", "scope", "등급", "축 n", "분류 브랜드", "평균 기타", "사유"], [[_string(row.get("display_name") or row.get("atc4")), _string(row.get("scope_id") or row.get("atc4")), _string(row.get("quality_grade")), _string(row.get("axis_row_count")), _string(row.get("sampled_brand_count")), _string(row.get("avg_etc_pct")), ", ".join(_string(reason) for reason in _list(row.get("reasons")))] for row in _list(quality.get("markets"))]),
+            _table(["시장", "scope", "등급", "축 n", "분류 브랜드", "사유"], [[_string(row.get("display_name") or row.get("atc4")), _string(row.get("scope_id") or row.get("atc4")), _string(row.get("quality_grade")), _string(row.get("axis_row_count")), _string(row.get("sampled_brand_count")), ", ".join(_string(reason) for reason in _list(row.get("reasons")))] for row in _list(quality.get("markets"))]),
             "",
             "Flash 시장축",
             "",
@@ -52,7 +51,7 @@ def render_quality_md(payload: dict[str, JsonValue]) -> str:
             "",
             "표본 브랜드 비율",
             "",
-            _table(["시장/브랜드", "source ATC4", "분류 n", "batch", "Top shares", "기타", "QC"], _brand_rows(payload)),
+            _table(["시장/브랜드", "source ATC4", "분류 n", "batch", "Top shares", "QC"], _brand_rows(payload)),
             "",
             "대형 시장 모델등급 재확인",
             "",
@@ -77,14 +76,14 @@ def render_pipeline_md(payload: dict[str, JsonValue]) -> str:
             "1. 최근 1년 또는 사용 가능한 10개월 Keyword 행을 시장/시장군별로 read-only 수집한다.",
             "2. 시장축은 전수 행을 토큰 예산 단위 chunk로 나누어 후보축을 생성한 뒤 raw-text-free merge로 5~8개 축을 통합한다.",
             "3. 이전 배치 축과 유사도 >= 0.8이면 이전 `axis_version`과 `topic_id`를 유지하고, 낮으면 `axis_version`을 증가시킨다.",
-            "4. 브랜드별 전수 행은 토큰 예산 단위 batch로 분류한 뒤 성공 batch의 topic row_count를 합산한다. 분모는 실제 성공 분류 행 수 기준 주토픽 1개 배정이며 기타 포함 100%다.",
+            "4. 브랜드별 전수 행은 토큰 예산 단위 batch로 분석한 뒤 topic affected_row_count를 합산한다. 분모는 브랜드 전체 행 수이며 토픽별 독립 비중이라 합계가 100%일 필요가 없다.",
             "5. 기계적 가드, 급변 감지, REDESIGN 사전 교차검증을 수행하고 실패분은 플래그/격리한다.",
             "6. 시장축, 브랜드 비율, QC 결과, 배치 메타, 입력 해시를 저장한다.",
             "",
             "## 저장 스키마 초안",
             "",
             "```json",
-            '{ "market_axis": { "scope_id": "atc4:C10C0", "axis_version": "v4", "topics": [], "stability": {} }, "brand_share": { "brand": "LIVALOZET", "topic_shares": [], "etc_pct": 0, "qc": {}, "input_hash": "sha256" }, "batch_meta": { "model": "flash", "prompt_version": "auto_topic_v1", "token_usage": {} } }',
+            '{ "market_axis": { "scope_id": "atc4:C10C0", "axis_version": "v4", "topics": [], "stability": {} }, "brand_share": { "brand": "LIVALOZET", "topic_shares": [{ "affected_row_count": 32, "share_pct": 32.0 }], "qc": {}, "input_hash": "sha256" }, "batch_meta": { "model": "flash", "prompt_version": "auto_topic_v4", "token_usage": {} } }',
             "```",
             "",
             "## 시장 그룹 메모",
@@ -196,7 +195,7 @@ def _brand_rows(payload: dict[str, JsonValue]) -> list[list[str]]:
         top = ", ".join(f"{_string(_dict(share).get('label'))}:{_string(_dict(share).get('share_pct'))}%" for share in shares[:5])
         qc = _string(_dict(_dict(item.get("qc")).get("guard")).get("status"))
         batching = _dict(item.get("batching"))
-        rows.append([f"{_string(item.get('display_name') or item.get('scope_key'))}/{_string(item.get('brand'))}", _string(item.get("atc4")), _string(item.get("row_count")), _string(batching.get("batch_count") or batching.get("chunk_count")), top, f"{_string(item.get('etc_pct'))}%", qc])
+        rows.append([f"{_string(item.get('display_name') or item.get('scope_key'))}/{_string(item.get('brand'))}", _string(item.get("atc4")), _string(item.get("row_count")), _string(batching.get("batch_count") or batching.get("chunk_count")), top, qc])
     return rows
 
 

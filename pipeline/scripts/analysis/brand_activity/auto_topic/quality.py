@@ -6,8 +6,8 @@ from .models import JsonValue
 from .stability import share_map
 
 
-def mechanical_guard(share_payload: dict[str, JsonValue], *, valid_topic_ids: set[str], epsilon: float = 0.5) -> dict[str, JsonValue]:
-    """Validate schema, topic ids, and 100 percent arithmetic for one share payload."""
+def mechanical_guard(share_payload: dict[str, JsonValue], *, valid_topic_ids: set[str], brand_total_rows: int | None = None) -> dict[str, JsonValue]:
+    """Validate schema, topic ids, and independent influence bounds."""
     reasons: list[str] = []
     if str(share_payload.get("status") or "") != "ok":
         reasons.append("schema_quarantine")
@@ -15,18 +15,20 @@ def mechanical_guard(share_payload: dict[str, JsonValue], *, valid_topic_ids: se
     if not isinstance(shares, list):
         reasons.append("missing_topic_shares")
         shares = []
-    total = float(share_payload.get("etc_pct") or 0.0)
+    total_rows = brand_total_rows if isinstance(brand_total_rows, int) else int(share_payload.get("row_count") or 0)
     for item in shares:
         if not isinstance(item, dict):
             reasons.append("invalid_share_item")
             continue
         topic_id = str(item.get("topic_id") or "")
         pct = float(item.get("share_pct") or 0.0)
-        total += pct
         if topic_id not in valid_topic_ids:
             reasons.append("unknown_topic_id")
         if pct < 0 or pct > 100:
             reasons.append("share_pct_out_of_bounds")
+        affected = int(item.get("affected_row_count") or 0)
+        if affected < 0 or (total_rows > 0 and affected > total_rows):
+            reasons.append("affected_row_count_out_of_bounds")
     brand_topics = share_payload.get("brand_specific_topics")
     if isinstance(brand_topics, list):
         if len(brand_topics) > 2:
@@ -36,15 +38,12 @@ def mechanical_guard(share_payload: dict[str, JsonValue], *, valid_topic_ids: se
                 reasons.append("invalid_brand_specific_item")
                 continue
             pct = float(item.get("share_pct") or 0.0)
-            total += pct
             if pct < 0 or pct > 100:
                 reasons.append("brand_specific_pct_out_of_bounds")
-    etc = float(share_payload.get("etc_pct") or 0.0)
-    if etc < 0 or etc > 100:
-        reasons.append("etc_pct_out_of_bounds")
-    if abs(total - 100.0) > epsilon:
-        reasons.append("share_sum_out_of_range")
-    return {"layer": "mechanical_guard", "status": "fail" if reasons else "pass", "sum_pct": round(total, 1), "reasons": sorted(set(reasons))}
+            affected = int(item.get("affected_row_count") or 0)
+            if affected < 0 or (total_rows > 0 and affected > total_rows):
+                reasons.append("affected_row_count_out_of_bounds")
+    return {"layer": "mechanical_guard", "status": "fail" if reasons else "pass", "reasons": sorted(set(reasons))}
 
 
 def drift_check(current_payload: dict[str, JsonValue], previous_payload: dict[str, JsonValue] | None, *, threshold_pp: float = 20.0) -> dict[str, JsonValue]:
@@ -86,15 +85,10 @@ def quality_summary(axis_results: dict[str, JsonValue], brand_results: dict[str,
     metadata = _scope_metadata(scope_metadata)
     markets = sorted({*axis_results.keys(), *by_market.keys()})
     market_rows: list[dict[str, JsonValue]] = []
-    etc_values: list[float] = []
     for market in markets:
         axis = axis_results.get(market)
         brand_payloads = by_market.get(market, [])
         grade, reasons = _grade_market(axis if isinstance(axis, dict) else {}, brand_payloads, is_large=market in large_markets)
-        for payload in brand_payloads:
-            etc = payload.get("etc_pct")
-            if isinstance(etc, int | float):
-                etc_values.append(float(etc))
         meta = metadata.get(market, {})
         market_rows.append(
             {
@@ -108,7 +102,6 @@ def quality_summary(axis_results: dict[str, JsonValue], brand_results: dict[str,
                 "quality_grade": grade,
                 "reasons": reasons,
                 "sampled_brand_count": len(brand_payloads),
-                "avg_etc_pct": _avg_etc(brand_payloads),
             }
         )
     distribution: dict[str, int] = {}
@@ -118,7 +111,6 @@ def quality_summary(axis_results: dict[str, JsonValue], brand_results: dict[str,
     return {
         "markets": market_rows,
         "grade_distribution": {grade: distribution.get(grade, 0) for grade in ("A", "B", "C", "D")},
-        "average_etc_pct": round(sum(etc_values) / len(etc_values), 1) if etc_values else None,
         "large_market_competitor_separation": {
             market: competitor_separation(by_market.get(market, []))
             for market in large_markets
@@ -149,14 +141,16 @@ def _grade_market(axis: dict[str, JsonValue], brand_payloads: list[dict[str, Jso
     guard_fail = any(_guard_status(payload) == "fail" for payload in brand_payloads)
     if guard_fail:
         return "D", [*reasons, "mechanical_guard_failed"]
-    avg_etc = _avg_etc(brand_payloads)
-    if isinstance(avg_etc, float) and avg_etc <= 15.0 and not reasons:
-        return "A", []
-    if isinstance(avg_etc, float) and avg_etc <= 30.0:
-        return "B", reasons
     if is_large and competitor_separation(brand_payloads).get("status") == "weak":
         reasons.append("weak_competitor_separation")
-    return "C", reasons or ["high_etc_pct"]
+    empty_brand_ratio = sum(1 for payload in brand_payloads if not payload.get("topic_shares")) / max(1, len(brand_payloads))
+    if empty_brand_ratio > 0.5:
+        reasons.append("many_brands_without_topics")
+    if not reasons:
+        return "A", []
+    if len(reasons) == 1 and reasons[0] in {"weak_competitor_separation", "topic_count_outside_3_7"}:
+        return "B", reasons
+    return "C", reasons
 
 
 def _guard_status(payload: dict[str, JsonValue]) -> str:
@@ -167,12 +161,6 @@ def _guard_status(payload: dict[str, JsonValue]) -> str:
         if isinstance(guard, dict):
             return str(guard.get("status") or "")
     return ""
-
-
-def _avg_etc(payloads: list[dict[str, JsonValue]]) -> float | None:
-    """Average 기타 share across sampled brand payloads."""
-    values = [float(payload["etc_pct"]) for payload in payloads if isinstance(payload.get("etc_pct"), int | float)]
-    return round(sum(values) / len(values), 1) if values else None
 
 
 def _top_labels(value: JsonValue) -> list[str]:
