@@ -9,6 +9,7 @@ from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.handlers.multi_market import choose_primary_market
 from pipeline.scripts.api.market_id import to_strategy_id
+from pipeline.scripts.api.openapi_docs import CAUSE_RESPONSES, PORTAL_CORE_TAG
 from pipeline.scripts.api.validators.query_params import UNIT_LABELS, validate_cause_query
 
 
@@ -46,13 +47,23 @@ def _fetch_cause_rows(
     )
 
 
-@router.get("/api/cause/{brand_name}")
+@router.get(
+    "/api/cause/{brand_name}",
+    tags=[PORTAL_CORE_TAG],
+    summary="운영 포탈 원인분석 조회",
+    description=(
+        "cache_cause에 저장된 운영 원인분석 payload를 그대로 반환합니다. "
+        "응답 data는 포탈 렌더링 계약인 23개 섹션 구조이며, markets root 메타로 대표 시장을 표시합니다."
+    ),
+    response_model=None,
+    responses=CAUSE_RESPONSES,
+)
 def cause(
     brand_name: str,
-    view: str | None = Query("market_landscape"),
-    source: str | None = Query("UBIST"),
-    measure: str | None = Query("sales"),
-    market_id: str | None = Query(None),
+    view: str | None = Query("market_landscape", description="조회 뷰. market_landscape 또는 competitive_dynamics.", examples=["market_landscape"]),
+    source: str | None = Query("UBIST", description="데이터 소스. UBIST 또는 IQVIA.", examples=["UBIST"]),
+    measure: str | None = Query("sales", description="지표. sales 또는 qty.", examples=["sales"]),
+    market_id: str | None = Query(None, description="선택 시장 id. strategy_006 또는 ml_006 형태를 허용합니다.", examples=["strategy_006"]),
 ) -> dict:
     view, source, measure = validate_cause_query(view, source, measure)
     brand = unquote(brand_name)

@@ -92,7 +92,7 @@ class BrandActivityInterestRxRequest(BaseModel):
     weights: InterestRxWeights | None = None
 
 
-@router.get("/api/brand-activity/topics")
+@router.get("/api/brand-activity/topics", include_in_schema=False)
 def brand_activity_topics() -> dict[str, JsonValue]:
     """Return all Brand Activity topic market payloads."""
     try:
@@ -101,7 +101,7 @@ def brand_activity_topics() -> dict[str, JsonValue]:
         raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
 
 
-@router.get("/api/brand-activity/topics/{scope_id}")
+@router.get("/api/brand-activity/topics/{scope_id}", include_in_schema=False)
 def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
     """Return one Brand Activity topic market payload."""
     try:
@@ -113,7 +113,7 @@ def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
     return {"data": payload}
 
 
-@router.post("/api/brand-activity/topics")
+@router.post("/api/brand-activity/topics", include_in_schema=False)
 def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str, JsonValue]:
     """Return selected and competitor brand topic shares."""
 
@@ -128,7 +128,7 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     return {"data": result}
 
 
-@router.post("/api/brand-activity/csd-timeseries")
+@router.post("/api/brand-activity/csd-timeseries", include_in_schema=False)
 def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, JsonValue]:
     """Return integrated CSD activity and IQVIA prescription timeseries."""
 
@@ -143,7 +143,7 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     return {"data": result}
 
 
-@router.post("/api/brand-activity/interest-rx-matrix")
+@router.post("/api/brand-activity/interest-rx-matrix", include_in_schema=False)
 def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
     """Return interest/Rx distributions and detailing for selected brands."""
 

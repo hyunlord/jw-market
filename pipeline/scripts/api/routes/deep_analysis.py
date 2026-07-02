@@ -9,6 +9,7 @@ import pymysql
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
 
 
 router = APIRouter()
@@ -131,7 +132,17 @@ def _slice_forecast_horizon(payload: dict) -> None:
         _slice_forecast_combo(combo)
 
 
-@router.get("/api/deep-analysis/{brand_name}")
+@router.get(
+    "/api/deep-analysis/{brand_name}",
+    tags=[PORTAL_CORE_TAG],
+    summary="포탈 심층분석 조회",
+    description=(
+        "cache_deep_analysis와 ai_analysis 보조 cache를 합쳐 포탈 심층분석 payload를 반환합니다. "
+        "월/분기 forecast horizon은 화면 계약에 맞게 잘라서 제공합니다."
+    ),
+    response_model=None,
+    responses=DEEP_ANALYSIS_RESPONSES,
+)
 def deep_analysis(brand_name: str) -> dict:
     brand = unquote(brand_name)
     row = db.fetch_one(

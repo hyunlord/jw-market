@@ -4,12 +4,20 @@ from fastapi import APIRouter, HTTPException
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.openapi_docs import MARKET_STATUS_RESPONSES, PORTAL_CORE_TAG
 
 
 router = APIRouter()
 
 
-@router.get("/api/market-status")
+@router.get(
+    "/api/market-status",
+    tags=[PORTAL_CORE_TAG],
+    summary="포탈 시장 현황 카드",
+    description="운영 포탈 첫 화면의 시장 카드/상태 목록을 cache_market_status에서 그대로 반환합니다.",
+    response_model=None,
+    responses=MARKET_STATUS_RESPONSES,
+)
 def market_status() -> dict:
     row = db.fetch_one(
         """

@@ -14,12 +14,25 @@ from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, S
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
+from pipeline.scripts.api.openapi_docs import DYNAMIC_MARKET_REQUEST_EXAMPLE, DYNAMIC_MARKET_RESPONSES, DYNAMIC_MARKET_TAG, FILTER_OPTIONS_RESPONSES
 
 
 router = APIRouter()
 
 
-@router.post("/api/dynamic-market")
+@router.post(
+    "/api/dynamic-market",
+    tags=[DYNAMIC_MARKET_TAG],
+    summary="동적 시장 원인분석 재계산",
+    description=(
+        "전략뷰 ml_id/cd_market_id 또는 일반뷰 ATC4/molecule 범위를 입력받아 cache 없이 실시간으로 "
+        "원인분석 payload를 재계산합니다. 응답 result는 /api/cause와 같은 root/data 구조입니다. "
+        "analysis_level의 각 차원은 차원 내 OR, 차원 간 AND로 적용됩니다."
+    ),
+    response_model=None,
+    openapi_extra={"requestBody": {"content": {"application/json": {"example": DYNAMIC_MARKET_REQUEST_EXAMPLE}}}},
+    responses=DYNAMIC_MARKET_RESPONSES,
+)
 def dynamic_market(payload: DynamicMarketRequest) -> dict:
     """Compute a caller-defined general-view market with the ``/api/cause`` response contract."""
 
@@ -111,11 +124,21 @@ def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
     return display_brand.ml_id
 
 
-@router.get("/api/dynamic-market/filter-options")
+@router.get(
+    "/api/dynamic-market/filter-options",
+    tags=[DYNAMIC_MARKET_TAG],
+    summary="동적 시장 필터 옵션",
+    description=(
+        "포탈 필터 UI가 사용하는 옵션 목록입니다. 전략뷰는 시장 소속 ATC/차원을 한 번에 반환하고, "
+        "일반뷰는 선택된 ATC4 set 기준으로 소스별 scoped 옵션을 실시간 산출합니다."
+    ),
+    response_model=None,
+    responses=FILTER_OPTIONS_RESPONSES,
+)
 def dynamic_market_filter_options(
-    view: str = "general",
-    source: str = "ubist",
-    measure: str = "sales",
+    view: str = Query("general", description="[입력] general 또는 strategic.", examples=["general"]),
+    source: str = Query("ubist", description="[입력] ubist 또는 iqvia.", examples=["ubist"]),
+    measure: str = Query("sales", description="[입력] sales 또는 qty.", examples=["sales"]),
     brand: str | None = Query(
         default=None,
         description="[입력] 선택 브랜드명. market_id는 이 브랜드로 내부 조회되어 응답에 echo됩니다.",
@@ -155,7 +178,7 @@ def dynamic_market_filter_options(
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_filter_options_request", "message": str(exc)}) from exc
 
 
-@router.get("/api/dynamic-market/brand-option-check")
+@router.get("/api/dynamic-market/brand-option-check", include_in_schema=False)
 def dynamic_market_brand_option_check(brand: str, view: str = "general", source: str = "ubist", market_id: str | None = None) -> dict:
     """Return option values and the sidecar values already matched by a brand.
 

@@ -31,7 +31,7 @@ from pipeline.scripts.api.validators.query_params import validate_cause_query
 router = APIRouter()
 
 
-@router.get("/api/market-scope/options")
+@router.get("/api/market-scope/options", include_in_schema=False)
 def options(
     brand: str = Query(...),
     view_family: str = Query("strategy"),
@@ -53,7 +53,7 @@ def options(
     }
 
 
-@router.post("/api/market-scope/resolve")
+@router.post("/api/market-scope/resolve", include_in_schema=False)
 def resolve(payload: MarketScopeResolveRequest) -> dict[str, Any]:
     """Resolve a market scope and echo per-request disjoint diagnostics."""
 
@@ -66,7 +66,7 @@ def resolve(payload: MarketScopeResolveRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail={"error": "overlap_without_fact_identity", "message": str(exc)}) from exc
 
 
-@router.post("/api/market-scope/cause")
+@router.post("/api/market-scope/cause", include_in_schema=False)
 def cause(payload: MarketScopeCauseRequest) -> dict[str, Any]:
     """Return a portal-compatible cause envelope for the resolved scope."""
 
