@@ -12,6 +12,12 @@ _UNAVAILABLE_SIGNAL_RE = re.compile(
     r"(?:데이터\s*미보유|미보유|미지원|지원\s*범위\s*밖|확인\s*불가|확인되지|확정\s*경로를\s*찾지\s*못|"
     r"표시할\s*검증\s*fact가\s*제한|현재\s*데이터로\s*답변\s*불가|데이터\s*없음)",
 )
+_QUESTION_UNAVAILABLE_RE = re.compile(
+    r"(?:datamonitor|cortellis|kol|nccn|가이드라인|치료\s*지침|전문가|자문|글로벌\s*시장\s*전망|"
+    r"파이프라인|임상\s*파이프라인|포지셔닝.*(?:채널|세그먼트)|(?:채널|세그먼트).*포지셔닝)",
+    re.IGNORECASE,
+)
+_INTERNAL_ID_RE = re.compile(r"\b(?:strategy|competitive)_\d+\b", re.IGNORECASE)
 _FIVE_STEP_MARKERS = (
     "1. 미보유 데이터",
     "2. 현재 가능한 proxy",
@@ -132,7 +138,7 @@ def apply_common_unavailable_response(question: str, answer: str, markdown_respo
     if _has_five_step_block(sanitized_answer):
         return _cleanup(sanitized_answer)
     combined = "\n\n".join(part for part in (question, sanitized_answer, sanitize_internal_diagnostics(fact_md)) if part)
-    if not _UNAVAILABLE_SIGNAL_RE.search(combined):
+    if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not _QUESTION_UNAVAILABLE_RE.search(question):
         return _cleanup(sanitized_answer)
     block = _five_step_block(_plan_for(question, sanitized_answer, fact_md))
     return _cleanup(_insert_before_source(sanitized_answer, block))
@@ -162,6 +168,7 @@ def sanitize_internal_diagnostics(text: str) -> str:
     sanitized = "\n".join(lines)
     sanitized = re.sub(r"CausePayloadKey\([^)]*\)", _GENERIC_UNAVAILABLE, sanitized)
     sanitized = re.sub(r"\bmarket_id\s*=\s*['\"]?[\w.-]+['\"]?", "시장 식별자", sanitized)
+    sanitized = _INTERNAL_ID_RE.sub("확정 시장", sanitized)
     sanitized = sanitized.replace("cache_cause", "운영 데이터")
     return _cleanup(sanitized)
 

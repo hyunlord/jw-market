@@ -294,6 +294,33 @@ def test_common_unavailable_layer_does_not_duplicate_existing_5step_block() -> N
     assert revised.count("### 미보유 데이터 처리") == 1
 
 
+def test_common_unavailable_layer_fires_for_external_unavailable_source_question() -> None:
+    answer = "리바로의 국내 매출 흐름은 UBIST 기준으로 확인됩니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = apply_common_unavailable_response(
+        "[리바로] Datamonitor 기준 글로벌 시장 전망을 알려줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "### 미보유 데이터 처리" in revised
+    assert "Datamonitor 등 글로벌 시장 전망" in revised
+    assert revised.index("### 미보유 데이터 처리") < revised.index("## 출처")
+
+
+def test_common_unavailable_layer_fires_for_positioning_channel_segment_gap() -> None:
+    answer = "리바로의 포지셔닝은 보유 시장 지표 중심으로 확인됩니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = apply_common_unavailable_response(
+        "[리바로] 채널과 세그먼트 기준 포지셔닝을 분석해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "### 미보유 데이터 처리" in revised
+    assert "요청 축의 세그먼트 원천 행" in revised
+
+
 def test_sanitize_internal_diagnostics_keeps_public_source_context() -> None:
     answer = "| 지표 | cache_cause response_json must be a JSON object |\n| 출처 | UBIST |"
 
@@ -303,3 +330,13 @@ def test_sanitize_internal_diagnostics_keeps_public_source_context() -> None:
     assert "cache_cause" not in revised
     assert "UBIST" in revised
     assert "현재 운영 데이터에서 확정 경로를 찾지 못했습니다" in revised
+
+
+def test_sanitize_internal_diagnostics_removes_bare_internal_market_ids() -> None:
+    answer = "| 데이터 상세 | IQVIA / UBIST - 기간 2020-Q3~2025-Q4, 시장 strategy_006, view strategic |"
+
+    revised = sanitize_internal_diagnostics(answer)
+
+    assert "strategy_006" not in revised
+    assert "확정 시장" in revised
+    assert "IQVIA / UBIST" in revised
