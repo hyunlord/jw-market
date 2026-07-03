@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_assignment as rta
+from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_db
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_runner
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_sql
 
@@ -130,6 +131,35 @@ def test_runner_plans_batches_per_scope_brand_pair() -> None:
     assert [[row.row_id for row in batch.rows] for batch in plan.pending_batches] == [[1, 2], [3], [4]]
 
 
+def test_execute_rubric_combines_axis_with_only_that_brand_topics() -> None:
+    """Given a stored scope payload, When rubrics are built, Then brand topics stay brand-local."""
+    payload = {
+        "axis": {"topics": [{"topic_id": "T1", "label": "axis", "definition": "common"}]},
+        "brands": [
+            {"brand": "A", "brand_specific_topics": [{"topic_id": "A:B1", "label": "A only", "definition": "A"}]},
+            {"brand": "B", "brand_specific_topics": [{"topic_id": "B:B1", "label": "B only", "definition": "B"}]},
+        ],
+    }
+    scope = row_topic_db.ScopeRubric(
+        scope_id="atc4:G04C2",
+        display_name="G04C2",
+        atc4_values=("G04C2",),
+        axis_topics=(row_topic_db.topic_rubric(payload["axis"]["topics"][0]),),
+        brand_topics={
+            "A": (row_topic_db.topic_rubric(payload["brands"][0]["brand_specific_topics"][0]),),
+            "B": (row_topic_db.topic_rubric(payload["brands"][1]["brand_specific_topics"][0]),),
+        },
+    )
+
+    rubrics = {
+        (scope.scope_id, brand): (*scope.axis_topics, *brand_topics)
+        for brand, brand_topics in scope.brand_topics.items()
+    }
+
+    assert [topic.topic_id for topic in rubrics[("atc4:G04C2", "A")]] == ["T1", "A:B1"]
+    assert [topic.topic_id for topic in rubrics[("atc4:G04C2", "B")]] == ["T1", "B:B1"]
+
+
 def test_sql_contract_declares_idempotent_assignment_table_and_compatible_view() -> None:
     """Given row-topic SQL assets, When inspected, Then versioned idempotence and view contracts exist."""
     ddl = row_topic_sql.assignment_table_ddl("jw_brand_activity_stage")
@@ -139,4 +169,6 @@ def test_sql_contract_declares_idempotent_assignment_table_and_compatible_view()
     assert "row_topic_assignment" in ddl
     assert "affected_row_count" in view
     assert "brand_total_rows" in view
+    assert "mart_brand_activity_topics topic_scope" in view
+    assert "JSON_CONTAINS(topic_scope.atc4_values, JSON_QUOTE(k.therapeutic_class), '$')" in view
     assert "ROUND(COUNT(DISTINCT a.row_id) * 100.0 / brand_total.brand_total_rows, 2)" in view

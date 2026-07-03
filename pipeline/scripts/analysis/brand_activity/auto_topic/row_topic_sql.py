@@ -42,16 +42,18 @@ JOIN (
     COUNT(DISTINCT row_id) AS brand_total_rows
   FROM (
     SELECT
-      CONCAT('atc4:', therapeutic_class) AS scope_id,
+      topic_scope.scope_id,
       product_name AS brand,
       row_id_source.topic_set_version,
       k.id AS row_id
     FROM {schema}.km_keyword_event_stage k
+    JOIN {schema}.mart_brand_activity_topics topic_scope
+      ON JSON_CONTAINS(topic_scope.atc4_values, JSON_QUOTE(k.therapeutic_class), '$')
     JOIN (
       SELECT DISTINCT scope_id, brand, topic_set_version
       FROM {schema}.row_topic_assignment
     ) row_id_source
-      ON row_id_source.scope_id = CONCAT('atc4:', k.therapeutic_class)
+      ON row_id_source.scope_id = topic_scope.scope_id
      AND row_id_source.brand = k.product_name
   ) scoped_rows
   GROUP BY scope_id, brand, topic_set_version
