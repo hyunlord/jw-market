@@ -248,6 +248,22 @@ def test_router_uses_provided_boundary_without_expanding_bq_map():
     assert route[0].sources == ("none",)
 
 
+def test_router_routes_forecast_without_documents_to_no_data_boundary():
+    route = BQRouter().route("리바로의 향후 시장 규모와 매출을 예측해줘")
+
+    assert route[0].bq == "Q1"
+    assert route[0].sources == ("none",)
+    assert "forecast" in route[0].reason
+
+
+def test_router_keeps_uploaded_forecast_questions_on_document_route():
+    routes = BQRouter().route("업로드한 시장 전망이랑 실제 우리 점유율 비교", has_documents=True)
+
+    sources = {source for route in routes for source in route.sources}
+    assert "document" in sources
+    assert "metrics" in sources
+
+
 def test_external_redaction_masks_service_key():
     url = "https://example.test/api?" + "serviceKey=X&x=1"
     assert ExternalApiClient.redact_url(url) == "https://example.test/api?serviceKey=<redacted>&x=1"

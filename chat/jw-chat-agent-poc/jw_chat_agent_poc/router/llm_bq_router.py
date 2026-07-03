@@ -9,7 +9,7 @@ import requests
 
 from jw_chat_agent_poc.genos_config import DEFAULT_GENOS_BASE_URL, resolve_genos_base_url
 from jw_chat_agent_poc.portfolio_scope import portfolio_scope_for_question
-from .bq_router import BQRouter, BQSubQuestion, BQ_SYSTEM_PROMPT
+from .bq_router import BQRouter, BQSubQuestion, BQ_SYSTEM_PROMPT, _is_forecast_question
 from .llm_filter_entries import filters_for_sources
 from .llm_route_helpers import (
     bool_value,
@@ -114,7 +114,7 @@ class LLMFirstBQRouter:
         return BQ_SYSTEM_PROMPT
 
     def route(self, question: str, has_documents: bool = False) -> list[BQSubQuestion]:
-        boundary = self._boundary_route(question)
+        boundary = self._boundary_route(question, has_documents)
         if boundary:
             self.last_diagnostics = RouteDiagnostics(mode="guard", fallback_used=False, reason="no_data_boundary")
             return boundary
@@ -156,7 +156,7 @@ class LLMFirstBQRouter:
         return routes
 
     @classmethod
-    def _boundary_route(cls, question: str) -> list[BQSubQuestion]:
+    def _boundary_route(cls, question: str, has_documents: bool = False) -> list[BQSubQuestion]:
         lower = question.lower()
         if "영업활동" in question or "영업 활동" in question or "영업 impact" in lower:
             return [
@@ -165,6 +165,15 @@ class LLMFirstBQRouter:
                     question="영업 Impact",
                     sources=("none",),
                     reason="LLM-first guard preserves Q4 데이터 없음 boundary.",
+                )
+            ]
+        if not has_documents and _is_forecast_question(question):
+            return [
+                BQSubQuestion(
+                    bq="Q1",
+                    question="시장정의·규모·성장예측",
+                    sources=("none",),
+                    reason="LLM-first guard preserves forecast 데이터 없음 boundary.",
                 )
             ]
         if any(token in question for token in ("포트폴리오", "사업성", "신사업", "사업 타당성")) and portfolio_scope_for_question(question) != "portfolio":

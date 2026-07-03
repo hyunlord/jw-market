@@ -163,11 +163,15 @@ def _tools_called(result: Mapping[str, Any]) -> list[str]:
         return names
     for call in tool_calls:
         if isinstance(call, Mapping) and isinstance(call.get("tool"), str):
-            names.append(_public_tool_name(call["tool"]))
+            names.append(_public_tool_name(call))
     return names
 
 
-def _public_tool_name(name: str) -> str:
+def _public_tool_name(call: Mapping[str, Any]) -> str:
+    name = str(call["tool"])
+    render_data = call.get("render_data")
+    if name == "get_brand_metric" and isinstance(render_data, Mapping) and render_data.get("metric") == "query_spec":
+        return "query_spec"
     if name == "get_market_landscape":
         return "market_scope"
     return name

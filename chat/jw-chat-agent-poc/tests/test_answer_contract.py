@@ -308,6 +308,51 @@ def test_common_unavailable_layer_fires_for_external_unavailable_source_question
     assert revised.index("### 미보유 데이터 처리") < revised.index("## 출처")
 
 
+def test_common_unavailable_layer_uses_forecast_specific_5step_for_prediction_questions() -> None:
+    answer = "현재 데이터로 답변 불가합니다. forecast 데이터는 P1 POC 데이터 범위 밖입니다."
+
+    revised = apply_common_unavailable_response(
+        "[리바로] 향후 시장 규모와 매출을 예측해줘",
+        answer,
+        {"fact_md": "데이터 미보유"},
+    )
+
+    assert "### 미보유 데이터 처리" in revised
+    assert "예측 모델" in revised
+    assert "과거 실적 추세" in revised
+    assert "참고용" in revised
+    assert "추세는 예측이 아닙니다" in revised
+    assert "forecast 시계열" in revised
+
+
+def test_common_unavailable_layer_does_not_infer_forecast_from_answer_wording() -> None:
+    answer = "출처 교차 추이 비교는 데이터 미보유입니다. 향후 데이터 확보가 필요합니다."
+
+    revised = apply_common_unavailable_response(
+        "리바로의 UBIST와 IQVIA 출처 교차로 추이를 비교해줘",
+        answer,
+        {"fact_md": "데이터 미보유"},
+    )
+
+    assert "출처 간 교차 검증" in revised
+    assert "동일 기간의 UBIST/IQVIA" in revised
+    assert "forecast 시계열" not in revised
+
+
+def test_common_unavailable_layer_fires_for_no_data_wording_from_final_answer() -> None:
+    answer = "리바로의 UBIST 및 IQVIA 출처 기반 시장 규모 비교는 현재 제공된 데이터가 없어 수행할 수 없습니다."
+
+    revised = apply_common_unavailable_response(
+        "리바로의 UBIST와 IQVIA 출처를 교차해서 시장 규모를 비교해줘",
+        answer,
+        {"fact_md": ""},
+    )
+
+    assert "### 미보유 데이터 처리" in revised
+    assert "출처 간 교차 검증" in revised
+    assert "forecast 시계열" not in revised
+
+
 def test_common_unavailable_layer_fires_for_positioning_channel_segment_gap() -> None:
     answer = "리바로의 포지셔닝은 보유 시장 지표 중심으로 확인됩니다.\n\n## 출처\n- 데이터: UBIST"
 

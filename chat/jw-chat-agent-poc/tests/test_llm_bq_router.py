@@ -95,6 +95,21 @@ def test_llm_router_falls_back_on_invalid_tool() -> None:
     assert router.last_diagnostics.reason == "empty_or_no_action"
 
 
+def test_llm_router_guards_forecast_questions_before_metric_decomposition() -> None:
+    router = LLMFirstBQRouter(
+        decomposer=FakeDecomposer(
+            '{"bq_ids":["Q1"],"tools":["metrics"],"brands":["리바로"],'
+            '"no_data_flag":false,"confidence":0.99}'
+        )
+    )
+
+    routes = router.route("리바로의 향후 시장 규모와 매출을 예측해줘")
+
+    assert routes[0].bq == "Q1"
+    assert routes[0].sources == ("none",)
+    assert router.last_diagnostics.mode == "guard"
+
+
 def test_keyword_router_routes_patient_count_to_hira_external_api_before_metrics() -> None:
     router = LLMFirstBQRouter(decomposer=FailingDecomposer())
 

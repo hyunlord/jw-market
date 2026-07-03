@@ -10,7 +10,7 @@ _INTERNAL_DIAGNOSTIC_RE = re.compile(
 )
 _UNAVAILABLE_SIGNAL_RE = re.compile(
     r"(?:데이터\s*미보유|미보유|미지원|지원\s*범위\s*밖|확인\s*불가|확인되지|확정\s*경로를\s*찾지\s*못|"
-    r"표시할\s*검증\s*fact가\s*제한|현재\s*데이터로\s*답변\s*불가|데이터\s*없음)",
+    r"표시할\s*검증\s*fact가\s*제한|현재\s*데이터로\s*답변\s*불가|데이터\s*없음|데이터\s*가\s*없)",
 )
 _QUESTION_UNAVAILABLE_RE = re.compile(
     r"(?:datamonitor|cortellis|kol|nccn|가이드라인|치료\s*지침|전문가|자문|글로벌\s*시장\s*전망|"
@@ -27,6 +27,7 @@ _FIVE_STEP_MARKERS = (
 )
 _SOURCE_HEADING_RE = re.compile(r"\n##\s*(?:출처|처리\s*시간)\b")
 _GENERIC_UNAVAILABLE = "요청한 일부 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다."
+_FORECAST_TOKENS = ("전망", "forecast", "예측", "향후")
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,13 +41,23 @@ class UnavailablePlan:
 
 _PLANS: tuple[tuple[tuple[str, ...], UnavailablePlan], ...] = (
     (
-        ("datamonitor", "글로벌", "전망", "forecast", "예측"),
+        ("datamonitor", "글로벌"),
         UnavailablePlan(
             missing="글로벌 시장 전망, 외부 리서치 forecast, 장기 성장률 원천 데이터입니다.",
             proxy="보유된 UBIST/IQVIA 매출·시장점유율·순위 fact가 있으면 국내 관찰 기간의 방향성만 proxy로 사용합니다.",
             ceiling="국내 처방/매출 관찰 범위의 최근 흐름만 말할 수 있고 글로벌 시장 전망이나 성장률을 추정하지 않습니다.",
             needed="Datamonitor 등 글로벌 시장 전망, 국가별 매출, forecast 기간, 가정·방법론 필드가 필요합니다.",
             analysis="확보 시 국가·기간별 CAGR과 국내 UBIST/IQVIA 추이를 나란히 비교해 전망과 실제 처방 흐름의 차이를 분석합니다.",
+        ),
+    ),
+    (
+        _FORECAST_TOKENS,
+        UnavailablePlan(
+            missing="예측 모델, forecast 시계열, 미래 기간에 대한 확정 전망 데이터입니다.",
+            proxy="보유된 UBIST/IQVIA 과거 실적 추세가 있으면 참고용 proxy로만 사용합니다. 과거 실적 추세는 예측이 아닙니다.",
+            ceiling="과거 추세는 미래 매출·시장 규모를 보장하지 않으며 forecast 값처럼 제시하지 않습니다.",
+            needed="forecast 시계열, 예측 기간, 모델 가정, 약가·경쟁 출시·정책 변화 변수 필드가 필요합니다.",
+            analysis="확보 시 과거 실적과 외생 변수를 분리하고 시계열 예측 모델을 적용해 예측값·신뢰구간·가정 민감도를 제시합니다.",
         ),
     ),
     (
@@ -185,8 +196,14 @@ def _has_five_step_block(answer: str) -> bool:
 
 
 def _plan_for(question: str, answer: str, fact_md: str) -> UnavailablePlan:
-    text = " ".join((question, answer, fact_md)).lower()
+    question_text = question.lower()
     for tokens, plan in _PLANS:
+        if any(token.lower() in question_text for token in tokens):
+            return plan
+    text = " ".join((answer, fact_md)).lower()
+    for tokens, plan in _PLANS:
+        if tokens == _FORECAST_TOKENS:
+            continue
         if any(token.lower() in text for token in tokens):
             return plan
     return _DEFAULT_PLAN

@@ -77,6 +77,16 @@ class BQRouter:
                 )
             ]
 
+        if not has_documents and _is_forecast_question(question):
+            return [
+                BQSubQuestion(
+                    bq="Q1",
+                    question="시장정의·규모·성장예측",
+                    sources=("none",),
+                    reason="Forecast intent requires forecast data/model; do not fall back to historical metrics.",
+                )
+            ]
+
         scope = portfolio_scope_for_question(question)
 
         if any(k in question for k in ("포트폴리오", "사업성")) and scope != "portfolio":
@@ -246,3 +256,8 @@ class BQRouter:
             )
             return not any(token in question.lower() for token in metric_or_api_tokens)
         return False
+
+
+def _is_forecast_question(question: str) -> bool:
+    lower = question.lower()
+    return any(token in question for token in ("전망", "예측", "향후")) or "forecast" in lower

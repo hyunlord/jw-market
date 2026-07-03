@@ -13,6 +13,7 @@ from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, create_app
 from jw_chat_agent_poc.service.conversation import PendingClarification
+from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
@@ -717,6 +718,33 @@ def test_stream_endpoint_emits_trace_metadata_without_changing_answer(monkeypatc
     assert trace["answer_contract_status"]["intent"] == "ranking"
     assert trace["answer_contract_status"]["status"] == "pass"
     assert trace["token_usage"]["available"] is False
+
+
+def test_trace_envelope_reports_query_spec_provenance_for_query_layer_calls() -> None:
+    result = {
+        "router_diagnostics": {"mode": "agent_loop", "deterministic_execution": True},
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "metric": "query_spec",
+                    "query_spec": {"market": "ml_006", "group_by": ["channel"]},
+                },
+            }
+        ],
+        "markdown_response": {"fact_md": "query(spec) fact"},
+    }
+
+    trace = trace_envelope(
+        question="리바로 채널과 세그먼트 기준 포지셔닝",
+        result=result,
+        answer="채널별 표",
+        charts=[],
+        timing={"stages": []},
+        conversation_id=None,
+    )
+
+    assert trace["tools_called"] == ["query_spec"]
 
 
 def test_stream_endpoint_emits_series_chart_from_verified_facts(monkeypatch) -> None:
