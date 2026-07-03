@@ -46,10 +46,12 @@ def prepare_run(
     resolved_version = topic_set_version or latest_topic_run_id(connection, schema=safe_schema)
     scopes = load_scope_rubrics(connection, schema=safe_schema, run_id=resolved_version)
     rows = tuple(load_assignment_rows(connection, schema=safe_schema, scopes=scopes))
+    scope_by_id = {scope.scope_id: scope for scope in scopes}
     rubrics: dict[tuple[str, str], tuple[TopicRubric, ...]] = {}
-    for scope in scopes:
-        for brand, brand_topics in scope.brand_topics.items():
-            rubrics[(scope.scope_id, brand)] = (*scope.axis_topics, *brand_topics)
+    for row in rows:
+        scope = scope_by_id[row.scope_id]
+        brand_topics = scope.brand_topics.get(row.brand, ())
+        rubrics[(row.scope_id, row.brand)] = (*scope.axis_topics, *brand_topics)
     return PreparedRun(topic_set_version=resolved_version, rows=rows, rubrics=rubrics)
 
 
@@ -130,7 +132,7 @@ def load_assignment_rows(
     schema: str,
     scopes: list[ScopeRubric],
 ) -> list[AssignmentInputRow]:
-    """Load keyword rows belonging to stored payload scopes and brands."""
+    """Load keyword rows belonging to stored payload scopes."""
     markets = sorted({atc4 for scope in scopes for atc4 in scope.atc4_values})
     placeholders = ",".join(["%s"] * len(markets))
     sql = (
@@ -152,8 +154,6 @@ def load_assignment_rows(
             brand = str(record["product_name"])
             atc4 = str(record["therapeutic_class"])
             for scope in scopes_by_atc4.get(atc4, []):
-                if brand not in scope.brand_topics:
-                    continue
                 rows.append(_assignment_row(record, scope.scope_id, brand))
         cursor.execute("COMMIT")
     return rows

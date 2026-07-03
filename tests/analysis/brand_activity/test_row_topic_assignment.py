@@ -160,6 +160,25 @@ def test_execute_rubric_combines_axis_with_only_that_brand_topics() -> None:
     assert [topic.topic_id for topic in rubrics[("atc4:G04C2", "B")]] == ["T1", "B:B1"]
 
 
+def test_execute_rubric_uses_axis_only_for_payload_external_brands() -> None:
+    """Given a market row for a brand without brand-specific topics, Then only axis topics are offered."""
+    scope = row_topic_db.ScopeRubric(
+        scope_id="atc4:G04C2",
+        display_name="G04C2",
+        atc4_values=("G04C2",),
+        axis_topics=(rta.TopicRubric(topic_id="T1", label="axis", definition="common"),),
+        brand_topics={"THRUPAS": (rta.TopicRubric(topic_id="THRUPAS:B1", label="brand", definition="brand"),)},
+    )
+    rows = [_row(1, brand="THRUPAS"), _row(2, brand="OTHER")]
+    rubrics = {}
+    for row in rows:
+        brand_topics = scope.brand_topics.get(row.brand, ())
+        rubrics[(scope.scope_id, row.brand)] = (*scope.axis_topics, *brand_topics)
+
+    assert [topic.topic_id for topic in rubrics[("atc4:G04C2", "THRUPAS")]] == ["T1", "THRUPAS:B1"]
+    assert [topic.topic_id for topic in rubrics[("atc4:G04C2", "OTHER")]] == ["T1"]
+
+
 def test_sql_contract_declares_idempotent_assignment_table_and_compatible_view() -> None:
     """Given row-topic SQL assets, When inspected, Then versioned idempotence and view contracts exist."""
     ddl = row_topic_sql.assignment_table_ddl("jw_brand_activity_stage")
