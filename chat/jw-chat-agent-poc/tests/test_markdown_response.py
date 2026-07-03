@@ -15,6 +15,7 @@ from jw_chat_agent_poc.router.llm_bq_router import GenosBQDecomposer
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 from jw_chat_agent_poc.service.answer_safety import (
     GENERATION_ATTEMPTS,
+    append_competitor_patent_coverage_block,
     deterministic_source_block,
     dedupe_repeated_hira_patient_counts,
     ensure_competitive_movement_analysis,
@@ -4256,6 +4257,36 @@ def test_competitor_patent_fact_surfaces_market_candidates_and_coverage() -> Non
     assert "MFDS 의약품특허목록" in response.fact_md
     assert "현재 특허 DB에서 확인되는 항목만 표시" in response.fact_md
     assert "10-1234567" in response.fact_md
+
+
+def test_competitor_patent_coverage_block_is_appended_when_final_omits_scope_heading() -> None:
+    # Given: verified competitor patent facts exist but final prose used a loose heading.
+    fact_md = "\n".join(
+        (
+            "### 경쟁 성분 후보군 fact",
+            "| 순위 | 성분 | 대표 브랜드 | 출처 | 시장 | 기간 | 매출 | MS |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| 1 | RSV/EZE | 로수젯 | UBIST | ml_006 | 2026-04 | 206.85억원 | 9.17% |",
+            "| 2 | ATV | 리피토 | UBIST | ml_006 | 2026-04 | 144.22억원 | 6.39% |",
+            "",
+            "### 경쟁 성분 특허 조회 커버리지 fact",
+            "| 항목 | 내용 |",
+            "| --- | --- |",
+            "| 출처 | MFDS 의약품특허목록, FDA OrangeBook |",
+            "| 범위 | 현재 특허 DB에서 확인되는 항목만 표시하며, 전체 독점권을 단정하지 않습니다. |",
+        )
+    )
+    answer = "경쟁 성분 특허 정보는 일부 미보유입니다."
+
+    # When: the final answer is post-processed deterministically.
+    repaired = append_competitor_patent_coverage_block(answer, fact_md)
+
+    # Then: the user-facing answer preserves candidate, source, and coverage labels.
+    assert "### 경쟁 성분 후보군·특허 커버리지" in repaired
+    assert "| 1 | RSV/EZE | 로수젯 | UBIST | ml_006 | 2026-04 | 206.85억원 | 9.17% |" in repaired
+    assert "#### 출처·커버리지" in repaired
+    assert "MFDS 의약품특허목록, FDA OrangeBook" in repaired
+    assert "현재 특허 DB에서 확인되는 항목만 표시" in repaired
 
 
 def test_markdown_cells_escape_raw_html() -> None:

@@ -19,6 +19,7 @@ from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.service.answer_safety import (
     FAIL_CLOSED_TEXT,
     answer_has_only_fact_numbers,
+    append_competitor_patent_coverage_block,
     append_deterministic_source_block,
     chunk_text,
     cleanup_markdown_answer,
@@ -718,6 +719,7 @@ class GenosClient:
         answer = ensure_top_brand_trend_table(answer, fact_md)
         answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = _apply_final_claim_controls(question, answer, fact_md)
+        answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = append_deterministic_source_block(answer, fact_md)
         answer = _append_uploaded_file_source(answer, file_context)
         return _append_web_search_section(answer, tool_calls)

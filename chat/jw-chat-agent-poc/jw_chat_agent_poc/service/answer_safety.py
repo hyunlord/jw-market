@@ -763,6 +763,28 @@ def append_deterministic_source_block(answer: str, fact_md: str) -> str:
     return cleanup_markdown_answer("\n\n".join((stripped_answer, source_block)))
 
 
+def append_competitor_patent_coverage_block(answer: str, fact_md: str) -> str:
+    """Append deterministic competitor patent scope when final prose omits it."""
+
+    candidate_rows = _fact_table_rows(fact_md, "경쟁 성분 후보군 fact")
+    coverage_rows = _fact_table_rows(fact_md, "경쟁 성분 특허 조회 커버리지 fact")
+    if not candidate_rows and not coverage_rows:
+        return answer
+    if "경쟁 성분 후보군" in answer and ("커버리지" in answer or "현재 특허 DB에서 확인되는 항목" in answer):
+        return answer
+    lines = [
+        "### 경쟁 성분 후보군·특허 커버리지",
+        "현재 특허 DB에서 확인되는 항목만 표시하며, 전체 독점권을 단정하지 않습니다.",
+    ]
+    if candidate_rows:
+        lines.extend(("", "| 순위 | 성분 | 대표 브랜드 | 출처 | 시장 | 기간 | 매출 | MS |", "| --- | --- | --- | --- | --- | --- | --- | --- |"))
+        lines.extend(candidate_rows[:5])
+    if coverage_rows:
+        lines.extend(("", "#### 출처·커버리지", "| 항목 | 내용 |", "| --- | --- |"))
+        lines.extend(coverage_rows[:5])
+    return cleanup_markdown_answer("\n\n".join((answer.strip(), "\n".join(lines))))
+
+
 def deterministic_source_block(fact_md: str) -> str:
     """Return final user-facing sources from verified fact markdown only."""
 
@@ -778,6 +800,31 @@ def deterministic_source_block(fact_md: str) -> str:
     if not clean:
         return ""
     return "\n".join(("## 출처", *clean))
+
+
+def _fact_table_rows(fact_md: str, title_fragment: str) -> list[str]:
+    lines = fact_md.splitlines()
+    start = -1
+    for index, line in enumerate(lines):
+        if line.strip().startswith("### ") and title_fragment in line:
+            start = index + 1
+            break
+    if start < 0:
+        return []
+    rows: list[str] = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped.startswith("### ") or stripped.startswith("## "):
+            break
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells or all(set(cell) <= {"-", ":", " "} for cell in cells):
+            continue
+        if any(cell in {"순위", "항목"} for cell in cells):
+            continue
+        rows.append(stripped)
+    return rows
 
 
 def normalize_source_line_position(answer: str) -> str:
