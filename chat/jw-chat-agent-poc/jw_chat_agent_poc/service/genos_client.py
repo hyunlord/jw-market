@@ -54,6 +54,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 )
 from jw_chat_agent_poc.common.timing import stage
 from jw_chat_agent_poc.service.portfolio_decline_render import ensure_portfolio_decline_summary
+from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
@@ -508,7 +509,7 @@ def _append_web_search_section(answer: str, tool_calls: list[dict[str, Any]] | N
     if not section:
         return answer
     body = _ensure_web_search_reference(answer)
-    return cleanup_markdown_answer("\n\n".join((body, section)))
+    return "\n\n".join(part.strip() for part in (body, section) if part.strip())
 
 
 def _ensure_web_search_reference(answer: str) -> str:
@@ -524,7 +525,7 @@ def _ensure_web_search_reference(answer: str) -> str:
 
 
 def _web_search_unverified_section(tool_calls: list[dict[str, Any]] | None) -> str:
-    rows: list[tuple[str, str, str]] = []
+    rows: list[dict[str, Any]] = []
     for call in tool_calls or []:
         if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
             continue
@@ -532,10 +533,10 @@ def _web_search_unverified_section(tool_calls: list[dict[str, Any]] | None) -> s
         if not isinstance(data, dict):
             continue
         for item in _web_search_items(data):
-            rows.append((str(item.get("title") or "-"), str(item.get("url") or "-"), str(item.get("snippet") or "-")))
+            rows.append(item)
     if not rows:
         return ""
-    return table("### 웹 검색 결과(미검증)", ("제목", "URL", "스니펫"), tuple(rows[:5]))
+    return web_search_mi_section(rows[:5])
 
 
 def _web_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:

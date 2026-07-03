@@ -50,6 +50,7 @@ from jw_chat_agent_poc.service.genos_client import (
     _needs_trend_fact_prose,
     _remove_endpoint_only_trend_sentence,
     _sanitize_preserving_analysis,
+    _web_search_unverified_section,
 )
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 
@@ -420,6 +421,65 @@ def test_genos_web_only_answer_skips_final_llm_and_appends_unverified_section(mo
     assert "웹 검색 결과는 하단 웹 검색 결과(미검증) 섹션을 참조하세요." in body
     assert "경쟁제품 디테일링 웹 스니펫" in web_section
     assert "https://example.com/livalo-detailing" in web_section
+
+
+def test_web_search_section_summarizes_dedupes_and_splits_old_results() -> None:
+    section = _web_search_unverified_section(
+        [
+            {
+                "tool": "web_search",
+                "source": "web_search",
+                "render_data": {
+                    "items": [
+                        {
+                            "title": "리바로젯, 이상지질혈증 2제 복합제 매출 1위 달성",
+                            "url": "https://www.monews.co.kr/news/articleView.html?idxno=411866&utm_source=copy",
+                            "snippet": "2026-06-17 JW중외제약 리바로젯이 이상지질혈증 2제 복합제 시장에서 매출 1위를 기록했다.",
+                            "published_date": "2026-06-17",
+                        },
+                        {
+                            "title": "리바로젯 이상지질혈증 2제 복합제 매출 1위 달성",
+                            "url": "https://www.monews.co.kr/news/articleView.html?idxno=411866",
+                            "snippet": "2026-06-17 리바로젯 2제 복합제 시장 매출 1위 기사.",
+                            "published_date": "2026-06-17",
+                        },
+                        {
+                            "title": "피타바스타틴 시장 경쟁 심화",
+                            "url": "https://pharma.example.test/pitavastatin-market",
+                            "snippet": "2026-05-30 피타바스타틴 시장에서 복합제 경쟁이 확대되고 있다.",
+                            "published_date": "2026-05-30",
+                        },
+                        {
+                            "title": "FDA Approves Livalo",
+                            "url": "https://www.fda.gov/drugs/livalo-2009",
+                            "snippet": "최종편집 2026-06-27. 리바로, 고지혈증 치료제로 미 FDA 승인. 승인 2009.08.05.",
+                            "published_date": "2026-06-27",
+                        },
+                        {
+                            "title": "RAG 검색 시스템 구축 사례",
+                            "url": "https://it.example.test/rag",
+                            "snippet": "2026-07-01 Livalo라는 내부 프로젝트명으로 RAG 시스템을 구축했다.",
+                            "published_date": "2026-07-01",
+                        },
+                    ],
+                },
+            }
+        ]
+    )
+
+    assert "### 웹 검색 결과(미검증)" in section
+    assert "#### 주요 MI 요약" in section
+    assert "리바로젯, 이상지질혈증 2제 복합제 매출 1위 달성" in section
+    assert section.count("https://www.monews.co.kr/news/articleView.html?idxno=411866") == 1
+    assert "매체 병합: 2건" in section
+    assert "패밀리" in section
+    assert "시장" in section
+    assert "→ 내부 지표 확인 가능" in section
+    assert "#### 과거 자료" in section
+    assert "2009-08-05" in section
+    assert section.index("2026-06-17") < section.index("2009-08-05")
+    assert "RAG 검색 시스템 구축 사례" not in section
+    assert "FDA Approves Livalo" in section
 
 
 def test_genos_default_base_url_coerces_existing_env_to_gemini_three_flash(monkeypatch) -> None:

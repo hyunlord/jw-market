@@ -109,6 +109,9 @@ def _remove_empty_headings(lines: list[str]) -> list[str]:
         if not _is_heading_line(line):
             kept.append(line)
             continue
+        if "웹 검색 결과" in line:
+            kept.append(line)
+            continue
         next_index = index + 1
         while next_index < len(lines) and not lines[next_index].strip():
             next_index += 1
@@ -122,6 +125,9 @@ def _remove_orphaned_news_headings(lines: list[str]) -> list[str]:
     kept: list[str] = []
     for index, line in enumerate(lines):
         if not (_is_heading_line(line) and "뉴스" in line):
+            kept.append(line)
+            continue
+        if "웹 검색 결과" in line:
             kept.append(line)
             continue
         next_index = index + 1
