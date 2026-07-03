@@ -147,6 +147,66 @@ def test_general_filter_options_scope_dimensions_to_selected_atc4(monkeypatch) -
     assert payload["applied_selections"]["atc4"] == ["C10A1", "C10C0"]
 
 
+def test_general_filter_options_adds_ubist_channel_axis_registry_from_raw_matrix(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        if "mart_general_filter_dimension_metric" in sql:
+            return []
+        if "SELECT atc4_code" in sql and "mart_general_brand_metric FORCE INDEX" in sql:
+            return [{"atc4_code": "C10A1"}]
+        if "channel_specialty_matrix" in sql:
+            assert params == ["ubist", "sales", "C10A1"]
+            return [
+                {
+                    "brand_key": "리바로",
+                    "brand_name": "리바로",
+                    "channel_specialty_matrix": '{"종합병원":{"순환기(Cardiology IM)":{"2026-05":10}},"의원":{"분리되지 않은 내과":{"2026-05":20}}}',
+                },
+                {
+                    "brand_key": "경쟁",
+                    "brand_name": "경쟁",
+                    "channel_specialty_matrix": '{"종합병원":{"내분비(Endocrinology IM)":{"2026-05":30}}}',
+                },
+            ]
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "C10A1"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        strategic_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        brand="리바로",
+        market_id="C10A1",
+    )
+
+    assert payload["channel_axis"]["ubist"]["facility"] == [
+        {"key": "의원", "value": "의원", "row_count": 1, "default": False, "selected": False, "flag": True},
+        {"key": "종합병원", "value": "종합병원", "row_count": 2, "default": False, "selected": False, "flag": True},
+    ]
+    assert payload["channel_axis"]["ubist"]["specialty"][0] == {
+        "key": "내분비(Endocrinology IM)",
+        "value": "내분비(Endocrinology IM)",
+        "row_count": 1,
+        "default": False,
+        "selected": False,
+        "flag": False,
+    }
+    assert {
+        "key": "종합병원|순환기(Cardiology IM)",
+        "value": {"facility": "종합병원", "specialty": "순환기(Cardiology IM)"},
+        "row_count": 1,
+        "default": False,
+        "selected": False,
+        "flag": True,
+    } in payload["channel_axis"]["ubist"]["pairs"]
+
+
 def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
 

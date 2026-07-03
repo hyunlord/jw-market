@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter, ChannelAxisPair
+
 
 class UbistAnalysisLevel(BaseModel):
     """UBIST product-level dynamic filters from the mock OpenAPI contract."""
@@ -55,6 +57,65 @@ class DynamicMarketAnalysisLevel(BaseModel):
 DynamicMarketAnalysisLevelFilters = DynamicMarketAnalysisLevel
 
 
+class UbistChannelAxisPair(BaseModel):
+    """Raw UBIST facility-specialty pair selected as one OR item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    facility: str = Field(description="UBIST 원천 종별 값.", examples=["종합병원"])
+    specialty: str = Field(description="UBIST 원천 진료과 값.", examples=["순환기(Cardiology IM)"])
+
+
+class UbistChannelAxis(BaseModel):
+    """UBIST value-slice filters over facility x specialty raw matrix."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    facility: list[str] = Field(default_factory=list, description="UBIST 종별 OR 선택. specialty와 함께 보내면 두 축은 AND로 결합합니다.")
+    specialty: list[str] = Field(default_factory=list, description="UBIST 진료과 OR 선택. facility와 함께 보내면 두 축은 AND로 결합합니다.")
+    pairs: list[UbistChannelAxisPair] = Field(default_factory=list, description="종별×진료과 raw pair OR 선택. 있으면 pair 선택이 우선합니다.")
+
+
+class IqviaChannelAxis(BaseModel):
+    """Reserved IQVIA audit-code channel axis; implementation is a later phase."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    audit_code: list[str] = Field(default_factory=list, description="IQVIA audit_code 후보. 1차 구현에서는 산출에 적용하지 않습니다.")
+
+
+class DynamicMarketChannelAxis(BaseModel):
+    """Source-specific value-slice filters, separate from analysis_level row filters."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ubist: UbistChannelAxis = Field(default_factory=UbistChannelAxis)
+    iqvia: IqviaChannelAxis = Field(default_factory=IqviaChannelAxis)
+
+    def to_filter(self, *, source: str = "ubist") -> ChannelAxisFilter | None:
+        """Convert the API boundary model into the runtime slice contract."""
+
+        normalized_source = source.strip().lower()
+        if normalized_source == "ubist":
+            pairs = tuple(
+                ChannelAxisPair(facility=item.facility.strip(), specialty=item.specialty.strip())
+                for item in self.ubist.pairs
+                if item.facility.strip() and item.specialty.strip()
+            )
+            selected = ChannelAxisFilter(
+                source="ubist",
+                facilities=tuple(dict.fromkeys(value.strip() for value in self.ubist.facility if value.strip())),
+                specialties=tuple(dict.fromkeys(value.strip() for value in self.ubist.specialty if value.strip())),
+                pairs=pairs,
+            )
+            return selected if selected.is_active else None
+        selected = ChannelAxisFilter(
+            source=normalized_source,
+            specialties=tuple(dict.fromkeys(value.strip() for value in self.iqvia.audit_code if value.strip())),
+        )
+        return selected if selected.is_active else None
+
+
 class DynamicMarketFilters(BaseModel):
     """Filter set accepted by general and strategic dynamic resolvers."""
 
@@ -67,6 +128,7 @@ class DynamicMarketFilters(BaseModel):
     cd_market_id: str | None = Field(default=None, description="전략 competitive_dynamics id.", examples=["cd_001"])
     focus_brand_key: str | None = Field(default=None, description="선택 브랜드명. narrowing 후에도 브랜드 자신을 유지할 때 사용합니다.", examples=["리바로"])
     analysis_level: DynamicMarketAnalysisLevel = Field(default_factory=DynamicMarketAnalysisLevel)
+    channel_axis: DynamicMarketChannelAxis = Field(default_factory=DynamicMarketChannelAxis, description="일반뷰 값 슬라이스용 채널 축 필터. analysis_level과 분리됩니다.")
 
 
 class DynamicMarketPeriodRange(BaseModel):

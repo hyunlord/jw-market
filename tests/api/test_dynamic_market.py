@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_hhi
+from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_hhi, sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market import cause_payload
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market import resolvers
@@ -92,6 +92,107 @@ def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monk
     assert metrics.all_brands[0].channel_specialty_matrix == {
         "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}
     }
+
+
+def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "filters": {
+                "atc4": ["C10A1"],
+                "channel_axis": {
+                    "ubist": {
+                        "facility": ["종합병원"],
+                        "specialty": ["순환기(Cardiology IM)"],
+                    }
+                },
+            },
+        }
+    )
+    aggregator = MetricAggregator(mart_db="jw_mart")
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-04": 100.0, "2026-05": 300.0}),
+            "channel_specialty_matrix": json.dumps(
+                {
+                    "종합병원": {
+                        "순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0},
+                        "내분비(Endocrinology IM)": {"2026-05": 70.0},
+                    },
+                    "의원": {"분리되지 않은 내과": {"2026-05": 190.0}},
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "brand_key": "b",
+            "brand_name": "B",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-04": 50.0, "2026-05": 150.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 60.0}}},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    brand_metrics, monthly_totals = aggregator._aggregate_rows(
+        rows,
+        period_range=PeriodRange(),
+        channel_axis=request.filters.channel_axis.to_filter(),
+    )
+
+    assert monthly_totals == {"2026-04": 30.0, "2026-05": 100.0}
+    assert [item.total_value for item in brand_metrics] == [70.0, 60.0]
+    assert brand_metrics[0].monthly_series == (
+        {"period": "2026-04", "value": 30.0},
+        {"period": "2026-05", "value": 40.0},
+    )
+    assert brand_metrics[0].channel_specialty_matrix == {
+        "종합병원": {"순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0}}
+    }
+
+
+def test_sidecar_rows_keep_channel_matrix_for_channel_axis_slice() -> None:
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "product_code": "p1",
+            "raw_value_history": json.dumps({"2026-05": 10.0}),
+            "dimension_type": "seller",
+        }
+    ]
+    matrix = {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 10.0}}}
+
+    metric_rows = sidecar_rows_to_metric_rows(
+        rows,
+        metadata={
+            ("a", "C10A1"): {
+                "unit_label": "KRW",
+                "channel_specialty_matrix": matrix,
+            }
+        },
+        required_dimensions=("seller",),
+    )
+
+    assert metric_rows == [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": '{"2026-05": 10.0}',
+            "channel_specialty_matrix": matrix,
+        }
+    ]
 
 
 def test_compose_when_definition_and_metrics_are_ready() -> None:
@@ -341,6 +442,70 @@ def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
 
     assert response["status"] == "SUCCESS"
     assert response["result"]["market_meta"]["market_size_recent"] == 1.0
+
+
+def test_route_passes_general_channel_axis_to_aggregator(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResolver:
+        def __init__(self, *, mart_db: str, bridge_db: str) -> None:
+            assert mart_db
+            assert bridge_db
+
+        def resolve(self, *, atc4, molecule, source, measure, channel_axis, **_kwargs):
+            captured["resolver_channel_axis"] = channel_axis
+            return MarketDefinition(
+                view="general",
+                filter_echo={
+                    "view": "general",
+                    "atc4": list(atc4),
+                    "molecule": list(molecule),
+                    "source": source,
+                    "measure": measure,
+                    "channel_axis": {"facility": ["종합병원"]},
+                },
+                source=source,
+                measure=measure,
+                brands=(),
+                channel_axis=channel_axis,
+            )
+
+    class FakeAggregator:
+        def __init__(self, *, mart_db: str) -> None:
+            assert mart_db
+
+        def aggregate(self, *, channel_axis, **_kwargs):
+            captured["aggregator_channel_axis"] = channel_axis
+            return AggregatedMetrics(
+                source="ubist",
+                measure="sales",
+                unit_label="KRW",
+                market_size=1.0,
+                hhi=None,
+                cagr=None,
+                monthly_series=({"period": "2026-04", "market_size": 1.0},),
+                brands=(),
+            )
+
+    monkeypatch.setattr(dynamic_market_route, "GeneralViewResolver", FakeResolver)
+    monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FakeAggregator)
+
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "source": "ubist",
+                "measure": "sales",
+                "filters": {
+                    "atc4": ["C10A1"],
+                    "channel_axis": {"ubist": {"facility": ["종합병원"]}},
+                },
+            }
+        )
+    )
+
+    assert response["status"] == "SUCCESS"
+    assert captured["resolver_channel_axis"].facilities == ("종합병원",)
+    assert captured["aggregator_channel_axis"].facilities == ("종합병원",)
 
 
 def test_route_uses_strategic_runtime_for_ml_id(monkeypatch) -> None:

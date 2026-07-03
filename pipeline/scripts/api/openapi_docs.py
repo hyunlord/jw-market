@@ -427,6 +427,22 @@ FILTER_OPTIONS_EXAMPLE: Final = {
         "atc4": [],
         "selectable_levels": ["atc3", "atc4"],
     },
+    "channel_axis": {
+        "ubist": {
+            "facility": [{"key": "종합병원", "value": "종합병원", "row_count": 120, "default": False, "selected": False, "flag": True}],
+            "specialty": [{"key": "순환기(Cardiology IM)", "value": "순환기(Cardiology IM)", "row_count": 90, "default": False, "selected": False, "flag": True}],
+            "pairs": [
+                {
+                    "key": "종합병원|순환기(Cardiology IM)",
+                    "value": {"facility": "종합병원", "specialty": "순환기(Cardiology IM)"},
+                    "row_count": 90,
+                    "default": False,
+                    "selected": False,
+                    "flag": True,
+                }
+            ],
+        }
+    },
     "default_selections": {"class": ["statin"], "atc1": ["C"]},
     "applied_selections": {"class": ["statin"], "atc1": ["C"]},
     "brand_matched": {"class": ["statin"], "atc4": ["C10A1"]},
@@ -453,6 +469,14 @@ FILTER_OPTIONS_RESPONSES: Final = {
                             "description": "registry 순서의 차원 목록. values의 flag=true는 선택 브랜드 해당 값입니다.",
                         },
                         "atc": {"type": "object", "description": "ATC1/2/3/4 계층. default/selected/flag 상태 포함."},
+                        "channel_axis": {
+                            "type": "object",
+                            "description": (
+                                "일반뷰 UBIST 전용 채널 축 registry. facility(종별), specialty(진료과), "
+                                "pairs(종별×진료과 조합)를 raw channel_specialty_matrix에서 동적으로 도출합니다. "
+                                "analysis_level과 분리된 값 슬라이스 필터입니다."
+                            ),
+                        },
                         "default_selections": {"type": "object", "description": "초기 선택값. 차원 내 값은 OR입니다."},
                         "applied_selections": {"type": "object", "description": "현재 selections 입력을 반영한 선택값."},
                         "brand_matched": {"type": "object", "description": "브랜드 자신 값. 프론트에서 locked 처리합니다."},

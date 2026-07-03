@@ -91,6 +91,7 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
             period_range=period_range,
             top_n=clamp_top_n(payload.options.top_n),
             dimension_filters=definition.dimension_filters,
+            channel_axis=definition.channel_axis,
             view=definition.view,
             strategic_market_id=definition.strategic_market_id,
         )
@@ -103,6 +104,9 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
 def _resolve_definition(payload: DynamicMarketRequest):
     filters = payload.filters
     analysis_level = filters.analysis_level.model_dump()
+    channel_axis = filters.channel_axis.to_filter(source=payload.source)
+    if channel_axis and channel_axis.source != "ubist":
+        raise DynamicMarketInputError("channel_axis is supported only for UBIST general view in this release")
     resolved_ml_id = _resolve_catalog_ml_id(filters)
     if filters.view_kind or filters.ml_id or filters.cd_market_id:
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
@@ -112,6 +116,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
             atc4=filters.atc4,
             molecule=filters.molecule,
             analysis_level=analysis_level,
+            channel_axis=channel_axis,
             focus_brand_key=filters.focus_brand_key,
             source=payload.source,
             measure=payload.measure,
@@ -120,6 +125,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
         atc4=filters.atc4,
         molecule=filters.molecule,
         analysis_level=analysis_level,
+        channel_axis=channel_axis,
         focus_brand_key=filters.focus_brand_key,
         source=payload.source,
         measure=payload.measure,

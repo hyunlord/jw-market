@@ -14,6 +14,7 @@ from time import monotonic
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
+from pipeline.scripts.api.dynamic_market.channel_axis import parse_channel_specialty_matrix
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 
@@ -102,6 +103,7 @@ def build_filter_options(
     normalized_view = normalize_view(view)
     normalized_source = normalize_source(source)
     normalized_measure = measure.strip().lower() or "sales"
+    normalized_brand = brand.strip() if brand else ""
     resolved_market_id = resolve_filter_option_market_id(
         mart_db=mart_db,
         view=normalized_view,
@@ -117,12 +119,12 @@ def build_filter_options(
         dimension_db=dimension_db,
         view=normalized_view,
         source=normalized_source,
+        brand=normalized_brand,
         market_id=resolved_market_id,
         measure=normalized_measure,
         atc4_codes=parsed_atc4_codes,
         selections=parsed_selections,
     )
-    normalized_brand = brand.strip() if brand else ""
     brand_matched: dict[str, list[str]] = {}
     if normalized_brand:
         payload["brand"] = normalized_brand
@@ -256,6 +258,7 @@ def _build_filter_options_uncached(
     dimension_db: str,
     view: str,
     source: str,
+    brand: str,
     market_id: str | None,
     measure: str,
     atc4_codes: Sequence[str],
@@ -278,12 +281,21 @@ def _build_filter_options_uncached(
         market_id=market_id,
         atc4_codes=atc4_codes,
     )
+    channel_axis = _load_channel_axis_options(
+        mart_db=mart_db,
+        view=view,
+        source=source,
+        measure=measure,
+        brand=brand,
+        atc4_codes=atc4_codes,
+    )
     return build_filter_option_payload(
         view=view,
         source=source,
         market_id=market_id,
         dimensions=dimensions,
         atc_rows=atc_rows,
+        channel_axis=channel_axis,
     )
 
 
@@ -324,6 +336,7 @@ def build_filter_option_payload(
     market_id: str | None,
     dimensions: Sequence[DimensionOptionRow],
     atc_rows: Sequence[Mapping[str, object]],
+    channel_axis: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     grouped: dict[str, list[DimensionOptionRow]] = defaultdict(list)
     for row in dimensions:
@@ -341,13 +354,16 @@ def build_filter_option_payload(
                 ],
             }
         )
-    return {
+    payload: dict[str, object] = {
         "view": view,
         "source": source,
         "market_id": market_id,
         "dimensions": ordered_dimensions,
         "atc": build_atc_hierarchy(atc_rows),
     }
+    if channel_axis:
+        payload["channel_axis"] = dict(channel_axis)
+    return payload
 
 
 def build_atc_hierarchy(rows: Iterable[Mapping[str, object]]) -> dict[str, object]:
@@ -521,6 +537,107 @@ def _merge_dimension_rows(*groups: Sequence[DimensionOptionRow]) -> tuple[Dimens
                 row_count=current.row_count + row.row_count,
             )
     return tuple(merged.values())
+
+
+def _load_channel_axis_options(
+    *,
+    mart_db: str,
+    view: str,
+    source: str,
+    measure: str,
+    brand: str,
+    atc4_codes: Sequence[str],
+) -> dict[str, object]:
+    """Build the UBIST channel-axis registry from scoped raw matrices."""
+
+    if view != "general" or source != "ubist" or not atc4_codes:
+        return {}
+    rows = db.fetch_all(
+        f"""
+        SELECT brand_key, brand_name, channel_specialty_matrix
+        FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+        WHERE source = %s
+          AND measure = %s
+          AND atc4_code IN ({', '.join(['%s'] * len(atc4_codes))})
+        ORDER BY brand_name, brand_key
+        """,
+        [source, measure, *atc4_codes],
+    )
+    facility_counts: dict[str, set[str]] = defaultdict(set)
+    specialty_counts: dict[str, set[str]] = defaultdict(set)
+    pair_counts: dict[tuple[str, str], set[str]] = defaultdict(set)
+    flagged_facilities: set[str] = set()
+    flagged_specialties: set[str] = set()
+    flagged_pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        brand_key = str(row.get("brand_key") or "")
+        brand_name = str(row.get("brand_name") or "")
+        brand_marker = brand_key or brand_name
+        is_brand_match = _is_brand_match(brand=brand, brand_key=brand_key, brand_name=brand_name)
+        matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
+        for facility, specialties in matrix.items():
+            facility_counts[facility].add(brand_marker)
+            if is_brand_match:
+                flagged_facilities.add(facility)
+            for specialty in specialties:
+                specialty_counts[specialty].add(brand_marker)
+                pair = (facility, specialty)
+                pair_counts[pair].add(brand_marker)
+                if is_brand_match:
+                    flagged_specialties.add(specialty)
+                    flagged_pairs.add(pair)
+    if not facility_counts and not specialty_counts and not pair_counts:
+        return {}
+    return {
+        "ubist": {
+            "facility": [
+                _channel_axis_option(value, row_count=len(facility_counts[value]), flagged=value in flagged_facilities)
+                for value in sorted(facility_counts)
+            ],
+            "specialty": [
+                _channel_axis_option(value, row_count=len(specialty_counts[value]), flagged=value in flagged_specialties)
+                for value in sorted(specialty_counts)
+            ],
+            "pairs": [
+                _channel_axis_pair_option(pair, row_count=len(pair_counts[pair]), flagged=pair in flagged_pairs)
+                for pair in sorted(pair_counts)
+            ],
+        }
+    }
+
+
+def _channel_axis_option(value: str, *, row_count: int, flagged: bool) -> dict[str, object]:
+    return {
+        "key": value,
+        "value": value,
+        "row_count": row_count,
+        "default": False,
+        "selected": False,
+        "flag": flagged,
+    }
+
+
+def _channel_axis_pair_option(pair: tuple[str, str], *, row_count: int, flagged: bool) -> dict[str, object]:
+    facility, specialty = pair
+    return {
+        "key": f"{facility}|{specialty}",
+        "value": {"facility": facility, "specialty": specialty},
+        "row_count": row_count,
+        "default": False,
+        "selected": False,
+        "flag": flagged,
+    }
+
+
+def _is_brand_match(*, brand: str, brand_key: str, brand_name: str) -> bool:
+    if not brand:
+        return False
+    requested = _compact_text(brand)
+    return requested in {_compact_text(brand_key), _compact_text(brand_name)}
+
+
+def _compact_text(value: str) -> str:
+    return value.replace(" ", "").lower()
 
 
 def _load_strategic_by_dimension_options(

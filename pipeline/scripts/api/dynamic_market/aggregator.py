@@ -10,6 +10,12 @@ import math
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.scripts.api import db
+from pipeline.scripts.api.dynamic_market.channel_axis import (
+    ChannelAxisFilter,
+    history_from_channel_specialty_matrix,
+    parse_channel_specialty_matrix,
+    slice_channel_specialty_matrix,
+)
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
     BrandMetric,
@@ -42,6 +48,7 @@ class MetricAggregator:
         period_range: PeriodRange,
         top_n: int,
         dimension_filters: tuple[DimensionFilter, ...] = (),
+        channel_axis: ChannelAxisFilter | None = None,
         view: str = "general",
         strategic_market_id: str | None = None,
     ) -> AggregatedMetrics:
@@ -76,7 +83,7 @@ class MetricAggregator:
             )
         else:
             rows = self._load_metric_rows(brands=brands, source=source, measure=measure)
-        brand_metrics, monthly_totals = self._aggregate_rows(rows, period_range=period_range)
+        brand_metrics, monthly_totals = self._aggregate_rows(rows, period_range=period_range, channel_axis=channel_axis)
         market_size = float(sum(monthly_totals.values()))
         ranked = tuple(
             BrandMetric(
@@ -265,7 +272,7 @@ class MetricAggregator:
         scope_sql, scope_params = brand_scope_predicate(brands)
         rows = db.fetch_all(
             f"""
-            SELECT DISTINCT brand_key, atc4_code, unit_label
+            SELECT DISTINCT brand_key, atc4_code, unit_label, channel_specialty_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -280,11 +287,14 @@ class MetricAggregator:
         rows: list[dict],
         *,
         period_range: PeriodRange,
+        channel_axis: ChannelAxisFilter | None = None,
     ) -> tuple[list[BrandMetric], dict[str, float]]:
         brand_metrics: list[BrandMetric] = []
         monthly_totals: dict[str, float] = {}
         for row in rows:
-            history = parse_history(str(row["raw_value_history"]))
+            raw_matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
+            matrix = slice_channel_specialty_matrix(raw_matrix, channel_axis)
+            history = history_from_channel_specialty_matrix(matrix) if channel_axis and channel_axis.is_active else parse_history(str(row["raw_value_history"]))
             filtered = filter_periods(history, period_range)
             for period, value in filtered.items():
                 monthly_totals[period] = monthly_totals.get(period, 0.0) + value
@@ -302,7 +312,7 @@ class MetricAggregator:
                     monthly_series=tuple({"period": period, "value": value} for period, value in sorted(filtered.items())),
                     ubist_channel_by_display=parse_channel_series(row.get("ubist_channel_by_display")),
                     ubist_channel_by_code=parse_channel_series(row.get("ubist_channel_by_code")),
-                    channel_specialty_matrix=parse_channel_specialty_matrix(row.get("channel_specialty_matrix")),
+                    channel_specialty_matrix=matrix,
                 )
             )
         return brand_metrics, monthly_totals
@@ -331,34 +341,6 @@ def parse_channel_series(raw: object) -> dict[str, dict[str, float]]:
         if not isinstance(series, dict):
             continue
         parsed[str(channel)] = {str(period): float(value or 0.0) for period, value in series.items()}
-    return parsed
-
-
-def parse_channel_specialty_matrix(raw: object) -> dict[str, dict[str, dict[str, float]]]:
-    """Parse raw UBIST facility-specialty-period matrix from the general mart."""
-
-    if isinstance(raw, dict):
-        payload = raw
-    elif isinstance(raw, str) and raw.strip():
-        payload = json.loads(raw)
-    else:
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    parsed: dict[str, dict[str, dict[str, float]]] = {}
-    for facility, specialties in payload.items():
-        if not isinstance(specialties, dict):
-            continue
-        facility_bucket: dict[str, dict[str, float]] = {}
-        for specialty, series in specialties.items():
-            if not isinstance(series, dict):
-                continue
-            facility_bucket[str(specialty)] = {
-                str(period): float(value or 0.0)
-                for period, value in series.items()
-            }
-        if facility_bucket:
-            parsed[str(facility)] = facility_bucket
     return parsed
 
 
@@ -467,6 +449,7 @@ def sidecar_rows_to_metric_rows(
                 "atc4_code": atc4_code,
                 "unit_label": str(meta.get("unit_label") or ""),
                 "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
+                "channel_specialty_matrix": meta.get("channel_specialty_matrix") or {},
             }
         )
     return metric_rows

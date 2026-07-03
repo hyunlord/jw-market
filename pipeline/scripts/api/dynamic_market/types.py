@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import re
 from typing import Final
 
+from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
+
 
 IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_]+$")
 DEFAULT_TOP_N: Final[int] = 20
@@ -57,6 +59,7 @@ class MarketDefinition:
     normalized_molecules: tuple[str, ...] = ()
     brands: tuple[BrandRef, ...] = ()
     dimension_filters: tuple[DimensionFilter, ...] = ()
+    channel_axis: ChannelAxisFilter | None = None
     focus_brand_key: str | None = None
     strategic_market_kind: str | None = None
     strategic_market_id: str | None = None
