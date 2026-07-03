@@ -14,7 +14,7 @@ from time import monotonic
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
-from pipeline.scripts.api.dynamic_market.channel_axis import parse_channel_specialty_matrix
+from pipeline.scripts.api.dynamic_market.channel_axis import parse_audit_code_matrix, parse_channel_specialty_matrix
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 
@@ -548,9 +548,19 @@ def _load_channel_axis_options(
     brand: str,
     atc4_codes: Sequence[str],
 ) -> dict[str, object]:
-    """Build the UBIST channel-axis registry from scoped raw matrices."""
+    """Build source-specific channel-axis registries from scoped raw matrices."""
 
-    if view != "general" or source != "ubist" or not atc4_codes:
+    if view != "general" or not atc4_codes:
+        return {}
+    if source == "iqvia_nsa":
+        return _load_iqvia_channel_axis_options(
+            mart_db=mart_db,
+            source=source,
+            measure=measure,
+            brand=brand,
+            atc4_codes=atc4_codes,
+        )
+    if source != "ubist":
         return {}
     rows = db.fetch_all(
         f"""
@@ -602,6 +612,49 @@ def _load_channel_axis_options(
                 _channel_axis_pair_option(pair, row_count=len(pair_counts[pair]), flagged=pair in flagged_pairs)
                 for pair in sorted(pair_counts)
             ],
+        }
+    }
+
+
+def _load_iqvia_channel_axis_options(
+    *,
+    mart_db: str,
+    source: str,
+    measure: str,
+    brand: str,
+    atc4_codes: Sequence[str],
+) -> dict[str, object]:
+    rows = db.fetch_all(
+        f"""
+        SELECT brand_key, brand_name, audit_code_matrix
+        FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+        WHERE source = %s
+          AND measure = %s
+          AND atc4_code IN ({', '.join(['%s'] * len(atc4_codes))})
+        ORDER BY brand_name, brand_key
+        """,
+        [source, measure, *atc4_codes],
+    )
+    audit_counts: dict[str, set[str]] = defaultdict(set)
+    flagged_audits: set[str] = set()
+    for row in rows:
+        brand_key = str(row.get("brand_key") or "")
+        brand_name = str(row.get("brand_name") or "")
+        brand_marker = brand_key or brand_name
+        is_brand_match = _is_brand_match(brand=brand, brand_key=brand_key, brand_name=brand_name)
+        matrix = parse_audit_code_matrix(row.get("audit_code_matrix"))
+        for audit_code in matrix:
+            audit_counts[audit_code].add(brand_marker)
+            if is_brand_match:
+                flagged_audits.add(audit_code)
+    if not audit_counts:
+        return {}
+    return {
+        "iqvia": {
+            "audit_code": [
+                _channel_axis_option(value, row_count=len(audit_counts[value]), flagged=value in flagged_audits)
+                for value in sorted(audit_counts)
+            ]
         }
     }
 

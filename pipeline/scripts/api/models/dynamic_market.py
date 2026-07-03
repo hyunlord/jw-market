@@ -77,11 +77,11 @@ class UbistChannelAxis(BaseModel):
 
 
 class IqviaChannelAxis(BaseModel):
-    """Reserved IQVIA audit-code channel axis; implementation is a later phase."""
+    """IQVIA audit-code value-slice filters over the raw audit matrix."""
 
     model_config = ConfigDict(extra="forbid")
 
-    audit_code: list[str] = Field(default_factory=list, description="IQVIA audit_code 후보. 1차 구현에서는 산출에 적용하지 않습니다.")
+    audit_code: list[str] = Field(default_factory=list, description="IQVIA audit_code OR 선택.")
 
 
 class DynamicMarketChannelAxis(BaseModel):
@@ -96,6 +96,19 @@ class DynamicMarketChannelAxis(BaseModel):
         """Convert the API boundary model into the runtime slice contract."""
 
         normalized_source = source.strip().lower()
+        if normalized_source == "iqvia":
+            normalized_source = "iqvia_nsa"
+        source_key = "iqvia" if normalized_source == "iqvia_nsa" else normalized_source
+        ubist_active = bool(
+            [value for value in self.ubist.facility if value.strip()]
+            or [value for value in self.ubist.specialty if value.strip()]
+            or [item for item in self.ubist.pairs if item.facility.strip() and item.specialty.strip()]
+        )
+        iqvia_active = bool([value for value in self.iqvia.audit_code if value.strip()])
+        if ubist_active and source_key != "ubist":
+            raise ValueError("channel_axis.ubist must match selected source")
+        if iqvia_active and source_key != "iqvia":
+            raise ValueError("channel_axis.iqvia must match selected source")
         if normalized_source == "ubist":
             pairs = tuple(
                 ChannelAxisPair(facility=item.facility.strip(), specialty=item.specialty.strip())
@@ -111,7 +124,7 @@ class DynamicMarketChannelAxis(BaseModel):
             return selected if selected.is_active else None
         selected = ChannelAxisFilter(
             source=normalized_source,
-            specialties=tuple(dict.fromkeys(value.strip() for value in self.iqvia.audit_code if value.strip())),
+            audit_codes=tuple(dict.fromkeys(value.strip().upper() for value in self.iqvia.audit_code if value.strip())),
         )
         return selected if selected.is_active else None
 
