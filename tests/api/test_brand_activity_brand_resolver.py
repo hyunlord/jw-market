@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pipeline.scripts.api.brand_activity_brand_filters import applied_brand_filter
-from pipeline.scripts.api.brand_activity_brand_resolver import BrandCandidate, _select_choices
+from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_activity_brand_resolver import BrandCandidate, _fetch_channel_axis_rows, _select_choices, view_config
 from pipeline.scripts.api.brand_activity_channel_axis import channel_axis_sales_value, parse_ubist_channel_axis
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
 
@@ -52,6 +55,44 @@ def test_channel_axis_sales_value_uses_raw_ubist_matrix_slice() -> None:
     }
 
     assert channel_axis_sales_value(row, channel_axis, "2026-Q2") == 30.0
+
+
+def test_channel_axis_sql_uses_only_columns_present_on_general_mart(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+
+    _fetch_channel_axis_rows(view_config("general"), "C10A1")
+
+    sql = str(captured["sql"])
+    assert "channel_specialty_matrix" in sql
+    assert "NULL AS ubist_channel_by_display" in sql
+    assert "NULL AS ubist_channel_by_code" in sql
+    assert captured["params"] == ("C10A1", "ubist", "sales")
+
+
+def test_channel_axis_sql_uses_only_columns_present_on_strategic_mart(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+
+    _fetch_channel_axis_rows(view_config("strategic_ml"), "ml_006")
+
+    sql = str(captured["sql"])
+    assert "NULL AS channel_specialty_matrix" in sql
+    assert "ubist_channel_by_display" in sql
+    assert "ubist_channel_by_code" in sql
+    assert captured["params"] == ("ml_006", "ubist", "sales")
 
 
 def _candidate(brand_key: str, *, rank: int, sales: float, dimensions: dict[str, tuple[str, ...]]) -> BrandCandidate:

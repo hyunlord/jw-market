@@ -172,11 +172,14 @@ def _fetch_market_row(view: ViewConfig, market_id: str) -> JsonMap | None:
 
 
 def _fetch_channel_axis_rows(view: ViewConfig, market_id: str) -> dict[str, JsonMap]:
-    channel_matrix = "channel_specialty_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS channel_specialty_matrix"
+    if view.brand_table == "mart_general_brand_metric":
+        channel_axis_columns = "channel_specialty_matrix, NULL AS ubist_channel_by_display, NULL AS ubist_channel_by_code"
+    else:
+        channel_axis_columns = "NULL AS channel_specialty_matrix, ubist_channel_by_display, ubist_channel_by_code"
     rows = db.fetch_all(
         f"""
         SELECT DISTINCT brand_key, metric_history, channel_data, specialty_data,
-               ubist_channel_by_display, ubist_channel_by_code, {channel_matrix}
+               {channel_axis_columns}
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
         """,
