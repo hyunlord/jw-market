@@ -299,7 +299,7 @@ class StrategicViewResolver:
         if atc4 or molecule:
             raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not ATC4/molecule expansion")
         if channel_axis and channel_axis.is_active:
-            raise DynamicMarketInputError("channel_axis is supported only for general UBIST views")
+            raise DynamicMarketInputError("channel_axis is supported only for general views")
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
         market_kind = normalize_strategic_view_kind(view_kind=view_kind, ml_id=ml_id, cd_market_id=cd_market_id)
@@ -453,6 +453,11 @@ def _dimension_echo(filters: tuple[DimensionFilter, ...]) -> dict[str, list[str]
 def _channel_axis_echo(channel_axis: ChannelAxisFilter | None) -> dict[str, object]:
     if channel_axis is None or not channel_axis.is_active:
         return {}
+    if channel_axis.source == "iqvia_nsa":
+        return {
+            "source": channel_axis.source,
+            "audit_code": list(channel_axis.audit_codes),
+        }
     return {
         "source": channel_axis.source,
         "facility": list(channel_axis.facilities),

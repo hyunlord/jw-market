@@ -1,8 +1,8 @@
-"""Runtime UBIST channel-axis slicing helpers.
+"""Runtime source-specific channel-axis slicing helpers.
 
 ``analysis_level`` filters choose market member rows.  Channel-axis filters are
-different: they slice each surviving brand's facility x specialty raw matrix
-and rebuild the monthly series from that selected value surface.
+different: they slice each surviving brand's raw value matrix and rebuild the
+metric series from that selected value surface.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import Any
 
 
 ChannelMatrix = dict[str, dict[str, dict[str, float]]]
+AuditCodeMatrix = dict[str, dict[str, float]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +32,11 @@ class ChannelAxisFilter:
     facilities: tuple[str, ...] = ()
     specialties: tuple[str, ...] = ()
     pairs: tuple[ChannelAxisPair, ...] = ()
+    audit_codes: tuple[str, ...] = ()
 
     @property
     def is_active(self) -> bool:
-        return bool(self.facilities or self.specialties or self.pairs)
+        return bool(self.facilities or self.specialties or self.pairs or self.audit_codes)
 
 
 def parse_channel_specialty_matrix(raw: Any) -> ChannelMatrix:
@@ -96,6 +98,49 @@ def history_from_channel_specialty_matrix(matrix: ChannelMatrix) -> dict[str, fl
         for series in specialties.values():
             for period, value in series.items():
                 history[period] = history.get(period, 0.0) + float(value or 0.0)
+    return history
+
+
+def parse_audit_code_matrix(raw: Any) -> AuditCodeMatrix:
+    """Parse raw IQVIA audit-code-period matrix from the general mart."""
+
+    if isinstance(raw, dict):
+        payload = raw
+    elif isinstance(raw, str) and raw.strip():
+        payload = json.loads(raw)
+    else:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    parsed: AuditCodeMatrix = {}
+    for audit_code, series in payload.items():
+        if not isinstance(series, dict):
+            continue
+        code = str(audit_code).strip()
+        if not code:
+            continue
+        parsed[code] = {str(period): float(value or 0.0) for period, value in series.items()}
+    return parsed
+
+
+def slice_audit_code_matrix(matrix: AuditCodeMatrix, channel_axis: ChannelAxisFilter | None) -> AuditCodeMatrix:
+    """Return only audit codes selected by the IQVIA channel-axis filter."""
+
+    if channel_axis is None or not channel_axis.is_active or channel_axis.source != "iqvia_nsa":
+        return matrix
+    selected_codes = set(channel_axis.audit_codes)
+    if not selected_codes:
+        return matrix
+    return {audit_code: dict(series) for audit_code, series in matrix.items() if audit_code in selected_codes}
+
+
+def history_from_audit_code_matrix(matrix: AuditCodeMatrix) -> dict[str, float]:
+    """Collapse selected audit-code cells into period totals."""
+
+    history: dict[str, float] = {}
+    for series in matrix.values():
+        for period, value in series.items():
+            history[period] = history.get(period, 0.0) + float(value or 0.0)
     return history
 
 

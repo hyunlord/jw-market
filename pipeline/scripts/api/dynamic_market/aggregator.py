@@ -12,8 +12,11 @@ from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIM
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.channel_axis import (
     ChannelAxisFilter,
+    history_from_audit_code_matrix,
     history_from_channel_specialty_matrix,
+    parse_audit_code_matrix,
     parse_channel_specialty_matrix,
+    slice_audit_code_matrix,
     slice_channel_specialty_matrix,
 )
 from pipeline.scripts.api.dynamic_market.types import (
@@ -99,6 +102,7 @@ class MetricAggregator:
                 ubist_channel_by_display=item.ubist_channel_by_display,
                 ubist_channel_by_code=item.ubist_channel_by_code,
                 channel_specialty_matrix=item.channel_specialty_matrix,
+                audit_code_matrix=item.audit_code_matrix,
             )
             for index, item in enumerate(sorted(brand_metrics, key=lambda row: (-row.total_value, row.brand_key)), start=1)
         )
@@ -221,7 +225,7 @@ class MetricAggregator:
         return db.fetch_all(
             f"""
             SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
-                   channel_specialty_matrix
+                   channel_specialty_matrix, audit_code_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -272,7 +276,7 @@ class MetricAggregator:
         scope_sql, scope_params = brand_scope_predicate(brands)
         rows = db.fetch_all(
             f"""
-            SELECT DISTINCT brand_key, atc4_code, unit_label, channel_specialty_matrix
+            SELECT DISTINCT brand_key, atc4_code, unit_label, channel_specialty_matrix, audit_code_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -294,7 +298,14 @@ class MetricAggregator:
         for row in rows:
             raw_matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
             matrix = slice_channel_specialty_matrix(raw_matrix, channel_axis)
-            history = history_from_channel_specialty_matrix(matrix) if channel_axis and channel_axis.is_active else parse_history(str(row["raw_value_history"]))
+            raw_audit_matrix = parse_audit_code_matrix(row.get("audit_code_matrix"))
+            audit_matrix = slice_audit_code_matrix(raw_audit_matrix, channel_axis)
+            history = _history_for_row(
+                raw_history=str(row["raw_value_history"]),
+                channel_axis=channel_axis,
+                channel_specialty_matrix=matrix,
+                audit_code_matrix=audit_matrix,
+            )
             filtered = filter_periods(history, period_range)
             for period, value in filtered.items():
                 monthly_totals[period] = monthly_totals.get(period, 0.0) + value
@@ -313,9 +324,26 @@ class MetricAggregator:
                     ubist_channel_by_display=parse_channel_series(row.get("ubist_channel_by_display")),
                     ubist_channel_by_code=parse_channel_series(row.get("ubist_channel_by_code")),
                     channel_specialty_matrix=matrix,
+                    audit_code_matrix=audit_matrix,
                 )
             )
         return brand_metrics, monthly_totals
+
+
+def _history_for_row(
+    *,
+    raw_history: str,
+    channel_axis: ChannelAxisFilter | None,
+    channel_specialty_matrix: dict[str, dict[str, dict[str, float]]],
+    audit_code_matrix: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    if channel_axis is None or not channel_axis.is_active:
+        return parse_history(raw_history)
+    if channel_axis.source == "ubist":
+        return history_from_channel_specialty_matrix(channel_specialty_matrix)
+    if channel_axis.source == "iqvia_nsa":
+        return history_from_audit_code_matrix(audit_code_matrix)
+    return parse_history(raw_history)
 
 
 def parse_history(raw: str) -> dict[str, float]:
@@ -442,16 +470,17 @@ def sidecar_rows_to_metric_rows(
     metric_rows: list[dict] = []
     for (brand_key, brand_name, atc4_code), history in sorted(histories_by_brand.items()):
         meta = metadata.get((brand_key, atc4_code), {})
-        metric_rows.append(
-            {
-                "brand_key": brand_key,
-                "brand_name": brand_name,
-                "atc4_code": atc4_code,
-                "unit_label": str(meta.get("unit_label") or ""),
-                "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
-                "channel_specialty_matrix": meta.get("channel_specialty_matrix") or {},
-            }
-        )
+        metric_row = {
+            "brand_key": brand_key,
+            "brand_name": brand_name,
+            "atc4_code": atc4_code,
+            "unit_label": str(meta.get("unit_label") or ""),
+            "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
+            "channel_specialty_matrix": meta.get("channel_specialty_matrix") or {},
+        }
+        if meta.get("audit_code_matrix"):
+            metric_row["audit_code_matrix"] = meta["audit_code_matrix"]
+        metric_rows.append(metric_row)
     return metric_rows
 
 

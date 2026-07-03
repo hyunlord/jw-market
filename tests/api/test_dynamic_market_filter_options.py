@@ -207,6 +207,51 @@ def test_general_filter_options_adds_ubist_channel_axis_registry_from_raw_matrix
     } in payload["channel_axis"]["ubist"]["pairs"]
 
 
+def test_general_filter_options_adds_iqvia_audit_code_registry_from_matrix(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        if "mart_general_filter_dimension_metric" in sql:
+            return []
+        if "SELECT atc4_code" in sql and "mart_general_brand_metric FORCE INDEX" in sql:
+            return [{"atc4_code": "C10A1"}]
+        if "audit_code_matrix" in sql:
+            assert params == ["iqvia_nsa", "sales", "C10A1"]
+            return [
+                {
+                    "brand_key": "리바로",
+                    "brand_name": "리바로",
+                    "audit_code_matrix": '{"KPA":{"2025-Q4":100},"KHPA":{"2025-Q4":20}}',
+                },
+                {
+                    "brand_key": "경쟁",
+                    "brand_name": "경쟁",
+                    "audit_code_matrix": '{"KPA":{"2025-Q4":50},"KCPA":{"2025-Q4":1}}',
+                },
+            ]
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "C10A1"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        strategic_dimension_db="jw_mart",
+        view="general",
+        source="iqvia",
+        brand="리바로",
+        market_id="C10A1",
+    )
+
+    assert payload["channel_axis"]["iqvia"]["audit_code"] == [
+        {"key": "KCPA", "value": "KCPA", "row_count": 1, "default": False, "selected": False, "flag": False},
+        {"key": "KHPA", "value": "KHPA", "row_count": 1, "default": False, "selected": False, "flag": True},
+        {"key": "KPA", "value": "KPA", "row_count": 2, "default": False, "selected": False, "flag": True},
+    ]
+
+
 def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
 
