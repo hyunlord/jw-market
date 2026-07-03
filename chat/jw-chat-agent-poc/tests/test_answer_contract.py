@@ -385,3 +385,31 @@ def test_sanitize_internal_diagnostics_removes_bare_internal_market_ids() -> Non
     assert "strategy_006" not in revised
     assert "확정 시장" in revised
     assert "IQVIA / UBIST" in revised
+
+
+def test_sanitize_internal_diagnostics_preserves_denominator_note_market_ids() -> None:
+    answer = (
+        "- 데이터 상세: UBIST — 기간 2025-07~2026-04, 시장: ml_006 (market_landscape, 분모 470), "
+        "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음"
+    )
+
+    revised = sanitize_internal_diagnostics(answer)
+
+    assert "시장: ml_006" in revised
+    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in revised
+    assert "확정 시장" not in revised
+
+
+def test_sanitize_internal_diagnostics_still_blocks_market_ids_in_error_context() -> None:
+    answer = (
+        "cache_cause row is missing: CausePayloadKey(brand='리바로', view_type='market_landscape', "
+        "source='UBIST', measure='sales', market_id='strategy_006')"
+    )
+
+    revised = sanitize_internal_diagnostics(answer)
+
+    assert "cache_cause" not in revised
+    assert "CausePayloadKey" not in revised
+    assert "market_id" not in revised
+    assert "strategy_006" not in revised
+    assert "요청한 일부 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다." in revised

@@ -18,6 +18,10 @@ _QUESTION_UNAVAILABLE_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_ID_RE = re.compile(r"\b(?:strategy|competitive)_\d+\b", re.IGNORECASE)
+_DENOMINATOR_NOTE_RE = re.compile(
+    r"참고:\s*(?:strategy|ml)_\d+\s+기준\s+순위는\s+\d+(?:/\d+)?/\d+으로\s+표시될\s+수\s+있음",
+    re.IGNORECASE,
+)
 _FIVE_STEP_MARKERS = (
     "1. 미보유 데이터",
     "2. 현재 가능한 proxy",
@@ -177,11 +181,30 @@ def sanitize_internal_diagnostics(text: str) -> str:
         lines.append(raw_line)
         previous_generic = False
     sanitized = "\n".join(lines)
+    sanitized, denominator_notes = _protect_denominator_notes(sanitized)
     sanitized = re.sub(r"CausePayloadKey\([^)]*\)", _GENERIC_UNAVAILABLE, sanitized)
     sanitized = re.sub(r"\bmarket_id\s*=\s*['\"]?[\w.-]+['\"]?", "시장 식별자", sanitized)
     sanitized = _INTERNAL_ID_RE.sub("확정 시장", sanitized)
+    sanitized = _restore_denominator_notes(sanitized, denominator_notes)
     sanitized = sanitized.replace("cache_cause", "운영 데이터")
     return _cleanup(sanitized)
+
+
+def _protect_denominator_notes(text: str) -> tuple[str, tuple[str, ...]]:
+    notes: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        notes.append(match.group(0))
+        return f"__DENOMINATOR_NOTE_{len(notes) - 1}__"
+
+    return _DENOMINATOR_NOTE_RE.sub(replace, text), tuple(notes)
+
+
+def _restore_denominator_notes(text: str, notes: tuple[str, ...]) -> str:
+    restored = text
+    for index, note in enumerate(notes):
+        restored = restored.replace(f"__DENOMINATOR_NOTE_{index}__", note)
+    return restored
 
 
 def _fact_markdown(markdown_response: Mapping[str, object] | None) -> str:
