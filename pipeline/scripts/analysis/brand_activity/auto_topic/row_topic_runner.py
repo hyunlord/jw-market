@@ -59,6 +59,7 @@ class AssignmentChatClient:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._serving_id = serving_id
+        self._path_template = os.environ.get("GENOS_GATEWAY_CHAT_PATH_TEMPLATE", "/api/gateway/rep/serving/{serving_id}/chat/completions")
 
     def classify(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int], int]:
         """Return raw content, usage, and latency for one batch call."""
@@ -67,7 +68,8 @@ class AssignmentChatClient:
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
-        endpoint = f"{self._base_url}/api/gateway/rep/serving/{self._serving_id}/chat/completions"
+        path = self._path_template.format(serving_id=self._serving_id)
+        endpoint = f"{self._base_url}{path}"
         request = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=150) as response:
