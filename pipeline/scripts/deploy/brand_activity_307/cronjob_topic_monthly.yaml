@@ -93,7 +93,7 @@ data:
         json_url: str = DEFAULT_JSON_URL
         stage_schema: str = SCHEMA
         raw_schema: str = "jw_brand_activity_raw_stage"
-        max_real_calls: int = 250
+        max_real_calls: int = 350
         brands_per_market: int = 10000
         large_market_limit: int = 0
         request_timeout_seconds: int = 60
@@ -339,9 +339,9 @@ data:
 
     def _config_from_env() -> JobConfig:
         """Build config from CronJob env, preserving the hard call cap."""
-        max_real_calls = _int_env("TOPIC_MAX_REAL_CALLS", 250)
-        if max_real_calls > 250:
-            raise SchedulerError(f"TOPIC_MAX_REAL_CALLS may not exceed 250: {max_real_calls}")
+        max_real_calls = _int_env("TOPIC_MAX_REAL_CALLS", 350)
+        if max_real_calls > 350:
+            raise SchedulerError(f"TOPIC_MAX_REAL_CALLS may not exceed 350: {max_real_calls}")
         return JobConfig(
             json_url=os.environ.get("TOPIC_JSON_URL", DEFAULT_JSON_URL),
             stage_schema=os.environ.get("TOPIC_STAGE_SCHEMA", SCHEMA),
@@ -443,7 +443,7 @@ spec:
                 - name: TOPIC_RAW_SCHEMA
                   value: jw_brand_activity_raw_stage
                 - name: TOPIC_MAX_REAL_CALLS
-                  value: "250"
+                  value: "350"
                 - name: TOPIC_BRANDS_PER_MARKET
                   value: "10000"
                 - name: TOPIC_LARGE_MARKET_LIMIT
