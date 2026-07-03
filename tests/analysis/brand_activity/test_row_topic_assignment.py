@@ -75,6 +75,20 @@ def test_parse_assignment_response_rejects_missing_duplicate_and_unknown_topics(
         rta.parse_assignment_response('{"assignments":[{"row_id":1,"topics":["NOPE"]},{"row_id":2,"topics":[]}]}', batch, topics, "v1", "b1")
 
 
+def test_parse_assignment_response_treats_string_empty_list_as_none() -> None:
+    """Given a model emits the explicit none sentinel as a string, Then no topic is invented."""
+    parsed = rta.parse_assignment_response(
+        '{"assignments":[{"row_id":1,"topics":["[]"]},{"row_id":2,"topics":["T1"]}]}',
+        [_row(1), _row(2)],
+        {"T1"},
+        "v1",
+        "b1",
+    )
+
+    assert [item.row_id for item in parsed] == [2]
+    assert [item.topic_id for item in parsed] == ["T1"]
+
+
 def test_filter_distribution_reuses_assignments_without_llm_calls() -> None:
     """Given row assignments, When a specialty filter is applied, Then shares are recomputed locally."""
     rows = [_row(1, specialty="Urologists"), _row(2, specialty="GP"), _row(3, specialty="Urologists")]

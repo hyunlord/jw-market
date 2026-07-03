@@ -142,7 +142,8 @@ def parse_assignment_response(
         topics = value.get("topics")
         if not isinstance(topics, list):
             raise AssignmentParseError(f"topics must be a list for row_id: {row_id}")
-        unknown = sorted({topic for topic in topics if not isinstance(topic, str) or topic not in known_topic_ids})
+        normalized_topics = _normalize_topics(topics)
+        unknown = sorted({topic for topic in normalized_topics if topic not in known_topic_ids})
         if unknown:
             raise AssignmentParseError(f"unknown topic for row_id {row_id}: {unknown}")
         row = row_by_id[row_id]
@@ -156,7 +157,7 @@ def parse_assignment_response(
                 prompt_version=PROMPT_VERSION,
                 batch_id=batch_id,
             )
-            for topic in topics
+            for topic in normalized_topics
         )
     missing = sorted(expected_ids - seen_ids)
     if missing:
@@ -217,6 +218,19 @@ def _parse_row_id(value: object) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     raise AssignmentParseError(f"invalid row_id: {value}")
+
+
+def _normalize_topics(topics: list[object]) -> list[str]:
+    """Normalize explicit none sentinels without inventing topic assignments."""
+    normalized: list[str] = []
+    for topic in topics:
+        if topic == "[]":
+            continue
+        if isinstance(topic, str):
+            normalized.append(topic)
+            continue
+        normalized.append("")
+    return normalized
 
 
 def _matches(row: AssignmentInputRow, filters: AssignmentFilters) -> bool:
