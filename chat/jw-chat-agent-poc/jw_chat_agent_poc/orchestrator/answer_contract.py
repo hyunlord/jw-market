@@ -536,7 +536,7 @@ def _axis_trend_so_what(rows: tuple[dict[str, str], ...]) -> str:
         if not name or not delta:
             continue
         direction = "상승" if not delta.startswith("-") else "하락"
-        parts.append(f"{name}({axis})는 {delta}p {direction}으로 관찰됩니다")
+        parts.append(f"{name}({axis})는 {_pct_point_delta(delta)} {direction}으로 관찰됩니다")
     if not parts:
         return ""
     return " / ".join(parts) + ". 이 변화는 해당 축 proxy의 방향성만 의미하며, 미지원 축의 값을 대체하지 않습니다."
@@ -556,6 +556,19 @@ def _axis_trend_rows(fact_md: str) -> tuple[dict[str, str], ...]:
         if match:
             rows.append(match.groupdict())
     return tuple(rows)
+
+
+def _pct_point_delta(value: str) -> str:
+    stripped = str(value or "").strip()
+    if not stripped:
+        return ""
+    if stripped.endswith("%p"):
+        return stripped
+    if stripped.endswith("p"):
+        return f"{stripped.removesuffix('p')}%p"
+    if stripped.endswith("%"):
+        return f"{stripped}p"
+    return f"{stripped}%p"
 
 
 def _number_from_text(value: str) -> float:

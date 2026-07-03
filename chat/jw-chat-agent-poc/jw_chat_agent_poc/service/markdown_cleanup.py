@@ -33,6 +33,7 @@ def cleanup_markdown_answer(markdown: str) -> str:
     lines = _remove_orphaned_news_headings(lines)
     lines = _renumber_section_headings(lines)
     text = "\n".join(lines).strip()
+    text = _remove_adjacent_duplicate_sentences(text)
     return _remove_duplicate_top_brand_rank_prose(text)
 
 
@@ -161,6 +162,47 @@ def _is_heading_line(line: str) -> bool:
 def _is_non_content_boundary(line: str) -> bool:
     stripped = line.strip()
     return stripped.startswith("출처:") or stripped.startswith("## 처리 시간")
+
+
+def _remove_adjacent_duplicate_sentences(markdown: str) -> str:
+    paragraphs = re.split(r"(\n{2,})", markdown)
+    cleaned: list[str] = []
+    for paragraph in paragraphs:
+        if not paragraph.strip() or paragraph.startswith("\n"):
+            cleaned.append(paragraph)
+            continue
+        if _is_structured_markdown_block(paragraph):
+            cleaned.append(paragraph)
+            continue
+        cleaned.append(_remove_adjacent_duplicate_sentence_in_paragraph(paragraph))
+    text = "".join(cleaned).strip()
+    return _remove_adjacent_duplicate_sentence_across_paragraphs(text)
+
+
+def _is_structured_markdown_block(paragraph: str) -> bool:
+    return any(line.lstrip().startswith(("#", "|", "-", "*")) for line in paragraph.splitlines())
+
+
+def _remove_adjacent_duplicate_sentence_in_paragraph(paragraph: str) -> str:
+    sentence_pattern = re.compile(r"(?P<sentence>[^\n]+?(?:입니다|합니다|됩니다|있습니다|없습니다)\.)\s+(?P=sentence)(?=\s|$)")
+    previous = ""
+    cleaned = paragraph
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = sentence_pattern.sub(r"\g<sentence>", cleaned)
+    return cleaned
+
+
+def _remove_adjacent_duplicate_sentence_across_paragraphs(markdown: str) -> str:
+    sentence_pattern = re.compile(
+        r"(?P<sentence>[^\n#|*\-][^\n]*?(?:입니다|합니다|됩니다|있습니다|없습니다)\.)\n{2,}(?P=sentence)(?=\s)"
+    )
+    previous = ""
+    cleaned = markdown
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = sentence_pattern.sub(r"\g<sentence>", cleaned)
+    return cleaned
 
 
 def _remove_duplicate_top_brand_rank_prose(markdown: str) -> str:

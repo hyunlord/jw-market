@@ -151,6 +151,8 @@ def test_trend_support_contract_adds_axis_support_matrix() -> None:
     assert "| Dose | 미지원 |" in revised
     assert "### 지원 축 so-what" in revised
     assert "Statin/EZE(제형)" in revised
+    assert "+3.42%p 상승" in revised
+    assert "+3.42p 상승" not in revised
 
 
 def test_change_drivers_contract_adds_external_internal_table() -> None:

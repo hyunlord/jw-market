@@ -35,6 +35,14 @@ CONFIRMED_MARKET_VIEW_BY_ID: Final[dict[str, str]] = {
     **{f"ml_{idx:03d}": "market_landscape" for idx in range(1, 17)},
     **{f"cd_{idx:03d}": "competitive_dynamics" for idx in range(1, 20)},
 }
+CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_BY_ID: Final[dict[str, str]] = {
+    **{f"strategy_{idx:03d}": f"ml_{idx:03d}" for idx in range(1, 17)},
+    **{f"ml_{idx:03d}": f"strategy_{idx:03d}" for idx in range(1, 17)},
+}
+CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID: Final[dict[str, int]] = {
+    "strategy_006": 470,
+    "ml_006": 516,
+}
 VIEW_NAME_BY_INTERNAL_LABEL: Final[dict[str, str]] = {
     "market_landscape": "market_landscape",
     "strategic_ml": "market_landscape",
@@ -675,7 +683,7 @@ def _required_top_trend_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
         rank = rank_value(item.get("rank"), None)
         share_delta = _top_trend_share_delta(item)
         period = _top_trend_delta_period(share_delta) or _comparison_period(item) or str(data.get("period") or "")
-        sales = eok_value(item.get("value_recent_억원"), item.get("value_recent"))
+        sales = _top_trend_sales(item)
         sales_delta = eok_value(item.get("value_delta_억원"), item.get("value_delta_krw"))
         ms_path = _top_trend_ms_path(share_delta)
         delta_text = _top_trend_delta_text(share_delta, period)
@@ -1088,7 +1096,7 @@ def _top_brand_trends(data: dict[str, Any]) -> str:
                 _top_trend_ms_cell(share_delta.from_period, share_delta.from_ms_pct),
                 _top_trend_ms_cell(share_delta.to_period, share_delta.to_ms_pct),
                 _top_trend_delta_cell(share_delta, period),
-                eok_value(item.get("value_recent_억원"), item.get("value_recent")),
+                _top_trend_sales(item),
                 eok_value(item.get("value_delta_억원"), item.get("value_delta_krw")),
             )
         )
@@ -1114,10 +1122,28 @@ def _top_trend_ms_cell(period: str, ms_pct: Any) -> str:
 
 def _top_trend_delta_cell(delta: TopTrendShareDelta, period: str) -> str:
     if _top_trend_delta_is_surfaceable(delta, period):
-        return f"{pct_value(delta.delta_pctp)}p"
+        return _pct_point_delta(delta.delta_pctp)
     if delta.delta_pctp not in (None, "", "-"):
         return "표시 보류"
     return ""
+
+
+def _top_trend_sales(item: dict[str, Any]) -> str:
+    explicit = eok_value(item.get("value_recent_억원"), item.get("value_recent"))
+    if explicit:
+        return explicit
+    series = item.get("series")
+    if not isinstance(series, list):
+        return ""
+    dated_rows = [
+        row
+        for row in series
+        if isinstance(row, dict) and str(row.get("period") or "").strip()
+    ]
+    if not dated_rows:
+        return ""
+    latest = sorted(dated_rows, key=lambda row: _period_sort_key(str(row.get("period") or "")))[-1]
+    return eok_value(latest.get("value_억원"), latest.get("value_krw"))
 
 
 def _top_brand_monthly_trends(data: dict[str, Any]) -> str:
@@ -1661,6 +1687,13 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
     market_detail = _market_detail_text(market=market, market_name=market_name, view=view, denominator=denominator)
     if market_detail:
         extra_details.append(market_detail)
+    denominator_note = _market_landscape_denominator_note(
+        query_specs=query_specs,
+        primary_market=market,
+        primary_denominator=denominator,
+    )
+    if denominator_note:
+        extra_details.append(denominator_note)
     market_definition = _first_market_scope_value(calls, query_specs, "market_definition")
     if market_definition:
         extra_details.append(f"market_definition {market_definition}")
@@ -1690,6 +1723,34 @@ def _market_detail_text(*, market: str, market_name: str, view: str, denominator
     if qualifiers:
         return f"시장: {label} ({', '.join(qualifiers)})"
     return f"시장: {label}"
+
+
+def _market_landscape_denominator_note(
+    *,
+    query_specs: tuple[dict[str, Any], ...],
+    primary_market: str,
+    primary_denominator: Any,
+) -> str:
+    counterpart_market = CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_BY_ID.get(primary_market)
+    if not counterpart_market:
+        return ""
+    for spec in query_specs:
+        market = str(spec.get("market") or spec.get("market_id") or "")
+        if market != counterpart_market:
+            continue
+        denominator = spec.get("total_brands_in_market") or spec.get("denominator") or spec.get("rank_denominator")
+        rank = rank_value(spec.get("rank"), None)
+        if not rank or denominator in (None, "") or str(denominator) == str(primary_denominator):
+            continue
+        return f"참고: {market} 기준 순위는 {rank}/{denominator}으로 표시될 수 있음"
+    fallback_denominator = CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID.get(primary_market)
+    if fallback_denominator in (None, "") or str(fallback_denominator) == str(primary_denominator):
+        return ""
+    rank = next((rank_value(spec.get("rank"), None) for spec in query_specs if str(spec.get("market") or spec.get("market_id") or "") == primary_market and spec.get("rank")), "")
+    if not rank:
+        return ""
+    return f"참고: {counterpart_market} 기준 순위는 {rank}/{fallback_denominator}으로 표시될 수 있음"
+    return ""
 
 
 def _first_market_scope_value(calls: list[dict[str, Any]], specs: tuple[dict[str, Any], ...], key: str) -> Any:
@@ -1977,6 +2038,7 @@ def _query_specs(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "view": data.get("view") or data.get("view_type"),
                     "market": data.get("market") or data.get("market_id"),
                     "market_name": data.get("market_name"),
+                    "rank": data.get("rank"),
                     "total_brands_in_market": data.get("total_brands_in_market")
                     or data.get("denominator")
                     or data.get("rank_denominator")

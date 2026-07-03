@@ -957,6 +957,73 @@ def test_source_block_uses_confirmed_view_mapping_for_market_landscape_query_mar
     assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (market_landscape, 분모 470)" in block
 
 
+def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_difference() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_market_scope",
+                "source": "UBIST",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "period": "2026-04",
+                    "market_id": "strategy_006",
+                    "market_name": "리바로/리바로젯",
+                    "total_brands_in_market": 516,
+                },
+            },
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "period": "2026-04",
+                    "query_spec": {
+                        "market": "ml_006",
+                        "market_name": "리바로/리바로젯",
+                        "view": "market_landscape",
+                        "total_brands_in_market": 470,
+                        "rank": 6,
+                    },
+                },
+            },
+        ],
+        ["UBIST"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로/리바로젯 (market_landscape, 분모 516)" in block
+    assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
+
+
+def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_path() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "brand": "리바로",
+                    "metric": "sales",
+                    "period": "2026-04",
+                    "market_id": "strategy_006",
+                    "market_name": "리바로/리바로젯",
+                    "total_brands_in_market": 516,
+                    "rank": 6,
+                    "sales_억원": 84.93,
+                },
+            }
+        ],
+        ["cache"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로/리바로젯 (market_landscape, 분모 516)" in block
+    assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
+
+
 def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_market() -> None:
     fact_md = answer_fact_markdown(
         [
@@ -2394,6 +2461,42 @@ def test_top_trend_fact_uses_actual_axis_label_for_dosage_form() -> None:
     assert "| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |" in fact_md
 
 
+def test_top_trend_fact_uses_latest_series_sales_when_recent_sales_field_is_missing() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "리바로",
+                    "level": "dosage_form",
+                    "level_top5_trend_series": [
+                        {
+                            "rank": 1,
+                            "brand": "Statin/EZE",
+                            "name": "Statin/EZE",
+                            "from_period": "2025-05",
+                            "from_ms_pct": 55.63,
+                            "to_period": "2026-04",
+                            "to_ms_pct": 59.05,
+                            "share_delta_pctp": 3.42,
+                            "series": [
+                                {"period": "2025-05", "ms_pct": 55.63, "value_억원": 1_100.00, "rank": 1},
+                                {"period": "2026-04", "ms_pct": 59.05, "value_억원": 1_332.65, "rank": 1},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+        ["cache"],
+    )
+
+    assert "최신 매출 1,332.65억원" in fact_md
+    assert "| 1 | Statin/EZE | 2025-05 55.63% | 2026-04 59.05% | 3.42%p | 1,332.65억원 | - |" in fact_md
+    assert "3.42p" not in fact_md
+
+
 def test_top_brand_trend_fact_surfaces_reproducible_start_latest_and_delta() -> None:
     fact_md = answer_fact_markdown(
         [
@@ -2528,6 +2631,24 @@ def test_top_brand_trend_table_is_code_rendered_when_llm_omits_start_value() -> 
 
     assert "| 최신 순위 | 브랜드 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |" in revised
     assert "| 3 | 리바로젯 | 2025-07 4.79% | 2026-04 5.32% | 0.53%p | 120.09억원 | 16.46억원 |" in revised
+
+
+def test_top_brand_trend_table_replaces_llm_table_when_latest_sales_is_missing() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 내용 |
+| --- | --- |
+| 상위 제형 추이 | 1위 Statin/EZE 2025-05 MS 55.63% → 2026-04 MS 59.05% 2025-05→2026-04 점유율 변화 3.42%p 최신 매출 1,332.65억원 |
+"""
+    answer = """### 상위 제형 추이
+| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | Statin/EZE | 2025-05 55.63% | 2026-04 59.05% | 3.42%p | - | - |
+"""
+
+    revised = ensure_top_brand_trend_table(answer, fact_md)
+
+    assert "| 1 | Statin/EZE | 2025-05 55.63% | 2026-04 59.05% | 3.42%p | 1,332.65억원 | - |" in revised
+    assert "| 1 | Statin/EZE | 2025-05 55.63% | 2026-04 59.05% | 3.42%p | - | - |" not in revised
 
 
 def test_top_brand_trend_table_replaces_raw_mandatory_completion_line() -> None:
@@ -3725,6 +3846,24 @@ def test_cleanup_removes_duplicate_top_brand_share_prose_before_table() -> None:
 
     assert "로수젯이 9.17%" not in answer
     assert "| 1위 | 로수젯 | 9.17% |" in answer
+
+
+def test_cleanup_removes_adjacent_duplicate_metric_sentence_without_touching_numbers() -> None:
+    raw = (
+        "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/516입니다. "
+        "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/516입니다.\n\n"
+        "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/516입니다. "
+        "브랜드 매출·점유율·순위는 시장 내 침투 수준과 경쟁 방어 과제를 보여줍니다.\n\n"
+        "## 출처\n"
+        "- 데이터: UBIST"
+    )
+
+    answer = cleanup_markdown_answer(raw)
+
+    assert answer.count("리바로는 2026-04 기준 매출 84.93억원") == 1
+    assert "84.93억원" in answer
+    assert "6/516" in answer
+    assert "## 출처" in answer
 
 
 def test_source_facts_use_user_friendly_names() -> None:
