@@ -87,9 +87,12 @@ def pct_value(value: Any) -> str:
 def rank_value(rank: Any, total: Any) -> str:
     if rank is None:
         return ""
+    rank_text = str(rank)
+    if "/" in rank_text:
+        return rank_text
     if total is None:
-        return str(rank)
-    return f"{rank}/{total}"
+        return rank_text
+    return f"{rank_text}/{total}"
 
 
 def number_value(value: Any) -> str:

@@ -24,6 +24,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     append_deterministic_source_block,
     chunk_text,
     cleanup_markdown_answer,
+    dedupe_brand_metric_sentence,
     dedupe_repeated_hira_patient_counts,
     ensure_competitive_movement_analysis,
     ensure_causal_structure,
@@ -720,6 +721,7 @@ class GenosClient:
         answer = _ensure_code_rendered_trend_table(answer, fact_lookup_md, trend_fact_md)
         answer = ensure_top_brand_trend_table(answer, fact_md)
         answer = ensure_portfolio_decline_summary(answer, fact_md)
+        answer = dedupe_brand_metric_sentence(answer, fact_md)
         answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = append_deterministic_source_block(answer, fact_md)

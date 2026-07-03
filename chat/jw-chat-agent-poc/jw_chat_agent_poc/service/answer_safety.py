@@ -1099,26 +1099,38 @@ def ensure_hira_sales_link_analysis(question: str, answer: str, fact_md: str) ->
     return _drop_duplicate_brand_metric_sentence(linked, brand)
 
 
-def _drop_duplicate_brand_metric_sentence(answer: str, brand: dict[str, str]) -> str:
-    sentence = (
-        f"{brand['brand']}는 {brand['period']} 기준 매출 {brand['sales']}억원, "
-        f"시장점유율 {brand['share']}%, 순위 {brand['rank']}입니다."
-    )
-    lines = answer.splitlines()
-    sentence_occurrences = sum(1 for line in lines if line.strip() == sentence)
-    sentence_as_prefix = any(line.strip().startswith(f"{sentence} ") for line in lines)
-    if sentence_occurrences <= 1 and not sentence_as_prefix:
+def dedupe_brand_metric_sentence(answer: str, fact_md: str) -> str:
+    """Remove repeated user-facing brand metric sentences derived from verified facts."""
+
+    brand = _brand_metric_fact(fact_md)
+    if not brand:
         return answer
-    kept: list[str] = []
-    skipped = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == sentence and (sentence_as_prefix or sentence_occurrences > 1):
-            if not skipped:
-                skipped = True
-                continue
-        kept.append(line)
-    return cleanup_markdown_answer("\n".join(kept))
+    return _drop_duplicate_brand_metric_sentence(answer, brand)
+
+
+def _drop_duplicate_brand_metric_sentence(answer: str, brand: dict[str, str]) -> str:
+    pattern = _brand_metric_sentence_pattern(brand)
+    matches = list(pattern.finditer(answer))
+    if len(matches) <= 1:
+        return answer
+    kept_parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        kept_parts.append(answer[cursor : match.start()])
+        if index == 0:
+            kept_parts.append(match.group(0))
+        cursor = match.end()
+    kept_parts.append(answer[cursor:])
+    return cleanup_markdown_answer("".join(kept_parts))
+
+
+def _brand_metric_sentence_pattern(brand: dict[str, str]) -> re.Pattern[str]:
+    rank = re.escape(str(brand["rank"]).removesuffix("위"))
+    return re.compile(
+        rf"{re.escape(brand['brand'])}는\s+{re.escape(brand['period'])}\s+기준\s+매출\s+"
+        rf"{re.escape(brand['sales'])}억원,\s*시장점유율\s+{re.escape(brand['share'])}%,\s*"
+        rf"순위(?:는)?\s+{rank}(?:위)?입니다\.?"
+    )
 
 
 def _drop_hira_derivative_sentences(answer: str) -> str:

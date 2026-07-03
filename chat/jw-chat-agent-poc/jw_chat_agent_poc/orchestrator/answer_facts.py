@@ -1797,18 +1797,26 @@ def _market_landscape_denominator_note(
         if market != counterpart_market:
             continue
         denominator = spec.get("total_brands_in_market") or spec.get("denominator") or spec.get("rank_denominator")
-        rank = rank_value(spec.get("rank"), None)
+        rank = _rank_position(spec.get("rank"))
         if not rank or denominator in (None, "") or str(denominator) == str(primary_denominator):
             continue
         return f"참고: {market} 기준 순위는 {rank}/{denominator}으로 표시될 수 있음"
     fallback_denominator = CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID.get(primary_market)
     if fallback_denominator in (None, "") or str(fallback_denominator) == str(primary_denominator):
         return ""
-    rank = next((rank_value(spec.get("rank"), None) for spec in query_specs if str(spec.get("market") or spec.get("market_id") or "") == primary_market and spec.get("rank")), "")
+    rank = next((_rank_position(spec.get("rank")) for spec in query_specs if str(spec.get("market") or spec.get("market_id") or "") == primary_market and spec.get("rank")), "")
     if not rank:
         return ""
     return f"참고: {counterpart_market} 기준 순위는 {rank}/{fallback_denominator}으로 표시될 수 있음"
-    return ""
+
+
+def _rank_position(rank: Any) -> str:
+    """Return the ordinal rank without an attached denominator."""
+
+    value = rank_value(rank, None)
+    if not value:
+        return ""
+    return value.split("/", 1)[0].removesuffix("위")
 
 
 def _first_market_scope_value(calls: list[dict[str, Any]], specs: tuple[dict[str, Any], ...], key: str) -> Any:

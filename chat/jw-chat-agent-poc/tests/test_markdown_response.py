@@ -16,6 +16,7 @@ from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 from jw_chat_agent_poc.service.answer_safety import (
     GENERATION_ATTEMPTS,
     append_competitor_patent_coverage_block,
+    dedupe_brand_metric_sentence,
     deterministic_source_block,
     dedupe_repeated_hira_patient_counts,
     ensure_competitive_movement_analysis,
@@ -1092,6 +1093,37 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_
     assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
 
 
+def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_path() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "source_label": "UBIST",
+                    "brand": "리바로",
+                    "metric": "sales",
+                    "period": "2026-04",
+                    "market_id": "ml_006",
+                    "market_name": "리바로/리바로젯",
+                    "view": "market_landscape",
+                    "total_brands_in_market": 470,
+                    "rank": "6/470",
+                    "sales_억원": 84.93,
+                    "ms_recent_pct": 3.76,
+                },
+            }
+        ],
+        ["UBIST"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "순위 6/470/470" not in fact_md
+    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in block
+    assert "6/470/516" not in block
+
+
 def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_market() -> None:
     fact_md = answer_fact_markdown(
         [
@@ -1248,6 +1280,24 @@ def test_causal_structure_uses_single_brand_metric_facts() -> None:
     assert "리바로는 2026-04 기준 매출 84.93억원" in answer
     assert "시장 내 침투 수준" in answer
     assert "현재 위치를 기준선" not in answer
+
+
+def test_dedupe_brand_metric_sentence_handles_e2_duplicate_metric_surface() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | 리바로 2026-04 매출 84.93억원 시장점유율 3.76% 순위 6/470 |
+"""
+    duplicate = (
+        "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/470위입니다.\n\n"
+        "인과 해석상 시장 내 위치를 기준선으로 봅니다.\n\n"
+        "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/470위입니다."
+    )
+
+    answer = dedupe_brand_metric_sentence(duplicate, fact_md)
+
+    assert answer.count("리바로는 2026-04 기준 매출 84.93억원") == 1
+    assert "인과 해석상 시장 내 위치" in answer
 
 
 def test_causal_structure_uses_hira_patient_facts() -> None:
