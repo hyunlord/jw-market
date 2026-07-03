@@ -9,6 +9,7 @@ import pandas as pd
 from .brand_key_normalize import best_name
 from .general_config import UNIT_LABELS
 from .general_history import (
+    build_audit_code_matrix,
     build_channel_specialty_matrix,
     build_dimensional_history,
     build_products,
@@ -150,6 +151,7 @@ def build_brand_rows(source: str, measure: str, frame: pd.DataFrame, catalog_map
                 "channel_data": build_dimensional_history(group, "channel", periods),
                 "specialty_data": build_dimensional_history(group, "specialty", periods) if source == "ubist" else {},
                 "channel_specialty_matrix": build_channel_specialty_matrix(group, periods) if source == "ubist" else {},
+                "audit_code_matrix": build_audit_code_matrix(group, periods) if source == "iqvia_nsa" else {},
                 "dimension_data": build_sku_dimension_data(group, periods),
                 "dimension_channel_data": build_sku_dimension_channel_data(group, periods),
                 "by_dimension": by_dimension,
