@@ -11,6 +11,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import table
 
 TODAY: date = date(2026, 7, 3)
 STALE_DAYS = 365
+MAX_SNIPPET_CHARS = 220
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,8 +63,9 @@ def _dedupe_items(raw_items: Sequence[Mapping[str, object]]) -> tuple[WebSearchI
 def _parse_item(raw: Mapping[str, object]) -> WebSearchItem:
     title = _text(raw, "title")
     url = _normalized_url(_text(raw, "url"))
-    snippet = _text(raw, "snippet") or _text(raw, "content")
-    basis = f"{title} {snippet}"
+    raw_snippet = _text(raw, "snippet") or _text(raw, "content")
+    basis = f"{title} {raw_snippet}"
+    snippet = _compact_snippet(raw_snippet)
     return WebSearchItem(
         title=title or "-",
         url=url or "-",
@@ -92,6 +94,16 @@ def _merge_item(left: WebSearchItem, right: WebSearchItem) -> WebSearchItem:
 def _text(raw: Mapping[str, object], key: str) -> str:
     value = raw.get(key)
     return value.strip() if isinstance(value, str) else ""
+
+
+def _compact_snippet(snippet: str) -> str:
+    normalized = re.sub(r"\s+", " ", snippet.replace("|", " ")).strip()
+    if len(normalized) <= MAX_SNIPPET_CHARS:
+        return normalized
+    boundary = normalized.rfind(".", 0, MAX_SNIPPET_CHARS)
+    if boundary >= 80:
+        return normalized[: boundary + 1]
+    return f"{normalized[:MAX_SNIPPET_CHARS].rstrip()}..."
 
 
 def _normalized_url(url: str) -> str:

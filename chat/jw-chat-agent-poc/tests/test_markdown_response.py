@@ -450,6 +450,12 @@ def test_web_search_section_summarizes_dedupes_and_splits_old_results() -> None:
                             "published_date": "2026-05-30",
                         },
                         {
+                            "title": "리바로 시장 장문 보도자료",
+                            "url": "https://pharma.example.test/livalo-long",
+                            "snippet": "2026-06-18 리바로 시장 동향 요약. " + ("장문 원문 " * 60) + "원문덤프꼬리",
+                            "published_date": "2026-06-18",
+                        },
+                        {
                             "title": "FDA Approves Livalo",
                             "url": "https://www.fda.gov/drugs/livalo-2009",
                             "snippet": "최종편집 2026-06-27. 리바로, 고지혈증 치료제로 미 FDA 승인. 승인 2009.08.05.",
@@ -480,6 +486,7 @@ def test_web_search_section_summarizes_dedupes_and_splits_old_results() -> None:
     assert section.index("2026-06-17") < section.index("2009-08-05")
     assert "RAG 검색 시스템 구축 사례" not in section
     assert "FDA Approves Livalo" in section
+    assert "원문덤프꼬리" not in section
 
 
 def test_genos_default_base_url_coerces_existing_env_to_gemini_three_flash(monkeypatch) -> None:
