@@ -486,7 +486,7 @@ def test_general_resolver_expands_ubist_canonical_atc4_for_source_native_rows(mo
     assert [brand.atc4_code for brand in definition.brands] == ["C10C"]
 
 
-def test_general_resolver_keeps_inactive_channel_axis_echo_shape(monkeypatch) -> None:
+def test_general_resolver_omits_inactive_channel_axis_from_identity_echo(monkeypatch) -> None:
     def fake_fetch_all(sql, params):
         assert "channel_axis" not in str(sql).lower()
         assert params == ["ubist", "sales", "C10A1"]
@@ -502,7 +502,7 @@ def test_general_resolver_keeps_inactive_channel_axis_echo_shape(monkeypatch) ->
         channel_axis=None,
     )
 
-    assert definition.filter_echo["channel_axis"] == {}
+    assert "channel_axis" not in definition.filter_echo
 
 
 def test_empty_channel_axis_payloads_normalize_like_missing_filter() -> None:
