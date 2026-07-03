@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from jw_chat_agent_poc.agentic import FilterEntry, validate_metric_filters
 from jw_chat_agent_poc.tools.metrics.cache_cause_series import brand_series_10pt, market_size_series, top_brand_trend_series
 from jw_chat_agent_poc.tools.metrics.cache_live import CausePayloadKey
 from jw_chat_agent_poc.tools.metrics.sales_filtering import filtered_metric_result, unsupported_metric
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CauseMetricMixin:
@@ -26,10 +30,11 @@ class CauseMetricMixin:
         try:
             payload = self._cause_cache.payload(key).payload
         except (LookupError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning("cache_cause filtered metric lookup failed", exc_info=exc)
             return unsupported_metric(
                 brand,
                 metric,
-                f"{brand}의 필터 적용 지표는 cache_cause에서 확정 경로를 찾지 못했습니다: {exc}",
+                f"{brand}의 필터 적용 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다.",
                 plan,
             )
         return filtered_metric_result(brand, metric, key, payload, plan)
@@ -48,10 +53,11 @@ class CauseMetricMixin:
         try:
             payload = self._cause_cache.payload(key).payload
         except (LookupError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning("cache_cause metric lookup failed", exc_info=exc)
             return self._unsupported(
                 brand=brand,
                 metric=metric,
-                message=f"{brand}의 {metric} 지표는 cache_cause에서 확정 경로를 찾지 못했습니다: {exc}",
+                message=f"{brand}의 {metric} 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다.",
             )
 
         data = payload.get("data", {})

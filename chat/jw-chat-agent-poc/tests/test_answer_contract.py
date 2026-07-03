@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
 
 
 TREND_FACT_MD = """## 확정 fact set
@@ -238,3 +239,67 @@ def test_simple_lookup_contract_does_not_expand_answer() -> None:
     )
 
     assert revised == answer
+
+
+def test_common_unavailable_layer_sanitizes_internal_cache_diagnostics_and_adds_5step() -> None:
+    answer = (
+        "요청한 출처 교차 지표는 확인 불가합니다.\n\n"
+        "- cache_cause row is missing: CausePayloadKey(brand='리바로', view_type='market_landscape', "
+        "source='UBIST', measure='sales', market_id='strategy_006')\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
+
+    revised = apply_common_unavailable_response(
+        "[리바로] UBIST와 IQVIA 출처 교차로 시장 규모를 비교해줘",
+        answer,
+        {"fact_md": "### 필수 답변 fact\n| 구분 | 반드시 반영할 내용 |\n| --- | --- |\n| 출처교차 | 데이터 미보유 |"},
+    )
+
+    assert "cache_cause" not in revised
+    assert "CausePayloadKey" not in revised
+    assert "market_id" not in revised
+    assert "strategy_006" not in revised
+    assert "요청한 일부 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다." in revised
+    assert "### 미보유 데이터 처리" in revised
+    assert "1. 미보유 데이터" in revised
+    assert "2. 현재 가능한 proxy" in revised
+    assert "3. 해석 가능한 상한선" in revised
+    assert "4. 확인 필요 데이터" in revised
+    assert "5. 확보 시 수행할 분석" in revised
+    assert revised.index("### 미보유 데이터 처리") < revised.index("## 출처")
+
+
+def test_common_unavailable_layer_does_not_fire_for_owned_metric_answer() -> None:
+    answer = "리바로는 2026-04 기준 매출 84.93억원, 시장점유율 3.76%, 순위 6/470입니다."
+
+    revised = apply_common_unavailable_response("[리바로] 매출 알려줘", answer, {"fact_md": RANKING_FACT_MD})
+
+    assert revised == answer
+    assert "미보유 데이터 처리" not in revised
+
+
+def test_common_unavailable_layer_does_not_duplicate_existing_5step_block() -> None:
+    answer = """### 미보유 데이터 처리
+| 단계 | 내용 |
+| --- | --- |
+| 1. 미보유 데이터 | CSD 영업활동입니다. |
+| 2. 현재 가능한 proxy | UBIST 매출입니다. |
+| 3. 해석 가능한 상한선 | 인과를 증명하지 않습니다. |
+| 4. 확인 필요 데이터 | 콜 수입니다. |
+| 5. 확보 시 수행할 분석 | 전후 비교입니다. |
+"""
+
+    revised = apply_common_unavailable_response("[리바로] 영업활동 Impact를 봐줘", answer, {"fact_md": "데이터 미보유"})
+
+    assert revised.count("### 미보유 데이터 처리") == 1
+
+
+def test_sanitize_internal_diagnostics_keeps_public_source_context() -> None:
+    answer = "| 지표 | cache_cause response_json must be a JSON object |\n| 출처 | UBIST |"
+
+    revised = sanitize_internal_diagnostics(answer)
+
+    assert "response_json" not in revised
+    assert "cache_cause" not in revised
+    assert "UBIST" in revised
+    assert "현재 운영 데이터에서 확정 경로를 찾지 못했습니다" in revised

@@ -21,6 +21,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contra
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
+from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
     cleanup_markdown_answer,
@@ -526,6 +527,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = _append_file_context_source(safe_answer, file_context_fact)
+    safe_answer = apply_common_unavailable_response(question, safe_answer, markdown_response)
     trace = trace_envelope(
         question=question,
         result=result,
