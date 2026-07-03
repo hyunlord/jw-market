@@ -4,10 +4,9 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pipeline.scripts.analysis.brand_activity.llm_topic.genos_client import GenosServingClient
+import time
+import urllib.error
+import urllib.request
 
 from .row_topic_assignment import (
     AssignmentInputRow,
@@ -54,24 +53,30 @@ class RunnerConfig:
 
 
 class AssignmentChatClient:
-    """Tiny adapter around the existing GenOS serving client."""
+    """Small stdlib GenOS serving client for batch assignment calls."""
 
     def __init__(self, *, base_url: str, token: str, serving_id: str) -> None:
-        from pipeline.scripts.analysis.brand_activity.llm_topic.genos_client import GenosServingClient
-
-        self._client = GenosServingClient(base_url=base_url, token=token, serving_id=serving_id, timeout_s=120.0)
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._serving_id = serving_id
 
     def classify(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int], int]:
         """Return raw content, usage, and latency for one batch call."""
-        result = self._client.chat(messages)
-        if result["status"] != "ok":
-            raise AssignmentParseError(f"serving call failed: {result['error_type']} {result['error_message']}")
-        usage = {
-            "prompt_tokens": int(result.get("usage", {}).get("prompt_tokens", 0)),
-            "completion_tokens": int(result.get("usage", {}).get("completion_tokens", 0)),
-            "total_tokens": int(result.get("usage", {}).get("total_tokens", 0)),
-        }
-        return result["content"], usage, int(result["latency_ms"])
+        start = time.perf_counter()
+        payload = json.dumps({"messages": messages, "stream": False, "temperature": 0.0}, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        endpoint = f"{self._base_url}/api/gateway/rep/serving/{self._serving_id}/chat/completions"
+        request = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=150) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise AssignmentParseError(f"serving call failed: {type(exc).__name__} {str(exc)[:300]}") from exc
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        usage = _extract_usage(body)
+        return _extract_content(body), usage, latency_ms
 
 
 def plan_batches(
@@ -183,3 +188,39 @@ def _append_checkpoint(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _extract_content(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                return message["content"]
+            text = first.get("text")
+            if isinstance(text, str):
+                return text
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("content"), str):
+        return data["content"]
+    return ""
+
+
+def _extract_usage(payload: object) -> dict[str, int]:
+    if not isinstance(payload, dict):
+        return {}
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            result[key] = value
+    return result
