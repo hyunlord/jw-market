@@ -19,6 +19,8 @@ from pipeline.scripts.etl.brand_activity.csd_core import (
 )
 from pipeline.scripts.etl.brand_activity.km_core import JsonValue, source_period_from_name
 
+KEYWORD_WORKBOOK_PATTERN = "*Keywords for JW*.xlsx"
+
 
 @dataclass(frozen=True, slots=True)
 class SourceRoots:
@@ -78,7 +80,7 @@ def discover_source_files(roots: SourceRoots) -> dict[str, list[Path]]:
     """Return sorted source workbooks, excluding Excel lock files."""
     return {
         "csd": _sorted_workbooks(roots.csd, "ChannelDynamics*.xlsx"),
-        "keyword": _sorted_workbooks(roots.keyword, "Keywords for JW*.xlsx"),
+        "keyword": _sorted_workbooks(roots.keyword, KEYWORD_WORKBOOK_PATTERN),
     }
 
 

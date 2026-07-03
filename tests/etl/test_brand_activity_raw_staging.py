@@ -90,6 +90,7 @@ def test_combined_discovery_keeps_csd_new_only_while_adding_legacy_keyword(tmp_p
     legacy_root = tmp_path / "CSD2"
     _touch_source(new_root / "ChannelDynamics (콜 수=영업 횟수)" / "ChannelDynamics_JW Pharma Regional Report_Dec.25.xlsx")
     _touch_source(new_root / "Keyword (고객=의사에게 전달한 메시지)" / "Keywords for JW Dec. 25.xlsx")
+    _touch_source(new_root / "Keyword (고객=의사에게 전달한 메시지)" / "202605_Keywords for JW May. 26.xlsx")
     _touch_source(legacy_root / "Keyword (고객=의사에게 전달한 메시지)" / "Keywords for JW Jan. 25.xlsx")
 
     # When: the combined P-0 file set is discovered.
@@ -99,10 +100,15 @@ def test_combined_discovery_keeps_csd_new_only_while_adding_legacy_keyword(tmp_p
 
     # Then: CSD stays on the new source root, while Keyword includes old+new.
     assert [path.name for path in files["csd"]] == ["ChannelDynamics_JW Pharma Regional Report_Dec.25.xlsx"]
-    assert [path.name for path in files["keyword"]] == ["Keywords for JW Jan. 25.xlsx", "Keywords for JW Dec. 25.xlsx"]
+    assert [path.name for path in files["keyword"]] == [
+        "Keywords for JW Jan. 25.xlsx",
+        "Keywords for JW Dec. 25.xlsx",
+        "202605_Keywords for JW May. 26.xlsx",
+    ]
     assert "meeting" not in files
     assert collection_map["Keywords for JW Jan. 25.xlsx"] == "old"
     assert collection_map["Keywords for JW Dec. 25.xlsx"] == "new"
+    assert collection_map["202605_Keywords for JW May. 26.xlsx"] == "new"
 
 
 def test_target_market_coverage_splits_old_and_new_keyword_contributions() -> None:
