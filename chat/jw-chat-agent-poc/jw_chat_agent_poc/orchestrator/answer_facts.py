@@ -1398,14 +1398,31 @@ def _external_fact_rows(data: dict[str, Any], keys: tuple[str, ...]) -> list[tup
 
 
 def _patent_facts(data: dict[str, Any]) -> str:
+    blocks: list[str] = []
+    candidate_rows = _competitor_ingredient_candidate_rows(data)
+    if candidate_rows:
+        blocks.append(
+            table(
+                "### 경쟁 성분 후보군 fact",
+                ("순위", "성분", "대표 브랜드", "출처", "시장", "기간", "매출", "MS"),
+                tuple(candidate_rows[:TABLE_LIMIT]),
+            )
+        )
+    coverage_rows = _competitor_patent_coverage_rows(data)
+    if coverage_rows:
+        blocks.append(table("### 경쟁 성분 특허 조회 커버리지 fact", ("항목", "내용"), tuple(coverage_rows)))
     rows = _patent_rows(data)
     if not rows:
-        return table("### 특허 fact", ("내용",), ((data.get("message") or data.get("summary_text") or "조회 결과 없음",),))
-    return table(
-        "### 특허 fact",
-        ("출처", "제품/성분", "특허번호", "상태", "만료일", "권리자/출원인"),
-        tuple(rows[:TABLE_LIMIT]),
+        blocks.append(table("### 특허 fact", ("내용",), ((data.get("message") or data.get("summary_text") or "조회 결과 없음",),)))
+        return "\n\n".join(blocks)
+    blocks.append(
+        table(
+            "### 특허 fact",
+            ("출처", "제품/성분", "특허번호", "상태", "만료일", "권리자/출원인"),
+            tuple(rows[:TABLE_LIMIT]),
+        )
     )
+    return "\n\n".join(blocks)
 
 
 def _clinical_trial_facts(data: dict[str, Any]) -> str:
@@ -1485,6 +1502,41 @@ def _patent_rows(data: dict[str, Any]) -> list[tuple[str, str, str, str, str, st
         owner = str(item.get("PATENTEE") or item.get("KOR_APPLICANT") or "-")
         rows.append((source, product or "-", str(patent_no), status, end_date, owner))
     return _dedupe_external_rows(rows)
+
+
+def _competitor_ingredient_candidate_rows(data: dict[str, Any]) -> list[tuple[str, str, str, str, str, str, str, str]]:
+    raw = data.get("competitor_ingredient_candidates")
+    if not isinstance(raw, list):
+        return []
+    rows: list[tuple[str, str, str, str, str, str, str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            (
+                str(item.get("rank") or "-"),
+                str(item.get("molecule") or "-"),
+                str(item.get("brand") or "-"),
+                str(item.get("source") or "-"),
+                str(item.get("market") or "-"),
+                str(item.get("period") or "-"),
+                str(item.get("sales") or "-"),
+                str(item.get("market_share") or "-"),
+            )
+        )
+    return rows
+
+
+def _competitor_patent_coverage_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    raw = data.get("competitor_patent_coverage")
+    if not isinstance(raw, dict):
+        return []
+    rows = [
+        ("출처", str(raw.get("sources") or "MFDS 의약품특허목록, FDA OrangeBook")),
+        ("상태", str(raw.get("message") or "경쟁 성분 후보별 특허 조회 상태 미보유")),
+        ("범위", str(raw.get("scope") or "현재 특허 DB에서 확인되는 항목만 표시하며, 전체 독점권을 단정하지 않습니다.")),
+    ]
+    return rows
 
 
 def _clinical_trial_rows(data: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:

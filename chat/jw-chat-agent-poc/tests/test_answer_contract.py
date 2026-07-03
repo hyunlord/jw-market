@@ -76,6 +76,16 @@ AXIS_FACT_MD = """## 확정 fact set
 """
 
 
+NEWS_FACT_MD = TREND_FACT_MD + """
+
+### 인사이트 근거 fact - 뉴스/이슈
+| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-06-20 | 이상지질혈증 복합제 경쟁 심화 | 데일리팜 | https://example.test/news/1 | 로수바스타틴 복합제가 시장 경쟁을 키웠다는 내용 | 경쟁 심화 |
+| 2026-06-25 | JW중외제약 리바로 영업 채널 확대 | 메디칼타임즈 | https://example.test/news/2 | 의원 채널 활동을 확대한다는 내용 | 영업 채널 확대 |
+"""
+
+
 def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell() -> None:
     # Given: verified trend facts exist, but final 514 returned a source-only shell.
     empty_shell = "확정 데이터 기준으로 정리하면 다음과 같습니다.\n\n## 출처\n- 데이터: UBIST / IQVIA NSA"
@@ -164,12 +174,32 @@ def test_change_drivers_contract_adds_external_internal_table() -> None:
         {"fact_md": TREND_FACT_MD},
     )
 
-    assert "## 변화요인 분석 설계" in revised
+    assert "## 변화 요인 결론" in revised
     assert "| External |" in revised
     assert "| Internal |" in revised
-    assert "### 미보유 데이터 처리" in revised
+    assert "### 미보유·확인필요" in revised
     assert "해석 가능한 상한선" in revised
     assert "이벤트 전후 1~3개월" in revised
+
+
+def test_change_drivers_contract_classifies_news_into_grounded_rows() -> None:
+    answer = "채널 현황입니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "[리바로] 목표 시장에서의 향후 예상되는 시장 변화 요인이 있는가? External/Internal로 정리",
+        answer,
+        {"fact_md": NEWS_FACT_MD},
+    )
+
+    assert "## 변화 요인 결론" in revised
+    assert "뉴스 fact를 정성 근거로 분류해 연결합니다" not in revised
+    assert "이상지질혈증 복합제 경쟁 심화" in revised
+    assert "https://example.test/news/1" in revised
+    assert "| External | 경쟁/시장 뉴스 |" in revised
+    assert "JW중외제약 리바로 영업 채널 확대" in revised
+    assert "https://example.test/news/2" in revised
+    assert "| Internal | 자사 영업/채널 뉴스 |" in revised
+    assert "| External | 정책/약가 변화 | 미보유 | 불확실 |" in revised
 
 
 def test_change_drivers_contract_can_be_reapplied_after_channel_claim_policy() -> None:
@@ -192,7 +222,7 @@ def test_change_drivers_contract_can_be_reapplied_after_channel_claim_policy() -
     policy_rewritten = apply_claim_policy(question, with_contract, channel_fact_md)
     revised = enforce_answer_contract(question, policy_rewritten, {"fact_md": channel_fact_md})
 
-    assert "## 변화요인 분석 설계" in revised
+    assert "## 변화 요인 결론" in revised
     assert "| External |" in revised
     assert "| Internal |" in revised
     assert "## 출처" in revised

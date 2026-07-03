@@ -301,7 +301,8 @@ def _background_context_calls(
     if any(call.get("tool") == "deep_analysis_related_news" for call in calls):
         return []
     try:
-        return [background_news_context_call(news, anchor_brand, _background_news_relevance_brands(calls, anchor_brand))]
+        relevance_brands = () if _asks_change_driver_context(question) else _background_news_relevance_brands(calls, anchor_brand)
+        return [background_news_context_call(news, anchor_brand, relevance_brands)]
     except Exception:
         return []
 
@@ -332,7 +333,13 @@ def _needs_background_news_context(question: str, calls: list[dict[str, Any]]) -
         return False
     if not allows_background_news_context(question):
         return False
+    if _asks_change_driver_context(question):
+        return True
     return any(_is_material_metric_call(call) for call in calls)
+
+
+def _asks_change_driver_context(question: str) -> bool:
+    return any(token in question for token in ("변화 요인", "변화요인", "Market expansion", "External", "Internal", "보건 정책", "Line extension"))
 
 
 def _is_material_metric_call(call: dict[str, Any]) -> bool:

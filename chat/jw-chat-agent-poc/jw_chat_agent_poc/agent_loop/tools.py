@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import logging
 from typing import Any, Mapping
 
@@ -223,6 +223,9 @@ class AgentToolFacade:
         resolution = self._resolver.resolve(brand, allow_default=False)
         call = patent_call(resolution, self._external)
         call["render_data"]["brand"] = brand
+        query = arguments.get("query", "")
+        if self._query_layer is not None and _asks_competitor_ingredients(query):
+            _attach_competitor_patent_context(call, brand, resolution.molecule_en, self._query_layer, self._external)
         return ToolExecution("ok", f"{brand} patent", call, arguments)
 
     def _drug_info(self, arguments: Mapping[str, str]) -> ToolExecution:
@@ -335,3 +338,38 @@ def _safe_arguments(arguments: Mapping[str, str]) -> dict[str, str]:
         value_text = str(value)
         safe[key_text] = value_text if len(value_text) <= 500 else f"{value_text[:500]}..."
     return safe
+
+
+def _asks_competitor_ingredients(query: str) -> bool:
+    return any(token in query for token in ("경쟁 성분", "경쟁성분", "경쟁 molecule", "경쟁 Molecule", "경쟁 성분의"))
+
+
+def _attach_competitor_patent_context(
+    call: dict[str, Any],
+    brand: str,
+    anchor_molecules: tuple[str, ...],
+    query_layer: StrategicQueryLayer,
+    external: ExternalApiClient,
+) -> None:
+    data = call.setdefault("render_data", {})
+    try:
+        candidates = query_layer.competitor_molecule_candidates(brand, limit=5)
+    except (LookupError, TypeError, ValueError):
+        candidates = []
+    data["competitor_ingredient_candidates"] = candidates
+    data["competitor_patent_coverage"] = {
+        "status": "attempted" if candidates else "no_candidate",
+        "message": "경쟁 성분 후보별 MFDS/OrangeBook 조회를 시도했습니다." if candidates else "같은 시장 경쟁 성분 후보를 mart에서 확인하지 못했습니다.",
+        "sources": "MFDS 의약품특허목록, FDA OrangeBook",
+        "scope": "현재 특허 DB에서 확인되는 항목만 표시하며, 전체 독점권을 단정하지 않습니다.",
+    }
+    calls = data.setdefault("calls", [])
+    if not isinstance(calls, list):
+        return
+    anchor_set = {molecule.casefold() for molecule in anchor_molecules if molecule}
+    for candidate in candidates:
+        molecule = str(candidate.get("molecule") or "").strip()
+        if not molecule or molecule.casefold() in anchor_set:
+            continue
+        calls.append(asdict(external.mfds_patent(molecule)))
+        calls.append(asdict(external.mfds_fda_orangebook(molecule)))

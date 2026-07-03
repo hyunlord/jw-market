@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -264,9 +265,47 @@ class ChatAgent:
                 calls.append(self.external.mfds_patent(molecule))
                 calls.append(self.external.mfds_fda_orangebook(molecule))
             calls.append(label_patent_scope_notice(resolution.canonical_brand, resolution.molecule_en).to_call())
+            competitor_context = self._competitor_patent_context_call(question, resolution)
+            if competitor_context is not None:
+                calls.append(competitor_context)
         if not calls:
             calls.append(self.external.mfds_permission_search(resolution.canonical_brand))
         return calls
+
+    def _competitor_patent_context_call(self, question: str, resolution) -> ExternalCall | None:
+        if self.query_layer is None or not _asks_competitor_ingredients(question):
+            return None
+        try:
+            candidates = self.query_layer.competitor_molecule_candidates(resolution.canonical_brand, limit=5)
+        except (LookupError, TypeError, ValueError):
+            candidates = []
+        nested: list[dict[str, Any]] = []
+        anchor_set = {molecule.casefold() for molecule in resolution.molecule_en if molecule}
+        for candidate in candidates:
+            molecule = str(candidate.get("molecule") or "").strip()
+            if not molecule or molecule.casefold() in anchor_set:
+                continue
+            nested.append(asdict(self.external.mfds_patent(molecule)))
+            nested.append(asdict(self.external.mfds_fda_orangebook(molecule)))
+        status = "ok" if candidates else "no_data"
+        return ExternalCall(
+            tool="search_patent",
+            source="external_api",
+            status=status,
+            summary_text=f"{resolution.canonical_brand} 경쟁 성분 후보 {len(candidates)}건의 특허 조회 범위를 표시합니다.",
+            render_data={
+                "status": status,
+                "brand": resolution.canonical_brand,
+                "competitor_ingredient_candidates": candidates,
+                "competitor_patent_coverage": {
+                    "status": "attempted" if candidates else "no_candidate",
+                    "message": "경쟁 성분 후보별 MFDS/OrangeBook 조회를 시도했습니다." if candidates else "같은 시장 경쟁 성분 후보를 mart에서 확인하지 못했습니다.",
+                    "sources": "MFDS 의약품특허목록, FDA OrangeBook",
+                    "scope": "현재 특허 DB에서 확인되는 항목만 표시하며, 전체 독점권을 단정하지 않습니다.",
+                },
+                "calls": nested,
+            },
+        )
 
     def _unsupported_brand(self, question: str, routes) -> dict[str, Any]:
         return unsupported_brand_result(question, routes, router_diagnostics(self.router))
@@ -329,3 +368,7 @@ def _answer_scope(question: str) -> str | None:
     if _single_brand_focus_question(question):
         return "single_brand_focus"
     return None
+
+
+def _asks_competitor_ingredients(question: str) -> bool:
+    return any(token in question for token in ("경쟁 성분", "경쟁성분", "경쟁 molecule", "경쟁 Molecule", "경쟁 성분의"))

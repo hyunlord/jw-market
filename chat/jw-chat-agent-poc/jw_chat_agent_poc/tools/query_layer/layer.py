@@ -162,6 +162,38 @@ class StrategicQueryLayer:
         data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
+    def competitor_molecule_candidates(self, brand: str, limit: int = 5) -> list[dict[str, Any]]:
+        snapshot = self._snapshot()
+        market = _required_market(snapshot, brand)
+        source = snapshot.source_for_market(market)
+        latest = snapshot.latest_period(market, source)
+        anchor_record = snapshot.record(market, brand, source)
+        anchor_molecule = anchor_record.molecule()
+        rows: list[dict[str, Any]] = []
+        for row in snapshot.ranked_brands(market, latest, source):
+            candidate_brand = str(row.get("brand") or "")
+            if not candidate_brand or candidate_brand == brand:
+                continue
+            record = snapshot.record(market, candidate_brand, source)
+            molecule = record.molecule()
+            if not molecule or molecule == anchor_molecule:
+                continue
+            rows.append(
+                {
+                    "rank": len(rows) + 1,
+                    "molecule": molecule,
+                    "brand": candidate_brand,
+                    "source": source_label(source),
+                    "market": market,
+                    "period": latest,
+                    "sales": f"{float(row.get('value') or 0.0) / 100_000_000:,.2f}억원",
+                    "market_share": f"{float(row.get('ms_recent_pct') or 0.0):.2f}%",
+                }
+            )
+            if len(rows) >= max(1, min(limit, 10)):
+                break
+        return rows
+
     def portfolio_decline_analysis(self, brands: tuple[Mapping[str, Any], ...], *, lookback_points: int = 5) -> dict[str, Any]:
         """Return strategic-brand market-share decliners with same-market gain candidates."""
 

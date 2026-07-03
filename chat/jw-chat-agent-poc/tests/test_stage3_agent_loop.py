@@ -12,6 +12,7 @@ from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
+from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.router import BQRouter
 from jw_chat_agent_poc.tools.deep_analysis.news import DeepAnalysisNewsTool, StaticDeepAnalysisNewsReader
@@ -20,6 +21,7 @@ from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD, cause_payload_with_top_brand_trends
+from test_query_layer_integration import _query_layer
 
 
 @dataclass(slots=True)
@@ -696,6 +698,47 @@ def test_heuristic_patient_sales_question_requests_series_metric() -> None:
 
     assert metric_calls
     assert metric_calls[0].arguments["measure"] == "series"
+
+
+def test_heuristic_competitor_patent_preserves_question_for_competitor_scope() -> None:
+    question = "[리바로] 경쟁 성분의 특허, 독점권은 어떠한가?"
+
+    decision = HeuristicToolPlanner().decide(
+        question,
+        (),
+        (
+            {"function": {"name": "search_patent"}},
+            {"function": {"name": "get_metric"}},
+        ),
+        allowed_brands=("리바로",),
+        allowed_periods=("2026-04",),
+    )
+
+    patent_calls = [call for call in decision.tool_calls if call.name == "search_patent"]
+    assert patent_calls
+    assert patent_calls[0].arguments["query"] == question
+
+
+def test_change_driver_question_gets_background_news_without_news_cue() -> None:
+    question = "[리바로] 목표 시장에서의 향후 예상되는 시장 변화 요인이 있는가? - External: 타사 경쟁품 출시,  Market expansion, 보건 정책 변화(약가인하 등) - Internal: 자사 Line extension, 영업/채널 (타겟 Segment)"
+    result = ChatAgent(external_mode="fixture").answer(question)
+    revised = enforce_answer_contract(question, result["answer"], result.get("markdown_response"))
+
+    assert "deep_analysis_related_news" in _tool_names(result)
+    assert "## 변화 요인 결론" in revised
+    assert "### External/Internal 결과표" in revised
+    assert "뉴스 fact를 정성 근거로 분류해 연결합니다" not in revised
+    assert "조건에 맞는 관련 뉴스 없음" not in result["markdown_response"]["fact_md"]
+
+
+def test_direct_patent_question_surfaces_competitor_ingredient_context() -> None:
+    result = ChatAgent(external_mode="fixture", query_layer=_query_layer()).answer("[리바로] 경쟁 성분의 특허, 독점권은 어떠한가?")
+
+    fact_md = result["markdown_response"]["fact_md"]
+    assert "search_patent" in _tool_names(result)
+    assert "### 경쟁 성분 후보군 fact" in fact_md
+    assert "### 경쟁 성분 특허 조회 커버리지 fact" in fact_md
+    assert "현재 특허 DB에서 확인되는 항목만 표시" in fact_md
 
 
 def test_patient_sales_question_backfills_series_when_planner_selected_latest_sales() -> None:

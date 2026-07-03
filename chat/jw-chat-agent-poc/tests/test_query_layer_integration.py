@@ -12,6 +12,7 @@ from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.tools.external.client import ExternalCall
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
@@ -39,6 +40,26 @@ class ScriptedPlanner:
         decision = self.decisions[min(self.index, len(self.decisions) - 1)]
         self.index += 1
         return decision
+
+
+class PatentEchoExternal:
+    def mfds_patent(self, ingredient_en: str) -> ExternalCall:
+        return ExternalCall(
+            tool="mfds_patent",
+            source="external_api",
+            status="ok",
+            summary_text=f"{ingredient_en} MFDS patent echo",
+            render_data={"query": ingredient_en, "items": []},
+        )
+
+    def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
+        return ExternalCall(
+            tool="mfds_fda_orangebook",
+            source="external_api",
+            status="ok",
+            summary_text=f"{ingredient_en} OrangeBook echo",
+            render_data={"query": ingredient_en, "items": []},
+        )
 
 
 def test_query_schema_injects_market_catalog_enums() -> None:
@@ -80,6 +101,28 @@ def test_facade_prefers_query_layer_for_strategic_metric() -> None:
     assert livaro["from_ms_pct"] == livaro["series"][0]["ms_pct"]
     assert livaro["to_period"] == livaro["series"][-1]["period"]
     assert livaro["to_ms_pct"] == livaro["series"][-1]["ms_pct"]
+
+
+def test_patent_facade_adds_market_based_competitor_ingredient_candidates() -> None:
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=_query_layer(),
+        external=PatentEchoExternal(),
+    )
+
+    execution = facade.execute("search_patent", {"brand": "리바로", "query": "경쟁 성분의 특허/독점권"})
+
+    data = execution.call["render_data"]
+    candidates = data["competitor_ingredient_candidates"]
+    assert execution.status == "ok"
+    assert [candidate["molecule"] for candidate in candidates[:3]] == ["로수젯성분", "리피토성분", "아토젯성분"]
+    assert all(candidate["source"] == "UBIST" for candidate in candidates)
+    assert all(candidate["market"] == "ml_006" for candidate in candidates)
+    assert data["competitor_patent_coverage"]["status"] == "attempted"
+    queried = [call["render_data"]["query"] for call in data["calls"] if call["tool"] == "mfds_patent"]
+    assert {"pitavastatin", "로수젯성분", "리피토성분", "아토젯성분"}.issubset(set(queried))
 
 
 def test_market_member_metric_reads_comparison_brand_series() -> None:

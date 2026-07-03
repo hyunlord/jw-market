@@ -133,6 +133,18 @@ class TrendFact:
     rows: tuple[TrendRow, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class NewsFactor:
+    category: str
+    factor: str
+    title: str
+    source: str
+    url: str
+    date: str
+    summary: str
+    direction: str
+
+
 def _intent(question: str) -> str | None:
     if _ranking_question(question):
         return "ranking"
@@ -379,7 +391,7 @@ def _structural_contract_present(answer: str, contract_type: str) -> bool:
     markers = {
         "sales_activity_link": "## 영업-매출 연계 분석 설계",
         "trend_support_matrix": "## 추이 지원 범위",
-        "change_drivers": "## 변화요인 분석 설계",
+        "change_drivers": "## 변화 요인 결론",
     }
     return markers.get(contract_type, "\0") in answer
 
@@ -503,26 +515,119 @@ def _trend_support_matrix_block(fact_md: str) -> str:
 def _change_drivers_contract_block(fact_md: str) -> str:
     trend = _trend_fact(fact_md)
     proxy = _sales_activity_proxy_text(trend) if trend is not None else "보유 정량 fact 범위에서 매출·MS·채널 proxy만 확인 가능합니다."
-    has_news = "뉴스/이슈" in fact_md or "뉴스 검색" in fact_md
-    external_basis = "뉴스 fact를 정성 근거로 분류해 연결합니다." if has_news else "타사 출시, 시장확대, 보건정책 fact는 현재 미보유입니다."
+    news_rows = _news_factor_rows(fact_md)
+    conclusion = (
+        f"반환된 뉴스 {len(news_rows)}건과 보유 UBIST/IQVIA proxy만으로 변화 요인을 분류했습니다."
+        if news_rows
+        else "반환된 뉴스 fact가 없어 보유 UBIST/IQVIA proxy와 미보유 항목을 분리해 표시합니다."
+    )
+    table_rows = [
+        "| 구분(E/I) | 요인 | 근거(뉴스명·인용 or UBIST or 미보유) | 영향방향 | 확인 필요 데이터 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in news_rows:
+        table_rows.append(
+            f"| {_contract_cell(row.category)} | {_contract_cell(row.factor)} | {_contract_cell(_news_factor_basis(row))} | {_contract_cell(row.direction)} | 기사 원문, 동일 기간 처방·매출 변동 |"
+        )
+    table_rows.extend(
+        (
+            "| External | 정책/약가 변화 | 미보유 | 불확실 | 정책 변경일, 약가/급여 변화, 경쟁품 처방 변화 |",
+            f"| Internal | 자사 영업/채널 활동 | UBIST proxy: {proxy} | 불확실 | 채널별 활동량, 세그먼트별 처방량 |",
+        )
+    )
     return "\n".join(
         (
-            "## 변화요인 분석 설계",
-            "| 구분 | 요인 | 현재근거 | 리바로 영향 방향 | 확인 필요 데이터 |",
-            "| --- | --- | --- | --- | --- |",
-            f"| External | 타사 경쟁품 출시, market expansion, 보건 정책 변화 | {external_basis} | 직접 영향은 단정하지 않고 후보 요인으로만 둡니다. | 출시 일정, 정책 변경일, 약가/급여 변화, 경쟁품 처방 변화 |",
-            f"| Internal | 자사 line extension, 영업/채널, 타겟 segment | {proxy} | 보유 proxy로 관찰 가능한 방향성까지만 설명합니다. | 제품별 라인 확장 일정, 채널별 활동량, 세그먼트별 처방량 |",
+            "## 변화 요인 결론",
+            conclusion,
             "",
-            "### 미보유 데이터 처리",
+            "### External/Internal 결과표",
+            *table_rows,
+            "",
+            "### 채널 현황(보조)",
+            "보유 fact의 채널·매출·MS proxy는 변화 후보를 관찰하는 보조 근거이며, 원인·잠식·전환을 직접 증명하지 않습니다.",
+            "",
+            "### 미보유·확인필요",
             "| 단계 | 내용 |",
             "| --- | --- |",
-            "| 1. 미보유 데이터 | 외부 출시·정책·market expansion 및 내부 영업/채널 활동 원천 데이터는 fact set에 없으면 확정하지 않습니다. |",
-            "| 2. 현재 가능한 proxy | UBIST/IQVIA 매출·MS·순위, 반환된 채널/축별 fact, 뉴스 fact가 있을 때의 정성 이슈입니다. |",
+            "| 1. 미보유 데이터 | 뉴스에 없는 외부 출시·정책·market expansion 및 내부 영업/채널 활동 원천 데이터는 확정하지 않습니다. |",
+            "| 2. 현재 가능한 proxy | UBIST/IQVIA 매출·MS·순위, 반환된 채널/축별 fact, 실제 뉴스 fact의 정성 이슈입니다. |",
             "| 3. 해석 가능한 상한선 | proxy는 동기간 변화 후보를 보여줄 뿐 원인, 잠식, 직접 전환을 증명하지 않습니다. |",
             "| 4. 확인 필요 데이터 | 경쟁품 출시일, 정책/약가 이벤트, 채널별 콜·처방, 세그먼트별 처방량이 필요합니다. |",
             "| 5. 확보 시 수행할 분석 | 이벤트 전후 1~3개월을 대조군과 비교하고 채널·세그먼트별 uplift/lag를 추정합니다. |",
         )
     )
+
+
+def _news_factor_rows(fact_md: str) -> tuple[NewsFactor, ...]:
+    rows: list[NewsFactor] = []
+    lines = fact_md.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not (stripped.startswith("### ") and "뉴스/이슈" in stripped):
+            continue
+        for raw in lines[index + 1 :]:
+            current = raw.strip()
+            if current.startswith("### "):
+                break
+            if not current.startswith("|") or "---" in current or "날짜" in current:
+                continue
+            cells = _table_cells(current)
+            if len(cells) < 6:
+                continue
+            date, title, source, url, summary, excerpt = cells[:6]
+            if not title:
+                continue
+            basis_text = " ".join((title, summary, excerpt))
+            category = _news_factor_category(basis_text)
+            rows.append(
+                NewsFactor(
+                    category=category,
+                    factor=_news_factor_label(category, basis_text),
+                    title=title,
+                    source=source or "뉴스",
+                    url=url,
+                    date=date,
+                    summary=summary or excerpt,
+                    direction=_news_factor_direction(basis_text),
+                )
+            )
+    return tuple(rows[:6])
+
+
+def _news_factor_category(text: str) -> str:
+    internal_tokens = ("JW", "제이더블유", "JW중외", "리바로", "영업", "채널", "라인", "마케팅", "프로모션", "상기")
+    return "Internal" if any(token in text for token in internal_tokens) else "External"
+
+
+def _news_factor_label(category: str, text: str) -> str:
+    if category == "Internal":
+        if any(token in text for token in ("영업", "채널", "상기", "마케팅", "프로모션")):
+            return "자사 영업/채널 뉴스"
+        return "자사 제품/전략 뉴스"
+    if any(token in text for token in ("정책", "약가", "급여", "보험")):
+        return "정책/약가 뉴스"
+    return "경쟁/시장 뉴스"
+
+
+def _news_factor_direction(text: str) -> str:
+    threat_tokens = ("경쟁 심화", "인하", "하락", "감소", "축소", "특허만료", "제네릭", "위협")
+    opportunity_tokens = ("확대", "성장", "증가", "승인", "급여 확대", "기회")
+    if any(token in text for token in threat_tokens):
+        return "위협"
+    if any(token in text for token in opportunity_tokens):
+        return "기회"
+    return "불확실"
+
+
+def _news_factor_basis(row: NewsFactor) -> str:
+    title = f"「{row.title}」"
+    linked = f"[{title}]({row.url})" if row.url else title
+    snippet = row.summary or "요약 미보유"
+    return f"{row.source} {row.date} {linked} - {snippet}"
+
+
+def _contract_cell(value: str) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def _axis_trend_so_what(rows: tuple[dict[str, str], ...]) -> str:

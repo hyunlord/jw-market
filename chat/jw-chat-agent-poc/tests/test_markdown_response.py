@@ -4191,6 +4191,73 @@ def test_external_patent_fact_table_uses_actual_api_fields() -> None:
     assert "2024-02-02" in response.fact_md
 
 
+def test_competitor_patent_fact_surfaces_market_candidates_and_coverage() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "search_patent",
+                "source": "external_api",
+                "render_data": {
+                    "competitor_ingredient_candidates": [
+                        {
+                            "rank": 1,
+                            "molecule": "로수바스타틴",
+                            "brand": "로수젯",
+                            "source": "UBIST",
+                            "market": "ml_006",
+                            "period": "2026-04",
+                            "sales": "220.00억원",
+                            "market_share": "28.35%",
+                        },
+                        {
+                            "rank": 2,
+                            "molecule": "아토르바스타틴",
+                            "brand": "리피토",
+                            "source": "UBIST",
+                            "market": "ml_006",
+                            "period": "2026-04",
+                            "sales": "145.00억원",
+                            "market_share": "18.68%",
+                        },
+                    ],
+                    "competitor_patent_coverage": {
+                        "status": "attempted",
+                        "message": "경쟁 성분 후보별 MFDS/OrangeBook 조회를 시도했습니다.",
+                        "sources": "MFDS 의약품특허목록, FDA OrangeBook",
+                    },
+                    "calls": [
+                        {
+                            "tool": "mfds_patent",
+                            "render_data": {
+                                "items": [
+                                    {
+                                        "ITEM_NAME": "크레스토정",
+                                        "INGR_NAME": "로수바스타틴칼슘",
+                                        "DOMESTIC_PATENT_NO": "10-1234567",
+                                        "DOMESTIC_PATENT_STATUS": "소멸",
+                                        "DOMESTIC_END_DATE": "2021-01-02",
+                                        "PATENTEE": "원천제약",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["external_api"],
+    )
+
+    assert "### 경쟁 성분 후보군 fact" in response.fact_md
+    assert "| 1 | 로수바스타틴 | 로수젯 | UBIST | ml_006 | 2026-04 | 220.00억원 | 28.35% |" in response.fact_md
+    assert "| 2 | 아토르바스타틴 | 리피토 | UBIST | ml_006 | 2026-04 | 145.00억원 | 18.68% |" in response.fact_md
+    assert "### 경쟁 성분 특허 조회 커버리지 fact" in response.fact_md
+    assert "MFDS 의약품특허목록" in response.fact_md
+    assert "현재 특허 DB에서 확인되는 항목만 표시" in response.fact_md
+    assert "10-1234567" in response.fact_md
+
+
 def test_markdown_cells_escape_raw_html() -> None:
     response = MarkdownResponseBuilder().build(
         brand="<script>alert(1)</script>",
