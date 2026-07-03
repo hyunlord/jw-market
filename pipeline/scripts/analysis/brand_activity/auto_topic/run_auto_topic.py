@@ -78,6 +78,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.sampling import (  # no
     build_market_samples,
     large_scopes_by_row_count,
 )
+from pipeline.scripts.analysis.brand_activity.auto_topic.source_sanitize import sanitize_source_text_carryover  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.static_quality import inspect_package  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store import load_artifacts  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store_db import (  # noqa: E402
@@ -215,6 +216,7 @@ def run_pipeline(
         csd_bridge=csd_bridge,
         open_questions=_open_questions(alias_source, should_execute),
     )
+    payload["source_text_sanitize"] = sanitize_source_text_carryover(payload, _all_sampled_rows(axis_samples, brand_samples))
     _write_reports_and_audit(docs_dir, run_audit_dir, payload, rows, summary, auth_mode, token_env, group_map, scope_metadata)
     static_quality = inspect_package(REPO_ROOT / "pipeline/scripts/analysis/brand_activity/auto_topic")
     write_json(run_audit_dir / "static_quality.json", static_quality)
@@ -359,6 +361,7 @@ def _write_reports_and_audit(
     write_json(audit_dir / "stability_results.json", summary.get("stability_results", {}))
     write_json(audit_dir / "dictionary_baseline.json", summary.get("dictionary_results", {}))
     write_json(audit_dir / "quality_summary.json", payload.get("quality_summary", {}))
+    write_json(audit_dir / "source_text_sanitize.json", payload.get("source_text_sanitize", {}))
     write_json(audit_dir / "label_quality_summary.json", _dict(_dict(payload.get("quality_summary")).get("label_quality")))
     write_json(audit_dir / "group_map.json", group_map)
     write_json(audit_dir / "scope_metadata.json", scope_metadata)
