@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS mart_general_brand_metric (
   channel_data JSON NOT NULL,
   specialty_data JSON NOT NULL,
   channel_specialty_matrix JSON NULL,
+  audit_code_matrix LONGTEXT NULL CHECK (audit_code_matrix IS NULL OR JSON_VALID(audit_code_matrix)),
   dimension_data JSON NOT NULL,
   dimension_channel_data JSON NOT NULL,
   by_dimension JSON NOT NULL,

@@ -31,7 +31,7 @@ UNIT_LABELS = {
 GENERAL_BRAND_INSERT_COLUMNS = [
     "brand_key", "brand_name", "atc4_code", "atc4_desc", "source", "measure", "unit_label",
     "metric_history", "extended_metric_history", "channel_data", "specialty_data", "channel_specialty_matrix",
-    "dimension_data", "dimension_channel_data", "by_dimension", "raw_value_history", "payload",
+    "audit_code_matrix", "dimension_data", "dimension_channel_data", "by_dimension", "raw_value_history", "payload",
 ]
 GENERAL_MARKET_INSERT_COLUMNS = [
     "atc4_code", "atc4_desc", "source", "measure", "unit_label", "market_size_series", "hhi_series",
@@ -41,7 +41,7 @@ GENERAL_MARKET_INSERT_COLUMNS = [
 ]
 JSON_INSERT_COLUMNS = {
     "metric_history", "extended_metric_history", "channel_data", "specialty_data", "dimension_data",
-    "channel_specialty_matrix", "dimension_channel_data", "dimension_specialty_data", "by_dimension", "raw_value_history",
+    "channel_specialty_matrix", "audit_code_matrix", "dimension_channel_data", "dimension_specialty_data", "by_dimension", "raw_value_history",
     "market_size_series", "hhi_series", "hhi_series_5y", "brand_ranking", "brand_ranking_stacked",
     "company_ranking_stacked", "company_concentration_trend", "ei_ms_matrix", "growth_contribution_ms_matrix",
     "growth_contribution", "analysis_levels", "level_top5_trend", "target_customer_competition",
