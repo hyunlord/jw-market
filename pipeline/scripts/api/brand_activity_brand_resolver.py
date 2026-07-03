@@ -6,6 +6,7 @@ from typing import Any, Final, Mapping, Sequence
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_activity_channel_axis import channel_axis_sales_value, parse_ubist_channel_axis
 from pipeline.scripts.api.brand_activity_brand_filters import applied_brand_filter
 from pipeline.scripts.api.brand_activity_brand_molecules import general_molecules_by_product
 from pipeline.scripts.api.brand_activity_csd_shared import (
@@ -22,10 +23,12 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
 )
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.config import config
+from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 
 MAX_BRAND_SET_SIZE: Final = 6
+UBIST_SOURCE: Final = "ubist"
 
 
 class BrandSetInputError(RuntimeError):
@@ -61,6 +64,7 @@ class BrandSetResolution:
     candidates: tuple[BrandCandidate, ...]
     ranking_quarter: str
     applied_filter: JsonMap
+    channel_axis: ChannelAxisFilter | None = None
 
 
 def resolve_brand_set(
@@ -91,7 +95,9 @@ def resolve_brand_set(
     if selected_brand not in brand_meta:
         return None
     applied_filter = applied_brand_filter(view_name, resolved_market_id, filter_payload or {})
-    candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking)
+    channel_axis = parse_ubist_channel_axis(filter_payload or {})
+    channel_rows = _fetch_channel_axis_rows(view, resolved_market_id) if channel_axis else {}
+    candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking, channel_axis=channel_axis, channel_rows=channel_rows)
     choices = _select_choices(candidates, selected_brand=selected_brand, applied_filter=applied_filter)
     return BrandSetResolution(
         view_name=view_name,
@@ -105,6 +111,7 @@ def resolve_brand_set(
         candidates=candidates,
         ranking_quarter=ranking["quarter"],
         applied_filter=applied_filter,
+        channel_axis=channel_axis,
     )
 
 
@@ -164,11 +171,28 @@ def _fetch_market_row(view: ViewConfig, market_id: str) -> JsonMap | None:
     )
 
 
+def _fetch_channel_axis_rows(view: ViewConfig, market_id: str) -> dict[str, JsonMap]:
+    channel_matrix = "channel_specialty_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS channel_specialty_matrix"
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT brand_key, metric_history, channel_data, specialty_data,
+               ubist_channel_by_display, ubist_channel_by_code, {channel_matrix}
+        FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
+        WHERE {view.market_key} = %s AND source = %s AND measure = %s
+        """,
+        (market_id, UBIST_SOURCE, RANKING_MEASURE),
+    )
+    return {str(row["brand_key"]): row for row in rows if row.get("brand_key")}
+
+
 def _brand_candidates(
     view_name: str,
     rows: tuple[JsonMap, ...],
     metas: dict[str, BrandMeta],
     ranking: JsonMap,
+    *,
+    channel_axis: ChannelAxisFilter | None = None,
+    channel_rows: dict[str, JsonMap] | None = None,
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
     general_molecules = general_molecules_by_product(metas) if view_name == "general" else {}
@@ -183,7 +207,11 @@ def _brand_candidates(
                 meta=meta,
                 dimensions=_dimensions(view_name, row, meta, general_molecules),
                 sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
-                sales_value=float_value(rank_item.get("raw_value")) or float_value(metric.get("raw_value")),
+                sales_value=(
+                    channel_axis_sales_value((channel_rows or {}).get(brand_key), channel_axis, str(ranking["quarter"]))
+                    if channel_axis
+                    else float_value(rank_item.get("raw_value")) or float_value(metric.get("raw_value"))
+                ),
             )
         )
     return tuple(candidates)

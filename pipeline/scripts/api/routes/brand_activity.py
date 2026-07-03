@@ -55,6 +55,7 @@ class CsdTimeseriesRequest(BaseModel):
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
     filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
+    channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description="UBIST 종별/진료과 value-slice 필터. filters.channel_axis와 동일하게 처리됩니다.")
     mode: str = Field(default="absolute", description="absolute 또는 share. 화면에서 series.absolute/ratio 선택에 사용.")
     window: CsdTimeseriesWindow | None = Field(default=None, description="분기 window. 미지정 시 CSD full quarter 범위.")
 
@@ -69,6 +70,7 @@ class BrandActivityTopicsRequest(BaseModel):
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
     filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
+    channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description="UBIST 종별/진료과 value-slice 필터. filters.channel_axis와 동일하게 처리됩니다.")
     visit_location: str = Field(default="전체", description="키워드 설문 방문 장소 필터.")
     specialty: str = Field(default="전체", description="키워드 설문 진료과 필터.")
     top_n: int = Field(default=5, ge=1, le=10, description="브랜드 카드당 상위 토픽 개수.")
@@ -94,6 +96,7 @@ class BrandActivityInterestRxRequest(BaseModel):
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
     filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
+    channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description="UBIST 종별/진료과 value-slice 필터. filters.channel_axis와 동일하게 처리됩니다.")
     visit_location: str = Field(default="전체", description="키워드 설문 방문 장소 필터.")
     specialty: str = Field(default="전체", description="키워드 설문 진료과 필터.")
     period_start: str | None = Field(default=None, description="집계 시작월 YYYY-MM.")
@@ -208,6 +211,9 @@ def _service_payload(payload: BaseModel) -> dict[str, JsonValue]:
     filters = data.get("filters") if isinstance(data.get("filters"), dict) else {}
     legacy_filter = data.get("filter") if isinstance(data.get("filter"), dict) else {}
     normalized = filters or legacy_filter
+    channel_axis = data.get("channel_axis") if isinstance(data.get("channel_axis"), dict) else {}
+    if channel_axis and "channel_axis" not in normalized:
+        normalized = {**normalized, "channel_axis": channel_axis}
     data["filters"] = normalized
     data["filter"] = normalized
     return data

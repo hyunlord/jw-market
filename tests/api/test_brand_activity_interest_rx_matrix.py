@@ -95,6 +95,39 @@ def test_interest_rx_service_rebuilds_distribution_for_specialty_filter(monkeypa
     assert payload["filters_applied"]["specialty"] == "Cardio"
 
 
+def test_interest_rx_service_maps_nested_channel_axis_to_keyword_filters(monkeypatch) -> None:
+    # Given
+    from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
+    from pipeline.scripts.api import brand_activity_interest_rx_source as source
+
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(service, "resolve_csd_market", lambda _codes: _crosswalk())
+    monkeypatch.setattr(service, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
+
+    # When
+    payload = service.get_interest_rx_matrix(
+        {
+            "view": "general",
+            "market_id": "C10A1",
+            "selected_brand": "리바로",
+            "filters": {
+                "channel_axis": {
+                    "ubist": {
+                        "facility": ["의원"],
+                        "specialty": ["순환기(Cardiology IM)"],
+                    }
+                }
+            },
+        }
+    )
+
+    # Then
+    assert payload is not None
+    assert payload["filters_applied"]["visit_location"] == "PRIV. PRACTICE"
+    assert payload["filters_applied"]["specialty"] == "Cardio"
+
+
 def test_interest_rx_service_applies_weight_overrides(monkeypatch) -> None:
     # Given
     from pipeline.scripts.api import brand_activity_interest_rx_matrix as service

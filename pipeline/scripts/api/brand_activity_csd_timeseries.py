@@ -132,6 +132,11 @@ def _scope_payload(
         "filter": request["filter"],
         "applied_filter": applied_filter,
         "applied_filters": applied_filter,
+        "filter_effect": {
+            "brand_set": "channel_axis_applied" if applied_filter.get("channel_axis") else "base",
+            "activity": "csd_total_channel",
+            "rx": "iqvia_nsa_public_measures",
+        },
         "resolved_market": _resolved_market_payload(request, view, market_row),
         "quarters": quarters,
         "measures": list(PUBLIC_MEASURES),

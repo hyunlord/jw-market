@@ -58,6 +58,10 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             "specialty": request["specialty"],
             "top_n": request["top_n"],
             "sliced": False,
+            "filter_effect": {
+                "brand_set": "channel_axis_applied" if brand_set.channel_axis else "base",
+                "payload": "precomputed_scope_not_resliced",
+            },
         },
         "brands": [
             _topic_brand_item(brand_set, choice_key=choice.brand_key, topic_index=topic_index, aliases=aliases, top_n=int(request["top_n"]))
