@@ -17,6 +17,7 @@ from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import parse_channel_specialty_matrix
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
+from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
 
 
 GENERAL_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
@@ -285,6 +286,7 @@ def _build_filter_options_uncached(
         mart_db=mart_db,
         view=view,
         source=source,
+        market_id=market_id,
         measure=measure,
         brand=brand,
         atc4_codes=atc4_codes,
@@ -544,13 +546,23 @@ def _load_channel_axis_options(
     mart_db: str,
     view: str,
     source: str,
+    market_id: str | None,
     measure: str,
     brand: str,
     atc4_codes: Sequence[str],
 ) -> dict[str, object]:
     """Build the UBIST channel-axis registry from scoped raw matrices."""
 
-    if view != "general" or source != "ubist" or not atc4_codes:
+    if source != "ubist":
+        return {}
+    if view == "strategic":
+        return _load_strategic_channel_axis_options(
+            mart_db=mart_db,
+            market_id=market_id,
+            measure=measure,
+            brand=brand,
+        )
+    if view != "general" or not atc4_codes:
         return {}
     rows = db.fetch_all(
         f"""
@@ -586,6 +598,79 @@ def _load_channel_axis_options(
                 if is_brand_match:
                     flagged_specialties.add(specialty)
                     flagged_pairs.add(pair)
+    if not facility_counts and not specialty_counts and not pair_counts:
+        return {}
+    return {
+        "ubist": {
+            "facility": [
+                _channel_axis_option(value, row_count=len(facility_counts[value]), flagged=value in flagged_facilities)
+                for value in sorted(facility_counts)
+            ],
+            "specialty": [
+                _channel_axis_option(value, row_count=len(specialty_counts[value]), flagged=value in flagged_specialties)
+                for value in sorted(specialty_counts)
+            ],
+            "pairs": [
+                _channel_axis_pair_option(pair, row_count=len(pair_counts[pair]), flagged=pair in flagged_pairs)
+                for pair in sorted(pair_counts)
+            ],
+        }
+    }
+
+
+def _load_strategic_channel_axis_options(
+    *,
+    mart_db: str,
+    market_id: str | None,
+    measure: str,
+    brand: str,
+) -> dict[str, object]:
+    if not market_id:
+        return {}
+    brand_table, id_column = _strategic_atc_table(market_id)
+    _, normalized_market_id = _strategic_market_filter(market_id)
+    rows = db.fetch_all(
+        f"""
+        SELECT brand_key, brand_name, ubist_channel_by_code
+        FROM {quote_identifier(mart_db)}.{brand_table}
+        WHERE {id_column} = %s
+          AND source = %s
+          AND measure = %s
+        ORDER BY brand_name, brand_key
+        """,
+        [normalized_market_id, "ubist", measure],
+    )
+    facility_counts: dict[str, set[str]] = defaultdict(set)
+    specialty_counts: dict[str, set[str]] = defaultdict(set)
+    pair_counts: dict[tuple[str, str], set[str]] = defaultdict(set)
+    flagged_facilities: set[str] = set()
+    flagged_specialties: set[str] = set()
+    flagged_pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        brand_key = str(row.get("brand_key") or "")
+        brand_name = str(row.get("brand_name") or "")
+        brand_marker = brand_key or brand_name
+        is_brand_match = _is_brand_match(brand=brand, brand_key=brand_key, brand_name=brand_name)
+        for code in _decode_json_object(row.get("ubist_channel_by_code")):
+            try:
+                parsed = parse_channel_code(str(code))
+            except ValueError:
+                continue
+            if parsed is None:
+                continue
+            for facility in parsed.facility_raw_values:
+                facility_counts[facility].add(brand_marker)
+                if is_brand_match:
+                    flagged_facilities.add(facility)
+            for specialty in parsed.specialty_raw_values:
+                specialty_counts[specialty].add(brand_marker)
+                if is_brand_match:
+                    flagged_specialties.add(specialty)
+                for facility in parsed.facility_raw_values:
+                    pair = (facility, specialty)
+                    pair_counts[pair].add(brand_marker)
+                    if is_brand_match:
+                        flagged_pairs.add(pair)
     if not facility_counts and not specialty_counts and not pair_counts:
         return {}
     return {

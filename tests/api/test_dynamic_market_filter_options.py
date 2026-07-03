@@ -218,6 +218,20 @@ def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monke
             return [
                 {"dimension_type": "seller", "dimension_value": "JW중외제약", "dimension_value_norm": "jw중외제약", "row_count": 3},
             ]
+        if "ubist_channel_by_code" in sql:
+            assert params == ["ml_006", "ubist", "sales"]
+            return [
+                {
+                    "brand_key": "리바로",
+                    "brand_name": "리바로",
+                    "ubist_channel_by_code": '{"GH Endo": {"2026-05": 10}, "CL Cardio": {"2026-05": 20}}',
+                },
+                {
+                    "brand_key": "경쟁",
+                    "brand_name": "경쟁",
+                    "ubist_channel_by_code": '{"GH GI": {"2026-05": 30}}',
+                },
+            ]
         if "mart_strategic_filter_dimension_metric" in sql and "brand_name" in sql:
             return [{"dimension_type": "seller", "dimension_value_norm": "jw중외제약"}]
         if "analysis_levels" in sql:
@@ -260,6 +274,23 @@ def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monke
     assert payload["default_selections"]["molecule"] == ["pitavastatin", "rosuvastatin"]
     assert payload["atc"]["atc4"][0]["default"] is True
     assert payload["atc"]["atc4"][0]["selected"] is True
+    assert {"key": "의원", "value": "의원", "row_count": 1, "default": False, "selected": False, "flag": True} in payload["channel_axis"]["ubist"]["facility"]
+    assert {
+        "key": "내분비(Endocrinology IM)",
+        "value": "내분비(Endocrinology IM)",
+        "row_count": 1,
+        "default": False,
+        "selected": False,
+        "flag": True,
+    } in payload["channel_axis"]["ubist"]["specialty"]
+    assert {
+        "key": "종합병원|소화기(Gastroenterology IM)",
+        "value": {"facility": "종합병원", "specialty": "소화기(Gastroenterology IM)"},
+        "row_count": 1,
+        "default": False,
+        "selected": False,
+        "flag": False,
+    } in payload["channel_axis"]["ubist"]["pairs"]
 
 
 def test_filter_options_openapi_hides_market_id_override() -> None:
