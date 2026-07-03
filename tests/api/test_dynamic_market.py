@@ -396,6 +396,39 @@ def test_general_resolver_expands_ubist_canonical_atc4_for_source_native_rows(mo
     assert [brand.atc4_code for brand in definition.brands] == ["C10C"]
 
 
+def test_general_resolver_omits_inactive_channel_axis_from_identity_echo(monkeypatch) -> None:
+    def fake_fetch_all(sql, params):
+        assert "channel_axis" not in str(sql).lower()
+        assert params == ["ubist", "sales", "C10A1"]
+        return [{"brand_key": "livaro", "brand_name": "리바로", "atc4_code": "C10A1"}]
+
+    monkeypatch.setattr(resolvers.db, "fetch_all", fake_fetch_all)
+
+    definition = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart").resolve(
+        atc4=["C10A1"],
+        molecule=[],
+        source="ubist",
+        measure="sales",
+        channel_axis=None,
+    )
+
+    assert "channel_axis" not in definition.filter_echo
+
+
+def test_empty_channel_axis_payloads_normalize_like_missing_filter() -> None:
+    payloads = [
+        {"filters": {"atc4": ["C10A1"]}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {"facility": []}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {"specialty": [], "pairs": []}}}, "source": "ubist", "measure": "sales"},
+    ]
+
+    for payload in payloads:
+        request = DynamicMarketRequest.model_validate(payload)
+        assert request.filters.channel_axis.to_filter(source=request.source) is None
+
+
 def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
     class FakeResolver:
         def __init__(self, *, mart_db: str, bridge_db: str) -> None:

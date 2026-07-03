@@ -102,19 +102,22 @@ class GeneralViewResolver:
                 source=normalized_source,
                 measure=normalized_measure,
             )
+        filter_echo = {
+            "view": "general",
+            "atc4": list(normalized_atc4),
+            "molecule": list(molecule),
+            "normalized_molecule": list(normalized_molecules),
+            "analysis_level": _dimension_echo(dimension_filters),
+            "focus_brand_key": normalized_focus_brand,
+            "source": normalized_source,
+            "measure": normalized_measure,
+        }
+        channel_axis_echo = _channel_axis_echo(channel_axis)
+        if channel_axis_echo:
+            filter_echo["channel_axis"] = channel_axis_echo
         return MarketDefinition(
             view="general",
-            filter_echo={
-                "view": "general",
-                "atc4": list(normalized_atc4),
-                "molecule": list(molecule),
-                "normalized_molecule": list(normalized_molecules),
-                "analysis_level": _dimension_echo(dimension_filters),
-                "channel_axis": _channel_axis_echo(channel_axis),
-                "focus_brand_key": normalized_focus_brand,
-                "source": normalized_source,
-                "measure": normalized_measure,
-            },
+            filter_echo=filter_echo,
             source=normalized_source,
             measure=normalized_measure,
             normalized_molecules=normalized_molecules,
