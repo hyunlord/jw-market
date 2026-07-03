@@ -7,6 +7,7 @@ from html import unescape
 from collections.abc import Iterator
 from typing import Any
 
+from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
@@ -479,12 +480,12 @@ def _remove_existing_top_brand_trend_table(answer: str, axis_label: str) -> str:
         line = lines[index]
         if line.strip() == heading:
             index += 1
-            while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("|")):
+            while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("|") or is_dosage_combination_note(lines[index])):
                 index += 1
             continue
         if line.startswith(header):
             index += 1
-            while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("|")):
+            while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("|") or is_dosage_combination_note(lines[index])):
                 index += 1
             continue
         kept.append(line)
@@ -513,6 +514,9 @@ def _top_brand_trend_table(rows: tuple[dict[str, str], ...], axis_label: str = "
             f"| {row['rank']} | {row['brand']} | {row['from_period']} {row['from_share']}% | "
             f"{row['to_period']} {row['to_share']}% | {row['share_delta']}%p | {sales} | {sales_delta} |"
         )
+    note = dosage_combination_note(axis_label, (row.get("brand") for row in rows))
+    if note:
+        table.append(note)
     return "\n".join(table)
 
 

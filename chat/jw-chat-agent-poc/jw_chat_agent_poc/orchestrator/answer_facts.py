@@ -17,6 +17,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     source_label,
     table,
 )
+from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
 from jw_chat_agent_poc.orchestrator.surface_policy import (
     DeltaOperands,
     can_surface_derived_value,
@@ -1084,9 +1085,11 @@ def _top_brand_trends(data: dict[str, Any]) -> str:
         return ""
     axis_label = display_level_name(data.get("level") or "Brand")
     summary_rows: list[tuple[Any, Any, Any, Any, Any, Any, Any]] = []
+    axis_values: list[Any] = []
     for item in trends[:TABLE_LIMIT]:
         if not isinstance(item, dict):
             continue
+        axis_values.append(item.get("name") or item.get("brand"))
         share_delta = _top_trend_share_delta(item)
         period = _top_trend_delta_period(share_delta) or _comparison_period(item) or str(data.get("period") or "")
         summary_rows.append(
@@ -1107,6 +1110,9 @@ def _top_brand_trends(data: dict[str, Any]) -> str:
             tuple(summary_rows),
         )
     ]
+    note = dosage_combination_note(axis_label, axis_values)
+    if note:
+        blocks.append(note)
     monthly_rows = _top_brand_monthly_rows(trends)
     if monthly_rows:
         blocks.append(table(f"### 상위 {cell(axis_label)} 월별 MS fact", (axis_label, "기간", "MS", "매출", "순위"), tuple(monthly_rows)))

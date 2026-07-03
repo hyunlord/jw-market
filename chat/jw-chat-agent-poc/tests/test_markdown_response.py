@@ -2515,6 +2515,19 @@ def test_top_trend_fact_uses_actual_axis_label_for_dosage_form() -> None:
                                 {"period": "2025-07", "ms_pct": 58.0, "value_억원": 320.0, "rank": 1},
                                 {"period": "2026-04", "ms_pct": 59.05, "value_억원": 330.0, "rank": 1},
                             ],
+                        },
+                        {
+                            "rank": 2,
+                            "brand": "Statin",
+                            "name": "Statin",
+                            "ms_recent_pct": 40.95,
+                            "share_delta_pctp": -1.05,
+                            "value_recent_억원": 228.0,
+                            "value_delta_억원": -10.0,
+                            "series": [
+                                {"period": "2025-07", "ms_pct": 42.0, "value_억원": 238.0, "rank": 2},
+                                {"period": "2026-04", "ms_pct": 40.95, "value_억원": 228.0, "rank": 2},
+                            ],
                         }
                     ],
                 },
@@ -2527,6 +2540,52 @@ def test_top_trend_fact_uses_actual_axis_label_for_dosage_form() -> None:
     assert "상위 브랜드 추이 | 1위 Statin/EZE" not in fact_md
     assert "### 상위 제형 점유율 추이 fact" in fact_md
     assert "| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |" in fact_md
+    assert "※ 본 시장의 제형 구분은 성분 조합 기준(예: Statin/EZE vs Statin)입니다." in fact_md
+
+
+def test_top_trend_fact_does_not_add_dosage_form_note_for_physical_forms() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "리바로",
+                    "level": "dosage_form",
+                    "level_top5_trend_series": [
+                        {
+                            "rank": 1,
+                            "brand": "정제",
+                            "name": "정제",
+                            "ms_recent_pct": 70.0,
+                            "share_delta_pctp": 1.0,
+                            "value_recent_억원": 70.0,
+                            "series": [
+                                {"period": "2025-07", "ms_pct": 69.0, "value_억원": 69.0, "rank": 1},
+                                {"period": "2026-04", "ms_pct": 70.0, "value_억원": 70.0, "rank": 1},
+                            ],
+                        },
+                        {
+                            "rank": 2,
+                            "brand": "캡슐",
+                            "name": "캡슐",
+                            "ms_recent_pct": 30.0,
+                            "share_delta_pctp": -1.0,
+                            "value_recent_억원": 30.0,
+                            "series": [
+                                {"period": "2025-07", "ms_pct": 31.0, "value_억원": 31.0, "rank": 2},
+                                {"period": "2026-04", "ms_pct": 30.0, "value_억원": 30.0, "rank": 2},
+                            ],
+                        },
+                    ],
+                },
+            }
+        ],
+        ["cache"],
+    )
+
+    assert "### 상위 제형 점유율 추이 fact" in fact_md
+    assert "성분 조합 기준" not in fact_md
 
 
 def test_top_trend_fact_uses_latest_series_sales_when_recent_sales_field_is_missing() -> None:
@@ -2741,6 +2800,7 @@ def test_top_trend_table_uses_dynamic_axis_label_for_non_brand_dimensions() -> N
 | 구분 | 내용 |
 | --- | --- |
 | 상위 제형 추이 | 1위 Statin/EZE 2025-07 MS 58.00% → 2026-04 MS 59.05% 2025-07→2026-04 점유율 변화 1.05%p 최신 매출 330.00억원 매출 변화 10.00억원 |
+| 상위 제형 추이 | 2위 Statin 2025-07 MS 42.00% → 2026-04 MS 40.95% 2025-07→2026-04 점유율 변화 -1.05%p 최신 매출 228.00억원 매출 변화 -10.00억원 |
 """
     raw_line = (
         "- 상위 제형 추이: 1위 Statin/EZE 2025-07 MS 58.00% → 2026-04 MS 59.05% "
@@ -2753,6 +2813,27 @@ def test_top_trend_table_uses_dynamic_axis_label_for_non_brand_dimensions() -> N
     assert "| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |" in revised
     assert "| 최신 순위 | 브랜드 |" not in revised
     assert raw_line not in revised
+    assert "※ 본 시장의 제형 구분은 성분 조합 기준(예: Statin/EZE vs Statin)입니다." in revised
+
+
+def test_top_trend_table_deduplicates_dosage_form_combination_note() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 내용 |
+| --- | --- |
+| 상위 제형 추이 | 1위 Statin/EZE 2025-07 MS 58.00% → 2026-04 MS 59.05% 2025-07→2026-04 점유율 변화 1.05%p 최신 매출 330.00억원 매출 변화 10.00억원 |
+| 상위 제형 추이 | 2위 Statin 2025-07 MS 42.00% → 2026-04 MS 40.95% 2025-07→2026-04 점유율 변화 -1.05%p 최신 매출 228.00억원 매출 변화 -10.00억원 |
+"""
+    answer = """### 상위 제형 추이
+| 최신 순위 | 제형 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | Statin/EZE | 2025-07 58.00% | 2026-04 59.05% | 1.05%p | - | 10.00억원 |
+※ 본 시장의 제형 구분은 성분 조합 기준(예: Statin/EZE vs Statin)입니다.
+"""
+
+    revised = ensure_top_brand_trend_table(answer, fact_md)
+
+    assert revised.count("성분 조합 기준") == 1
+    assert "| 1 | Statin/EZE | 2025-07 58.00% | 2026-04 59.05% | 1.05%p | 330.00억원 | 10.00억원 |" in revised
 
 
 def test_model_compare_config_sets_bounded_runtime_timeouts(monkeypatch) -> None:
