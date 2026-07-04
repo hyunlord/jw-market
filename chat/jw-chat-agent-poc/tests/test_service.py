@@ -119,6 +119,27 @@ def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatc
     assert captured["loop_question"] == "리바로 경쟁 구도 변화"
 
 
+def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
+    def fail_build_loop(_dependencies):
+        raise AssertionError("requested-source trap must not enter direct agent loop")
+
+    monkeypatch.setattr(service_app, "build_tool_use_agent", fail_build_loop)
+    FakeAgent.calls.clear()
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "리바로 KOL 자문 기준 처방 의견과 시장 시사점을 알려줘",
+        "live",
+        None,
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["answer"].startswith("fallback:리바로 KOL 자문")
+    assert FakeAgent.calls == [("리바로 KOL 자문 기준 처방 의견과 시장 시사점을 알려줘", "live")]
+
+
 def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypatch) -> None:
     def fail_direct_dependencies(*, external_mode: str = "fixture"):
         raise AssertionError("document questions must keep the ChatAgent/RAG facade")

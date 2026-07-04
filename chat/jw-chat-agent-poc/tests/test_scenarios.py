@@ -183,6 +183,30 @@ def test_combo_clinical_uses_and_query_and_separates_reference_results():
     assert "유의해야 합니다.에" not in result["answer"]
 
 
+def test_cortellis_requested_source_trap_keeps_clinicaltrials_as_alternate_reference():
+    result = ChatAgent().answer("Cortellis 기준 이상지질혈증 파이프라인과 리바로 경쟁 임상 현황을 분석해줘")
+
+    assert result["answer"].startswith("Cortellis 데이터는 현재 운영 데이터에 미보유입니다.")
+    assert "Cortellis 기준" not in result["answer"]
+    assert "### 대체 참고" in result["answer"]
+    assert "ClinicalTrials/MFDS 결과는 Cortellis 데이터가 아니므로 요청 소스 결론으로 승격하지 않습니다." in result["answer"]
+    assert "적응증 확장 가능성" not in result["answer"]
+    assert "상업 경쟁 압력" not in result["answer"]
+    assert result["tool_calls"][0]["tool"] == "requested_source_unavailable"
+
+
+def test_requested_source_trap_short_circuits_kol_and_nccn_before_web_or_news_tools():
+    for question, first_sentence in (
+        ("리바로 KOL 자문 기준 처방 의견과 시장 시사점을 알려줘", "KOL 자문 데이터는 현재 운영 데이터에 미보유입니다."),
+        ("리바로 NCCN 치료 지침 기준 시장 영향을 알려줘", "NCCN/가이드라인 데이터는 현재 운영 데이터에 미보유입니다."),
+    ):
+        result = ChatAgent().answer(question)
+
+        assert result["answer"].startswith(first_sentence)
+        assert "### 미보유 데이터 처리" in result["answer"]
+        assert [call.get("tool") for call in result["tool_calls"]] == ["requested_source_unavailable"]
+
+
 def test_nutrition_infusion_electrolyte_external_clinical_is_marked_inapplicable():
     result = ChatAgent().answer("플라주오피 임상")
 

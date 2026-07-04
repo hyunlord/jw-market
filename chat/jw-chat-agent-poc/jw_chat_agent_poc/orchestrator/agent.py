@@ -22,6 +22,8 @@ from jw_chat_agent_poc.orchestrator.hira_disease import HIRA_DISEASE_MAPPINGS, h
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context, metric_from_question, requires_brand
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
+from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
+from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter, LLMFirstBQRouter
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
@@ -86,6 +88,9 @@ class ChatAgent:
         calls: list[dict[str, Any]] = []
         notices: list[str] = []
         sources: list[str] = []
+        source_trap = requested_unavailable_source(question)
+        if source_trap is not None and not docs:
+            return self._requested_source_unavailable(question, resolution, routes, source_trap)
 
         if not docs and should_use_agent_loop(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
@@ -158,13 +163,14 @@ class ChatAgent:
             sources=sources,
             notices=notices,
         )
+        answer = apply_requested_source_trap_gate(question, markdown.markdown)
         return {
             "question": question,
             "resolution": resolution.__dict__,
             "decomposition": [route.__dict__ for route in routes],
             "router_diagnostics": router_diagnostics(self.router),
             "tool_calls": calls,
-            "answer": markdown.markdown,
+            "answer": answer,
             "markdown_response": markdown.to_dict(),
             "sources": sorted(set(sources)),
         }
@@ -309,6 +315,38 @@ class ChatAgent:
 
     def _unsupported_brand(self, question: str, routes) -> dict[str, Any]:
         return unsupported_brand_result(question, routes, router_diagnostics(self.router))
+
+    def _requested_source_unavailable(self, question: str, resolution, routes, source_trap) -> dict[str, Any]:
+        markdown_response = {
+            "fact_md": "데이터 미보유",
+            "data_md": "",
+            "allowed_numbers": (),
+            "evidence": (),
+            "verification": {"status": "pass", "unexpected_numbers": ()},
+        }
+        answer = apply_common_unavailable_response(
+            question,
+            f"{source_trap.label} 데이터는 현재 운영 데이터에 미보유입니다.",
+            markdown_response,
+        )
+        answer = apply_requested_source_trap_gate(question, answer)
+        call = {
+            "tool": "requested_source_unavailable",
+            "source": "cache",
+            "status": "unsupported",
+            "summary_text": f"{source_trap.label} 데이터는 현재 운영 데이터에 미보유입니다.",
+            "render_data": {"requested_source": source_trap.label, "status": "unsupported"},
+        }
+        return {
+            "question": question,
+            "resolution": resolution.__dict__,
+            "decomposition": [route.__dict__ for route in routes],
+            "router_diagnostics": router_diagnostics(self.router),
+            "tool_calls": [call],
+            "answer": answer,
+            "markdown_response": markdown_response,
+            "sources": ["cache"],
+        }
 
     def _no_data(self, question: str, resolution, routes) -> dict[str, Any]:
         message = "현재 데이터로 답변 불가합니다. Q4 영업 Impact 또는 Q5 포트폴리오·사업성 영역은 P1 POC 데이터 범위 밖입니다."

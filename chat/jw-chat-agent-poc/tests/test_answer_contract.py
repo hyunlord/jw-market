@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls, enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
 
 
@@ -337,6 +338,81 @@ def test_common_unavailable_layer_fires_for_external_unavailable_source_question
     assert "### 미보유 데이터 처리" in revised
     assert "Datamonitor 등 글로벌 시장 전망" in revised
     assert revised.index("### 미보유 데이터 처리") < revised.index("## 출처")
+
+
+def test_source_trap_gate_blocks_cortellis_label_and_separates_clinicaltrials_reference() -> None:
+    answer = (
+        "Cortellis 기준 파이프라인 현황입니다.\n"
+        "Venetoclax 백혈병 병용 임상은 리바로 적응증 확장 가능성 및 상업 경쟁 압력입니다.\n"
+        "### 임상시험\n"
+        "| ID | 제목 | 상태 |\n"
+        "| --- | --- | --- |\n"
+        "| NCT01764178 | ClinicalTrials safety study | Completed |\n"
+        "## 출처\n"
+        "- 외부 API: ClinicalTrials/MFDS 임상 정보\n"
+    )
+
+    revised = apply_requested_source_trap_gate(
+        "Cortellis 기준 이상지질혈증 파이프라인과 리바로 경쟁 임상 현황을 분석해줘",
+        answer,
+    )
+
+    assert revised.startswith("Cortellis 데이터는 현재 운영 데이터에 미보유입니다.")
+    assert "Cortellis 기준" not in revised
+    assert "### 대체 참고" in revised
+    assert "ClinicalTrials/MFDS 결과는 Cortellis 데이터가 아니므로" in revised
+    assert "적응증 확장 가능성" not in revised
+    assert "상업 경쟁 압력" not in revised
+    assert "NCT01764178" in revised
+
+
+def test_source_trap_gate_generalizes_to_requested_unavailable_sources() -> None:
+    for question, expected in (
+        ("리바로 KOL 자문 기준 처방 의견을 알려줘", "KOL 자문 데이터는 현재 운영 데이터에 미보유입니다."),
+        ("리바로 NCCN 치료 지침 기준 시장 영향을 알려줘", "NCCN/가이드라인 데이터는 현재 운영 데이터에 미보유입니다."),
+        ("리바로 Datamonitor 기준 글로벌 시장 전망을 알려줘", "Datamonitor 데이터는 현재 운영 데이터에 미보유입니다."),
+    ):
+        revised = apply_requested_source_trap_gate(question, "UBIST 매출 proxy만 확인됩니다.")
+
+        assert revised.startswith(expected)
+
+
+def test_source_trap_gate_compacts_final_answer_once_common_5step_exists() -> None:
+    answer = (
+        "Cortellis 데이터는 현재 운영 데이터에 미보유입니다.\n\n"
+        "리바로는 Venetoclax 병용 임상으로 적응증 확장 가능성을 탐색했습니다.\n\n"
+        "### 미보유 데이터 처리\n"
+        "| 단계 | 내용 |\n"
+        "| --- | --- |\n"
+        "| 1. 미보유 데이터 | Cortellis/파이프라인 원천 데이터입니다. |\n"
+        "| 2. 현재 가능한 proxy | ClinicalTrials 참고만 가능합니다. |\n"
+        "| 3. 해석 가능한 상한선 | 출시 가능성을 추정하지 않습니다. |\n"
+        "| 4. 확인 필요 데이터 | 임상 단계와 예상 출시일입니다. |\n"
+        "| 5. 확보 시 수행할 분석 | 경쟁 위협도를 나눕니다. |\n\n"
+        "### 대체 참고\n"
+        "- ClinicalTrials 결과\n\n"
+        "## 출처\n"
+        "- 외부: ClinicalTrials/MFDS 임상 정보\n"
+    )
+
+    revised = apply_requested_source_trap_gate(
+        "Cortellis 기준 이상지질혈증 파이프라인과 리바로 경쟁 임상 현황을 분석해줘",
+        answer,
+    )
+
+    assert revised.startswith("Cortellis 데이터는 현재 운영 데이터에 미보유입니다.")
+    assert "적응증 확장 가능성" not in revised
+    assert "Venetoclax" not in revised
+    assert "### 미보유 데이터 처리" in revised
+    assert "### 대체 참고" in revised
+    assert "요청 소스 결론으로 승격하지 않습니다" in revised
+    assert "## 출처" in revised
+
+
+def test_source_trap_gate_does_not_touch_general_external_question() -> None:
+    answer = "리바로 임상은 ClinicalTrials 참고 결과를 기준으로 확인됩니다."
+
+    assert apply_requested_source_trap_gate("리바로 임상 알려줘", answer) == answer
 
 
 def test_common_unavailable_layer_uses_forecast_specific_5step_for_prediction_questions() -> None:

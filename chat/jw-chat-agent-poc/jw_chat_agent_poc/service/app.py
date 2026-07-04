@@ -21,6 +21,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contra
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
+from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
@@ -367,6 +368,8 @@ def _answer_without_pending(
     *,
     use_direct_agent_loop: bool = False,
 ) -> dict:
+    if requested_unavailable_source(question) is not None and not documents:
+        return agent_factory(external_mode=external_mode).answer(question, documents)
     if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
         return _answer_direct_agent_loop(question, external_mode)
     if should_use_agent_loop(question):
@@ -528,6 +531,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = _append_file_context_source(safe_answer, file_context_fact)
     safe_answer = apply_common_unavailable_response(question, safe_answer, markdown_response)
+    safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     trace = trace_envelope(
         question=question,
         result=result,

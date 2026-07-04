@@ -15,6 +15,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, sou
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
+from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.service.answer_safety import (
@@ -727,6 +728,7 @@ class GenosClient:
         answer = append_deterministic_source_block(answer, fact_md)
         answer = _append_uploaded_file_source(answer, file_context)
         answer = apply_common_unavailable_response(question, answer, markdown_response)
+        answer = apply_requested_source_trap_gate(question, answer)
         return _append_web_search_section(answer, tool_calls)
 
     @staticmethod

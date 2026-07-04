@@ -76,6 +76,25 @@ def test_detects_requested_source_mismatch() -> None:
     assert "requested_vs_actual_source_mismatch" in result.flags
 
 
+def test_requested_source_unavailable_with_alternate_reference_is_not_mismatch() -> None:
+    text = (
+        "Cortellis 데이터는 현재 운영 데이터에 미보유입니다.\n\n"
+        "### 대체 참고\n"
+        "- ClinicalTrials/MFDS 결과는 Cortellis 데이터가 아니므로 요청 소스 기준 결론으로 승격하지 않습니다.\n\n"
+        "## 출처\n"
+        "- 외부 API: ClinicalTrials/MFDS 임상 정보\n"
+    )
+    result = screen_answer(
+        _input(
+            text,
+            case_id="R_T4_cortellis_fixed",
+            question="Cortellis 기준 이상지질혈증 파이프라인과 리바로 경쟁 임상 현황을 분석해줘",
+        ),
+    )
+
+    assert "requested_vs_actual_source_mismatch" not in result.flags
+
+
 def test_detects_positioning_intent_without_axis() -> None:
     text = (
         "- 인사이트: 리바로젯 점유 0.53%p 상승\n"

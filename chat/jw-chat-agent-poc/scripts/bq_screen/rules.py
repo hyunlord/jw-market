@@ -200,12 +200,33 @@ def _source_mismatch(question: str, text: str) -> str:
         requested = any(token.lower() in question_lower for token in tokens)
         if not requested:
             continue
+        if _declares_requested_source_unavailable(source_key, text) and not _masquerades_requested_source(source_key, text):
+            return ""
         if not source_block_raw:
             return ""
         if source_key not in source_block:
             actual = source_block[:160].replace("\n", " ") or "source block missing"
             return f"requested {source_key} but source block does not cite it: {actual}"
     return ""
+
+
+def _declares_requested_source_unavailable(source_key: str, text: str) -> bool:
+    label_tokens = SOURCE_REQUESTS.get(source_key, ())
+    if not label_tokens:
+        return False
+    first_block = text[:500].lower()
+    return any(token.lower() in first_block for token in label_tokens) and "미보유" in first_block
+
+
+def _masquerades_requested_source(source_key: str, text: str) -> bool:
+    patterns = {
+        "cortellis": r"Cortellis\s*기준",
+        "datamonitor": r"Datamonitor\s*기준",
+        "kol": r"(?:KOL|전문가|자문)\s*기준",
+        "nccn": r"(?:NCCN|가이드라인|치료\s*지침)\s*기준",
+    }
+    pattern = patterns.get(source_key)
+    return bool(pattern and re.search(pattern, text, re.IGNORECASE))
 
 
 def _source_block(text: str) -> str:
