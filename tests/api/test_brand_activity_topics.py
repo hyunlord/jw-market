@@ -106,9 +106,54 @@ def test_post_topic_service_matches_topics_by_product_code(monkeypatch) -> None:
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
     assert payload["scope"]["sliced"] is False
     assert payload["brands"][0]["brand_key"] == "리바로"
-    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share": 62.5}]
+    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5}]
     assert payload["brands"][1]["brand_key"] == "리피토"
     assert payload["brands"][1]["topics"] == []
+
+
+def test_post_topic_service_slices_topics_from_row_assignments(monkeypatch) -> None:
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [_post_topic_row()]
+        if params and "LIPITOR" in params:
+            return []
+        assert "k.visit_location = %s" in sql
+        assert "k.specialty = %s" in sql
+        assert "k.period_ym >= %s" in sql
+        assert "k.period_ym <= %s" in sql
+        assert params == ("atc4:C10A1", "LIVALO", "의원", "내과", "2026-01", "2026-06", "atc4:C10A1", "brand_activity_replay_20260703_125045")
+        return [
+            {"topic_id": "T02", "affected_row_count": 3, "brand_total_rows": 4, "share_pct": "75.00"},
+            {"topic_id": "B1", "affected_row_count": 2, "brand_total_rows": 4, "share_pct": "50.00"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    payload = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "general",
+            "market_id": "C10A1",
+            "selected_brand": "리바로",
+            "visit_location": "의원",
+            "specialty": "내과",
+            "period_start": "2026-01",
+            "period_end": "2026-06",
+            "top_n": 5,
+        }
+    )
+
+    assert payload is not None
+    assert payload["scope"]["sliced"] is True
+    assert payload["scope"]["topic_set_version"] == "brand_activity_replay_20260703_125045"
+    assert payload["scope"]["filter_effect"]["payload"] == "row_topic_assignment_filtered"
+    assert payload["brands"][0]["event_count"] == 4
+    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T02", "label": "LDL 조절", "share_pct": 75.0, "row_count": 3}]
+    assert payload["brands"][0]["brand_specific_topics"] == [
+        {"topic_id": "B1", "label": "리바로 고유", "share_pct": 50.0, "row_count": 2, "definition": "리바로 특화"}
+    ]
 
 
 def assert_public_brand_contract(payload: dict[str, Any]) -> None:
@@ -203,6 +248,13 @@ def _brand_set() -> BrandSetResolution:
 
 def _post_topic_row() -> dict[str, str]:
     payload = {
+        "scope": {"scope_id": "atc4:C10A1", "atc4_values": ["C10A1"]},
+        "axis": {
+            "topics": [
+                {"topic_id": "T01", "label": "당뇨 안전성", "definition": "당뇨 안전성"},
+                {"topic_id": "T02", "label": "LDL 조절", "definition": "LDL 조절"},
+            ]
+        },
         "brands": [
             {
                 "brand": "LIVALO",
@@ -211,6 +263,7 @@ def _post_topic_row() -> dict[str, str]:
                     {"topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "row_count": 10},
                     {"topic_id": "T02", "label": "LDL 조절", "share_pct": 20.0, "row_count": 4},
                 ],
+                "brand_specific_topics": [{"topic_id": "B1", "label": "리바로 고유", "definition": "리바로 특화"}],
             }
         ]
     }
@@ -219,5 +272,6 @@ def _post_topic_row() -> dict[str, str]:
         "display_name": "LIVALO Market",
         "quality_grade": "A",
         "source_row_count": "1",
+        "run_id": "brand_activity_replay_20260703_125045",
         "payload": json.dumps(payload, ensure_ascii=False),
     }

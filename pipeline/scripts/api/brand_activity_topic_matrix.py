@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Final, Sequence
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
+from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandSetInputError,
     BrandSetResolution,
@@ -19,6 +21,8 @@ from pipeline.scripts.api.brand_activity_topics import (
     _number,
     _text,
 )
+from pipeline.scripts.api.config import config
+from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 
 ALIAS_MAPPING_PATH: Final = Path("docs/design/brand_activity/alias/ALIAS_01_MAPPING.json")
@@ -43,8 +47,11 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
         raise TopicRequestError(str(exc)) from exc
     if brand_set is None:
         return None
-    topic_index = _topic_brand_index()
+    topic_rows = _fetch_topic_rows()
+    topic_index = _topic_brand_index(topic_rows)
     aliases = _alias_lookup()
+    topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows, aliases=aliases)
+    is_sliced = _is_sliced_request(request)
     return {
         "scope": {
             "view": request["view"],
@@ -56,15 +63,30 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             "resolved_market": _resolved_market_payload(request, brand_set),
             "visit_location": request["visit_location"],
             "specialty": request["specialty"],
+            "period_start": request["period_start"],
+            "period_end": request["period_end"],
             "top_n": request["top_n"],
-            "sliced": False,
+            "sliced": is_sliced,
+            "topic_set_version": topic_scope.get("topic_set_version"),
             "filter_effect": {
                 "brand_set": "channel_axis_applied" if brand_set.channel_axis else "base",
-                "payload": "precomputed_scope_not_resliced",
+                "payload": "row_topic_assignment_filtered" if is_sliced else "precomputed_scope_not_resliced",
             },
         },
         "brands": [
-            _topic_brand_item(brand_set, choice_key=choice.brand_key, topic_index=topic_index, aliases=aliases, top_n=int(request["top_n"]))
+            (
+                _sliced_topic_brand_item(
+                    brand_set,
+                    choice_key=choice.brand_key,
+                    topic_scope=topic_scope,
+                    topic_index=topic_index,
+                    request=request,
+                    aliases=aliases,
+                    top_n=int(request["top_n"]),
+                )
+                if is_sliced and topic_scope
+                else _topic_brand_item(brand_set, choice_key=choice.brand_key, topic_index=topic_index, aliases=aliases, top_n=int(request["top_n"]))
+            )
             for choice in brand_set.choices
         ],
     }
@@ -88,14 +110,16 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         "filter": filter_payload,
         "visit_location": _text(payload.get("visit_location")) or "전체",
         "specialty": _text(payload.get("specialty")) or "전체",
+        "period_start": _text(payload.get("period_start") or filter_payload.get("period_start")),
+        "period_end": _text(payload.get("period_end") or filter_payload.get("period_end")),
         "top_n": max(1, min(top_n, 10)),
     }
 
 
-def _topic_brand_index() -> dict[str, dict[str, JsonValue]]:
+def _topic_brand_index(topic_rows: Sequence[dict[str, JsonValue]] | None = None) -> dict[str, dict[str, JsonValue]]:
     """Build a normalized English brand name index from stored topic payloads."""
     index: dict[str, dict[str, JsonValue]] = {}
-    for row in _fetch_topic_rows():
+    for row in topic_rows if topic_rows is not None else _fetch_topic_rows():
         payload = _json_object(row.get("payload"))
         for raw_brand in _json_list(payload.get("brands")):
             brand = _json_object(raw_brand)
@@ -133,6 +157,78 @@ def _topic_brand_item(
     }
 
 
+def _sliced_topic_brand_item(
+    brand_set: BrandSetResolution,
+    *,
+    choice_key: str,
+    topic_scope: dict[str, JsonValue],
+    topic_index: dict[str, dict[str, JsonValue]],
+    request: dict[str, JsonValue],
+    aliases: dict[str, str],
+    top_n: int,
+) -> dict[str, JsonValue]:
+    """Project one brand from row-topic assignments under keyword filters."""
+    meta = brand_set.brand_meta[choice_key]
+    choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
+    rows = _fetch_sliced_topic_rows(
+        scope_id=_text(topic_scope.get("scope_id")),
+        topic_set_version=_text(topic_scope.get("topic_set_version")),
+        product_codes=_brand_product_codes(meta, aliases),
+        visit_location=_text(request.get("visit_location")),
+        specialty=_text(request.get("specialty")),
+        period_start=_text(request.get("period_start")),
+        period_end=_text(request.get("period_end")),
+    )
+    stored = _stored_brand_topics(meta, topic_index, aliases)
+    axis_labels = _axis_topic_label_index(topic_scope)
+    brand_labels = _brand_topic_label_index(stored)
+    axis_topics: list[dict[str, JsonValue]] = []
+    brand_topics: list[dict[str, JsonValue]] = []
+    event_count = 0
+    for row in rows:
+        event_count = max(event_count, _integer(row.get("brand_total_rows")))
+        topic_id = _text(row.get("topic_id"))
+        labels = brand_labels if topic_id.startswith("B") else axis_labels
+        topic = {
+            "topic_id": topic_id,
+            "label": _text(labels.get(topic_id, {}).get("label")),
+            "share_pct": _numeric(row.get("share_pct")),
+            "row_count": _integer(row.get("affected_row_count")),
+        }
+        if topic_id.startswith("B"):
+            brand_specific = {
+                **topic,
+                "definition": _text(labels.get(topic_id, {}).get("definition")),
+            }
+            brand_topics.append(brand_specific)
+        else:
+            axis_topics.append(topic)
+    axis_topics.sort(key=lambda topic: _number(topic.get("share_pct")), reverse=True)
+    ranked_topics = [
+        {
+            "rank": index,
+            "topic_id": _text(topic.get("topic_id")),
+            "label": _text(topic.get("label")),
+            "share_pct": _number(topic.get("share_pct")),
+            "row_count": _integer(topic.get("row_count")),
+        }
+        for index, topic in enumerate(axis_topics[:top_n], start=1)
+    ]
+    brand_topics.sort(key=lambda topic: _number(topic.get("share_pct")), reverse=True)
+    return {
+        "brand_key": choice.brand_key,
+        "brand_name": choice.brand_name,
+        "is_jw": meta.is_jw,
+        "is_selected": choice.is_selected,
+        "sales_rank": choice.sales_rank,
+        "event_count": event_count,
+        "topic_shares": ranked_topics,
+        "topics": ranked_topics,
+        "etc_pct": max(0.0, 100.0 - sum(_number(topic.get("share_pct")) for topic in ranked_topics)),
+        "brand_specific_topics": brand_topics,
+    }
+
+
 def _stored_brand_topics(
     meta: BrandMeta,
     topic_index: dict[str, dict[str, JsonValue]],
@@ -145,6 +241,158 @@ def _stored_brand_topics(
             if key and key in topic_index:
                 return topic_index[key]
     return None
+
+
+def _is_sliced_request(request: dict[str, JsonValue]) -> bool:
+    """Return whether keyword filters require row-topic aggregation."""
+    return any(
+        (
+            _text(request.get("visit_location")) not in {"", "전체"},
+            _text(request.get("specialty")) not in {"", "전체"},
+            bool(_text(request.get("period_start"))),
+            bool(_text(request.get("period_end"))),
+        )
+    )
+
+
+def _topic_scope(
+    *,
+    brand_set: BrandSetResolution,
+    topic_rows: Sequence[dict[str, JsonValue]],
+    aliases: dict[str, str],
+) -> dict[str, JsonValue]:
+    """Resolve the stored topic scope that backs one brand-set request."""
+    direct_scope_id = f"atc4:{brand_set.market_id}"
+    for row in topic_rows:
+        if _text(row.get("scope_id")) == direct_scope_id:
+            return _scope_catalog_row(row)
+    selected_meta = brand_set.brand_meta.get(brand_set.selected_brand)
+    if selected_meta is None:
+        return {}
+    selected_codes = set(_brand_product_codes(selected_meta, aliases))
+    for row in topic_rows:
+        payload = _json_object(row.get("payload"))
+        for raw_brand in _json_list(payload.get("brands")):
+            brand = _json_object(raw_brand)
+            if normalize_iqvia_en(_text(brand.get("brand"))) in selected_codes:
+                return _scope_catalog_row(row)
+    return {}
+
+
+def _scope_catalog_row(row: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    payload = _json_object(row.get("payload"))
+    scope = _json_object(payload.get("scope"))
+    return {
+        "scope_id": _text(row.get("scope_id") or scope.get("scope_id")),
+        "topic_set_version": _text(row.get("run_id") or payload.get("run_id") or payload.get("tag")),
+        "payload": payload,
+    }
+
+
+def _axis_topic_label_index(topic_scope: dict[str, JsonValue]) -> dict[str, dict[str, JsonValue]]:
+    """Return labels and definitions for shared market-axis topic ids."""
+    payload = _json_object(topic_scope.get("payload"))
+    axis = _json_object(payload.get("axis"))
+    labels: dict[str, dict[str, JsonValue]] = {}
+    for raw_topic in _json_list(axis.get("topics")):
+        topic = _json_object(raw_topic)
+        topic_id = _text(topic.get("topic_id"))
+        if topic_id:
+            labels[topic_id] = {
+                "label": _text(topic.get("label")),
+                "definition": _text(topic.get("definition")),
+            }
+    return labels
+
+
+def _brand_topic_label_index(stored: dict[str, JsonValue] | None) -> dict[str, dict[str, JsonValue]]:
+    """Return labels and definitions for one brand's B* topic ids."""
+    labels: dict[str, dict[str, JsonValue]] = {}
+    if stored is None:
+        return labels
+    for raw_topic in _json_list(stored.get("brand_specific_topics")):
+        topic = _json_object(raw_topic)
+        topic_id = _text(topic.get("topic_id"))
+        if topic_id:
+            labels[topic_id] = {
+                "label": _text(topic.get("label")),
+                "definition": _text(topic.get("definition")),
+            }
+    return labels
+
+
+def _brand_product_codes(meta: BrandMeta, aliases: dict[str, str]) -> tuple[str, ...]:
+    """Return normalized product codes and aliases used by topic row brands."""
+    codes: list[str] = []
+    for code in meta.product_codes:
+        normalized = normalize_iqvia_en(code)
+        if normalized:
+            codes.append(normalized)
+        alias = aliases.get(normalized)
+        if alias:
+            codes.append(alias)
+    return tuple(dict.fromkeys(codes))
+
+
+def _fetch_sliced_topic_rows(
+    *,
+    scope_id: str,
+    topic_set_version: str,
+    product_codes: Sequence[str],
+    visit_location: str,
+    specialty: str,
+    period_start: str,
+    period_end: str,
+) -> list[dict[str, JsonValue]]:
+    """Aggregate row-topic assignments under keyword row filters."""
+    if not scope_id or not topic_set_version or not product_codes:
+        return []
+    placeholders = ", ".join(["%s"] * len(product_codes))
+    filters = [
+        "topic_scope.scope_id = %s",
+        f"k.product_name IN ({placeholders})",
+    ]
+    params: list[object] = [scope_id, *product_codes]
+    if visit_location and visit_location != "전체":
+        filters.append("k.visit_location = %s")
+        params.append(visit_location)
+    if specialty and specialty != "전체":
+        filters.append("k.specialty = %s")
+        params.append(specialty)
+    if period_start:
+        filters.append("k.period_ym >= %s")
+        params.append(period_start)
+    if period_end:
+        filters.append("k.period_ym <= %s")
+        params.append(period_end)
+    where_clause = " AND ".join(filters)
+    schema = quote_identifier(config.brand_activity_db_name)
+    sql = f"""
+        WITH scoped_rows AS (
+            SELECT DISTINCT k.id AS row_id
+            FROM {schema}.`km_keyword_event_stage` k
+            JOIN {schema}.`mart_brand_activity_topics` topic_scope
+              ON JSON_CONTAINS(topic_scope.atc4_values, JSON_QUOTE(k.therapeutic_class), '$')
+            WHERE {where_clause}
+        ),
+        denominator AS (
+            SELECT COUNT(DISTINCT row_id) AS brand_total_rows
+            FROM scoped_rows
+        )
+        SELECT a.topic_id AS topic_id,
+               COUNT(DISTINCT a.row_id) AS affected_row_count,
+               denominator.brand_total_rows AS brand_total_rows,
+               ROUND(COUNT(DISTINCT a.row_id) * 100.0 / NULLIF(denominator.brand_total_rows, 0), 2) AS share_pct
+        FROM {schema}.`row_topic_assignment` a
+        JOIN scoped_rows ON scoped_rows.row_id = a.row_id
+        JOIN denominator
+        WHERE a.scope_id = %s
+          AND a.topic_set_version = %s
+        GROUP BY a.topic_id, denominator.brand_total_rows
+        HAVING denominator.brand_total_rows > 0
+        ORDER BY share_pct DESC, topic_id
+    """
+    return db.fetch_all(sql, (*params, scope_id, topic_set_version))
 
 
 def _ranked_topics(stored: dict[str, JsonValue] | None, *, top_n: int) -> list[dict[str, JsonValue]]:
@@ -234,4 +482,16 @@ def _alias_lookup() -> dict[str, str]:
 
 def _integer(value: JsonValue) -> int:
     """Return a numeric JSON scalar as int."""
-    return int(value) if isinstance(value, int | float) else 0
+    return int(_numeric(value))
+
+
+def _numeric(value: JsonValue) -> float:
+    """Return DB or JSON numeric values as float."""
+    if isinstance(value, int | float | Decimal):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0

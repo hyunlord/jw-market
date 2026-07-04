@@ -73,6 +73,8 @@ class BrandActivityTopicsRequest(BaseModel):
     channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description="UBIST 종별/진료과 value-slice 필터. filters.channel_axis와 동일하게 처리됩니다.")
     visit_location: str = Field(default="전체", description="키워드 설문 방문 장소 필터.")
     specialty: str = Field(default="전체", description="키워드 설문 진료과 필터.")
+    period_start: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
+    period_end: str | None = Field(default=None, description="키워드 집계 종료월 YYYY-MM.")
     top_n: int = Field(default=5, ge=1, le=10, description="브랜드 카드당 상위 토픽 개수.")
 
 
