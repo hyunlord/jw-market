@@ -29,7 +29,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: crawler
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:6b05a5cafae62388f2e2f6806df97c527ce91011e92b23ef408c6e805cc7acb9
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
               imagePullPolicy: IfNotPresent
               resources:
                 requests:
@@ -93,9 +93,10 @@ spec:
                     --score \
                     --weekday-slice "$WEEKDAY" \
                     --days 7 \
+                    --tier2-concurrent-sites 4 \
                     --max-pages-per-site 3 \
                     --max-links-per-page 80 \
-                    --delay-sec 2 \
+                    --delay-sec 5 \
                     --output-dir "$RAW" \
                     --processed-dir "$SCORED" \
                     --brand-plan-output "$WORK/tier2_brand_plan.json"
@@ -107,7 +108,7 @@ spec:
                   article_files = [
                       path
                       for path in raw.rglob("*.json")
-                      if path.name not in {"crawl_report.json", "tier2_brand_plan.json"}
+                      if path.name not in {"crawl_report.json", "tier2_brand_plan.json", "tier2_site_report.json"}
                       and not path.name.endswith("_report.json")
                   ]
                   print(f"CRAWL_ARTICLE_FILE_COUNT={len(article_files)}")
