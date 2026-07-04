@@ -1744,7 +1744,7 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
         label = source_label(str(data.get("source_label") or call.get("source") or ""))
         if label in {"UBIST", "IQVIA"}:
             labels.add(label)
-    data_labels = sorted(label for label in labels if label in {"UBIST", "IQVIA"})
+    data_labels = sorted(label for label in labels if label in {"UBIST", "IQVIA", "IQVIA NSA"})
     if not data_labels:
         return []
     periods = _period_range(calls)
@@ -1760,6 +1760,9 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
     market_detail = _market_detail_text(market=market, market_name=market_name, view=view, denominator=denominator)
     if market_detail:
         extra_details.append(market_detail)
+    structure_detail = _market_structure_detail(calls)
+    if structure_detail:
+        extra_details.append(structure_detail)
     denominator_note = _market_landscape_denominator_note(
         query_specs=query_specs,
         primary_market=market,
@@ -1796,6 +1799,33 @@ def _market_detail_text(*, market: str, market_name: str, view: str, denominator
     if qualifiers:
         return f"시장: {label} ({', '.join(qualifiers)})"
     return f"시장: {label}"
+
+
+def _market_structure_detail(calls: list[dict[str, Any]]) -> str:
+    structure = _first_market_structure(calls)
+    if not structure or str(structure.get("type") or "") != "class_split":
+        return ""
+    axis_label = str(structure.get("display_axis_label") or "Class 2").strip() or "Class 2"
+    denominator = structure.get("display_denominator")
+    axis_text = f"{axis_label} 기준"
+    if denominator not in (None, ""):
+        axis_text = f"{axis_text} 분모 {denominator}"
+    guardrail = str(
+        structure.get("comparison_guardrail")
+        or "전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음"
+    ).strip()
+    return f"Class 구분 존재: 운영 노출은 {axis_text}; {guardrail}"
+
+
+def _first_market_structure(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    for call in calls:
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        structure = data.get("market_structure")
+        if isinstance(structure, dict):
+            return structure
+    return {}
 
 
 def _market_landscape_denominator_note(

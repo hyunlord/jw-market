@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from jw_chat_agent_poc.tools.query_layer.market_structure import CLASS_2_KEY, structure_from_records
 from jw_chat_agent_poc.tools.query_layer.store import MartSnapshot
 
 
@@ -13,6 +14,7 @@ BASE_DIMENSIONS: Final[tuple[str, ...]] = (
     "channel",
     "specialty",
     "molecule",
+    "class_2",
     "dosage_form",
     "nhi_type",
     "ox_gx",
@@ -33,10 +35,12 @@ class QueryCatalog:
     metrics: tuple[str, ...] = METRICS
     derivations: tuple[str, ...] = DERIVATIONS
     sorts: tuple[str, ...] = SORTS
+    market_structure: dict[str, object] | None = None
 
     @classmethod
     def from_snapshot(cls, snapshot: MartSnapshot, market: str, source: str = "ubist") -> "QueryCatalog":
         records = snapshot.market_records(market, source, "sales")
+        structure = structure_from_records(records)
         available: list[str] = []
         if any(record.channel_data for record in records):
             available.append("channel")
@@ -44,7 +48,9 @@ class QueryCatalog:
             available.append("specialty")
         if any(record.molecule() for record in records):
             available.append("molecule")
-        if any(record.dosage_form() or record.class_label() for record in records):
+        if structure.get("display_axis") == CLASS_2_KEY:
+            available.append(CLASS_2_KEY)
+        elif any(record.dosage_form() or record.class_label() for record in records):
             available.append("dosage_form")
         if any(record.nhi_type() for record in records):
             available.append("nhi_type")
@@ -52,7 +58,14 @@ class QueryCatalog:
             available.append("ox_gx")
         available.extend(("product", "company"))
         dimensions = tuple(item for item in BASE_DIMENSIONS if item in set(available))
-        return cls(market=market, source=source, view="market_landscape", dimensions=dimensions, group_by=(*dimensions, "period"))
+        return cls(
+            market=market,
+            source=source,
+            view="market_landscape",
+            dimensions=dimensions,
+            group_by=(*dimensions, "period"),
+            market_structure=structure or None,
+        )
 
     def schema_fragment(self) -> dict[str, tuple[str, ...]]:
         return {

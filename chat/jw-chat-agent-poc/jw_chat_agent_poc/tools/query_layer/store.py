@@ -50,6 +50,12 @@ class MartRecord:
     def class_label(self) -> str:
         return str(self.by_dimension.get("class") or "")
 
+    def class_1(self) -> str:
+        return str(self.by_dimension.get("class_1") or "")
+
+    def class_2(self) -> str:
+        return str(self.by_dimension.get("class_2") or "")
+
     def dosage_form(self) -> str:
         return str(self.by_dimension.get("dosage_form") or "")
 

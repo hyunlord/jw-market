@@ -62,6 +62,8 @@ def level_name(spec: Mapping[str, Any]) -> str:
         return "Brand"
     if key == "molecule":
         return "Molecule"
+    if key == "class_2":
+        return "class_2"
     return key
 
 
@@ -71,6 +73,8 @@ _LEVEL_DISPLAY_NAMES: Final[dict[str, str]] = {
     "product": "브랜드",
     "Molecule": "성분",
     "molecule": "성분",
+    "class_1": "Class 1",
+    "class_2": "Class 2",
     "dosage_form": "제형",
     "channel": "채널",
     "specialty": "진료과",
@@ -93,6 +97,10 @@ def dimension_value(record: MartRecord, key: str) -> str:
         return record.company() or "unknown"
     if key == "molecule":
         return record.molecule() or "unknown"
+    if key == "class_1":
+        return record.class_1() or "unknown"
+    if key == "class_2":
+        return record.class_2() or "unknown"
     if key == "dosage_form":
         return record.dosage_form() or record.class_label() or "unknown"
     if key == "nhi_type":

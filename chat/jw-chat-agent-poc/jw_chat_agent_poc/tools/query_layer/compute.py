@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.tools.query_layer.render import level_segments, metric_name, source_label
+from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, dimension_value
 from jw_chat_agent_poc.tools.query_layer.store import MartRecord, MartSnapshot
 
@@ -13,7 +14,8 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
         raise LookupError(f"mart metric row missing or failed: market={market} source={source} brand={record.brand_name} period={period}")
     market_value = snapshot.market_value_or_none(market, period, source)
     series_periods = snapshot.periods(market, source)[-10:]
-    return {
+    structure = market_structure(snapshot, market, source)
+    data = {
         "brand": record.brand_name,
         "metric": metric_name(metric),
         "period": period,
@@ -35,6 +37,9 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
         "level_segments": level_segments(snapshot.ranked_brands(market, period, source)[:10]),
         "level_top5_trend_series": top_trend(snapshot, market, source, period, record.brand_name),
     }
+    if structure:
+        data["market_structure"] = structure
+    return data
 
 
 def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anchor_brand: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -277,7 +282,7 @@ def _record_matches(record: MartRecord, filters: Mapping[str, Any]) -> bool:
     brand = str(filters.get("brand") or "")
     if brand and record.brand_name != brand:
         return False
-    for key in ("company", "molecule", "dosage_form", "nhi_type", "ox_gx"):
+    for key in ("company", "molecule", "class_1", "class_2", "dosage_form", "nhi_type", "ox_gx"):
         expected = str(filters.get(key) or "")
         if expected and dimension_value(record, key) != expected:
             return False

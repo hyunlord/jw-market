@@ -19,6 +19,7 @@ from jw_chat_agent_poc.tools.query_layer.render import (
     result_rows_from_render_data,
     source_label,
 )
+from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, bounded_limit, level_name, parse_spec, validate_spec
 from jw_chat_agent_poc.tools.query_layer.store import (
     MariaDbStrategicMartReader,
@@ -105,26 +106,30 @@ class StrategicQueryLayer:
         ranked = snapshot.ranked_brands(market, latest, source)
         rows = ranked[:10]
         result_id = self._results.put(rows)
+        structure = market_structure(snapshot, market, source)
+        render_data: dict[str, Any] = {
+            "market": market,
+            "market_id": market,
+            "market_name": market,
+            "level": "Brand",
+            "view_type": "market_landscape",
+            "period": latest,
+            "anchor_brand": brand,
+            "member_brands": tuple(row["brand"] for row in ranked),
+            "market_size_recent_krw": snapshot.market_value(market, latest, source),
+            "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
+            "level_segments": level_segments(rows),
+            "source_label": source_label(source),
+            "query_result_id": result_id,
+            "query_spec": {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc"},
+        }
+        if structure:
+            render_data["market_structure"] = structure
         return {
             "source": source_label(source),
             "tool": "get_market_landscape",
             "summary_text": f"{brand}이 속한 {market} 시장의 상위 브랜드를 전략 mart에서 조회했습니다.",
-            "render_data": {
-                "market": market,
-                "market_id": market,
-                "market_name": market,
-                "level": "Brand",
-                "view_type": "market_landscape",
-                "period": latest,
-                "anchor_brand": brand,
-                "member_brands": tuple(row["brand"] for row in ranked),
-                "market_size_recent_krw": snapshot.market_value(market, latest, source),
-                "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
-                "level_segments": level_segments(rows),
-                "source_label": source_label(source),
-                "query_result_id": result_id,
-                "query_spec": {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc"},
-            },
+            "render_data": render_data,
         }
 
     def market_member_metric(self, anchor_brand: str, member_brand: str) -> dict[str, Any]:
@@ -152,6 +157,7 @@ class StrategicQueryLayer:
         source = snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         ranked = snapshot.ranked_brands(market, latest, source)[: max(1, min(limit, 20))]
+        structure = market_structure(snapshot, market, source)
         data = {
             "brand": brand,
             "metric": "market_top_brands",
@@ -165,6 +171,8 @@ class StrategicQueryLayer:
             "market_size_recent_krw": snapshot.market_value(market, latest, source),
             "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
         }
+        if structure:
+            data["market_structure"] = structure
         data["query_result_id"] = self._results.put(ranked)
         data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
@@ -254,6 +262,7 @@ class StrategicQueryLayer:
         result_id = self._results.put(rows)
         filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
         subject_brand = str(filters.get("brand") or fallback_brand)
+        structure = market_structure(snapshot, market, source)
         data = {
             "brand": subject_brand,
             "metric": "query_spec",
@@ -268,6 +277,8 @@ class StrategicQueryLayer:
             "applied_filters": filters,
             "schema_ok": True,
         }
+        if structure:
+            data["market_structure"] = structure
         group_by = tuple(as_list(spec.get("group_by")))
         if "period" in group_by or "trend" in derive:
             trends = grouped_trends(snapshot, market, source, spec, limit)
@@ -295,6 +306,9 @@ class StrategicQueryLayer:
                 "schema_ok": True,
             }
         )
+        structure = market_structure(snapshot, market, source)
+        if structure:
+            data["market_structure"] = structure
         data["query_result_id"] = self._results.put(result_rows_from_render_data(data))
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"query(spec) {data['query_result_id']}를 전략 mart에서 실행했습니다.", "render_data": data}
 

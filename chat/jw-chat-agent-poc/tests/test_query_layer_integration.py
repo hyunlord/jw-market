@@ -77,6 +77,21 @@ def test_query_schema_injects_market_catalog_enums() -> None:
     assert "nhi_type" not in dimension_enum
 
 
+def test_query_catalog_exposes_class2_only_for_split_market() -> None:
+    """Given a dual-class market, catalog preserves split metadata while exposing Class 2 for grouping."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records()))
+
+    catalog = layer.catalog_for_brand("악템라")
+
+    assert "class_2" in catalog.dimensions
+    assert "class_1" not in catalog.dimensions
+    assert "dosage_form" not in catalog.dimensions
+    assert catalog.market_structure["type"] == "class_split"
+    assert catalog.market_structure["display_axis"] == "class_2"
+    assert {axis["key"] for axis in catalog.market_structure["axes"]} == {"class_1", "class_2"}
+
+
 def test_facade_prefers_query_layer_for_strategic_metric() -> None:
     """Given the query layer is available, get_metric returns mart-derived facts."""
 
@@ -282,6 +297,31 @@ def test_query_spec_builds_dimension_trend_for_period_grouping() -> None:
     assert [point["period"] for point in first["series"]] == ["2026-02", "2026-03", "2026-04"]
     assert first["from_ms_pct"] == first["series"][0]["ms_pct"]
     assert first["to_ms_pct"] == first["series"][-1]["ms_pct"]
+
+
+def test_query_spec_groups_class2_for_split_market() -> None:
+    """Given a split market, query(spec) can group the exposed Class 2 population."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records()))
+
+    call = layer.query(
+        {
+            "market": "ml_011",
+            "source": "iqvia_nsa",
+            "dimensions": ["class_2"],
+            "group_by": ["class_2"],
+            "metrics": ["sales"],
+        },
+        fallback_brand="악템라",
+    )
+
+    data = call["render_data"]
+    rows = {row["name"]: row for row in data["level_segments"]}
+    assert data["level"] == "class_2"
+    assert data["market_structure"]["type"] == "class_split"
+    assert data["market_structure"]["display_axis"] == "class_2"
+    assert rows["IL-6"]["value"] == pytest.approx(7_000_000_000.0)
+    assert rows["JAK"]["value"] == pytest.approx(3_000_000_000.0)
 
 
 def test_query_spec_calculates_yoy_growth_and_average_share() -> None:
@@ -707,6 +747,41 @@ def _portfolio_records() -> tuple[MartRecord, ...]:
     }
     totals = [sum(series[index] for series in values.values()) for index in range(len(periods))]
     return tuple(_record_with_market("ml_012", brand, series, periods, totals) for brand, series in values.items())
+
+
+def _split_class_records() -> tuple[MartRecord, ...]:
+    periods = ("2025-Q4",)
+    values = {
+        "악템라": (4_000_000_000.0, "Biologic", "IL-6"),
+        "케브자라": (3_000_000_000.0, "Biologic", "IL-6"),
+        "올루미언트": (2_000_000_000.0, "JAK", "JAK"),
+        "린버크": (1_000_000_000.0, "JAK", "JAK"),
+    }
+    total = sum(float(item[0]) for item in values.values())
+    return tuple(
+        _split_record(brand, float(value), periods[0], total, class_1, class_2)
+        for brand, (value, class_1, class_2) in values.items()
+    )
+
+
+def _split_record(brand: str, value: float, period: str, total: float, class_1: str, class_2: str) -> MartRecord:
+    history = {period: {"raw_value": value, "ms": value / total * 100, "source_status": "OK"}}
+    return MartRecord(
+        ml_id="ml_011",
+        brand_name=brand,
+        source="iqvia_nsa",
+        measure="sales",
+        metric_history=history,
+        channel_data={},
+        specialty_data={},
+        dimension_data={"class_1": {class_1: history}, "class_2": {class_2: history}},
+        by_dimension={
+            "company": "테스트제약",
+            "molecule": f"{brand}성분",
+            "class_1": class_1,
+            "class_2": class_2,
+        },
+    )
 
 
 def _record(brand: str, values: tuple[float, ...], periods: tuple[str, ...], totals: list[float]) -> MartRecord:

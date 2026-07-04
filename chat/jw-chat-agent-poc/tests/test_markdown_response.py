@@ -1124,6 +1124,47 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_pat
     assert "6/470/516" not in block
 
 
+def test_source_block_notes_split_market_class2_basis() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "IQVIA NSA",
+                "render_data": {
+                    "source_label": "IQVIA NSA",
+                    "brand": "악템라",
+                    "metric": "sales",
+                    "period": "2025-Q4",
+                    "market_id": "ml_011",
+                    "market_name": "악템라",
+                    "view": "market_landscape",
+                    "total_brands_in_market": 26,
+                    "rank": "3/26",
+                    "market_structure": {
+                        "type": "class_split",
+                        "display_axis": "class_2",
+                        "display_axis_label": "Class 2",
+                        "display_denominator": 12,
+                        "axes": [
+                            {"key": "class_1", "label": "Class 1", "exposure": "catalog_only"},
+                            {"key": "class_2", "label": "Class 2", "exposure": "display"},
+                        ],
+                    },
+                },
+            }
+        ],
+        ["IQVIA NSA"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "- 데이터 상세: IQVIA NSA — 기간 2025-Q4, 시장: 악템라 (market_landscape, 분모 26)" in block
+    assert "Class 구분 존재" in block
+    assert "Class 2 기준 분모 12" in block
+    assert "전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음" in block
+    assert "Class 1 기준" not in block
+
+
 def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_market() -> None:
     fact_md = answer_fact_markdown(
         [
