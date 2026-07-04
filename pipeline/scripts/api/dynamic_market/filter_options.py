@@ -113,7 +113,8 @@ def build_filter_options(
         market_id=market_id,
     )
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
-    parsed_atc4_codes = _parse_atc4_codes(resolved_market_id, atc4_codes)
+    market_id_for_atc = resolved_market_id if normalized_view == "general" else None
+    parsed_atc4_codes = _parse_atc4_codes(market_id_for_atc, atc4_codes)
     parsed_selections = _parse_selection_map(selections)
     payload = _build_filter_options_uncached(
         mart_db=mart_db,
@@ -129,25 +130,15 @@ def build_filter_options(
     brand_matched: dict[str, list[str]] = {}
     if normalized_brand:
         payload["brand"] = normalized_brand
-        brand_matched = _load_brand_dimension_matches(
-            dimension_db=dimension_db,
-            brand=normalized_brand,
-            view=normalized_view,
-            source=normalized_source,
-            market_id=resolved_market_id,
-            measure=normalized_measure,
-        )
-        if normalized_view == "strategic":
-            brand_matched.update(
-                _load_strategic_brand_by_dimension_matches(
-                    mart_db=mart_db,
-                    brand=normalized_brand,
-                    source=normalized_source,
-                    market_id=resolved_market_id,
-                    measure=normalized_measure,
-                )
-            )
         if normalized_view == "general" and parsed_atc4_codes:
+            brand_matched = _load_brand_dimension_matches(
+                dimension_db=dimension_db,
+                brand=normalized_brand,
+                view=normalized_view,
+                source=normalized_source,
+                market_id=resolved_market_id,
+                measure=normalized_measure,
+            )
             brand_matched.setdefault("atc4", [parsed_atc4_codes[0]])
         payload["brand_matched"] = brand_matched
     _apply_option_state(
@@ -265,16 +256,6 @@ def _build_filter_options_uncached(
     atc4_codes: Sequence[str],
     selections: Mapping[str, Sequence[str]],
 ) -> dict[str, object]:
-    dimensions = _load_dimension_options(
-        mart_db=mart_db,
-        dimension_db=dimension_db,
-        view=view,
-        source=source,
-        market_id=market_id,
-        measure=measure,
-        atc4_codes=atc4_codes,
-        selections=selections,
-    )
     atc_rows = _load_atc_rows(
         mart_db=mart_db,
         view=view,
@@ -282,15 +263,29 @@ def _build_filter_options_uncached(
         market_id=market_id,
         atc4_codes=atc4_codes,
     )
-    channel_axis = _load_channel_axis_options(
-        mart_db=mart_db,
-        view=view,
-        source=source,
-        market_id=market_id,
-        measure=measure,
-        brand=brand,
-        atc4_codes=atc4_codes,
-    )
+    if view == "strategic":
+        dimensions: tuple[DimensionOptionRow, ...] = ()
+        channel_axis: dict[str, object] = {}
+    else:
+        dimensions = _load_dimension_options(
+            mart_db=mart_db,
+            dimension_db=dimension_db,
+            view=view,
+            source=source,
+            market_id=market_id,
+            measure=measure,
+            atc4_codes=atc4_codes,
+            selections=selections,
+        )
+        channel_axis = _load_channel_axis_options(
+            mart_db=mart_db,
+            view=view,
+            source=source,
+            market_id=market_id,
+            measure=measure,
+            brand=brand,
+            atc4_codes=atc4_codes,
+        )
     return build_filter_option_payload(
         view=view,
         source=source,
@@ -553,13 +548,6 @@ def _load_channel_axis_options(
 ) -> dict[str, object]:
     """Build source-specific channel-axis registries from scoped raw matrices."""
 
-    if view == "strategic" and source == "ubist":
-        return _load_strategic_channel_axis_options(
-            mart_db=mart_db,
-            market_id=market_id,
-            measure=measure,
-            brand=brand,
-        )
     if view != "general" or not atc4_codes:
         return {}
     if source == "iqvia_nsa":

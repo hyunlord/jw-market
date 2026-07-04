@@ -252,46 +252,25 @@ def test_general_filter_options_adds_iqvia_audit_code_registry_from_matrix(monke
     ]
 
 
-def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monkeypatch) -> None:
+def test_strategic_filter_options_exposes_only_atc_hierarchy(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
 
     def fake_resolve(**_kwargs: object) -> str:
         return "ml_006"
 
     def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
-        if "mart_strategic_filter_dimension_metric" in sql and "brand_name" not in sql:
-            return [
-                {"dimension_type": "seller", "dimension_value": "JW중외제약", "dimension_value_norm": "jw중외제약", "row_count": 3},
-            ]
-        if "ubist_channel_by_code" in sql:
-            assert params == ["ml_006", "ubist", "sales"]
-            return [
-                {
-                    "brand_key": "리바로",
-                    "brand_name": "리바로",
-                    "ubist_channel_by_code": '{"GH Endo": {"2026-05": 10}, "CL Cardio": {"2026-05": 20}}',
-                },
-                {
-                    "brand_key": "경쟁",
-                    "brand_name": "경쟁",
-                    "ubist_channel_by_code": '{"GH GI": {"2026-05": 30}}',
-                },
-            ]
-        if "mart_strategic_filter_dimension_metric" in sql and "brand_name" in sql:
-            return [{"dimension_type": "seller", "dimension_value_norm": "jw중외제약"}]
-        if "analysis_levels" in sql:
-            return [{"analysis_levels": '{"class": {}, "molecule": {}}'}]
         if "JSON_EXTRACT(by_dimension" in sql:
             return [{"atc4_code": "C10A1"}]
-        if "by_dimension" in sql and "brand_name" in sql:
-            return [
-                {"by_dimension": '{"class": "Statin", "molecule": "PITAVASTATIN"}'},
-            ]
-        if "by_dimension" in sql:
-            return [
-                {"by_dimension": '{"class": "Statin", "molecule": "PITAVASTATIN"}'},
-                {"by_dimension": '{"class": "Statin", "molecule": "ROSUVASTATIN"}'},
-            ]
+        forbidden = (
+            "mart_strategic_filter_dimension_metric",
+            "analysis_levels",
+            "by_dimension",
+            "ubist_channel_by_code",
+            "audit_code_matrix",
+            "channel_specialty_matrix",
+        )
+        if any(token in sql for token in forbidden):
+            raise AssertionError(f"strategic filter-options must stay ATC-only, got query: {sql}")
         raise AssertionError(sql)
 
     monkeypatch.setattr(filter_options, "resolve_filter_option_market_id", fake_resolve)
@@ -306,36 +285,18 @@ def test_strategic_filter_options_marks_all_values_default_and_flags_brand(monke
         brand="리바로",
     )
 
-    class_dimension = next(dimension for dimension in payload["dimensions"] if dimension["dimension_type"] == "class")
-    assert class_dimension["values"] == [
-        {"key": "statin", "value": "Statin", "row_count": 2, "default": True, "selected": True, "flag": True},
-    ]
-    molecule = next(dimension for dimension in payload["dimensions"] if dimension["dimension_type"] == "molecule")
-    assert molecule["values"] == [
-        {"key": "pitavastatin", "value": "PITAVASTATIN", "row_count": 1, "default": True, "selected": True, "flag": True},
-        {"key": "rosuvastatin", "value": "ROSUVASTATIN", "row_count": 1, "default": True, "selected": True, "flag": False},
-    ]
-    assert payload["default_selections"]["class"] == ["statin"]
-    assert payload["default_selections"]["molecule"] == ["pitavastatin", "rosuvastatin"]
+    assert payload["dimensions"] == []
+    assert "channel_axis" not in payload
+    assert payload["brand_matched"] == {}
     assert payload["atc"]["atc4"][0]["default"] is True
     assert payload["atc"]["atc4"][0]["selected"] is True
-    assert {"key": "의원", "value": "의원", "row_count": 1, "default": False, "selected": False, "flag": True} in payload["channel_axis"]["ubist"]["facility"]
-    assert {
-        "key": "내분비(Endocrinology IM)",
-        "value": "내분비(Endocrinology IM)",
-        "row_count": 1,
-        "default": False,
-        "selected": False,
-        "flag": True,
-    } in payload["channel_axis"]["ubist"]["specialty"]
-    assert {
-        "key": "종합병원|소화기(Gastroenterology IM)",
-        "value": {"facility": "종합병원", "specialty": "소화기(Gastroenterology IM)"},
-        "row_count": 1,
-        "default": False,
-        "selected": False,
-        "flag": False,
-    } in payload["channel_axis"]["ubist"]["pairs"]
+    assert payload["default_selections"] == {
+        "atc1": ["C"],
+        "atc2": ["C10"],
+        "atc3": ["C10A"],
+        "atc4": ["C10A1"],
+    }
+    assert payload["applied_selections"] == {}
 
 
 def test_filter_options_openapi_hides_market_id_override() -> None:
