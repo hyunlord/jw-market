@@ -1,0 +1,935 @@
+from __future__ import annotations
+
+import copy
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from jw_chat_agent_poc import ChatAgent
+from jw_chat_agent_poc.agent_loop import should_use_agent_loop
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _sales_delta_calls
+from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
+from jw_chat_agent_poc.agent_loop.planner import HeuristicToolPlanner
+from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.router import BQRouter
+from jw_chat_agent_poc.tools.deep_analysis.news import DeepAnalysisNewsTool, StaticDeepAnalysisNewsReader
+from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.metrics import MetricsTool
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+
+from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD, cause_payload_with_top_brand_trends
+
+
+@dataclass(slots=True)
+class Stage3ScriptedPlanner:
+    decisions: tuple[AgentDecision, ...]
+    index: int = 0
+    allowed_brand_history: list[tuple[str, ...]] | None = None
+    allowed_period_history: list[tuple[str, ...]] | None = None
+    schema_history: list[tuple[dict[str, Any], ...]] | None = None
+
+    def decide(
+        self,
+        _question: str,
+        _observations,
+        schemas: tuple[dict[str, Any], ...],
+        allowed_brands: tuple[str, ...] = (),
+        allowed_periods: tuple[str, ...] = (),
+    ) -> AgentDecision:
+        if self.allowed_brand_history is None:
+            self.allowed_brand_history = []
+        if self.allowed_period_history is None:
+            self.allowed_period_history = []
+        if self.schema_history is None:
+            self.schema_history = []
+        self.allowed_brand_history.append(tuple(allowed_brands))
+        self.allowed_period_history.append(tuple(allowed_periods))
+        self.schema_history.append(schemas)
+        decision = self.decisions[min(self.index, len(self.decisions) - 1)]
+        self.index += 1
+        return decision
+
+
+def _metrics_tool() -> MetricsTool:
+    cache_reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    cause_reader = StaticCausePayloadReader(
+        {
+            ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): CAUSE_PAYLOAD,
+        }
+    )
+    return MetricsTool(mode="cache", cache_reader=cache_reader, cause_reader=cause_reader)
+
+
+def _livalohigh_metrics_tool() -> MetricsTool:
+    cache_reader = StaticMetricsCacheReader(
+        cache_brands=[{"brand": "리바로하이", "market_id": "strategy_011", "market_name": "리바로하이 시장", "sources": ["UBIST"]}],
+        market_status={
+            "brand_cards": [
+                {
+                    "brand": "리바로하이",
+                    "market_id": "strategy_011",
+                    "market_name": "리바로하이 시장",
+                    "rank": 4,
+                    "total_brands_in_market": 18,
+                    "front": {"value_recent": 3_100_000_000.0, "ms_recent_pct": 4.1, "default_source": "UBIST"},
+                    "back": {"cagr_5y_pct": 2.3},
+                    "back_extended": {"market_size_recent": 75_000_000_000.0, "market_cagr_5y_pct": 3.5, "excess_growth_pct": -1.2},
+                }
+            ],
+            "kpi_summary": {"UBIST": {"period_recent": "2026-04"}},
+        },
+    )
+    return MetricsTool(mode="cache", cache_reader=cache_reader, cause_reader=StaticCausePayloadReader({}))
+
+
+def _news_tool() -> DeepAnalysisNewsTool:
+    return DeepAnalysisNewsTool(
+        reader=StaticDeepAnalysisNewsReader(
+            {
+                "리바로": {
+                    "data": {
+                        "events": [
+                            {
+                                "date": "2026-04-12",
+                                "title": "아토젯 약가 이슈 이후 리바로 처방 동향",
+                                "source": "약업신문",
+                                "url": "https://news.example/atozet-livalo",
+                                "impact_score": 82,
+                                "on_list": True,
+                                "summary": "아토젯 이슈와 리바로 시장 반응을 함께 다룬 기사",
+                                "body_full": "아토젯 이슈 이후 리바로 매출 변화가 언급됐다.",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+    )
+
+
+def _resolver_with_atozet(tmp_path) -> BrandResolver:
+    fixture_path = tmp_path / "brand_catalog.json"
+    base_path = Path(__file__).resolve().parents[1] / "jw_chat_agent_poc" / "fixtures" / "brand_catalog.json"
+    catalog = json.loads(base_path.read_text(encoding="utf-8"))
+    catalog.append(
+        {
+            "canonical_brand": "아토젯",
+            "aliases": ["atozet", "ATOZET"],
+            "audit_code": "test_atozet",
+            "molecule_en": ["atorvastatin", "ezetimibe"],
+            "atc": ["C10C0"],
+            "edi_code": None,
+            "item_seq": None,
+        }
+    )
+    fixture_path.write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
+    return BrandResolver(fixture_path=fixture_path)
+
+
+def _metrics_tool_with_atozet() -> MetricsTool:
+    cards = copy.deepcopy(BRAND_CARDS)
+    cards["brand_cards"].append(
+        {
+            "rank": 1,
+            "total_brands_in_market": 516,
+            "brand": "아토젯",
+            "market_id": "strategy_006",
+            "market_name": "리바로/리바로젯",
+            "front": {"value_recent": 26_100_000_000.0, "ms_recent_pct": 11.56, "default_source": "UBIST"},
+            "back": {"cagr_5y_pct": 9.4},
+            "back_extended": {
+                "market_size_recent": 225_677_368_890.97986,
+                "market_cagr_5y_pct": 16.18,
+                "brand_cagr_5y_pct": 9.4,
+                "excess_growth_pct": -6.78,
+                "source_label": "UBIST",
+                "market_label_kor": "고지혈증",
+            },
+        }
+    )
+    brands = [*CACHE_BRANDS, {"brand": "아토젯", "market_id": "strategy_006", "sources": ["UBIST"], "rank": 1}]
+    atozet_payload = copy.deepcopy(CAUSE_PAYLOAD)
+    brand_series = atozet_payload["data"]["level_top5_trend"]["by_level"]["Brand"]["values"][0]["brands_in_value"][0]
+    brand_series["brand"] = "아토젯"
+    brand_series["value_series_10pt"] = [24_900_000_000.0, 25_800_000_000.0, 25_600_000_000.0, 26_100_000_000.0]
+    brand_series["ms_series_10pt"] = [11.1, 11.4, 11.2, 11.56]
+    brand_series["rank_series_10pt"] = [1, 1, 1, 1]
+    brand_series["value_recent"] = 26_100_000_000.0
+    brand_series["ms_recent_pct"] = 11.56
+    brand_series["rank"] = 1
+    cause_reader = StaticCausePayloadReader(
+        {
+            ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): CAUSE_PAYLOAD,
+            ("아토젯", "market_landscape", "UBIST", "sales", "strategy_006"): atozet_payload,
+        }
+    )
+    return MetricsTool(mode="cache", cache_reader=StaticMetricsCacheReader(cache_brands=brands, market_status=cards), cause_reader=cause_reader)
+
+
+def _metrics_tool_with_atozet_segment_only() -> MetricsTool:
+    payload = copy.deepcopy(CAUSE_PAYLOAD)
+    payload["data"]["analysis_levels"]["data"]["Brand"]["ms_segments"] = [
+        {"name": "로수젯", "rank": 1, "recent_share_pct": 9.1659, "value_recent": 20_685_385_934.33},
+        {"name": "아토젯", "rank": 4, "recent_share_pct": 5.1620, "value_recent": 11_648_132_500.0},
+        {"name": "로수바미브", "rank": 5, "recent_share_pct": 4.2897, "value_recent": 9_681_501_337.12},
+    ]
+    cause_reader = StaticCausePayloadReader(
+        {
+            ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): payload,
+        }
+    )
+    return MetricsTool(
+        mode="cache",
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        cause_reader=cause_reader,
+    )
+
+
+def _metrics_tool_with_atozet_trend_only() -> MetricsTool:
+    payload = cause_payload_with_top_brand_trends()
+    cause_reader = StaticCausePayloadReader(
+        {
+            ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): payload,
+        }
+    )
+    return MetricsTool(
+        mode="cache",
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        cause_reader=cause_reader,
+    )
+
+
+def _period_enum(schemas: tuple[dict[str, Any], ...], tool_name: str) -> list[str]:
+    schema = next(item for item in schemas if item["function"]["name"] == tool_name)
+    return schema["function"]["parameters"]["properties"]["period"]["enum"]
+
+
+def _tool_names(result: dict[str, Any]) -> list[str]:
+    return [str(call.get("tool")) for call in result["tool_calls"]]
+
+
+def test_period_grounding_exposes_available_enum_and_blocks_2026_06() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "market_share", "period": "2026-06"}, reason="bad unavailable month"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    payload = cause_payload_with_top_brand_trends()
+    payload["data"]["sources_data"]["market_size_series"] = {
+        "2026-01": {"value": 230_000_000_000.0, "yoy_growth_pct": 21.0},
+        "2026-02": {"value": 215_000_000_000.0, "yoy_growth_pct": 12.0},
+        "2026-03": {"value": 228_838_670_570.0, "yoy_growth_pct": 25.59},
+        "2026-04": {"value": 225_677_368_890.97986, "yoy_growth_pct": 36.88},
+    }
+    brand_block = payload["data"]["level_top5_trend"]["by_level"]["Brand"]
+    brand_block["periods_10pt"] = ["2026-01", "2026-02", "2026-03", "2026-04"]
+    livalo_row = brand_block["values"][0]["brands_in_value"][0]
+    livalo_row["value_series_10pt"] = [9_000_000_000.0, 8_000_000_000.0, 8_711_248_139.54, 8_493_234_217.11]
+    livalo_row["ms_series_10pt"] = [3.91, 3.72, 3.8067, 3.7634]
+    metrics = MetricsTool(
+        mode="cache",
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        cause_reader=StaticCausePayloadReader({("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): payload}),
+    )
+    agent = ChatAgent(router=BQRouter(), metrics=metrics, agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner))
+
+    result = agent.answer("리바로 3달전 대비 점유율 변화?")
+
+    assert planner.allowed_period_history is not None
+    assert "2026-04" in planner.allowed_period_history[0]
+    assert "2026-06" not in planner.allowed_period_history[0]
+    assert planner.schema_history is not None
+    assert "2026-06" not in _period_enum(planner.schema_history[0], "get_metric")
+    assert result["tool_calls"][0]["tool"] == "unsupported_metric"
+    assert "available period enum" in result["tool_calls"][0]["summary_text"]
+    assert all(call.get("render_data", {}).get("period") != "2026-06" for call in result["tool_calls"])
+
+
+def test_share_delta_completion_fetches_metrics_when_planner_only_resolves_date() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="resolve_relative_date", arguments={"expression": "3달전"}, reason="비교 기간 확인"),
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "market_share", "period": "2026-01"}, reason="잘못 고른 비교 월"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, current_month=lambda: "2026-06"),
+    )
+
+    result = agent.answer("리바로 3달전 대비 점유율 변화")
+
+    periods = [
+        call.get("render_data", {}).get("period")
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric"
+    ]
+    calculations = [
+        call.get("render_data", {})
+        for call in result["tool_calls"]
+        if call.get("tool") == "agent_calculation"
+    ]
+    assert "2026-03" in periods
+    assert "2026-04" in periods
+    assert any(item.get("metric") == "market_share_delta" and item.get("period") == "2026-03→2026-04" for item in calculations)
+    assert "점유율 변화" in result["markdown_response"]["fact_md"]
+    assert "필수 답변 fact" in result["markdown_response"]["fact_md"]
+    assert "2026-03→2026-04" in result["markdown_response"]["fact_md"]
+
+
+def test_share_delta_calculation_uses_series_when_planner_returns_series_metric() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="resolve_relative_date", arguments={"expression": "3달전"}, reason="비교 기간 확인"),
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "series", "period": "latest"}, reason="시계열 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, current_month=lambda: "2026-06"),
+    )
+
+    result = agent.answer("리바로 3달전 대비 점유율 변화")
+
+    calculations = [
+        call.get("render_data", {})
+        for call in result["tool_calls"]
+        if call.get("tool") == "agent_calculation"
+    ]
+    assert any(
+        item.get("metric") == "market_share_delta"
+        and item.get("period") == "2026-03→2026-04"
+        and item.get("ms_delta_pct") == -0.0433
+        for item in calculations
+    )
+    assert "점유율 변화" in result["markdown_response"]["fact_md"]
+
+
+def test_complex_news_and_sales_question_uses_news_and_metric_tools() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "아토젯"}, reason="뉴스 이슈 확인"),
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}, reason="매출 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 뉴스에서 아토젯 이슈랑 매출 변화 같이 봐줘")
+
+    assert result["decomposition"][0]["intent"] == "agent_loop"
+    assert "deep_analysis_related_news" in _tool_names(result)
+    assert "get_brand_metric" in _tool_names(result)
+    assert "agent_calculation" in _tool_names(result)
+    assert {"cache", "deep_analysis_events"}.issubset(set(result["sources"]))
+    assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
+    assert "아토젯" in result["answer"]
+    assert "매출 변화" in result["answer"]
+    assert "데이터 없음" not in result["answer"]
+
+
+def test_news_query_is_normalized_before_deep_analysis_filtering() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "아토젯 이슈"}, reason="뉴스 이슈 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    news = DeepAnalysisNewsTool(
+        reader=StaticDeepAnalysisNewsReader(
+            {
+                "리바로": {
+                    "data": {
+                        "events": [
+                            {
+                                "date": "2026-04-12",
+                                "title": "리바로 분기 매출 500억원 돌파",
+                                "source": "약업신문",
+                                "impact_score": 82,
+                                "on_list": True,
+                                "summary": "리바로 매출 흐름을 정리한 기사",
+                                "body_full": "종근당 고지혈증 치료제 아토젯 261억원, 리바로는 500억원대 매출을 기록했다.",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=news,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, news=news),
+    )
+
+    result = agent.answer("리바로 뉴스에서 아토젯 이슈랑 매출 변화 같이 봐줘")
+
+    news_call = next(call for call in result["tool_calls"] if call.get("tool") == "deep_analysis_related_news")
+    assert news_call["applied_filters"] == {"text_contains": "아토젯"}
+    assert news_call["render_data"]["items"][0]["match_excerpt"]
+    trace_args = result["agent_trace"][0]["observations"][0]["arguments"]
+    assert trace_args["query"] == "아토젯"
+
+
+def test_issue_question_backfills_brand_metric_context_for_quantitative_link() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "리바로"}, reason="최근 이슈 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 관련 최근 이슈 뭐 있어")
+
+    metric_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("brand") == "리바로"
+    ]
+    assert metric_calls
+    assert "리바로 지표 fact" in result["markdown_response"]["fact_md"]
+    assert "매출" in result["markdown_response"]["fact_md"]
+
+
+def test_comparison_brand_sales_change_is_completed_when_supported(tmp_path) -> None:
+    metrics = _metrics_tool_with_atozet()
+    resolver = _resolver_with_atozet(tmp_path)
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        resolver=resolver,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=resolver, planner=HeuristicToolPlanner(), news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 뉴스에서 아토젯 이슈랑 매출 변화 같이 봐줘")
+
+    series_brands = [
+        call["render_data"]["brand"]
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("metric") == "series"
+    ]
+    delta_brands = [
+        call["render_data"]["brand"]
+        for call in result["tool_calls"]
+        if call.get("tool") == "agent_calculation" and call.get("render_data", {}).get("metric") == "sales_delta"
+    ]
+    assert series_brands == ["리바로", "아토젯"]
+    assert delta_brands == ["리바로", "아토젯"]
+    assert result["markdown_response"]["fact_md"].count("아토젯 매출 시계열 fact") == 1
+
+
+def test_sales_delta_uses_common_recent_periods_when_series_are_duplicated() -> None:
+    """Given overlapping comparison-brand series, sales delta uses one value per common month."""
+
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "render_data": {
+                "brand": "리바로",
+                "brand_value_series_10pt": [
+                    {"period": "2026-03", "value_krw": 8_711_248_139.54},
+                    {"period": "2026-04", "value_krw": 8_493_234_217.11},
+                ],
+            },
+        },
+        {
+            "tool": "get_brand_metric",
+            "render_data": {
+                "brand": "아토젯",
+                "brand_value_series_10pt": [
+                    {"period": "2026-03", "value_krw": 11_949_154_627.42},
+                    {"period": "2026-04", "value_krw": 11_649_391_769.95},
+                ],
+            },
+        },
+        {
+            "tool": "get_brand_metric",
+            "render_data": {
+                "brand": "아토젯",
+                "brand_value_series_10pt": [
+                    {"period": "2026-03", "value_krw": 11_949_154_627.42},
+                    {"period": "2026-04", "value_krw": 11_649_391_769.95},
+                ],
+            },
+        },
+    ]
+
+    deltas = _sales_delta_calls(calls)
+
+    by_brand = {call["render_data"]["brand"]: call["render_data"] for call in deltas}
+    assert by_brand["리바로"]["period"] == "2026-03→2026-04"
+    assert by_brand["아토젯"]["period"] == "2026-03→2026-04"
+    assert by_brand["아토젯"]["sales_delta_억원"] == -3.0
+
+
+def test_comparison_brand_uses_market_member_segment_when_not_canonical() -> None:
+    metrics = _metrics_tool_with_atozet_segment_only()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner(), news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 뉴스에서 아토젯 이슈랑 매출 변화 같이 봐줘")
+
+    atozet_metrics = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("brand") == "아토젯"
+    ]
+    unsupported_atozet = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "unsupported_metric" and call.get("render_data", {}).get("brand") == "아토젯"
+    ]
+    assert atozet_metrics
+    assert not unsupported_atozet
+    data = atozet_metrics[0]["render_data"]
+    assert data["metric"] == "market_member_snapshot"
+    assert data["ms_recent_pct"] == 5.1620
+    assert data["sales_krw"] == 11_648_132_500.0
+    assert data["rank"] == 4
+    assert "아토젯 최신 시장 멤버 지표" in result["markdown_response"]["fact_md"]
+    assert "아토젯 매출 변화는 현재 지원 브랜드 목록" not in result["markdown_response"]["fact_md"]
+
+
+def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:
+    metrics = _metrics_tool_with_atozet_trend_only()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner(), news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 뉴스에서 아토젯 이슈랑 매출 변화 같이 봐줘")
+
+    atozet_series = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric"
+        and call.get("render_data", {}).get("brand") == "아토젯"
+        and call.get("render_data", {}).get("brand_value_series_10pt")
+    ]
+    unsupported_atozet = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "unsupported_metric" and call.get("render_data", {}).get("brand") == "아토젯"
+    ]
+    delta_brands = [
+        call["render_data"]["brand"]
+        for call in result["tool_calls"]
+        if call.get("tool") == "agent_calculation" and call.get("render_data", {}).get("metric") == "sales_delta"
+    ]
+    assert atozet_series
+    assert not unsupported_atozet
+    assert "아토젯" in delta_brands
+    assert "아토젯 매출 시계열 fact" in result["markdown_response"]["fact_md"]
+
+
+def test_comparison_brand_metric_gap_is_explicit_when_unsupported() -> None:
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner(), news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 뉴스에서 아토젯 이슈랑 매출 변화 같이 봐줘")
+
+    unsupported = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "unsupported_metric" and call.get("render_data", {}).get("brand") == "아토젯"
+    ]
+    assert unsupported
+    assert "지원 브랜드 목록" in unsupported[0]["summary_text"]
+    assert "필수 답변 fact" in result["markdown_response"]["fact_md"]
+    assert "데이터 미보유" in result["markdown_response"]["fact_md"]
+
+
+def test_complex_hira_and_sales_question_uses_disease_and_metric_tools() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="get_disease_stats", arguments={"brand": "리바로하이"}, reason="질병 환자수 확인"),
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로하이", "measure": "sales", "period": "latest"}, reason="최근 매출 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _livalohigh_metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, external=ExternalApiClient(mode="fixture")),
+    )
+
+    result = agent.answer("리바로하이 질병 환자수랑 최근 매출 한번에")
+
+    assert result["decomposition"][0]["intent"] == "agent_loop"
+    assert result["resolution"]["canonical_brand"] == "리바로하이"
+    assert "get_disease_stats" in _tool_names(result)
+    assert "get_brand_metric" in _tool_names(result)
+    metric_calls = [call for call in result["tool_calls"] if call.get("tool") == "get_brand_metric"]
+    assert metric_calls
+    assert all(call.get("render_data", {}).get("brand") == "리바로하이" for call in metric_calls)
+    assert all(call.get("render_data", {}).get("answer_scope") == "single_brand_focus" for call in metric_calls)
+    assert {"cache", "hira_disease"}.issubset(set(result["sources"]))
+    assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
+    assert "리바로하이 지표 fact" in result["markdown_response"]["fact_md"]
+    assert "데이터 없음" not in result["answer"]
+    assert "환자수" in result["answer"]
+    assert "4010" in result["answer"]
+
+
+def test_heuristic_patient_sales_question_requests_series_metric() -> None:
+    decision = HeuristicToolPlanner().decide(
+        "리바로하이 환자수+매출",
+        (),
+        (
+            {"function": {"name": "get_disease_stats"}},
+            {"function": {"name": "get_metric"}},
+        ),
+        allowed_brands=("리바로하이",),
+        allowed_periods=("2026-04",),
+    )
+
+    metric_calls = [call for call in decision.tool_calls if call.name == "get_metric"]
+
+    assert metric_calls
+    assert metric_calls[0].arguments["measure"] == "series"
+
+
+def test_patient_sales_question_backfills_series_when_planner_selected_latest_sales() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="get_disease_stats", arguments={"brand": "리바로"}, reason="환자수 확인"),
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}, reason="매출 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, external=ExternalApiClient(mode="fixture")),
+    )
+
+    result = agent.answer("리바로 환자수+매출")
+
+    series_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric"
+        and len(call.get("render_data", {}).get("brand_value_series_10pt") or []) >= 2
+    ]
+    assert series_calls
+    assert "매출 추이" in result["markdown_response"]["fact_md"]
+    assert should_use_agent_loop("리바로하이 환자수+매출")
+
+
+def test_sales_change_question_uses_series_and_renders_deterministic_delta() -> None:
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner()),
+    )
+
+    result = agent.answer("리바로 매출 변화 봐줘")
+
+    assert result["decomposition"][0]["intent"] == "agent_loop"
+    assert "get_brand_metric" in _tool_names(result)
+    assert "agent_calculation" in _tool_names(result)
+    assert any(call.get("render_data", {}).get("metric") == "series" for call in result["tool_calls"])
+    assert any(call.get("render_data", {}).get("metric") == "sales_delta" for call in result["tool_calls"])
+    assert "매출 변화" in result["answer"]
+    assert "-2.18억원" in result["answer"]
+    assert "-2.50%" in result["answer"]
+
+
+def test_single_month_sales_call_does_not_block_full_series_completion() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "2026-02"}, reason="2월 매출 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner),
+    )
+
+    result = agent.answer("리바로 2월 매출 하락이 시장 영향인지 브랜드 고유인지")
+
+    full_series_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric"
+        and len(call.get("render_data", {}).get("brand_value_series_10pt") or []) >= 2
+    ]
+    assert full_series_calls
+    assert full_series_calls[-1]["render_data"]["completion_reason"] == "sales_change_requires_series"
+
+
+def test_fixture_agent_loop_metric_path_uses_period_grounding_display() -> None:
+    result = ChatAgent().answer("리바로 같은 시장 작년 제일 큰 경쟁사")
+
+    assert result["decomposition"][0]["intent"] == "agent_loop"
+    assert "unsupported_metric" not in _tool_names(result)
+    assert "get_brand_metric" in _tool_names(result)
+    assert "NameError" not in result["answer"]
+
+
+def test_clinical_and_patent_facade_tools_return_policy_scoped_facts() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="search_clinical", arguments={"brand": "리바로"}, reason="임상 확인"),
+                    ToolCallPlan(name="search_patent", arguments={"brand": "리바로"}, reason="특허 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner, external=ExternalApiClient(mode="fixture")),
+    )
+
+    result = agent.answer("리바로 임상하고 특허를 같이 확인해줘")
+
+    assert result["decomposition"][0]["intent"] == "agent_loop"
+    assert {"search_clinical", "search_patent"}.issubset(set(_tool_names(result)))
+    assert "external_api" in result["sources"]
+    assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
+
+
+def test_judgment_metric_question_gets_background_news_context_without_news_cue() -> None:
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=_news_tool(),
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner(), news=_news_tool()),
+    )
+
+    result = agent.answer("리바로 경쟁 구도 변화는 어때")
+
+    news_calls = [call for call in result["tool_calls"] if call.get("tool") == "deep_analysis_related_news"]
+    assert news_calls
+    assert news_calls[0]["render_data"]["context_role"] == "background_insight"
+    assert "인사이트 근거 fact - 뉴스/이슈" in result["markdown_response"]["fact_md"]
+    assert "아토젯 약가 이슈 이후 리바로 처방 동향" in result["markdown_response"]["fact_md"]
+
+
+def test_judgment_background_news_uses_market_structure_relevance_brands() -> None:
+    news = DeepAnalysisNewsTool(
+        reader=StaticDeepAnalysisNewsReader(
+            {
+                "리바로": {
+                    "data": {
+                        "events": [
+                            {
+                                "date": "2026-06-11",
+                                "title": "리바로 단독 generic 스타틴 기사",
+                                "source": "약사공론",
+                                "url": "https://news.example/livalo-generic",
+                                "impact_score": 99,
+                                "on_list": True,
+                                "summary": "리바로 anchor만 걸린 generic 배경 기사",
+                            }
+                        ]
+                    }
+                },
+                "리피토": {
+                    "data": {
+                        "events": [
+                            {
+                                "date": "2026-06-10",
+                                "title": "리피토 점유율 하락 기사",
+                                "source": "데일리팜",
+                                "url": "https://news.example/lipitor-share",
+                                "impact_score": 92,
+                                "on_list": True,
+                                "summary": "경쟁 브랜드 점유율 변화 기사",
+                            }
+                        ]
+                    }
+                },
+                "아토젯": {
+                    "data": {
+                        "events": [
+                            {
+                                "date": "2026-06-09",
+                                "title": "아토젯 경쟁 구도 기사",
+                                "source": "히트뉴스",
+                                "url": "https://news.example/atozet-competition",
+                                "impact_score": 91,
+                                "on_list": True,
+                                "summary": "시장 경쟁 구도 기사",
+                            }
+                        ]
+                    }
+                },
+            }
+        )
+    )
+    metrics = _metrics_tool_with_atozet_trend_only()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=news,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner(), news=news),
+    )
+
+    result = agent.answer("리바로 경쟁 구도 변화는 어때")
+
+    news_call = next(call for call in result["tool_calls"] if call.get("tool") == "deep_analysis_related_news")
+    relevance_filter = news_call["applied_filters"]["relevance_brands"]
+    assert " OR " in relevance_filter
+    assert "리피토" in relevance_filter
+    assert "아토젯" in relevance_filter
+    titles = [item["title"] for item in news_call["render_data"]["items"]]
+    assert "리바로 단독 generic 스타틴 기사" not in titles
+    assert titles == ["리피토 점유율 하락 기사", "아토젯 경쟁 구도 기사"]
+
+
+def test_quantitative_questions_suppress_background_news_context() -> None:
+    metrics = _metrics_tool()
+    agent = ChatAgent(router=BQRouter(), metrics=metrics, news=_news_tool())
+
+    for question in (
+        "리바로 매출 알려줘",
+        "리바로 채널",
+        "리바로젯 시장 규모",
+        "리바로 점유율 순위",
+        "리바로 최근 매출 추이 어때",
+    ):
+        result = agent.answer(question)
+
+        news_calls = [call for call in result["tool_calls"] if call.get("tool") == "deep_analysis_related_news"]
+        assert not news_calls, question
+        assert "인사이트 근거 fact - 뉴스/이슈" not in result["markdown_response"]["fact_md"]
+
+
+def test_simple_share_rank_question_uses_agent_loop_for_market_scope_consistency() -> None:
+    assert should_use_agent_loop("리바로 점유율 순위")
+    assert should_use_agent_loop("리바로 순위 알려줘")
+
+
+def test_single_brand_sales_trend_suppresses_top_brand_context() -> None:
+    metrics = _metrics_tool_with_atozet_trend_only()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner()),
+    )
+
+    result = agent.answer("리바로 최근 매출 추이 어때")
+    fact_md = result["markdown_response"]["fact_md"]
+
+    series_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("metric") == "series"
+    ]
+    assert series_calls
+    assert all(call["render_data"].get("answer_scope") == "single_brand_trend" for call in series_calls)
+    assert "리바로 매출 시계열 fact" in fact_md
+    assert "상위 브랜드 점유율 추이 fact" not in fact_md
+    assert "| 상위 브랜드 추이 |" not in fact_md
+
+
+def test_competitive_landscape_adds_deterministic_agent2_insight_signals() -> None:
+    metrics = _metrics_tool_with_atozet_trend_only()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=HeuristicToolPlanner()),
+    )
+
+    result = agent.answer("리바로 경쟁 구도 변화는 어때")
+    insight_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "agent_calculation" and call.get("render_data", {}).get("metric") == "competitive_insight_signals"
+    ]
+
+    assert insight_calls
+    signals = insight_calls[0]["render_data"]["signals"]
+    assert all(signal.get("period_from") for signal in signals)
+    assert all(signal.get("period_to") == "2026-04" for signal in signals)
+    assert all(signal.get("comparison_basis") == "analysis_period" for signal in signals)
+    assert insight_calls[0]["render_data"].get("surface_policy", {}).get("gain_loss_ratio_pct") == "internal_only"
+    period = insight_calls[0]["render_data"]["period"]
+    assert "인사이트 계산" in result["markdown_response"]["fact_md"]
+    assert "share-of-growth" in result["markdown_response"]["fact_md"]
+    assert "93.62%" not in result["markdown_response"]["fact_md"]
+    assert f"{period} 점유율 변화" in result["markdown_response"]["fact_md"]

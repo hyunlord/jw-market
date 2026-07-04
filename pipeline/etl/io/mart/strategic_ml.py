@@ -31,6 +31,7 @@ from .strategic_constants import CATALOG_DIR, ML_BRAND_COLUMNS, ML_BRAND_JSONL, 
 from .strategic_dimension_apply import enhance_strategic_dimensions
 from .strategic_dimensions import catalog_single_dimension_by_brand, load_ubist_dimension_context
 from .strategic_scope import collapse_same_rows, group_by_source_measure, recompute_market_scoped_metric_history
+from .strategic_ubist_channels import UBIST_CHANNEL_CONTRACT_COLUMNS, attach_ubist_channel_totals
 
 
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -98,6 +99,7 @@ def build_ml_rows(ml_row: pd.Series, catalog_rows: pd.DataFrame, general_rows: l
                 "overlay_data": _ml_overlay(ml_row, overlay, allowed, aliases),
             }
         )
+        attach_ubist_channel_totals(copied)
         selected.append(enhance_strategic_dimensions(copied, dimension_context, market_id=ml_row.get("ml_id")))
     selected = collapse_same_rows(selected, ("ml_id", "brand_id"))
     validate_market_completeness(ml_row, catalog_rows, selected)
@@ -155,7 +157,10 @@ def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str 
         write_jsonl(output_dir / ML_MARKET_JSONL, market_rows)
     if insert:
         market_ids = {str(row["ml_id"]) for _, row in ml_market.iterrows()}
-        ensure_json_columns("mart_strategic_ml_brand_metric", ("dimension_data", "dimension_channel_data", "dimension_specialty_data"))
+        ensure_json_columns(
+            "mart_strategic_ml_brand_metric",
+            ("dimension_data", "dimension_channel_data", "dimension_specialty_data", *UBIST_CHANNEL_CONTRACT_COLUMNS),
+        )
         delete_existing_rows("mart_strategic_ml_brand_metric", "ml_id", market_ids)
         delete_existing_rows("mart_strategic_ml_market_metric", "ml_id", market_ids)
         insert_rows("mart_strategic_ml_brand_metric", ML_BRAND_COLUMNS, brand_rows, {"ml_id", "brand_id", "source", "measure"})

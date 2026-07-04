@@ -106,7 +106,7 @@ def test_post_topic_service_matches_topics_by_product_code(monkeypatch) -> None:
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
     assert payload["scope"]["sliced"] is False
     assert payload["brands"][0]["brand_key"] == "리바로"
-    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share": 62.5}]
+    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5}]
     assert payload["brands"][1]["brand_key"] == "리피토"
     assert payload["brands"][1]["topics"] == []
 

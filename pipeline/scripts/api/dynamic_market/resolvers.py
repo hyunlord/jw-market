@@ -16,6 +16,7 @@ from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_val
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.api import db
+from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import (
     BrandRef,
     DimensionFilter,
@@ -40,6 +41,7 @@ class MarketResolver(Protocol):
         atc4: list[str],
         molecule: list[str],
         analysis_level: dict[str, dict[str, list[str]]] | None,
+        channel_axis: ChannelAxisFilter | None,
         focus_brand_key: str | None,
         source: str,
         measure: str,
@@ -60,6 +62,7 @@ class GeneralViewResolver:
         atc4: list[str],
         molecule: list[str],
         analysis_level: dict[str, dict[str, list[str]]] | None = None,
+        channel_axis: ChannelAxisFilter | None = None,
         focus_brand_key: str | None = None,
         source: str,
         measure: str,
@@ -84,8 +87,9 @@ class GeneralViewResolver:
         if not normalized_atc4 and not normalized_molecules:
             raise DynamicMarketInputError("at least one ATC4 or molecule filter is required")
 
+        query_atc4 = expand_atc4_for_source(normalized_atc4, source=normalized_source)
         brands = self._resolve_brands(
-            atc4=normalized_atc4,
+            atc4=query_atc4,
             molecules=normalized_molecules,
             source=normalized_source,
             measure=normalized_measure,
@@ -106,6 +110,7 @@ class GeneralViewResolver:
                 "molecule": list(molecule),
                 "normalized_molecule": list(normalized_molecules),
                 "analysis_level": _dimension_echo(dimension_filters),
+                "channel_axis": _channel_axis_echo(channel_axis),
                 "focus_brand_key": normalized_focus_brand,
                 "source": normalized_source,
                 "measure": normalized_measure,
@@ -115,6 +120,7 @@ class GeneralViewResolver:
             normalized_molecules=normalized_molecules,
             brands=brands,
             dimension_filters=dimension_filters,
+            channel_axis=channel_axis,
             focus_brand_key=normalized_focus_brand,
         )
 
@@ -285,12 +291,15 @@ class StrategicViewResolver:
         atc4: list[str],
         molecule: list[str],
         analysis_level: dict[str, dict[str, list[str]]] | None = None,
+        channel_axis: ChannelAxisFilter | None = None,
         focus_brand_key: str | None = None,
         source: str,
         measure: str,
     ) -> MarketDefinition:
         if atc4 or molecule:
             raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not ATC4/molecule expansion")
+        if channel_axis and channel_axis.is_active:
+            raise DynamicMarketInputError("channel_axis is supported only for general UBIST views")
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
         market_kind = normalize_strategic_view_kind(view_kind=view_kind, ml_id=ml_id, cd_market_id=cd_market_id)
@@ -419,7 +428,7 @@ def _api_dimension_names(source: str) -> dict[str, str]:
     return {
         "mfr_name_kor": "mfr",
         "molecule_type": "molecule_type",
-        "molecule_desc": "molecule",
+        "molecule_desc": "molecule_desc",
         "pack_desc": "pack",
         "strength": "strength",
         "nhi_type": "nhi",
@@ -439,6 +448,21 @@ def _normalize_dimension_values(values: list[str]) -> tuple[str, ...]:
 
 def _dimension_echo(filters: tuple[DimensionFilter, ...]) -> dict[str, list[str]]:
     return {item.dimension_type: list(item.values) for item in filters}
+
+
+def _channel_axis_echo(channel_axis: ChannelAxisFilter | None) -> dict[str, object]:
+    if channel_axis is None or not channel_axis.is_active:
+        return {}
+    return {
+        "source": channel_axis.source,
+        "facility": list(channel_axis.facilities),
+        "specialty": list(channel_axis.specialties),
+        "pairs": [
+            {"facility": item.facility, "specialty": item.specialty}
+            for item in channel_axis.pairs
+        ],
+    }
+
 
 def normalize_source(value: str) -> str:
     """Normalize API source labels to mart source labels."""
@@ -471,6 +495,44 @@ def normalize_atc4_list(values: list[str]) -> tuple[str, ...]:
             seen.add(item)
             normalized.append(item)
     return tuple(normalized)
+
+
+def expand_atc4_for_source(values: tuple[str, ...], *, source: str) -> tuple[str, ...]:
+    """Expand canonical ATC4 filters to source-native mart aliases for UBIST only."""
+
+    if source != "ubist":
+        return values
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for candidate in _ubist_atc4_candidates(value):
+            if candidate not in seen:
+                seen.add(candidate)
+                expanded.append(candidate)
+    return tuple(expanded)
+
+
+def _ubist_atc4_candidates(value: str) -> tuple[str, ...]:
+    """Return canonical plus source-native UBIST ATC4 code candidates."""
+
+    candidates = [value]
+    if len(value) == 5:
+        leading_zero_removed = value[0] + value[2:] if value[1] == "0" and value[2].isdigit() else None
+        trailing_zero_removed = value[:-1] if value.endswith("0") else None
+        if leading_zero_removed:
+            candidates.append(leading_zero_removed)
+        if trailing_zero_removed:
+            candidates.append(trailing_zero_removed)
+        if leading_zero_removed and trailing_zero_removed:
+            candidates.append(leading_zero_removed[:-1])
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return tuple(deduped)
 
 
 def normalize_molecule_list(values: list[str]) -> tuple[str, ...]:

@@ -1,21 +1,252 @@
 [
   {
+    "canonical_brand": "라베칸",
+    "aliases": ["rabecan", "RABECAN"],
+    "audit_code": "sb_canonical_001_라베칸",
+    "molecule_en": ["rabeprazole"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "201908064",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "라베칸듀오",
+    "aliases": ["rabecan duo", "RABECAN DUO"],
+    "audit_code": "sb_canonical_002_라베칸듀오",
+    "molecule_en": ["rabeprazole", "sodium bicarbonate"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202105435",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "제이클",
+    "aliases": ["jaicle", "JAICLE"],
+    "audit_code": "sb_canonical_003_제이클",
+    "molecule_en": ["magnesium", "picosulfuric acid", "potassium", "simeticone", "sulfuric acid"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": null,
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv; MFDS T1 item_name search was ambiguous"
+  },
+  {
+    "canonical_brand": "가드렛",
+    "aliases": ["guardlet", "GARDLET"],
+    "audit_code": "sb_canonical_004_가드렛",
+    "molecule_en": ["anagliptin"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202203044",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "가드메트",
+    "aliases": ["guardmet", "GARDMET"],
+    "audit_code": "sb_canonical_005_가드메트",
+    "molecule_en": ["anagliptin", "metformin"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202203084",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "타발리스",
+    "aliases": ["tavalisse", "TAVALISSE"],
+    "audit_code": "sb_canonical_006_타발리스",
+    "molecule_en": ["fostamatinib"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202100599",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "시그마트",
+    "aliases": ["sigmart", "SIGMART"],
+    "audit_code": "sb_canonical_007_시그마트",
+    "molecule_en": ["nicorandil"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "200100769",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
     "canonical_brand": "리바로",
     "aliases": ["livalo", "LIVALO"],
-    "audit_code": "ml_006_livalo",
+    "audit_code": "sb_canonical_008_리바로",
     "molecule_en": ["pitavastatin"],
     "atc": ["C10A1"],
     "edi_code": "645304520",
-    "item_seq": "200402090"
+    "item_seq": "200402090",
+    "evidence_source": "existing fixture + MFDS T1 ITEM_INGR_NAME"
   },
   {
     "canonical_brand": "리바로젯",
     "aliases": ["livalozet", "LIVALOZET"],
-    "audit_code": "ml_006_livalozet",
+    "audit_code": "sb_canonical_009_리바로젯",
     "molecule_en": ["ezetimibe", "pitavastatin"],
     "atc": ["C10A1", "C10C"],
     "edi_code": "645306730",
-    "item_seq": "202105123"
+    "item_seq": "202105123",
+    "evidence_source": "existing fixture + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "리바로페노",
+    "aliases": ["livalofeno", "LIVALOFENO"],
+    "audit_code": "sb_canonical_010_리바로페노",
+    "molecule_en": ["fenofibric acid", "pitavastatin"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202202565",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "리바로하이",
+    "aliases": ["livalohigh", "LIVALOHIGH"],
+    "audit_code": "sb_canonical_011_리바로하이",
+    "molecule_en": ["pitavastatin", "valsartan", "amlodipine"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202106293",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "리바로브이",
+    "aliases": ["livalov", "LIVALO V"],
+    "audit_code": "sb_canonical_012_리바로브이",
+    "molecule_en": ["pitavastatin", "valsartan"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202106297",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "트루패스",
+    "aliases": ["trupass", "TRUPASS"],
+    "audit_code": "sb_canonical_013_트루패스",
+    "molecule_en": ["silodosin"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "201000535",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "피나스타",
+    "aliases": ["finasta", "FINASTA"],
+    "audit_code": "sb_canonical_014_피나스타",
+    "molecule_en": ["finasteride"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202203650",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "제이다트",
+    "aliases": ["j-dut", "J-DUT", "jedart"],
+    "audit_code": "sb_canonical_015_제이다트",
+    "molecule_en": ["dutasteride"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202104245",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "뉴트로진",
+    "aliases": ["neutrogin", "NEUTROGIN"],
+    "audit_code": "sb_canonical_016_뉴트로진",
+    "molecule_en": ["lenograstim"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "199900321",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "모빌리아",
+    "aliases": ["mobilia", "MOBILIA"],
+    "audit_code": "sb_canonical_017_모빌리아",
+    "molecule_en": ["plerixafor"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202007708",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "악템라",
+    "aliases": ["actemra", "ACTEMRA"],
+    "audit_code": "sb_canonical_018_악템라",
+    "molecule_en": ["tocilizumab"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "201006144",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "페린젝트",
+    "aliases": ["ferinject", "FERINJECT"],
+    "audit_code": "sb_canonical_019_페린젝트",
+    "molecule_en": ["ferric carboxymaltose"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "201003803",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "베노훼럼",
+    "aliases": ["venofer", "VENOFER"],
+    "audit_code": "sb_canonical_020_베노훼럼",
+    "molecule_en": ["iron sucrose"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "200301217",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "헴리브라",
+    "aliases": ["hemlibra", "HEMLIBRA"],
+    "audit_code": "sb_canonical_021_헴리브라",
+    "molecule_en": ["emicizumab"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "201902234",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
+  },
+  {
+    "canonical_brand": "위너프",
+    "aliases": ["winuf", "WINUF"],
+    "audit_code": "sb_canonical_022_위너프",
+    "molecule_en": ["alanine", "arginine", "glucose", "glycine", "leucine", "lysine", "olea europaea", "proline", "triglycerides"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": null,
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv; MFDS T1 confirmed multi-nutrient formulation"
+  },
+  {
+    "canonical_brand": "위너프A+",
+    "aliases": ["winuf a+", "WINUF A+", "위너프에이플러스"],
+    "audit_code": "sb_canonical_023_위너프a",
+    "molecule_en": ["acetic acid", "alanine", "arginine", "calcium", "doconexent", "glucose", "glycine", "histidine", "icosapent"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": null,
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv; MFDS T1 item_name exact search returned no result"
+  },
+  {
+    "canonical_brand": "엔커버",
+    "aliases": ["encover", "ENCOVER"],
+    "audit_code": "sb_canonical_024_엔커버",
+    "molecule_en": ["general nutrients"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "200301508",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv; MFDS T1 confirmed nutrition formula with many ingredients"
+  },
+  {
+    "canonical_brand": "플라주오피",
+    "aliases": ["plajuopi", "PLAJUOPI"],
+    "audit_code": "sb_canonical_025_플라주오피",
+    "molecule_en": ["magnesium chloride", "potassium chloride", "sodium acetate", "sodium chloride", "sodium gluconate"],
+    "atc": [],
+    "edi_code": null,
+    "item_seq": "202007154",
+    "evidence_source": "strategic_brand.parquet + molecule_v4_worklist.csv + MFDS T1 ITEM_INGR_NAME"
   }
 ]
-

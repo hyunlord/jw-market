@@ -24,6 +24,7 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     recent_yoy,
 )
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
 
 
 PORTAL_UNUSED_DATA_KEYS = frozenset({"data_period_coverage"})
@@ -69,6 +70,7 @@ def build_cause_data(
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     levels = empty_analysis_levels(series)
+    ubist_channels = _general_ubist_channels(metrics)
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     data = {
         "analysis_level_market_status": levels,
@@ -114,10 +116,97 @@ def build_cause_data(
             "note": "동적 일반뷰 MVP에는 전략뷰 target customer overlay가 없다.",
         },
         "target_customer_competition_by_channel": {},
-        "ubist_specialty_channels": [],
-        "ubist_specialty_target_channels": [],
+        "ubist_specialty_channels": ubist_channels["specialty_channels"],
+        "ubist_specialty_target_channels": ubist_channels["specialty_target_channels"],
     }
     return normalize_portal_read_data(data)
+
+
+def _general_ubist_channels(metrics: AggregatedMetrics, *, max_channels: int = 4) -> dict[str, list[Any]]:
+    """Return general-view UBIST top channels from raw matrix when present.
+
+    General views have no MI Master target slots, so they intentionally use the
+    existing general GH parser where general hospitals include hospital rows.
+    Ranking uses the latest raw period, matching the runtime-fill rule; only
+    sidecar-filter rows without raw matrix fall back to the legacy mart totals.
+    """
+
+    if metrics.source != "ubist":
+        return {"specialty_channels": [], "specialty_target_channels": []}
+
+    channels = _general_ubist_channels_from_raw_matrix(metrics, max_channels=max_channels)
+    if channels:
+        return channels
+
+    totals_by_code: dict[str, float] = {}
+    for brand in metrics.all_brands:
+        for code, series in brand.ubist_channel_by_code.items():
+            parsed = parse_channel_code(code)
+            if parsed is None:
+                continue
+            totals_by_code[parsed.code] = totals_by_code.get(parsed.code, 0.0) + sum(
+                float(value or 0.0) for value in series.values()
+            )
+
+    channels = []
+    used: set[str] = set()
+    for code, _value in sorted(totals_by_code.items(), key=lambda item: item[1], reverse=True):
+        if len(channels) >= max_channels:
+            break
+        parsed = parse_channel_code(code)
+        if parsed is None or parsed.code in used:
+            continue
+        channels.append(parsed)
+        used.add(parsed.code)
+
+    if not channels:
+        return {"specialty_channels": [], "specialty_target_channels": []}
+    return {
+        "specialty_channels": ["전체", *[channel.display_name for channel in channels]],
+        "specialty_target_channels": [channel.as_dict() for channel in channels],
+    }
+
+
+def _general_ubist_channels_from_raw_matrix(metrics: AggregatedMetrics, *, max_channels: int) -> dict[str, list[Any]]:
+    latest_period = _latest_matrix_period(metrics)
+    if latest_period is None:
+        return {}
+    totals_by_code: dict[str, float] = {}
+    for brand in metrics.all_brands:
+        for facility, specialties in brand.channel_specialty_matrix.items():
+            for specialty, series in specialties.items():
+                code = raw_pair_to_channel_code(facility, specialty)
+                if not code:
+                    continue
+                parsed = parse_channel_code(code)
+                if parsed is None:
+                    continue
+                totals_by_code[parsed.code] = totals_by_code.get(parsed.code, 0.0) + float(series.get(latest_period) or 0.0)
+    channels = []
+    used: set[str] = set()
+    for code, _value in sorted(totals_by_code.items(), key=lambda item: item[1], reverse=True):
+        if len(channels) >= max_channels:
+            break
+        parsed = parse_channel_code(code)
+        if parsed is None or parsed.code in used:
+            continue
+        channels.append(parsed)
+        used.add(parsed.code)
+    if not channels:
+        return {}
+    return {
+        "specialty_channels": ["전체", *[channel.display_name for channel in channels]],
+        "specialty_target_channels": [channel.as_dict() for channel in channels],
+    }
+
+
+def _latest_matrix_period(metrics: AggregatedMetrics) -> str | None:
+    periods: set[str] = set()
+    for brand in metrics.all_brands:
+        for specialties in brand.channel_specialty_matrix.values():
+            for series in specialties.values():
+                periods.update(str(period) for period in series)
+    return max(periods) if periods else None
 
 
 def normalize_portal_read_payload(payload: dict[str, Any]) -> dict[str, Any]:

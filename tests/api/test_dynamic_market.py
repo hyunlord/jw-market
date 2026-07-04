@@ -69,6 +69,148 @@ def test_aggregate_rows_when_period_range_limits_history() -> None:
     assert [item.total_value for item in brand_metrics] == [60.0, 30.0]
 
 
+def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        assert "ubist_channel_by_display" not in sql
+        assert "ubist_channel_by_code" not in sql
+        return [
+            {
+                "brand_key": "a",
+                "brand_name": "A",
+                "atc4_code": "C10A1",
+                "source": "ubist",
+                "measure": "sales",
+                "unit_label": "KRW",
+                "raw_value_history": json.dumps({"2026-05": 100.0}),
+                "channel_specialty_matrix": json.dumps(
+                    {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
+                    ensure_ascii=False,
+                ),
+            }
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("a", "A", "C10A1"),),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+    )
+
+    assert "channel_specialty_matrix" in str(captured["sql"])
+    assert captured["params"] == ("ubist", "sales", "a", "C10A1")
+    assert metrics.all_brands[0].channel_specialty_matrix == {
+        "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}
+    }
+
+
+def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "filters": {
+                "atc4": ["C10A1"],
+                "channel_axis": {
+                    "ubist": {
+                        "facility": ["종합병원"],
+                        "specialty": ["순환기(Cardiology IM)"],
+                    }
+                },
+            },
+        }
+    )
+    aggregator = MetricAggregator(mart_db="jw_mart")
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-04": 100.0, "2026-05": 300.0}),
+            "channel_specialty_matrix": json.dumps(
+                {
+                    "종합병원": {
+                        "순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0},
+                        "내분비(Endocrinology IM)": {"2026-05": 70.0},
+                    },
+                    "의원": {"분리되지 않은 내과": {"2026-05": 190.0}},
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "brand_key": "b",
+            "brand_name": "B",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-04": 50.0, "2026-05": 150.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 60.0}}},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    brand_metrics, monthly_totals = aggregator._aggregate_rows(
+        rows,
+        period_range=PeriodRange(),
+        channel_axis=request.filters.channel_axis.to_filter(),
+    )
+
+    assert monthly_totals == {"2026-04": 30.0, "2026-05": 100.0}
+    assert [item.total_value for item in brand_metrics] == [70.0, 60.0]
+    assert brand_metrics[0].monthly_series == (
+        {"period": "2026-04", "value": 30.0},
+        {"period": "2026-05", "value": 40.0},
+    )
+    assert brand_metrics[0].channel_specialty_matrix == {
+        "종합병원": {"순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0}}
+    }
+
+
+def test_sidecar_rows_keep_channel_matrix_for_channel_axis_slice() -> None:
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "product_code": "p1",
+            "raw_value_history": json.dumps({"2026-05": 10.0}),
+            "dimension_type": "seller",
+        }
+    ]
+    matrix = {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 10.0}}}
+
+    metric_rows = sidecar_rows_to_metric_rows(
+        rows,
+        metadata={
+            ("a", "C10A1"): {
+                "unit_label": "KRW",
+                "channel_specialty_matrix": matrix,
+            }
+        },
+        required_dimensions=("seller",),
+    )
+
+    assert metric_rows == [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": '{"2026-05": 10.0}',
+            "channel_specialty_matrix": matrix,
+        }
+    ]
+
+
 def test_compose_when_definition_and_metrics_are_ready() -> None:
     definition = MarketDefinition(
         view="general",
@@ -118,6 +260,7 @@ def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypat
         source="ubist",
         measure="sales",
         dimension_filters=(),
+        channel_axis=None,
         view="strategic_ml",
         strategic_market_id="ml_005",
     )

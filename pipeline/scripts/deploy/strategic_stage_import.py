@@ -29,6 +29,7 @@ from pipeline.scripts.deploy.mart_import_ops import attach_dump_to_manifest
 from pipeline.scripts.deploy.mart_import_ops import capture_manifest
 from pipeline.scripts.deploy.mart_import_ops import ensure_direct_import_target_absent
 from pipeline.scripts.deploy.mart_import_ops import ensure_schema_exists
+from pipeline.scripts.deploy.mart_import_ops import drop_schema_if_unprotected
 from pipeline.scripts.deploy.mart_import_ops import restore_dump_into_schema
 from pipeline.scripts.deploy.mart_import_ops import sha256_file
 from pipeline.scripts.deploy.mart_import_ops import verify_against_manifest
@@ -81,6 +82,7 @@ class ImportConfig:
     target_env_file: Path | None = None
     restore_shell_command: str | None = None
     raw_restore_stream: bool = False
+    drop_target_after_success: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +94,7 @@ class DumpImportConfig:
     manifest_path: Path
     source_env_file: Path | None = None
     target_env_file: Path | None = None
+    drop_target_after_success: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +197,11 @@ def run_import_from_dump(config: ImportConfig) -> dict[str, object]:
                 restore_result=restore_result,
                 verification=verification,
             )
+            if config.drop_target_after_success:
+                drop_schema_if_unprotected(conn, config.target_db)
+                imported["cleanup"] = {"target_db_dropped": True}
+            else:
+                imported["cleanup"] = {"target_db_dropped": False}
             _write_json(config.output_manifest_path, imported)
         finally:
             conn.close()
@@ -202,6 +210,7 @@ def run_import_from_dump(config: ImportConfig) -> dict[str, object]:
         "target_db": config.target_db,
         "verification": verification,
         "manifest_path": str(config.output_manifest_path),
+        "cleanup": imported["cleanup"],
     }
 
 
@@ -245,6 +254,7 @@ def run_dump_import(config: DumpImportConfig) -> dict[str, object]:
             manifest_path=config.manifest_path,
             output_manifest_path=_default_import_manifest_path(config.manifest_path),
             target_env_file=config.target_env_file,
+            drop_target_after_success=config.drop_target_after_success,
         )
     )
     return {"mode": "dump_import", "dump": dump_summary, "import": import_summary}
@@ -458,6 +468,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest-only", action="store_true")
     parser.add_argument("--import-from-dump", action="store_true")
     parser.add_argument("--compare-only", action="store_true")
+    parser.add_argument(
+        "--drop-target-after-success",
+        action="store_true",
+        help="Drop the safe staging schema after manifest verification succeeds; failed imports are preserved.",
+    )
     args = parser.parse_args(argv)
     selected_modes = sum(bool(value) for value in (args.dump_only, args.manifest_only, args.import_from_dump, args.compare_only))
     if selected_modes > 1:
@@ -499,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_env_file=args.target_env_file,
                 restore_shell_command=args.restore_shell_command,
                 raw_restore_stream=bool(args.raw_restore_stream),
+                drop_target_after_success=bool(args.drop_target_after_success),
             )
         )
     elif args.compare_only:
@@ -520,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
                 manifest_path=args.manifest_path,
                 source_env_file=args.source_env_file,
                 target_env_file=args.target_env_file,
+                drop_target_after_success=bool(args.drop_target_after_success),
             )
         )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

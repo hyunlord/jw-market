@@ -26,6 +26,8 @@ STRATEGIC_DIMENSION_TABLE = "mart_strategic_filter_dimension_metric"
 LOAD_BATCH_SIZE = 200
 EMPTY_DIMENSION_VALUES = {"", "nan", "none", "null", "<na>", "n/a", "na", "-"}
 UBIST_DIMENSION_FIELDS: dict[str, tuple[str, ...]] = {
+    "atc4": ("atc4_code", "atc4"),
+    "atc3": ("atc4_code", "atc4"),
     "seller": ("company", "manufacturer", "raw_company", "판매사", "제조사"),
     "molecule_strength": ("strength_pack", "성분용량"),
     "form": ("dosage_form", "제형"),
@@ -152,6 +154,8 @@ def extract_dimension_metric_rows(
             rows.extend(_synthetic_dimension_rows(row, dimension_type, dimension_history))
             continue
         label = _single_history_label(dimension_history) or _first_label(label_sources, fields)
+        if dimension_type == "atc3":
+            label = _atc3_from_atc4(label)
         if not label:
             continue
         rows.extend(_product_dimension_rows(row, products, dimension_type, label))
@@ -208,6 +212,13 @@ def _first_label(sources: Iterable[object], fields: Iterable[str]) -> str | None
             if label:
                 return label
     return None
+
+
+def _atc3_from_atc4(value: object) -> str | None:
+    label = clean_dimension_value(value)
+    if not label:
+        return None
+    return label[:4].upper()
 
 
 def _product_dimension_rows(

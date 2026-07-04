@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY requirements-service.txt /tmp/requirements-service.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements-service.txt
+
+COPY jw_chat_agent_poc /app/jw_chat_agent_poc
+COPY frontend /app/frontend
+
+EXPOSE 8080
+
+CMD ["uvicorn", "jw_chat_agent_poc.service.app:app", "--host", "0.0.0.0", "--port", "8080"]

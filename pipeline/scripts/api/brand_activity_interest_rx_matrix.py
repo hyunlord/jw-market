@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, BrandSetResolution, resolve_brand_set
+from pipeline.scripts.api.brand_activity_channel_axis import parse_ubist_channel_axis
 from pipeline.scripts.api.brand_activity_csd_shared import (
     BrandChoice,
     BrandMeta,
@@ -34,6 +35,7 @@ from pipeline.scripts.api.brand_activity_interest_rx_source import (
     period_for_request,
 )
 from pipeline.scripts.api.brand_activity_topic_matrix import _alias_lookup
+from pipeline.scripts.utils.ubist_target_channel_mapping import target_facility_abbr_for_raw, target_specialty_abbr_for_raw
 
 
 class InterestRxMatrixInputError(RuntimeError):
@@ -118,13 +120,14 @@ def _parse_request(payload: Mapping[str, Any]) -> MatrixRequest:
     if not selected_brand or (view == "general" and not market_id):
         raise InterestRxMatrixInputError("market_id or filters.atc4, and selected_brand are required")
     weights = payload.get("weights")
+    visit_location, specialty = _keyword_filters_from_channel_axis(filter_payload)
     return MatrixRequest(
         view=view,
         market_id=market_id,
         selected_brand=selected_brand,
         filter_payload=filter_payload,
-        visit_location=text(payload.get("visit_location")) or "전체",
-        specialty=text(payload.get("specialty")) or "전체",
+        visit_location=visit_location or text(payload.get("visit_location")) or "전체",
+        specialty=specialty or text(payload.get("specialty")) or "전체",
         period_start=text(payload.get("period_start")),
         period_end=text(payload.get("period_end")),
         weights=weights if isinstance(weights, dict) else {},
@@ -227,6 +230,7 @@ def _brand_payload(choice: BrandChoice, projection: Projection) -> JsonMap:
         "is_selected": choice.is_selected,
         "is_jw": meta.is_jw,
         "sales_rank": choice.sales_rank,
+        "detailing": projection.detailing.get(choice.brand_key),
     }
     payload.update(_stats_payload(projection.brand_counts[choice.brand_key], projection.inputs.weights))
     return payload
@@ -242,6 +246,7 @@ def _stats_payload(counts: JsonMap, weights: JsonMap) -> JsonMap:
         "rx_frequency_distribution": rx_frequency,
         "prescription_evolution_distribution": evolution,
         "event_count": event_count,
+        "confidence": "sufficient" if event_count >= 5 else "insufficient",
         "interest_score": _score(interest, weights["interest"]),
         "rx_frequency_score": _score(rx_frequency, weights["rx_frequency"]),
         "prescription_evolution_score": _score(evolution, weights["prescription_evolution"]),
@@ -285,6 +290,51 @@ def _filter_payload(payload: Mapping[str, Any]) -> JsonMap:
     if isinstance(filters, dict) and filters:
         return filters
     return legacy_filter if isinstance(legacy_filter, dict) else {}
+
+
+def _keyword_filters_from_channel_axis(filter_payload: Mapping[str, Any]) -> tuple[str, str]:
+    channel_axis = parse_ubist_channel_axis(filter_payload)
+    if channel_axis is None:
+        return "", ""
+    facilities = {target_facility_abbr_for_raw(value) for value in channel_axis.facilities}
+    facilities.discard(None)
+    specialties = {target_specialty_abbr_for_raw(value) for value in channel_axis.specialties}
+    specialties.discard(None)
+    for pair in channel_axis.pairs:
+        facility = target_facility_abbr_for_raw(pair.facility)
+        specialty = target_specialty_abbr_for_raw(pair.specialty)
+        if facility:
+            facilities.add(facility)
+        if specialty:
+            specialties.add(specialty)
+    visit_location = _keyword_visit_location(tuple(str(value) for value in facilities))
+    specialty = _keyword_specialty(tuple(str(value) for value in specialties))
+    return visit_location, specialty
+
+
+def _keyword_visit_location(facilities: tuple[str, ...]) -> str:
+    if not facilities:
+        return ""
+    if set(facilities) <= {"CL"}:
+        return "PRIV. PRACTICE"
+    if set(facilities) <= {"GH", "TH", "BH"}:
+        return "HOSPITAL"
+    return "전체"
+
+
+def _keyword_specialty(specialties: tuple[str, ...]) -> str:
+    if len(set(specialties)) != 1:
+        return ""
+    mapping = {
+        "Cardio": "Cardio",
+        "Endo": "Endo",
+        "GI": "Gastro",
+        "Nephro": "Nephro",
+        "Neuro": "Neuro",
+        "Uro": "Urologists",
+        "IGF": "IM/FM",
+    }
+    return mapping.get(specialties[0], "")
 
 
 def _first_filter_value(filter_payload: Mapping[str, Any], key: str) -> str:

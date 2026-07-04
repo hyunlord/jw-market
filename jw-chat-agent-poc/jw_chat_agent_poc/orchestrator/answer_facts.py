@@ -1,0 +1,1474 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
+import re
+from typing import Any, Final
+
+from jw_chat_agent_poc.orchestrator.markdown_formatting import (
+    TABLE_LIMIT,
+    cell,
+    eok_value,
+    items,
+    number_value,
+    pct_value,
+    rank_value,
+    source_label,
+    table,
+)
+
+RenderData = dict[str, Any]
+RequiredFactCollector = Callable[[RenderData, str], tuple["AxisFact", ...]]
+
+
+class RequiredAxis(StrEnum):
+    """Question axes that independently contribute mandatory answer facts."""
+
+    SALES_TREND = "sales_trend"
+    MARKET_STRUCTURE = "market_structure"
+    PATIENT_VOLUME = "patient_volume"
+    ISSUE_CONTEXT = "issue_context"
+    BRAND_POSITION = "brand_position"
+
+
+class MetricFactDetail(StrEnum):
+    """How much context a metric call should render outside mandatory axis facts."""
+
+    FULL = "full"
+    CORE_ONLY = "core_only"
+    MONTHLY_ONLY = "monthly_only"
+
+
+@dataclass(frozen=True, slots=True)
+class AxisFact:
+    """One mandatory fact row owned by a single answer axis."""
+
+    axis: RequiredAxis
+    label: str
+    content: str
+
+
+_REQUIRED_AXIS_ORDER: Final[tuple[RequiredAxis, ...]] = (
+    RequiredAxis.SALES_TREND,
+    RequiredAxis.MARKET_STRUCTURE,
+    RequiredAxis.PATIENT_VOLUME,
+    RequiredAxis.ISSUE_CONTEXT,
+    RequiredAxis.BRAND_POSITION,
+)
+
+_REQUIRED_METRIC_AXES: Final[dict[str, tuple[RequiredAxis, ...]]] = {
+    "sales_delta": (RequiredAxis.SALES_TREND,),
+    "market_share_delta": (RequiredAxis.MARKET_STRUCTURE,),
+    "market_vs_brand_delta": (RequiredAxis.SALES_TREND, RequiredAxis.MARKET_STRUCTURE),
+    "brand_trend_comparison": (RequiredAxis.MARKET_STRUCTURE,),
+    "competitive_insight_signals": (RequiredAxis.MARKET_STRUCTURE,),
+    "market_member_snapshot": (RequiredAxis.MARKET_STRUCTURE,),
+    "yoy_growth": (RequiredAxis.SALES_TREND,),
+    "average_share": (RequiredAxis.MARKET_STRUCTURE,),
+    "sales": (RequiredAxis.SALES_TREND, RequiredAxis.BRAND_POSITION),
+    "market_share": (RequiredAxis.MARKET_STRUCTURE, RequiredAxis.BRAND_POSITION),
+    "share": (RequiredAxis.MARKET_STRUCTURE, RequiredAxis.BRAND_POSITION),
+    "rank": (RequiredAxis.BRAND_POSITION,),
+    "hira_disease": (RequiredAxis.PATIENT_VOLUME,),
+}
+
+
+def answer_fact_markdown(calls: list[dict[str, Any]], sources: list[str]) -> str:
+    blocks: list[str] = ["## 확정 fact set"]
+    required = _required_fact_block(calls)
+    if required:
+        blocks.append(required)
+    for call in calls:
+        if _is_fact_only_completion_call(call):
+            continue
+        block = _call_fact_block(call, detail=_metric_fact_detail(call, calls))
+        if block:
+            blocks.append(block)
+    if len(blocks) == 1:
+        blocks.append("- 표시할 확정 fact가 없습니다.")
+    source_block = _source_block(calls, sources)
+    if source_block:
+        blocks.append(source_block)
+    return "\n\n".join(blocks)
+
+
+def _is_fact_only_completion_call(call: dict[str, Any]) -> bool:
+    data = call.get("render_data")
+    if not isinstance(data, dict) or not data.get("completion_reason"):
+        return False
+    return data.get("completion_reason") in {
+        "comparison_trend_requires_series",
+        "share_delta_requires_period_metrics",
+        "largest_competitor_requires_member_metric",
+    }
+
+
+def _required_fact_block(calls: list[dict[str, Any]]) -> str:
+    facts: list[AxisFact] = []
+    for call in calls:
+        facts.extend(_axis_facts_for_call(call))
+    rows = _ordered_axis_rows(facts)
+    if not rows:
+        return ""
+    return table("### 필수 답변 fact", ("구분", "반드시 반영할 내용"), tuple(rows))
+
+
+def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
+    data = call.get("render_data")
+    if not isinstance(data, dict):
+        return ()
+    if data.get("status") == "unsupported":
+        return (
+            AxisFact(
+                RequiredAxis.BRAND_POSITION,
+                "데이터 미보유",
+                str(data.get("message") or "요청 지표를 현재 지원 데이터에서 확정하지 못했습니다."),
+            ),
+        )
+    tool = str(call.get("tool") or "")
+    if tool == "agent_calculation":
+        return _agent_calculation_axis_facts(data)
+    if tool == "get_brand_metric":
+        return _brand_metric_axis_facts(data)
+    if _is_hira_disease_call(call):
+        return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_rows(data))
+    return ()
+
+
+def _is_hira_disease_call(call: dict[str, Any]) -> bool:
+    tool = str(call.get("tool") or "")
+    source = str(call.get("source") or "")
+    return source == "hira_disease" or tool == "get_disease_stats" or tool.startswith("hira_disease")
+
+
+def _agent_calculation_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    metric = str(data.get("metric") or "")
+    if metric not in _REQUIRED_METRIC_AXES:
+        return ()
+    collector = _AGENT_CALCULATION_FACTS.get(metric)
+    if collector is None:
+        return ()
+    return collector(data, str(data.get("brand") or "브랜드"))
+
+
+def _brand_metric_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    metric = str(data.get("metric") or "")
+    brand = str(data.get("brand") or "브랜드")
+    axes = _REQUIRED_METRIC_AXES.get(metric, ())
+    facts: list[AxisFact] = []
+    collector = _BRAND_METRIC_FACTS.get(metric)
+    if collector is not None:
+        facts.extend(collector(data, brand))
+    if RequiredAxis.BRAND_POSITION in axes or data.get("answer_scope") in {"single_brand_focus", "single_brand_trend"} or _is_direct_brand_metric(data):
+        facts.extend(_single_brand_axis_facts(data, brand))
+    if RequiredAxis.MARKET_STRUCTURE in axes or _market_structure_payload_present(data):
+        facts.extend(_market_structure_axis_facts(data))
+    return tuple(facts)
+
+
+def _single_brand_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    facts: list[AxisFact] = []
+    trend_metric = _required_sales_trend_metric(data, brand)
+    if trend_metric:
+        facts.append(AxisFact(RequiredAxis.SALES_TREND, "매출 추이", trend_metric))
+    focus_metric = _required_single_brand_focus_metric(data, brand)
+    if focus_metric:
+        facts.append(AxisFact(RequiredAxis.BRAND_POSITION, "브랜드 핵심 지표", focus_metric))
+    return tuple(facts)
+
+
+def _market_structure_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    if _is_single_brand_scope(data):
+        return ()
+    rows: list[tuple[str, str]] = []
+    if _prefer_top_trend_rows(data):
+        rows.extend(_required_top_trend_rows(data))
+    else:
+        if isinstance(data.get("level_segments"), list):
+            rows.extend(_required_level_segment_rows(data))
+        if isinstance(data.get("level_top5_trend_series"), list):
+            rows.extend(_required_top_trend_rows(data))
+    return tuple(AxisFact(RequiredAxis.MARKET_STRUCTURE, label, content) for label, content in rows)
+
+
+def _market_structure_payload_present(data: RenderData) -> bool:
+    return isinstance(data.get("level_segments"), list) or isinstance(data.get("level_top5_trend_series"), list)
+
+
+def _ordered_axis_rows(facts: list[AxisFact]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for axis in _REQUIRED_AXIS_ORDER:
+        axis_facts = _prioritized_axis_facts(axis, tuple(fact for fact in facts if fact.axis == axis))
+        for fact in axis_facts:
+            key = (fact.label, fact.content)
+            if key in seen or not fact.content:
+                continue
+            seen.add(key)
+            rows.append(key)
+    return rows
+
+
+def _prioritized_axis_facts(axis: RequiredAxis, facts: tuple[AxisFact, ...]) -> tuple[AxisFact, ...]:
+    if axis == RequiredAxis.SALES_TREND and any(fact.label == "시장/브랜드 변화율 대조" for fact in facts):
+        return tuple(fact for fact in facts if fact.label != "매출 변화")
+    if axis == RequiredAxis.MARKET_STRUCTURE and any(fact.label == "브랜드 추세 비교" for fact in facts):
+        return tuple(fact for fact in facts if not _is_snapshot_rank_fact(fact))
+    return facts
+
+
+def _is_snapshot_rank_fact(fact: AxisFact) -> bool:
+    return fact.label.endswith("상위") or fact.label == "상위 브랜드 추이"
+
+
+def _metric_fact_detail(call: dict[str, Any], calls: list[dict[str, Any]]) -> MetricFactDetail:
+    if not _market_structure_payload_present_in_call(call):
+        return MetricFactDetail.FULL
+    if any(_agent_metric_present(other_call, "market_vs_brand_delta") for other_call in calls):
+        return MetricFactDetail.CORE_ONLY
+    if any(_agent_metric_present(other_call, "brand_trend_comparison") for other_call in calls):
+        return MetricFactDetail.MONTHLY_ONLY
+    return MetricFactDetail.FULL
+
+
+def _market_structure_payload_present_in_call(call: dict[str, Any]) -> bool:
+    data = call.get("render_data")
+    return call.get("tool") == "get_brand_metric" and isinstance(data, dict) and _market_structure_payload_present(data)
+
+
+def _agent_metric_present(call: dict[str, Any], metric: str) -> bool:
+    data = call.get("render_data")
+    if call.get("tool") != "agent_calculation" or not isinstance(data, dict):
+        return False
+    return data.get("metric") == metric
+
+
+def _is_single_brand_scope(data: dict[str, Any]) -> bool:
+    """Return whether the answer must stay centered on the requested brand."""
+
+    return data.get("answer_scope") in {"single_brand_trend", "single_brand_focus"}
+
+
+def _is_direct_brand_metric(data: dict[str, Any]) -> bool:
+    """Return whether direct metric facts must be echoed in the answer."""
+
+    metric = str(data.get("metric") or "")
+    if metric not in {"sales", "market_share", "share", "rank"}:
+        return False
+    return any(
+        data.get(key) not in (None, "")
+        for key in ("sales_억원", "sales_krw", "ms_recent_pct", "market_share", "rank")
+    )
+
+
+def _required_market_member_metric(data: dict[str, Any], brand: str) -> str:
+    period = str(data.get("period") or "latest")
+    rank = rank_value(data.get("rank"), None)
+    ms = pct_value(data.get("ms_recent_pct"))
+    sales = eok_value(data.get("sales_억원"), data.get("sales_krw"))
+    parts = [
+        f"{brand} 최신 시장 멤버 지표",
+        f"기간 {period}",
+        f"순위 {rank}위" if rank else "",
+        f"시장점유율 {ms}" if ms else "",
+        f"매출 {sales}" if sales else "",
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _required_yoy_growth(data: dict[str, Any], brand: str) -> str:
+    period = str(data.get("period") or "")
+    from_period = str(data.get("from_period") or "").strip()
+    to_period = str(data.get("to_period") or "").strip()
+    period_label = period or "→".join(part for part in (from_period, to_period) if part)
+    parts = [
+        f"{brand} YoY",
+        period_label,
+        f"기준 매출 {eok_value(data.get('from_sales_억원'), data.get('from_sales_krw'))}",
+        f"비교 매출 {eok_value(data.get('to_sales_억원'), data.get('to_sales_krw'))}",
+        f"매출 변화 {eok_value(data.get('sales_delta_억원'), data.get('sales_delta_krw'))}",
+        f"성장률 {pct_value(data.get('growth_pct'))}",
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _required_average_share(data: dict[str, Any], brand: str) -> str:
+    period = str(data.get("period") or "")
+    parts = [
+        f"{brand} 평균 점유율",
+        period,
+        pct_value(data.get("avg_ms_pct")),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _sales_delta_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    period = str(data.get("period") or "")
+    content = (
+        f"{brand} {period}: {eok_value(data.get('from_sales_억원'), data.get('from_sales_krw'))}"
+        f" → {eok_value(data.get('to_sales_억원'), data.get('to_sales_krw'))}, "
+        f"변화 {eok_value(data.get('sales_delta_억원'), data.get('sales_delta_krw'))}"
+        f"({pct_value(data.get('sales_delta_pct'))})"
+    )
+    return (AxisFact(RequiredAxis.SALES_TREND, "매출 변화", content),)
+
+
+def _market_share_delta_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    period = str(data.get("period") or "")
+    content = (
+        f"{brand} {period}: {pct_value(data.get('from_ms_pct'))}"
+        f" → {pct_value(data.get('to_ms_pct'))}, 변화 {pct_value(data.get('ms_delta_pct'))}p"
+    )
+    return (AxisFact(RequiredAxis.MARKET_STRUCTURE, "점유율 변화", content),)
+
+
+def _market_vs_brand_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    return (AxisFact(RequiredAxis.SALES_TREND, "시장/브랜드 변화율 대조", _required_market_vs_brand_delta(data, brand)),)
+
+
+def _brand_trend_comparison_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    return (AxisFact(RequiredAxis.MARKET_STRUCTURE, "브랜드 추세 비교", _required_brand_trend_comparison(data, brand)),)
+
+
+def _competitive_insight_axis_facts(data: RenderData, _brand: str) -> tuple[AxisFact, ...]:
+    return tuple(AxisFact(RequiredAxis.MARKET_STRUCTURE, label, content) for label, content in _required_competitive_insight_rows(data))
+
+
+def _market_member_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    return (AxisFact(RequiredAxis.MARKET_STRUCTURE, "비교 브랜드 지표", _required_market_member_metric(data, brand)),)
+
+
+def _yoy_growth_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    return (AxisFact(RequiredAxis.SALES_TREND, "YoY 성장률", _required_yoy_growth(data, brand)),)
+
+
+def _average_share_axis_facts(data: RenderData, brand: str) -> tuple[AxisFact, ...]:
+    return (AxisFact(RequiredAxis.MARKET_STRUCTURE, "평균 점유율", _required_average_share(data, brand)),)
+
+
+def _required_single_brand_focus_metric(data: dict[str, Any], brand: str) -> str:
+    period = str(data.get("period") or "")
+    sales = eok_value(data.get("sales_억원"), data.get("sales_krw"))
+    share = pct_value(data.get("ms_recent_pct") or data.get("market_share"))
+    rank = rank_value(data.get("rank"), data.get("total_brands_in_market"))
+    rank_label = f"{rank}위" if rank and "/" not in rank else rank
+    if not any((sales, share, rank_label)):
+        return ""
+    parts = [
+        f"{brand} {period}",
+        f"매출 {sales}" if sales else "",
+        f"시장점유율 {share}" if share else "",
+        f"순위 {rank_label}" if rank_label else "",
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _required_sales_trend_metric(data: RenderData, brand: str) -> str:
+    series = data.get("brand_value_series_10pt")
+    if not isinstance(series, list):
+        return ""
+    points = [point for point in series if isinstance(point, dict) and point.get("period")]
+    if len(points) < 2:
+        return ""
+    first = points[0]
+    last = points[-1]
+    first_sales = eok_value(first.get("value_억원"), first.get("value_krw"))
+    last_sales = eok_value(last.get("value_억원"), last.get("value_krw"))
+    first_ms = pct_value(first.get("ms_pct"))
+    last_ms = pct_value(last.get("ms_pct"))
+    parts = [
+        f"{brand} 매출 시계열 {first.get('period')} {first_sales} → {last.get('period')} {last_sales}",
+        f"MS {first_ms} → {last_ms}" if first_ms and last_ms else "",
+    ]
+    return ", ".join(part for part in parts if part)
+
+
+def _required_market_vs_brand_delta(data: dict[str, Any], brand: str) -> str:
+    period = str(data.get("period") or "")
+    parts = [
+        f"{brand} {period}",
+        f"브랜드 매출 {eok_value(data.get('brand_from_sales_억원'), data.get('brand_from_sales_krw'))}"
+        f" → {eok_value(data.get('brand_to_sales_억원'), data.get('brand_to_sales_krw'))}",
+        f"브랜드 변화율 {pct_value(data.get('brand_delta_pct'))}",
+        f"시장 매출 {eok_value(data.get('market_from_sales_억원'), data.get('market_from_sales_krw'))}"
+        f" → {eok_value(data.get('market_to_sales_억원'), data.get('market_to_sales_krw'))}",
+        f"시장 변화율 {pct_value(data.get('market_delta_pct'))}",
+        f"변화율 차이 {pct_value(data.get('delta_pct_gap'))}p",
+        _market_causal_signal(data),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _market_causal_signal(data: dict[str, Any]) -> str:
+    relation = str(data.get("comparison_relation") or "")
+    gap = _numeric(data.get("delta_pct_gap"))
+    if relation == "same_direction_market_down":
+        return "근거 기반 인과 분석: 시장 동반 하락이 브랜드 매출 하락의 주요 배경으로 해석됨"
+    if relation == "brand_declined_more_than_market" or gap < -3:
+        return "근거 기반 인과 분석: 브랜드 하락폭이 시장보다 커 브랜드 고유 압력 가능성이 큼"
+    if relation == "brand_declined_less_than_market" or gap > 3:
+        return "근거 기반 인과 분석: 시장 하락에도 브랜드 방어력이 상대적으로 확인됨"
+    if relation == "brand_specific_weakness_signal":
+        return "근거 기반 인과 분석: 시장이 버티는 동안 브랜드가 하락해 브랜드 고유 약세 신호"
+    if relation == "brand_outperformed_falling_market":
+        return "근거 기반 인과 분석: 시장 하락 속 브랜드는 역행해 점유 방어 신호를 보이나 직접 처방 이동은 확인 불가"
+    return "근거 기반 인과 분석: 시장과 브랜드 변화율 격차로 배경 요인을 판별"
+
+
+def _required_brand_trend_comparison(data: dict[str, Any], brand: str) -> str:
+    comparison = str(data.get("comparison_brand") or "비교 브랜드")
+    period = str(data.get("period") or "")
+    parts = [
+        f"{brand} vs {comparison} {period}",
+        f"{brand} MS {pct_value(data.get('brand_from_ms_pct'))} → {pct_value(data.get('brand_to_ms_pct'))}",
+        f"{brand} MS 변화 {pct_value(data.get('brand_share_delta_pctp'))}p",
+        f"{comparison} MS {pct_value(data.get('comparison_from_ms_pct'))} → {pct_value(data.get('comparison_to_ms_pct'))}",
+        f"{comparison} MS 변화 {pct_value(data.get('comparison_share_delta_pctp'))}p",
+        f"{brand} 매출 변화율 {pct_value(data.get('brand_sales_delta_pct'))}",
+        f"{comparison} 매출 변화율 {pct_value(data.get('comparison_sales_delta_pct'))}",
+        _trend_causal_signal(data, brand, comparison),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _trend_causal_signal(data: dict[str, Any], brand: str, comparison: str) -> str:
+    signal = str(data.get("comparison_signal") or "")
+    if signal == "comparison_outpaced_anchor_trend":
+        return f"근거 기반 인과 분석: {comparison}이 점유율·매출 성장에서 {brand}를 앞서며 경쟁 압력으로 작용"
+    if signal == "comparison_gaining_while_anchor_flat_or_down":
+        return f"근거 기반 인과 분석: {comparison} 점유 확대와 {brand} 정체/하락이 맞물려 처방 이동 후보 신호"
+    return f"근거 기반 인과 분석: {brand}와 {comparison}의 추세 격차로 위협 수준을 판별"
+
+
+def _required_competitive_insight_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    market_delta = eok_value(data.get("market_delta_억원"), data.get("market_delta_krw"))
+    market_growth = pct_value(data.get("market_growth_pct"))
+    for signal in data.get("signals", [])[:3]:
+        if not isinstance(signal, dict):
+            continue
+        brand = str(signal.get("brand") or "")
+        if not brand:
+            continue
+        parts = [
+            brand,
+            f"share-of-growth {pct_value(signal.get('share_of_growth_pct'))}" if signal.get("share_of_growth_pct") is not None else "",
+            f"성장분해 시장 {market_growth}" if market_growth else "",
+            f"점유 {pct_value(signal.get('share_delta_pctp'))}p" if signal.get("share_delta_pctp") is not None else "",
+            f"시장 변화 {market_delta}" if market_delta else "",
+            f"cohort z-score {number_value(signal.get('z_score'))}" if signal.get("z_score") is not None else "",
+            f"백분위 {pct_value(signal.get('percentile'))}" if signal.get("percentile") is not None else "",
+        ]
+        rows.append(("인사이트 계산", " ".join(part for part in parts if part)))
+    movement = _required_gain_loss_movement(data)
+    if movement:
+        rows.append(("인사이트 계산", movement))
+    return rows
+
+
+def _required_gain_loss_movement(data: dict[str, Any]) -> str:
+    nested = data.get("gain_loss")
+    if isinstance(nested, dict):
+        gainer_brand = str(nested.get("gainer") or "")
+        faller_brand = str(nested.get("faller") or "")
+        if gainer_brand and faller_brand:
+            period = _comparison_period(nested)
+            parts = [
+                f"{gainer_brand} {period} 상승폭 {pct_value(nested.get('gainer_delta_pctp'))}p",
+                f"{faller_brand} {period} 하락폭 {pct_value(nested.get('faller_delta_pctp'))}p",
+                "근거 기반 인과 분석: 두 브랜드 점유율이 반대 방향으로 변했으나 직접 처방 이동은 확인 불가",
+            ]
+            return " ".join(part for part in parts if part)
+    gainer = data.get("top_gainer")
+    faller = data.get("top_faller")
+    if not isinstance(gainer, dict) or not isinstance(faller, dict):
+        return ""
+    gainer_brand = str(gainer.get("brand") or "")
+    faller_brand = str(faller.get("brand") or "")
+    if not gainer_brand or not faller_brand:
+        return ""
+    period = _comparison_period(gainer) or _comparison_period(faller) or str(data.get("period") or "")
+    parts = [
+        f"{gainer_brand} {period} 상승폭 {pct_value(gainer.get('share_delta_pctp'))}p",
+        f"{faller_brand} {period} 하락폭 {pct_value(faller.get('share_delta_pctp'))}p",
+        "근거 기반 인과 분석: 두 브랜드 점유율이 반대 방향으로 변했으나 직접 처방 이동은 확인 불가",
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _required_level_segment_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    level = str(data.get("level") or "분석 기준")
+    for item in data.get("level_segments", [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+        rank = rank_value(item.get("rank"), None)
+        ms = pct_value(item.get("ms_recent_pct"))
+        sales = eok_value(None, item.get("value"))
+        parts = [part for part in (f"{rank}위" if rank else "", str(name), f"시장점유율 {ms}" if ms else "", f"매출 {sales}" if sales else "") if part]
+        if parts:
+            rows.append((f"{level} 상위", " ".join(parts)))
+    return rows
+
+
+def _prefer_top_trend_rows(data: dict[str, Any]) -> bool:
+    """Prefer trend rows when snapshot segment values are all zero but trend facts are populated."""
+    return _all_level_segment_values_zero(data) and _top_trend_values_contain_nonzero(data)
+
+
+def _all_level_segment_values_zero(data: dict[str, Any]) -> bool:
+    segments = data.get("level_segments")
+    if not isinstance(segments, list) or not segments:
+        return False
+    checked = 0
+    for item in segments[:5]:
+        if not isinstance(item, dict):
+            continue
+        checked += 1
+        if _numeric(item.get("ms_recent_pct")) != 0 or _numeric(item.get("value")) != 0:
+            return False
+    return checked > 0
+
+
+def _top_trend_values_contain_nonzero(data: dict[str, Any]) -> bool:
+    trends = data.get("level_top5_trend_series")
+    if not isinstance(trends, list):
+        return False
+    for item in trends[:5]:
+        if not isinstance(item, dict):
+            continue
+        if _numeric(item.get("ms_recent_pct")) != 0 or _numeric(item.get("value_recent_억원")) != 0 or _numeric(item.get("value_recent")) != 0:
+            return True
+    return False
+
+
+def _numeric(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _required_top_trend_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for item in data.get("level_top5_trend_series", [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        brand = item.get("brand")
+        if not brand:
+            continue
+        rank = rank_value(item.get("rank"), None)
+        ms = pct_value(item.get("ms_recent_pct"))
+        ms_delta = pct_value(item.get("share_delta_pctp"))
+        period = _comparison_period(item) or str(data.get("period") or "")
+        sales = eok_value(item.get("value_recent_억원"), item.get("value_recent"))
+        sales_delta = eok_value(item.get("value_delta_억원"), item.get("value_delta_krw"))
+        parts = [
+            f"{rank}위" if rank else "",
+            str(brand),
+            f"최신 시장점유율 {ms}" if ms else "",
+            f"{period} 점유율 변화 {ms_delta}p" if ms_delta and period else f"점유율 변화 {ms_delta}p" if ms_delta else "",
+            f"최신 매출 {sales}" if sales else "",
+            f"매출 변화 {sales_delta}" if sales_delta else "",
+        ]
+        rows.append(("상위 브랜드 추이", " ".join(part for part in parts if part)))
+        monthly_ms = _top_trend_monthly_ms_summary(item)
+        if monthly_ms:
+            rows.append(("상위 브랜드 월별 MS", monthly_ms))
+    return rows
+
+
+def _comparison_period(data: dict[str, Any]) -> str:
+    period_from = str(data.get("period_from") or "")
+    period_to = str(data.get("period_to") or "")
+    if period_from and period_to:
+        return f"{period_from}→{period_to}"
+    series = data.get("series")
+    if isinstance(series, list) and series:
+        first = series[0]
+        last = series[-1]
+        if isinstance(first, dict) and isinstance(last, dict):
+            start = str(first.get("period") or "")
+            end = str(last.get("period") or "")
+            if start and end:
+                return f"{start}→{end}"
+    return str(data.get("period") or "")
+
+
+def _required_hira_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    candidates: list[tuple[Any, Any, Any, Any]] = []
+    for label, code, disease_name, patient_count in _dedupe_hira_rows(_hira_rows(data), seen=seen):
+        if patient_count in (None, "", "-"):
+            continue
+        candidates.append((label, code, disease_name, patient_count))
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if not isinstance(render_data, dict):
+                continue
+            for label, code, disease_name, patient_count in _dedupe_hira_rows(_hira_rows(render_data), seen=seen):
+                if patient_count in (None, "", "-"):
+                    continue
+                candidates.append((label, code, disease_name, patient_count))
+    rows: list[tuple[str, str]] = []
+    for label, code, disease_name, patient_count in _select_required_hira_rows(candidates):
+        rows.append(("HIRA 환자수", f"{disease_name}({code}) {label}: {patient_count}명"))
+    return rows or _required_hira_unavailable_rows(data)
+
+
+def _required_hira_unavailable_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    calls = data.get("calls")
+    nested_calls = [call for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
+    mapping_by_code: dict[str, str] = {}
+    unavailable_codes: set[str] = set()
+    for call in nested_calls:
+        render_data = call.get("render_data")
+        if not isinstance(render_data, dict):
+            continue
+        code = str(render_data.get("sickCd") or render_data.get("mapping_sickCd") or "").strip()
+        disease = str(render_data.get("disease_name") or render_data.get("mapping_disease_name") or "").strip()
+        if code and disease:
+            mapping_by_code.setdefault(code, disease)
+        if _hira_payload_has_no_body(render_data):
+            if code:
+                unavailable_codes.add(code)
+    rows: list[tuple[str, str]] = []
+    for code in sorted(unavailable_codes):
+        disease = mapping_by_code.get(code, "").strip()
+        if not disease:
+            continue
+        rows.append(("HIRA 조회 상태", f"{code} {disease}: 환자수 수치 미반환"))
+    return rows
+
+
+def _hira_payload_has_no_body(data: dict[str, Any]) -> bool:
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    header = payload.get("header") if isinstance(payload.get("header"), dict) else {}
+    result_code = str(header.get("resultCode") or "").strip()
+    return bool(result_code and result_code != "00" and payload.get("body") is None)
+
+
+def _select_required_hira_rows(rows: list[tuple[Any, Any, Any, Any]]) -> list[tuple[Any, Any, Any, Any]]:
+    """Prefer high-level admission/outpatient rows over narrow age tails for required facts."""
+
+    if not rows:
+        return []
+    priority_labels = ("외래", "입원")
+    selected: list[tuple[Any, Any, Any, Any]] = []
+    for priority in priority_labels:
+        selected.extend(row for row in rows if str(row[0] or "") == priority and row not in selected)
+    if selected:
+        return selected[:2]
+    non_age = [row for row in rows if not re.match(r"^\d+_\d+세$", str(row[0] or ""))]
+    return (non_age or rows)[:3]
+
+
+_AGENT_CALCULATION_FACTS: Final[dict[str, RequiredFactCollector]] = {
+    "sales_delta": _sales_delta_axis_facts,
+    "market_share_delta": _market_share_delta_axis_facts,
+    "market_vs_brand_delta": _market_vs_brand_axis_facts,
+    "brand_trend_comparison": _brand_trend_comparison_axis_facts,
+    "competitive_insight_signals": _competitive_insight_axis_facts,
+}
+
+_BRAND_METRIC_FACTS: Final[dict[str, RequiredFactCollector]] = {
+    "market_member_snapshot": _market_member_axis_facts,
+    "yoy_growth": _yoy_growth_axis_facts,
+    "average_share": _average_share_axis_facts,
+}
+
+
+def _call_fact_block(
+    call: dict[str, Any],
+    *,
+    detail: MetricFactDetail = MetricFactDetail.FULL,
+) -> str:
+    data = call.get("render_data")
+    if not isinstance(data, dict):
+        return ""
+    tool = str(call.get("tool") or "")
+    if tool == "deep_analysis_related_news":
+        return _news_facts(data)
+    if tool in {"get_brand_metric", "get_market_landscape", "agent_calculation", "unsupported_metric"}:
+        return _metric_facts(tool, data, detail=detail)
+    if _is_hira_disease_call(call):
+        return _hira_facts(tool, data)
+    if "clinical" in tool:
+        return _external_items_facts("임상시험", data, ("NCTId", "CLNC_TEST_SN", "briefTitle", "overallStatus", "GOODS_NAME"))
+    if "patent" in tool or "orangebook" in tool:
+        return _external_items_facts("특허/라벨", data, ("DOMESTIC_PATENT_NO", "KOR_PAT_NO", "ITEM_NAME", "PRT_NAME", "DOMESTIC_END_DATE"))
+    return _generic_facts(tool, data)
+
+
+def _news_facts(data: dict[str, Any]) -> str:
+    rows = []
+    for item in items(data):
+        rows.append(
+            (
+                item.get("date"),
+                item.get("title"),
+                item.get("source"),
+                item.get("url"),
+                item.get("summary"),
+                item.get("match_excerpt"),
+            )
+        )
+    if not rows:
+        message = data.get("message") or "관련 뉴스 없음"
+        return table("### 인사이트 근거 fact - 뉴스/이슈", ("항목", "값"), (("상태", message),))
+    return table("### 인사이트 근거 fact - 뉴스/이슈", ("날짜", "제목", "출처", "URL", "요약", "매칭 발췌"), tuple(rows))
+
+
+def _metric_facts(
+    tool: str,
+    data: dict[str, Any],
+    *,
+    detail: MetricFactDetail = MetricFactDetail.FULL,
+) -> str:
+    if data.get("status") == "unsupported":
+        subject = data.get("brand") or data.get("tool_name") or tool
+        return table(f"### {cell(subject)} 지표 fact", ("항목", "값"), (("상태", data.get("message")),))
+
+    subject = str(data.get("brand") or data.get("market_name") or data.get("market_id") or "시장")
+    rows: list[tuple[str, Any]] = []
+    _append(rows, "브랜드/시장", subject)
+    _append(rows, "지표", data.get("metric"))
+    _append(rows, "기간", data.get("period"))
+    _append(rows, "매출", eok_value(data.get("sales_억원"), data.get("sales_krw")))
+    _append(rows, "시장점유율", pct_value(data.get("ms_recent_pct", data.get("market_share"))))
+    _append(rows, "순위", rank_value(data.get("rank"), data.get("total_brands_in_market")))
+    _append(rows, "시장규모", eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw")))
+    _append(rows, "브랜드 CAGR", pct_value(data.get("brand_cagr_5y_pct")))
+    _append(rows, "시장 CAGR", pct_value(data.get("market_cagr_5y_pct")))
+    _append(rows, "Excess growth", pct_value(data.get("excess_growth_pct")))
+    _append(rows, "HHI", number_value(data.get("hhi_recent", data.get("hhi"))))
+    _append(rows, "기준 매출", eok_value(data.get("from_sales_억원"), data.get("from_sales_krw")))
+    _append(rows, "비교 매출", eok_value(data.get("to_sales_억원"), data.get("to_sales_krw")))
+    _append(rows, "매출 변화", eok_value(data.get("sales_delta_억원"), data.get("sales_delta_krw")))
+    _append(rows, "매출 변화율", pct_value(data.get("sales_delta_pct")))
+    _append(rows, "브랜드 변화율", pct_value(data.get("brand_delta_pct")))
+    _append(rows, "시장 변화율", pct_value(data.get("market_delta_pct")))
+    _append(rows, "변화율 차이", pct_value(data.get("delta_pct_gap")))
+    _append(rows, "비교 브랜드", data.get("comparison_brand"))
+    _append(rows, "브랜드 MS 변화", pct_value(data.get("brand_share_delta_pctp")))
+    _append(rows, "비교 브랜드 MS 변화", pct_value(data.get("comparison_share_delta_pctp")))
+    _append(rows, "브랜드 매출 변화율", pct_value(data.get("brand_sales_delta_pct")))
+    _append(rows, "비교 브랜드 매출 변화율", pct_value(data.get("comparison_sales_delta_pct")))
+    _append(rows, "YoY 성장률", pct_value(data.get("growth_pct")))
+    _append(rows, "평균 점유율", pct_value(data.get("avg_ms_pct")))
+    _append(rows, "기준 점유율", pct_value(data.get("from_ms_pct")))
+    _append(rows, "비교 점유율", pct_value(data.get("to_ms_pct")))
+    _append(rows, "점유율 변화", pct_value(data.get("ms_delta_pct")))
+
+    blocks = [table(f"### {cell(subject)} 지표 fact", ("항목", "값"), tuple(rows))]
+    include_context_tables = detail == MetricFactDetail.FULL
+    level_segments = "" if _is_single_brand_scope(data) or not include_context_tables else _level_segments(data, subject)
+    if level_segments:
+        blocks.append(level_segments)
+    brand_series = _brand_series(data, subject)
+    if brand_series:
+        blocks.append(brand_series)
+    if not _is_single_brand_scope(data):
+        top_brand_trends = _top_brand_trends(data)
+        if include_context_tables and top_brand_trends:
+            blocks.append(top_brand_trends)
+        if detail == MetricFactDetail.MONTHLY_ONLY:
+            monthly_trends = _top_brand_monthly_trends(data)
+            if monthly_trends:
+                blocks.append(monthly_trends)
+    market_series = _market_series(data, subject)
+    if market_series:
+        blocks.append(market_series)
+    return "\n\n".join(blocks)
+
+
+def _level_segments(data: dict[str, Any], subject: str) -> str:
+    if _prefer_top_trend_rows(data):
+        return ""
+    segments = data.get("level_segments")
+    if not isinstance(segments, list):
+        return ""
+    level = str(data.get("level") or "분석 기준")
+    rows = tuple(
+        (
+            rank_value(item.get("rank"), None),
+            item.get("name"),
+            pct_value(item.get("ms_recent_pct")),
+            eok_value(None, item.get("value")),
+        )
+        for item in segments[:TABLE_LIMIT]
+        if isinstance(item, dict)
+    )
+    return table(f"### {cell(subject)} {cell(level)}별 점유율 fact", ("순위", "구분", "시장점유율", "매출"), rows)
+
+
+def _brand_series(data: dict[str, Any], subject: str) -> str:
+    series = data.get("brand_value_series_10pt")
+    if not isinstance(series, list):
+        return ""
+    rows = tuple(
+        (item.get("period"), eok_value(item.get("value_억원"), item.get("value_krw")), pct_value(item.get("ms_pct")))
+        for item in sorted(
+            (item for item in series if isinstance(item, dict) and str(item.get("period") or "").strip()),
+            key=lambda item: _period_sort_key(str(item.get("period") or "")),
+        )
+    )
+    return table(f"### {cell(subject)} 매출 시계열 fact", ("기간", "매출", "MS"), rows)
+
+
+def _top_brand_trends(data: dict[str, Any]) -> str:
+    trends = data.get("level_top5_trend_series")
+    if not isinstance(trends, list):
+        return ""
+    summary_rows: list[tuple[Any, Any, Any, Any, Any, Any]] = []
+    for item in trends[:TABLE_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        summary_rows.append(
+            (
+                rank_value(item.get("rank"), None),
+                item.get("brand"),
+                pct_value(item.get("ms_recent_pct")),
+                pct_value(item.get("share_delta_pctp")),
+                eok_value(item.get("value_recent_억원"), item.get("value_recent")),
+                eok_value(item.get("value_delta_억원"), item.get("value_delta_krw")),
+            )
+        )
+    blocks = [
+        table(
+            "### 상위 브랜드 점유율 추이 fact",
+            ("최신 순위", "브랜드", "최신 MS", "MS 변화", "최신 매출", "매출 변화"),
+            tuple(summary_rows),
+        )
+    ]
+    monthly_rows = _top_brand_monthly_rows(trends)
+    if monthly_rows:
+        blocks.append(table("### 상위 브랜드 월별 MS fact", ("브랜드", "기간", "MS", "매출", "순위"), tuple(monthly_rows)))
+    return "\n\n".join(blocks)
+
+
+def _top_brand_monthly_trends(data: dict[str, Any]) -> str:
+    trends = data.get("level_top5_trend_series")
+    if not isinstance(trends, list):
+        return ""
+    monthly_rows = _top_brand_monthly_rows(trends)
+    if not monthly_rows:
+        return ""
+    return table("### 상위 브랜드 월별 MS fact", ("브랜드", "기간", "MS", "매출", "순위"), tuple(monthly_rows))
+
+
+def _top_brand_monthly_rows(trends: list[Any]) -> list[tuple[Any, Any, Any, Any, Any]]:
+    rows: list[tuple[Any, Any, Any, Any, Any]] = []
+    for item in trends[:5]:
+        if not isinstance(item, dict):
+            continue
+        brand = item.get("brand")
+        series = item.get("series")
+        if not brand or not isinstance(series, list):
+            continue
+        for point in series[-TABLE_LIMIT:]:
+            if not isinstance(point, dict):
+                continue
+            rows.append(
+                (
+                    brand,
+                    point.get("period"),
+                    pct_value(point.get("ms_pct")),
+                    eok_value(point.get("value_억원"), point.get("value_krw")),
+                    rank_value(point.get("rank"), None),
+                )
+            )
+    return rows
+
+
+def _top_trend_monthly_ms_summary(item: dict[str, Any]) -> str:
+    brand = item.get("brand")
+    series = item.get("series")
+    if not brand or not isinstance(series, list):
+        return ""
+    points: list[str] = []
+    for point in series[-TABLE_LIMIT:]:
+        if not isinstance(point, dict):
+            continue
+        period = point.get("period")
+        ms = pct_value(point.get("ms_pct"))
+        if period and ms:
+            points.append(f"{period} {ms}")
+    if not points:
+        return ""
+    return f"{brand} 월별 MS: " + " → ".join(points)
+
+
+def _market_series(data: dict[str, Any], subject: str) -> str:
+    series = data.get("market_size_series")
+    if not isinstance(series, list):
+        return ""
+    brand_series = data.get("brand_value_series_10pt")
+    required_periods = _trend_key_periods(brand_series) if isinstance(brand_series, list) else ()
+    rows = tuple(
+        (item.get("period"), eok_value(item.get("value_억원"), item.get("value_krw")), pct_value(item.get("yoy_growth_pct")))
+        for item in _series_with_required_periods(series, required_periods)
+        if isinstance(item, dict)
+    )
+    return table(f"### {cell(subject)} 시장규모 시계열 fact", ("기간", "시장규모", "YoY"), rows)
+
+
+def _series_with_required_periods(series: list[Any], required_periods: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+    recent = [item for item in series[-TABLE_LIMIT:] if isinstance(item, dict)]
+    required = [
+        item
+        for item in series
+        if isinstance(item, dict) and str(item.get("period") or "").strip() in required_periods
+    ]
+    by_period: dict[str, dict[str, Any]] = {}
+    for item in (*recent, *required):
+        period = str(item.get("period") or "").strip()
+        if period:
+            by_period[period] = item
+    return tuple(sorted(by_period.values(), key=lambda item: _period_sort_key(str(item.get("period") or ""))))
+
+
+def _trend_key_periods(series: list[Any]) -> tuple[str, ...]:
+    points = [item for item in series if isinstance(item, dict) and item.get("period")]
+    if len(points) < 2:
+        return tuple(str(item.get("period")) for item in points)
+    sorted_points = sorted(points, key=lambda item: _period_sort_key(str(item.get("period") or "")))
+    peak = max(sorted_points, key=_series_value)
+    peak_index = sorted_points.index(peak)
+    trough = min(sorted_points[peak_index:], key=_series_value)
+    periods: list[str] = []
+    for item in (sorted_points[0], peak, trough, sorted_points[-1]):
+        period = str(item.get("period") or "").strip()
+        if period and period not in periods:
+            periods.append(period)
+    return tuple(periods)
+
+
+def _series_value(item: dict[str, Any]) -> float:
+    eok = item.get("value_억원")
+    if isinstance(eok, int | float):
+        return float(eok)
+    krw = item.get("value_krw") or item.get("value")
+    if isinstance(krw, int | float):
+        return float(krw) / 100_000_000
+    return 0.0
+
+
+def _period_sort_key(period: str) -> tuple[int, int, str]:
+    quarter = re.fullmatch(r"(20\d{2})-?Q([1-4])", period, flags=re.IGNORECASE)
+    if quarter:
+        return int(quarter.group(1)), (int(quarter.group(2)) - 1) * 3 + 1, period
+    month = re.fullmatch(r"(20\d{2})-(\d{2})", period)
+    if month:
+        return int(month.group(1)), int(month.group(2)), period
+    year = re.fullmatch(r"(20\d{2})", period)
+    if year:
+        return int(year.group(1)), 1, period
+    return 9999, 99, period
+
+
+def _hira_facts(tool: str, data: dict[str, Any]) -> str:
+    if tool == "hira_disease_mapping":
+        rows = (("대표 질병", data.get("disease_name")), ("KCD", data.get("sickCd")), ("근거", data.get("basis")))
+        return table("### HIRA 질병 매핑 fact", ("항목", "값"), rows)
+    rows = []
+    rows.extend(_hira_rows(data))
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if isinstance(render_data, dict):
+                rows.extend(_hira_rows(render_data))
+    rows = _dedupe_hira_rows(rows)
+    return table("### HIRA 질병통계 fact", ("구분", "질병코드", "질병명", "환자수"), tuple(rows[:TABLE_LIMIT]))
+
+
+def _hira_rows(data: dict[str, Any]) -> list[tuple[Any, Any, Any, Any]]:
+    rows: list[tuple[Any, Any, Any, Any]] = []
+    for item in items(data):
+        label = item.get("inpatOpat") or item.get("age") or item.get("grade") or item.get("lcName") or item.get("sickEngNm")
+        rows.append((label, item.get("sickCd"), item.get("sickNm"), item.get("ptntCnt") or item.get("specCnt") or "-"))
+    return rows
+
+
+def _dedupe_hira_rows(
+    rows: list[tuple[Any, Any, Any, Any]],
+    *,
+    seen: set[tuple[str, str, str]] | None = None,
+) -> list[tuple[Any, Any, Any, Any]]:
+    """Keep the first patient-count row for the same disease/code/breakdown label."""
+
+    seen_keys = seen if seen is not None else set()
+    deduped: list[tuple[Any, Any, Any, Any]] = []
+    for label, code, disease_name, patient_count in rows:
+        key = (str(label or ""), str(code or ""), str(disease_name or ""))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append((label, code, disease_name, patient_count))
+    return deduped
+
+
+def _external_items_facts(title: str, data: dict[str, Any], keys: tuple[str, ...]) -> str:
+    rows = _external_fact_rows(data, keys)
+    if not rows:
+        rows.append((data.get("message") or data.get("summary_text") or "조회 결과 없음",))
+    return table(f"### {title} fact", ("내용",), tuple(rows))
+
+
+def _external_fact_rows(data: dict[str, Any], keys: tuple[str, ...]) -> list[tuple[str]]:
+    rows = _external_rows_from_data(data, keys)
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            render_data = call.get("render_data")
+            if isinstance(render_data, dict):
+                rows.extend(_external_rows_from_data(render_data, keys))
+            elif isinstance(call.get("summary_text"), str):
+                rows.append((str(call["summary_text"]),))
+    return _dedupe_external_rows(rows)[:TABLE_LIMIT]
+
+
+def _external_rows_from_data(data: dict[str, Any], keys: tuple[str, ...]) -> list[tuple[str]]:
+    rows: list[tuple[str]] = []
+    for item in items(data):
+        values = [item.get(key) for key in keys if item.get(key)]
+        if values:
+            rows.append((" / ".join(str(value) for value in values[:3]),))
+    direct = _external_direct_values(data, keys)
+    if direct:
+        rows.append((" / ".join(direct[:3]),))
+    rows.extend(_external_clinical_rows(data))
+    rows.extend(_external_payload_rows(data, keys))
+    if not rows and isinstance(data.get("summary_text"), str):
+        rows.append((str(data["summary_text"]),))
+    return rows
+
+
+def _external_direct_values(data: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    values = [str(data[key]) for key in keys if data.get(key)]
+    nct_ids = data.get("nct_ids")
+    if isinstance(nct_ids, list) and nct_ids:
+        values.insert(0, ", ".join(str(value) for value in nct_ids[:3]))
+    return values
+
+
+def _external_clinical_rows(data: dict[str, Any]) -> list[tuple[str]]:
+    nct_ids = data.get("nct_ids")
+    if not isinstance(nct_ids, list) or not nct_ids:
+        return []
+    title = str(data.get("briefTitle") or data.get("title") or "").strip()
+    status = str(data.get("overallStatus") or data.get("status") or "").strip()
+    parts = [", ".join(str(value) for value in nct_ids[:3]), title, status]
+    return [(" / ".join(part for part in parts if part),)]
+
+
+def _external_payload_rows(data: dict[str, Any], keys: tuple[str, ...]) -> list[tuple[str]]:
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return []
+    rows: list[tuple[str]] = []
+    for item in _payload_items(payload):
+        if not isinstance(item, dict):
+            continue
+        values = [item.get(key) for key in keys if item.get(key)]
+        if values:
+            rows.append((" / ".join(str(value) for value in values[:3]),))
+        clinical = _clinical_study_text(item)
+        if clinical:
+            rows.append((clinical,))
+    return rows
+
+
+def _payload_items(payload: dict[str, Any]) -> list[Any]:
+    for key in ("items", "results", "studies", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    response = payload.get("response")
+    if isinstance(response, dict):
+        body = response.get("body")
+        if isinstance(body, dict):
+            items_value = body.get("items")
+            if isinstance(items_value, dict):
+                item = items_value.get("item")
+                if isinstance(item, list):
+                    return item
+                if isinstance(item, dict):
+                    return [item]
+            if isinstance(items_value, list):
+                return items_value
+    return []
+
+
+def _clinical_study_text(item: dict[str, Any]) -> str:
+    protocol = item.get("protocolSection")
+    if not isinstance(protocol, dict):
+        return ""
+    identification = protocol.get("identificationModule")
+    status = protocol.get("statusModule")
+    title = ""
+    nct_id = ""
+    overall_status = ""
+    if isinstance(identification, dict):
+        nct_id = str(identification.get("nctId") or "").strip()
+        title = str(identification.get("briefTitle") or identification.get("officialTitle") or "").strip()
+    if isinstance(status, dict):
+        overall_status = str(status.get("overallStatus") or "").strip()
+    parts = [nct_id, title, overall_status]
+    return " / ".join(part for part in parts if part)
+
+
+def _dedupe_external_rows(rows: list[tuple[str]]) -> list[tuple[str]]:
+    out: list[tuple[str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        value = str(row[0]).strip() if row else ""
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((value,))
+    return out
+
+
+def _generic_facts(tool: str, data: dict[str, Any]) -> str:
+    rows = []
+    for key, value in data.items():
+        if key in {"items", "payload", "calls"}:
+            continue
+        if isinstance(value, str | int | float):
+            rows.append((key, value))
+    return table(f"### {cell(tool)} fact", ("항목", "값"), tuple(rows[:TABLE_LIMIT]))
+
+
+def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
+    rows = _data_source_rows(calls, sources)
+    rows.extend(_news_source_rows(calls))
+    rows.extend(_hira_source_rows(calls))
+    rows.extend(_external_source_rows(calls))
+    rows.extend(_fallback_source_rows(sources, rows))
+    if not rows:
+        return ""
+    return table("### 출처 유형 fact", ("출처", "상세"), tuple(rows))
+
+
+def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[tuple[str, str]]:
+    labels = {source_label(source) for source in sources}
+    for call in calls:
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        label = source_label(str(data.get("source_label") or call.get("source") or ""))
+        if label in {"UBIST", "IQVIA"}:
+            labels.add(label)
+    data_labels = sorted(label for label in labels if label in {"UBIST", "IQVIA"})
+    if not data_labels:
+        return []
+    periods = _period_range(calls)
+    details: list[str] = []
+    extra_details: list[str] = []
+    if periods:
+        details.append(f"기간 {periods}")
+    query_specs = tuple(_query_specs(calls))
+    market = next((str(spec.get("market") or spec.get("market_id")) for spec in query_specs if spec.get("market") or spec.get("market_id")), "")
+    view = next((str(spec.get("view") or spec.get("view_type")) for spec in query_specs if spec.get("view") or spec.get("view_type")), "")
+    if not view:
+        view = _view_from_market_code(market)
+    if market:
+        extra_details.append(f"시장 {market}")
+    if view:
+        extra_details.append(f"view {view}")
+    if not extra_details:
+        return []
+    details.extend(extra_details)
+    suffix = f" — {', '.join(details)}" if details else ""
+    return [("데이터 상세", f"{' / '.join(data_labels)}{suffix}")]
+
+
+def _view_from_market_code(market: str) -> str:
+    if market.startswith("strategy_"):
+        return "strategic"
+    if market.startswith("general_"):
+        return "general"
+    return ""
+
+
+def _news_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for call in calls:
+        if str(call.get("source")) != "deep_analysis_events":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        tool = str(data.get("facade_tool") or call.get("tool") or "search_news")
+        condition = _news_condition_text(data)
+        if condition:
+            rows.append(("뉴스 검색", f"events corpus · {tool} — {condition}"))
+    return _dedupe_rows(rows)
+
+
+def _hira_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for call in calls:
+        if str(call.get("source")) != "hira_disease" and not str(call.get("tool") or "").startswith("hira_disease"):
+            continue
+        facade_tool = str(call.get("tool") or "get_disease_stats")
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        nested_calls = data.get("calls")
+        if isinstance(nested_calls, list):
+            source_calls = [item for item in nested_calls if isinstance(item, dict)]
+        else:
+            source_calls = [call]
+        rows.extend(_hira_source_rows_from_calls(source_calls, facade_tool))
+    return _dedupe_rows(rows)
+
+
+def _hira_source_rows_from_calls(calls: list[dict[str, Any]], facade_tool: str) -> list[tuple[str, str]]:
+    by_disease: dict[tuple[str, str], dict[str, set[str] | str]] = {}
+    for call in calls:
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        tool = str(call.get("tool") or "")
+        rows = _dedupe_hira_rows(_hira_rows(data))
+        code = str(data.get("mapping_sickCd") or _request_value(data, "sickCd") or "").strip()
+        disease_name = str(data.get("mapping_disease_name") or data.get("disease_name") or "").strip()
+        if rows:
+            for label, row_code, row_disease, _patient_count in rows:
+                actual_code = str(row_code or code).strip()
+                actual_name = str(row_disease or disease_name).strip()
+                if not actual_code and not actual_name:
+                    continue
+                entry = by_disease.setdefault((actual_code, actual_name), {"labels": set(), "years": set()})
+                _add_hira_source_option(entry, tool, data, str(label or ""))
+        elif code or disease_name:
+            entry = by_disease.setdefault((code, disease_name), {"labels": set(), "years": set()})
+            _add_hira_source_option(entry, tool, data, "")
+    rows_out: list[tuple[str, str]] = []
+    redundant_name_only = _redundant_hira_name_only_keys(by_disease)
+    for (code, disease_name), values in by_disease.items():
+        if (code, disease_name) in redundant_name_only:
+            continue
+        labels = values["labels"] if isinstance(values["labels"], set) else set()
+        years = values["years"] if isinstance(values["years"], set) else set()
+        label_text = "/".join(_ordered_hira_labels(labels)) + " 기준" if labels else ""
+        year_text = f", {'/'.join(sorted(years))}년" if years else ""
+        disease_text = " ".join(part for part in (code, disease_name) if part).strip()
+        option_text = f" — {label_text}{year_text}" if label_text else (f" — {year_text.lstrip(', ')}" if year_text else "")
+        rows_out.append(("외부 HIRA", f"HIRA 질병정보서비스 · {facade_tool} — {disease_text}{option_text}"))
+    return rows_out
+
+
+def _redundant_hira_name_only_keys(by_disease: dict[tuple[str, str], dict[str, set[str] | str]]) -> set[tuple[str, str]]:
+    coded_names = {
+        _normalize_hira_disease_name(disease_name)
+        for code, disease_name in by_disease
+        if code and disease_name
+    }
+    redundant: set[tuple[str, str]] = set()
+    for code, disease_name in by_disease:
+        if code or not disease_name:
+            continue
+        normalized = _normalize_hira_disease_name(disease_name)
+        if any(normalized and (normalized in coded or coded in normalized) for coded in coded_names):
+            redundant.add((code, disease_name))
+    return redundant
+
+
+def _normalize_hira_disease_name(value: str) -> str:
+    normalized = re.sub(r"[^0-9A-Za-z가-힣]", "", value)
+    return normalized.replace("원발성", "")
+
+
+def _external_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for call in calls:
+        if str(call.get("source")) != "external_api":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        tool = str(data.get("facade_tool") or call.get("tool") or "external_api")
+        nested_calls = data.get("calls")
+        if isinstance(nested_calls, list):
+            for nested in nested_calls:
+                if not isinstance(nested, dict):
+                    continue
+                nested_data = nested.get("render_data")
+                if not isinstance(nested_data, dict):
+                    continue
+                request = nested_data.get("request")
+                request_text = _request_text(request) if isinstance(request, dict) else ""
+                nested_tool = str(nested.get("tool") or tool)
+                detail = f"{nested_tool}"
+                if request_text:
+                    detail += f" — {request_text}"
+                rows.append(("외부 API", f"{tool} · {detail}"))
+    return _dedupe_rows(rows)
+
+
+def _fallback_source_rows(sources: list[str], existing_rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    existing_text = " ".join(detail for _label, detail in existing_rows)
+    rows: list[tuple[str, str]] = []
+    for source in sorted(set(sources)):
+        label = source_label(source)
+        if label and label not in existing_text:
+            rows.append((label, "-"))
+    return rows
+
+
+def _news_condition_text(data: dict[str, Any]) -> str:
+    applied_filters = data.get("applied_filters")
+    if isinstance(applied_filters, dict):
+        parts = [_news_filter_label(str(key), value) for key, value in applied_filters.items() if value]
+        if parts:
+            return "검색조건 " + ", ".join(str(part) for part in parts)
+    filter_entries = data.get("filter_entries")
+    if isinstance(filter_entries, list | tuple):
+        parts = []
+        for entry in filter_entries:
+            if isinstance(entry, list | tuple) and len(entry) >= 2:
+                parts.append(f"{entry[0]}={entry[1]}")
+        if parts:
+            return "검색조건 " + ", ".join(str(part) for part in parts)
+    transparency_parts = []
+    for key in ("title_contains", "text_contains", "content_contains"):
+        value = data.get(key)
+        if value:
+            transparency_parts.append(f"{key}={value}")
+    return "검색조건 " + ", ".join(transparency_parts) if transparency_parts else ""
+
+
+def _news_filter_label(key: str, value: Any) -> str:
+    labels = {
+        "title_contains": "제목",
+        "text_contains": "본문/제목",
+        "content_contains": "본문",
+        "relevance_brands": "관련 브랜드",
+        "recent_days": "최근 일수",
+        "date_from": "시작일",
+        "date_to": "종료일",
+        "category": "분류",
+        "min_impact_score": "최소 영향도",
+        "limit": "건수",
+    }
+    return f"{labels.get(key, key)}={value}"
+
+
+def _period_range(calls: list[dict[str, Any]]) -> str:
+    periods = sorted(set(_period_values(calls)))
+    if not periods:
+        return ""
+    if len(periods) == 1:
+        return periods[0]
+    return f"{periods[0]}~{periods[-1]}"
+
+
+def _period_values(value: Any) -> list[str]:
+    periods: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "period" and isinstance(item, str) and re.fullmatch(r"20\d{2}-(?:\d{2}|Q[1-4])", item):
+                periods.append(item)
+            elif isinstance(item, dict | list | tuple):
+                periods.extend(_period_values(item))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            periods.extend(_period_values(item))
+    return periods
+
+
+def _query_specs(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for call in calls:
+        data = call.get("render_data")
+        if isinstance(data, dict) and isinstance(data.get("query_spec"), dict):
+            specs.append(data["query_spec"])
+        if isinstance(data, dict):
+            inferred = {
+                key: value
+                for key, value in {
+                    "source": data.get("source_label") or call.get("source"),
+                    "view": data.get("view") or data.get("view_type"),
+                    "market": data.get("market") or data.get("market_id"),
+                }.items()
+                if value
+            }
+            if inferred:
+                specs.append(inferred)
+    return specs
+
+
+def _request_value(data: dict[str, Any], key: str) -> Any:
+    request = data.get("request")
+    if isinstance(request, dict):
+        return request.get(key)
+    return None
+
+
+def _add_hira_source_option(entry: dict[str, set[str] | str], tool: str, data: dict[str, Any], row_label: str) -> None:
+    option = _hira_tool_option(tool, row_label)
+    if option:
+        labels = entry["labels"]
+        if isinstance(labels, set):
+            labels.add(option)
+    year = _request_value(data, "year") or data.get("year")
+    if year:
+        years = entry["years"]
+        if isinstance(years, set):
+            years.add(str(year))
+
+
+def _hira_tool_option(tool: str, row_label: str) -> str:
+    if tool == "hira_disease_name_code":
+        return ""
+    if tool == "hira_disease_hospitalization_outpatient_stats":
+        return row_label if row_label in {"입원", "외래"} else "입원/외래"
+    if tool == "hira_disease_gender_age_stats":
+        return ""
+    if tool == "hira_disease_institution_class_stats":
+        return ""
+    if tool == "hira_disease_area_stats":
+        return ""
+    return row_label
+
+
+def _request_text(request: dict[str, Any]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in sorted(request.items()) if value not in (None, ""))
+
+
+def _dedupe_rows(rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for label, detail in rows:
+        key = (label, detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((label, detail))
+    return out
+
+
+def _ordered_hira_labels(labels: set[str]) -> list[str]:
+    preferred = ("입원", "외래")
+    ordered = [label for label in preferred if label in labels]
+    ordered.extend(sorted(label for label in labels if label not in set(preferred)))
+    return ordered
+
+
+def _append(rows: list[tuple[str, Any]], label: str, value: Any) -> None:
+    if value not in (None, ""):
+        rows.append((label, value))

@@ -68,7 +68,7 @@ def resolve(payload: MarketScopeResolveRequest) -> dict[str, Any]:
 
 @router.post("/api/market-scope/cause", include_in_schema=False)
 def cause(payload: MarketScopeCauseRequest) -> dict[str, Any]:
-    """Return the portal-read cause envelope while keeping scope resolution internal."""
+    """Return the portal-compatible cause envelope while keeping scope resolution internal."""
 
     _reject_general(_view_family(payload.view_family))
     try:

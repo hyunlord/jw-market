@@ -19,7 +19,7 @@ ML_BRAND_COLUMNS = [
     "ml_id", "brand_id", "brand_key", "brand_name", "source", "measure", "is_jw", "unit_label",
     "metric_history", "extended_metric_history", "channel_data", "specialty_data", "dimension_data",
     "dimension_channel_data", "dimension_specialty_data", "by_dimension", "raw_value_history",
-    "overlay_data", "payload",
+    "ubist_channel_by_display", "ubist_channel_by_code", "overlay_data", "payload",
 ]
 ML_MARKET_COLUMNS = [
     "ml_id", "ml_name", "source", "measure", "unit_label", "market_size_series", "hhi_series_5y",
@@ -30,8 +30,8 @@ ML_MARKET_COLUMNS = [
 CD_BRAND_COLUMNS = [
     "cd_market_id", "cd_brand_id", "brand_key", "brand_name", "source", "measure", "is_jw",
     "unit_label", "metric_history", "extended_metric_history", "channel_data", "specialty_data",
-    "dimension_data", "dimension_channel_data", "by_dimension", "raw_value_history", "cd_overlay",
-    "overlay_data", "payload",
+    "dimension_data", "dimension_channel_data", "by_dimension", "raw_value_history",
+    "ubist_channel_by_display", "ubist_channel_by_code", "cd_overlay", "overlay_data", "payload",
 ]
 CD_MARKET_COLUMNS = [
     "cd_market_id", "cd_market_name", "source", "measure", "unit_label", "market_size_series",

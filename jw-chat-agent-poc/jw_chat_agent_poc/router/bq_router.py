@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+from jw_chat_agent_poc.agentic import FilterEntry, extract_metric_filter_entries, extract_news_filter_entries
+
 
 BQ_SYSTEM_PROMPT = """\
 JW Market Chat Agent P1 routing map.
@@ -13,7 +15,8 @@ Q1 시장정의·규모:
   Sub-Q: 질환특성/시장정의/성장예측
   Structured tools: IQVIA·UBIST metrics
   Document RAG: Datamonitor·Guideline·Factsheet
-  External API: none
+  External API: HIRA disease statistics for patient-count/distribution questions
+  Deep analysis cache: curated related news/events
 
 Q2 경쟁 차별점:
   Sub-Q: MoA/제형/급여/처방요인/unmet
@@ -51,6 +54,8 @@ class BQSubQuestion:
     question: str
     sources: tuple[str, ...]
     reason: str
+    filters: tuple[FilterEntry, ...] = ()
+    brands: tuple[str, ...] = ()
 
 
 class BQRouter:
@@ -80,7 +85,50 @@ class BQRouter:
                 )
             ]
 
-        if any(k in question for k in ("시장 규모", "성장", "성장 추이", "전망")):
+        if self._is_news_question(question):
+            routes.append(
+                BQSubQuestion(
+                    bq="Q1",
+                    question="관련 뉴스·소식·이슈",
+                    sources=("deep_analysis_events",),
+                    reason="Related news questions use curated cache_deep_analysis.data.events.",
+                    filters=extract_news_filter_entries(question),
+                )
+            )
+
+        lower = question.lower()
+        metric_filters = extract_metric_filter_entries(question)
+        if any(
+            k in question
+            for k in (
+                "환자수",
+                "환자 수",
+                "환자통계",
+                "환자 통계",
+                "환자분포",
+                "환자 분포",
+                "관련 질병",
+                "관련 질환",
+                "질병통계",
+                "질병 통계",
+                "질환통계",
+                "질환 통계",
+                "질병 환자",
+                "질환 환자",
+            )
+        ):
+            routes.append(
+                BQSubQuestion(
+                    bq="Q1",
+                    question="질환특성·환자수·질병통계",
+                    sources=("external_api",),
+                    reason="Q1 disease patient/distribution questions use HIRA disease statistics, not internal sales metrics.",
+                )
+            )
+
+        if any(k in question for k in ("시장 규모", "시장규모", "성장", "성장 추이", "전망", "매출", "판매", "시계열", "월별", "모멘텀")) or any(
+            k in lower for k in ("hhi", "momentum", "monthly", "ei")
+        ):
             sources = ["metrics"]
             if has_documents or "업로드" in question:
                 sources.append("document")
@@ -90,10 +138,11 @@ class BQRouter:
                     question="시장정의·규모·성장예측",
                     sources=tuple(sources),
                     reason="Q1 maps market size/growth to IQVIA·UBIST metrics and optional documents.",
+                    filters=metric_filters,
                 )
             )
 
-        if any(k in question for k in ("경쟁", "차별", "ms", "점유율", "처방요인", "unmet")):
+        if any(k in question for k in ("경쟁", "차별", "점유율", "처방요인", "상위", "위협", "unmet")) or any(k in lower for k in ("ms", "m/s")):
             sources = ["metrics"]
             if has_documents:
                 sources.append("document")
@@ -103,6 +152,7 @@ class BQRouter:
                     question="경쟁 차별점·점유율·처방요인",
                     sources=tuple(sources),
                     reason="Q2 maps competitive context to metrics plus optional RAG/external sources.",
+                    filters=metric_filters,
                 )
             )
 
@@ -133,6 +183,7 @@ class BQRouter:
                     question="Segment 처방추이",
                     sources=("metrics",),
                     reason="Q3 maps prescription trend to UBIST metrics.",
+                    filters=metric_filters,
                 )
             )
 
@@ -157,12 +208,31 @@ class BQRouter:
 
     @staticmethod
     def _dedupe(routes: Iterable[BQSubQuestion]) -> list[BQSubQuestion]:
-        seen: set[tuple[str, str, tuple[str, ...]]] = set()
+        seen: set[tuple[str, str, tuple[str, ...], tuple[FilterEntry, ...], tuple[str, ...]]] = set()
         out: list[BQSubQuestion] = []
         for route in routes:
-            key = (route.bq, route.question, route.sources)
+            key = (route.bq, route.question, route.sources, route.filters, route.brands)
             if key in seen:
                 continue
             seen.add(key)
             out.append(route)
         return out
+
+    @staticmethod
+    def _is_news_question(question: str) -> bool:
+        if any(token in question for token in ("뉴스", "소식", "이슈")):
+            return True
+        if any(token in question for token in ("최근 동향", "관련 동향")):
+            metric_or_api_tokens = (
+                "매출",
+                "시장",
+                "점유율",
+                "환자",
+                "임상",
+                "특허",
+                "라벨",
+                "fda",
+                "hhi",
+            )
+            return not any(token in question.lower() for token in metric_or_api_tokens)
+        return False

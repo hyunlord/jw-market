@@ -124,6 +124,42 @@ def test_import_from_dump_uses_target_env_and_verifies_manifest(tmp_path, monkey
     assert summary["verification"] == [{"table": "cache_cause", "row_count": 19360}]
 
 
+def test_import_from_dump_drops_target_only_after_success_when_requested(tmp_path, monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    dump_path = tmp_path / "stage.sql.gz"
+    dump_path.write_bytes(b"dump")
+    manifest_path = tmp_path / "stage.manifest.json"
+    manifest_path.write_text(json.dumps({"tables": []}), encoding="utf-8")
+
+    class Conn:
+        def close(self) -> None:
+            calls.append(("close", "target"))
+
+    monkeypatch.setattr(stage_import, "connect_admin", lambda: Conn())
+    monkeypatch.setattr(stage_import, "schema_exists", lambda conn, db_name: False)
+    monkeypatch.setattr(stage_import, "ensure_schema_exists", lambda conn, db_name, create: calls.append(("ensure", db_name)))
+    monkeypatch.setattr(stage_import, "ensure_direct_import_target_absent", lambda conn, target_db, tables: None)
+    monkeypatch.setattr(stage_import, "restore_dump_into_schema", lambda target_db, dump_path: stage_import.RestoreResult(dump_path, dump_path.stat().st_size, 2.5))
+    monkeypatch.setattr(stage_import, "verify_against_manifest", lambda conn, target_db, manifest: [{"table": "cache_cause", "row_count": 1}])
+    monkeypatch.setattr(stage_import, "db_endpoint_summary", lambda: {"host": "target-db"})
+    monkeypatch.setattr(stage_import, "drop_schema_if_unprotected", lambda conn, db_name: calls.append(("drop", db_name)))
+
+    summary = stage_import.run_import_from_dump(
+        stage_import.ImportConfig(
+            target_db="jw_mart_d1_stage_repro_20260626_010203",
+            dump_path=dump_path,
+            manifest_path=manifest_path,
+            output_manifest_path=tmp_path / "imported.manifest.json",
+            drop_target_after_success=True,
+        )
+    )
+
+    payload = json.loads((tmp_path / "imported.manifest.json").read_text(encoding="utf-8"))
+    assert summary["cleanup"] == {"target_db_dropped": True}
+    assert payload["cleanup"] == {"target_db_dropped": True}
+    assert ("drop", "jw_mart_d1_stage_repro_20260626_010203") in calls
+
+
 def test_manifest_only_attaches_existing_dump_without_redumping(tmp_path, monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     dump_path = tmp_path / "stage.sql.gz"

@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from pipeline.etl.io.catalog import db_sync
+
+
+@dataclass
+class Cursor:
+    statements: list[str]
+    batches: list[int]
+
+    def __enter__(self) -> "Cursor":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def execute(self, sql: str) -> None:
+        self.statements.append(sql)
+
+    def executemany(self, sql: str, values: list[tuple[object, ...]]) -> None:
+        self.statements.append(sql)
+        self.batches.append(len(values))
+
+
+@dataclass
+class Connection:
+    statements: list[str] = field(default_factory=list)
+    batches: list[int] = field(default_factory=list)
+    commits: int = 0
+
+    def cursor(self) -> Cursor:
+        return Cursor(self.statements, self.batches)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+def test_sync_catalog_tables_upserts_output_catalog_with_batch_cap(tmp_path: Path) -> None:
+    # Given: finalized output/catalog parquet files, including a >200 row brand catalog.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_006")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_006")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(index) for index in range(205)])
+    conn = Connection()
+
+    # When: syncing catalog tables with an oversized requested batch.
+    results = db_sync.sync_catalog_tables(
+        conn,
+        target_db="jw_mart_d2_stage_20260630_r2",
+        catalog_root=tmp_path,
+        batch_size=10000,
+    )
+
+    # Then: only catalog tables are created/upserted and write batches are capped at 200.
+    assert [result.table_name for result in results] == [
+        "catalog_ml_market",
+        "catalog_cd_market",
+        "catalog_strategic_brand",
+    ]
+    assert [result.rows for result in results] == [1, 1, 205]
+    assert all(result.batch_size == 200 for result in results)
+    assert conn.batches == [1, 1, 200, 5]
+    assert all("catalog_" in statement for statement in conn.statements)
+    assert any("CREATE TABLE IF NOT EXISTS `jw_mart_d2_stage_20260630_r2`.`catalog_ml_market`" in s for s in conn.statements)
+    assert any("ON DUPLICATE KEY UPDATE" in s for s in conn.statements)
+
+
+def test_sync_catalog_tables_dry_run_does_not_write(tmp_path: Path) -> None:
+    # Given: the three required finalized catalog parquet files.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_006")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_006")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(1)])
+    conn = Connection()
+
+    # When: dry-running the sync.
+    results = db_sync.sync_catalog_tables(conn, target_db="scratch", catalog_root=tmp_path, dry_run=True)
+
+    # Then: parquet is inspected but no DDL/UPSERT is executed.
+    assert [result.rows for result in results] == [1, 1, 1]
+    assert conn.statements == []
+    assert conn.commits == 0
+
+
+def test_sync_catalog_tables_requires_output_catalog_layout(tmp_path: Path) -> None:
+    # Given: a root parquet-style location instead of output/catalog/<name>/<name>.parquet.
+    wrong_layout = tmp_path / "strategic_brand"
+    wrong_layout.mkdir()
+
+    # When / Then: the sync refuses to infer or fall back to root parquet files.
+    try:
+        db_sync.sync_catalog_tables(Connection(), target_db="scratch", catalog_root=tmp_path)
+    except FileNotFoundError as exc:
+        assert "ml_market/ml_market.parquet" in str(exc)
+    else:
+        raise AssertionError("expected missing output/catalog layout to fail")
+
+
+def _write_parquet(root: Path, name: str, rows: list[dict[str, object]]) -> None:
+    directory = root / name
+    directory.mkdir(parents=True)
+    table = pa.Table.from_pylist(rows)
+    pq.write_table(table, directory / f"{name}.parquet")
+
+
+def _ml_row(ml_id: str) -> dict[str, object]:
+    return {
+        "ml_id": ml_id,
+        "name": "리바로 리바로젯",
+        "data_source": "UBIST",
+        "atc_codes_json": "[\"C10A1\", \"C10C\"]",
+        "analyze_class": True,
+        "analyze_molecule": True,
+        "analyze_dosage_form": False,
+        "analyze_strength_pack": True,
+        "analyze_nhi_type": False,
+        "analyze_ox_gx": True,
+        "analyze_fish_oil": False,
+        "target_iqvia_1": None,
+        "target_iqvia_2": None,
+        "target_iqvia_3": None,
+        "target_ubist_1": "순환기",
+        "target_ubist_2": "내분비",
+        "target_ubist_3": None,
+        "target_ubist_4": None,
+        "source_file_version": "MI Master 2026.05.18.xlsx",
+        "ingested_at": datetime(2026, 5, 18, 0, 0, 0),
+    }
+
+
+def _cd_row(cd_id: str) -> dict[str, object]:
+    row = _ml_row("ml_006")
+    row.update({"cd_id": cd_id, "cd_filter_id": "cf_006"})
+    return row
+
+
+def _brand_row(index: int) -> dict[str, object]:
+    return {
+        "brand_id": f"brand_{index:04d}",
+        "name": f"브랜드{index}",
+        "merge_name": f"브랜드{index}",
+        "ml_id": "ml_006",
+        "cd_id": "cd_006",
+        "is_excluded": False,
+        "is_class_excluded": False,
+        "allowed_atc4_codes_json": "[\"C10A1\"]",
+        "class": "C10",
+        "class_1": "C",
+        "class_2": "C10A",
+        "molecule": "pitavastatin",
+        "dosage_form": "tablet",
+        "strength_pack": "2mg",
+        "nhi_type": "급여",
+        "ox_gx": "O",
+        "fish_oil": None,
+        "판매사": "JW중외제약",
+        "제조사": "JW중외제약",
+        "source_file_version": "MI Master 2026.05.18.xlsx",
+        "ingested_at": datetime(2026, 5, 18, 0, 0, 0),
+        "is_jw": index == 0,
+        "is_target": index == 0,
+        "canonical_name": "리바로" if index == 0 else None,
+        "general_brand_key": "리바로" if index == 0 else None,
+        "strategy_id": "strategy_006",
+    }
+

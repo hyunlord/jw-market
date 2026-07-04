@@ -389,14 +389,55 @@ def normalize_nsa_audit_desc(row: dict[str, Any]) -> Any:
     return row.get("AUDIT DESC") or row.get("AUDIT CODE")
 
 
+def long_format_period_record(path: Path, sheet_name: str, source_row_no: int, raw: dict[str, Any], static_cols: list[str]) -> dict[str, Any] | None:
+    period = parse_yyyymm(raw.get("DATA PERIOD"))
+    if not period:
+        return None
+    year, month = period.split("-")
+    quarter = quarter_from_month(int(month))
+    if quarter is None:
+        return None
+    period_values = {metric: clean_value(raw.get(metric)) for metric in NSA_PARQUET_METRICS}
+    if all(value is None for value in period_values.values()):
+        return None
+    static = {key: raw.get(key) for key in static_cols}
+    return {
+        "source_file": path.name,
+        "sheet_name": sheet_name,
+        "source_row_no": source_row_no,
+        "audit_code": clean_value(raw.get("AUDIT CODE")),
+        "audit_desc": clean_value(normalize_nsa_audit_desc(raw)),
+        "mfr_code": clean_value(raw.get("MFR CODE")),
+        "mfr_name": clean_value(raw.get("MFR NAME")),
+        "period_yyyy": int(year),
+        "period_quarter": quarter,
+        "period_label": f"{year}Q{quarter}",
+        "payload": dumps_payload(
+            {
+                "__source": "NSA",
+                "__raw_period": period,
+                "__period_metric_columns": {metric: metric for metric in NSA_PARQUET_METRICS},
+                "static": static,
+                "period_values": period_values,
+            }
+        ),
+        "source_master_version": None,
+    }
+
+
 def iter_nsa_csv(path: Path, chunk_size: int = 2000) -> Iterator[dict[str, Any]]:
     for chunk in pd.read_csv(path, encoding="utf-8-sig", chunksize=chunk_size, dtype=object):
         periods = nsa_period_columns(chunk.columns)
-        static_cols = [c for c in chunk.columns if not re.match(r"^\d{1,2}/\d{4}_", str(c))]
+        static_cols = [c for c in chunk.columns if not re.match(r"^\d{1,2}/\d{4}_", str(c)) and c not in NSA_PARQUET_METRICS]
         for offset, row in chunk.iterrows():
             raw = row_to_payload(row.to_dict())
             static = {k: raw.get(k) for k in static_cols}
             source_row_no = int(offset) + 2
+            if not periods:
+                record = long_format_period_record(path, "CSV", source_row_no, raw, static_cols)
+                if record:
+                    yield record
+                continue
             for period, metric_cols in periods.items():
                 period_values = {metric: clean_value(raw.get(col)) for metric, col in metric_cols.items()}
                 if all(v is None for v in period_values.values()):
@@ -439,12 +480,17 @@ def iter_nsa_xlsx(path: Path) -> Iterator[dict[str, Any]]:
             continue
         headers = dedupe_keys([clean_key(v, idx) for idx, v in enumerate(headers_raw)])
         periods = nsa_period_columns(headers)
-        static_cols = [c for c in headers if not re.match(r"^\d{1,2}/\d{4}_", c)]
+        static_cols = [c for c in headers if not re.match(r"^\d{1,2}/\d{4}_", c) and c not in NSA_PARQUET_METRICS]
         for row_no, values in enumerate(rows, start=2):
             if all(v is None for v in values):
                 continue
             raw = row_to_payload(dict(zip(headers, values)))
             static = {k: raw.get(k) for k in static_cols}
+            if not periods:
+                record = long_format_period_record(path, ws.title, row_no, raw, static_cols)
+                if record:
+                    yield record
+                continue
             for period, metric_cols in periods.items():
                 period_values = {metric: clean_value(raw.get(col)) for metric, col in metric_cols.items()}
                 if all(v is None for v in period_values.values()):
@@ -531,18 +577,25 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
         yield from iter_nsa_xlsx(path)
 
 
+def canonical_nsa_files(files: Iterable[Path]) -> list[Path]:
+    return sorted(
+        path
+        for path in files
+        if path.suffix.lower() in {".csv", ".xlsx", ".xls"} and is_iqvia_source_file(path, {".csv", ".xlsx", ".xls"})
+    )
+
+
 def materialize_iqvia_nsa_parquet(files: list[Path], output_dir: Path) -> dict[str, int]:
     """Write canonical IQVIA NSA period parquet files for Layer0 consumers.
 
-    Raw loading keeps every lineage source, including the duplicate 2Q XLSX.
-    This parquet surface preserves the existing canonical contract used by
-    downstream enrich checks: include the NSA CSV sources (2Q and 4Q) and
-    exclude XLSX duplicates, while keeping the source_file lineage column.
+    The local NSA source set can arrive as CSV or workbook extracts.  Keep the
+    source_file lineage column and materialize every discovered NSA source file;
+    source-level deduplication is handled by the downstream mart loaders.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     rows_by_period: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
-    canonical_files = sorted(path for path in files if path.suffix.lower() == ".csv")
+    canonical_files = canonical_nsa_files(files)
     for path in canonical_files:
         LOGGER.info("materializing NSA parquet from %s", path)
         for record in iter_records(path):

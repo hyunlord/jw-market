@@ -191,7 +191,7 @@ def _empty_analysis_levels_template(*, periods: tuple[str, ...], source: str) ->
 
 
 def _empty_market_status_template(*, periods: tuple[str, ...], source: str) -> dict[str, Any]:
-    """Return the portal-read chart-8 shape for a scope with no level overlay."""
+    """Return the deployed portal-read chart8 ALMS shape for a scope with no level overlay."""
 
     return {
         "channels": [],

@@ -36,6 +36,7 @@ def test_extracts_single_recode_dimension_at_product_grain() -> None:
                     }
                 ],
                 "strength_pack": "carteolol HCl 5mg [124801ATB]",
+                "atc4_code": "S01ED",
             },
             ensure_ascii=False,
         ),
@@ -52,6 +53,10 @@ def test_extracts_single_recode_dimension_at_product_grain() -> None:
 
     assert rows_by_type["seller"].product_code == "649900100"
     assert rows_by_type["seller"].dimension_value == "태준제약"
+    assert rows_by_type["atc4"].product_code == "649900100"
+    assert rows_by_type["atc4"].dimension_value == "S01ED"
+    assert rows_by_type["atc3"].product_code == "649900100"
+    assert rows_by_type["atc3"].dimension_value == "S01E"
     assert rows_by_type["molecule_strength"].product_code == "649900100"
     assert rows_by_type["molecule_strength"].raw_value_history == {"2026-04": 31_282_626.06}
 

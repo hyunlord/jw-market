@@ -1,0 +1,33 @@
+{
+  "리바로": {
+    "data": {
+      "events": [
+        {
+          "title": "리바로 처방 동향 점검",
+          "source": "fixture-news",
+          "date": "2026-06-11",
+          "url": "https://example.invalid/livalo-news",
+          "impact_score": 91,
+          "on_list": true,
+          "summary": "fixture curated event"
+        }
+      ]
+    }
+  },
+  "리바로젯": {
+    "data": {
+      "events": [
+        {
+          "title": "리바로젯 최근 이슈 점검",
+          "source": "fixture-news",
+          "date": "2026-06-10",
+          "url": "https://example.invalid/livalojet-news",
+          "impact_score": 88,
+          "on_list": true,
+          "summary": "fixture curated event"
+        }
+      ]
+    }
+  }
+}
+

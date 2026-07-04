@@ -14,6 +14,7 @@ from .strategic_common import *
 from .strategic_constants import CATALOG_DIR, CD_BRAND_COLUMNS, CD_BRAND_JSONL, CD_MARKET_COLUMNS, CD_MARKET_JSONL, OVERRIDE_COLS
 from .strategic_dimension_apply import apply_cd_dimension_recode
 from .strategic_scope import collapse_same_rows, group_by_source_measure, recompute_market_scoped_metric_history
+from .strategic_ubist_channels import UBIST_CHANNEL_CONTRACT_COLUMNS, attach_ubist_channel_totals
 
 
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -89,6 +90,7 @@ def build_cd_rows(cd_row: pd.Series, catalog_rows: pd.DataFrame, cd_filter: pd.D
                 "overlay_data": _cd_overlay(overlay, allowed, aliases, override_columns),
             }
         )
+        attach_ubist_channel_totals(copied)
         selected.append(apply_cd_dimension_recode(copied, overlay, market_id=cd_row.get("cd_id")))
     selected = collapse_same_rows(selected, ("cd_market_id", "cd_brand_id"))
     validate_market_completeness(cd_row, catalog_rows, selected)
@@ -142,7 +144,10 @@ def compute_strategic_cd(dry_run: bool, insert: bool, output_dir: Path, cd_marke
         write_jsonl(output_dir / CD_MARKET_JSONL, market_rows)
     if insert:
         market_ids = {str(row["cd_id"]) for _, row in cd_markets.iterrows()}
-        ensure_json_columns("mart_strategic_cd_brand_metric", ("dimension_data", "dimension_channel_data"))
+        ensure_json_columns(
+            "mart_strategic_cd_brand_metric",
+            ("dimension_data", "dimension_channel_data", *UBIST_CHANNEL_CONTRACT_COLUMNS),
+        )
         delete_existing_rows("mart_strategic_cd_brand_metric", "cd_market_id", market_ids)
         delete_existing_rows("mart_strategic_cd_market_metric", "cd_market_id", market_ids)
         insert_rows("mart_strategic_cd_brand_metric", CD_BRAND_COLUMNS, brand_rows, {"cd_market_id", "cd_brand_id", "source", "measure"})

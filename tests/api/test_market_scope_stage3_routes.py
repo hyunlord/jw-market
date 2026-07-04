@@ -64,7 +64,7 @@ def test_cause_route_returns_portal_read_envelope(monkeypatch: pytest.MonkeyPatc
                 "result": {
                     "brand": "리바로젯",
                     "source": "UBIST",
-                    "market_meta": {"market_id": "strategy_006"},
+                    "market_meta": {"market_id": "strategy_006", "market_size_recent": 150.0},
                     "data": {"kpi": {"market_size_recent": 150.0}},
                 },
                 "resolved_scope": _resolved_scope().to_dict(),
@@ -93,6 +93,7 @@ def test_cause_route_returns_portal_read_envelope(monkeypatch: pytest.MonkeyPatc
     assert body["result"]["brand"] == "리바로젯"
     assert body["result"]["source"] == "UBIST"
     assert body["result"]["market_meta"]["market_id"] == "strategy_006"
+    assert body["result"]["market_meta"]["market_size_recent"] == 150.0
     assert body["result"]["data"]["kpi"]["market_size_recent"] == 150.0
     assert "resolved_scope" not in body
 
