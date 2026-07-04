@@ -3213,6 +3213,45 @@ def test_query_failed_fact_is_rendered_as_lookup_failure_not_missing_data() -> N
     assert "error 또는 query_failed" in system_prompt
 
 
+def test_blocked_metric_values_hide_failed_zero_from_fact_and_data() -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="악템라",
+        calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "악템라",
+                    "metric": "sales",
+                    "period": "2026-04",
+                    "sales_krw": None,
+                    "sales_억원": None,
+                    "ms_recent_pct": None,
+                    "rank": None,
+                    "total_brands_in_market": None,
+                    "source_status": "query_failed",
+                    "blocked_metric_values": [
+                        {
+                            "period": "2026-04",
+                            "status": "query_failed",
+                            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["cache"],
+    )
+
+    combined = f"{response.data_md}\n{response.fact_md}"
+
+    assert "조회 차단" in combined
+    assert "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다." in combined
+    assert "0.00억원" not in combined
+    assert "0.00%" not in combined
+    assert "23/26" not in combined
+
+
 def test_genos_markdown_strips_news_only_metric_claims(monkeypatch) -> None:
     response = MarkdownResponseBuilder().build(
         brand="리바로",

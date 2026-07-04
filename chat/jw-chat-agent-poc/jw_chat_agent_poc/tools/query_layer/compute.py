@@ -8,8 +8,10 @@ from jw_chat_agent_poc.tools.query_layer.store import MartRecord, MartSnapshot
 
 
 def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record: MartRecord, metric: str, period: str) -> dict[str, Any]:
-    value = snapshot.value(record, period)
-    market_value = snapshot.market_value(market, period, source)
+    value = snapshot.value_or_none(record, period)
+    if value is None:
+        raise LookupError(f"mart metric row missing or failed: market={market} source={source} brand={record.brand_name} period={period}")
+    market_value = snapshot.market_value_or_none(market, period, source)
     series_periods = snapshot.periods(market, source)[-10:]
     return {
         "brand": record.brand_name,
@@ -20,11 +22,12 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
         "source_label": source_label(source),
         "sales_krw": value,
         "sales_억원": round(value / 100_000_000, 2),
-        "ms_recent_pct": snapshot.share(market, record, period, source),
+        "ms_recent_pct": snapshot.share_or_none(market, record, period, source),
         "rank": snapshot.rank(market, record.brand_name, period, source),
         "total_brands_in_market": len(snapshot.market_records(market, source)),
+        "source_status": snapshot.value_status(record, period),
         "market_size_recent_krw": market_value,
-        "market_size_억원": round(market_value / 100_000_000, 2),
+        "market_size_억원": round(market_value / 100_000_000, 2) if market_value is not None else None,
         "hhi_recent": round(snapshot.hhi(market, period, source), 4),
         "brand_value_series_10pt": snapshot.brand_series(market, record.brand_name, series_periods, source),
         "market_size_series": snapshot.market_series(market, series_periods, source),
@@ -46,6 +49,8 @@ def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anc
             continue
         record = snapshot.record(market, brand, source)
         series = snapshot.brand_series(market, brand, periods, source)
+        if not series:
+            continue
         latest = series[-1]
         first = series[0]
         out.append(
@@ -176,21 +181,32 @@ def _group_values(snapshot: MartSnapshot, market: str, source: str, key: str, pe
 
 def _record_group_values(snapshot: MartSnapshot, record: MartRecord, key: str, period: str, filters: Mapping[str, Any]) -> list[tuple[str, float]]:
     if key == "channel":
-        return [(label, _period_value(history, period)) for label, history in _selected_nested(record.channel_data, "channel", filters)]
+        return [
+            (label, value)
+            for label, history in _selected_nested(record.channel_data, "channel", filters)
+            for value in (_period_value_or_none(history, period),)
+            if value is not None
+        ]
     if key == "specialty":
-        return [(label, _period_value(history, period)) for label, history in _selected_nested(record.specialty_data, "specialty", filters)]
+        return [
+            (label, value)
+            for label, history in _selected_nested(record.specialty_data, "specialty", filters)
+            for value in (_period_value_or_none(history, period),)
+            if value is not None
+        ]
     label = dimension_value(record, key)
-    return [(label, _record_value(snapshot, record, period, filters))]
+    value = _record_value_or_none(snapshot, record, period, filters)
+    return [(label, value)] if value is not None else []
 
 
-def _record_value(snapshot: MartSnapshot, record: MartRecord, period: str, filters: Mapping[str, Any]) -> float:
+def _record_value_or_none(snapshot: MartSnapshot, record: MartRecord, period: str, filters: Mapping[str, Any]) -> float | None:
     channel = str(filters.get("channel") or "")
     if channel:
-        return _period_value(_nested(record.channel_data, channel), period)
+        return _period_value_or_none(_nested(record.channel_data, channel), period)
     specialty = str(filters.get("specialty") or "")
     if specialty:
-        return _period_value(_nested(record.specialty_data, specialty), period)
-    return snapshot.value(record, period)
+        return _period_value_or_none(_nested(record.specialty_data, specialty), period)
+    return snapshot.value_or_none(record, period)
 
 
 def _share_denominator(
@@ -279,11 +295,19 @@ def _nested(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
 
 
 def _period_value(history: Mapping[str, Any], period: str) -> float:
+    value = _period_value_or_none(history, period)
+    return value if value is not None else 0.0
+
+
+def _period_value_or_none(history: Mapping[str, Any], period: str) -> float | None:
     row = history.get(period)
     if isinstance(row, Mapping):
+        status = str(row.get("source_status", row.get("status")) or "OK")
+        if status in {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}:
+            return None
         value = row.get("raw_value")
-        return float(value) if isinstance(value, int | float) else 0.0
-    return 0.0
+        return float(value) if isinstance(value, int | float) else None
+    return None
 
 
 def _int(value: Any, default: int) -> int:

@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import json
 import os
 import time
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
+
+
+FAILED_VALUE_STATUSES: Final[frozenset[str]] = frozenset(
+    {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,19 +105,78 @@ class MartSnapshot:
             raise LookupError(f"mart periods missing: market={market_id} source={source}")
         return periods[-1]
 
-    def value(self, record: MartRecord, period: str) -> float:
+    def latest_valid_period(self, record: MartRecord) -> str | None:
+        periods = tuple(sorted(period for period in record.metric_history if self.value_or_none(record, period) is not None))
+        return periods[-1] if periods else None
+
+    def value_status(self, record: MartRecord, period: str) -> str:
         if len(period) == 4 and period.isdigit():
-            return sum(_number(item.get("raw_value")) for key, item in record.metric_history.items() if key.startswith(f"{period}-"))
-        return _number(record.metric_history.get(period, {}).get("raw_value"))
+            statuses = tuple(
+                self.value_status(record, key)
+                for key in sorted(record.metric_history)
+                if key.startswith(f"{period}-")
+            )
+            if not statuses:
+                return "missing"
+            if any(status in FAILED_VALUE_STATUSES for status in statuses):
+                return next(status for status in statuses if status in FAILED_VALUE_STATUSES)
+            return "OK"
+        row = record.metric_history.get(period)
+        if not isinstance(row, dict):
+            return "missing"
+        return _row_status(row)
+
+    def value_or_none(self, record: MartRecord, period: str) -> float | None:
+        if len(period) == 4 and period.isdigit():
+            values = [
+                value
+                for key in sorted(record.metric_history)
+                if key.startswith(f"{period}-")
+                for value in (self.value_or_none(record, key),)
+                if value is not None
+            ]
+            return sum(values) if values else None
+        row = record.metric_history.get(period)
+        if not isinstance(row, dict) or _row_status(row) in FAILED_VALUE_STATUSES:
+            return None
+        value = row.get("raw_value")
+        return float(value) if isinstance(value, int | float) else None
+
+    def value(self, record: MartRecord, period: str) -> float:
+        value = self.value_or_none(record, period)
+        return value if value is not None else 0.0
+
+    def market_value_or_none(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        values = [
+            value
+            for record in self.market_records(market_id, source, measure)
+            for value in (self.value_or_none(record, period),)
+            if value is not None
+        ]
+        return sum(values) if values else None
 
     def market_value(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        return sum(self.value(record, period) for record in self.market_records(market_id, source, measure))
+        value = self.market_value_or_none(market_id, period, source, measure)
+        return value if value is not None else 0.0
+
+    def share_or_none(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        value = self.value_or_none(record, period)
+        if value is None:
+            return None
+        if len(period) == 4 and period.isdigit():
+            total = self.market_value_or_none(market_id, period, source, measure)
+            return value / total * 100 if total else 0.0
+        row = record.metric_history.get(period)
+        if isinstance(row, dict):
+            share = row.get("ms")
+            if isinstance(share, int | float):
+                return float(share)
+        total = self.market_value_or_none(market_id, period, source, measure)
+        return value / total * 100 if total else 0.0
 
     def share(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        if len(period) == 4 and period.isdigit():
-            total = self.market_value(market_id, period, source, measure)
-            return self.value(record, period) / total * 100 if total else 0.0
-        return _number(record.metric_history.get(period, {}).get("ms"))
+        value = self.share_or_none(market_id, record, period, source, measure)
+        return value if value is not None else 0.0
 
     def rank(self, market_id: str, brand: str, period: str, source: str = "ubist", measure: str = "sales") -> int | None:
         rows = self.ranked_brands(market_id, period, source, measure)
@@ -123,17 +187,22 @@ class MartSnapshot:
 
     def ranked_brands(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
         records = self.market_records(market_id, source, measure)
-        total = self.market_value(market_id, period, source, measure)
-        rows = [
-            {
-                "brand": record.brand_name,
-                "value": self.value(record, period),
-                "ms_recent_pct": self.share(market_id, record, period, source, measure) if total else 0.0,
-                "company": record.company(),
-                "molecule": record.molecule(),
-            }
-            for record in records
-        ]
+        total = self.market_value_or_none(market_id, period, source, measure)
+        rows = []
+        for record in records:
+            value = self.value_or_none(record, period)
+            if value is None:
+                continue
+            rows.append(
+                {
+                    "brand": record.brand_name,
+                    "value": value,
+                    "source_status": self.value_status(record, period),
+                    "ms_recent_pct": self.share(market_id, record, period, source, measure) if total is not None else 0.0,
+                    "company": record.company(),
+                    "molecule": record.molecule(),
+                }
+            )
         rows.sort(key=lambda item: item["value"], reverse=True)
         for index, row in enumerate(rows, start=1):
             row["rank"] = index
@@ -141,16 +210,22 @@ class MartSnapshot:
 
     def brand_series(self, market_id: str, brand: str, periods: Iterable[str], source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
         record = self.record(market_id, brand, source, measure)
-        return [
-            {
-                "period": period,
-                "value_krw": self.value(record, period),
-                "value_억원": round(self.value(record, period) / 100_000_000, 2),
-                "ms_pct": self.share(market_id, record, period, source, measure),
-                "rank": self.rank(market_id, brand, period, source, measure),
-            }
-            for period in periods
-        ]
+        rows: list[dict[str, Any]] = []
+        for period in periods:
+            value = self.value_or_none(record, period)
+            if value is None:
+                continue
+            rows.append(
+                {
+                    "period": period,
+                    "value_krw": value,
+                    "value_억원": round(value / 100_000_000, 2),
+                    "ms_pct": self.share(market_id, record, period, source, measure),
+                    "rank": self.rank(market_id, brand, period, source, measure),
+                    "source_status": self.value_status(record, period),
+                }
+            )
+        return rows
 
     def market_series(self, market_id: str, periods: Iterable[str], source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
         return [
@@ -239,8 +314,10 @@ def _loads(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _number(value: Any) -> float:
-    return float(value) if isinstance(value, int | float) else 0.0
+def _row_status(row: dict[str, Any]) -> str:
+    raw = row.get("source_status", row.get("status"))
+    status = str(raw or "OK")
+    return status if status in FAILED_VALUE_STATUSES else "OK"
 
 
 def _source_key(value: str) -> str:

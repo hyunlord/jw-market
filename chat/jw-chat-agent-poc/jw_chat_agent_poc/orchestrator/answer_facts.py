@@ -1000,6 +1000,7 @@ def _metric_facts(
     _append(rows, "매출", eok_value(data.get("sales_억원"), data.get("sales_krw")))
     _append(rows, "시장점유율", pct_value(data.get("ms_recent_pct", data.get("market_share"))))
     _append(rows, "순위", rank_value(data.get("rank"), data.get("total_brands_in_market")))
+    rows.extend(_blocked_metric_rows(data))
     _append(rows, "시장규모", eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw")))
     _append_surfaceable_cagr(rows, "브랜드 CAGR", "brand_cagr_5y_pct", data)
     _append_surfaceable_cagr(rows, "시장 CAGR", "market_cagr_5y_pct", data)
@@ -1043,6 +1044,20 @@ def _metric_facts(
     if market_series:
         blocks.append(market_series)
     return "\n\n".join(blocks)
+
+
+def _blocked_metric_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    blocked = data.get("blocked_metric_values")
+    if not isinstance(blocked, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    for item in blocked:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "").strip()
+        if message:
+            rows.append(("조회 차단", message))
+    return rows
 
 
 def _level_segments(data: dict[str, Any], subject: str) -> str:

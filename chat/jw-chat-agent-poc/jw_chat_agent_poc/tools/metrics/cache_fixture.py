@@ -119,23 +119,31 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         extended = card.get("back_extended", {})
         period_recent = self._period_recent(snapshot.market_status, card)
 
-        sales = front.get("value_recent")
-        ms = front.get("ms_recent_pct")
-        rank = card.get("rank")
-        total = card.get("total_brands_in_market")
+        source_status = _source_status(front)
+        value_blocked = _value_blocked(source_status)
+        sales = None if value_blocked else front.get("value_recent")
+        ms = None if value_blocked else front.get("ms_recent_pct")
+        rank = None if value_blocked else card.get("rank")
+        total = None if value_blocked else card.get("total_brands_in_market")
         market_size = extended.get("market_size_recent")
         brand_cagr = extended.get("brand_cagr_5y_pct", back.get("cagr_5y_pct"))
         market_cagr = extended.get("market_cagr_5y_pct")
         excess = extended.get("excess_growth_pct")
         source = front.get("default_source") or extended.get("source_label") or self._first_source(bridge)
+        blocked_values = [_blocked_period_message(period_recent or period, source_status)] if value_blocked else []
 
         return {
             "source": "cache",
             "tool": "get_brand_metric",
-            "summary_text": (
-                f"{brand}의 {period_recent} 최신 매출은 {self._format_krw(sales)}, MS {self._format_pct(ms)}, "
-                f"순위 {rank}/{total}, 시장규모 {self._format_krw(market_size)}입니다. "
-                f"성장률 파생 지표는 검산 피연산자가 있을 때만 표시합니다."
+            "summary_text": _brand_card_summary(
+                brand=brand,
+                period=period_recent,
+                sales=self._format_krw(sales),
+                share=self._format_pct(ms),
+                rank=rank,
+                total=total,
+                market_size=self._format_krw(market_size),
+                blocked_values=blocked_values,
             ),
             "render_data": {
                 "brand": brand,
@@ -149,6 +157,8 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                 "ms_recent_pct": ms,
                 "rank": rank,
                 "total_brands_in_market": total,
+                "source_status": source_status,
+                "blocked_metric_values": blocked_values,
                 "market_size_recent_krw": market_size,
                 "market_size_억원": self._krw_to_eok(market_size),
                 "brand_cagr_5y_pct": brand_cagr,
@@ -193,3 +203,44 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                 "source_label": front.get("default_source") or extended.get("source_label"),
             },
         }
+
+
+def _source_status(front: dict[str, Any]) -> str:
+    status = str(front.get("source_status", front.get("status")) or "OK")
+    return status
+
+
+def _value_blocked(status: str) -> bool:
+    return status in {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}
+
+
+def _blocked_period_message(period: str, status: str) -> dict[str, str]:
+    reason = "조회 실패/시장 매핑 불완전"
+    if status in {"missing", "incomplete_split"}:
+        reason = "시장 매핑 불완전"
+    return {
+        "period": period,
+        "status": status,
+        "message": f"{period} 값은 {reason}으로 표시하지 않습니다.",
+    }
+
+
+def _brand_card_summary(
+    *,
+    brand: str,
+    period: str,
+    sales: str,
+    share: str,
+    rank: Any,
+    total: Any,
+    market_size: str,
+    blocked_values: list[dict[str, str]],
+) -> str:
+    if blocked_values:
+        message = blocked_values[0]["message"]
+        return f"{brand}의 {period} 핵심 지표는 {message} 시장규모 {market_size}만 참고합니다."
+    return (
+        f"{brand}의 {period} 최신 매출은 {sales}, MS {share}, "
+        f"순위 {rank}/{total}, 시장규모 {market_size}입니다. "
+        f"성장률 파생 지표는 검산 피연산자가 있을 때만 표시합니다."
+    )

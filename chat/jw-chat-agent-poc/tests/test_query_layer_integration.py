@@ -103,6 +103,77 @@ def test_facade_prefers_query_layer_for_strategic_metric() -> None:
     assert livaro["to_ms_pct"] == livaro["series"][-1]["ms_pct"]
 
 
+def test_query_layer_blocks_failed_latest_zero_metric() -> None:
+    """Given the latest row failed upstream lookup, it is not surfaced as real zero."""
+
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_status_history(
+                    "ml_011",
+                    "악템라",
+                    {
+                        "2025-Q4": {"raw_value": 4_819_000_000.0, "ms": 4.34, "source_status": "OK"},
+                        "2026-04": {"raw_value": 0.0, "ms": 0.0, "source_status": "query_failed"},
+                    },
+                    source="iqvia_nsa",
+                ),
+                _record_with_status_history(
+                    "ml_011",
+                    "경쟁품",
+                    {
+                        "2025-Q4": {"raw_value": 106_239_000_000.0, "ms": 95.66, "source_status": "OK"},
+                        "2026-04": {"raw_value": 120_000_000_000.0, "ms": 100.0, "source_status": "OK"},
+                    },
+                    source="iqvia_nsa",
+                ),
+            )
+        )
+    )
+
+    result = layer.brand_metric("악템라", "sales", "latest")
+    data = result["render_data"]
+
+    assert data["period"] == "2025-Q4"
+    assert data["source_status"] == "OK"
+    assert data["sales_억원"] == 48.19
+    assert data["ms_recent_pct"] == 4.34
+    assert "2026-04 값은 조회 실패" in data["blocked_metric_values"][0]["message"]
+    assert "0.00억원" not in result["summary_text"]
+    assert "MS 0.00%" not in result["summary_text"]
+
+
+def test_query_layer_keeps_status_ok_true_zero_metric() -> None:
+    """Given a row is explicitly successful, a raw zero remains displayable."""
+
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_status_history(
+                    "ml_zero",
+                    "제로브랜드",
+                    {"2026-04": {"raw_value": 0.0, "ms": 0.0, "source_status": "OK"}},
+                ),
+                _record_with_status_history(
+                    "ml_zero",
+                    "비교브랜드",
+                    {"2026-04": {"raw_value": 100_000_000.0, "ms": 100.0, "source_status": "OK"}},
+                ),
+            )
+        )
+    )
+
+    result = layer.brand_metric("제로브랜드", "sales", "latest")
+    data = result["render_data"]
+
+    assert data["period"] == "2026-04"
+    assert data["source_status"] == "OK"
+    assert data["sales_억원"] == 0.0
+    assert data["ms_recent_pct"] == 0.0
+    assert data["rank"] == 2
+    assert "0.00억원" in result["summary_text"]
+
+
 def test_patent_facade_adds_market_based_competitor_ingredient_candidates() -> None:
     facade = AgentToolFacade(
         metrics=_metrics_tool(),
@@ -669,6 +740,26 @@ def _record_with_market(ml_id: str, brand: str, values: tuple[float, ...], perio
         specialty_data=specialty_data,
         dimension_data={"company": {company: history}, "ox_gx": {ox_gx: history}, "dosage_form": {dosage_form: history}},
         by_dimension={"company": company, "molecule": molecule, "ox_gx": ox_gx, "dosage_form": dosage_form, "class": dosage_form},
+    )
+
+
+def _record_with_status_history(
+    ml_id: str,
+    brand: str,
+    history: dict[str, dict[str, Any]],
+    *,
+    source: str = "ubist",
+) -> MartRecord:
+    return MartRecord(
+        ml_id=ml_id,
+        brand_name=brand,
+        source=source,
+        measure="sales",
+        metric_history=history,
+        channel_data={},
+        specialty_data={},
+        dimension_data={},
+        by_dimension={"company": "테스트제약", "molecule": f"{brand}성분", "dosage_form": "테스트"},
     )
 
 

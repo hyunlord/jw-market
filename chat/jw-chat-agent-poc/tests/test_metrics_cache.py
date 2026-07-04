@@ -268,6 +268,41 @@ def test_metrics_tool_reads_latest_brand_card_values() -> None:
     assert result["render_data"]["market_cagr_5y_pct"] == 16.18
 
 
+def test_metrics_tool_blocks_failed_cache_card_zero_values() -> None:
+    market_status = deepcopy(BRAND_CARDS)
+    market_status["kpi_summary"] = {"IQVIA": {"period_recent": "2026-04"}}
+    market_status["brand_cards"].append(
+        {
+            "rank": 23,
+            "total_brands_in_market": 26,
+            "brand": "악템라",
+            "market_id": "strategy_011",
+            "market_name": "악템라",
+            "front": {
+                "value_recent": 0.0,
+                "ms_recent_pct": 0.0,
+                "default_source": "IQVIA",
+                "source_status": "query_failed",
+            },
+            "back": {},
+            "back_extended": {"source_label": "IQVIA"},
+        }
+    )
+    cache_brands = [*CACHE_BRANDS, {"brand": "악템라", "market_id": "strategy_011", "sources": ["IQVIA"]}]
+    reader = StaticMetricsCacheReader(cache_brands=cache_brands, market_status=market_status)
+    tool = MetricsTool(mode="cache", cache_reader=reader)
+
+    result = tool.get_brand_metric("악템라", metric="sales")
+    data = result["render_data"]
+
+    assert data["source_status"] == "query_failed"
+    assert data["sales_krw"] is None
+    assert data["ms_recent_pct"] is None
+    assert data["rank"] is None
+    assert "2026-04 값은 조회 실패" in data["blocked_metric_values"][0]["message"]
+    assert "0.00억원" not in result["summary_text"]
+
+
 def test_chat_agent_routes_sales_question_to_cache_metrics() -> None:
     reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
     tool = MetricsTool(mode="cache", cache_reader=reader)

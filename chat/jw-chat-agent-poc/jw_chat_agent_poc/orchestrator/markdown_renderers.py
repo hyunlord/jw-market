@@ -84,6 +84,7 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     rank = rank_value(data.get("rank"), data.get("total_brands_in_market"))
     if rank:
         rows.append(("순위", rank))
+    rows.extend(_blocked_metric_rows(data))
     market_size = eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw")) or latest_series_eok(data.get("series"))
     if market_size:
         rows.append(("시장규모", market_size))
@@ -99,6 +100,20 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     if filter_rows:
         blocks.append(table("### 지표 필터", ("구분", "값"), filter_rows))
     return "\n\n".join(blocks)
+
+
+def _blocked_metric_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
+    blocked = data.get("blocked_metric_values")
+    if not isinstance(blocked, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    for item in blocked:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "").strip()
+        if message:
+            rows.append(("조회 차단", message))
+    return rows
 
 
 def portfolio_decline_md(data: dict[str, Any]) -> str:
