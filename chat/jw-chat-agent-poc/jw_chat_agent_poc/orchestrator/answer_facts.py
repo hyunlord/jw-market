@@ -161,13 +161,17 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
     if not isinstance(data, dict):
         return ()
     if data.get("status") in {"error", "query_failed"}:
-        return (
+        facts = [
             AxisFact(
                 RequiredAxis.BRAND_POSITION,
                 "조회 실패",
                 str(data.get("message") or "요청 지표 조회 실행이 실패했습니다. 데이터 미보유로 해석하지 않습니다."),
-            ),
-        )
+            )
+        ]
+        structure_detail = _market_structure_detail([call])
+        if structure_detail:
+            facts.append(AxisFact(RequiredAxis.MARKET_STRUCTURE, "Class 구조 기준", structure_detail))
+        return tuple(facts)
     if data.get("status") == "unsupported":
         return (
             AxisFact(

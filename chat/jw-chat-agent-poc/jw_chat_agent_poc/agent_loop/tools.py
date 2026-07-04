@@ -15,6 +15,7 @@ from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer.spec import parse_spec
 
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,14 @@ class AgentToolFacade:
         except UnsupportedBrandError as exc:
             return _tool_error(name, arguments, str(exc), status=UNSUPPORTED_STATUS, error=exc)
         except (LookupError, TypeError, ValueError) as exc:
-            return _tool_error(name, arguments, _query_failed_message(), status=QUERY_FAILED_STATUS, error=exc)
+            return _tool_error(
+                name,
+                arguments,
+                _query_failed_message(),
+                status=QUERY_FAILED_STATUS,
+                error=exc,
+                render_data_extra=self._error_render_context(name, grounded_arguments),
+            )
         return _tool_error(
             name,
             grounded_arguments,
@@ -283,6 +291,27 @@ class AgentToolFacade:
         brand = self._allowed_brands[0] if self._allowed_brands else None
         return catalog_for(self._query_layer, brand)
 
+    def _error_render_context(self, name: str, arguments: Mapping[str, str]) -> dict[str, Any]:
+        if name != "query":
+            return {}
+        catalog = self._query_catalog()
+        if catalog is None or not catalog.market_structure:
+            return {}
+        try:
+            spec = parse_spec(arguments.get("spec", ""))
+        except (SyntaxError, TypeError, ValueError):
+            spec = {}
+        market = str(spec.get("market") or catalog.market)
+        if market != catalog.market:
+            return {}
+        return {
+            "market_id": catalog.market,
+            "market_name": catalog.market,
+            "view": catalog.view,
+            "source_label": catalog.source,
+            "market_structure": catalog.market_structure,
+        }
+
 
 def _tool_error(
     name: str,
@@ -291,6 +320,7 @@ def _tool_error(
     *,
     status: str,
     error: BaseException | None,
+    render_data_extra: Mapping[str, Any] | None = None,
 ) -> ToolExecution:
     if status == QUERY_FAILED_STATUS:
         _log_tool_execution_failure(name, arguments, error)
@@ -303,6 +333,8 @@ def _tool_error(
     }
     if error is not None:
         render_data["error_type"] = type(error).__name__
+    if render_data_extra:
+        render_data.update(render_data_extra)
     call = {
         "source": "cache",
         "tool": tool,

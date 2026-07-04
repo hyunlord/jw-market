@@ -376,6 +376,8 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     contract_type = _structural_contract_type(question)
     if not contract_type or not fact_md:
         return answer
+    if contract_type == "trend_support_matrix":
+        answer = _repair_split_market_support(answer, fact_md)
     if _structural_contract_present(answer, contract_type):
         return answer
     block = ""
@@ -503,10 +505,15 @@ def _trend_support_matrix_block(fact_md: str) -> str:
     axis_trends = _axis_trend_rows(fact_md)
     supported_axes = {row["axis"] for row in axis_trends}
     has_monthly = "월별 MS fact" in fact_md or "매출 시계열 fact" in fact_md
+    split_note = _split_market_structure_note(fact_md)
     rows = [
         ("Weekly", "미지원", "현재 fact set에 주간 grain 행이 없어 주간 변화는 확정하지 않습니다."),
         ("Monthly", "지원" if has_monthly else "미지원", "월별 시계열 또는 월별 MS fact 기준으로만 해석합니다." if has_monthly else "월별 행이 반환되지 않았습니다."),
-        ("Class", "지원" if "Class" in supported_axes else "미지원", "Class 축 fact가 있을 때만 별도 해석합니다."),
+        (
+            "Class",
+            "지원(구조)" if split_note else "지원" if "Class" in supported_axes else "미지원",
+            split_note or "Class 축 fact가 있을 때만 별도 해석합니다.",
+        ),
         ("Molecule", "지원" if "성분" in supported_axes else "미지원", "성분 축 fact가 있을 때만 별도 해석합니다."),
         ("Brand", "지원" if "브랜드" in supported_axes or "매출 시계열 fact" in fact_md else "미지원", "브랜드 시계열 fact 범위 안에서만 해석합니다."),
         ("Dose", "미지원", "용량 축 fact가 없어 용량별 변화는 확정하지 않습니다."),
@@ -529,6 +536,29 @@ def _trend_support_matrix_block(fact_md: str) -> str:
         )
     )
     return "\n".join(lines)
+
+
+def _repair_split_market_support(answer: str, fact_md: str) -> str:
+    split_note = _split_market_structure_note(fact_md)
+    if not split_note:
+        return answer
+    replacement = f"| Class | 지원(구조) | {split_note} |"
+    pattern = re.compile(r"(?m)^\|\s*Class\s*\|\s*미지원\s*\|[^\n]*\|$")
+    if pattern.search(answer):
+        return pattern.sub(replacement, answer)
+    if "## 추이 지원 범위" in answer and replacement not in answer:
+        return _insert_before_source(answer, "\n".join(("### Class 구조 기준", replacement)))
+    return answer
+
+
+def _split_market_structure_note(fact_md: str) -> str:
+    for line in fact_md.splitlines():
+        if "Class 구조 기준" not in line or "Class 구분 존재" not in line:
+            continue
+        cells = _table_cells(line)
+        if len(cells) >= 2:
+            return cells[1]
+    return ""
 
 
 def _change_drivers_contract_block(fact_md: str) -> str:

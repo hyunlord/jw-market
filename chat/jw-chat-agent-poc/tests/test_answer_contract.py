@@ -431,6 +431,21 @@ def test_sanitize_internal_diagnostics_preserves_denominator_note_market_ids() -
     assert "확정 시장" not in revised
 
 
+def test_sanitize_internal_diagnostics_preserves_intended_split_market_context() -> None:
+    answer = (
+        "- 데이터 상세: IQVIA NSA — 기간 2025-Q4, 시장: ml_011 (market_landscape, 분모 26), "
+        "Class 구분 존재: 운영 노출은 Class 2 기준 분모 26; "
+        "전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음"
+    )
+
+    revised = sanitize_internal_diagnostics(answer)
+
+    assert "시장: ml_011 (market_landscape, 분모 26)" in revised
+    assert "Class 구분 존재" in revised
+    assert "Class 2 기준 분모 26" in revised
+    assert "확정 시장" not in revised
+
+
 def test_sanitize_internal_diagnostics_still_blocks_market_ids_in_error_context() -> None:
     answer = (
         "cache_cause row is missing: CausePayloadKey(brand='리바로', view_type='market_landscape', "
@@ -444,3 +459,31 @@ def test_sanitize_internal_diagnostics_still_blocks_market_ids_in_error_context(
     assert "market_id" not in revised
     assert "strategy_006" not in revised
     assert "요청한 일부 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다." in revised
+
+
+def test_trend_support_matrix_reflects_split_market_structure_on_query_failure() -> None:
+    answer = (
+        "악템라의 Class 축은 현재 지원하지 않습니다.\n\n"
+        "## 추이 지원 범위\n"
+        "| 축 | 지원 여부 | 처리 |\n"
+        "| --- | --- | --- |\n"
+        "| Class | 미지원 | Class 축 fact가 있을 때만 별도 해석합니다. |\n\n"
+        "## 출처\n- 데이터: IQVIA NSA"
+    )
+    fact_md = (
+        "### 필수 답변 fact\n"
+        "| 구분 | 반드시 반영할 내용 |\n"
+        "| --- | --- |\n"
+        "| 조회 실패 | 요청한 지표 조회 실행이 실패했습니다. 데이터 미보유로 해석하지 않습니다. |\n"
+        "| Class 구조 기준 | Class 구분 존재: 운영 노출은 Class 2 기준 분모 26; "
+        "전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음 |\n"
+    )
+
+    revised = enforce_answer_contract(
+        "[악템라] Weekly/Monthly와 Class/Molecule 추이를 보여줘",
+        answer,
+        {"fact_md": fact_md},
+    )
+
+    assert "| Class | 지원(구조) | Class 구분 존재: 운영 노출은 Class 2 기준 분모 26; 전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음 |" in revised
+    assert "| Class | 미지원 |" not in revised

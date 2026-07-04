@@ -11,6 +11,7 @@ from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.external.client import ExternalCall
 from jw_chat_agent_poc.tools.metrics import MetricsTool
@@ -594,6 +595,36 @@ def test_query_execution_failure_is_not_reported_as_unsupported(caplog) -> None:
     assert data["error_type"] == "LookupError"
     assert "조회 실행이 실패" in data["message"]
     assert "데이터가 없다는 뜻" in data["message"]
+    assert any(record.message == "agent_tool_execution_failed" for record in caplog.records)
+
+
+def test_query_failure_preserves_split_market_structure_metadata(caplog) -> None:
+    """Given a split-market query fails, the error call still carries class structure metadata."""
+
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("악템라",),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records())),
+    )
+
+    execution = facade.execute(
+        "query",
+        {
+            "brand": "악템라",
+            "spec": '{"market":"ml_011","source":"iqvia_nsa","dimensions":["class"],"metrics":["sales"]}',
+        },
+    )
+
+    data = execution.call["render_data"]
+    assert execution.call["tool"] == "query_failed"
+    assert data["status"] == "query_failed"
+    assert data["market_id"] == "ml_011"
+    assert data["market_structure"]["type"] == "class_split"
+    assert data["market_structure"]["display_axis"] == "class_2"
+    fact_md = answer_fact_markdown([execution.call], ["IQVIA NSA"])
+    assert "Class 구조 기준" in fact_md
+    assert "Class 2 기준" in fact_md
     assert any(record.message == "agent_tool_execution_failed" for record in caplog.records)
 
 

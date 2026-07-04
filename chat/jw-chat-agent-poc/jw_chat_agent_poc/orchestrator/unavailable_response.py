@@ -22,6 +22,11 @@ _DENOMINATOR_NOTE_RE = re.compile(
     r"참고:\s*(?:strategy|ml)_\d+\s+기준\s+순위는\s+\d+(?:/\d+)?/\d+으로\s+표시될\s+수\s+있음",
     re.IGNORECASE,
 )
+_INTENTIONAL_MARKET_CONTEXT_RE = re.compile(
+    r"(?:데이터\s*상세|시장:)\s*.*\b(?:strategy|ml|competitive)_\d+\b.*"
+    r"(?:market_landscape|competitive_dynamics|분모|Class\s*구분\s*존재)",
+    re.IGNORECASE,
+)
 _FIVE_STEP_MARKERS = (
     "1. 미보유 데이터",
     "2. 현재 가능한 proxy",
@@ -181,29 +186,41 @@ def sanitize_internal_diagnostics(text: str) -> str:
         lines.append(raw_line)
         previous_generic = False
     sanitized = "\n".join(lines)
-    sanitized, denominator_notes = _protect_denominator_notes(sanitized)
+    sanitized, protected_market_contexts = _protect_intentional_market_contexts(sanitized)
     sanitized = re.sub(r"CausePayloadKey\([^)]*\)", _GENERIC_UNAVAILABLE, sanitized)
     sanitized = re.sub(r"\bmarket_id\s*=\s*['\"]?[\w.-]+['\"]?", "시장 식별자", sanitized)
     sanitized = _INTERNAL_ID_RE.sub("확정 시장", sanitized)
-    sanitized = _restore_denominator_notes(sanitized, denominator_notes)
+    sanitized = _restore_intentional_market_contexts(sanitized, protected_market_contexts)
     sanitized = sanitized.replace("cache_cause", "운영 데이터")
     return _cleanup(sanitized)
 
 
-def _protect_denominator_notes(text: str) -> tuple[str, tuple[str, ...]]:
-    notes: list[str] = []
+def _protect_intentional_market_contexts(text: str) -> tuple[str, tuple[str, ...]]:
+    protected: list[str] = []
+    lines: list[str] = []
+    for line in text.splitlines():
+        if _is_intentional_market_context(line):
+            protected.append(line)
+            lines.append(f"__INTENTIONAL_MARKET_CONTEXT_{len(protected) - 1}__")
+            continue
+        lines.append(line)
+    contextualized = "\n".join(lines)
 
     def replace(match: re.Match[str]) -> str:
-        notes.append(match.group(0))
-        return f"__DENOMINATOR_NOTE_{len(notes) - 1}__"
+        protected.append(match.group(0))
+        return f"__INTENTIONAL_MARKET_CONTEXT_{len(protected) - 1}__"
 
-    return _DENOMINATOR_NOTE_RE.sub(replace, text), tuple(notes)
+    return _DENOMINATOR_NOTE_RE.sub(replace, contextualized), tuple(protected)
 
 
-def _restore_denominator_notes(text: str, notes: tuple[str, ...]) -> str:
+def _is_intentional_market_context(line: str) -> bool:
+    return bool(_INTENTIONAL_MARKET_CONTEXT_RE.search(line))
+
+
+def _restore_intentional_market_contexts(text: str, protected: tuple[str, ...]) -> str:
     restored = text
-    for index, note in enumerate(notes):
-        restored = restored.replace(f"__DENOMINATOR_NOTE_{index}__", note)
+    for index, value in enumerate(protected):
+        restored = restored.replace(f"__INTENTIONAL_MARKET_CONTEXT_{index}__", value)
     return restored
 
 
