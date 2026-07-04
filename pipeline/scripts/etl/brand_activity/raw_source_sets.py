@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, source_period_from_name
-from pipeline.scripts.etl.brand_activity.raw_extract import SourceRoots, discover_source_files
+from pipeline.scripts.etl.brand_activity.raw_extract import KEYWORD_WORKBOOK_PATTERN, SourceRoots, discover_source_files
 
 
 TARGET_MARKETS: dict[str, tuple[str, ...]] = {
@@ -60,7 +60,7 @@ def discover_combined_source_files(roots: SourceRoots, legacy_root: Path) -> dic
     legacy = resolve_legacy_keyword_root(legacy_root)
     combined = {
         "csd": files["csd"],
-        "keyword": _sorted_km_workbooks((*files["keyword"], *_source_workbooks(legacy.keyword, "Keywords for JW*.xlsx"))),
+        "keyword": _sorted_km_workbooks((*files["keyword"], *_source_workbooks(legacy.keyword, KEYWORD_WORKBOOK_PATTERN))),
     }
     _ensure_unique_event_filenames(combined)
     return combined
