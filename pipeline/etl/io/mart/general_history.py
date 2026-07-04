@@ -105,6 +105,30 @@ def build_channel_specialty_matrix(group: pd.DataFrame, periods: list[str]) -> d
         result.setdefault(str(channel), {})[str(specialty)] = period_value_map(part, periods)
     return result
 
+def build_audit_code_matrix(group: pd.DataFrame, periods: list[str]) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
+    if "audit_code" not in group.columns:
+        return result
+    period_order = {period: idx for idx, period in enumerate(fill_periods(periods))}
+    for audit_code, part in group.groupby("audit_code", dropna=False):
+        if pd.isna(audit_code):
+            continue
+        audit_key = str(audit_code).strip().upper()
+        if not audit_key:
+            continue
+        series = part.groupby("period_yyyymm", dropna=False)["raw_value"].sum().to_dict()
+        values = {
+            str(period): float(value)
+            for period, value in sorted(
+                series.items(),
+                key=lambda item: period_order.get(str(item[0]), period_sort_key(str(item[0]))),
+            )
+            if period is not None and not pd.isna(period) and float(value or 0.0) != 0.0
+        }
+        if values:
+            result[audit_key] = values
+    return dict(sorted(result.items()))
+
 def build_products(group: pd.DataFrame, periods: list[str]) -> list[dict[str, Any]]:
     products = []
     for (product_name, product_code), part in group.groupby(["product_name", "product_code"], dropna=False):
