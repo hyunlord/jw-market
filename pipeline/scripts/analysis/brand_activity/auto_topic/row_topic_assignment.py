@@ -52,6 +52,14 @@ class RowTopicAssignment:
 
 
 @dataclass(frozen=True, slots=True)
+class AssignmentParseResult:
+    """Parsed assignments plus row ids that still need a no-guess fallback."""
+
+    assignments: list[RowTopicAssignment]
+    missing_row_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AssignmentFilters:
     """Optional local aggregation filters for row-topic shares."""
 
@@ -122,6 +130,20 @@ def parse_assignment_response(
     batch_id: str,
 ) -> list[RowTopicAssignment]:
     """Parse and enforce exact id echo, known topic ids, and no guessing."""
+    parsed = parse_assignment_response_allow_missing(content, rows, known_topic_ids, topic_set_version, batch_id)
+    if parsed.missing_row_ids:
+        raise AssignmentParseError(f"missing row_id(s): {list(parsed.missing_row_ids)[:10]}")
+    return parsed.assignments
+
+
+def parse_assignment_response_allow_missing(
+    content: str,
+    rows: list[AssignmentInputRow],
+    known_topic_ids: set[str],
+    topic_set_version: str,
+    batch_id: str,
+) -> AssignmentParseResult:
+    """Parse assignments while surfacing omitted row ids for a smaller fallback call."""
     payload = _parse_json_object(content)
     items = payload.get("assignments")
     if not isinstance(items, list):
@@ -160,9 +182,7 @@ def parse_assignment_response(
             for topic in normalized_topics
         )
     missing = sorted(expected_ids - seen_ids)
-    if missing:
-        raise AssignmentParseError(f"missing row_id(s): {missing[:10]}")
-    return assignments
+    return AssignmentParseResult(assignments=assignments, missing_row_ids=tuple(missing))
 
 
 def aggregate_topic_shares(

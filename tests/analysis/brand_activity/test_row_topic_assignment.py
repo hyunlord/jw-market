@@ -7,6 +7,7 @@ import pytest
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_assignment as rta
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_db
+from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_execute
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_runner
 from pipeline.scripts.analysis.brand_activity.auto_topic import row_topic_sql
 
@@ -87,6 +88,88 @@ def test_parse_assignment_response_treats_string_empty_list_as_none() -> None:
 
     assert [item.row_id for item in parsed] == [2]
     assert [item.topic_id for item in parsed] == ["T1"]
+
+
+def test_parse_assignment_response_allow_missing_returns_assignments_and_missing_ids() -> None:
+    """Given a model omits one row, When parsed for fallback, Then parsed rows are kept without guessing."""
+    parsed = rta.parse_assignment_response_allow_missing(
+        '{"assignments":[{"row_id":1,"topics":["T1"]},{"row_id":3,"topics":[]}]}',
+        [_row(1), _row(2), _row(3)],
+        {"T1"},
+        "v1",
+        "b1",
+    )
+
+    assert parsed.missing_row_ids == (2,)
+    assert [item.row_id for item in parsed.assignments] == [1]
+    assert [item.topic_id for item in parsed.assignments] == ["T1"]
+
+
+class _FakeAssignmentClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.calls: list[list[dict[str, str]]] = []
+
+    def classify(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int], int]:
+        self.calls.append(messages)
+        return self.responses.pop(0), {}, 1
+
+
+def test_execute_falls_back_to_missing_rows_only() -> None:
+    """Given a partial batch response, When one row is missing, Then only that row is re-asked."""
+    rows = (_row(1), _row(2), _row(3))
+    rubric = (rta.TopicRubric(topic_id="T1", label="axis", definition="axis"),)
+    client = _FakeAssignmentClient(
+        [
+            '{"assignments":[{"row_id":1,"topics":["T1"]},{"row_id":2,"topics":[]}]}',
+            '{"assignments":[{"row_id":3,"topics":["T1"]}]}',
+        ]
+    )
+
+    parsed = row_topic_execute._classify_with_missing_fallback(  # noqa: SLF001 - regression covers resume-critical private helper.
+        client,
+        rubric,
+        rows,
+        "topic-set",
+        "batch-1",
+        max_calls=10,
+        calls_used=0,
+    )
+
+    assert parsed["calls"] == 2
+    assert parsed["fallback_calls"] == 1
+    assert parsed["missing_row_ids"] == []
+    assert [(item.row_id, item.topic_id) for item in parsed["assignments"]] == [(1, "T1"), (3, "T1")]
+    assert "3\tTHRUPAS" in client.calls[1][1]["content"]
+    assert "1\tTHRUPAS" not in client.calls[1][1]["content"]
+
+
+def test_execute_records_unresolved_missing_after_small_fallback() -> None:
+    """Given fallback still omits a row, When classified, Then the row id is recorded but not guessed."""
+    rows = (_row(1), _row(2))
+    rubric = (rta.TopicRubric(topic_id="T1", label="axis", definition="axis"),)
+    client = _FakeAssignmentClient(
+        [
+            '{"assignments":[{"row_id":1,"topics":["T1"]}]}',
+            '{"assignments":[]}',
+            '{"assignments":[]}',
+        ]
+    )
+
+    parsed = row_topic_execute._classify_with_missing_fallback(  # noqa: SLF001 - regression covers no-imputation fallback.
+        client,
+        rubric,
+        rows,
+        "topic-set",
+        "batch-1",
+        max_calls=10,
+        calls_used=0,
+    )
+
+    assert parsed["calls"] == 3
+    assert parsed["fallback_calls"] == 2
+    assert parsed["missing_row_ids"] == [2]
+    assert [(item.row_id, item.topic_id) for item in parsed["assignments"]] == [(1, "T1")]
 
 
 def test_filter_distribution_reuses_assignments_without_llm_calls() -> None:
