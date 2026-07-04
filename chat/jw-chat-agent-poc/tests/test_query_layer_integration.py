@@ -110,6 +110,21 @@ def test_market_structure_falls_back_to_sibling_sources_for_split_metadata() -> 
     assert structure["display_axis"] == "class_2"
 
 
+def test_brand_metric_carries_split_market_structure_for_source_detail() -> None:
+    """Given a split market metric, source facts still show the Class 2 operating basis."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records()))
+
+    call = layer.brand_metric("악템라", "sales", "latest")
+
+    data = call["render_data"]
+    assert data["market_structure"]["type"] == "class_split"
+    assert data["market_structure"]["display_axis"] == "class_2"
+    fact_md = answer_fact_markdown([call], ["IQVIA NSA"])
+    assert "Class 구분 존재" in fact_md
+    assert "Class 2 기준" in fact_md
+
+
 def test_facade_prefers_query_layer_for_strategic_metric() -> None:
     """Given the query layer is available, get_metric returns mart-derived facts."""
 

@@ -78,6 +78,9 @@ class StrategicQueryLayer:
         if snapshot.value_or_none(record, actual_period) is None:
             return _failed_metric_call(brand, metric, actual_period, source, snapshot.value_status(record, actual_period))
         render_data = metric_render_data(snapshot, market, source, record, metric, actual_period)
+        structure = market_structure(snapshot, market, source)
+        if structure:
+            render_data["market_structure"] = structure
         if actual_period != requested_period:
             render_data["blocked_metric_values"] = [_blocked_period_message(requested_period, snapshot.value_status(record, requested_period))]
         rows = result_rows_from_render_data(render_data)
