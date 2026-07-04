@@ -147,6 +147,51 @@ def test_general_filter_options_scope_dimensions_to_selected_atc4(monkeypatch) -
     assert payload["applied_selections"]["atc4"] == ["C10A1", "C10C0"]
 
 
+def test_general_filter_options_splits_comma_atc4_codes_and_flags_all_defaults(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+    captured_dimension_params: list[object] = []
+    captured_match_params: list[object] = []
+
+    def fake_resolve(**_kwargs: object) -> str | None:
+        return None
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        nonlocal captured_dimension_params, captured_match_params
+        if "mart_general_filter_dimension_metric" in sql and "brand_name" in sql:
+            captured_match_params = params
+            assert "atc4_code IN" in sql
+            return [
+                {"dimension_type": "seller", "dimension_value_norm": "jw중외제약"},
+                {"dimension_type": "atc4", "dimension_value_norm": "C10A1"},
+                {"dimension_type": "atc4", "dimension_value_norm": "C10C0"},
+            ]
+        if "mart_general_filter_dimension_metric" in sql:
+            captured_dimension_params = params
+            assert "atc4_code IN" in sql
+            return []
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "C10A1"}, {"atc4_code": "C10C0"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(filter_options, "resolve_filter_option_market_id", fake_resolve)
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        strategic_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        brand="리바로",
+        atc4_codes=["C10A1,C10C0"],
+    )
+
+    assert captured_dimension_params == ["ubist", "sales", "C10A1", "C10C0"]
+    assert captured_match_params[-2:] == ["C10A1", "C10C0"]
+    assert payload["default_selections"]["atc4"] == ["C10A1", "C10C0"]
+    assert payload["brand_matched"]["atc4"] == ["C10A1", "C10C0"]
+
+
 def test_general_filter_options_adds_ubist_channel_axis_registry_from_raw_matrix(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
 

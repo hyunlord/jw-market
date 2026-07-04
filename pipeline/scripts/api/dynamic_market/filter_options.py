@@ -138,8 +138,9 @@ def build_filter_options(
                 source=normalized_source,
                 market_id=resolved_market_id,
                 measure=normalized_measure,
+                atc4_codes=parsed_atc4_codes,
             )
-            brand_matched.setdefault("atc4", [parsed_atc4_codes[0]])
+            brand_matched.setdefault("atc4", list(parsed_atc4_codes))
         payload["brand_matched"] = brand_matched
     _apply_option_state(
         payload=payload,
@@ -918,6 +919,7 @@ def _load_brand_dimension_matches(
     source: str,
     market_id: str | None,
     measure: str,
+    atc4_codes: Sequence[str] | None = None,
 ) -> dict[str, list[str]]:
     table = GENERAL_DIMENSION_TABLE if view == "general" else STRATEGIC_DIMENSION_TABLE
     where = [
@@ -927,9 +929,10 @@ def _load_brand_dimension_matches(
     ]
     params: list[object] = [source, measure, brand, brand, brand, brand]
     if view == "general":
-        if atc_prefix := _general_atc_prefix(market_id):
-            where.append("atc4_code LIKE %s")
-            params.append(atc_prefix)
+        atc4_values = _parse_atc4_codes(market_id, atc4_codes)
+        if atc4_values:
+            where.append(f"atc4_code IN ({', '.join(['%s'] * len(atc4_values))})")
+            params.extend(atc4_values)
     elif market_id:
         market_kind, normalized_market_id = _strategic_market_filter(market_id)
         where.extend(["market_kind = %s", "market_id = %s"])
@@ -1026,10 +1029,15 @@ def _append_selection_exists_filters(
 
 
 def _parse_atc4_codes(market_id: str | None, atc4_codes: Sequence[str] | None) -> tuple[str, ...]:
+    raw_values: list[str] = []
+    if market_id:
+        raw_values.extend(_split_list_values(market_id))
+    for value in atc4_codes or ():
+        raw_values.extend(_split_list_values(str(value)))
     return tuple(
         dict.fromkeys(
             _canonical_general_atc4(value)
-            for value in [*(_split_list_values(market_id) if market_id else []), *list(atc4_codes or [])]
+            for value in raw_values
             if _canonical_general_atc4(value)
         )
     )
@@ -1209,15 +1217,6 @@ def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> st
         if atc4_code := str(row.get("atc4_code") or "").strip().upper():
             return atc4_code
     return None
-
-
-def _general_atc_prefix(market_id: str | None) -> str | None:
-    if not market_id:
-        return None
-    normalized = market_id.strip().upper()
-    if not normalized:
-        return None
-    return f"{normalized}%"
 
 
 def _strategic_market_filter(market_id: str) -> tuple[str, str]:
