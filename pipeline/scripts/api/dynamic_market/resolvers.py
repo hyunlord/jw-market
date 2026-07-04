@@ -102,19 +102,22 @@ class GeneralViewResolver:
                 source=normalized_source,
                 measure=normalized_measure,
             )
+        filter_echo = {
+            "view": "general",
+            "atc4": list(normalized_atc4),
+            "molecule": list(molecule),
+            "normalized_molecule": list(normalized_molecules),
+            "analysis_level": _dimension_echo(dimension_filters),
+            "focus_brand_key": normalized_focus_brand,
+            "source": normalized_source,
+            "measure": normalized_measure,
+        }
+        channel_axis_echo = _channel_axis_echo(channel_axis)
+        if channel_axis_echo:
+            filter_echo["channel_axis"] = channel_axis_echo
         return MarketDefinition(
             view="general",
-            filter_echo={
-                "view": "general",
-                "atc4": list(normalized_atc4),
-                "molecule": list(molecule),
-                "normalized_molecule": list(normalized_molecules),
-                "analysis_level": _dimension_echo(dimension_filters),
-                "channel_axis": _channel_axis_echo(channel_axis),
-                "focus_brand_key": normalized_focus_brand,
-                "source": normalized_source,
-                "measure": normalized_measure,
-            },
+            filter_echo=filter_echo,
             source=normalized_source,
             measure=normalized_measure,
             normalized_molecules=normalized_molecules,
@@ -299,7 +302,7 @@ class StrategicViewResolver:
         if atc4 or molecule:
             raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not ATC4/molecule expansion")
         if channel_axis and channel_axis.is_active:
-            raise DynamicMarketInputError("channel_axis is supported only for general UBIST views")
+            raise DynamicMarketInputError("channel_axis is supported only for general views")
         normalized_source = normalize_source(source)
         normalized_measure = normalize_measure(normalized_source, measure)
         market_kind = normalize_strategic_view_kind(view_kind=view_kind, ml_id=ml_id, cd_market_id=cd_market_id)
@@ -453,6 +456,11 @@ def _dimension_echo(filters: tuple[DimensionFilter, ...]) -> dict[str, list[str]
 def _channel_axis_echo(channel_axis: ChannelAxisFilter | None) -> dict[str, object]:
     if channel_axis is None or not channel_axis.is_active:
         return {}
+    if channel_axis.source == "iqvia_nsa":
+        return {
+            "source": channel_axis.source,
+            "audit_code": list(channel_axis.audit_codes),
+        }
     return {
         "source": channel_axis.source,
         "facility": list(channel_axis.facilities),

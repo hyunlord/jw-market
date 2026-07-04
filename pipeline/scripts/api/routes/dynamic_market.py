@@ -60,6 +60,12 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
     resolved_ml_id = _resolve_catalog_ml_id(payload.filters)
     if resolved_ml_id or payload.filters.cd_market_id:
         try:
+            try:
+                channel_axis = payload.filters.channel_axis.to_filter(source=payload.source)
+            except ValueError as exc:
+                raise DynamicMarketInputError(str(exc)) from exc
+            if channel_axis and channel_axis.is_active:
+                raise DynamicMarketInputError("channel_axis is supported only for general views")
             result = build_strategic_payload(
                 mart_db=config.db_name,
                 ml_id=resolved_ml_id,
@@ -104,9 +110,10 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
 def _resolve_definition(payload: DynamicMarketRequest):
     filters = payload.filters
     analysis_level = filters.analysis_level.model_dump()
-    channel_axis = filters.channel_axis.to_filter(source=payload.source)
-    if channel_axis and channel_axis.source != "ubist":
-        raise DynamicMarketInputError("channel_axis is supported only for UBIST general view in this release")
+    try:
+        channel_axis = filters.channel_axis.to_filter(source=payload.source)
+    except ValueError as exc:
+        raise DynamicMarketInputError(str(exc)) from exc
     resolved_ml_id = _resolve_catalog_ml_id(filters)
     if filters.view_kind or filters.ml_id or filters.cd_market_id:
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(

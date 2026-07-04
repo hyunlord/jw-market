@@ -62,7 +62,6 @@ def build_cause_data(
 ) -> dict[str, Any]:
     """Build all direct ``data`` keys expected by the cause renderer."""
 
-    del definition
     series = market_size_series(metrics)
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
     hhi = hhi_series(metrics.all_brands, source=metrics.source)
@@ -119,6 +118,8 @@ def build_cause_data(
         "ubist_specialty_channels": ubist_channels["specialty_channels"],
         "ubist_specialty_target_channels": ubist_channels["specialty_target_channels"],
     }
+    if definition.channel_axis and definition.channel_axis.is_active and definition.channel_axis.source == "iqvia_nsa":
+        data["iqvia_audit_code_channels"] = _general_iqvia_audit_codes(metrics)
     return normalize_portal_read_data(data)
 
 
@@ -206,6 +207,38 @@ def _latest_matrix_period(metrics: AggregatedMetrics) -> str | None:
         for specialties in brand.channel_specialty_matrix.values():
             for series in specialties.values():
                 periods.update(str(period) for period in series)
+    return max(periods) if periods else None
+
+
+def _general_iqvia_audit_codes(metrics: AggregatedMetrics) -> list[dict[str, Any]]:
+    """Return selected IQVIA audit-code summaries from the raw audit matrix."""
+
+    latest_period = _latest_audit_matrix_period(metrics)
+    summaries: list[dict[str, Any]] = []
+    totals: dict[str, float] = {}
+    latest_values: dict[str, float] = {}
+    for brand in metrics.all_brands:
+        for audit_code, series in brand.audit_code_matrix.items():
+            totals[audit_code] = totals.get(audit_code, 0.0) + sum(float(value or 0.0) for value in series.values())
+            if latest_period is not None:
+                latest_values[audit_code] = latest_values.get(audit_code, 0.0) + float(series.get(latest_period) or 0.0)
+    for audit_code, total_value in sorted(totals.items(), key=lambda item: (-item[1], item[0])):
+        summaries.append(
+            {
+                "audit_code": audit_code,
+                "latest_period": latest_period,
+                "latest_value": latest_values.get(audit_code, 0.0) if latest_period is not None else None,
+                "total_value": total_value,
+            }
+        )
+    return summaries
+
+
+def _latest_audit_matrix_period(metrics: AggregatedMetrics) -> str | None:
+    periods: set[str] = set()
+    for brand in metrics.all_brands:
+        for series in brand.audit_code_matrix.values():
+            periods.update(str(period) for period in series)
     return max(periods) if periods else None
 
 

@@ -36,7 +36,7 @@ def compute_general(
     if insert:
         ensure_json_columns(
             "mart_general_brand_metric",
-            ("channel_specialty_matrix", "dimension_data", "dimension_channel_data"),
+            ("channel_specialty_matrix", "audit_code_matrix", "dimension_data", "dimension_channel_data"),
         )
         delete_source_rows("mart_general_brand_metric", source)
         delete_source_rows("mart_general_market_metric", source)

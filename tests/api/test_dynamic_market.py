@@ -94,6 +94,41 @@ def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monk
     }
 
 
+def test_general_aggregate_reads_audit_code_matrix_for_iqvia(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            {
+                "brand_key": "livaro",
+                "brand_name": "리바로",
+                "atc4_code": "C10A1",
+                "source": "iqvia_nsa",
+                "measure": "sales",
+                "unit_label": "KRW",
+                "raw_value_history": json.dumps({"2025-Q4": 100.0}),
+                "channel_specialty_matrix": "{}",
+                "audit_code_matrix": json.dumps({"KPA": {"2025-Q4": 90.0}}),
+            }
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("livaro", "리바로", "C10A1"),),
+        source="iqvia_nsa",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+    )
+
+    assert "audit_code_matrix" in str(captured["sql"])
+    assert captured["params"] == ("iqvia_nsa", "sales", "livaro", "C10A1")
+    assert metrics.all_brands[0].audit_code_matrix == {"KPA": {"2025-Q4": 90.0}}
+
+
 def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
     request = DynamicMarketRequest.model_validate(
         {
@@ -156,6 +191,61 @@ def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
     )
     assert brand_metrics[0].channel_specialty_matrix == {
         "종합병원": {"순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0}}
+    }
+
+
+def test_general_aggregate_slices_iqvia_audit_code_axis_from_matrix() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "source": "iqvia",
+            "measure": "sales",
+            "filters": {
+                "atc4": ["C10A1"],
+                "channel_axis": {"iqvia": {"audit_code": ["KPA", "KHPA"]}},
+            },
+        }
+    )
+    aggregator = MetricAggregator(mart_db="jw_mart")
+    rows = [
+        {
+            "brand_key": "livaro",
+            "brand_name": "리바로",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2025-Q4": 1000.0, "2026-Q1": 2000.0}),
+            "audit_code_matrix": json.dumps(
+                {
+                    "KPA": {"2025-Q4": 100.0, "2026-Q1": 200.0},
+                    "KHPA": {"2026-Q1": 30.0},
+                    "KCPA": {"2026-Q1": 900.0},
+                }
+            ),
+        },
+        {
+            "brand_key": "competitor",
+            "brand_name": "경쟁",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2025-Q4": 500.0, "2026-Q1": 500.0}),
+            "audit_code_matrix": json.dumps({"KPA": {"2026-Q1": 70.0}, "KCPA": {"2026-Q1": 430.0}}),
+        },
+    ]
+
+    brand_metrics, monthly_totals = aggregator._aggregate_rows(
+        rows,
+        period_range=PeriodRange(),
+        channel_axis=request.filters.channel_axis.to_filter(source=request.source),
+    )
+
+    assert monthly_totals == {"2025-Q4": 100.0, "2026-Q1": 300.0}
+    assert [item.total_value for item in brand_metrics] == [330.0, 70.0]
+    assert brand_metrics[0].monthly_series == (
+        {"period": "2025-Q4", "value": 100.0},
+        {"period": "2026-Q1", "value": 230.0},
+    )
+    assert brand_metrics[0].audit_code_matrix == {
+        "KPA": {"2025-Q4": 100.0, "2026-Q1": 200.0},
+        "KHPA": {"2026-Q1": 30.0},
     }
 
 
@@ -396,6 +486,72 @@ def test_general_resolver_expands_ubist_canonical_atc4_for_source_native_rows(mo
     assert [brand.atc4_code for brand in definition.brands] == ["C10C"]
 
 
+def test_general_resolver_omits_inactive_channel_axis_from_identity_echo(monkeypatch) -> None:
+    def fake_fetch_all(sql, params):
+        assert "channel_axis" not in str(sql).lower()
+        assert params == ["ubist", "sales", "C10A1"]
+        return [{"brand_key": "livaro", "brand_name": "리바로", "atc4_code": "C10A1"}]
+
+    monkeypatch.setattr(resolvers.db, "fetch_all", fake_fetch_all)
+
+    definition = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart").resolve(
+        atc4=["C10A1"],
+        molecule=[],
+        source="ubist",
+        measure="sales",
+        channel_axis=None,
+    )
+
+    assert "channel_axis" not in definition.filter_echo
+
+
+def test_empty_channel_axis_payloads_normalize_like_missing_filter() -> None:
+    payloads = [
+        {"filters": {"atc4": ["C10A1"]}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {"facility": []}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {"specialty": [], "pairs": []}}}, "source": "ubist", "measure": "sales"},
+    ]
+
+    for payload in payloads:
+        request = DynamicMarketRequest.model_validate(payload)
+        assert request.filters.channel_axis.to_filter(source=request.source) is None
+
+
+def test_empty_iqvia_channel_axis_payloads_normalize_like_missing_filter() -> None:
+    payloads = [
+        {"filters": {"atc4": ["C10A1"]}, "source": "iqvia", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {}}, "source": "iqvia", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {}}}, "source": "iqvia", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": []}}}, "source": "iqvia", "measure": "sales"},
+    ]
+
+    for payload in payloads:
+        request = DynamicMarketRequest.model_validate(payload)
+        assert request.filters.channel_axis.to_filter(source=request.source) is None
+
+
+def test_channel_axis_rejects_source_mismatch() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "filters": {
+                "atc4": ["C10A1"],
+                "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
+            },
+            "source": "ubist",
+            "measure": "sales",
+        }
+    )
+
+    try:
+        request.filters.channel_axis.to_filter(source=request.source)
+    except ValueError as exc:
+        assert "channel_axis.iqvia must match selected source" in str(exc)
+    else:
+        raise AssertionError("source-mismatched channel_axis must be rejected")
+
+
 def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
     class FakeResolver:
         def __init__(self, *, mart_db: str, bridge_db: str) -> None:
@@ -506,6 +662,154 @@ def test_route_passes_general_channel_axis_to_aggregator(monkeypatch) -> None:
     assert response["status"] == "SUCCESS"
     assert captured["resolver_channel_axis"].facilities == ("종합병원",)
     assert captured["aggregator_channel_axis"].facilities == ("종합병원",)
+
+
+def test_route_passes_iqvia_channel_axis_to_aggregator(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResolver:
+        def __init__(self, *, mart_db: str, bridge_db: str) -> None:
+            assert mart_db
+            assert bridge_db
+
+        def resolve(self, *, atc4, molecule, source, measure, channel_axis, **_kwargs):
+            captured["resolver_channel_axis"] = channel_axis
+            return MarketDefinition(
+                view="general",
+                filter_echo={
+                    "view": "general",
+                    "atc4": list(atc4),
+                    "molecule": list(molecule),
+                    "source": "iqvia_nsa",
+                    "measure": measure,
+                    "channel_axis": {"source": "iqvia_nsa", "audit_code": ["KPA"]},
+                },
+                source="iqvia_nsa",
+                measure=measure,
+                brands=(),
+                channel_axis=channel_axis,
+            )
+
+    class FakeAggregator:
+        def __init__(self, *, mart_db: str) -> None:
+            assert mart_db
+
+        def aggregate(self, *, channel_axis, **_kwargs):
+            captured["aggregator_channel_axis"] = channel_axis
+            return AggregatedMetrics(
+                source="iqvia_nsa",
+                measure="sales",
+                unit_label="KRW",
+                market_size=1.0,
+                hhi=None,
+                cagr=None,
+                monthly_series=({"period": "2026-Q1", "market_size": 1.0},),
+                brands=(),
+            )
+
+    monkeypatch.setattr(dynamic_market_route, "GeneralViewResolver", FakeResolver)
+    monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FakeAggregator)
+
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "source": "iqvia",
+                "measure": "sales",
+                "filters": {
+                    "atc4": ["C10A1"],
+                    "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
+                },
+            }
+        )
+    )
+
+    assert response["status"] == "SUCCESS"
+    assert captured["resolver_channel_axis"].source == "iqvia_nsa"
+    assert captured["resolver_channel_axis"].audit_codes == ("KPA",)
+    assert captured["aggregator_channel_axis"].audit_codes == ("KPA",)
+
+
+def test_route_rejects_channel_axis_for_strategic_shortcut() -> None:
+    try:
+        dynamic_market_route.dynamic_market(
+            DynamicMarketRequest.model_validate(
+                {
+                    "source": "iqvia",
+                    "measure": "sales",
+                    "filters": {
+                        "ml_id": "ml_006",
+                        "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
+                    },
+                }
+            )
+        )
+    except dynamic_market_route.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "channel_axis is supported only for general views" in str(exc.detail)
+    else:
+        raise AssertionError("strategic channel_axis must be rejected")
+
+
+def test_iqvia_channel_axis_response_adds_selected_audit_summary_only_when_active() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["C10A1"], "source": "iqvia_nsa", "measure": "sales"},
+        source="iqvia_nsa",
+        measure="sales",
+    )
+    inactive_metrics = AggregatedMetrics(
+        source="iqvia_nsa",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2025-Q4", "market_size": 100.0},),
+        brands=(),
+        all_brands=(
+            BrandMetric(
+                "livaro",
+                "리바로",
+                "C10A1",
+                100.0,
+                100.0,
+                1,
+                "2025-Q4",
+                100.0,
+                audit_code_matrix={"KPA": {"2025-Q4": 100.0}},
+            ),
+        ),
+    )
+
+    inactive_payload = cause_payload.build_cause_data(definition=definition, metrics=inactive_metrics, focus=None)
+
+    assert "iqvia_audit_code_channels" not in inactive_payload
+
+    active_definition = MarketDefinition(
+        view="general",
+        filter_echo={
+            "view": "general",
+            "atc4": ["C10A1"],
+            "source": "iqvia_nsa",
+            "measure": "sales",
+            "channel_axis": {"source": "iqvia_nsa", "audit_code": ["KPA"]},
+        },
+        source="iqvia_nsa",
+        measure="sales",
+        channel_axis=DynamicMarketRequest.model_validate(
+            {
+                "source": "iqvia",
+                "measure": "sales",
+                "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KPA"]}}},
+            }
+        ).filters.channel_axis.to_filter(source="iqvia"),
+    )
+
+    active_payload = cause_payload.build_cause_data(definition=active_definition, metrics=inactive_metrics, focus=None)
+
+    assert active_payload["iqvia_audit_code_channels"] == [
+        {"audit_code": "KPA", "latest_period": "2025-Q4", "latest_value": 100.0, "total_value": 100.0}
+    ]
 
 
 def test_route_uses_strategic_runtime_for_ml_id(monkeypatch) -> None:

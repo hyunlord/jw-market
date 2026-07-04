@@ -441,7 +441,13 @@ FILTER_OPTIONS_EXAMPLE: Final = {
                     "flag": True,
                 }
             ],
-        }
+        },
+        "iqvia": {
+            "audit_code": [
+                {"key": "KPA", "value": "KPA", "row_count": 120, "default": False, "selected": False, "flag": True},
+                {"key": "KHPA", "value": "KHPA", "row_count": 90, "default": False, "selected": False, "flag": True},
+            ]
+        },
     },
     "default_selections": {"class": ["statin"], "atc1": ["C"]},
     "applied_selections": {"class": ["statin"], "atc1": ["C"]},
@@ -472,8 +478,9 @@ FILTER_OPTIONS_RESPONSES: Final = {
                         "channel_axis": {
                             "type": "object",
                             "description": (
-                                "일반뷰 UBIST 전용 채널 축 registry. facility(종별), specialty(진료과), "
-                                "pairs(종별×진료과 조합)를 raw channel_specialty_matrix에서 동적으로 도출합니다. "
+                                "일반뷰 source별 채널 축 registry. UBIST는 facility(종별), specialty(진료과), "
+                                "pairs(종별×진료과 조합)를 raw channel_specialty_matrix에서 동적으로 도출하고, "
+                                "IQVIA는 audit_code를 raw audit_code_matrix에서 동적으로 도출합니다. "
                                 "analysis_level과 분리된 값 슬라이스 필터입니다."
                             ),
                         },
