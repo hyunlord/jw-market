@@ -8,6 +8,14 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesInputError,
     get_csd_timeseries,
 )
+from pipeline.scripts.api.brand_activity_csd_activity_series import (
+    CsdActivitySeriesInputError,
+    get_csd_activity_series,
+)
+from pipeline.scripts.api.brand_activity_csd_activity_contract import (
+    CSD_ACTIVITY_SERIES_EXAMPLE,
+    CsdActivitySeriesRequest,
+)
 from pipeline.scripts.api.brand_activity_interest_rx_matrix import (
     InterestRxMatrixInputError,
     get_interest_rx_matrix,
@@ -184,6 +192,31 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
 
 
 @router.post(
+    "/api/brand-activity/csd-activity-series",
+    tags=[BRAND_ACTIVITY_TAG],
+    summary="CSD 활동량·비율·순위 추세",
+    description=(
+        "문서 Section 1 CSD Channeldynamics 시계열 API입니다. "
+        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, top5 기준, 활동량 rank series를 제공합니다."
+    ),
+    response_model=None,
+    openapi_extra={"requestBody": {"content": {"application/json": {"example": CSD_ACTIVITY_SERIES_EXAMPLE}}}},
+)
+def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dict[str, JsonValue]:
+    """Return Section 1 CSD activity volume, share, and rank time series."""
+
+    try:
+        result = get_csd_activity_series(_service_payload(payload))
+    except CsdActivitySeriesInputError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_csd_activity_series_request", "message": str(exc)}) from exc
+    except CsdTimeseriesAmbiguousMarketError as exc:
+        return {"data": None, "reason": "csd_market_ambiguous", "message": str(exc)}
+    if result is None:
+        return {"data": None, "reason": "market_not_found"}
+    return {"data": result}
+
+
+@router.post(
     "/api/brand-activity/interest-rx-matrix",
     tags=[BRAND_ACTIVITY_TAG],
     summary="interest×처방빈도 버블",
@@ -208,7 +241,7 @@ def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -
     return {"data": result}
 
 
-def _service_payload(payload: CsdTimeseriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
+def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
     """Normalize mock v0.1.7 `filters` while preserving legacy `filter` input."""
 
     data = payload.model_dump()
