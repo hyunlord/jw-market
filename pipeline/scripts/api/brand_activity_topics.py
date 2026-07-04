@@ -39,7 +39,7 @@ def _fetch_topic_rows(scope_id: str | None = None) -> list[dict[str, JsonValue]]
     params: tuple[str, ...] = (scope_id,) if scope_id else ()
     rows = db.fetch_all(
         f"""
-        SELECT scope_id, display_name, quality_grade, source_row_count, payload
+        SELECT scope_id, display_name, quality_grade, source_row_count, run_id, payload
         FROM {table}
         {where_clause}
         ORDER BY scope_id
