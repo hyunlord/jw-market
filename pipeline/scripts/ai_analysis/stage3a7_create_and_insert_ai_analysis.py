@@ -11,12 +11,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pymysql
 
 
-JW25_BRANDS = [
+DEFAULT_STAGE3A7_BRANDS = [
     "가드렛",
     "가드메트",
     "뉴트로진",
@@ -173,8 +173,19 @@ def schema_matches(describe_rows: list[dict[str, Any]]) -> bool:
     return "varchar(255)" in str(by_field["brand"]["Type"]).lower() and "longtext" in str(by_field["ai_analysis_json"]["Type"]).lower()
 
 
-def select_latest_runs(conn: pymysql.connections.Connection) -> dict[str, SelectedRun]:
-    placeholders = ",".join(["%s"] * len(JW25_BRANDS))
+def _dedupe_brands(brands: Sequence[str]) -> list[str]:
+    deduped: list[str] = []
+    for brand in brands:
+        if brand and brand not in deduped:
+            deduped.append(brand)
+    if not deduped:
+        raise ValueError("at least one brand is required")
+    return deduped
+
+
+def select_latest_runs(conn: pymysql.connections.Connection, brands: Sequence[str]) -> dict[str, SelectedRun]:
+    brands = _dedupe_brands(brands)
+    placeholders = ",".join(["%s"] * len(brands))
     sql = f"""
     SELECT run_id, brand, status, model_version, created_at, bundle_hash
     FROM zeta_analysis_runs
@@ -185,7 +196,7 @@ def select_latest_runs(conn: pymysql.connections.Connection) -> dict[str, Select
     ORDER BY brand, run_id DESC
     """
     with conn.cursor() as cursor:
-        cursor.execute(sql, JW25_BRANDS)
+        cursor.execute(sql, brands)
         rows = cursor.fetchall()
 
     selected: dict[str, SelectedRun] = {}
@@ -235,8 +246,9 @@ def load_parsed_output(conn: pymysql.connections.Connection, run: SelectedRun) -
     return parsed
 
 
-def load_market_ids(conn: pymysql.connections.Connection) -> tuple[dict[str, str | None], str]:
-    placeholders = ",".join(["%s"] * len(JW25_BRANDS))
+def load_market_ids(conn: pymysql.connections.Connection, brands: Sequence[str]) -> tuple[dict[str, str | None], str]:
+    brands = _dedupe_brands(brands)
+    placeholders = ",".join(["%s"] * len(brands))
     with conn.cursor() as cursor:
         cursor.execute("SHOW TABLES LIKE 'strategic_brand'")
         has_strategic_brand = cursor.fetchone() is not None
@@ -247,7 +259,7 @@ def load_market_ids(conn: pymysql.connections.Connection) -> tuple[dict[str, str
                 FROM strategic_brand
                 WHERE brand_name IN ({placeholders}) AND is_jw = 1
                 """,
-                JW25_BRANDS,
+                brands,
             )
             rows = cursor.fetchall()
             return {str(row["brand"]): row.get("market_id") for row in rows}, "strategic_brand.ml_id"
@@ -259,7 +271,7 @@ def load_market_ids(conn: pymysql.connections.Connection) -> tuple[dict[str, str
             WHERE brand IN ({placeholders})
             GROUP BY brand
             """,
-            JW25_BRANDS,
+            brands,
         )
         rows = cursor.fetchall()
         return {str(row["brand"]): row.get("market_id") for row in rows}, "cache_deep_analysis.market_id fallback"
@@ -289,6 +301,7 @@ def insert_ai_analysis(
     conn: pymysql.connections.Connection,
     payloads: dict[str, dict[str, Any]],
     market_ids: dict[str, str | None],
+    brands: Sequence[str],
 ) -> list[dict[str, Any]]:
     sql = f"""
     INSERT INTO {TARGET_TABLE}
@@ -300,7 +313,7 @@ def insert_ai_analysis(
     """
     rows: list[dict[str, Any]] = []
     with conn.cursor() as cursor:
-        for brand in JW25_BRANDS:
+        for brand in _dedupe_brands(brands):
             payload = payloads[brand]
             market_id = market_ids.get(brand)
             cursor.execute(sql, (brand, market_id, _json_dumps(payload)))
@@ -317,8 +330,9 @@ def insert_ai_analysis(
     return rows
 
 
-def verify_insert(conn: pymysql.connections.Connection) -> list[dict[str, Any]]:
-    placeholders = ",".join(["%s"] * len(JW25_BRANDS))
+def verify_insert(conn: pymysql.connections.Connection, brands: Sequence[str]) -> list[dict[str, Any]]:
+    brands = _dedupe_brands(brands)
+    placeholders = ",".join(["%s"] * len(brands))
     with conn.cursor() as cursor:
         cursor.execute(
             f"""
@@ -333,7 +347,7 @@ def verify_insert(conn: pymysql.connections.Connection) -> list[dict[str, Any]]:
             WHERE brand IN ({placeholders})
             ORDER BY brand
             """,
-            JW25_BRANDS,
+            brands,
         )
         return list(cursor.fetchall())
 
@@ -413,7 +427,7 @@ def zip_audit(audit_dir: Path) -> Path:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Create permanent Phase ζ ai_analysis table and insert JW25 narratives.")
+    parser = argparse.ArgumentParser(description="Create permanent Phase ζ ai_analysis table and insert Phase ζ narratives.")
     parser.add_argument("--db-host", default=os.getenv("DB_HOST", "localhost"))
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3308")))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
@@ -421,11 +435,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart"))
     parser.add_argument("--audit-dir", default=None)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--brands",
+        nargs="*",
+        default=None,
+        help="Brands to insert. Defaults to the original JW25 list for backward-compatible safe runs.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    brands = _dedupe_brands(args.brands if args.brands is not None else DEFAULT_STAGE3A7_BRANDS)
     root = Path(__file__).resolve().parents[3]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     audit_dir = Path(args.audit_dir) if args.audit_dir else root / "outputs" / "phase_zeta_stage3a7" / f"audit_phase_zeta_stage3a7_{timestamp}"
@@ -447,15 +468,15 @@ def main() -> int:
     _write_text(audit_dir / "new_table_setup" / "describe_output.txt", _json_dumps(table_info["describe"], indent=2) + "\n")
     _write_text(audit_dir / "new_table_setup" / "initial_row_count.txt", f"{table_info['initial_row_count']}\n")
 
-    selected_runs = select_latest_runs(conn)
-    market_ids, market_id_source = load_market_ids(conn)
-    missing_runs = [brand for brand in JW25_BRANDS if brand not in selected_runs]
+    selected_runs = select_latest_runs(conn, brands)
+    market_ids, market_id_source = load_market_ids(conn, brands)
+    missing_runs = [brand for brand in brands if brand not in selected_runs]
     parsed_by_brand: dict[str, dict[str, Any]] = {}
     payloads: dict[str, dict[str, Any]] = {}
     run_rows: list[dict[str, Any]] = []
     incomplete: list[dict[str, Any]] = []
 
-    for brand in JW25_BRANDS:
+    for brand in brands:
         run = selected_runs.get(brand)
         if run is None:
             continue
@@ -489,10 +510,10 @@ def main() -> int:
     if args.apply:
         if missing_runs or incomplete:
             raise SystemExit(f"Cannot insert with missing/incomplete outputs: missing={missing_runs}, incomplete={incomplete}")
-        insert_rows = insert_ai_analysis(conn, payloads, market_ids)
+        insert_rows = insert_ai_analysis(conn, payloads, market_ids, brands)
     _write_csv(audit_dir / "insert_results" / "insert_log_per_brand.csv", insert_rows)
 
-    verification = verify_insert(conn) if args.apply else []
+    verification = verify_insert(conn, brands) if args.apply else []
     weak_notes = verify_weak_notes(conn) if args.apply else []
     _write_csv(audit_dir / "insert_results" / "post_insert_verification.csv", verification)
     _write_csv(audit_dir / "insert_results" / "weak_brand_notes.csv", weak_notes)
@@ -511,11 +532,22 @@ def main() -> int:
     title_ok = [row for row in verification if row.get("phenomenon_title")]
     analysis_ok = [row for row in verification if int(row.get("analysis_size") or 0) > 4]
     note_by_brand = {row["brand"]: row.get("quality_note") for row in weak_notes}
+    expected_weak_notes = {brand: note for brand, note in WEAK_NARRATIVE_BRANDS.items() if brand in brands}
     weak_notes_correct = {
         brand: note_by_brand.get(brand) == note
-        for brand, note in WEAK_NARRATIVE_BRANDS.items()
+        for brand, note in expected_weak_notes.items()
     }
-    verdict = "PASS" if args.apply and len(found) == 25 and len(stage_ok) == 25 and len(title_ok) == 25 and len(analysis_ok) == 25 and all(weak_notes_correct.values()) else "DRY_RUN" if not args.apply else "PARTIAL"
+    expected_count = len(brands)
+    verdict = (
+        "PASS"
+        if args.apply
+        and len(found) == expected_count
+        and len(stage_ok) == expected_count
+        and len(title_ok) == expected_count
+        and len(analysis_ok) == expected_count
+        and all(weak_notes_correct.values())
+        else "DRY_RUN" if not args.apply else "PARTIAL"
+    )
 
     audit_result = {
         "verdict": verdict,
@@ -538,7 +570,7 @@ def main() -> int:
             "initial_row_count": table_info["initial_row_count"],
         },
         "insert_summary": {
-            "total_brands_attempted": len(JW25_BRANDS),
+            "total_brands_attempted": expected_count,
             "brands_with_complete_4_stages": len(parsed_by_brand),
             "brands_with_partial_stages": len(incomplete),
             "brands_failed_insert": len(missing_runs) + len(incomplete),
@@ -546,12 +578,17 @@ def main() -> int:
             "market_id_source": market_id_source,
         },
         "post_insert_verification": {
-            "all_25_brands_present": len(found) == 25,
-            "all_25_have_phase_zeta_stage_marker": len(stage_ok) == 25,
-            "all_25_have_phenomenon_title": len(title_ok) == 25,
-            "all_25_stage_eq_stage3a7": len(stage_ok) == 25,
-            "all_25_have_nontrivial_json": len(analysis_ok) == 25,
-            "missing_brands_after_insert": [brand for brand in JW25_BRANDS if brand not in found],
+            "all_requested_brands_present": len(found) == expected_count,
+            "all_requested_have_phase_zeta_stage_marker": len(stage_ok) == expected_count,
+            "all_requested_have_phenomenon_title": len(title_ok) == expected_count,
+            "all_requested_stage_eq_stage3a7": len(stage_ok) == expected_count,
+            "all_requested_have_nontrivial_json": len(analysis_ok) == expected_count,
+            "all_25_brands_present": expected_count == 25 and len(found) == 25,
+            "all_25_have_phase_zeta_stage_marker": expected_count == 25 and len(stage_ok) == 25,
+            "all_25_have_phenomenon_title": expected_count == 25 and len(title_ok) == 25,
+            "all_25_stage_eq_stage3a7": expected_count == 25 and len(stage_ok) == 25,
+            "all_25_have_nontrivial_json": expected_count == 25 and len(analysis_ok) == 25,
+            "missing_brands_after_insert": [brand for brand in brands if brand not in found],
             "weak_brand_notes_correct": weak_notes_correct,
         },
         "permanent_safety_evidence": {
@@ -579,8 +616,8 @@ Verdict: {verdict}
 
 - Table: `{TARGET_TABLE}`
 - Stage marker: `{STAGE_MARKER}`
-- Complete 4-stage parsed outputs: {len(parsed_by_brand)}/25
-- Rows in permanent table for JW25 after insert: {len(verification)}
+- Complete 4-stage parsed outputs: {len(parsed_by_brand)}/{expected_count}
+- Rows in permanent table for requested brands after insert: {len(verification)}
 - Market ID source: {market_id_source}
 """,
     )

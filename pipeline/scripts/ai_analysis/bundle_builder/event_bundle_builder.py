@@ -7,6 +7,15 @@ from typing import Dict, Optional, Tuple
 from .config import EventConfig
 
 TAGS = ["신약/R&D", "정책/규제", "공급/생산", "자본/경영", "외부/트렌드", "기타"]
+DIRECT_EVENT_SOURCE_PROCESSORS = ("workflow_196_optionB",)
+CROSS_MATCH_SOURCE_PROCESSORS = ("cross_match_adapter_v1",)
+# Future LLM-promoted Tier2 evidence belongs in DIRECT_EVENT_SOURCE_PROCESSORS
+# after it is written as tier2_llm_v1. The rule-only tier2_exact_rule_v1
+# processor is intentionally excluded from Agent2 narrative evidence.
+
+
+def _sql_placeholders(values) -> str:
+    return ",".join(["%s"] * len(values))
 
 
 def _clean_text(value):
@@ -43,14 +52,14 @@ def _build_event_bundle_v1(
     snapshot_date = snapshot_at.date().isoformat()
     with db_conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
                    s.summary, s.reason, n.source_name
             FROM event_brand_scores s
             JOIN news_raw n ON s.news_id = n.news_id
             WHERE (s.brand_canonical = %s OR s.brand_name = %s)
               AND s.derivation = 'llm_direct'
-              AND s.source_processor = 'workflow_196_optionB'
+              AND s.source_processor IN ({_sql_placeholders(DIRECT_EVENT_SOURCE_PROCESSORS)})
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s
@@ -60,6 +69,7 @@ def _build_event_bundle_v1(
             (
                 brand,
                 brand,
+                *DIRECT_EVENT_SOURCE_PROCESSORS,
                 config.min_score_direct,
                 snapshot_date,
                 config.lookback_months,
@@ -70,14 +80,14 @@ def _build_event_bundle_v1(
         direct_rows = cur.fetchall()
 
         cur.execute(
-            """
+            f"""
             SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
                    s.summary, n.source_name, s.mirrored_from_jw_brands
             FROM event_brand_scores s
             JOIN news_raw n ON s.news_id = n.news_id
             WHERE (s.brand_name = %s OR s.brand_canonical = %s OR s.mirrored_from_jw_brands LIKE %s)
               AND s.derivation = 'cross_match'
-              AND s.source_processor = 'cross_match_adapter_v1'
+              AND s.source_processor IN ({_sql_placeholders(CROSS_MATCH_SOURCE_PROCESSORS)})
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s
@@ -88,6 +98,7 @@ def _build_event_bundle_v1(
                 brand,
                 brand,
                 f'%"{brand}"%',
+                *CROSS_MATCH_SOURCE_PROCESSORS,
                 config.min_score_cross,
                 snapshot_date,
                 config.lookback_months,
@@ -143,14 +154,14 @@ def _build_event_bundle_v1_1(
     snapshot_date = snapshot_at.date().isoformat()
     with db_conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
                    s.summary, s.reason, n.source_name
             FROM event_brand_scores s
             JOIN news_raw n ON s.news_id = n.news_id
             WHERE (s.brand_canonical = %s OR s.brand_name = %s)
               AND s.derivation = 'llm_direct'
-              AND s.source_processor = 'workflow_196_optionB'
+              AND s.source_processor IN ({_sql_placeholders(DIRECT_EVENT_SOURCE_PROCESSORS)})
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s
@@ -160,6 +171,7 @@ def _build_event_bundle_v1_1(
             (
                 brand,
                 brand,
+                *DIRECT_EVENT_SOURCE_PROCESSORS,
                 event_config.min_score_direct,
                 snapshot_date,
                 event_config.lookback_months,
