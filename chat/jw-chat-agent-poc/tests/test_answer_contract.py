@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
-from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls, enforce_answer_contract
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
 
 
@@ -144,6 +144,37 @@ def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
     assert "회복 흐름" not in revised
     assert "MS는 29.34%에서 25.36%로 낮아졌습니다" in revised
     assert revised.index("## 영업-매출 연계 분석 설계") < revised.index("## 출처")
+
+
+def test_structural_contract_backfill_requests_metric_proxy() -> None:
+    plans = answer_contract_backfill_tool_calls(
+        "악템라 영업활동 Impact와 매출 연계성을 분석해줘",
+        "악템라",
+        [],
+    )
+
+    assert len(plans) == 1
+    assert plans[0].name == "get_metric"
+    assert plans[0].arguments == {"brand": "악템라", "measure": "sales", "period": "latest"}
+
+
+def test_structural_contract_backfill_skips_existing_metric_proxy() -> None:
+    plans = answer_contract_backfill_tool_calls(
+        "악템라 시장 변화 요인과 매출 변화를 종합해서 인과 분석해줘",
+        "악템라",
+        [
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "brand": "악템라",
+                    "sales_krw": 4_819_000_000,
+                    "source_status": "OK",
+                },
+            }
+        ],
+    )
+
+    assert plans == ()
 
 
 def test_trend_support_contract_adds_axis_support_matrix() -> None:

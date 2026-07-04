@@ -3077,10 +3077,12 @@ def test_no_data_answer_is_markdown_graceful() -> None:
 
     answer = result["answer"]
 
-    assert result["sources"] == ["none"]
+    assert result["sources"] == ["cache"]
+    assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
     assert not answer.startswith("## 답변")
     assert "**요약:**" not in answer
     assert "현재 데이터로 답변 불가" in answer
+    assert "84.93" in answer
     assert "## 출처" in answer
 
 

@@ -34,9 +34,18 @@ ANSWER_CONTRACT: Final[dict[str, ContractRule]] = {
 def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[dict[str, Any]]) -> tuple[ToolCallPlan, ...]:
     """Return deterministic tool calls needed before final answer generation."""
 
+    structural = _structural_contract_type(question)
+    if structural in {"sales_activity_link", "change_drivers"} and not _has_brand_metric_fact(calls, brand):
+        return (
+            ToolCallPlan(
+                name="get_metric",
+                arguments={"brand": brand, "measure": "sales", "period": "latest"},
+                reason="AnswerContract structural proxy backfill",
+            ),
+        )
     if _intent(question) != "ranking":
         return ()
-    if _has_ranking_fact(calls, brand):
+    if _has_brand_metric_fact(calls, brand):
         return ()
     return (
         ToolCallPlan(
@@ -173,6 +182,10 @@ def _fact_markdown(markdown_response: Mapping[str, Any] | None) -> str:
 
 
 def _has_ranking_fact(calls: list[dict[str, Any]], brand: str) -> bool:
+    return _has_brand_metric_fact(calls, brand)
+
+
+def _has_brand_metric_fact(calls: list[dict[str, Any]], brand: str) -> bool:
     for call in calls:
         if call.get("tool") != "get_brand_metric":
             continue
@@ -181,7 +194,13 @@ def _has_ranking_fact(calls: list[dict[str, Any]], brand: str) -> bool:
             continue
         if data.get("brand") != brand:
             continue
+        if data.get("status") in {"error", "query_failed", "mapping_failed", "missing", "incomplete_split"}:
+            continue
         if data.get("rank") is not None and (data.get("sales_krw") is not None or data.get("sales_억원") is not None):
+            return True
+        if data.get("sales_krw") is not None or data.get("sales_억원") is not None:
+            return True
+        if data.get("brand_value_series_10pt"):
             return True
     return False
 

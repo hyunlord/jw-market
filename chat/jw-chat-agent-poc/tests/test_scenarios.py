@@ -220,9 +220,10 @@ def test_document_rag_upload_search_and_citation():
 
 def test_no_data_boundary_for_sales_impact():
     result = ChatAgent().answer("리바로 영업활동 Impact는?")
-    assert result["sources"] == ["none"]
+    assert result["sources"] == ["cache"]
     assert "현재 데이터로 답변 불가" in result["answer"]
-    assert result["tool_calls"] == []
+    assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
+    assert "84.93" in result["answer"]
 
 
 def test_mixed_structured_and_document_sources_are_separated():

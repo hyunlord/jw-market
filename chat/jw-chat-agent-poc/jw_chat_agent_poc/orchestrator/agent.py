@@ -311,19 +311,57 @@ class ChatAgent:
         return unsupported_brand_result(question, routes, router_diagnostics(self.router))
 
     def _no_data(self, question: str, resolution, routes) -> dict[str, Any]:
-        markdown = MarkdownResponseBuilder().no_data(
-            "현재 데이터로 답변 불가합니다. Q4 영업 Impact 또는 Q5 포트폴리오·사업성 영역은 P1 POC 데이터 범위 밖입니다."
+        message = "현재 데이터로 답변 불가합니다. Q4 영업 Impact 또는 Q5 포트폴리오·사업성 영역은 P1 POC 데이터 범위 밖입니다."
+        proxy_call = self._no_data_proxy_call(resolution)
+        if proxy_call is None:
+            markdown = MarkdownResponseBuilder().no_data(message)
+            return {
+                "question": question,
+                "resolution": resolution.__dict__,
+                "decomposition": [route.__dict__ for route in routes],
+                "router_diagnostics": router_diagnostics(self.router),
+                "tool_calls": [],
+                "answer": markdown.markdown,
+                "markdown_response": markdown.to_dict(),
+                "sources": ["none"],
+            }
+        source = str(proxy_call.get("source") or "cache")
+        builder = MarkdownResponseBuilder()
+        markdown = builder.build(brand=resolution.canonical_brand, calls=[proxy_call], sources=[source])
+        interpretation_md = MarkdownResponseBuilder._join(f"## 해석\n\n- {message}", markdown.interpretation_md)
+        answer = MarkdownResponseBuilder._join(
+            markdown.summary_md,
+            interpretation_md,
+            markdown.data_md,
+            markdown.evidence_md,
+            markdown.sources_md,
+            markdown.notice_md,
         )
+        markdown_response = markdown.to_dict()
+        markdown_response["markdown"] = answer
+        markdown_response["interpretation_md"] = interpretation_md
         return {
             "question": question,
             "resolution": resolution.__dict__,
             "decomposition": [route.__dict__ for route in routes],
             "router_diagnostics": router_diagnostics(self.router),
-            "tool_calls": [],
-            "answer": markdown.markdown,
-            "markdown_response": markdown.to_dict(),
-            "sources": ["none"],
+            "tool_calls": [proxy_call],
+            "answer": answer,
+            "markdown_response": markdown_response,
+            "sources": [source],
         }
+
+    def _no_data_proxy_call(self, resolution) -> dict[str, Any] | None:
+        brand = resolution.canonical_brand
+        if self.query_layer is not None:
+            try:
+                return self.query_layer.brand_metric(brand, "sales", "latest")
+            except (LookupError, TypeError, ValueError):
+                pass
+        try:
+            return self.metrics.get_brand_metric(brand, metric="sales")
+        except (LookupError, TypeError, ValueError):
+            return None
 
 
 def _is_single_brand_trend_question(question: str) -> bool:
