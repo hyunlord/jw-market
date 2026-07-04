@@ -17,6 +17,7 @@ from jw_chat_agent_poc.tools.external.client import ExternalCall
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS
 
@@ -91,6 +92,22 @@ def test_query_catalog_exposes_class2_only_for_split_market() -> None:
     assert catalog.market_structure["type"] == "class_split"
     assert catalog.market_structure["display_axis"] == "class_2"
     assert {axis["key"] for axis in catalog.market_structure["axes"]} == {"class_1", "class_2"}
+
+
+def test_market_structure_falls_back_to_sibling_sources_for_split_metadata() -> None:
+    """Given one source lacks class columns, market structure is still inferred from sibling source rows."""
+
+    snapshot = StaticStrategicMartReader(
+        (
+            *_split_class_records(),
+            *_split_market_ubist_records_without_class(),
+        )
+    ).load()
+
+    structure = market_structure(snapshot, "ml_011", "ubist")
+
+    assert structure["type"] == "class_split"
+    assert structure["display_axis"] == "class_2"
 
 
 def test_facade_prefers_query_layer_for_strategic_metric() -> None:
@@ -793,6 +810,16 @@ def _split_class_records() -> tuple[MartRecord, ...]:
         _split_record(brand, float(value), periods[0], total, class_1, class_2)
         for brand, (value, class_1, class_2) in values.items()
     )
+
+
+def _split_market_ubist_records_without_class() -> tuple[MartRecord, ...]:
+    periods = ("2025-12",)
+    values = {
+        "악템라": (4_200_000_000.0,),
+        "케브자라": (3_100_000_000.0,),
+    }
+    total = [sum(series[0] for series in values.values())]
+    return tuple(_record_with_market("ml_011", brand, series, periods, total) for brand, series in values.items())
 
 
 def _split_record(brand: str, value: float, period: str, total: float, class_1: str, class_2: str) -> MartRecord:

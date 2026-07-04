@@ -14,7 +14,13 @@ def market_structure(snapshot: MartSnapshot, market: str, source: str = "ubist")
     """Return registry-style market structure metadata inferred from mart dimensions."""
 
     records = snapshot.market_records(market, source, "sales")
-    return structure_from_records(records)
+    structure = structure_from_records(records)
+    if structure:
+        return structure
+    sibling_records = tuple(
+        record for record in snapshot.records if record.ml_id == market and record.measure == "sales"
+    )
+    return structure_from_records(sibling_records)
 
 
 def structure_from_records(records: tuple[MartRecord, ...]) -> dict[str, Any]:
