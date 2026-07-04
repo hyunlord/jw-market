@@ -26,6 +26,12 @@ from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 
 ALIAS_MAPPING_PATH: Final = Path("docs/design/brand_activity/alias/ALIAS_01_MAPPING.json")
+KEYWORD_FILTER_COLUMNS: Final = {
+    "visit_location": "visit_location",
+    "specialty": "specialty",
+    "interest": "interest",
+    "prescription_evolution": "prescription_evolution",
+}
 
 
 class TopicRequestError(RuntimeError):
@@ -36,6 +42,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
     """Return selected plus competitor brands with stored topic shares."""
 
     request = _parse_topic_request(payload)
+    _validate_topic_filter_domains(request)
     try:
         brand_set = resolve_brand_set(
             view_name=request["view"],
@@ -61,12 +68,15 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             "applied_filter": brand_set.applied_filter,
             "applied_filters": brand_set.applied_filter,
             "resolved_market": _resolved_market_payload(request, brand_set),
-            "visit_location": request["visit_location"],
-            "specialty": request["specialty"],
+            "visit_location": _display_filter_value(request["visit_location"]),
+            "specialty": _display_filter_value(request["specialty"]),
+            "interest": _display_filter_value(request["interest"]),
+            "prescription_evolution": _display_filter_value(request["prescription_evolution"]),
             "period_start": request["period_start"],
             "period_end": request["period_end"],
             "top_n": request["top_n"],
             "sliced": is_sliced,
+            "applied_topic_filters": _applied_topic_filters(request),
             "topic_set_version": topic_scope.get("topic_set_version"),
             "filter_effect": {
                 "brand_set": "channel_axis_applied" if brand_set.channel_axis else "base",
@@ -108,8 +118,10 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         "market_id": market_id,
         "selected_brand": selected_brand,
         "filter": filter_payload,
-        "visit_location": _text(payload.get("visit_location")) or "전체",
-        "specialty": _text(payload.get("specialty")) or "전체",
+        "visit_location": _filter_values(_payload_or_filter_value(payload, filter_payload, "visit_location")),
+        "specialty": _filter_values(_payload_or_filter_value(payload, filter_payload, "specialty")),
+        "interest": _filter_values(_payload_or_filter_value(payload, filter_payload, "interest")),
+        "prescription_evolution": _filter_values(_payload_or_filter_value(payload, filter_payload, "prescription_evolution")),
         "period_start": _text(payload.get("period_start") or filter_payload.get("period_start")),
         "period_end": _text(payload.get("period_end") or filter_payload.get("period_end")),
         "top_n": max(1, min(top_n, 10)),
@@ -174,8 +186,10 @@ def _sliced_topic_brand_item(
         scope_id=_text(topic_scope.get("scope_id")),
         topic_set_version=_text(topic_scope.get("topic_set_version")),
         product_codes=_brand_product_codes(meta, aliases),
-        visit_location=_text(request.get("visit_location")),
-        specialty=_text(request.get("specialty")),
+        visit_locations=_filter_tuple(request.get("visit_location")),
+        specialties=_filter_tuple(request.get("specialty")),
+        interests=_filter_tuple(request.get("interest")),
+        prescription_evolutions=_filter_tuple(request.get("prescription_evolution")),
         period_start=_text(request.get("period_start")),
         period_end=_text(request.get("period_end")),
     )
@@ -247,8 +261,10 @@ def _is_sliced_request(request: dict[str, JsonValue]) -> bool:
     """Return whether keyword filters require row-topic aggregation."""
     return any(
         (
-            _text(request.get("visit_location")) not in {"", "전체"},
-            _text(request.get("specialty")) not in {"", "전체"},
+            bool(_filter_tuple(request.get("visit_location"))),
+            bool(_filter_tuple(request.get("specialty"))),
+            bool(_filter_tuple(request.get("interest"))),
+            bool(_filter_tuple(request.get("prescription_evolution"))),
             bool(_text(request.get("period_start"))),
             bool(_text(request.get("period_end"))),
         )
@@ -339,8 +355,10 @@ def _fetch_sliced_topic_rows(
     scope_id: str,
     topic_set_version: str,
     product_codes: Sequence[str],
-    visit_location: str,
-    specialty: str,
+    visit_locations: Sequence[str],
+    specialties: Sequence[str],
+    interests: Sequence[str],
+    prescription_evolutions: Sequence[str],
     period_start: str,
     period_end: str,
 ) -> list[dict[str, JsonValue]]:
@@ -353,12 +371,10 @@ def _fetch_sliced_topic_rows(
         f"k.product_name IN ({placeholders})",
     ]
     params: list[object] = [scope_id, *product_codes]
-    if visit_location and visit_location != "전체":
-        filters.append("k.visit_location = %s")
-        params.append(visit_location)
-    if specialty and specialty != "전체":
-        filters.append("k.specialty = %s")
-        params.append(specialty)
+    _append_in_filter(filters, params, "k.visit_location", visit_locations)
+    _append_in_filter(filters, params, "k.specialty", specialties)
+    _append_in_filter(filters, params, "k.interest", interests)
+    _append_in_filter(filters, params, "k.prescription_evolution", prescription_evolutions)
     if period_start:
         filters.append("k.period_ym >= %s")
         params.append(period_start)
@@ -393,6 +409,15 @@ def _fetch_sliced_topic_rows(
         ORDER BY share_pct DESC, topic_id
     """
     return db.fetch_all(sql, (*params, scope_id, topic_set_version))
+
+
+def _append_in_filter(filters: list[str], params: list[object], column: str, values: Sequence[str]) -> None:
+    """Append a parameterized IN predicate for one active keyword dimension."""
+    if not values:
+        return
+    placeholders = ", ".join(["%s"] * len(values))
+    filters.append(f"{column} IN ({placeholders})")
+    params.extend(values)
 
 
 def _ranked_topics(stored: dict[str, JsonValue] | None, *, top_n: int) -> list[dict[str, JsonValue]]:
@@ -430,6 +455,83 @@ def _brand_specific_topics(stored: dict[str, JsonValue] | None) -> list[dict[str
             }
         )
     return topics
+
+
+def _filter_values(value: JsonValue) -> tuple[str, ...]:
+    """Normalize scalar-or-list keyword filters into a deduplicated tuple."""
+    if isinstance(value, list):
+        values = [_text(item).strip() for item in value]
+    else:
+        values = [_text(value).strip()]
+    return tuple(dict.fromkeys(item for item in values if item and item != "전체"))
+
+
+def _payload_or_filter_value(payload: dict[str, JsonValue], filter_payload: dict[str, JsonValue], key: str) -> JsonValue:
+    """Prefer top-level topic filters while accepting the shared `filters` envelope."""
+    value = payload.get(key)
+    return filter_payload.get(key) if value is None else value
+
+
+def _filter_tuple(value: JsonValue) -> tuple[str, ...]:
+    """Return an internal tuple stored in a parsed request."""
+    if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+        return value
+    return _filter_values(value)
+
+
+def _display_filter_value(value: JsonValue) -> str | list[str]:
+    """Return legacy scalar display for one value and list display for multi-select."""
+    values = _filter_tuple(value)
+    if not values:
+        return "전체"
+    if len(values) == 1:
+        return values[0]
+    return list(values)
+
+
+def _applied_topic_filters(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Echo active row-topic filters in list form for portal verification."""
+    applied: dict[str, JsonValue] = {}
+    for key in KEYWORD_FILTER_COLUMNS:
+        values = _filter_tuple(request.get(key))
+        if values:
+            applied[key] = list(values)
+    period_start = _text(request.get("period_start"))
+    period_end = _text(request.get("period_end"))
+    if period_start:
+        applied["period_start"] = period_start
+    if period_end:
+        applied["period_end"] = period_end
+    return applied
+
+
+def _validate_topic_filter_domains(request: dict[str, JsonValue]) -> None:
+    """Reject unknown row-topic filter values instead of silently returning empty slices."""
+    for key, column in KEYWORD_FILTER_COLUMNS.items():
+        values = _filter_tuple(request.get(key))
+        if not values:
+            continue
+        allowed = _keyword_filter_domain(column)
+        unknown = [value for value in values if value not in allowed]
+        if unknown:
+            joined = ", ".join(unknown)
+            raise TopicRequestError(f"unsupported {key} filter value: {joined}")
+
+
+def _keyword_filter_domain(column: str) -> frozenset[str]:
+    """Return the live keyword domain for a row-topic filter column."""
+    schema = quote_identifier(config.brand_activity_db_name)
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT k.{column} AS value
+        FROM {schema}.`km_keyword_event_stage` k
+        JOIN {schema}.`row_topic_assignment` a ON a.row_id = k.id
+        WHERE k.{column} IS NOT NULL
+          AND k.{column} <> ''
+        ORDER BY k.{column}
+        """
+    )
+    return frozenset(_text(row.get("value")) for row in rows if _text(row.get("value")))
 
 
 def _filter_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
