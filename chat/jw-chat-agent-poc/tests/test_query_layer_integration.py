@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
@@ -121,6 +122,23 @@ def test_brand_metric_carries_split_market_structure_for_source_detail() -> None
     assert data["market_structure"]["type"] == "class_split"
     assert data["market_structure"]["display_axis"] == "class_2"
     fact_md = answer_fact_markdown([call], ["IQVIA NSA"])
+    assert "Class 구분 존재" in fact_md
+    assert "Class 2 기준" in fact_md
+
+
+def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:
+    """Given a split-market brand, simple metric routing still carries the registry basis."""
+
+    agent = ChatAgent(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records())),
+    )
+
+    result = agent.answer("악템라 매출 추이 알려줘")
+
+    assert result["tool_calls"][0]["render_data"]["market_structure"]["type"] == "class_split"
+    fact_md = result["markdown_response"]["fact_md"]
     assert "Class 구분 존재" in fact_md
     assert "Class 2 기준" in fact_md
 

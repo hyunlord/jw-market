@@ -12,7 +12,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     unsupported_brand_result,
 )
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
-from jw_chat_agent_poc.agentic import relevance_filter_entries, relevance_question_text, validate_metric_filters
+from jw_chat_agent_poc.agentic import FilterEntry, relevance_filter_entries, relevance_question_text, validate_metric_filters
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.orchestrator.external_notices import (
     external_unavailable_for_missing_molecule,
@@ -109,7 +109,7 @@ class ChatAgent:
             filter_plan = validate_metric_filters(metric_filters)
             effective_filters = metric_filters if filter_plan.has_effective_filter else ()
             metric_calls = [
-                self.metrics.get_brand_metric(
+                self._metric_call(
                     resolution.canonical_brand,
                     metric=metric,
                     filter_entries=effective_filters,
@@ -362,6 +362,16 @@ class ChatAgent:
             return self.metrics.get_brand_metric(brand, metric="sales")
         except (LookupError, TypeError, ValueError):
             return None
+
+    def _metric_call(self, brand: str, *, metric: str, filter_entries: tuple[FilterEntry, ...]) -> dict[str, Any]:
+        if not filter_entries and self.query_layer is not None:
+            try:
+                catalog = self.query_layer.catalog_for_brand(brand)
+                if catalog.market_structure:
+                    return self.query_layer.brand_metric(brand, metric, "latest")
+            except (LookupError, TypeError, ValueError):
+                pass
+        return self.metrics.get_brand_metric(brand, metric=metric, filter_entries=filter_entries)
 
 
 def _is_single_brand_trend_question(question: str) -> bool:
