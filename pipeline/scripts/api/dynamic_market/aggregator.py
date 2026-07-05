@@ -29,7 +29,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     quote_identifier,
 )
-from pipeline.scripts.utils.ubist_channel_mapping import UBIST_FACILITY_MAPPING, UBIST_SPECIALTY_MAPPING, parse_channel_code, raw_pair_to_channel_code
+from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,10 +126,9 @@ class MetricAggregator:
             )
         )
         monthly_series = tuple({"period": period, "market_size": value} for period, value in sorted(aggregated.monthly_totals.items()))
-        ubist_summary = self._load_ubist_channel_summary(
-            brands=brands,
+        ubist_summary = self._ubist_channel_summary_from_code_series(
+            brand_metrics=aggregated.brand_metrics,
             source=source,
-            measure=measure,
             channel_axis=channel_axis,
             view=view,
             dimension_filters=dimension_filters,
@@ -249,12 +248,12 @@ class MetricAggregator:
         source: str,
         measure: str,
         channel_axis: ChannelAxisFilter | None,
-    ) -> Iterable[dict[str, Any]]:
+        ) -> Iterable[dict[str, Any]]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        matrix_columns = general_metric_matrix_columns(channel_axis)
+        extra_columns = general_metric_extra_columns(source=source, channel_axis=channel_axis)
         sql = f"""
-            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history{matrix_columns}
+            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history{extra_columns}
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -266,12 +265,11 @@ class MetricAggregator:
             (source, measure, *scope_params),
         )
 
-    def _load_ubist_channel_summary(
+    def _ubist_channel_summary_from_code_series(
         self,
         *,
-        brands: tuple[BrandRef, ...],
+        brand_metrics: list[BrandMetric],
         source: str,
-        measure: str,
         channel_axis: ChannelAxisFilter | None,
         view: str,
         dimension_filters: tuple[DimensionFilter, ...],
@@ -285,28 +283,13 @@ class MetricAggregator:
             or not latest_period
         ):
             return _UbistChannelSummary((), ())
-        mart_db = quote_identifier(self.mart_db)
-        scope_sql, scope_params = brand_scope_predicate(brands)
-        select_sql, path_params, code_order = ubist_channel_latest_select(latest_period)
-        if not select_sql:
-            return _UbistChannelSummary((), ())
-        row = db.fetch_one(
-            f"""
-            SELECT {select_sql}
-            FROM {mart_db}.mart_general_brand_metric
-            WHERE source = %s
-              AND measure = %s
-              AND {scope_sql}
-            """,
-            (*path_params, source, measure, *scope_params),
-        )
-        if not row:
-            return _UbistChannelSummary((), ())
-        totals_by_code = {
-            code: value
-            for index, code in enumerate(code_order)
-            if (value := float(row.get(f"ch_{index}") or 0.0)) > 0.0
-        }
+        totals_by_code: dict[str, float] = {}
+        for brand in brand_metrics:
+            for code, series in brand.ubist_channel_by_code.items():
+                parsed = parse_channel_code(code)
+                if parsed is None:
+                    continue
+                totals_by_code[parsed.code] = totals_by_code.get(parsed.code, 0.0) + float(series.get(latest_period) or 0.0)
         if not totals_by_code:
             return _UbistChannelSummary((), ())
         ranked_codes = sorted(
@@ -455,45 +438,16 @@ def _history_for_row(
     return parse_history(raw_history)
 
 
-def general_metric_matrix_columns(channel_axis: ChannelAxisFilter | None) -> str:
+def general_metric_extra_columns(*, source: str, channel_axis: ChannelAxisFilter | None) -> str:
     if channel_axis is None or not channel_axis.is_active:
+        if source == "ubist":
+            return ", ubist_channel_by_code"
         return ""
     if channel_axis.source == "ubist":
         return ", channel_specialty_matrix"
     if channel_axis.source == "iqvia_nsa":
         return ", audit_code_matrix"
     return ""
-
-
-def ubist_channel_latest_select(latest_period: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-    selects: list[str] = []
-    path_params: list[str] = []
-    code_order: list[str] = []
-    paths_by_code: dict[str, list[str]] = {}
-    for facility_meta in UBIST_FACILITY_MAPPING.values():
-        for specialty_meta in UBIST_SPECIALTY_MAPPING.values():
-            for facility in facility_meta["raw_values"]:
-                for specialty in specialty_meta["raw_values"]:
-                    code = raw_pair_to_channel_code(str(facility), str(specialty))
-                    if not code:
-                        continue
-                    if code not in paths_by_code:
-                        paths_by_code[code] = []
-                    paths_by_code[code].append(_json_path(str(facility), str(specialty), latest_period))
-    for code, paths in paths_by_code.items():
-        terms = []
-        for path in paths:
-            terms.append("COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(channel_specialty_matrix, %s)) AS DECIMAL(38, 10)), 0)")
-            path_params.append(path)
-        if not terms:
-            continue
-        selects.append(f"SUM({' + '.join(terms)}) AS {quote_identifier(f'ch_{len(code_order)}')}")
-        code_order.append(code)
-    return ", ".join(selects), tuple(path_params), tuple(code_order)
-
-
-def _json_path(*parts: str) -> str:
-    return "$" + "".join(f'."{str(part).replace(chr(92), chr(92) + chr(92)).replace(chr(34), chr(92) + chr(34))}"' for part in parts)
 
 
 def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict[str, float]]) -> None:

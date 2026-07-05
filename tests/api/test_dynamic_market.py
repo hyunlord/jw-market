@@ -78,25 +78,32 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
     def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
-        assert "ubist_channel_by_code" not in sql
-        if "JSON_EXTRACT" in sql:
-            return [{"ch_2": 90.0, "ch_11": 10.0}]
         assert "audit_code_matrix" not in sql
         assert "channel_specialty_matrix" not in sql
-        return [
-            {
-                "brand_key": "a",
-                "brand_name": "A",
-                "atc4_code": "C10A1",
-                "source": "ubist",
-                "measure": "sales",
-                "unit_label": "KRW",
-                "raw_value_history": json.dumps({"2026-05": 100.0}),
-            }
-        ]
+        return []
 
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
-        yield from fake_fetch_all(sql, params)
+        calls.append(sql)
+        assert "ubist_channel_by_display" not in sql
+        assert "ubist_channel_by_code" in sql
+        assert "audit_code_matrix" not in sql
+        assert "channel_specialty_matrix" not in sql
+        yield {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-05": 100.0}),
+            "ubist_channel_by_code": json.dumps(
+                {
+                    "GH Cardio": {"2026-05": 90.0},
+                    "CL IGF": {"2026-05": 10.0},
+                },
+                ensure_ascii=False,
+            ),
+        }
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
@@ -112,6 +119,7 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
     metric_sql = calls[0]
     assert "raw_value_history" in metric_sql
     assert "channel_specialty_matrix" not in metric_sql
+    assert "ubist_channel_by_code" in metric_sql
     assert metrics.all_brands[0].channel_specialty_matrix == {}
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
     assert metrics.ubist_specialty_target_channels == (
