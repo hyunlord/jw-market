@@ -36,11 +36,10 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
     payload = service.get_csd_activity_series(
         {
             "view": "general",
-            "market_id": "C10A1",
             "selected_brand": "LIVALO",
+            "filters": {"atc4": ["C10A1"]},
             "entity_level": "company",
             "csd_channel": "GH+SHPPI",
-            "top5_basis": "activity_count",
         }
     )
 
@@ -60,7 +59,7 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
 def test_activity_series_rejects_unknown_channel() -> None:
     try:
         service.get_csd_activity_series(
-            {"view": "general", "market_id": "C10A1", "selected_brand": "LIVALO", "csd_channel": "BAD"}
+            {"view": "general", "selected_brand": "LIVALO", "filters": {"atc4": ["C10A1"]}, "csd_channel": "BAD"}
         )
     except service.CsdActivitySeriesInputError as exc:
         assert "unsupported csd_channel" in str(exc)
@@ -68,7 +67,7 @@ def test_activity_series_rejects_unknown_channel() -> None:
         raise AssertionError("expected CsdActivitySeriesInputError")
 
 
-def test_activity_series_top5_basis_changes_competitor_order(monkeypatch) -> None:
+def test_activity_series_ignores_stale_top5_basis_and_uses_iqvia_order(monkeypatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
         if "SELECT DISTINCT period_ym" in sql:
             return [{"period_ym": period} for period in _months()]
@@ -81,16 +80,19 @@ def test_activity_series_top5_basis_changes_competitor_order(monkeypatch) -> Non
     monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
 
-    csd_market = service.get_csd_activity_series(_request(top5_basis="csd_market", period={"start": "2025-Q4", "end": "2025-Q4"}))
-    activity_count = service.get_csd_activity_series(_request(top5_basis="activity_count", period={"start": "2025-Q4", "end": "2025-Q4"}))
+    defaulted = service.get_csd_activity_series(_request(period={"start": "2025-Q4", "end": "2025-Q4"}))
+    stale_field = service.get_csd_activity_series(
+        {**_request(period={"start": "2025-Q4", "end": "2025-Q4"}), "top5_basis": "activity_count"}
+    )
 
-    assert csd_market is not None
-    assert activity_count is not None
-    assert [entity["key"] for entity in csd_market["entities"][:3]] == ["LIVALO", "C", "A"]
-    assert [entity["key"] for entity in activity_count["entities"][:3]] == ["LIVALO", "A", "LIVALOZET"]
+    assert defaulted is not None
+    assert stale_field is not None
+    assert [entity["key"] for entity in defaulted["entities"][:3]] == ["LIVALO", "A", "B"]
+    assert [entity["key"] for entity in stale_field["entities"][:3]] == ["LIVALO", "A", "B"]
+    assert "top5_basis" not in defaulted["applied"]
 
 
-def test_activity_series_ignores_audit_code_for_csd_based_top5(monkeypatch) -> None:
+def test_activity_series_passes_audit_code_to_iqvia_brand_resolver(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
@@ -112,7 +114,6 @@ def test_activity_series_ignores_audit_code_for_csd_based_top5(monkeypatch) -> N
     payload = service.get_csd_activity_series(
         {
             "view": "general",
-            "market_id": "C10A1",
             "selected_brand": "LIVALO",
             "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["BAD"]}}},
             "top5_basis": "activity_count",
@@ -120,7 +121,7 @@ def test_activity_series_ignores_audit_code_for_csd_based_top5(monkeypatch) -> N
     )
 
     assert payload is not None
-    assert captured["filter_payload"] == {"atc4": ["C10A1"]}
+    assert captured["filter_payload"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["BAD"]}}}
 
 
 def test_requested_quarters_defaults_to_one_year_and_clamps_to_three_years() -> None:
@@ -153,7 +154,7 @@ def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "LIVALO",
-            "filters": {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}},
+            "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}},
             "entity_level": "brand",
             "csd_channel": "CPPI",
             "top5_basis": "csd_market",
@@ -163,7 +164,46 @@ def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"data": expected}
     assert captured["payload"]["csd_channel"] == "CPPI"
-    assert captured["payload"]["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert "market_id" not in captured["payload"]
+    assert "top5_basis" not in captured["payload"]
+    assert captured["payload"]["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+
+
+def test_brand_activity_openapi_hides_removed_request_fields() -> None:
+    app = FastAPI()
+    app.include_router(brand_activity.router)
+
+    schemas = app.openapi()["components"]["schemas"]
+    request_names = (
+        "CsdTimeseriesRequest",
+        "BrandActivityTopicsRequest",
+        "BrandActivityInterestRxRequest",
+        "CsdActivitySeriesRequest",
+    )
+    for name in request_names:
+        assert "market_id" not in schemas[name]["properties"]
+    assert "top5_basis" not in schemas["CsdActivitySeriesRequest"]["properties"]
+
+
+def test_brand_activity_request_models_ignore_stale_market_id_and_top5_basis() -> None:
+    common = {
+        "view": "general",
+        "market_id": "STALE",
+        "selected_brand": "LIVALO",
+        "filters": {"atc4": ["C10A1"]},
+        "top5_basis": "activity_count",
+    }
+    models = (
+        brand_activity.CsdTimeseriesRequest,
+        brand_activity.BrandActivityTopicsRequest,
+        brand_activity.BrandActivityInterestRxRequest,
+        brand_activity.CsdActivitySeriesRequest,
+    )
+
+    for model in models:
+        dumped = model(**common).model_dump()
+        assert "market_id" not in dumped
+        assert "top5_basis" not in dumped
 
 
 def test_csd_activity_series_service_uses_select_only_sql() -> None:
@@ -173,14 +213,13 @@ def test_csd_activity_series_service_uses_select_only_sql() -> None:
     assert not any(token in source.upper() for token in forbidden)
 
 
-def _request(*, top5_basis: str, period: dict[str, str]) -> dict[str, Any]:
+def _request(*, period: dict[str, str]) -> dict[str, Any]:
     return {
         "view": "general",
-        "market_id": "C10A1",
         "selected_brand": "LIVALO",
+        "filters": {"atc4": ["C10A1"]},
         "entity_level": "brand",
         "csd_channel": "TOTAL",
-        "top5_basis": top5_basis,
         "period": period,
     }
 

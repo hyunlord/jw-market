@@ -98,13 +98,15 @@ def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
         },
     )
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
-    assert captured["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert "market_id" not in captured
+    assert captured["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
 def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
@@ -122,6 +124,7 @@ def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "visit_location": ["의원", "병원"],
             "specialty": ["Cardio"],
             "interest": ["VERY USEFUL", "SOMEWHAT USEFUL"],
@@ -130,6 +133,7 @@ def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
+    assert "market_id" not in captured
     assert captured["visit_location"] == ["의원", "병원"]
     assert captured["specialty"] == ["Cardio"]
     assert captured["interest"] == ["VERY USEFUL", "SOMEWHAT USEFUL"]
@@ -141,7 +145,7 @@ def test_post_topic_service_matches_topics_by_product_code(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
     monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: [_post_topic_row()])
 
-    payload = topic_matrix.get_topic_brand_payload({"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "top_n": 1})
+    payload = topic_matrix.get_topic_brand_payload({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}, "top_n": 1})
 
     assert payload is not None
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
@@ -179,6 +183,7 @@ def test_post_topic_service_slices_topics_from_row_assignments(monkeypatch) -> N
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "visit_location": "의원",
             "specialty": "내과",
             "period_start": "2026-01",
@@ -239,6 +244,7 @@ def test_post_topic_service_accepts_list_filters_as_or_with_axis_and(monkeypatch
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "visit_location": "의원",
             "specialty": ["내과", "순환기"],
             "interest": ["VERY USEFUL", "SOMEWHAT USEFUL"],
@@ -271,6 +277,7 @@ def test_post_topic_service_treats_empty_filter_lists_as_unsliced(monkeypatch) -
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "visit_location": [],
             "specialty": [],
             "interest": [],
@@ -287,9 +294,8 @@ def test_post_topic_service_reads_keyword_filters_from_filters_envelope(monkeypa
     parsed = topic_matrix._parse_topic_request(
         {
             "view": "general",
-            "market_id": "C10A1",
             "selected_brand": "리바로",
-            "filters": {"specialty": ["Cardio", "Nephro"], "interest": "VERY USEFUL"},
+            "filters": {"atc4": ["C10A1"], "specialty": ["Cardio", "Nephro"], "interest": "VERY USEFUL"},
         }
     )
 
@@ -304,8 +310,8 @@ def test_post_topic_service_rejects_unknown_filter_values(monkeypatch) -> None:
         topic_matrix.get_topic_brand_payload(
             {
                 "view": "general",
-                "market_id": "C10A1",
                 "selected_brand": "리바로",
+                "filters": {"atc4": ["C10A1"]},
                 "specialty": ["Unknown"],
             }
         )

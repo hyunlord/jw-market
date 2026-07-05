@@ -85,16 +85,18 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
         },
     )
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
-    assert captured["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert "market_id" not in captured
+    assert captured["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
-def test_csd_timeseries_route_returns_null_for_missing_market(monkeypatch) -> None:
+def test_csd_timeseries_route_ignores_stale_market_id_input(monkeypatch) -> None:
     monkeypatch.setattr(brand_activity, "get_csd_timeseries", lambda _payload: None)
     app = FastAPI()
     app.include_router(brand_activity.router)

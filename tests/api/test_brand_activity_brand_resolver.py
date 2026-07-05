@@ -5,6 +5,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandCandidate,
     BrandSetInputError,
     _brand_candidates,
+    _ml_id_for_brand,
     _select_choices,
     validate_audit_code_axis,
 )
@@ -76,6 +77,14 @@ def test_unknown_audit_code_is_rejected_from_dynamic_matrix_keys() -> None:
         assert "BAD" in str(exc)
     else:
         raise AssertionError("unknown audit_code must be rejected")
+
+
+def test_ambiguous_ml_brand_auto_selects_first_sorted_market(monkeypatch) -> None:
+    rows = [{"ml_id": "ml_010"}, {"ml_id": "ml_002"}, {"ml_id": "ml_006"}]
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", lambda *_args, **_kwargs: rows)
+
+    assert _ml_id_for_brand("가드렛") == "ml_002"
+    assert _ml_id_for_brand("가드렛") == "ml_002"
 
 
 def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> None:
