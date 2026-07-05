@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -183,6 +184,32 @@ def _dedupe_brands(brands: Sequence[str]) -> list[str]:
     return deduped
 
 
+def align_stage_evidence_basis(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy whose stage evidence items use the portal `basis` contract.
+
+    The portal renders evidence text from `basis`, while historical Agent2
+    stage payloads emitted the same value under `source`.  This intentionally
+    touches only the four stage-level `evidence[]` arrays; top-level
+    `evidence_pool` and other `source` fields use separate meanings.
+    """
+
+    aligned = copy.deepcopy(payload)
+    for stage in STAGES:
+        stage_payload = aligned.get(stage)
+        if not isinstance(stage_payload, dict):
+            continue
+        evidence = stage_payload.get("evidence")
+        if not isinstance(evidence, list):
+            continue
+        for item in evidence:
+            if not isinstance(item, dict) or "source" not in item:
+                continue
+            if "basis" not in item:
+                item["basis"] = item["source"]
+            item.pop("source", None)
+    return aligned
+
+
 def select_latest_runs(conn: pymysql.connections.Connection, brands: Sequence[str]) -> dict[str, SelectedRun]:
     brands = _dedupe_brands(brands)
     placeholders = ",".join(["%s"] * len(brands))
@@ -294,7 +321,7 @@ def build_ai_analysis(run: SelectedRun, parsed: dict[str, Any]) -> dict[str, Any
     }
     if run.brand in WEAK_NARRATIVE_BRANDS:
         ai_analysis["note"] = WEAK_NARRATIVE_BRANDS[run.brand]
-    return ai_analysis
+    return align_stage_evidence_basis(ai_analysis)
 
 
 def insert_ai_analysis(
