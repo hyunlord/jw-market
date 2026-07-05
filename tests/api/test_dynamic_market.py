@@ -79,19 +79,10 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
         assert "ubist_channel_by_code" not in sql
+        if "JSON_EXTRACT" in sql:
+            return [{"ch_2": 90.0, "ch_11": 10.0}]
         assert "audit_code_matrix" not in sql
-        if "channel_specialty_matrix" in sql:
-            return [
-                {
-                    "channel_specialty_matrix": json.dumps(
-                        {
-                            "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}},
-                            "의원": {"분리되지 않은 내과": {"2026-05": 10.0}},
-                        },
-                        ensure_ascii=False,
-                    )
-                }
-            ]
+        assert "channel_specialty_matrix" not in sql
         return [
             {
                 "brand_key": "a",

@@ -29,7 +29,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     quote_identifier,
 )
-from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+from pipeline.scripts.utils.ubist_channel_mapping import UBIST_FACILITY_MAPPING, UBIST_SPECIALTY_MAPPING, parse_channel_code, raw_pair_to_channel_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +133,7 @@ class MetricAggregator:
             channel_axis=channel_axis,
             view=view,
             dimension_filters=dimension_filters,
+            latest_period=max(aggregated.monthly_totals) if aggregated.monthly_totals else None,
         )
         return AggregatedMetrics(
             source=source,
@@ -274,36 +275,43 @@ class MetricAggregator:
         channel_axis: ChannelAxisFilter | None,
         view: str,
         dimension_filters: tuple[DimensionFilter, ...],
+        latest_period: str | None,
     ) -> _UbistChannelSummary:
         if (
             view != "general"
             or dimension_filters
             or source != "ubist"
             or (channel_axis is not None and channel_axis.is_active)
+            or not latest_period
         ):
             return _UbistChannelSummary((), ())
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        totals_by_code_period: dict[str, dict[str, float]] = {}
-        rows = db.iter_rows(
+        select_sql, path_params, code_order = ubist_channel_latest_select(latest_period)
+        if not select_sql:
+            return _UbistChannelSummary((), ())
+        row = db.fetch_one(
             f"""
-            SELECT channel_specialty_matrix
+            SELECT {select_sql}
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
               AND {scope_sql}
-            ORDER BY brand_name, brand_key
             """,
-            (source, measure, *scope_params),
+            (*path_params, source, measure, *scope_params),
         )
-        for row in rows:
-            collect_ubist_channel_totals(row.get("channel_specialty_matrix"), totals_by_code_period)
-        if not totals_by_code_period:
+        if not row:
             return _UbistChannelSummary((), ())
-        latest_period = max(period for series in totals_by_code_period.values() for period in series)
+        totals_by_code = {
+            code: value
+            for index, code in enumerate(code_order)
+            if (value := float(row.get(f"ch_{index}") or 0.0)) > 0.0
+        }
+        if not totals_by_code:
+            return _UbistChannelSummary((), ())
         ranked_codes = sorted(
-            totals_by_code_period,
-            key=lambda code: totals_by_code_period[code].get(latest_period, 0.0),
+            totals_by_code,
+            key=lambda code: totals_by_code[code],
             reverse=True,
         )
         channels = []
@@ -455,6 +463,32 @@ def general_metric_matrix_columns(channel_axis: ChannelAxisFilter | None) -> str
     if channel_axis.source == "iqvia_nsa":
         return ", audit_code_matrix"
     return ""
+
+
+def ubist_channel_latest_select(latest_period: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    selects: list[str] = []
+    path_params: list[str] = []
+    code_order: list[str] = []
+    for facility_abbr in UBIST_FACILITY_MAPPING:
+        for specialty_abbr in UBIST_SPECIALTY_MAPPING:
+            code = f"{facility_abbr} {specialty_abbr}"
+            parsed = parse_channel_code(code)
+            if parsed is None:
+                continue
+            terms = []
+            for facility in parsed.facility_raw_values:
+                for specialty in parsed.specialty_raw_values:
+                    terms.append("COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(channel_specialty_matrix, %s)) AS DECIMAL(38, 10)), 0)")
+                    path_params.append(_json_path(facility, specialty, latest_period))
+            if not terms:
+                continue
+            selects.append(f"SUM({' + '.join(terms)}) AS {quote_identifier(f'ch_{len(code_order)}')}")
+            code_order.append(parsed.code)
+    return ", ".join(selects), tuple(path_params), tuple(code_order)
+
+
+def _json_path(*parts: str) -> str:
+    return "$" + "".join(f'."{str(part).replace(chr(92), chr(92) + chr(92)).replace(chr(34), chr(92) + chr(34))}"' for part in parts)
 
 
 def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict[str, float]]) -> None:
