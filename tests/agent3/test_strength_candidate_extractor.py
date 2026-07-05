@@ -198,6 +198,30 @@ def test_tiny_currency_display_includes_won_unit_alias() -> None:
     assert "915원" in candidates[0]["display_number_aliases"]["delta_abs"]
 
 
+def test_currency_display_includes_truncated_manwon_alias() -> None:
+    row = MetricRow(
+        brand_name="절삭만원",
+        brand_key="truncated-manwon",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 100_000_000.0, "2026-04": 163_077_632.0},
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=10.0,
+            min_delta_pct=10.0,
+            min_recent_value=20.0,
+            min_contribution_pct=10.0,
+        ),
+    )
+
+    assert {"6,307만원", "6,308만원", "63,077,632원"}.issubset(
+        candidates[0]["display_number_aliases"]["delta_abs"]
+    )
+
+
 def test_tiny_percent_display_keeps_two_significant_digits() -> None:
     row = MetricRow(
         brand_name="극소퍼센트",

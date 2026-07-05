@@ -33,6 +33,8 @@ def display_aliases(key: str, value: float | None) -> list[str]:
     aliases.add(f"{value:,.0f}원")
     if abs(value) >= 10_000:
         aliases.add(f"{value / 10_000:,.0f}만원")
+        truncated_manwon = math.trunc(value / 10_000)
+        aliases.add(f"{truncated_manwon:,.0f}만원")
     if abs(value) >= 100_000_000:
         aliases.add(f"{value / 100_000_000:.1f}억원")
     return sorted(alias for alias in aliases if alias)
