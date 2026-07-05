@@ -62,6 +62,9 @@ env/
 *.egg-info/
 .pytest_cache/
 
+# Crawl ops runtime bytecode
+crawl/ops/**/__pycache__/
+
 # Logs and temporary files
 *.log
 *.bak
