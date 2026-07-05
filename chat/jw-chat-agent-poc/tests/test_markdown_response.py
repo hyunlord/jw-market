@@ -3295,6 +3295,98 @@ def test_blocked_metric_values_hide_failed_zero_from_fact_and_data() -> None:
     assert "23/26" not in combined
 
 
+def test_genos_markdown_appends_blocked_metric_notice_once(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="악템라",
+        calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "악템라",
+                    "metric": "sales",
+                    "period": "2025-Q4",
+                    "requested_period": "2026-04",
+                    "fallback_period": "2025-Q4",
+                    "sales_억원": 48.19,
+                    "ms_recent_pct": 4.34,
+                    "rank": 8,
+                    "total_brands_in_market": 26,
+                    "source_status": "OK",
+                    "blocked_metric_values": [
+                        {
+                            "period": "2026-04",
+                            "status": "query_failed",
+                            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["cache"],
+    )
+
+    def stream_chat(_self: GenosClient, _messages: list[dict[str, str]]):
+        yield "악템라는 사용 가능한 최신 기준 2025-Q4 매출 48.19억원, MS 4.34%입니다."
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
+
+    answer = "".join(GenosClient(token="dummy-token").stream_answer("악템라 2026-04 매출 알려줘", {"markdown_response": response.to_dict()}))
+
+    notice = "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다."
+    assert answer.count(notice) == 1
+    assert answer.rfind("## 출처") > answer.rfind(notice)
+    assert "0.00억원" not in answer
+    assert "0.00%" not in answer
+    assert "23/26" not in answer
+
+
+def test_genos_markdown_appends_blocked_metric_notice_from_data_md(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="악템라",
+        calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "악템라",
+                    "metric": "sales",
+                    "period": "2025-Q4",
+                    "requested_period": "2026-04",
+                    "fallback_period": "2025-Q4",
+                    "sales_억원": 48.19,
+                    "ms_recent_pct": 4.34,
+                    "rank": 8,
+                    "total_brands_in_market": 26,
+                    "source_status": "OK",
+                    "blocked_metric_values": [
+                        {
+                            "period": "2026-04",
+                            "status": "query_failed",
+                            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["cache"],
+    )
+    payload = response.to_dict()
+    payload["fact_md"] = "### 출처 유형 fact\n| 출처 |\n| --- |\n| UBIST |\n"
+
+    def stream_chat(_self: GenosClient, _messages: list[dict[str, str]]):
+        yield "악템라는 사용 가능한 최신 기준 2025-Q4 매출 48.19억원, MS 4.34%입니다."
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
+
+    answer = "".join(GenosClient(token="dummy-token").stream_answer("악템라 2026-04 매출 알려줘", {"markdown_response": payload}))
+
+    notice = "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다."
+    assert answer.count(notice) == 1
+    assert "0.00억원" not in answer
+    assert "23/26" not in answer
+
+
 def test_genos_markdown_strips_news_only_metric_claims(monkeypatch) -> None:
     response = MarkdownResponseBuilder().build(
         brand="리바로",

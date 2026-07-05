@@ -215,13 +215,10 @@ def _value_blocked(status: str) -> bool:
 
 
 def _blocked_period_message(period: str, status: str) -> dict[str, str]:
-    reason = "조회 실패/시장 매핑 불완전"
-    if status in {"missing", "incomplete_split"}:
-        reason = "시장 매핑 불완전"
     return {
         "period": period,
         "status": status,
-        "message": f"{period} 값은 {reason}으로 표시하지 않습니다.",
+        "message": f"{period} 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
     }
 
 

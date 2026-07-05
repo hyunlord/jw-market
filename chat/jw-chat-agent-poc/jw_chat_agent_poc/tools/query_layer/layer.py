@@ -23,6 +23,7 @@ from jw_chat_agent_poc.tools.query_layer.market_structure import market_structur
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, bounded_limit, level_name, parse_spec, validate_spec
 from jw_chat_agent_poc.tools.query_layer.store import (
     MariaDbStrategicMartReader,
+    MartRecord,
     MartSnapshot,
     StrategicMartReader,
     TtlStrategicMartStore,
@@ -72,16 +73,26 @@ class StrategicQueryLayer:
         source = snapshot.source_for_market(market)
         record = snapshot.record(market, brand, source)
         requested_period = _actual_period(snapshot, market, source, period)
-        actual_period = snapshot.latest_valid_period(record) if period in {"", "latest"} else requested_period
-        if actual_period is None:
-            return _failed_metric_call(brand, metric, requested_period, source)
-        if snapshot.value_or_none(record, actual_period) is None:
-            return _failed_metric_call(brand, metric, actual_period, source, snapshot.value_status(record, actual_period))
-        render_data = metric_render_data(snapshot, market, source, record, metric, actual_period)
+        actual_period = _display_period(snapshot, record, requested_period, period)
         structure = market_structure(snapshot, market, source)
+        if actual_period is None:
+            return _failed_metric_call(brand, metric, requested_period, source, market=market, market_structure=structure)
+        if snapshot.value_or_none(record, actual_period) is None:
+            return _failed_metric_call(
+                brand,
+                metric,
+                actual_period,
+                source,
+                snapshot.value_status(record, actual_period),
+                market=market,
+                market_structure=structure,
+            )
+        render_data = metric_render_data(snapshot, market, source, record, metric, actual_period)
         if structure:
             render_data["market_structure"] = structure
         if actual_period != requested_period:
+            render_data["requested_period"] = requested_period
+            render_data["fallback_period"] = actual_period
             render_data["blocked_metric_values"] = [_blocked_period_message(requested_period, snapshot.value_status(record, requested_period))]
         rows = result_rows_from_render_data(render_data)
         result_id = self._results.put(rows)
@@ -322,31 +333,56 @@ def _actual_period(snapshot: MartSnapshot, market: str, source: str, period: str
     return period
 
 
+def _display_period(snapshot: MartSnapshot, record: MartRecord, requested_period: str, raw_period: str) -> str | None:
+    if raw_period in {"", "latest"}:
+        return snapshot.latest_valid_period(record)
+    if snapshot.value_or_none(record, requested_period) is not None:
+        return requested_period
+    previous = tuple(
+        period
+        for period in sorted(record.metric_history)
+        if period < requested_period and snapshot.value_or_none(record, period) is not None
+    )
+    return previous[-1] if previous else None
+
+
 def _blocked_period_message(period: str, status: str) -> dict[str, str]:
-    reason = "조회 실패/시장 매핑 불완전"
-    if status in {"missing", "incomplete_split"}:
-        reason = "시장 매핑 불완전"
     return {
         "period": period,
         "status": status,
-        "message": f"{period} 값은 {reason}으로 표시하지 않습니다.",
+        "message": f"{period} 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
     }
 
 
-def _failed_metric_call(brand: str, metric: str, period: str, source: str, status: str = "missing") -> dict[str, Any]:
+def _failed_metric_call(
+    brand: str,
+    metric: str,
+    period: str,
+    source: str,
+    status: str = "missing",
+    *,
+    market: str | None = None,
+    market_structure: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     message = f"{period} 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다."
+    render_data: dict[str, Any] = {
+        "brand": brand,
+        "metric": metric_name(metric),
+        "period": period,
+        "status": "query_failed",
+        "message": message,
+        "source_status": status,
+    }
+    if market:
+        render_data["market_id"] = market
+        render_data["market_name"] = market
+    if market_structure:
+        render_data["market_structure"] = market_structure
     return {
         "source": source_label(source),
         "tool": "query_failed",
         "summary_text": message,
-        "render_data": {
-            "brand": brand,
-            "metric": metric_name(metric),
-            "period": period,
-            "status": "query_failed",
-            "message": message,
-            "source_status": status,
-        },
+        "render_data": render_data,
     }
 
 

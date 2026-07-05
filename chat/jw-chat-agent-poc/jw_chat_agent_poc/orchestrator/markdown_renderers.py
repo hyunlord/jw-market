@@ -74,7 +74,7 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
         rows.append(("기준 브랜드", anchor_brand))
     period = data.get("period")
     if period:
-        rows.append(("기간", period))
+        rows.append((_period_row_label(data), period))
     sales = eok_value(data.get("sales_억원"), data.get("sales_krw"))
     if sales:
         rows.append(("매출", sales))
@@ -114,6 +114,15 @@ def _blocked_metric_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
         if message:
             rows.append(("조회 차단", message))
     return rows
+
+
+def _period_row_label(data: dict[str, Any]) -> str:
+    requested_period = str(data.get("requested_period") or "").strip()
+    fallback_period = str(data.get("fallback_period") or "").strip()
+    period = str(data.get("period") or "").strip()
+    if requested_period and fallback_period and fallback_period == period and requested_period != fallback_period:
+        return "사용 가능한 최신 기준"
+    return "기간"
 
 
 def portfolio_decline_md(data: dict[str, Any]) -> str:

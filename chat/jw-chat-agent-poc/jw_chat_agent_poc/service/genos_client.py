@@ -507,6 +507,43 @@ def _append_uploaded_file_source(answer: str, file_context: str) -> str:
     return cleanup_markdown_answer("\n\n".join((answer, source_block)))
 
 
+def _append_blocked_metric_notices(answer: str, fact_md: str) -> str:
+    rows = _blocked_metric_notice_lines(fact_md)
+    missing = tuple(line for line in rows if line not in answer)
+    if not missing:
+        return answer
+    block = "\n".join(("- 조회 실패값 차단:", *missing))
+    marker = re.search(r"\n##\s*(?:출처|처리\s*시간)\b", answer)
+    if marker:
+        before = answer[: marker.start()].rstrip()
+        after = answer[marker.start() :].lstrip()
+        return cleanup_markdown_answer(f"{before}\n\n{block}\n\n{after}")
+    return cleanup_markdown_answer("\n\n".join((answer, block)))
+
+
+def append_blocked_metric_notices_from_markdown_response(answer: str, markdown_response: dict[str, Any] | None) -> str:
+    if not isinstance(markdown_response, dict):
+        return answer
+    return _append_blocked_metric_notices(answer, _fact_lookup_markdown(markdown_response))
+
+
+def _blocked_metric_notice_lines(fact_md: str) -> tuple[str, ...]:
+    rows: list[str] = []
+    seen_messages: set[str] = set()
+    for raw_line in fact_md.splitlines():
+        stripped = raw_line.strip()
+        if not stripped.startswith("|") or "---" in stripped:
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2 or cells[0] != "조회 차단":
+            continue
+        message = cells[1]
+        if message and message not in seen_messages:
+            seen_messages.add(message)
+            rows.append(f"- {message}")
+    return tuple(rows)
+
+
 def _append_web_search_section(answer: str, tool_calls: list[dict[str, Any]] | None) -> str:
     section = _web_search_unverified_section(tool_calls)
     if not section:
@@ -725,6 +762,7 @@ class GenosClient:
         answer = dedupe_brand_metric_sentence(answer, fact_md)
         answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
+        answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         answer = append_deterministic_source_block(answer, fact_md)
         answer = _append_uploaded_file_source(answer, file_context)
         answer = apply_common_unavailable_response(question, answer, markdown_response)

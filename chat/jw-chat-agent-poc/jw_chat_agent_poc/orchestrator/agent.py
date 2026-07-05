@@ -402,11 +402,15 @@ class ChatAgent:
             return None
 
     def _metric_call(self, brand: str, *, metric: str, filter_entries: tuple[FilterEntry, ...]) -> dict[str, Any]:
-        if not filter_entries and self.query_layer is not None:
+        if self.query_layer is not None:
             try:
                 catalog = self.query_layer.catalog_for_brand(brand)
                 if catalog.market_structure:
-                    return self.query_layer.brand_metric(brand, metric, "latest")
+                    period = _metric_filter_period(filter_entries)
+                    if period is not None:
+                        return self.query_layer.brand_metric(brand, metric, period)
+                    if not filter_entries:
+                        return self.query_layer.brand_metric(brand, metric, "latest")
             except (LookupError, TypeError, ValueError):
                 pass
         return self.metrics.get_brand_metric(brand, metric=metric, filter_entries=filter_entries)
@@ -417,6 +421,19 @@ def _is_single_brand_trend_question(question: str) -> bool:
         return False
     widening_tokens = ("경쟁", "구도", "상위", "위협", "시장 영향", "시장 탓", "시장 문제", "고유", "아토젯", "비교", "같이", "랑")
     return not any(token in question for token in widening_tokens)
+
+
+def _metric_filter_period(filter_entries: tuple[FilterEntry, ...]) -> str | None:
+    if not filter_entries:
+        return None
+    plan = validate_metric_filters(filter_entries)
+    if plan.channel is not None or plan.level is not None or plan.blocks_results:
+        return None
+    if plan.period_month is not None:
+        return plan.period_month
+    if plan.period_year is not None:
+        return str(plan.period_year)
+    return None
 
 
 def _single_brand_focus_question(question: str) -> bool:

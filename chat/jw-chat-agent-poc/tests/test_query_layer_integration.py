@@ -143,6 +143,56 @@ def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:
     assert "Class 2 기준" in fact_md
 
 
+def test_chat_agent_split_metric_period_filter_uses_query_layer_fallback() -> None:
+    """Given a split-market period filter fails, the standard route still surfaces structure and fallback facts."""
+
+    agent = ChatAgent(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(
+                (
+                    _split_record_with_status_history(
+                        "악템라",
+                        {
+                            "2025-Q4": {"raw_value": 4_819_000_000.0, "ms": 4.34, "source_status": "OK"},
+                            "2026-04": {"raw_value": 0.0, "ms": 0.0, "source_status": "query_failed"},
+                        },
+                        class_1="Biologic",
+                        class_2="IL-6",
+                    ),
+                    _split_record_with_status_history(
+                        "케브자라",
+                        {
+                            "2025-Q4": {"raw_value": 3_000_000_000.0, "ms": 2.70, "source_status": "OK"},
+                            "2026-04": {"raw_value": 10_000_000_000.0, "ms": 100.0, "source_status": "OK"},
+                        },
+                        class_1="Biologic",
+                        class_2="IL-6",
+                    ),
+                )
+            )
+        ),
+    )
+
+    result = agent.answer("악템라 2026-04 매출 알려줘")
+    call = result["tool_calls"][0]
+    data = call["render_data"]
+    fact_md = result["markdown_response"]["fact_md"]
+
+    assert call["source"] == "IQVIA"
+    assert data["period"] == "2025-Q4"
+    assert data["requested_period"] == "2026-04"
+    assert data["fallback_period"] == "2025-Q4"
+    assert data["market_structure"]["type"] == "class_split"
+    assert "Class 구분 존재" in fact_md
+    assert "Class 2 기준" in fact_md
+    assert "사용 가능한 최신 기준" in fact_md
+    assert fact_md.count("2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.") == 1
+    assert "2026-04 매출 0.00억원" not in fact_md
+    assert "2026-04 MS 0.00%" not in fact_md
+
+
 def test_facade_prefers_query_layer_for_strategic_metric() -> None:
     """Given the query layer is available, get_metric returns mart-derived facts."""
 
@@ -180,7 +230,7 @@ def test_query_layer_blocks_failed_latest_zero_metric() -> None:
                     "악템라",
                     {
                         "2025-Q4": {"raw_value": 4_819_000_000.0, "ms": 4.34, "source_status": "OK"},
-                        "2026-04": {"raw_value": 0.0, "ms": 0.0, "source_status": "query_failed"},
+                        "2026-04": {"raw_value": 0.0, "ms": 0.0, "source_status": "mapping_failed"},
                     },
                     source="iqvia_nsa",
                 ),
@@ -207,6 +257,68 @@ def test_query_layer_blocks_failed_latest_zero_metric() -> None:
     assert "2026-04 값은 조회 실패" in data["blocked_metric_values"][0]["message"]
     assert "0.00억원" not in result["summary_text"]
     assert "MS 0.00%" not in result["summary_text"]
+
+
+def test_query_layer_falls_back_from_failed_requested_period_and_keeps_split_structure() -> None:
+    """Given a requested period failed, the valid prior period and market structure remain surfaceable."""
+
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _split_record_with_status_history(
+                    "악템라",
+                    {
+                        "2025-Q3": {"raw_value": 5_823_000_000.0, "ms": 5.12, "source_status": "OK"},
+                        "2025-Q4": {"raw_value": 4_819_000_000.0, "ms": 4.34, "source_status": "OK"},
+                        "2026-04": {"raw_value": 0.0, "ms": 0.0, "source_status": "mapping_failed"},
+                    },
+                    class_1="Biologic",
+                    class_2="IL-6",
+                ),
+                _split_record_with_status_history(
+                    "경쟁품",
+                    {
+                        "2025-Q3": {"raw_value": 107_887_000_000.0, "ms": 94.88, "source_status": "OK"},
+                        "2025-Q4": {"raw_value": 106_239_000_000.0, "ms": 95.66, "source_status": "OK"},
+                        "2026-04": {"raw_value": 120_000_000_000.0, "ms": 100.0, "source_status": "OK"},
+                    },
+                    class_1="Biologic",
+                    class_2="IL-6",
+                ),
+            )
+        )
+    )
+
+    result = layer.brand_metric("악템라", "sales", "2026-04")
+    data = result["render_data"]
+
+    assert result["tool"] == "get_brand_metric"
+    assert data["period"] == "2025-Q4"
+    assert data["requested_period"] == "2026-04"
+    assert data["source_status"] == "OK"
+    assert data["sales_억원"] == 48.19
+    assert data["ms_recent_pct"] == 4.34
+    assert data["market_structure"]["type"] == "class_split"
+    assert data["market_structure"]["display_axis"] == "class_2"
+    assert data["blocked_metric_values"] == [
+        {
+            "period": "2026-04",
+            "status": "mapping_failed",
+            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
+        }
+    ]
+    series_periods = [item["period"] for item in data["brand_value_series_10pt"]]
+    assert series_periods == ["2025-Q3", "2025-Q4"]
+    assert "0.00억원" not in result["summary_text"]
+    assert "MS 0.00%" not in result["summary_text"]
+    fact_md = answer_fact_markdown([result], [result["source"]])
+    assert "Class 구분 존재" in fact_md
+    assert "Class 2 기준" in fact_md
+    assert "사용 가능한 최신 기준" in fact_md
+    assert "2025-Q4" in fact_md
+    assert fact_md.count("2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.") == 1
+    assert "2026-04 매출 0.00억원" not in fact_md
+    assert "2026-04 MS 0.00%" not in fact_md
 
 
 def test_query_layer_keeps_status_ok_true_zero_metric() -> None:
@@ -857,6 +969,31 @@ def _split_market_ubist_records_without_class() -> tuple[MartRecord, ...]:
 
 def _split_record(brand: str, value: float, period: str, total: float, class_1: str, class_2: str) -> MartRecord:
     history = {period: {"raw_value": value, "ms": value / total * 100, "source_status": "OK"}}
+    return MartRecord(
+        ml_id="ml_011",
+        brand_name=brand,
+        source="iqvia_nsa",
+        measure="sales",
+        metric_history=history,
+        channel_data={},
+        specialty_data={},
+        dimension_data={"class_1": {class_1: history}, "class_2": {class_2: history}},
+        by_dimension={
+            "company": "테스트제약",
+            "molecule": f"{brand}성분",
+            "class_1": class_1,
+            "class_2": class_2,
+        },
+    )
+
+
+def _split_record_with_status_history(
+    brand: str,
+    history: dict[str, dict[str, Any]],
+    *,
+    class_1: str,
+    class_2: str,
+) -> MartRecord:
     return MartRecord(
         ml_id="ml_011",
         brand_name=brand,

@@ -31,7 +31,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 )
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
-from jw_chat_agent_poc.service.genos_client import GenosClient
+from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
@@ -530,6 +530,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = _append_file_context_source(safe_answer, file_context_fact)
+    safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
     safe_answer = apply_common_unavailable_response(question, safe_answer, markdown_response)
     safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     trace = trace_envelope(

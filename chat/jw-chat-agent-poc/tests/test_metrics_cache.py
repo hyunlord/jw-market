@@ -3,9 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 
 from jw_chat_agent_poc import ChatAgent
+from jw_chat_agent_poc.agentic import MetricFilterPlan
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.metrics import MetricsTool
-from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.cache_live import CausePayloadKey, StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.sales_filtering import filtered_metric_result
 
 
 BRAND_CARDS = {
@@ -301,6 +303,62 @@ def test_metrics_tool_blocks_failed_cache_card_zero_values() -> None:
     assert data["rank"] is None
     assert "2026-04 값은 조회 실패" in data["blocked_metric_values"][0]["message"]
     assert "0.00억원" not in result["summary_text"]
+
+
+def test_filtered_metric_falls_back_to_latest_previous_period_when_requested_month_has_no_rows() -> None:
+    key = CausePayloadKey(
+        brand="악템라",
+        view_type="market_landscape",
+        source="IQVIA",
+        measure="sales",
+        market_id="ml_011",
+    )
+    payload = {
+        "sources_data": {
+            "market_size_series": {
+                "2025-Q3": {"value": 115_072_267_761.0},
+                "2025-Q4": {"value": 111_077_299_071.0},
+            }
+        },
+        "level_top5_trend": {
+            "by_level": {
+                "Brand": {
+                    "periods_10pt": ["2025-Q3", "2025-Q4"],
+                    "values": [
+                        {
+                            "brands_in_value": [
+                                {
+                                    "brand": "악템라",
+                                    "value_series_10pt": [5_024_013_945.0, 4_818_657_972.0],
+                                    "ms_series_10pt": [4.37, 4.34],
+                                    "rank_series_10pt": [8, 8],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            }
+        },
+    }
+    plan = MetricFilterPlan(period_month="2026-04")
+
+    result = filtered_metric_result("악템라", "sales", key, payload, plan)
+    data = result["render_data"]
+
+    assert result["tool"] == "get_brand_metric"
+    assert data["period"] == "2025-Q4"
+    assert data["requested_period"] == "2026-04"
+    assert data["fallback_period"] == "2025-Q4"
+    assert data["sales_억원"] == 48.19
+    assert round(data["ms_recent_pct"], 2) == 4.34
+    assert data["blocked_metric_values"] == [
+        {
+            "period": "2026-04",
+            "status": "query_failed",
+            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
+        }
+    ]
+    assert "사용 가능한 최신 기준 2025-Q4" in result["summary_text"]
 
 
 def test_chat_agent_routes_sales_question_to_cache_metrics() -> None:

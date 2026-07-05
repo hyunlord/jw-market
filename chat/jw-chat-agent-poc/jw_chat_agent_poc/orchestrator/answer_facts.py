@@ -445,13 +445,22 @@ def _required_single_brand_focus_metric(data: dict[str, Any], brand: str) -> str
     rank_label = f"{rank}위" if rank and "/" not in rank else rank
     if not any((sales, share, rank_label)):
         return ""
+    period_label = _metric_period_label(data, period)
     parts = [
-        f"{brand} {period}",
+        f"{brand} {period_label}",
         f"매출 {sales}" if sales else "",
         f"시장점유율 {share}" if share else "",
         f"순위 {rank_label}" if rank_label else "",
     ]
     return " ".join(part for part in parts if part)
+
+
+def _metric_period_label(data: dict[str, Any], period: str) -> str:
+    requested_period = str(data.get("requested_period") or "").strip()
+    fallback_period = str(data.get("fallback_period") or "").strip()
+    if requested_period and fallback_period and fallback_period == period and requested_period != fallback_period:
+        return f"사용 가능한 최신 기준 {period}"
+    return period
 
 
 def _required_sales_trend_metric(data: RenderData, brand: str) -> str:
@@ -1000,7 +1009,7 @@ def _metric_facts(
     rows: list[tuple[str, Any]] = []
     _append(rows, "브랜드/시장", subject)
     _append(rows, "지표", data.get("metric"))
-    _append(rows, "기간", data.get("period"))
+    _append(rows, _fact_period_row_label(data), data.get("period"))
     _append(rows, "매출", eok_value(data.get("sales_억원"), data.get("sales_krw")))
     _append(rows, "시장점유율", pct_value(data.get("ms_recent_pct", data.get("market_share"))))
     _append(rows, "순위", rank_value(data.get("rank"), data.get("total_brands_in_market")))
@@ -1062,6 +1071,15 @@ def _blocked_metric_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
         if message:
             rows.append(("조회 차단", message))
     return rows
+
+
+def _fact_period_row_label(data: dict[str, Any]) -> str:
+    period = str(data.get("period") or "").strip()
+    requested_period = str(data.get("requested_period") or "").strip()
+    fallback_period = str(data.get("fallback_period") or "").strip()
+    if requested_period and fallback_period and fallback_period == period and requested_period != fallback_period:
+        return "사용 가능한 최신 기준"
+    return "기간"
 
 
 def _level_segments(data: dict[str, Any], subject: str) -> str:

@@ -11,7 +11,7 @@ from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBui
 from jw_chat_agent_poc.service.answer_safety import chunk_text
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
-from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, create_app
+from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, compute_final_answer, create_app
 from jw_chat_agent_poc.service.conversation import PendingClarification
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
@@ -65,6 +65,55 @@ def _reconstruct_answer_from_sse(sse: str) -> str:
 
 def _normalize_markdown_spacing(markdown: str) -> str:
     return "\n\n".join(part.strip() for part in markdown.strip().split("\n\n") if part.strip())
+
+
+def test_compute_final_answer_appends_blocked_metric_notice(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="악템라",
+        calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "악템라",
+                    "metric": "sales",
+                    "period": "2025-Q4",
+                    "requested_period": "2026-04",
+                    "fallback_period": "2025-Q4",
+                    "sales_억원": 48.19,
+                    "ms_recent_pct": 4.34,
+                    "rank": 8,
+                    "total_brands_in_market": 26,
+                    "source_status": "OK",
+                    "blocked_metric_values": [
+                        {
+                            "period": "2026-04",
+                            "status": "query_failed",
+                            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["cache"],
+    )
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        yield "악템라는 사용 가능한 최신 기준 2025-Q4 매출 48.19억원, MS 4.34%입니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    final = compute_final_answer(
+        "악템라 2026-04 매출 알려줘",
+        {"answer": "", "markdown_response": response.to_dict(), "tool_calls": [], "sources": ["cache"]},
+        "test-conversation",
+    )
+
+    notice = "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다."
+    assert final.text.count(notice) == 1
+    assert "48.19억원" in final.text
+    assert "4.34%" in final.text
+    assert "0.00억원" not in final.text
+    assert "23/26" not in final.text
 
 
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:
