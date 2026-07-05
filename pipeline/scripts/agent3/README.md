@@ -68,6 +68,13 @@ canonical `brand_name` from `mart_general_brand_metric` by the highest latest
 sales value and stores it as display-only metadata. The key remains the only
 idempotency and upsert identity.
 
+Serving lookup uses `serving_brand_name`, not `brand_name`. This column is
+nullable and unique: if several `brand_key` rows share one canonical display
+name, only the latest-sales representative stores that name; the other rows stay
+stored with `serving_brand_name = NULL`. API routes that resolve
+`GET /api/deep-analysis/{brand_name}` must filter on `serving_brand_name` so a
+decoded name resolves to at most one row.
+
 ## Schema Reset
 
 The brand-key schema is stored in
@@ -81,6 +88,9 @@ DROP TABLE IF EXISTS agent3_brand_strength;
 then apply the `002` DDL and rerun the JW25 pilot. Do not put `DROP TABLE` in the
 runner path; `ensure_table()` is intentionally create-only so routine Agent3
 runs cannot erase prior rows.
+
+Apply `pipeline/scripts/agent3/sql/003_add_serving_brand_name.sql` after `002`
+to add the serving-name unique constraint.
 
 ## Kubernetes
 

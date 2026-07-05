@@ -11,7 +11,8 @@ from pipeline.scripts.agent3.config import WORKFLOW_ID, resolve_workflow_rev
 from pipeline.scripts.agent3.db import DbConfig
 from pipeline.scripts.agent3.loader import Agent3Loader, compute_input_hash, make_record
 from pipeline.scripts.agent3.profile_provider import build_profile
-from pipeline.scripts.agent3.repository import Agent3Repository, BrandIdentity, metric_rows_from_general
+from pipeline.scripts.agent3.brand_identity import BrandIdentity, serving_brand_names_for_identities
+from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
 from pipeline.scripts.agent3.strength_candidate_extractor import CandidateFloors, extract_strength_candidates
 from pipeline.scripts.agent3.summary_postprocess import (
     SummaryValidationError,
@@ -46,6 +47,7 @@ def run_full(
     loader = Agent3Loader(DbConfig.from_env())
     universe = explicit_brands or _brand_universe(repo, brand_source)
     identities = repo.resolve_brand_identities(universe, _display_aliases_by_name())
+    serving_names = serving_brand_names_for_identities(identities)
     chunk = identities[chunk_index * chunk_size : (chunk_index + 1) * chunk_size]
     brand_keys = [identity.brand_key for identity in chunk]
     brand_names = [identity.brand_name for identity in chunk]
@@ -101,6 +103,7 @@ def run_full(
         record = make_record(
             brand_key=identity.brand_key,
             brand_name=brand,
+            serving_brand_name=serving_names.get(identity.brand_key),
             profile=profile,
             candidates=candidates,
             summary=summary,

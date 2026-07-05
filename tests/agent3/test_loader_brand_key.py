@@ -5,8 +5,13 @@ from typing import Any
 
 from pipeline.scripts.agent3 import loader
 from pipeline.scripts.agent3 import repository
+from pipeline.scripts.agent3.brand_identity import (
+    BrandIdentity,
+    canonical_brand_names_from_rows,
+    serving_brand_names_for_identities,
+)
 from pipeline.scripts.agent3.loader import Agent3Loader
-from pipeline.scripts.agent3.repository import Agent3Repository, canonical_brand_names_from_rows
+from pipeline.scripts.agent3.repository import Agent3Repository
 
 
 class FakeCursor:
@@ -124,3 +129,51 @@ def test_agent3_brand_strength_v2_schema_uses_brand_key_primary_key() -> None:
     assert "brand_name VARCHAR(255) NOT NULL" in ddl
     assert "PRIMARY KEY (brand_key)" in ddl
     assert "KEY idx_agent3_brand_strength_brand_name (brand_name)" in ddl
+
+
+def test_serving_brand_name_keeps_one_representative_for_colliding_name() -> None:
+    identities = [
+        BrandIdentity(brand_key="BK-LOW", brand_name="충돌브랜드", latest_sales=100.0),
+        BrandIdentity(brand_key="BK-HIGH", brand_name="충돌브랜드", latest_sales=250.0),
+        BrandIdentity(brand_key="BK-OTHER", brand_name="다른브랜드", latest_sales=10.0),
+    ]
+
+    assert serving_brand_names_for_identities(identities) == {
+        "BK-LOW": None,
+        "BK-HIGH": "충돌브랜드",
+        "BK-OTHER": "다른브랜드",
+    }
+
+
+def test_serving_brand_name_is_non_null_when_names_do_not_collide() -> None:
+    identities = [
+        BrandIdentity(brand_key="BK-001", brand_name="브랜드1", latest_sales=100.0),
+        BrandIdentity(brand_key="BK-002", brand_name="브랜드2", latest_sales=50.0),
+    ]
+
+    assert serving_brand_names_for_identities(identities) == {
+        "BK-001": "브랜드1",
+        "BK-002": "브랜드2",
+    }
+
+
+def test_serving_brand_name_representative_is_stable_on_rerun() -> None:
+    first = [
+        BrandIdentity(brand_key="BK-A", brand_name="같은이름", latest_sales=200.0),
+        BrandIdentity(brand_key="BK-B", brand_name="같은이름", latest_sales=200.0),
+    ]
+    second = list(reversed(first))
+
+    assert serving_brand_names_for_identities(first) == serving_brand_names_for_identities(second)
+    assert serving_brand_names_for_identities(first) == {
+        "BK-A": "같은이름",
+        "BK-B": None,
+    }
+
+
+def test_agent3_brand_strength_v3_schema_adds_unique_nullable_serving_name() -> None:
+    ddl = Path("pipeline/scripts/agent3/sql/003_add_serving_brand_name.sql").read_text(encoding="utf-8")
+
+    assert "serving_brand_name VARCHAR(255) NULL" in ddl
+    assert "UNIQUE INDEX" in ddl
+    assert "serving_brand_name" in ddl

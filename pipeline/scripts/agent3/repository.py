@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+from .brand_identity import BrandIdentity, canonical_brand_names_from_rows, latest_sales_by_brand_key_from_rows
 from .db import DbConfig, connect
 from .json_util import parse_history, parse_json_object
 from .profile_provider import MoleculeRow
@@ -10,12 +10,6 @@ from .strength_candidate_extractor import MetricRow
 
 
 BrandSource = str
-
-
-@dataclass(frozen=True, slots=True)
-class BrandIdentity:
-    brand_key: str
-    brand_name: str
 
 
 class Agent3Repository:
@@ -105,13 +99,18 @@ class Agent3Repository:
                 )
                 rows = list(cursor.fetchall())
         canonical = canonical_brand_names_from_rows(rows)
+        latest_sales = latest_sales_by_brand_key_from_rows(rows)
         by_ref: dict[str, BrandIdentity] = {}
         for row in rows:
             brand_key = str(row.get("brand_key") or "")
             brand_name = str(row.get("brand_name") or "")
             if not brand_key:
                 continue
-            identity = BrandIdentity(brand_key=brand_key, brand_name=canonical.get(brand_key, brand_name or brand_key))
+            identity = BrandIdentity(
+                brand_key=brand_key,
+                brand_name=canonical.get(brand_key, brand_name or brand_key),
+                latest_sales=latest_sales.get(brand_key, 0.0),
+            )
             by_ref.setdefault(brand_key, identity)
             if brand_name:
                 by_ref.setdefault(brand_name, identity)
@@ -227,23 +226,6 @@ def metric_rows_from_general(rows: list[dict[str, Any]]) -> list[MetricRow]:
         )
         for row in rows
     ]
-
-
-def canonical_brand_names_from_rows(rows: list[dict[str, Any]]) -> dict[str, str]:
-    totals: dict[str, dict[str, float]] = {}
-    for row in rows:
-        brand_key = str(row.get("brand_key") or "")
-        brand_name = str(row.get("brand_name") or "")
-        if not brand_key or not brand_name:
-            continue
-        history = parse_history(row.get("raw_value_history"))
-        latest_value = history[max(history)] if history else 0.0
-        totals.setdefault(brand_key, {})
-        totals[brand_key][brand_name] = totals[brand_key].get(brand_name, 0.0) + latest_value
-    result: dict[str, str] = {}
-    for brand_key, values_by_name in totals.items():
-        result[brand_key] = sorted(values_by_name.items(), key=lambda item: (-item[1], item[0]))[0][0]
-    return result
 
 
 def _query_refs_with_aliases(brand_refs: list[str], aliases_by_ref: dict[str, tuple[str, ...]]) -> list[str]:

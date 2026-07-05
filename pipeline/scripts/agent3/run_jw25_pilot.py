@@ -11,6 +11,7 @@ from pipeline.scripts.agent3.config import WORKFLOW_ID, resolve_workflow_rev
 from pipeline.scripts.agent3.db import DbConfig
 from pipeline.scripts.agent3.loader import Agent3Loader, make_record
 from pipeline.scripts.agent3.profile_provider import build_profile
+from pipeline.scripts.agent3.brand_identity import serving_brand_names_for_identities
 from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
 from pipeline.scripts.agent3.strength_candidate_extractor import CandidateFloors, extract_strength_candidates
 from pipeline.scripts.agent3.summary_postprocess import (
@@ -38,6 +39,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
         raise RuntimeError(f"JW25 catalog guard failed: expected 25 brands, got {len(brands)}")
     aliases_by_brand = {item.brand_name: item.layer3_aliases for item in DISPLAY_BRANDS if item.layer3_aliases}
     identities = repo.resolve_brand_identities(brands, aliases_by_brand)
+    serving_names = serving_brand_names_for_identities(identities)
     brand_keys = [identity.brand_key for identity in identities]
     brand_names = [identity.brand_name for identity in identities]
     if apply:
@@ -88,6 +90,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
         record = make_record(
             brand_key=identity.brand_key,
             brand_name=brand,
+            serving_brand_name=serving_names.get(identity.brand_key),
             profile=profile,
             candidates=candidates,
             summary=summary,
