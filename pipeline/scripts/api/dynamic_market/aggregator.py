@@ -745,9 +745,9 @@ def brand_scope_predicate(brands: tuple[BrandRef, ...]) -> tuple[str, tuple[str,
 
     if all(brand.atc4_code for brand in brands):
         pairs = tuple((brand.brand_key, brand.atc4_code) for brand in brands)
-        predicates = " OR ".join(["(brand_key = %s AND atc4_code = %s)"] * len(pairs))
+        predicates = ", ".join(["(%s, %s)"] * len(pairs))
         params = tuple(value for pair in pairs for value in pair)
-        return f"({predicates})", params
+        return f"(brand_key, atc4_code) IN ({predicates})", params
 
     brand_keys = tuple(brand.brand_key for brand in brands)
     placeholders = ", ".join(["%s"] * len(brand_keys))
