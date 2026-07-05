@@ -262,6 +262,58 @@ def test_brand_metric_defaults_dual_market_quarterly_period_to_iqvia() -> None:
     assert data["sales_억원"] == 20.0
 
 
+def test_strict_query_plan_captures_omitted_source_quarter_metric_question() -> None:
+    """Given a quarter metric question, deterministic query specs preserve the quarter."""
+
+    plan = strict_query_plan("가드렛 2025-Q4 분기 매출 알려줘", "가드렛")
+
+    assert plan is not None
+    assert len(plan.specs) == 1
+    spec = plan.specs[0]
+    assert spec["source"] == ""
+    assert spec["dimensions"] == ["product"]
+    assert spec["metrics"] == ["sales"]
+    assert spec["filters"] == {"brand": "가드렛", "period": "2025-Q4"}
+
+
+def test_agent_loop_replaces_generic_metric_with_dual_market_quarter_query() -> None:
+    """Given a dual-source quarter question, strict query uses IQVIA instead of generic UBIST metric."""
+
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        name="get_metric",
+                        arguments={"brand": "가드렛", "measure": "sales", "period": "previous_year"},
+                        reason="generic metric fallback",
+                    ),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_dual_gadlet_records()))
+    agent = ToolUseAgent(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        planner=planner,
+        query_layer=layer,
+    )
+
+    result = agent.answer("가드렛 2025-Q4 분기 매출 알려줘")
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
+    data = result["tool_calls"][0]["render_data"]
+    assert data["metric"] == "query_spec"
+    assert data["query_spec"]["filters"] == {"brand": "가드렛", "period": "2025-Q4"}
+    assert result["tool_calls"][0]["source"] == "IQVIA"
+    assert data["period"] == "2025-Q4"
+    assert data["source_label"] == "IQVIA"
+    assert data["level_segments"][0]["name"] == "가드렛"
+    assert data["level_segments"][0]["value_억원"] == 35.0
+
+
 def test_query_layer_preserves_explicit_source_over_market_default() -> None:
     """Given the caller explicitly asks for UBIST, market defaults must not override it."""
 
@@ -1317,6 +1369,17 @@ def _dual_source_records() -> tuple[MartRecord, ...]:
         "ml_003",
         "듀얼소스",
         {"2025-Q4": {"raw_value": 2_000_000_000.0, "ms": 100.0, "source_status": "OK"}},
+        source="iqvia_nsa",
+    )
+    return (ubist, iqvia)
+
+
+def _dual_gadlet_records() -> tuple[MartRecord, ...]:
+    ubist = _record_with_market("ml_003", "가드렛", (1_200_000_000.0,), ("2025-12",), [3_600_000_000.0])
+    iqvia = _record_with_status_history(
+        "ml_003",
+        "가드렛",
+        {"2025-Q4": {"raw_value": 3_500_000_000.0, "ms": 100.0, "source_status": "OK"}},
         source="iqvia_nsa",
     )
     return (ubist, iqvia)
