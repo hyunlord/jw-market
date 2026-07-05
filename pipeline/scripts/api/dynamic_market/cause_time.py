@@ -30,6 +30,8 @@ MEASURE_LABEL = {
 def history(brand: BrandMetric) -> dict[str, float]:
     """Return one brand's filtered monthly history."""
 
+    if brand.history_by_period:
+        return brand.history_by_period
     return {str(item["period"]): float(item["value"]) for item in brand.monthly_series}
 
 

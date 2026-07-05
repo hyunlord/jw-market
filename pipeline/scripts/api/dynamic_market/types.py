@@ -91,6 +91,7 @@ class BrandMetric:
     ubist_channel_by_code: dict[str, dict[str, float]] = field(default_factory=dict)
     channel_specialty_matrix: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
     audit_code_matrix: dict[str, dict[str, float]] = field(default_factory=dict)
+    history_by_period: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

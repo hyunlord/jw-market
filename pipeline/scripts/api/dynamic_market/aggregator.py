@@ -55,6 +55,21 @@ class _UbistChannelSummary:
     specialty_target_channels: tuple[dict[str, Any], ...]
 
 
+def _filter_metric_pair_scope(
+    rows: Iterable[dict[str, Any]],
+    *,
+    pair_scope: frozenset[tuple[str, str]],
+    label: str,
+) -> Iterable[dict[str, Any]]:
+    filtered_rows = 0
+    for row in rows:
+        if pair_scope and (str(row["brand_key"]), str(row["atc4_code"])) not in pair_scope:
+            filtered_rows += 1
+            continue
+        yield row
+    logger.debug("%s_pair_filter filtered_rows=%s", label, filtered_rows)
+
+
 @dataclass(frozen=True, slots=True)
 class MetricAggregator:
     """Aggregate mart metric histories for a resolved brand set.
@@ -129,6 +144,7 @@ class MetricAggregator:
                 ubist_channel_by_code=item.ubist_channel_by_code,
                 channel_specialty_matrix=item.channel_specialty_matrix,
                 audit_code_matrix=item.audit_code_matrix,
+                history_by_period=item.history_by_period,
             )
             for index, item in enumerate(
                 sorted(aggregated.brand_metrics, key=lambda row: (-row.total_value, row.brand_key)),
@@ -261,7 +277,7 @@ class MetricAggregator:
         channel_axis: ChannelAxisFilter | None,
         ) -> Iterable[dict[str, Any]]:
         mart_db = quote_identifier(self.mart_db)
-        scope_sql, scope_params = brand_scope_predicate(brands)
+        scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
         extra_columns = general_metric_extra_columns(channel_axis=channel_axis)
         sql = f"""
             SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history{extra_columns}
@@ -271,9 +287,13 @@ class MetricAggregator:
               AND {scope_sql}
             ORDER BY brand_name, brand_key
             """
-        return db.iter_rows(
-            sql,
-            (source, measure, *scope_params),
+        return _filter_metric_pair_scope(
+            db.iter_rows(
+                sql,
+                (source, measure, *scope_params),
+            ),
+            pair_scope=pair_scope,
+            label="general_metric_rows",
         )
 
     def _load_ubist_channel_summary(
@@ -425,6 +445,7 @@ class MetricAggregator:
                 audit_code_matrix=audit_matrix,
             )
             filtered = filter_periods(history, period_range)
+            history_by_period = {period: value for period, value in sorted(filtered.items())}
             for period, value in filtered.items():
                 monthly_totals[period] = monthly_totals.get(period, 0.0) + value
             latest_period = max(filtered) if filtered else None
@@ -438,11 +459,12 @@ class MetricAggregator:
                     rank=0,
                     latest_period=latest_period,
                     latest_value=filtered.get(latest_period) if latest_period else None,
-                    monthly_series=tuple({"period": period, "value": value} for period, value in sorted(filtered.items())),
+                    monthly_series=tuple({"period": period, "value": value} for period, value in history_by_period.items()),
                     ubist_channel_by_display=parse_channel_series(row.get("ubist_channel_by_display")),
                     ubist_channel_by_code=parse_channel_series(row.get("ubist_channel_by_code")),
                     channel_specialty_matrix=matrix,
                     audit_code_matrix=audit_matrix,
+                    history_by_period=history_by_period,
                 )
             )
         return _AggregatedRows(brand_metrics=brand_metrics, monthly_totals=monthly_totals, unit_label=unit_label)

@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pipeline.scripts.api.dynamic_market import cause_payload, resolvers
+from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -168,6 +168,74 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
             ],
         },
     )
+
+
+def test_general_metric_rows_use_superset_scope_with_pair_filter(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_iter_rows(sql: str, params: tuple[object, ...]):
+        seen["sql"] = sql
+        seen["params"] = params
+        yield {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": "{}",
+        }
+        yield {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10C0",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": "{}",
+        }
+        yield {
+            "brand_key": "b",
+            "brand_name": "B",
+            "atc4_code": "C10C0",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": "{}",
+        }
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
+
+    rows = list(
+        MetricAggregator(mart_db="jw_mart")._iter_metric_rows(
+            brands=(BrandRef("a", "A", "C10A1"), BrandRef("b", "B", "C10C0")),
+            source="ubist",
+            measure="sales",
+            channel_axis=None,
+        )
+    )
+
+    assert "brand_key IN" in str(seen["sql"])
+    assert "atc4_code IN" in str(seen["sql"])
+    assert "(brand_key, atc4_code) IN" not in str(seen["sql"])
+    assert [(row["brand_key"], row["atc4_code"]) for row in rows] == [("a", "C10A1"), ("b", "C10C0")]
+
+
+def test_history_prefers_cached_history_by_period() -> None:
+    brand = BrandMetric(
+        "a",
+        "A",
+        "C10A1",
+        1.0,
+        100.0,
+        1,
+        "2026-02",
+        2.0,
+        monthly_series=({"period": "2026-02", "value": 2.0},),
+        history_by_period={"2026-01": 1.0, "2026-02": 2.0},
+    )
+
+    assert cause_time.history(brand) == {"2026-01": 1.0, "2026-02": 2.0}
 
 
 def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
