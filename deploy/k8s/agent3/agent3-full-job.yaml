@@ -47,6 +47,8 @@ spec:
               value: jw_mart
             - name: WF316_DIRECT_RUN_URL
               value: http://workflow-316.llmops.svc.cluster.local:8080/run/v2
+            - name: AGENT3_WORKFLOW_REV
+              value: "5365"
             - name: AGENT3_BRAND_SOURCE
               value: general_all
             - name: AGENT3_MODE

@@ -7,16 +7,18 @@ import sys
 from typing import Any, Literal
 
 from pipeline.scripts.api.catalog import DISPLAY_BRANDS
+from pipeline.scripts.agent3.config import WORKFLOW_ID, resolve_workflow_rev
 from pipeline.scripts.agent3.db import DbConfig
 from pipeline.scripts.agent3.loader import Agent3Loader, compute_input_hash, make_record
 from pipeline.scripts.agent3.profile_provider import build_profile
 from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
 from pipeline.scripts.agent3.strength_candidate_extractor import CandidateFloors, extract_strength_candidates
+from pipeline.scripts.agent3.summary_postprocess import (
+    SummaryValidationError,
+    inject_candidate_numbers,
+    validate_display_number_narratives,
+)
 from pipeline.scripts.agent3.workflow_client import Agent3WorkflowClient
-
-
-WORKFLOW_ID = 316
-WORKFLOW_REV = 5356
 BrandSource = Literal["jw25", "strategic_ml", "general_all"]
 RunMode = Literal["dry-run", "full"]
 
@@ -38,6 +40,7 @@ def run_full(
     explicit_brands: list[str] | None,
     output: Path,
     top_n: int,
+    workflow_rev: int,
 ) -> dict[str, Any]:
     repo = Agent3Repository(DbConfig.from_env())
     loader = Agent3Loader(DbConfig.from_env())
@@ -71,14 +74,18 @@ def run_full(
             counts["candidate_brands"] += 1
         else:
             counts["profile_only"] += 1
-        input_hash = compute_input_hash(profile, candidates, WORKFLOW_REV)
+        input_hash = compute_input_hash(profile, candidates, workflow_rev)
         old = existing.get(brand)
-        if old == (input_hash, WORKFLOW_REV):
+        if old == (input_hash, workflow_rev):
             counts["skipped_same_hash"] += 1
             records.append(_record_summary(brand, candidates, input_hash, "skipped_same_hash", None, 0))
             continue
         if mode == "full" and candidates:
             summary, meta = client.run(build_agent3_input(profile, candidates))
+            summary = inject_candidate_numbers(summary, candidates)
+            validation_errors = validate_display_number_narratives(summary, candidates)
+            if validation_errors:
+                raise SummaryValidationError(brand=brand, errors=validation_errors)
             counts["workflow_calls"] += 1
         else:
             summary = _profile_only_summary(brand, profile, candidates, mode)
@@ -89,7 +96,7 @@ def run_full(
             candidates=candidates,
             summary=summary,
             workflow_id=WORKFLOW_ID,
-            workflow_rev=WORKFLOW_REV,
+            workflow_rev=workflow_rev,
         )
         if mode == "full":
             pending_records.append(record)
@@ -102,6 +109,8 @@ def run_full(
         "chunk_size": chunk_size,
         "universe_count": len(universe),
         "chunk_brand_count": len(brands),
+        "workflow_id": WORKFLOW_ID,
+        "workflow_rev": workflow_rev,
         "affected": affected,
         **counts,
         "estimated_cost_krw": counts["workflow_calls"] * 3.39 if mode == "full" else counts["candidate_brands"] * 3.39,
@@ -154,6 +163,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--brands", help="Comma-separated brand keys/names for bounded sample runs.")
     parser.add_argument("--output", type=Path, default=Path("/tmp/agent3_full.json"))
     parser.add_argument("--top-n", type=int, default=5)
+    parser.add_argument("--workflow-rev", type=int, help="wf316 revision id to record in input_hash/idempotency.")
     return parser.parse_args()
 
 
@@ -176,6 +186,7 @@ def main() -> int:
         explicit_brands=_parse_brands(args.brands),
         output=args.output,
         top_n=args.top_n,
+        workflow_rev=resolve_workflow_rev(args.workflow_rev),
     )
     print(json.dumps({key: value for key, value in result.items() if key != "records"}, ensure_ascii=False, sort_keys=True))
     return 0

@@ -86,12 +86,7 @@ Return JSON only. No markdown, no prose outside JSON.
       "slice": "string",
       "period": "string",
       "metric": "string",
-      "numbers": {
-        "value_current": 0,
-        "value_baseline": 0,
-        "delta_abs": 0,
-        "delta_pct": 0
-      },
+      "candidate_index": 0,
       "narrative": "string",
       "confidence": "high|medium|low"
     }
@@ -115,7 +110,9 @@ Absolute rules:
    Do not recalculate, estimate, round to a new value, invent missing values, or
    infer hidden denominators.
    In narrative sentences, copy only the strings from candidate
-   `display_numbers`. Keep raw numeric values only inside the `numbers` object.
+   `display_numbers`. Do not output raw numeric fields in narrative text.
+   Do not create or echo a `numbers` object; the server injects `numbers` from
+   the matched candidate after the workflow response.
 2. Do not make a strength claim without a candidate item that supports it.
 3. If candidates are weak, mixed, or only broad total-market signals, say that
    the strength evidence is limited. Do not overstate it.
@@ -129,7 +126,7 @@ Absolute rules:
 Narrative guidance:
 
 - Prefer a sentence such as
-  "2026-04 기준 전체 UBIST YOY가 22.7748%로 확인되어 최근 매출 성장 신호가 있다."
+  "2026-04 기준 전체 UBIST YOY가 22.8%로 확인되어 최근 매출 성장 신호가 있다."
 - If a candidate includes both current and baseline values, cite them exactly as
   displayed in `display_numbers`.
 - If `delta_pct` exists, cite only `display_numbers.delta_pct`.
@@ -156,8 +153,10 @@ JSON field requirements:
 - `profile_display.nhi_type` must use `nhi_type_recode` if present, otherwise
   `nhi_type_raw`.
 - `raw_available` is true when at least one `_raw` field has a non-empty value.
-- Each `numbers` object must copy the candidate numeric values exactly. Use null
-  when the candidate has null.
+- Each `strength_items` entry must include `candidate_index`, the zero-based
+  index of the supporting item in the input `strength_candidates` array.
+- Do not include a `numbers` object. The server will inject exact raw numbers
+  by matching `candidate_index` to the original candidate.
 - `confidence` is high only when the candidate has a direct numeric delta or
   percent change; medium for broad total-market metric fields; low for weak or
   incomplete candidate evidence.

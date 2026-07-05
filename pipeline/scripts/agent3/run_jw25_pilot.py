@@ -7,16 +7,18 @@ import sys
 from typing import Any
 
 from pipeline.scripts.api.catalog import DISPLAY_BRANDS
+from pipeline.scripts.agent3.config import WORKFLOW_ID, resolve_workflow_rev
 from pipeline.scripts.agent3.db import DbConfig
 from pipeline.scripts.agent3.loader import Agent3Loader, make_record
 from pipeline.scripts.agent3.profile_provider import build_profile
 from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
 from pipeline.scripts.agent3.strength_candidate_extractor import CandidateFloors, extract_strength_candidates
+from pipeline.scripts.agent3.summary_postprocess import (
+    SummaryValidationError,
+    inject_candidate_numbers,
+    validate_display_number_narratives,
+)
 from pipeline.scripts.agent3.workflow_client import Agent3WorkflowClient
-
-
-WORKFLOW_ID = 316
-WORKFLOW_REV = 5356
 
 
 def build_agent3_input(profile: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -42,6 +44,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
 
     records: list[dict[str, Any]] = []
     wf_calls = 0
+    workflow_rev = resolve_workflow_rev()
     for index, brand in enumerate(brands, start=1):
         print(f"[agent3] {index:02d}/{len(brands)} {brand}", file=sys.stderr, flush=True)
         general_rows = general_by_brand.get(brand, [])
@@ -60,6 +63,10 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
         )
         if candidates and not skip_workflow:
             summary, meta = client.run(build_agent3_input(profile, candidates))
+            summary = inject_candidate_numbers(summary, candidates)
+            validation_errors = validate_display_number_narratives(summary, candidates)
+            if validation_errors:
+                raise SummaryValidationError(brand=brand, errors=validation_errors)
             wf_calls += 1
         else:
             summary = {
@@ -79,7 +86,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
             candidates=candidates,
             summary=summary,
             workflow_id=WORKFLOW_ID,
-            workflow_rev=WORKFLOW_REV,
+            workflow_rev=workflow_rev,
         )
         affected = loader.upsert(record) if apply else 0
         records.append(
@@ -98,6 +105,8 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
         "apply": apply,
         "brand_count": len(brands),
         "workflow_calls": wf_calls,
+        "workflow_id": WORKFLOW_ID,
+        "workflow_rev": workflow_rev,
         "skip_workflow": skip_workflow,
         "records": records,
     }

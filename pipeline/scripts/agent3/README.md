@@ -3,6 +3,18 @@
 Agent3 builds one `agent3_brand_strength` row per brand from mart realtime
 profile and slice evidence. It does not read portal cache tables.
 
+## Workflow
+
+- Workflow: `jw-agent3-brand-strength`
+- Workflow id: `316`
+- Active prompt revision: `5365`
+- Active deploy id: `1324`
+- Serving: `163`
+
+Revision `5365` is the live prompt revision that asks wf316 to return `candidate_index` only; exact raw `numbers` are injected server-side from the matched candidate while narrative text still must copy only `display_numbers`. Keep
+`AGENT3_WORKFLOW_REV` aligned with the live revision so idempotency hashes are
+rev-aware.
+
 ## Build the Job Image
 
 The Agent3 runner is packaged in the backend image and used only by Agent3
