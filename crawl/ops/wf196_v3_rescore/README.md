@@ -31,3 +31,12 @@ Do not rerun chunks already marked `PASS` without first proving idempotence for
 the exact target set. Do not delete or alter the backup table. The scripts are
 intended for event score rows only; they must not update `news_raw`, `events`,
 Tier2 rows, or `cache_deep_analysis`.
+
+## Invalid Tag Fallback
+
+The v3 rerun hit a model-side invalid tag (`경쟁 구도`) on chunk 11. The rescore
+step now retries only that news item once with the same prompt and parameters.
+If the retry response is valid JSON but still emits a tag outside the fixed
+six-tag allowlist, only the tag falls back to `기타`; malformed retry responses
+still abort the chunk. Every retry/fallback is written to
+`chunk_<N>_tag_events.jsonl` for audit.

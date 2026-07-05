@@ -34,6 +34,10 @@ def summary_path() -> Path:
     return OUT_DIR / f"chunk_{chunk_index():02d}_rescore_summary.json"
 
 
+def tag_events_path() -> Path:
+    return OUT_DIR / f"chunk_{chunk_index():02d}_tag_events.jsonl"
+
+
 def connect_db():
     return pymysql.connect(
         host=os.environ["DB_HOST"],
@@ -177,16 +181,42 @@ def append_result(update: dict) -> None:
         handle.write(json.dumps(update, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def append_tag_event(event: dict) -> None:
+    with tag_events_path().open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def load_tag_events() -> list[dict]:
+    if not tag_events_path().exists():
+        return []
+    with tag_events_path().open(encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def retry_invalid_tag(news_id: str, question: str, original_tag: str) -> tuple[dict, str, float, bool, int]:
+    retry_parsed, retry_elapsed, retry_resume_sent, retry_attempts = call_workflow(question)
+    retry_tag = str(retry_parsed.get("tag") or "").strip()
+    if retry_tag in VALID_TAGS:
+        append_tag_event({"news_id": news_id, "original_tag": original_tag, "retry_tag": retry_tag, "final_tag": retry_tag, "action": "retried"})
+        return retry_parsed, retry_tag, retry_elapsed, retry_resume_sent, retry_attempts
+    append_tag_event({"news_id": news_id, "original_tag": original_tag, "retry_tag": retry_tag, "final_tag": "기타", "action": "fallback"})
+    return retry_parsed, "기타", retry_elapsed, retry_resume_sent, retry_attempts
+
+
 def collect_updates(catalog_text: str, grouped: dict[str, list[dict]]) -> list[dict]:
     updates = load_checkpoint()
     completed = {str(update["news_id"]) for update in updates}
     for index, (news_id, rows) in enumerate(grouped.items(), start=1):
         if news_id in completed:
             continue
-        parsed, elapsed, resume_sent, attempts = call_workflow(build_question(catalog_text, rows[0]))
+        question = build_question(catalog_text, rows[0])
+        parsed, elapsed, resume_sent, attempts = call_workflow(question)
         tag = str(parsed.get("tag") or "").strip()
         if tag not in VALID_TAGS:
-            raise ValueError(f"invalid tag for {news_id}: {tag}")
+            parsed, tag, retry_elapsed, retry_resume_sent, retry_attempts = retry_invalid_tag(news_id, question, tag)
+            elapsed += retry_elapsed
+            resume_sent = resume_sent or retry_resume_sent
+            attempts += retry_attempts
         matches = parse_matches(parsed)
         summary = str(parsed.get("summary") or "")
         meta = json.dumps({"model": None, "tokens_in": None, "tokens_out": None, "duration_sec": elapsed, "cost_usd": None, "rescore": "wf196_v3_rev5347"}, ensure_ascii=False, sort_keys=True)
@@ -210,7 +240,10 @@ def main() -> int:
     updates = collect_updates(CATALOG_PATH.read_text(encoding="utf-8"), grouped)
     if len(updates) != len(rows):
         raise ValueError(f"checkpoint mismatch rows={len(updates)} expected={len(rows)}")
-    summary = {"chunk": chunk_index(), "news": len(grouped), "rows": len(rows), "checkpoint_rows": len(updates), "tag_violations": 0, "result_path": str(result_path())}
+    tag_events = load_tag_events()
+    tag_retried = sum(1 for event in tag_events if event.get("action") == "retried")
+    tag_fallback = sum(1 for event in tag_events if event.get("action") == "fallback")
+    summary = {"chunk": chunk_index(), "news": len(grouped), "rows": len(rows), "checkpoint_rows": len(updates), "tag_violations": 0, "tag_retried": tag_retried, "tag_fallback": tag_fallback, "tag_events_path": str(tag_events_path()), "result_path": str(result_path())}
     summary_path().write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     print("RESCORE_SUMMARY=" + json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
     return 0
