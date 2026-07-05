@@ -1,0 +1,196 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-cache-refresh-daily
+  namespace: llmops
+  labels:
+    app: jw-cache-refresh
+    component: cache-deep-analysis
+spec:
+  schedule: "0 20 * * *" # 05:00 KST, after Tier1/Tier2 crawl windows
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: jw-cache-refresh
+            component: cache-deep-analysis
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: "enabled"
+          containers:
+            - name: cache-refresh
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.54-unified-ec5d6f5d-20260704
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "200m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+              env:
+                - name: MARIADB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_USER
+                  value: llmops
+                - name: MARIADB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: galera-mariadb-galera
+                      key: mariadb-password
+                - name: MARIADB_DATABASE
+                  value: jw_mart
+              command: ["/bin/bash", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+
+                  RUN_ID="$(date -u +%Y%m%d%H%M%S)"
+                  LIVE_TABLE="cache_deep_analysis"
+                  STAGING_TABLE="cache_deep_analysis_events_staging"
+                  BACKUP_TABLE="cache_deep_analysis_events_backup_${RUN_ID}"
+                  export LIVE_TABLE STAGING_TABLE BACKUP_TABLE RUN_ID
+
+                  if [ -f /app/pipeline/scripts/etl/build_cache_deep_analysis.py ]; then
+                    cd /app
+                  elif [ -f /workspace/pipeline/scripts/etl/build_cache_deep_analysis.py ]; then
+                    cd /workspace
+                  elif [ -f pipeline/scripts/etl/build_cache_deep_analysis.py ]; then
+                    :
+                  else
+                    echo "ABORT: build_cache_deep_analysis.py not found in image"
+                    exit 20
+                  fi
+
+                  echo "CACHE_REFRESH_START run_id=${RUN_ID} target=${STAGING_TABLE}"
+                  python pipeline/scripts/etl/build_cache_deep_analysis.py \
+                    --events-only \
+                    --target-table "${STAGING_TABLE}" \
+                    --verbose
+
+                  python - <<'PY_VALIDATE_AND_SWAP'
+                  from __future__ import annotations
+
+                  import json
+                  import os
+                  import sys
+                  from typing import Any
+
+                  import pymysql
+
+                  LIVE_TABLE = os.environ["LIVE_TABLE"]
+                  STAGING_TABLE = os.environ["STAGING_TABLE"]
+                  BACKUP_TABLE = os.environ["BACKUP_TABLE"]
+
+                  ALLOWED_TABLES = {
+                      "cache_deep_analysis",
+                      "cache_deep_analysis_events_staging",
+                  }
+
+                  def quote_ident(name: str) -> str:
+                      if name not in ALLOWED_TABLES and not name.startswith("cache_deep_analysis_events_backup_"):
+                          raise SystemExit(f"ABORT: unsafe table name {name!r}")
+                      return "`" + name.replace("`", "``") + "`"
+
+                  def connect_db() -> pymysql.connections.Connection:
+                      return pymysql.connect(
+                          host=os.environ["MARIADB_HOST"],
+                          port=int(os.environ.get("MARIADB_PORT", "3306")),
+                          user=os.environ["MARIADB_USER"],
+                          password=os.environ["MARIADB_PASSWORD"],
+                          database=os.environ.get("MARIADB_DATABASE", "jw_mart"),
+                          charset="utf8mb4",
+                          autocommit=True,
+                          cursorclass=pymysql.cursors.DictCursor,
+                      )
+
+                  def count_rows(cur: Any, table: str) -> int:
+                      cur.execute(f"SELECT COUNT(*) AS c FROM {quote_ident(table)}")
+                      return int(cur.fetchone()["c"])
+
+                  conn = connect_db()
+                  try:
+                      with conn.cursor() as cur:
+                          live_count = count_rows(cur, LIVE_TABLE)
+                          staging_count = count_rows(cur, STAGING_TABLE)
+                          if live_count <= 0:
+                              raise SystemExit("ABORT: live cache_deep_analysis is empty")
+                          if staging_count != live_count:
+                              raise SystemExit(
+                                  f"ABORT: staging row count {staging_count} != live row count {live_count}"
+                              )
+
+                          cur.execute(
+                              f"SELECT brand, market_id, response_json FROM {quote_ident(STAGING_TABLE)}"
+                          )
+                          invalid_json: list[str] = []
+                          invalid_contract: list[str] = []
+                          rows_with_events = 0
+                          total_events = 0
+                          for row in cur.fetchall():
+                              label = f"{row.get('brand')}::{row.get('market_id')}"
+                              try:
+                                  payload = json.loads(row.get("response_json") or "{}")
+                              except Exception:
+                                  invalid_json.append(label)
+                                  continue
+                              data = payload.get("data")
+                              if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+                                  invalid_contract.append(label)
+                                  continue
+                              events = data.get("events") or []
+                              if events:
+                                  rows_with_events += 1
+                                  total_events += len(events)
+
+                          if invalid_json or invalid_contract:
+                              raise SystemExit(
+                                  "ABORT: invalid staging payloads "
+                                  + json.dumps(
+                                      {
+                                          "invalid_json": invalid_json[:10],
+                                          "invalid_contract": invalid_contract[:10],
+                                      },
+                                      ensure_ascii=False,
+                                      sort_keys=True,
+                                  )
+                              )
+                          if total_events <= 0:
+                              raise SystemExit("ABORT: staging cache has zero events")
+
+                          cur.execute(f"DROP TABLE IF EXISTS {quote_ident(BACKUP_TABLE)}")
+                          cur.execute(
+                              f"RENAME TABLE {quote_ident(LIVE_TABLE)} TO {quote_ident(BACKUP_TABLE)}, "
+                              f"{quote_ident(STAGING_TABLE)} TO {quote_ident(LIVE_TABLE)}"
+                          )
+                          print(
+                              "CACHE_REFRESH_SUMMARY="
+                              + json.dumps(
+                                  {
+                                      "live_rows": live_count,
+                                      "staging_rows": staging_count,
+                                      "rows_with_events": rows_with_events,
+                                      "total_events": total_events,
+                                      "backup_table": BACKUP_TABLE,
+                                  },
+                                  ensure_ascii=False,
+                                  sort_keys=True,
+                              )
+                          )
+                  finally:
+                      conn.close()
+                  PY_VALIDATE_AND_SWAP
+
+                  echo "CACHE_REFRESH_DONE run_id=${RUN_ID}"
