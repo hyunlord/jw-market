@@ -126,9 +126,10 @@ class MetricAggregator:
             )
         )
         monthly_series = tuple({"period": period, "market_size": value} for period, value in sorted(aggregated.monthly_totals.items()))
-        ubist_summary = self._ubist_channel_summary_from_code_series(
-            brand_metrics=aggregated.brand_metrics,
+        ubist_summary = self._load_ubist_channel_summary(
+            brands=brands,
             source=source,
+            measure=measure,
             channel_axis=channel_axis,
             view=view,
             dimension_filters=dimension_filters,
@@ -251,7 +252,7 @@ class MetricAggregator:
         ) -> Iterable[dict[str, Any]]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        extra_columns = general_metric_extra_columns(source=source, channel_axis=channel_axis)
+        extra_columns = general_metric_extra_columns(channel_axis=channel_axis)
         sql = f"""
             SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history{extra_columns}
             FROM {mart_db}.mart_general_brand_metric
@@ -265,11 +266,12 @@ class MetricAggregator:
             (source, measure, *scope_params),
         )
 
-    def _ubist_channel_summary_from_code_series(
+    def _load_ubist_channel_summary(
         self,
         *,
-        brand_metrics: list[BrandMetric],
+        brands: tuple[BrandRef, ...],
         source: str,
+        measure: str,
         channel_axis: ChannelAxisFilter | None,
         view: str,
         dimension_filters: tuple[DimensionFilter, ...],
@@ -283,13 +285,22 @@ class MetricAggregator:
             or not latest_period
         ):
             return _UbistChannelSummary((), ())
+        mart_db = quote_identifier(self.mart_db)
+        scope_sql, scope_params = brand_scope_predicate(brands)
         totals_by_code: dict[str, float] = {}
-        for brand in brand_metrics:
-            for code, series in brand.ubist_channel_by_code.items():
-                parsed = parse_channel_code(code)
-                if parsed is None:
-                    continue
-                totals_by_code[parsed.code] = totals_by_code.get(parsed.code, 0.0) + float(series.get(latest_period) or 0.0)
+        rows = db.iter_rows(
+            f"""
+            SELECT channel_specialty_matrix
+            FROM {mart_db}.mart_general_brand_metric
+            WHERE source = %s
+              AND measure = %s
+              AND {scope_sql}
+            ORDER BY brand_name, brand_key
+            """,
+            (source, measure, *scope_params),
+        )
+        for row in rows:
+            collect_ubist_channel_latest_totals(row.get("channel_specialty_matrix"), latest_period, totals_by_code)
         if not totals_by_code:
             return _UbistChannelSummary((), ())
         ranked_codes = sorted(
@@ -438,10 +449,8 @@ def _history_for_row(
     return parse_history(raw_history)
 
 
-def general_metric_extra_columns(*, source: str, channel_axis: ChannelAxisFilter | None) -> str:
+def general_metric_extra_columns(*, channel_axis: ChannelAxisFilter | None) -> str:
     if channel_axis is None or not channel_axis.is_active:
-        if source == "ubist":
-            return ", ubist_channel_by_code"
         return ""
     if channel_axis.source == "ubist":
         return ", channel_specialty_matrix"
@@ -472,6 +481,30 @@ def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict
             for period, value in series.items():
                 period_key = str(period)
                 target[period_key] = target.get(period_key, 0.0) + float(value or 0.0)
+
+
+def collect_ubist_channel_latest_totals(raw: Any, latest_period: str, totals_by_code: dict[str, float]) -> None:
+    if isinstance(raw, dict):
+        payload = raw
+    elif isinstance(raw, str) and raw.strip():
+        payload = json.loads(raw)
+    else:
+        return
+    if not isinstance(payload, dict):
+        return
+    for facility, specialties in payload.items():
+        if not isinstance(specialties, dict):
+            continue
+        for specialty, series in specialties.items():
+            if not isinstance(series, dict):
+                continue
+            value = series.get(latest_period)
+            if value is None:
+                continue
+            code = raw_pair_to_channel_code(facility, specialty)
+            if not code:
+                continue
+            totals_by_code[code] = totals_by_code.get(code, 0.0) + float(value or 0.0)
 
 
 def parse_history(raw: str) -> dict[str, float]:
