@@ -6,7 +6,11 @@ from typing import Any, Final, Mapping, Sequence
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
-from pipeline.scripts.api.brand_activity_channel_axis import channel_axis_sales_value, parse_ubist_channel_axis
+from pipeline.scripts.api.brand_activity_channel_axis import (
+    audit_code_keys,
+    audit_code_sales_value,
+    parse_audit_code_axis,
+)
 from pipeline.scripts.api.brand_activity_brand_filters import applied_brand_filter
 from pipeline.scripts.api.brand_activity_brand_molecules import general_molecules_by_product
 from pipeline.scripts.api.brand_activity_csd_shared import (
@@ -28,7 +32,6 @@ from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 
 MAX_BRAND_SET_SIZE: Final = 6
-UBIST_SOURCE: Final = "ubist"
 
 
 class BrandSetInputError(RuntimeError):
@@ -95,9 +98,9 @@ def resolve_brand_set(
     if selected_brand not in brand_meta:
         return None
     applied_filter = applied_brand_filter(view_name, resolved_market_id, filter_payload or {})
-    channel_axis = parse_ubist_channel_axis(filter_payload or {})
-    channel_rows = _fetch_channel_axis_rows(view, resolved_market_id) if channel_axis else {}
-    candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking, channel_axis=channel_axis, channel_rows=channel_rows)
+    channel_axis = parse_audit_code_axis(filter_payload or {}) if view_name == "general" else None
+    validate_audit_code_axis(brand_rows, channel_axis)
+    candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking, audit_code_axis=channel_axis)
     choices = _select_choices(candidates, selected_brand=selected_brand, applied_filter=applied_filter)
     return BrandSetResolution(
         view_name=view_name,
@@ -148,9 +151,10 @@ def _ml_id_for_brand(brand: str) -> str:
 def _fetch_brand_rows(view: ViewConfig, market_id: str) -> list[JsonMap]:
     is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
     overlay = "overlay_data" if view.has_is_jw else "NULL AS overlay_data"
+    audit_code_matrix = "audit_code_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS audit_code_matrix"
     return db.fetch_all(
         f"""
-        SELECT DISTINCT brand_key, brand_name, {is_jw}, by_dimension, {overlay}, metric_history
+        SELECT DISTINCT brand_key, brand_name, {is_jw}, by_dimension, {overlay}, metric_history, {audit_code_matrix}
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
         ORDER BY brand_key
@@ -171,21 +175,15 @@ def _fetch_market_row(view: ViewConfig, market_id: str) -> JsonMap | None:
     )
 
 
-def _fetch_channel_axis_rows(view: ViewConfig, market_id: str) -> dict[str, JsonMap]:
-    if view.brand_table == "mart_general_brand_metric":
-        channel_axis_columns = "channel_specialty_matrix, NULL AS ubist_channel_by_display, NULL AS ubist_channel_by_code"
-    else:
-        channel_axis_columns = "NULL AS channel_specialty_matrix, ubist_channel_by_display, ubist_channel_by_code"
-    rows = db.fetch_all(
-        f"""
-        SELECT DISTINCT brand_key, metric_history, channel_data, specialty_data,
-               {channel_axis_columns}
-        FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
-        WHERE {view.market_key} = %s AND source = %s AND measure = %s
-        """,
-        (market_id, UBIST_SOURCE, RANKING_MEASURE),
-    )
-    return {str(row["brand_key"]): row for row in rows if row.get("brand_key")}
+def validate_audit_code_axis(rows: tuple[JsonMap, ...], channel_axis: ChannelAxisFilter | None) -> None:
+    """Reject requested IQVIA audit codes that are absent from the dynamic matrix keys."""
+
+    if channel_axis is None or not channel_axis.is_active:
+        return
+    supported = {code for row in rows for code in audit_code_keys(row)}
+    unsupported = tuple(code for code in channel_axis.audit_codes if code not in supported)
+    if unsupported:
+        raise BrandSetInputError(f"unsupported audit_code: {', '.join(unsupported)}")
 
 
 def _brand_candidates(
@@ -194,8 +192,7 @@ def _brand_candidates(
     metas: dict[str, BrandMeta],
     ranking: JsonMap,
     *,
-    channel_axis: ChannelAxisFilter | None = None,
-    channel_rows: dict[str, JsonMap] | None = None,
+    audit_code_axis: ChannelAxisFilter | None = None,
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
     general_molecules = general_molecules_by_product(metas) if view_name == "general" else {}
@@ -211,8 +208,8 @@ def _brand_candidates(
                 dimensions=_dimensions(view_name, row, meta, general_molecules),
                 sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
                 sales_value=(
-                    channel_axis_sales_value((channel_rows or {}).get(brand_key), channel_axis, str(ranking["quarter"]))
-                    if channel_axis
+                    audit_code_sales_value(row, audit_code_axis, str(ranking["quarter"]))
+                    if audit_code_axis
                     else float_value(rank_item.get("raw_value")) or float_value(metric.get("raw_value"))
                 ),
             )

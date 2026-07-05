@@ -18,19 +18,31 @@ from pipeline.scripts.api.routes import brand_activity
 def test_interest_rx_route_wraps_success_envelope(monkeypatch) -> None:
     # Given
     expected = {"scope": {"view": "general"}, "brands": [], "market_average": {}}
-    monkeypatch.setattr(brand_activity, "get_interest_rx_matrix", lambda _payload: expected, raising=False)
+    captured: dict[str, object] = {}
+
+    def fake_get_interest_rx_matrix(payload: dict[str, object]) -> dict[str, object]:
+        captured.update(payload)
+        return expected
+
+    monkeypatch.setattr(brand_activity, "get_interest_rx_matrix", fake_get_interest_rx_matrix, raising=False)
     app = FastAPI()
     app.include_router(brand_activity.router)
 
     # When
     response = TestClient(app).post(
         "/api/brand-activity/interest-rx-matrix",
-        json={"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "filter": {}},
+        json={
+            "view": "general",
+            "market_id": "C10A1",
+            "selected_brand": "리바로",
+            "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
+        },
     )
 
     # Then
     assert response.status_code == 200
     assert response.json() == {"data": expected}
+    assert captured["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
 def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(monkeypatch) -> None:
@@ -95,7 +107,7 @@ def test_interest_rx_service_rebuilds_distribution_for_specialty_filter(monkeypa
     assert payload["filters_applied"]["specialty"] == "Cardio"
 
 
-def test_interest_rx_service_maps_nested_channel_axis_to_keyword_filters(monkeypatch) -> None:
+def test_interest_rx_service_ignores_nested_ubist_channel_axis_for_keyword_filters(monkeypatch) -> None:
     # Given
     from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
     from pipeline.scripts.api import brand_activity_interest_rx_source as source
@@ -124,8 +136,8 @@ def test_interest_rx_service_maps_nested_channel_axis_to_keyword_filters(monkeyp
 
     # Then
     assert payload is not None
-    assert payload["filters_applied"]["visit_location"] == "PRIV. PRACTICE"
-    assert payload["filters_applied"]["specialty"] == "Cardio"
+    assert payload["filters_applied"]["visit_location"] == "전체"
+    assert payload["filters_applied"]["specialty"] == "전체"
 
 
 def test_interest_rx_service_applies_weight_overrides(monkeypatch) -> None:
