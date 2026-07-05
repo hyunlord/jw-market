@@ -18,16 +18,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
-FORECAST_HORIZON_QUARTERS = 4
-FORECAST_HORIZON_MONTHS = 12
-FORECAST_INTERVAL_KEYS = (
-    "upper_horizon_adaptive",
-    "lower_horizon_adaptive",
-    "upper_95_natural",
-    "lower_95_natural",
-    "ci_upper_95",
-    "ci_lower_95",
-)
+FORECAST_HORIZON_QUARTERS = 20
+FORECAST_HORIZON_MONTHS = 60
 
 
 def _not_generated_brand_strength() -> dict:
@@ -138,8 +130,7 @@ def _forecast_horizon_for_combo(combo: dict) -> int | None:
 def _slice_forecast_intervals(forecast_intervals: object, horizon: int) -> None:
     if not isinstance(forecast_intervals, dict):
         return
-    for key in FORECAST_INTERVAL_KEYS:
-        value = forecast_intervals.get(key)
+    for key, value in forecast_intervals.items():
         if isinstance(value, list):
             forecast_intervals[key] = value[:horizon]
 
