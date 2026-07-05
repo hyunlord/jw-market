@@ -1,0 +1,479 @@
+version: stage0_v1
+description: "Tool-use agent transition Stage 0 baseline question set."
+questions:
+  - id: REV001
+    category: "매출/지표"
+    question: "리바로 최근 매출 알려줘"
+    gold_note: "cache brand card의 리바로 recent sales_krw 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "최근 매출"
+        key: sales_krw
+        kind: krw
+  - id: REV002
+    category: "매출/지표"
+    question: "리바로 시장점유율은 몇 퍼센트야?"
+    gold_note: "cache brand card의 리바로 ms/market_share 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "시장점유율"
+        key: ms
+        kind: percent
+  - id: REV003
+    category: "매출/지표"
+    question: "리바로 순위 알려줘"
+    gold_note: "cache brand card의 rank 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "순위"
+        key: rank
+        kind: rank
+  - id: REV004
+    category: "매출/지표"
+    question: "리바로가 속한 시장 규모는?"
+    gold_note: "cache market_status/market_scope의 market_size_recent 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "시장 규모"
+        key: market_size_recent
+        kind: krw
+  - id: REV005
+    category: "매출/지표"
+    question: "리바로젯 최근 매출 알려줘"
+    gold_note: "cache brand card의 리바로젯 recent sales_krw 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "최근 매출"
+        key: sales_krw
+        kind: krw
+  - id: REV006
+    category: "매출/지표"
+    question: "페린젝트 매출과 점유율 알려줘"
+    gold_note: "cache brand card의 페린젝트 sales_krw 및 ms 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "최근 매출"
+        key: sales_krw
+        kind: krw
+      - label: "시장점유율"
+        key: ms
+        kind: percent
+  - id: REV007
+    category: "매출/지표"
+    question: "가드렛 최근 매출 알려줘"
+    gold_note: "cache brand card의 가드렛 recent sales_krw 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "최근 매출"
+        key: sales_krw
+        kind: krw
+  - id: REV008
+    category: "매출/지표"
+    question: "리바로 시장 HHI 알려줘"
+    gold_note: "cache에서 HHI가 제공되면 표기, 없으면 명시적 기권"
+    expected_behavior: manual
+    gold_keys:
+      - label: "HHI"
+        key: hhi
+        kind: ratio
+  - id: REV009
+    category: "매출/지표"
+    question: "리바로 최근 추세를 요약해줘"
+    gold_note: "시계열/추세가 cache에 있으면 근거와 함께 요약"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: REV010
+    category: "매출/지표"
+    question: "리바로와 리바로젯 매출 비교해줘"
+    gold_note: "두 브랜드 cache 매출을 혼동 없이 비교"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "최근 매출"
+        key: sales_krw
+        kind: krw
+
+  - id: FIL001
+    category: "매출 필터"
+    question: "리바로 작년 매출 알려줘"
+    gold_note: "상대/연도 필터가 적용되면 해당 기간 매출, 불가하면 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "필터 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL002
+    category: "매출 필터"
+    question: "리바로 2026년 3월 매출 알려줘"
+    gold_note: "월 필터가 적용되면 2026-03 cache 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "월 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL003
+    category: "매출 필터"
+    question: "리바로 UBIST 기준 매출 알려줘"
+    gold_note: "source=UBIST 필터 적용 또는 적용 불가 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "UBIST 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL004
+    category: "매출 필터"
+    question: "리바로 IQVIA 기준 매출 알려줘"
+    gold_note: "source=IQVIA 필터 적용 또는 적용 불가 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "IQVIA 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL005
+    category: "매출 필터"
+    question: "리바로 상급종병 매출 알려줘"
+    gold_note: "채널 필터 상급종병 적용 여부를 투명하게 표시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "상급종병 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL006
+    category: "매출 필터"
+    question: "리바로 종합병원 매출 알려줘"
+    gold_note: "채널 필터 종합병원 적용 여부를 투명하게 표시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "종합병원 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL007
+    category: "매출 필터"
+    question: "리바로 상급종병+종합병원 합산 매출 알려줘"
+    gold_note: "복수 채널 합산 가능 여부와 결과/한계를 명시"
+    expected_behavior: complex_target
+    gold_keys:
+      - label: "합산 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL008
+    category: "매출 필터"
+    question: "리바로 정제 제형만 매출 알려줘"
+    gold_note: "제형 필터 적용 또는 cache 한계 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "제형 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL009
+    category: "매출 필터"
+    question: "리바로 의원 채널 매출 알려줘"
+    gold_note: "채널 필터 의원 적용 또는 cache 한계 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "의원 매출"
+        key: sales_krw
+        kind: krw
+  - id: FIL010
+    category: "매출 필터"
+    question: "리바로 원외처방 기준 최근 3개월 매출 알려줘"
+    gold_note: "source/기간 복합 필터가 적용되면 cache 값 표기"
+    expected_behavior: complex_target
+    gold_keys:
+      - label: "최근 3개월 매출"
+        key: sales_krw
+        kind: krw
+
+  - id: REL001
+    category: "상대날짜"
+    question: "리바로 3달전 매출 알려줘"
+    gold_note: "현재 기준 상대월 해석 후 cache 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "3달전 매출"
+        key: sales_krw
+        kind: krw
+  - id: REL002
+    category: "상대날짜"
+    question: "리바로 1달전 매출 알려줘"
+    gold_note: "현재 기준 상대월 해석 후 cache 값 표기"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "1달전 매출"
+        key: sales_krw
+        kind: krw
+  - id: REL003
+    category: "상대날짜"
+    question: "리바로 오늘 매출 볼 수 있어?"
+    gold_note: "월 단위 cache 한계가 있으면 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+  - id: REL004
+    category: "상대날짜"
+    question: "리바로 최근 6개월 매출 추이 보여줘"
+    gold_note: "최근 6개월 시계열 또는 한계 명시"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: REL005
+    category: "상대날짜"
+    question: "리바로 올해 누적 매출 알려줘"
+    gold_note: "YTD 집계 가능 여부와 결과/한계 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "누적 매출"
+        key: sales_krw
+        kind: krw
+  - id: REL006
+    category: "상대날짜"
+    question: "리바로 2020년 매출 있어?"
+    gold_note: "cache 범위 밖이면 unsupported/no-data 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+
+  - id: NEWS001
+    category: "뉴스"
+    question: "리바로 관련 뉴스 알려줘"
+    gold_note: "cache_deep_analysis events 기반 뉴스 목록"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS002
+    category: "뉴스"
+    question: "리바로 약업신문 뉴스만 보여줘"
+    gold_note: "뉴스 source 필터 적용"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS003
+    category: "뉴스"
+    question: "리바로 뉴스 제목에 아토젯 들어간 거 보여줘"
+    gold_note: "title_contains 아토젯; 0건이면 0건 명시"
+    expected_behavior: no_data
+    gold_keys: []
+  - id: NEWS004
+    category: "뉴스"
+    question: "리바로 뉴스 본문에 아토젯 들어간 거 보여줘"
+    gold_note: "content_contains 아토젯; 운영 cache 본문 결과를 명시"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS005
+    category: "뉴스"
+    question: "리바로와 리바로젯 둘 다 관련된 뉴스 있어?"
+    gold_note: "brand membership AND 필터"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS006
+    category: "뉴스"
+    question: "리바로 또는 리바로젯 관련 뉴스 보여줘"
+    gold_note: "brand membership OR 필터"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS007
+    category: "뉴스"
+    question: "리바로 관련 제목에 약가 들어간 뉴스 보여줘"
+    gold_note: "relevance+title text 조합"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS008
+    category: "뉴스"
+    question: "가드렛 관련 뉴스 최신 이슈 알려줘"
+    gold_note: "가드렛 membership 기반 뉴스"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: NEWS009
+    category: "뉴스"
+    question: "아토젯 관련 뉴스 보여줘"
+    gold_note: "아토젯이 brand membership에 없으면 관련 필터 0건 명시"
+    expected_behavior: no_data
+    gold_keys: []
+  - id: NEWS010
+    category: "뉴스"
+    question: "리바로 뉴스 중 본문에 약가와 급여가 둘 다 들어간 것 찾아줘"
+    gold_note: "본문 텍스트 AND 필터"
+    expected_behavior: complex_target
+    gold_keys: []
+
+  - id: HIRA001
+    category: "HIRA 질병"
+    question: "이상지질혈증 환자통계 알려줘"
+    gold_note: "HIRA 질병 도구가 지원하면 환자통계와 출처 표시"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: HIRA002
+    category: "HIRA 질병"
+    question: "리바로 관련 질병 환자수 알려줘"
+    gold_note: "성분/질병 매핑 기반 HIRA 응답 또는 한계 명시"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: HIRA003
+    category: "HIRA 질병"
+    question: "리바로하이 관련 KCD 여러 개 환자수 알려줘"
+    gold_note: "복수 KCD 처리"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: HIRA004
+    category: "HIRA 질병"
+    question: "가드렛 관련 질병 통계 알려줘"
+    gold_note: "가드렛 질병 매핑 또는 명시적 한계"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: HIRA005
+    category: "HIRA 질병"
+    question: "위너프 환자통계 알려줘"
+    gold_note: "지원 범위 밖이면 unsupported 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+  - id: HIRA006
+    category: "HIRA 질병"
+    question: "KCD E78 환자수 알려줘"
+    gold_note: "직접 KCD 입력 처리 가능 여부"
+    expected_behavior: supported_text
+    gold_keys: []
+
+  - id: EXT001
+    category: "임상/특허"
+    question: "리바로 임상 정보 알려줘"
+    gold_note: "외부 API/fixture 임상 응답과 성분 면책"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: EXT002
+    category: "임상/특허"
+    question: "리바로젯 임상시험 알려줘"
+    gold_note: "외부 API/fixture 임상 응답과 성분 면책"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: EXT003
+    category: "임상/특허"
+    question: "리바로젯 FDA 라벨과 특허 알려줘"
+    gold_note: "FDA/특허 응답과 면책 문구"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: EXT004
+    category: "임상/특허"
+    question: "플라주오피 임상 정보 있어?"
+    gold_note: "미지원 또는 데이터 없음 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+
+  - id: MKT001
+    category: "같은 시장"
+    question: "리바로랑 같은 시장 매출"
+    gold_note: "기본 전략뷰 market_landscape 시장 전체값과 기준 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "전략뷰 시장 전체"
+        key: market_size_recent
+        kind: krw
+  - id: MKT002
+    category: "같은 시장"
+    question: "리바로 같은 시장 경쟁군 기준 매출"
+    gold_note: "competitive_dynamics 시장 전체값과 기준 명시"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "경쟁군 시장 전체"
+        key: market_size_recent
+        kind: krw
+  - id: MKT003
+    category: "같은 시장"
+    question: "리바로 같은 시장 일반뷰 기준 매출"
+    gold_note: "chat cache에 일반뷰 데이터 없음 unsupported 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+  - id: MKT004
+    category: "같은 시장"
+    question: "리바로가 어느 시장 기준인지 설명해줘"
+    gold_note: "전략뷰/CD/일반뷰 구분을 혼동 없이 설명"
+    expected_behavior: supported_text
+    gold_keys: []
+  - id: MKT005
+    category: "같은 시장"
+    question: "리바로젯이 속한 시장 전체 매출 알려줘"
+    gold_note: "brand→market_id 기반 시장 전체값"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "시장 전체"
+        key: market_size_recent
+        kind: krw
+  - id: MKT006
+    category: "같은 시장"
+    question: "가드렛 같은 시장 매출 알려줘"
+    gold_note: "brand→market_id 기반 시장 전체값"
+    expected_behavior: supported_numeric
+    gold_keys:
+      - label: "시장 전체"
+        key: market_size_recent
+        kind: krw
+
+  - id: AMB001
+    category: "모호/unsupported"
+    question: "리바로 어때?"
+    gold_note: "모호 질문이면 추가 기준 또는 가능한 분석 축 제시"
+    expected_behavior: ambiguous
+    gold_keys: []
+  - id: AMB002
+    category: "모호/unsupported"
+    question: "시무라 매출 알려줘"
+    gold_note: "없는 엔티티는 환각 없이 미확인/없음 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+  - id: AMB003
+    category: "모호/unsupported"
+    question: "리바로 병원별 매출 알려줘"
+    gold_note: "병원별 원천이 없으면 unsupported 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+  - id: AMB004
+    category: "모호/unsupported"
+    question: "리바로 지역별 매출 알려줘"
+    gold_note: "지역별 원천이 없으면 unsupported 명시"
+    expected_behavior: unsupported
+    gold_keys: []
+  - id: AMB005
+    category: "모호/unsupported"
+    question: "우리 주요 고객 종합병원 기준으로 리바로 매출 알려줘"
+    gold_note: "상급종병+종합병원 정의 필요 여부와 현재 처리 명시"
+    expected_behavior: complex_target
+    gold_keys:
+      - label: "주요고객 매출"
+        key: sales_krw
+        kind: krw
+  - id: AMB006
+    category: "모호/unsupported"
+    question: "리바로 사업성 판단해줘"
+    gold_note: "근거 없는 단정 금지, 가능한 지표/한계 제시"
+    expected_behavior: ambiguous
+    gold_keys: []
+
+  - id: CMP001
+    category: "복잡/유동"
+    question: "리바로 같은 시장에서 작년 제일 큰 경쟁사는 누구야?"
+    gold_note: "시장 scope+작년+순위 복합 처리. 현재 안 되면 한계 명시"
+    expected_behavior: complex_target
+    gold_keys: []
+  - id: CMP002
+    category: "복잡/유동"
+    question: "리바로 3달전 대비 점유율이 얼마나 변했어?"
+    gold_note: "상대월 두 점 비교. 현재 안 되면 한계 명시"
+    expected_behavior: complex_target
+    gold_keys: []
+  - id: CMP003
+    category: "복잡/유동"
+    question: "리바로 뉴스에서 아토젯 언급된 이슈랑 매출 변화를 같이 봐줘"
+    gold_note: "뉴스 텍스트 검색+매출 연결. 현재 안 되면 부분 답변/한계"
+    expected_behavior: complex_target
+    gold_keys: []
+  - id: CMP004
+    category: "복잡/유동"
+    question: "리바로하이 질병 환자수랑 최근 매출을 한 번에 알려줘"
+    gold_note: "HIRA+매출 복합. 현재 안 되면 부분 답변/한계"
+    expected_behavior: complex_target
+    gold_keys: []
+  - id: CMP005
+    category: "복잡/유동"
+    question: "리바로 경쟁군 기준 시장에서 순위 변화 보여줘"
+    gold_note: "CD scope+시계열 순위 변화. 현재 안 되면 한계 명시"
+    expected_behavior: complex_target
+    gold_keys: []
+  - id: CMP006
+    category: "복잡/유동"
+    question: "리바로젯과 아토젯 경쟁 뉴스 중 최근 3건만 요약해줘"
+    gold_note: "관련 vs 텍스트 구분, 경쟁약 no-data 투명"
+    expected_behavior: complex_target
+    gold_keys: []

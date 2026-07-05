@@ -1,0 +1,12 @@
+# dry-run skeleton 최소 의존성.
+# DB driver, weaviate SDK, PDF parser, embedding client은 dry-run 단계에서 불필요.
+# (commit 단계에서 mysql/sqlalchemy 등 추가 예정)
+# supervisor 4.x는 pkg_resources(setuptools)를 import → setuptools<81 고정 필수 (81+에서 제거됨)
+fastapi==0.115.6
+pydantic==2.10.4
+gunicorn==23.0.0
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+PyMySQL==1.1.1
+supervisor==4.2.5
+setuptools<81
