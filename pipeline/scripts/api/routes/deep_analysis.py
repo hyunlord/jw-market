@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException
@@ -9,10 +10,12 @@ import pymysql
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
 FORECAST_HORIZON_QUARTERS = 4
@@ -25,6 +28,63 @@ FORECAST_INTERVAL_KEYS = (
     "ci_upper_95",
     "ci_lower_95",
 )
+
+
+def _not_generated_brand_strength() -> dict:
+    return {"available": False, "reason": "not_generated"}
+
+
+def _quote_identifier(identifier: str) -> str:
+    return "`" + identifier.replace("`", "``") + "`"
+
+
+def _format_agent3_generated_at(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds")
+    return str(value)
+
+
+def _parse_brand_strength(row: dict) -> dict:
+    raw_summary = row.get("strength_summary_json")
+    try:
+        summary = json.loads(raw_summary)
+    except (TypeError, json.JSONDecodeError):
+        return _not_generated_brand_strength()
+    if not isinstance(summary, dict):
+        return _not_generated_brand_strength()
+    return {
+        "available": True,
+        "profile_display": summary.get("profile_display"),
+        "strength_items": summary.get("strength_items", []),
+        "limitations": summary.get("limitations", []),
+        "meta": {
+            "generated_at": _format_agent3_generated_at(row.get("generated_at")),
+            "workflow_rev": row.get("workflow_rev"),
+        },
+    }
+
+
+def _load_brand_strength(brand: str) -> dict:
+    settings = get_settings()
+    schema = _quote_identifier(settings.agent3_db_name)
+    try:
+        row = db.fetch_one(
+            f"""
+            SELECT strength_summary_json, generated_at, workflow_rev
+            FROM {schema}.agent3_brand_strength
+            WHERE brand_name = %s
+            LIMIT 1
+            """,
+            [brand],
+        )
+    except pymysql.MySQLError:
+        logger.warning("agent3 brand_strength lookup failed", exc_info=True)
+        return _not_generated_brand_strength()
+    if not row:
+        return _not_generated_brand_strength()
+    return _parse_brand_strength(row)
 
 
 def _load_ai_analysis(brand: str) -> dict:
@@ -164,4 +224,5 @@ def deep_analysis(brand_name: str) -> dict:
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
         data["ai_analysis"] = _load_ai_analysis(brand)
+        data["brand_strength"] = _load_brand_strength(brand)
     return payload
