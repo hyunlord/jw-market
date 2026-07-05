@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import TracebackType
 
 import pytest
 
@@ -18,6 +19,7 @@ def _row(row_id: int, brand: str = "THRUPAS", period: str = "2026-05", specialty
         scope_id="atc4:G04C2",
         brand=brand,
         keyword_text=f"message {row_id}",
+        stage_row_sha256=f"hash-{row_id}",
         period_ym=period,
         visit_location="HOSPITAL",
         specialty=specialty,
@@ -288,3 +290,157 @@ def test_sql_contract_declares_idempotent_assignment_table_and_compatible_view()
     assert "mart_brand_activity_topics topic_scope" in view
     assert "JSON_CONTAINS(topic_scope.atc4_values, JSON_QUOTE(k.therapeutic_class), '$')" in view
     assert "ROUND(COUNT(DISTINCT a.row_id) * 100.0 / brand_total.brand_total_rows, 2)" in view
+
+
+class _FakeCursor:
+    def __init__(self, rows: list[dict[str, str | int]] | None = None, *, fail_on_status_insert: bool = False) -> None:
+        self.rows = rows or []
+        self.fail_on_status_insert = fail_on_status_insert
+        self.statements: list[str] = []
+        self.executemany_values: list[list[tuple[str | int, ...]]] = []
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, _exc_type: type[BaseException] | None, _exc: BaseException | None, _tb: TracebackType | None) -> None:
+        return None
+
+    def execute(self, sql: str, _params: tuple[str, ...] | None = None) -> int:
+        self.statements.append(sql)
+        return 1
+
+    def executemany(self, sql: str, values: list[tuple[str | int, ...]]) -> int:
+        self.statements.append(sql)
+        if self.fail_on_status_insert and "row_topic_assignment_status" in sql:
+            raise row_topic_db.AssignmentStatusError("status insert failed")
+        self.executemany_values.append(values)
+        return len(values)
+
+    def fetchall(self) -> list[dict[str, str | int]]:
+        return self.rows
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self.cursor_instance = cursor
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self) -> _FakeCursor:
+        return self.cursor_instance
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+def test_db_pending_status_records_none_only_rows_as_classified() -> None:
+    """Given a none-only row, When status rows are built, Then it is marked complete with zero assignments."""
+    rows = (_row(1), _row(2))
+    assignments = [
+        rta.RowTopicAssignment(
+            row_id=2,
+            scope_id="atc4:G04C2",
+            brand="THRUPAS",
+            topic_id="T1",
+            topic_set_version="topic-set",
+            prompt_version="row_topic_v1",
+            batch_id="batch-1",
+        )
+    ]
+
+    statuses = row_topic_execute._status_rows_for_batch(  # noqa: SLF001 - regression covers DB pending contract.
+        rows,
+        assignments,
+        missing_row_ids=[],
+        topic_set_version="topic-set",
+        batch_id="batch-1",
+    )
+
+    assert [(item.row_id, item.status, item.assignment_count) for item in statuses] == [
+        (1, row_topic_db.STATUS_CLASSIFIED, 0),
+        (2, row_topic_db.STATUS_CLASSIFIED, 1),
+    ]
+
+
+def test_db_pending_excludes_none_only_rows_and_reopens_changed_or_retry_unresolved_rows() -> None:
+    """Given status rows, When pending is loaded, Then completed none rows stay skipped unless content changed."""
+    rows = [_row(1), _row(2), _row(3)]
+    cursor = _FakeCursor(
+        [
+            {"scope_id": "atc4:G04C2", "row_id": 1, "stage_row_sha256": "hash-1", "status": row_topic_db.STATUS_CLASSIFIED},
+            {"scope_id": "atc4:G04C2", "row_id": 2, "stage_row_sha256": "hash-2", "status": row_topic_db.STATUS_UNRESOLVED_MISSING},
+            {"scope_id": "atc4:G04C2", "row_id": 3, "stage_row_sha256": "old-hash", "status": row_topic_db.STATUS_CLASSIFIED},
+        ]
+    )
+    connection = _FakeConnection(cursor)
+
+    default_pending = row_topic_db.load_pending_rows(connection, schema="jw_brand_activity_stage", topic_set_version="topic-set", rows=rows)
+    retry_pending = row_topic_db.load_pending_rows(
+        connection,
+        schema="jw_brand_activity_stage",
+        topic_set_version="topic-set",
+        rows=rows,
+        retry_unresolved=True,
+    )
+
+    assert [row.row_id for row in default_pending] == [3]
+    assert [row.row_id for row in retry_pending] == [2, 3]
+
+
+def test_db_pending_transaction_rolls_back_assignments_when_status_insert_fails() -> None:
+    """Given status persistence fails, When a DB-pending batch is stored, Then assignments roll back too."""
+    cursor = _FakeCursor(fail_on_status_insert=True)
+    connection = _FakeConnection(cursor)
+    assignment = rta.RowTopicAssignment(
+        row_id=1,
+        scope_id="atc4:G04C2",
+        brand="THRUPAS",
+        topic_id="T1",
+        topic_set_version="topic-set",
+        prompt_version="row_topic_v1",
+        batch_id="batch-1",
+    )
+    status = row_topic_db.RowTopicAssignmentStatus(
+        topic_set_version="topic-set",
+        scope_id="atc4:G04C2",
+        row_id=1,
+        stage_row_sha256="hash-1",
+        prompt_version="row_topic_v1",
+        batch_id="batch-1",
+        status=row_topic_db.STATUS_CLASSIFIED,
+        assignment_count=1,
+    )
+
+    with pytest.raises(row_topic_db.AssignmentStatusError):
+        row_topic_db.insert_assignment_batch(
+            connection,
+            schema="jw_brand_activity_stage",
+            assignments=[assignment],
+            statuses=[status],
+        )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_runner_can_plan_db_pending_rows_without_checkpoint_skip(tmp_path: Path) -> None:
+    """Given DB pending rows, When planned, Then checkpoint files remain audit-only for db mode."""
+    rows = [_row(i) for i in range(1, 4)]
+    checkpoint = tmp_path / "checkpoint.jsonl"
+    checkpoint.write_text(json.dumps({"batch_id": "atc4:G04C2:THRUPAS:row_topic_v1:000001", "status": "ok"}) + "\n", encoding="utf-8")
+
+    plan = row_topic_runner.plan_batches(
+        rows,
+        batch_size=2,
+        prompt_version="row_topic_v1",
+        checkpoint_path=checkpoint,
+        ignore_checkpoint=True,
+    )
+
+    assert [batch.batch_id for batch in plan.pending_batches] == [
+        "atc4:G04C2:THRUPAS:row_topic_v1:000001",
+        "atc4:G04C2:THRUPAS:row_topic_v1:000002",
+    ]

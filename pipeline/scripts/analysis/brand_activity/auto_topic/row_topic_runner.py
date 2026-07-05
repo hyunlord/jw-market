@@ -87,9 +87,10 @@ def plan_batches(
     batch_size: int,
     prompt_version: str,
     checkpoint_path: Path,
+    ignore_checkpoint: bool = False,
 ) -> BatchPlan:
     """Build pending batches, excluding completed checkpoint entries."""
-    completed = _completed_batch_ids(checkpoint_path)
+    completed = set() if ignore_checkpoint else _completed_batch_ids(checkpoint_path)
     all_batches = tuple(_build_batches(rows, batch_size, prompt_version))
     pending = tuple(batch for batch in all_batches if batch.batch_id not in completed)
     return BatchPlan(

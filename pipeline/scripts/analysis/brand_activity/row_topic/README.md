@@ -13,6 +13,7 @@ so topic shares can sum above 100%.
 - Stage rows: `jw_brand_activity_stage.km_keyword_event_stage`
 - Topic rubric: `jw_brand_activity_stage.mart_brand_activity_topics.payload`
 - Assignment table: `jw_brand_activity_stage.row_topic_assignment`
+- Assignment status table: `jw_brand_activity_stage.row_topic_assignment_status`
 - Compatible view: `jw_brand_activity_stage.row_topic_assignment_share_view`
 - Current topic set version: `brand_activity_replay_20260703_125045`
 
@@ -27,11 +28,24 @@ for them.
 - Batches are grouped by `(scope_id, brand)`.
 - Batch IDs are deterministic:
   `{scope_id}:{brand}:row_topic_v1:{index:06d}`
-- A checkpoint JSONL row with `status: "ok"` marks that batch complete.
-- Resume mode is just rerunning `execute` with the same checkpoint path; completed
-  batch IDs are skipped and must not be called again.
 - Assignments are inserted idempotently with primary key
   `(row_id, topic_id, topic_set_version)`.
+
+There are two pending sources:
+
+- `--pending-source file` is the legacy default. A checkpoint JSONL row with
+  `status: "ok"` marks that batch complete, and rerunning `execute` with the
+  same checkpoint path skips completed batch IDs.
+- `--pending-source db` uses `row_topic_assignment_status` as the authority.
+  The checkpoint remains an audit log, but it is not used to decide what to
+  skip. This is the CronJob-safe mode for stateless pods.
+
+The status table records every processed row for a topic set. Rows with no topic
+assignments are stored as `status='classified'` with `assignment_count=0`, so
+they are not misread as pending work on the next run. Rows that remain omitted
+after fallback are stored as `status='unresolved_missing'` and are skipped by
+default; pass `--retry-unresolved` only when intentionally spending calls on
+those rows again.
 
 ## Missing-Row Fallback
 
@@ -65,13 +79,25 @@ Run these from the repository root.
 
 ### Apply DDL
 
-Apply once only. If the assignment table already exists, the runner refuses to
-overwrite it.
+Apply once only for a fresh install. On an existing assignment install, the
+runner can add the status table and refresh the compatible view without
+overwriting assignment data.
 
 ```bash
 python -m pipeline.scripts.analysis.brand_activity.row_topic.execute apply-ddl \
   --schema jw_brand_activity_stage
 ```
+
+Before enabling `--pending-source db` in live automation, two PL-gated steps are
+mandatory:
+
+1. Run `apply-ddl` against the live schema to create
+   `row_topic_assignment_status`.
+2. Backfill the completed 59,012 classified rows for
+   `brand_activity_replay_20260703_125045`.
+
+If that backfill is skipped, the first DB-pending run will see all historical
+rows as pending and can re-call the model for already completed work.
 
 ### Dry Run
 
@@ -81,6 +107,7 @@ Dry run performs no LLM calls and is the cost gate.
 python -m pipeline.scripts.analysis.brand_activity.row_topic.execute dry-run \
   --schema jw_brand_activity_stage \
   --topic-set-version brand_activity_replay_20260703_125045 \
+  --pending-source db \
   --checkpoint /tmp/row_topic_full/checkpoint.jsonl \
   --batch-size 150
 ```
@@ -93,6 +120,7 @@ Use the same checkpoint path for resume. The runner skips completed batch IDs.
 python -m pipeline.scripts.analysis.brand_activity.row_topic.execute execute \
   --schema jw_brand_activity_stage \
   --topic-set-version brand_activity_replay_20260703_125045 \
+  --pending-source db \
   --checkpoint /tmp/row_topic_full/checkpoint.jsonl \
   --log /tmp/row_topic_full/execute_log.jsonl \
   --batch-size 150 \
@@ -126,4 +154,3 @@ ORDER BY scope_id;
 Use `row_topic_assignment_share_view` to compare row-level assignment shares with
 the existing mart payload and to demonstrate filtered distributions for period,
 visit location, specialty, interest, and prescription evolution.
-

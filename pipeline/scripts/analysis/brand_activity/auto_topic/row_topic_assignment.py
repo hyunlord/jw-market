@@ -31,6 +31,7 @@ class AssignmentInputRow:
     scope_id: str
     brand: str
     keyword_text: str
+    stage_row_sha256: str = ""
     period_ym: str = ""
     visit_location: str = ""
     specialty: str = ""

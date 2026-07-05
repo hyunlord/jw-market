@@ -20,6 +20,26 @@ CREATE TABLE IF NOT EXISTS {schema}.row_topic_assignment (
 """.strip()
 
 
+def assignment_status_table_ddl(schema: str) -> str:
+    """Return the DB-backed completion marker table for pending-row detection."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {schema}.row_topic_assignment_status (
+  topic_set_version VARCHAR(128) NOT NULL,
+  scope_id VARCHAR(128) NOT NULL,
+  row_id BIGINT(20) UNSIGNED NOT NULL,
+  stage_row_sha256 CHAR(64) NOT NULL,
+  prompt_version VARCHAR(64) NOT NULL,
+  batch_id VARCHAR(192) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  assignment_count INT(11) NOT NULL DEFAULT 0,
+  classified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (topic_set_version, scope_id, row_id),
+  KEY idx_row_topic_assignment_status_status (topic_set_version, status),
+  KEY idx_row_topic_assignment_status_batch (topic_set_version, batch_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""".strip()
+
+
 def compatible_share_view_sql(schema: str) -> str:
     """Return a legacy topic_shares-compatible aggregation view."""
     return f"""

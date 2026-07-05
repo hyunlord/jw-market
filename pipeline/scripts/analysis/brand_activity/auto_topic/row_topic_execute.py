@@ -26,17 +26,30 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.models import JsonValue
 from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_assignment import (
     AssignmentInputRow,
     AssignmentParseError,
+    RowTopicAssignment,
     TopicRubric,
     parse_assignment_response_allow_missing,
     parse_assignment_response,
     row_topic_prompt,
 )
-from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_db import PreparedRun, apply_ddl, insert_assignments, prepare_run
+from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_db import (
+    STATUS_CLASSIFIED,
+    STATUS_UNRESOLVED_MISSING,
+    PreparedRun,
+    RowTopicAssignmentStatus,
+    apply_ddl,
+    insert_assignment_batch,
+    insert_assignments,
+    load_pending_rows,
+    prepare_run,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_runner import AssignmentBatch, AssignmentChatClient, plan_batches
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store import validated_stage_schema
 
 
 PROMPT_VERSION: Final = "row_topic_v1"
+PENDING_SOURCE_FILE: Final = "file"
+PENDING_SOURCE_DB: Final = "db"
 
 
 def main() -> int:
@@ -50,6 +63,8 @@ def main() -> int:
     parser.add_argument("--max-calls", type=int, default=0)
     parser.add_argument("--base-url", default="https://jwai-dev.jwhealthcare.com")
     parser.add_argument("--serving-id", default="163")
+    parser.add_argument("--pending-source", choices=(PENDING_SOURCE_FILE, PENDING_SOURCE_DB), default=PENDING_SOURCE_FILE)
+    parser.add_argument("--retry-unresolved", action="store_true")
     args = parser.parse_args()
     schema = validated_stage_schema(args.schema)
     connection = connect_mariadb(read_env_file())
@@ -58,25 +73,68 @@ def main() -> int:
             _print_json(apply_ddl(connection, schema=schema))
             return 0
         prepared = prepare_run(connection, schema=schema, topic_set_version=args.topic_set_version)
-        summary = dry_summary(prepared, batch_size=args.batch_size, checkpoint_path=args.checkpoint)
+        summary = dry_summary(
+            prepared,
+            connection,
+            schema=schema,
+            batch_size=args.batch_size,
+            checkpoint_path=args.checkpoint,
+            pending_source=args.pending_source,
+            retry_unresolved=args.retry_unresolved,
+        )
         _print_json(summary)
         if args.mode == "dry-run":
             return 0
         client = AssignmentChatClient(base_url=args.base_url, token=_required_env("GENOS_BEARER_TOKEN"), serving_id=args.serving_id)
-        result = execute(prepared, connection, client, schema=schema, batch_size=args.batch_size, max_calls=args.max_calls, checkpoint_path=args.checkpoint, log_path=args.log)
+        result = execute(
+            prepared,
+            connection,
+            client,
+            schema=schema,
+            batch_size=args.batch_size,
+            max_calls=args.max_calls,
+            checkpoint_path=args.checkpoint,
+            log_path=args.log,
+            pending_source=args.pending_source,
+            retry_unresolved=args.retry_unresolved,
+        )
         _print_json(result)
         return 0
     finally:
         connection.close()
 
 
-def dry_summary(prepared: PreparedRun, *, batch_size: int, checkpoint_path: Path) -> dict[str, JsonValue]:
+def dry_summary(
+    prepared: PreparedRun,
+    connection: pymysql.connections.Connection,
+    *,
+    schema: str,
+    batch_size: int,
+    checkpoint_path: Path,
+    pending_source: str = PENDING_SOURCE_FILE,
+    retry_unresolved: bool = False,
+) -> dict[str, JsonValue]:
     """Return the no-call estimate used as the cost gate."""
-    plan = plan_batches(list(prepared.rows), batch_size=batch_size, prompt_version=PROMPT_VERSION, checkpoint_path=checkpoint_path)
+    rows = _pending_rows_for_source(
+        prepared,
+        connection,
+        schema=schema,
+        pending_source=pending_source,
+        retry_unresolved=retry_unresolved,
+    )
+    plan = plan_batches(
+        rows,
+        batch_size=batch_size,
+        prompt_version=PROMPT_VERSION,
+        checkpoint_path=checkpoint_path,
+        ignore_checkpoint=pending_source == PENDING_SOURCE_DB,
+    )
     return {
         "mode": "dry-run",
         "topic_set_version": prepared.topic_set_version,
-        "total_rows": plan.total_rows,
+        "pending_source": pending_source,
+        "total_rows": len(prepared.rows),
+        "pending_rows": plan.total_rows,
         "scope_brand_pairs": plan.total_scope_brand_pairs,
         "total_batches": plan.total_batches,
         "pending_batches": len(plan.pending_batches),
@@ -96,9 +154,24 @@ def execute(
     max_calls: int,
     checkpoint_path: Path,
     log_path: Path,
+    pending_source: str = PENDING_SOURCE_FILE,
+    retry_unresolved: bool = False,
 ) -> dict[str, JsonValue]:
     """Classify all pending batches, inserting each successful batch before checkpointing."""
-    plan = plan_batches(list(prepared.rows), batch_size=batch_size, prompt_version=PROMPT_VERSION, checkpoint_path=checkpoint_path)
+    rows = _pending_rows_for_source(
+        prepared,
+        connection,
+        schema=schema,
+        pending_source=pending_source,
+        retry_unresolved=retry_unresolved,
+    )
+    plan = plan_batches(
+        rows,
+        batch_size=batch_size,
+        prompt_version=PROMPT_VERSION,
+        checkpoint_path=checkpoint_path,
+        ignore_checkpoint=pending_source == PENDING_SOURCE_DB,
+    )
     if max_calls and plan.estimated_calls > max_calls:
         raise AssignmentParseError(f"pending calls {plan.estimated_calls} exceed cap {max_calls}")
     calls_used = 0
@@ -116,7 +189,18 @@ def execute(
         missing_rows_total += len(missing_row_ids)
         unresolved_missing.extend(missing_row_ids)
         assignments = parsed["assignments"]
-        inserted += insert_assignments(connection, schema=schema, assignments=assignments)
+        if pending_source == PENDING_SOURCE_DB:
+            statuses = _status_rows_for_batch(
+                batch.rows,
+                assignments,
+                missing_row_ids=missing_row_ids,
+                topic_set_version=prepared.topic_set_version,
+                batch_id=batch.batch_id,
+            )
+            inserted_rows, _status_rows = insert_assignment_batch(connection, schema=schema, assignments=assignments, statuses=statuses)
+            inserted += inserted_rows
+        else:
+            inserted += insert_assignments(connection, schema=schema, assignments=assignments)
         assignments_total += len(assignments)
         none_rows += len(batch.rows) - len({assignment.row_id for assignment in assignments})
         checkpoint_payload = {
@@ -146,6 +230,8 @@ def execute(
     return {
         "mode": "execute",
         "topic_set_version": prepared.topic_set_version,
+        "pending_source": pending_source,
+        "pending_rows_before": plan.total_rows,
         "pending_batches_before": len(plan.pending_batches),
         "calls_used": calls_used,
         "assignment_rows_inserted_or_updated": inserted,
@@ -157,6 +243,55 @@ def execute(
         "checkpoint_path": str(checkpoint_path),
         "log_path": str(log_path),
     }
+
+
+def _pending_rows_for_source(
+    prepared: PreparedRun,
+    connection: pymysql.connections.Connection,
+    *,
+    schema: str,
+    pending_source: str,
+    retry_unresolved: bool,
+) -> list[AssignmentInputRow]:
+    if pending_source == PENDING_SOURCE_DB:
+        return load_pending_rows(
+            connection,
+            schema=schema,
+            topic_set_version=prepared.topic_set_version,
+            rows=list(prepared.rows),
+            retry_unresolved=retry_unresolved,
+        )
+    return list(prepared.rows)
+
+
+def _status_rows_for_batch(
+    rows: tuple[AssignmentInputRow, ...],
+    assignments: list[RowTopicAssignment],
+    *,
+    missing_row_ids: list[int],
+    topic_set_version: str,
+    batch_id: str,
+) -> list[RowTopicAssignmentStatus]:
+    assignment_counts: dict[int, int] = {}
+    for assignment in assignments:
+        assignment_counts[assignment.row_id] = assignment_counts.get(assignment.row_id, 0) + 1
+    missing = set(missing_row_ids)
+    statuses: list[RowTopicAssignmentStatus] = []
+    for row in rows:
+        status = STATUS_UNRESOLVED_MISSING if row.row_id in missing else STATUS_CLASSIFIED
+        statuses.append(
+            RowTopicAssignmentStatus(
+                topic_set_version=topic_set_version,
+                scope_id=row.scope_id,
+                row_id=row.row_id,
+                stage_row_sha256=row.stage_row_sha256,
+                prompt_version=PROMPT_VERSION,
+                batch_id=batch_id,
+                status=status,
+                assignment_count=assignment_counts.get(row.row_id, 0),
+            )
+        )
+    return statuses
 
 
 def _classify_batch(
