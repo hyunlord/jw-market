@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import math
 from typing import Any
 
+from .display_format import display_aliases as _display_aliases
+from .display_format import display_number as _display_number
+from .display_format import display_pct as _display_pct
 from .json_util import parse_history, parse_json_object
 
 
@@ -129,6 +131,16 @@ def _candidate_from_history(
     score = _score(current=current, delta_abs=delta_abs, delta_pct=delta_pct, contribution=contribution, yoy_delta_pct=yoy_delta_pct)
     low_base = _is_low_base(previous, total_recent, floors)
     final_score = round(score * floors.low_base_score_multiplier, 6) if low_base else score
+    display_values = {
+        "value_current": current,
+        "value_baseline": previous,
+        "delta_abs": delta_abs,
+        "delta_pct": delta_pct,
+        "yoy_value_baseline": yoy_value,
+        "yoy_delta_abs": yoy_delta_abs,
+        "yoy_delta_pct": yoy_delta_pct,
+        "contribution_pct": contribution,
+    }
     return {
         "brand": row.brand_name,
         "source": row.source,
@@ -160,6 +172,10 @@ def _candidate_from_history(
             "yoy_delta_abs": _display_number(yoy_delta_abs),
             "yoy_delta_pct": _display_pct(yoy_delta_pct),
             "contribution_pct": _display_pct(contribution),
+        },
+        "display_number_aliases": {
+            key: _display_aliases(key, value)
+            for key, value in display_values.items()
         },
     }
 
@@ -252,31 +268,3 @@ def _yoy_period(period: str, history: dict[str, float]) -> str | None:
         candidate = f"{int(year_text) - 1}-{month}"
     return candidate if candidate in history else None
 
-
-def _display_number(value: float | None) -> str | None:
-    if value is None:
-        return None
-    if abs(value) >= 100_000_000:
-        return f"{value / 100_000_000:.1f}억원"
-    if abs(value) >= 10_000:
-        return f"{value:,.0f}"
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-def _display_pct(value: float | None) -> str | None:
-    if value is None:
-        return None
-    if value == 0:
-        return "0%"
-    if abs(value) < 0.1:
-        return f"{_format_small_percent(value)}%"
-    return f"{value:.1f}%"
-
-
-def _format_small_percent(value: float) -> str:
-    # Preserve two significant digits for tiny percentages; one-decimal
-    # formatting turns 0.05% signals into 0.0%, which wf316 cannot quote
-    # without failing display-number validation.
-    magnitude = abs(value)
-    decimals = max(2, min(6, 1 - math.floor(math.log10(magnitude))))
-    return f"{value:.{decimals}f}".rstrip("0").rstrip(".")

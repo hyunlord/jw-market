@@ -26,9 +26,11 @@ class SummaryValidationError(RuntimeError):
 NUMBER_KEYS = ("value_current", "value_baseline", "delta_abs", "delta_pct")
 RAW_DECIMAL_RE = re.compile(r"\d+\.\d{5,}")
 DISPLAY_NUMBER_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?:억원|원|%|건|개|명|MG|MCG|G|ML|IU)",
+    r"(?<![A-Za-z0-9])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?:억원|만원|원|%|건|개|명|MG|MCG|G|ML|IU)",
     re.IGNORECASE,
 )
+MONEY_RE = re.compile(r"^(?P<number>\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?P<unit>억원|만원|원)$")
+PERCENT_RE = re.compile(r"^(?P<number>\d+(?:\.\d+)?)\s*%$")
 
 
 def inject_candidate_numbers(summary: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -66,14 +68,13 @@ def validate_display_number_narratives(
         except CandidateMatchError as exc:
             errors.append(str(exc))
             continue
-        display_values = {
-            str(value)
-            for value in (candidate.get("display_numbers") or {}).values()
-            if value not in (None, "")
-        }
+        display_values = _display_number_tokens(candidate)
         label_values = _label_number_tokens(candidate, profile or summary.get("profile_display"))
         for token in DISPLAY_NUMBER_RE.findall(narrative):
-            if token not in display_values and token not in label_values:
+            if (
+                _normalize_token(token) not in {_normalize_token(value) for value in label_values}
+                and not _token_matches_display_number(token, display_values)
+            ):
                 errors.append(f"item {index} narrative number is not in display_numbers: {token}")
     return errors
 
@@ -98,6 +99,49 @@ def _label_number_tokens(candidate: dict[str, Any], profile: Any) -> set[str]:
     """Return numeric tokens that are labels, not metric values."""
     sources = [candidate.get("slice"), *_profile_strings(profile)]
     return {token for source in sources if isinstance(source, str) for token in DISPLAY_NUMBER_RE.findall(source)}
+
+
+def _display_number_tokens(candidate: dict[str, Any]) -> set[str]:
+    tokens = {
+        str(value)
+        for value in (candidate.get("display_numbers") or {}).values()
+        if value not in (None, "")
+    }
+    for value in (candidate.get("display_number_aliases") or {}).values():
+        if isinstance(value, list):
+            tokens.update(str(item) for item in value if item not in (None, ""))
+        elif value not in (None, ""):
+            tokens.add(str(value))
+    return tokens
+
+
+def _token_matches_display_number(token: str, display_values: set[str]) -> bool:
+    normalized = _normalize_token(token)
+    normalized_values = {_normalize_token(value) for value in display_values}
+    if normalized in normalized_values:
+        return True
+    parsed = _parse_display_value(token)
+    if parsed is None:
+        return False
+    return any(parsed == _parse_display_value(value) for value in display_values)
+
+
+def _normalize_token(token: str) -> str:
+    return re.sub(r"\s+", "", token)
+
+
+def _parse_display_value(token: str) -> tuple[str, int] | tuple[str, float] | None:
+    compact = _normalize_token(token)
+    money = MONEY_RE.match(compact)
+    if money:
+        number = float(money.group("number").replace(",", ""))
+        unit = money.group("unit")
+        multipliers = {"원": 1, "만원": 10_000, "억원": 100_000_000}
+        return ("money", round(number * multipliers[unit]))
+    percent = PERCENT_RE.match(compact)
+    if percent:
+        return ("percent", round(float(percent.group("number")), 6))
+    return None
 
 
 def _profile_strings(value: Any) -> list[str]:

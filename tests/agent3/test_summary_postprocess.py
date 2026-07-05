@@ -122,6 +122,61 @@ def test_validate_display_number_narratives_accepts_slice_label_number() -> None
     assert validate_display_number_narratives(summary, [candidate]) == []
 
 
+def test_validate_display_number_narratives_accepts_won_alias_for_small_currency() -> None:
+    candidate = {
+        "slice": "전체 UBIST",
+        "metric": "recent_growth",
+        "display_numbers": {
+            "value_current": "1.7억원",
+            "value_baseline": "1.0억원",
+            "delta_abs": "7,021만원",
+            "delta_pct": "70.2%",
+        },
+        "display_number_aliases": {
+            "delta_abs": ["7,021만원", "70,211,632원"],
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "전체 UBIST",
+                "metric": "recent_growth",
+                "narrative": "전체 UBIST 매출이 70,211,632원 증가하며 70.2% 성장했습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == []
+
+
+def test_validate_display_number_narratives_rejects_unknown_currency_value() -> None:
+    candidate = {
+        "slice": "전체 UBIST",
+        "metric": "recent_growth",
+        "display_numbers": {
+            "value_current": "1.7억원",
+            "value_baseline": "1.0억원",
+            "delta_abs": "70,211,632원",
+            "delta_pct": "70.2%",
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "전체 UBIST",
+                "metric": "recent_growth",
+                "narrative": "전체 UBIST 매출이 70,999,999원 증가했습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == [
+        "item 0 narrative number is not in display_numbers: 70,999,999원"
+    ]
+
+
 def test_validate_display_number_narratives_still_rejects_raw_metric_number() -> None:
     candidate = {
         "slice": "IQVIA 성분용량: 0.05%",

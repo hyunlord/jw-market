@@ -153,6 +153,29 @@ def test_candidates_include_display_numbers_for_narrative_copy() -> None:
     assert candidates[0]["display_numbers"]["delta_pct"] == "150.0%"
 
 
+def test_small_currency_display_includes_won_unit_aliases() -> None:
+    row = MetricRow(
+        brand_name="소액",
+        brand_key="small-money",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 100_000_000.0, "2026-04": 170_211_631.8},
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=10.0,
+            min_delta_pct=10.0,
+            min_recent_value=20.0,
+            min_contribution_pct=10.0,
+        ),
+    )
+
+    assert candidates[0]["display_numbers"]["delta_abs"] == "70,211,632원"
+    assert {"70,211,632원", "7,021만원"}.issubset(candidates[0]["display_number_aliases"]["delta_abs"])
+
+
 def test_tiny_percent_display_keeps_two_significant_digits() -> None:
     row = MetricRow(
         brand_name="극소퍼센트",
