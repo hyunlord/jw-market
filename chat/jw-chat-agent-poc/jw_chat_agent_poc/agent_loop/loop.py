@@ -490,14 +490,27 @@ def _strict_query_calls(
         return [_unsupported_population_call(plan.unsupported_message)]
     facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, (brand,), observations)
     strict_calls: list[dict[str, Any]] = []
-    for spec in plan.specs:
+    for index, spec in enumerate(plan.specs):
         execution = facade.execute("query", {"brand": brand, "spec": json.dumps(spec, ensure_ascii=False)})
-        strict_calls.append(execution.call)
+        call = execution.call
+        if index < len(plan.metadata):
+            call = _with_strict_query_metadata(call, plan.metadata[index])
+        strict_calls.append(call)
     if plan.needs_top_competitor_specialty:
         strict_calls.extend(_top_competitor_specialty_calls(facade, brand))
     if plan.needs_company_molecule:
         strict_calls.extend(_company_molecule_calls(facade, brand, strict_calls))
     return strict_calls or [_unsupported_population_call("요청한 모집단 query spec을 생성하지 못했습니다.")]
+
+
+def _with_strict_query_metadata(call: dict[str, Any], metadata: dict[str, str]) -> dict[str, Any]:
+    if not metadata:
+        return call
+    enriched = dict(call)
+    data = enriched.get("render_data")
+    if isinstance(data, dict):
+        enriched["render_data"] = {**data, **metadata}
+    return enriched
 
 
 def _non_metric_support_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:

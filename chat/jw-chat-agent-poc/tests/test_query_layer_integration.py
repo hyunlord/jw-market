@@ -627,6 +627,71 @@ def test_population_question_forces_query_spec_instead_of_generic_metric() -> No
     assert data["applied_filters"] == {"channel": "의원"}
 
 
+def test_segment_compare_collects_axis_facts_instead_of_unsupported_only() -> None:
+    """Given a segment comparison question, supported axes are queried and absent axes remain axis-scoped."""
+
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(tool_calls=(ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}, reason="generic metric"),)),
+            AgentDecision(final_answer="done"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, query_layer=_query_layer())
+
+    result = agent.answer("리바로 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘")
+
+    tools = [call.get("tool") for call in result["tool_calls"]]
+    assert tools != ["unsupported_metric"]
+    query_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("metric") == "query_spec"
+    ]
+    axes = {call["render_data"].get("requested_axis") for call in query_calls}
+    assert {"Molecule", "브랜드", "제형"}.issubset(axes)
+    failed_axes = {
+        call.get("render_data", {}).get("requested_axis")
+        for call in result["tool_calls"]
+        if call.get("tool") == "query_failed"
+    }
+    assert {"Class", "용량"}.issubset(failed_axes)
+    fact_md = result["markdown_response"]["fact_md"]
+    assert "Molecule 지원" in fact_md
+    assert "브랜드 지원" in fact_md
+    assert "제형 지원" in fact_md
+    assert "Class 미지원" in fact_md
+    assert "용량 미지원" in fact_md
+
+
+def test_source_crosscheck_collects_ubist_and_iqvia_separately() -> None:
+    """Given a source cross-check question, available sources surface without pretending a cross-check happened."""
+
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(tool_calls=(ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}, reason="generic metric"),)),
+            AgentDecision(final_answer="done"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, query_layer=_query_layer())
+
+    result = agent.answer("리바로 UBIST와 IQVIA 데이터 출처별로 교차 확인해줘")
+
+    sources = {
+        call.get("render_data", {}).get("requested_source"): call
+        for call in result["tool_calls"]
+        if call.get("render_data", {}).get("contract_intent") == "source_crosscheck"
+    }
+    assert sources["UBIST"]["tool"] == "get_brand_metric"
+    assert sources["IQVIA"]["tool"] == "query_failed"
+    assert sources["UBIST"]["render_data"]["requested_brand"] == "리바로"
+    assert sources["UBIST"]["render_data"].get("filters", {}).get("brand") is None
+    fact_md = result["markdown_response"]["fact_md"]
+    assert "UBIST 보유" in fact_md
+    assert "IQVIA 미보유" in fact_md
+    assert "100.00%→100.00%" not in fact_md
+    assert "교차 판정" not in fact_md
+
+
 @pytest.mark.parametrize(
     "question",
     [

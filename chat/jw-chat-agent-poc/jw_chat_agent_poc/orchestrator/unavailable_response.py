@@ -14,7 +14,7 @@ _UNAVAILABLE_SIGNAL_RE = re.compile(
 )
 _QUESTION_UNAVAILABLE_RE = re.compile(
     r"(?:datamonitor|cortellis|kol|nccn|가이드라인|치료\s*지침|전문가|자문|글로벌\s*시장\s*전망|"
-    r"파이프라인|임상\s*파이프라인|포지셔닝.*(?:채널|세그먼트)|(?:채널|세그먼트).*포지셔닝)",
+    r"파이프라인|임상\s*파이프라인)",
     re.IGNORECASE,
 )
 _INTERNAL_ID_RE = re.compile(r"\b(?:strategy|competitive)_\d+\b", re.IGNORECASE)
@@ -158,7 +158,12 @@ def apply_common_unavailable_response(question: str, answer: str, markdown_respo
     if _has_five_step_block(sanitized_answer):
         return _cleanup(sanitized_answer)
     combined = "\n\n".join(part for part in (question, sanitized_answer, sanitize_internal_diagnostics(fact_md)) if part)
-    if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not _QUESTION_UNAVAILABLE_RE.search(question):
+    question_has_unavailable_signal = bool(_QUESTION_UNAVAILABLE_RE.search(question))
+    if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not question_has_unavailable_signal:
+        return _cleanup(sanitized_answer)
+    if not question_has_unavailable_signal and _is_positioning_question(question):
+        return _cleanup(sanitized_answer)
+    if not question_has_unavailable_signal and not _UNAVAILABLE_SIGNAL_RE.search(sanitize_internal_diagnostics(fact_md)):
         return _cleanup(sanitized_answer)
     block = _five_step_block(_plan_for(question, sanitized_answer, fact_md))
     return _cleanup(_insert_before_source(sanitized_answer, block))
@@ -244,9 +249,19 @@ def _plan_for(question: str, answer: str, fact_md: str) -> UnavailablePlan:
     for tokens, plan in _PLANS:
         if tokens == _FORECAST_TOKENS:
             continue
+        if _is_source_trap_plan(tokens):
+            continue
         if any(token.lower() in text for token in tokens):
             return plan
     return _DEFAULT_PLAN
+
+
+def _is_source_trap_plan(tokens: tuple[str, ...]) -> bool:
+    return any(token in tokens for token in ("datamonitor", "cortellis", "kol", "nccn"))
+
+
+def _is_positioning_question(question: str) -> bool:
+    return "포지셔닝" in question
 
 
 def _five_step_block(plan: UnavailablePlan) -> str:

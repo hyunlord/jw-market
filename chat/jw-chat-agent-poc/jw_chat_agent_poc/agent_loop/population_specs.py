@@ -12,6 +12,7 @@ class StrictQueryPlan:
     """Deterministic query specs for population-sensitive questions."""
 
     specs: tuple[QuerySpec, ...] = ()
+    metadata: tuple[dict[str, str], ...] = ()
     unsupported_message: str = ""
     exclusive: bool = True
     needs_top_competitor_specialty: bool = False
@@ -66,6 +67,46 @@ def _nhi_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | No
     if _asks_nhi(question):
         return StrictQueryPlan(unsupported_message="nhi_type dimension absent in strategic mart for this market.")
     return None
+
+
+def _source_crosscheck_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
+    sources = _requested_sources(question)
+    if len(sources) < 2 or not _asks_source_crosscheck(question):
+        return None
+    specs: list[QuerySpec] = []
+    metadata: list[dict[str, str]] = []
+    for source_label, source in sources:
+        specs.append(
+            _spec(
+                "product",
+                source=source,
+                metric="sales",
+                group_by=("product", "period"),
+                derive=("trend",),
+                filters={"periods": "10"},
+                limit=20,
+            )
+        )
+        metadata.append(
+            {
+                "contract_intent": "source_crosscheck",
+                "requested_source": source_label,
+                "requested_brand": brand,
+            }
+        )
+    return StrictQueryPlan(specs=tuple(specs), metadata=tuple(metadata))
+
+
+def _segment_compare_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
+    axes = _requested_segment_axes(question)
+    if not axes or not _asks_segment_compare(question):
+        return None
+    specs: list[QuerySpec] = []
+    metadata: list[dict[str, str]] = []
+    for axis, dimension in axes:
+        specs.append(_spec(dimension, metric="sales", limit=5))
+        metadata.append({"contract_intent": "segment_compare", "requested_axis": axis, "requested_dimension": dimension})
+    return StrictQueryPlan(specs=tuple(specs), metadata=tuple(metadata))
 
 
 def _yoy_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
@@ -128,6 +169,8 @@ def _company_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan 
 STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
     StrictQueryRule("causal_news_sales_unsupported", _causal_news_sales_plan),
     StrictQueryRule("nhi_unsupported", _nhi_plan),
+    StrictQueryRule("source_crosscheck", _source_crosscheck_plan),
+    StrictQueryRule("segment_compare", _segment_compare_plan),
     StrictQueryRule("yoy_product_growth", _yoy_plan),
     StrictQueryRule("average_product_share", _average_share_plan),
     StrictQueryRule("channel_molecule_share", _channel_molecule_plan),
@@ -143,6 +186,7 @@ STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
 def _spec(
     dimension: str,
     *,
+    source: str = "ubist",
     metric: str,
     group_by: tuple[str, ...] | None = None,
     derive: tuple[str, ...] = (),
@@ -150,7 +194,7 @@ def _spec(
     limit: int = 10,
 ) -> QuerySpec:
     return {
-        "source": "ubist",
+        "source": source,
         "view": "market_landscape",
         "dimensions": [dimension],
         "group_by": list(group_by or (dimension,)),
@@ -196,3 +240,41 @@ def _asks_causal_news_sales(question: str) -> bool:
 
 def _asks_form_sales_trend(question: str) -> bool:
     return ("제형" in question or "class" in question) and any(token in question for token in ("매출", "추이", "최근 1년"))
+
+
+def _asks_segment_compare(question: str) -> bool:
+    if any(token in question for token in ("세그먼트별", "세그먼트 별", "segment별", "Segment별")):
+        return True
+    if "비교" in question and len(_requested_segment_axes(question)) >= 2:
+        return True
+    return "비교" in question and any(token in question for token in ("Class", "Molecule", "브랜드", "용량", "제형"))
+
+
+def _requested_segment_axes(question: str) -> tuple[tuple[str, str], ...]:
+    axis_map: tuple[tuple[tuple[str, ...], str, str], ...] = (
+        (("Class", "class", "클래스"), "Class", "class_2"),
+        (("Molecule", "molecule", "성분"), "Molecule", "molecule"),
+        (("브랜드", "Brand", "brand"), "브랜드", "product"),
+        (("용량", "Dose", "dose"), "용량", "dose"),
+        (("제형", "Form", "form"), "제형", "dosage_form"),
+    )
+    requested: list[tuple[str, str]] = []
+    for tokens, axis, dimension in axis_map:
+        if any(token in question for token in tokens):
+            requested.append((axis, dimension))
+    return tuple(requested)
+
+
+def _asks_source_crosscheck(question: str) -> bool:
+    return any(token in question for token in ("교차", "출처별", "출처 별", "source", "Source")) and any(
+        token in question for token in ("UBIST", "ubist", "IQVIA", "iqvia")
+    )
+
+
+def _requested_sources(question: str) -> tuple[tuple[str, str], ...]:
+    sources: list[tuple[str, str]] = []
+    if any(token in question for token in ("UBIST", "ubist")):
+        sources.append(("UBIST", "ubist"))
+    if any(token in question for token in ("IQVIA", "iqvia")):
+        sources.append(("IQVIA", "iqvia_nsa"))
+    return tuple(sources)

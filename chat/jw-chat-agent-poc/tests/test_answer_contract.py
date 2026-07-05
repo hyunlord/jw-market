@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
-from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls, enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls, enforce_answer_contract, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
 
@@ -85,6 +85,39 @@ NEWS_FACT_MD = TREND_FACT_MD + """
 | --- | --- | --- | --- | --- | --- |
 | 2026-06-20 | 이상지질혈증 복합제 경쟁 심화 | 데일리팜 | https://example.test/news/1 | 로수바스타틴 복합제가 시장 경쟁을 키웠다는 내용 | 경쟁 심화 |
 | 2026-06-25 | JW중외제약 리바로 영업 채널 확대 | 메디칼타임즈 | https://example.test/news/2 | 의원 채널 활동을 확대한다는 내용 | 영업 채널 확대 |
+"""
+
+
+SEGMENT_COMPARE_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Molecule 지원 | UBIST 2026-04 기준 1위 RSV/EZE 매출 749.07억원, MS 33.19% |
+| 브랜드 지원 | UBIST 2026-04 기준 1위 로수젯 매출 206.85억원, MS 9.17% |
+| 제형 지원 | UBIST 2026-04 기준 1위 Statin/EZE 매출 1332.65억원, MS 59.05% |
+| Class 미지원 | Class 축은 현재 catalog/query 경로에서 지원되지 않습니다. |
+| 용량 미지원 | 용량 축은 현재 catalog/query 경로에서 지원되지 않습니다. |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2026-04, 시장 ml_006, view market_landscape |
+"""
+
+
+SOURCE_CROSSCHECK_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| UBIST 보유 | 리바로 UBIST 2025-04→2026-04 매출 70.00억원→90.00억원, MS 8.56%→11.00% |
+| IQVIA 미보유 | IQVIA 출처는 현재 ml_006 기간 mart에서 조회되지 않습니다. |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2025-04~2026-04, 시장 ml_006, view market_landscape |
 """
 
 
@@ -196,6 +229,73 @@ def test_trend_support_contract_adds_axis_support_matrix() -> None:
     assert "Statin/EZE(제형)" in revised
     assert "+3.42%p 상승" in revised
     assert "+3.42p 상승" not in revised
+
+
+def test_segment_compare_contract_surfaces_supported_and_missing_axes() -> None:
+    answer = "확보되지 않아 분석 불가능합니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "리바로 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘",
+        answer,
+        {"fact_md": SEGMENT_COMPARE_FACT_MD},
+    )
+
+    assert "## 세그먼트 비교 지원 범위" in revised
+    assert "| Molecule | 지원 |" in revised
+    assert "| 브랜드 | 지원 |" in revised
+    assert "| 제형 | 지원 |" in revised
+    assert "| Class | 미지원 |" in revised
+    assert "| 용량 | 미지원 |" in revised
+    assert "1332.65억원" in revised
+    assert "### 미지원 축 처리" in revised
+    assert "확보되지 않아 분석 불가능" not in revised
+    status = evaluate_answer_contract(
+        "리바로 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘",
+        revised,
+        {"fact_md": SEGMENT_COMPARE_FACT_MD},
+    )
+    assert status["structural_contract"] == "segment_compare"
+    assert status["status"] == "pass"
+
+
+def test_source_crosscheck_contract_keeps_single_source_values_without_cross_claim() -> None:
+    answer = "UBIST와 IQVIA 교차 확인은 불가합니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "리바로 UBIST와 IQVIA 데이터 출처별로 교차 확인해줘",
+        answer,
+        {"fact_md": SOURCE_CROSSCHECK_FACT_MD},
+    )
+
+    assert "## 출처별 교차 확인 범위" in revised
+    assert "| UBIST | 보유 |" in revised
+    assert "| IQVIA | 미보유 |" in revised
+    assert "70.00억원→90.00억원" in revised
+    assert "양 소스가 모두 확보될 때만 일치/불일치" in revised
+    assert "일치합니다" not in revised
+    assert "불일치합니다" not in revised
+    status = evaluate_answer_contract(
+        "리바로 UBIST와 IQVIA 데이터 출처별로 교차 확인해줘",
+        revised,
+        {"fact_md": SOURCE_CROSSCHECK_FACT_MD},
+    )
+    assert status["structural_contract"] == "source_crosscheck"
+    assert status["status"] == "pass"
+
+
+def test_source_crosscheck_contract_does_not_fire_without_source_tokens() -> None:
+    answer = "포지셔닝 축은 보유 경쟁구도 fact 기준으로만 봅니다."
+
+    revised = enforce_answer_contract(
+        "리바로 시장 내 포지셔닝을 경쟁 제품과 비교해줘",
+        answer,
+        {"fact_md": SOURCE_CROSSCHECK_FACT_MD},
+    )
+
+    assert revised == answer
+    assert evaluate_answer_contract("리바로 시장 내 포지셔닝을 경쟁 제품과 비교해줘", revised, {"fact_md": SOURCE_CROSSCHECK_FACT_MD})[
+        "status"
+    ] == "not_applicable"
 
 
 def test_change_drivers_contract_adds_external_internal_table() -> None:
@@ -452,7 +552,7 @@ def test_common_unavailable_layer_fires_for_no_data_wording_from_final_answer() 
     revised = apply_common_unavailable_response(
         "리바로의 UBIST와 IQVIA 출처를 교차해서 시장 규모를 비교해줘",
         answer,
-        {"fact_md": ""},
+        {"fact_md": "IQVIA 미보유"},
     )
 
     assert "### 미보유 데이터 처리" in revised
@@ -460,8 +560,13 @@ def test_common_unavailable_layer_fires_for_no_data_wording_from_final_answer() 
     assert "forecast 시계열" not in revised
 
 
-def test_common_unavailable_layer_fires_for_positioning_channel_segment_gap() -> None:
-    answer = "리바로의 포지셔닝은 보유 시장 지표 중심으로 확인됩니다.\n\n## 출처\n- 데이터: UBIST"
+def test_common_unavailable_layer_does_not_fire_for_positioning_without_unavailable_signal() -> None:
+    answer = (
+        "리바로의 포지셔닝은 보유 시장 지표 중심으로 확인됩니다.\n"
+        "직접 처방 이동은 확인할 수 없습니다.\n"
+        "단일제의 임상적 가치는 별도 근거로만 판단합니다.\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
 
     revised = apply_common_unavailable_response(
         "[리바로] 채널과 세그먼트 기준 포지셔닝을 분석해줘",
@@ -469,8 +574,22 @@ def test_common_unavailable_layer_fires_for_positioning_channel_segment_gap() ->
         {"fact_md": RANKING_FACT_MD},
     )
 
-    assert "### 미보유 데이터 처리" in revised
-    assert "요청 축의 세그먼트 원천 행" in revised
+    assert revised == answer
+    assert "### 미보유 데이터 처리" not in revised
+    assert "Cortellis/파이프라인" not in revised
+
+
+def test_common_unavailable_layer_does_not_choose_cortellis_from_answer_wording() -> None:
+    answer = "단일제의 임상적 가치는 별도 근거로 판단합니다."
+
+    revised = apply_common_unavailable_response(
+        "리바로 시장 내 포지셔닝을 경쟁 제품과 비교해줘",
+        answer,
+        {"fact_md": "리바로 경쟁 브랜드 지표 fact"},
+    )
+
+    assert revised == answer
+    assert "Cortellis/파이프라인" not in revised
 
 
 def test_sanitize_internal_diagnostics_keeps_public_source_context() -> None:

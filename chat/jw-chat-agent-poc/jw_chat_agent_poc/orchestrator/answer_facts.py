@@ -160,6 +160,11 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
     data = call.get("render_data")
     if not isinstance(data, dict):
         return ()
+    contract_intent = str(data.get("contract_intent") or "")
+    if contract_intent == "segment_compare":
+        return _segment_compare_axis_facts(data)
+    if contract_intent == "source_crosscheck":
+        return _source_crosscheck_axis_facts(data)
     if data.get("status") in {"error", "query_failed"}:
         facts = [
             AxisFact(
@@ -192,6 +197,110 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
     if _is_hira_procedure_call(call):
         return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_procedure_rows(data))
     return ()
+
+
+def _segment_compare_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    axis = str(data.get("requested_axis") or data.get("level") or "요청 축")
+    status = str(data.get("status") or "")
+    if status in {"error", "query_failed", "unsupported", "mapping_failed", "missing", "incomplete_split"}:
+        return (
+            AxisFact(
+                RequiredAxis.MARKET_STRUCTURE,
+                f"{axis} 미지원",
+                f"{axis} 축은 현재 catalog/query 경로에서 조회 성공하지 못했습니다. 값을 추정하지 않습니다.",
+            ),
+        )
+    segments = _segment_compare_rows(data)
+    if not segments:
+        return (
+            AxisFact(
+                RequiredAxis.MARKET_STRUCTURE,
+                f"{axis} 미지원",
+                f"{axis} 축은 조회 결과 행이 없어 값을 표시하지 않습니다.",
+            ),
+        )
+    top = next((item for item in segments if isinstance(item, dict)), {})
+    if not top:
+        return ()
+    source = str(data.get("source_label") or data.get("source") or "보유 소스")
+    period = str(data.get("period") or "최신 기간")
+    name = str(top.get("name") or top.get("brand") or "상위 세그먼트")
+    sales = eok_value(top.get("value_억원") or top.get("value_recent_억원"), top.get("value") or top.get("value_recent"))
+    share = pct_value(top.get("ms_recent_pct") or top.get("to_ms_pct"))
+    parts = [
+        f"{source} {period} 기준 1위 {name}",
+        f"매출 {sales}" if sales else "",
+        f"MS {share}" if share else "",
+    ]
+    content = " ".join(part for part in parts if part)
+    note = dosage_combination_note(axis, (item.get("name") or item.get("brand") for item in segments if isinstance(item, dict)))
+    if note:
+        content = f"{content} {note}"
+    return (AxisFact(RequiredAxis.MARKET_STRUCTURE, f"{axis} 지원", content),)
+
+
+def _segment_compare_rows(data: RenderData) -> list[dict[str, Any]]:
+    segments = data.get("level_segments")
+    if isinstance(segments, list) and segments:
+        return [item for item in segments if isinstance(item, dict)]
+    trends = data.get("level_top5_trend_series")
+    if isinstance(trends, list) and trends:
+        return [item for item in trends if isinstance(item, dict)]
+    return []
+
+
+def _source_crosscheck_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    requested_source = str(data.get("requested_source") or data.get("source_label") or "요청 소스")
+    requested_brand = str(data.get("requested_brand") or data.get("brand") or "")
+    status = str(data.get("status") or "")
+    if status in {"error", "query_failed", "unsupported", "mapping_failed", "missing", "incomplete_split"}:
+        return (
+            AxisFact(
+                RequiredAxis.SALES_TREND,
+                f"{requested_source} 미보유",
+                f"{requested_source} 출처는 현재 동일 market/기간 query 경로에서 조회 성공하지 못했습니다.",
+            ),
+        )
+    trend_rows = data.get("level_top5_trend_series")
+    if isinstance(trend_rows, list) and trend_rows:
+        row = _source_crosscheck_trend_row(trend_rows, requested_brand)
+        if row:
+            first_sales = eok_value(row.get("series", [{}])[0].get("value_억원") if isinstance(row.get("series"), list) and row.get("series") else None, None)
+            latest_sales = eok_value(row.get("value_recent_억원"), row.get("value_recent"))
+            first_ms = pct_value(row.get("from_ms_pct"))
+            latest_ms = pct_value(row.get("to_ms_pct"))
+            content = (
+                f"{requested_source} {row.get('from_period')}→{row.get('to_period')} "
+                f"매출 {first_sales}→{latest_sales}, MS {first_ms}→{latest_ms}"
+            )
+            return (AxisFact(RequiredAxis.SALES_TREND, f"{requested_source} 보유", content),)
+    segments = data.get("level_segments")
+    if isinstance(segments, list) and segments:
+        top = next((item for item in segments if isinstance(item, dict)), {})
+        if top:
+            content = (
+                f"{requested_source} {data.get('period') or '최신 기간'} "
+                f"매출 {eok_value(top.get('value_억원'), top.get('value'))}, MS {pct_value(top.get('ms_recent_pct'))}"
+            )
+            return (AxisFact(RequiredAxis.SALES_TREND, f"{requested_source} 보유", content),)
+    return (
+        AxisFact(
+            RequiredAxis.SALES_TREND,
+            f"{requested_source} 미보유",
+            f"{requested_source} 출처는 조회 결과 행이 없어 값을 표시하지 않습니다.",
+        ),
+    )
+
+
+def _source_crosscheck_trend_row(rows: list[Any], requested_brand: str) -> dict[str, Any]:
+    if requested_brand:
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            candidate = str(item.get("brand") or item.get("name") or item.get("product") or "")
+            if candidate == requested_brand:
+                return item
+    return next((item for item in rows if isinstance(item, dict)), {})
 
 
 def _is_hira_disease_call(call: dict[str, Any]) -> bool:

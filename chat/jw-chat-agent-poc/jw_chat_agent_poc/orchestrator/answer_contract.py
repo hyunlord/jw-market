@@ -5,6 +5,7 @@ import re
 from typing import Any, Final, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
+from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +276,24 @@ def _mandatory_row_payload(fact_md: str, label: str) -> str:
     return ""
 
 
+def _mandatory_rows(fact_md: str) -> dict[str, str]:
+    rows: dict[str, str] = {}
+    in_section = False
+    for line in fact_md.splitlines():
+        stripped = line.strip()
+        if stripped == "### 필수 답변 fact":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("### "):
+            break
+        if not in_section or not stripped.startswith("|") or "---" in stripped or "구분" in stripped:
+            continue
+        cells = _table_cells(stripped)
+        if len(cells) >= 2 and cells[0]:
+            rows[cells[0]] = cells[1]
+    return rows
+
+
 def _key_value_section(fact_md: str, title_fragment: str) -> dict[str, str]:
     lines = fact_md.splitlines()
     for index, line in enumerate(lines):
@@ -384,6 +403,12 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     if contract_type == "sales_activity_link":
         answer = _sanitize_sales_activity_answer(answer, fact_md)
         block = _sales_activity_contract_block(fact_md)
+    elif contract_type == "segment_compare":
+        answer = _sanitize_full_unavailable_answer(answer)
+        block = _segment_compare_contract_block(question, fact_md, answer)
+    elif contract_type == "source_crosscheck":
+        answer = _sanitize_full_unavailable_answer(answer)
+        block = _source_crosscheck_contract_block(question, fact_md)
     elif contract_type == "trend_support_matrix":
         block = _trend_support_matrix_block(fact_md)
     elif contract_type == "change_drivers":
@@ -395,6 +420,10 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
 
 def _structural_contract_type(question: str) -> str:
     text = question.lower()
+    if _is_source_crosscheck_question(question):
+        return "source_crosscheck"
+    if _is_segment_compare_question(question):
+        return "segment_compare"
     if any(token in question for token in ("영업활동", "영업 활동", "Impact", "impact", "상기 콜", "콜")):
         return "sales_activity_link"
     if any(token in question for token in ("Weekly", "Monthly", "Class", "Molecule", "용량", "제형")) and "추이" in question:
@@ -411,10 +440,49 @@ def _structural_contract_type(question: str) -> str:
 def _structural_contract_present(answer: str, contract_type: str) -> bool:
     markers = {
         "sales_activity_link": "## 영업-매출 연계 분석 설계",
+        "segment_compare": "## 세그먼트 비교 지원 범위",
+        "source_crosscheck": "## 출처별 교차 확인 범위",
         "trend_support_matrix": "## 추이 지원 범위",
         "change_drivers": "## 변화 요인 결론",
     }
     return markers.get(contract_type, "\0") in answer
+
+
+def _is_segment_compare_question(question: str) -> bool:
+    axes = _requested_segment_axes(question)
+    if not axes:
+        return False
+    if any(token in question for token in ("세그먼트별", "세그먼트 별", "segment별", "Segment별")):
+        return True
+    return "비교" in question and len(axes) >= 2
+
+
+def _requested_segment_axes(question: str) -> tuple[str, ...]:
+    axis_tokens: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Class", ("Class", "class", "클래스")),
+        ("Molecule", ("Molecule", "molecule", "성분")),
+        ("브랜드", ("브랜드", "Brand", "brand")),
+        ("용량", ("용량", "Dose", "dose")),
+        ("제형", ("제형", "Form", "form")),
+    )
+    axes: list[str] = []
+    for axis, tokens in axis_tokens:
+        if any(token in question for token in tokens):
+            axes.append(axis)
+    return tuple(axes)
+
+
+def _is_source_crosscheck_question(question: str) -> bool:
+    return len(_requested_sources(question)) >= 2 and any(token in question for token in ("교차", "출처별", "출처 별", "source", "Source"))
+
+
+def _requested_sources(question: str) -> tuple[str, ...]:
+    sources: list[str] = []
+    if any(token in question for token in ("UBIST", "ubist")):
+        sources.append("UBIST")
+    if any(token in question for token in ("IQVIA", "iqvia")):
+        sources.append("IQVIA")
+    return tuple(sources)
 
 
 def _insert_before_source(answer: str, block: str) -> str:
@@ -449,6 +517,149 @@ def _sales_activity_contract_block(fact_md: str) -> str:
             "| 5. 확보 시 수행할 분석 | 활동 전후 1~3개월 매출·MS를 비활동군과 비교해 uplift와 lag를 추정합니다. |",
         )
     )
+
+
+def _segment_compare_contract_block(question: str, fact_md: str, answer: str = "") -> str:
+    mandatory = _mandatory_rows(fact_md)
+    axes = _requested_segment_axes(question)
+    rows: list[tuple[str, str, str]] = []
+    missing: list[str] = []
+    for axis in axes:
+        supported = mandatory.get(f"{axis} 지원", "")
+        unsupported = mandatory.get(f"{axis} 미지원", "")
+        if not supported:
+            supported = _segment_compare_answer_payload(axis, answer)
+        if supported:
+            rows.append((axis, "지원", supported))
+        elif unsupported:
+            rows.append((axis, "미지원", unsupported))
+            missing.append(axis)
+        else:
+            rows.append((axis, "미지원", f"{axis} 축은 이번 fact set에 조회 결과가 없어 값을 추정하지 않습니다."))
+            missing.append(axis)
+    if not rows:
+        return ""
+    lines = [
+        "## 세그먼트 비교 지원 범위",
+        "| 축 | 지원 여부 | 근거/값 |",
+        "| --- | --- | --- |",
+        *(f"| {_contract_cell(axis)} | {status} | {_contract_cell(note)} |" for axis, status, note in rows),
+    ]
+    if missing:
+        lines.extend(
+            (
+                "",
+                "### 미지원 축 처리",
+                "| 단계 | 내용 |",
+                "| --- | --- |",
+                f"| 1. 미보유 데이터 | {', '.join(missing)} 축의 운영 query 결과입니다. |",
+                "| 2. 현재 가능한 proxy | 지원 축의 UBIST 세그먼트 값만 비교합니다. |",
+                "| 3. 해석 가능한 상한선 | 지원 축 내 구성비 비교만 가능하며 미지원 축 값은 대체하지 않습니다. |",
+                f"| 4. 확인 필요 데이터 | {', '.join(missing)} 축이 포함된 market mart 또는 catalog 매핑이 필요합니다. |",
+                "| 5. 확보 시 수행할 분석 | 같은 기간·같은 시장 기준으로 지원 축과 미지원 축을 병렬 비교합니다. |",
+            )
+        )
+    return "\n".join(lines)
+
+
+def _segment_compare_answer_payload(axis: str, answer: str) -> str:
+    if not answer:
+        return ""
+    answer = answer.split("### 미보유 데이터 처리", 1)[0].split("## 세그먼트 비교 지원 범위", 1)[0]
+    axis_re = re.compile(rf"(?:\\*\\*)?{re.escape(axis)}(?:\\*\\*)?[^\\n|]*(?:매출|MS|점유율)[^\\n]*")
+    for raw in answer.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("|"):
+            if axis not in stripped or not any(token in stripped for token in ("억원", "%", "MS", "점유율")):
+                continue
+            cells = _table_cells(stripped)
+            if len(cells) >= 3:
+                payload = " / ".join(cell for cell in cells if cell and "---" not in cell)
+                payload = re.sub(r"\\*+", "", payload).strip()
+                note = _segment_compare_dosage_note(axis, answer)
+                if note and note not in payload:
+                    payload = f"{payload} {note}"
+                return payload
+            continue
+        line = re.sub(r"[*`_]", "", stripped).lstrip("- ").strip()
+        if not line or axis not in line:
+            continue
+        if not any(token in line for token in ("매출", "MS", "점유율")):
+            continue
+        if any(token in line for token in ("필요", "미보유", "미지원", "조회 실패")):
+            continue
+        matched = axis_re.search(line)
+        payload = matched.group(0) if matched else line
+        payload = re.sub(r"\\*+", "", payload).strip()
+        note = _segment_compare_dosage_note(axis, answer)
+        if note and note not in payload:
+            payload = f"{payload} {note}"
+        if payload:
+            return payload
+    return ""
+
+
+def _segment_compare_dosage_note(axis: str, answer: str) -> str:
+    if axis != "제형":
+        return ""
+    values: list[str] = []
+    for match in re.finditer(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+/[A-Za-z가-힣]+)(?![A-Za-z가-힣])", answer):
+        value = match.group(1)
+        if value not in values:
+            values.append(value)
+    for match in re.finditer(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+)\s*단일", answer):
+        value = match.group(1)
+        if value not in values:
+            values.append(value)
+    return dosage_combination_note(axis, values)
+
+
+def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
+    mandatory = _mandatory_rows(fact_md)
+    sources = _requested_sources(question)
+    rows: list[tuple[str, str, str]] = []
+    supported_count = 0
+    for source in sources:
+        supported = mandatory.get(f"{source} 보유", "")
+        missing = mandatory.get(f"{source} 미보유", "")
+        if supported:
+            supported_count += 1
+            rows.append((source, "보유", supported))
+        elif missing:
+            rows.append((source, "미보유", missing))
+        else:
+            rows.append((source, "미보유", f"{source} 출처는 이번 fact set에 조회 결과가 없어 값을 추정하지 않습니다."))
+    if not rows:
+        return ""
+    lines = [
+        "## 출처별 교차 확인 범위",
+        "| 출처 | 보유 여부 | 값/처리 |",
+        "| --- | --- | --- |",
+        *(f"| {_contract_cell(source)} | {status} | {_contract_cell(note)} |" for source, status, note in rows),
+    ]
+    if supported_count < len(rows):
+        lines.extend(
+            (
+                "",
+                "### 교차 판정",
+                "양 소스가 모두 확보될 때만 일치/불일치 판정을 합니다. 현재는 보유 소스 값만 표시하고 미보유 소스 값은 추정하지 않습니다.",
+            )
+        )
+    else:
+        lines.extend(("", "### 교차 판정", "양 소스가 모두 확보된 범위에서만 기간·정의 차이를 확인합니다."))
+    return "\n".join(lines)
+
+
+def _sanitize_full_unavailable_answer(answer: str) -> str:
+    blocked_tokens = ("확보되지 않아 분석 불가능", "분석 불가능합니다", "확인 불가합니다", "수행할 수 없습니다")
+    kept: list[str] = []
+    for raw in answer.splitlines():
+        if any(token in raw for token in blocked_tokens):
+            continue
+        kept.append(raw)
+    return "\n".join(kept).strip()
 
 
 def _sanitize_sales_activity_answer(answer: str, fact_md: str) -> str:
