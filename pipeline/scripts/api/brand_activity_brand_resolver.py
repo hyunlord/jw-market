@@ -143,10 +143,13 @@ def _ml_id_for_brand(brand: str) -> str:
     market_ids = tuple(str(row["ml_id"]) for row in rows if row.get("ml_id"))
     if not market_ids:
         raise BrandSetInputError("brand not in any ml market")
-    # Multiple ML markets are rare in the IQVIA sales scope. Since Brand
-    # Activity no longer accepts market_id as an input override, pick a stable
-    # first market instead of failing with an unusable escape hatch.
-    return sorted(market_ids)[0]
+    if len(market_ids) > 1:
+        # Expected 1:1 in the IQVIA sales scope. If violated, fail loudly
+        # rather than silently returning a possibly-wrong market.
+        raise BrandSetInputError(
+            f"ambiguous ml market for brand: {', '.join(market_ids)}"
+        )
+    return market_ids[0]
 
 
 def _fetch_brand_rows(view: ViewConfig, market_id: str) -> list[JsonMap]:
