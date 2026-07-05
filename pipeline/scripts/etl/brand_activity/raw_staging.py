@@ -6,12 +6,29 @@ from calendar import monthrange
 from datetime import date
 import hashlib
 from typing import Final
+from typing import Literal
 
 from pipeline.scripts.etl.brand_activity.csd_core import CsdRow
 from pipeline.scripts.etl.brand_activity.km_core import KeywordEvent
 
 
 CSD_METRIC: Final[str] = "product_details"
+StageDataset = Literal["csd", "keyword"]
+StageScope = Literal["all", "csd", "keyword"]
+STAGE_SCOPE_CHOICES: Final[tuple[StageScope, ...]] = ("all", "csd", "keyword")
+
+
+def datasets_for_stage_scope(scope: StageScope) -> tuple[StageDataset, ...]:
+    """Return the source/stage datasets that a rebuild scope may touch."""
+    match scope:
+        case "all":
+            return ("csd", "keyword")
+        case "csd":
+            return ("csd",)
+        case "keyword":
+            return ("keyword",)
+        case _:
+            raise ValueError(f"unsupported stage scope: {scope!r}")
 
 
 def _hash_key(parts: tuple[str, ...]) -> str:

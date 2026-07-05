@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 from pipeline.scripts.etl.brand_activity.csd_core import CsdRow, source_month_key
+from pipeline.scripts.etl.brand_activity.raw_staging import StageScope, datasets_for_stage_scope
 
 
-def refresh_stage(cursor: object, raw_schema: str, stage_schema: str, window: tuple[str, str]) -> dict[str, int]:
+def refresh_stage(
+    cursor: object,
+    raw_schema: str,
+    stage_schema: str,
+    window: tuple[str, str],
+    stage_scope: StageScope = "all",
+) -> dict[str, int]:
     """Rebuild legacy stage tables from raw rows inside the analysis window."""
     start, end = window
     loaded_at = _stage_loaded_at(end)
-    cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`csd_channel_dynamics_stage`")
-    cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`km_keyword_event_stage`")
-    csd_rows = _canonical_csd_stage_rows(cursor, raw_schema, start, end)
-    _insert_csd_stage(cursor, stage_schema, csd_rows, loaded_at)
-    keyword_count = _copy_keyword_stage(cursor, raw_schema, stage_schema, start, end, loaded_at)
-    return {
-        "csd_channel_dynamics_stage": len(csd_rows),
-        "km_keyword_event_stage": keyword_count,
-    }
+    datasets = set(datasets_for_stage_scope(stage_scope))
+    refreshed: dict[str, int] = {}
+    if "csd" in datasets:
+        cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`csd_channel_dynamics_stage`")
+        csd_rows = _canonical_csd_stage_rows(cursor, raw_schema, start, end)
+        _insert_csd_stage(cursor, stage_schema, csd_rows, loaded_at)
+        refreshed["csd_channel_dynamics_stage"] = len(csd_rows)
+    if "keyword" in datasets:
+        cursor.execute(f"TRUNCATE TABLE `{stage_schema}`.`km_keyword_event_stage`")
+        refreshed["km_keyword_event_stage"] = _copy_keyword_stage(cursor, raw_schema, stage_schema, start, end, loaded_at)
+    return refreshed
 
 
 def _canonical_csd_stage_rows(cursor: object, schema: str, start: str, end: str) -> list[CsdRow]:

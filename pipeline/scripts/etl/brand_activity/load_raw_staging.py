@@ -36,11 +36,17 @@ from pipeline.scripts.etl.brand_activity.raw_extract import (
 from pipeline.scripts.etl.brand_activity.raw_source_sets import (
     CoverageSources,
     discover_combined_source_files,
+    discover_scoped_source_files,
     source_collection_by_file,
     source_collection_counts,
     target_market_coverage,
 )
-from pipeline.scripts.etl.brand_activity.raw_staging import recent_month_window
+from pipeline.scripts.etl.brand_activity.raw_staging import (
+    STAGE_SCOPE_CHOICES,
+    StageScope,
+    datasets_for_stage_scope,
+    recent_month_window,
+)
 
 
 DEFAULT_SOURCE_ROOT: Final[Path] = ROOT / "data" / "IQVIA" / "CSD"
@@ -65,6 +71,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-password-env", default="MARIADB_ROOT_PASSWORD")
     parser.add_argument("--raw-schema", default=RAW_SCHEMA)
     parser.add_argument("--stage-schema", default=STAGE_SCHEMA)
+    parser.add_argument(
+        "--stage-scope",
+        choices=STAGE_SCOPE_CHOICES,
+        default="all",
+        help="Limit rebuild work to all sources, CSD only, or Keyword only. Default preserves legacy all-source behavior.",
+    )
     return parser.parse_args()
 
 
@@ -73,14 +85,16 @@ def main() -> int:
     args = parse_args()
     if args.repeat < 1:
         raise SystemExit("--repeat must be >= 1")
+    stage_scope: StageScope = args.stage_scope
     roots = resolve_source_roots(args.source_root)
-    files = discover_combined_source_files(roots, args.legacy_source_root)
+    files = discover_scoped_source_files(roots, args.legacy_source_root, stage_scope)
     source_collections = source_collection_by_file(files)
     source_rows = read_all_sources(files)
     window = recent_month_window(max_period(source_rows))
     args.audit_dir.mkdir(parents=True, exist_ok=True)
     source_manifest = build_source_manifest(files, source_collections)
     profile = build_profile(roots, files, source_rows, window, source_collections)
+    stage_plan = build_stage_plan(source_rows, window, stage_scope)
     write_json(args.audit_dir / "source_manifest.json", source_manifest)
     write_json(args.audit_dir / "source_profile.json", profile)
     load_runs: list[dict[str, JsonValue]] = []
@@ -94,13 +108,15 @@ def main() -> int:
             stage_schema=str(args.stage_schema),
         )
         for pass_index in range(1, args.repeat + 1):
-            stats = load_sources(config, source_rows, window)
+            stats = load_sources(config, source_rows, window, stage_scope=stage_scope)
             load_runs.append({"pass": pass_index, **asdict(stats)})
     run_summary = {
         "execute": bool(args.execute),
         "repeat": args.repeat,
         "raw_schema": str(args.raw_schema),
         "stage_schema": str(args.stage_schema),
+        "stage_scope": stage_scope,
+        "execution_plan": stage_plan,
         "analysis_window": {"start": window[0], "end": window[1]},
         "load_runs": load_runs,
         "source_rows": {
@@ -116,9 +132,9 @@ def main() -> int:
 def read_all_sources(files: dict[str, list[Path]]) -> SourceRows:
     """Parse all source workbooks into typed raw rows."""
     csd_rows: list[CsdSourceRow] = []
-    for workbook in files["csd"]:
+    for workbook in files.get("csd", []):
         csd_rows.extend(read_csd_source_rows(workbook, source_sha256(workbook)))
-    keyword_events = [event for workbook in files["keyword"] for event in read_keyword_events(workbook)]
+    keyword_events = [event for workbook in files.get("keyword", []) for event in read_keyword_events(workbook)]
     return SourceRows(csd=csd_rows, keyword=keyword_events)
 
 
@@ -126,6 +142,8 @@ def max_period(rows: SourceRows) -> str:
     """Return the newest row-level period across CSD and Keyword datasets."""
     periods = [row.period_ym for row in rows.csd]
     periods.extend(event.period_ym for event in rows.keyword)
+    if not periods:
+        raise ValueError("no CSD or Keyword rows found for requested stage scope")
     return max(periods)
 
 
@@ -158,7 +176,7 @@ def build_profile(
     return {
         "source_roots": {
             "csd": str(roots.csd),
-            "keyword": sorted({str(path.parent) for path in files["keyword"]}),
+            "keyword": sorted({str(path.parent) for path in files.get("keyword", [])}),
         },
         "source_files": {dataset: [path.name for path in paths] for dataset, paths in files.items()},
         "source_collection_counts": source_collection_counts(files),
@@ -191,6 +209,33 @@ def build_profile(
                 source_collection=source_collections,
             )
         ),
+    }
+
+
+def build_stage_plan(rows: SourceRows, window: tuple[str, str], stage_scope: StageScope) -> dict[str, JsonValue]:
+    """Describe the no-write stage rebuild plan for audit and dry-run gates."""
+    datasets = set(datasets_for_stage_scope(stage_scope))
+    selected_csd = [row.to_stage_row() for row in rows.csd if row.selected_for_stage and window[0] <= row.period_ym <= window[1]]
+    deduped_csd, _ = deduplicate_rows(selected_csd)
+    keyword_rows = [event for event in rows.keyword if window[0] <= event.period_ym <= window[1]]
+    truncate_targets: list[str] = []
+    expected_stage_rows: dict[str, int] = {}
+    raw_insert_targets: list[str] = []
+    if "csd" in datasets:
+        truncate_targets.append("csd_channel_dynamics_stage")
+        raw_insert_targets.append("raw_csd_channel_dynamics")
+        expected_stage_rows["csd_channel_dynamics_stage"] = len(deduped_csd)
+    if "keyword" in datasets:
+        truncate_targets.append("km_keyword_event_stage")
+        raw_insert_targets.append("raw_keyword_events")
+        expected_stage_rows["km_keyword_event_stage"] = len(keyword_rows)
+    return {
+        "stage_scope": stage_scope,
+        "keyword_stage_untouched": stage_scope == "csd",
+        "raw_insert_targets": raw_insert_targets,
+        "truncate_targets": truncate_targets,
+        "expected_stage_rows": expected_stage_rows,
+        "log_message": f"stage_scope={stage_scope}; keyword stage untouched={stage_scope == 'csd'}",
     }
 
 

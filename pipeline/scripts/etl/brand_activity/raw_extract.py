@@ -79,9 +79,19 @@ def resolve_source_roots(root: Path) -> SourceRoots:
 def discover_source_files(roots: SourceRoots) -> dict[str, list[Path]]:
     """Return sorted source workbooks, excluding Excel lock files."""
     return {
-        "csd": _sorted_workbooks(roots.csd, "ChannelDynamics*.xlsx"),
-        "keyword": _sorted_workbooks(roots.keyword, KEYWORD_WORKBOOK_PATTERN),
+        "csd": discover_csd_source_files(roots),
+        "keyword": discover_keyword_source_files(roots),
     }
+
+
+def discover_csd_source_files(roots: SourceRoots) -> list[Path]:
+    """Return CSD source workbooks without scanning Keyword folders."""
+    return _sorted_workbooks(roots.csd, "ChannelDynamics*.xlsx")
+
+
+def discover_keyword_source_files(roots: SourceRoots) -> list[Path]:
+    """Return Keyword source workbooks without scanning CSD folders."""
+    return _sorted_workbooks(roots.keyword, KEYWORD_WORKBOOK_PATTERN)
 
 
 def read_csd_source_rows(workbook_path: Path, workbook_hash: str) -> list[CsdSourceRow]:
