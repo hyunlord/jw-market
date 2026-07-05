@@ -176,6 +176,28 @@ def test_small_currency_display_includes_won_unit_aliases() -> None:
     assert {"70,211,632원", "7,021만원"}.issubset(candidates[0]["display_number_aliases"]["delta_abs"])
 
 
+def test_tiny_currency_display_includes_won_unit_alias() -> None:
+    row = MetricRow(
+        brand_name="극소액",
+        brand_key="tiny-money",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 100_000_000.0, "2026-04": 100_000_915.0},
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=1.0,
+            min_delta_pct=0.0,
+            min_recent_value=20.0,
+            min_contribution_pct=0.0,
+        ),
+    )
+
+    assert "915원" in candidates[0]["display_number_aliases"]["delta_abs"]
+
+
 def test_tiny_percent_display_keeps_two_significant_digits() -> None:
     row = MetricRow(
         brand_name="극소퍼센트",

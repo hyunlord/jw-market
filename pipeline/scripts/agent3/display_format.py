@@ -30,8 +30,8 @@ def display_aliases(key: str, value: float | None) -> list[str]:
         display = display_pct(value)
         return [display] if display else []
     aliases = {display_number(value)}
+    aliases.add(f"{value:,.0f}원")
     if abs(value) >= 10_000:
-        aliases.add(f"{value:,.0f}원")
         aliases.add(f"{value / 10_000:,.0f}만원")
     if abs(value) >= 100_000_000:
         aliases.add(f"{value / 100_000_000:.1f}억원")

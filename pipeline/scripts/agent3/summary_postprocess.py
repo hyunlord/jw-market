@@ -26,11 +26,11 @@ class SummaryValidationError(RuntimeError):
 NUMBER_KEYS = ("value_current", "value_baseline", "delta_abs", "delta_pct")
 RAW_DECIMAL_RE = re.compile(r"\d+\.\d{5,}")
 DISPLAY_NUMBER_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?:억원|만원|원|%|건|개|명|MG|MCG|G|ML|IU)",
+    r"(?<![A-Za-z0-9])[-+]?(?:\d[\d,]*(?:\.\d+)?)\s*(?:억원|만원|원|%|건|개|명|MG|MCG|G|ML|IU)",
     re.IGNORECASE,
 )
-MONEY_RE = re.compile(r"^(?P<number>\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?P<unit>억원|만원|원)$")
-PERCENT_RE = re.compile(r"^(?P<number>\d+(?:\.\d+)?)\s*%$")
+MONEY_RE = re.compile(r"^(?P<number>[-+]?\d[\d,]*(?:\.\d+)?)\s*(?P<unit>억원|만원|원)$")
+PERCENT_RE = re.compile(r"^(?P<number>[-+]?\d+(?:\.\d+)?)\s*%$")
 
 
 def inject_candidate_numbers(summary: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:

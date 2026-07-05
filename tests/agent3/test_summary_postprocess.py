@@ -177,6 +177,63 @@ def test_validate_display_number_narratives_rejects_unknown_currency_value() -> 
     ]
 
 
+def test_validate_display_number_narratives_accepts_malformed_comma_grouping_when_value_matches() -> None:
+    candidate = {
+        "slice": "IQVIA 급여: NHI",
+        "metric": "recent_growth",
+        "display_numbers": {
+            "value_current": "5.6억원",
+            "value_baseline": "5.0억원",
+            "delta_abs": "56,878,382원",
+            "delta_pct": "11.4%",
+        },
+        "display_number_aliases": {
+            "delta_abs": ["56,878,382원", "5,688만원"],
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "IQVIA 급여: NHI",
+                "metric": "recent_growth",
+                "narrative": "매출 증가가 5,6878,382원으로 표기됐습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == []
+
+
+def test_validate_display_number_narratives_accepts_signed_percent_alias() -> None:
+    candidate = {
+        "slice": "IQVIA 성분용량: 2250MG",
+        "metric": "recent_growth",
+        "display_numbers": {
+            "value_current": "5.4억원",
+            "value_baseline": "4.7억원",
+            "delta_abs": "7,000만원",
+            "delta_pct": "14.4%",
+            "yoy_delta_pct": "-17.5%",
+        },
+        "display_number_aliases": {
+            "yoy_delta_pct": ["-17.5%"],
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "IQVIA 성분용량: 2250MG",
+                "metric": "recent_growth",
+                "narrative": "전년 동기 대비로는 -17.5% 변동을 보였습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == []
+
+
 def test_validate_display_number_narratives_still_rejects_raw_metric_number() -> None:
     candidate = {
         "slice": "IQVIA 성분용량: 0.05%",
