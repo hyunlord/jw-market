@@ -26,6 +26,10 @@ def _not_generated_brand_strength() -> dict:
     return {"available": False, "reason": "not_generated"}
 
 
+def _not_generated_ai_variant() -> dict:
+    return {"available": False, "reason": "not_generated"}
+
+
 def _quote_identifier(identifier: str) -> str:
     return "`" + identifier.replace("`", "``") + "`"
 
@@ -101,6 +105,36 @@ def _load_ai_analysis(brand: str) -> dict:
     except (TypeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _parse_ai_variant(value: object) -> dict:
+    try:
+        payload = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return _not_generated_ai_variant()
+    return payload if isinstance(payload, dict) else _not_generated_ai_variant()
+
+
+def _load_ai_analysis_variants(brand: str) -> tuple[dict, dict]:
+    try:
+        row = db.fetch_one(
+            """
+            SELECT ai_analysis_short_json, ai_analysis_long_json
+            FROM cache_deep_analysis_ai_analysis
+            WHERE brand = %s
+            LIMIT 1
+            """,
+            [brand],
+        )
+    except pymysql.MySQLError:
+        logger.warning("AI analysis variant lookup failed", exc_info=True)
+        return _not_generated_ai_variant(), _not_generated_ai_variant()
+    if not row:
+        return _not_generated_ai_variant(), _not_generated_ai_variant()
+    return (
+        _parse_ai_variant(row.get("ai_analysis_short_json")),
+        _parse_ai_variant(row.get("ai_analysis_long_json")),
+    )
 
 
 def _format_generated_at(value: object) -> str:
@@ -215,5 +249,8 @@ def deep_analysis(brand_name: str) -> dict:
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
         data["ai_analysis"] = _load_ai_analysis(brand)
+        ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(brand)
+        data["ai_analysis_short"] = ai_analysis_short
+        data["ai_analysis_long"] = ai_analysis_long
         data["brand_strength"] = _load_brand_strength(brand)
     return payload
