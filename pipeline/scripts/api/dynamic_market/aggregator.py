@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import math
 import re
 from json.decoder import scanstring
@@ -37,6 +38,8 @@ from pipeline.scripts.utils.ubist_channel_mapping import (
     parse_channel_code,
     raw_pair_to_channel_code,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,11 +296,12 @@ class MetricAggregator:
         ):
             return _UbistChannelSummary((), ())
         mart_db = quote_identifier(self.mart_db)
-        scope_sql, scope_params = brand_scope_predicate(brands)
+        scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
         totals_by_code: dict[str, float] = {}
+        filtered_rows = 0
         rows = db.iter_rows(
             f"""
-            SELECT channel_specialty_matrix
+            SELECT brand_key, atc4_code, channel_specialty_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -307,7 +311,11 @@ class MetricAggregator:
             (source, measure, *scope_params),
         )
         for row in rows:
+            if pair_scope and (str(row["brand_key"]), str(row["atc4_code"])) not in pair_scope:
+                filtered_rows += 1
+                continue
             collect_ubist_channel_latest_totals(row.get("channel_specialty_matrix"), latest_period, totals_by_code)
+        logger.debug("ubist_channel_summary_pair_filter filtered_rows=%s", filtered_rows)
         if not totals_by_code:
             return _UbistChannelSummary((), ())
         ranked_codes = sorted(
@@ -752,6 +760,23 @@ def brand_scope_predicate(brands: tuple[BrandRef, ...]) -> tuple[str, tuple[str,
     brand_keys = tuple(brand.brand_key for brand in brands)
     placeholders = ", ".join(["%s"] * len(brand_keys))
     return f"brand_key IN ({placeholders})", brand_keys
+
+
+def brand_matrix_summary_scope(brands: tuple[BrandRef, ...]) -> tuple[str, tuple[str, ...], frozenset[tuple[str, str]]]:
+    """Return a matrix-summary scope that avoids tuple predicates on LONGTEXT rows."""
+
+    if all(brand.atc4_code for brand in brands):
+        brand_keys = tuple(dict.fromkeys(brand.brand_key for brand in brands))
+        atc4_codes = tuple(dict.fromkeys(brand.atc4_code for brand in brands))
+        pair_scope = frozenset((brand.brand_key, brand.atc4_code) for brand in brands)
+        return (
+            f"brand_key IN ({placeholders(brand_keys)}) AND atc4_code IN ({placeholders(atc4_codes)})",
+            (*brand_keys, *atc4_codes),
+            pair_scope,
+        )
+
+    scope_sql, scope_params = brand_scope_predicate(brands)
+    return scope_sql, scope_params, frozenset()
 
 
 def dimension_filter_predicate(filters: tuple[DimensionFilter, ...]) -> tuple[str, tuple[str, ...]]:

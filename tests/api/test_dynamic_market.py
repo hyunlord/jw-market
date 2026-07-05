@@ -92,8 +92,10 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
         assert "ubist_channel_by_display" not in sql
         assert "ubist_channel_by_code" not in sql
         assert "audit_code_matrix" not in sql
-        if "SELECT channel_specialty_matrix" in sql:
+        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
             yield {
+                "brand_key": "a",
+                "atc4_code": "C10A1",
                 "channel_specialty_matrix": json.dumps(
                     {
                         "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}},
@@ -166,6 +168,59 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
             ],
         },
     )
+
+
+def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_iter_rows(sql: str, params: tuple[object, ...]):
+        calls.append((sql, params))
+        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
+            assert "(brand_key, atc4_code) IN" not in sql
+            assert "brand_key IN" in sql
+            assert "atc4_code IN" in sql
+            yield {
+                "brand_key": "a",
+                "atc4_code": "C10A1",
+                "channel_specialty_matrix": json.dumps(
+                    {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
+                    ensure_ascii=False,
+                ),
+            }
+            yield {
+                "brand_key": "a",
+                "atc4_code": "C10C0",
+                "channel_specialty_matrix": json.dumps(
+                    {"의원": {"분리되지 않은 내과": {"2026-05": 999.0}}},
+                    ensure_ascii=False,
+                ),
+            }
+            return
+        yield {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-05": 100.0}),
+        }
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
+
+    with caplog.at_level("DEBUG", logger="pipeline.scripts.api.dynamic_market.aggregator"):
+        metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+            brands=(BrandRef("a", "A", "C10A1"),),
+            source="ubist",
+            measure="sales",
+            period_range=PeriodRange(),
+            top_n=20,
+        )
+
+    summary_sql, summary_params = calls[1]
+    assert summary_params == ("ubist", "sales", "a", "C10A1")
+    assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기")
+    assert "filtered_rows=1" in caplog.text
 
 
 def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
