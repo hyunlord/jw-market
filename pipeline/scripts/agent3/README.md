@@ -28,6 +28,9 @@ python -m pipeline.scripts.agent3.run_full \
   --output /tmp/agent3_full_result.json
 ```
 
+Use `--brands brand_key_a,brand_key_b` for bounded sample checks; the same
+loader path is used, but the universe is limited to the explicit list.
+
 `--brand-source`:
 
 - `jw25`: display catalog JW25.

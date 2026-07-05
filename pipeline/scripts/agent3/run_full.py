@@ -35,12 +35,13 @@ def run_full(
     mode: RunMode,
     chunk_index: int,
     chunk_size: int,
+    explicit_brands: list[str] | None,
     output: Path,
     top_n: int,
 ) -> dict[str, Any]:
     repo = Agent3Repository(DbConfig.from_env())
     loader = Agent3Loader(DbConfig.from_env())
-    universe = _brand_universe(repo, brand_source)
+    universe = explicit_brands or _brand_universe(repo, brand_source)
     brands = universe[chunk_index * chunk_size : (chunk_index + 1) * chunk_size]
     if mode == "full":
         loader.ensure_table()
@@ -150,9 +151,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["dry-run", "full"], required=True)
     parser.add_argument("--chunk-index", type=int, default=0)
     parser.add_argument("--chunk-size", type=int, default=500)
+    parser.add_argument("--brands", help="Comma-separated brand keys/names for bounded sample runs.")
     parser.add_argument("--output", type=Path, default=Path("/tmp/agent3_full.json"))
     parser.add_argument("--top-n", type=int, default=5)
     return parser.parse_args()
+
+
+def _parse_brands(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    brands = [item.strip() for item in value.split(",") if item.strip()]
+    if not brands:
+        raise SystemExit("--brands must contain at least one non-empty brand")
+    return brands
 
 
 def main() -> int:
@@ -162,6 +173,7 @@ def main() -> int:
         mode=args.mode,
         chunk_index=args.chunk_index,
         chunk_size=args.chunk_size,
+        explicit_brands=_parse_brands(args.brands),
         output=args.output,
         top_n=args.top_n,
     )
