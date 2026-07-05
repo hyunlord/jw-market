@@ -165,6 +165,8 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
         return _segment_compare_axis_facts(data)
     if contract_intent == "source_crosscheck":
         return _source_crosscheck_axis_facts(data)
+    if contract_intent == "quarter_metric":
+        return _quarter_metric_axis_facts(data)
     if data.get("status") in {"error", "query_failed"}:
         facts = [
             AxisFact(
@@ -290,6 +292,41 @@ def _source_crosscheck_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
             f"{requested_source} 출처는 조회 결과 행이 없어 값을 표시하지 않습니다.",
         ),
     )
+
+
+def _quarter_metric_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    brand = str(data.get("requested_brand") or data.get("brand") or "브랜드")
+    row = _brand_level_segment(data, brand)
+    if not row:
+        return ()
+    source = str(data.get("source_label") or data.get("source") or "보유 소스")
+    period = str(data.get("period") or "요청 기간")
+    sales = eok_value(row.get("value_억원") or row.get("value_recent_억원"), row.get("value") or row.get("value_recent"))
+    share = pct_value(row.get("ms_recent_pct") or row.get("to_ms_pct"))
+    rank = rank_value(row.get("rank"), None)
+    parts = [
+        f"{source} {period} 기준 {brand}",
+        f"매출 {sales}" if sales else "",
+        f"MS {share}" if share else "",
+        f"순위 {rank}위" if rank else "",
+    ]
+    content = " ".join(part for part in parts if part)
+    if not content.strip():
+        return ()
+    return (AxisFact(RequiredAxis.BRAND_POSITION, "브랜드 핵심 지표", content),)
+
+
+def _brand_level_segment(data: RenderData, brand: str) -> dict[str, Any]:
+    segments = data.get("level_segments")
+    if not isinstance(segments, list):
+        return {}
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("brand") or item.get("name") or item.get("product") or "")
+        if candidate == brand:
+            return item
+    return next((item for item in segments if isinstance(item, dict)), {})
 
 
 def _source_crosscheck_trend_row(rows: list[Any], requested_brand: str) -> dict[str, Any]:

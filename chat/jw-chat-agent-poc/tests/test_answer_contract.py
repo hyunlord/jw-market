@@ -194,6 +194,37 @@ SPECIALTY_DATA_TABLE_MD = """## 확정 fact set
 """
 
 
+QUARTER_METRIC_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | IQVIA 2025-Q4 기준 악템라 매출 48.19억원 MS 4.34% 순위 12위 |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | IQVIA — 기간 2025-Q4, 시장 ml_011, view market_landscape |
+"""
+
+
+def test_quarter_metric_contract_reinserts_verified_value_when_final_says_unavailable() -> None:
+    # Given: final synthesis dropped a verified quarterly fact and closed as unavailable.
+    unavailable = "요청하신 2025-Q4 기간에 대한 악템라의 매출 지표는 데이터 미보유 항목입니다."
+
+    # When: the post-generation answer contract is enforced.
+    revised = enforce_answer_contract(
+        "악템라 IQVIA NSA 기준 2025-Q4 매출 알려줘",
+        unavailable,
+        {"fact_md": QUARTER_METRIC_FACT_MD},
+    )
+
+    # Then: the verified quarterly metric is appended deterministically.
+    assert "## 분기 지표" in revised
+    assert "IQVIA 2025-Q4 기준 악템라 매출 48.19억원 MS 4.34%" in revised
+    assert "미확인 값은 추정하지 않습니다" in revised
+
+
 def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell() -> None:
     # Given: verified trend facts exist, but final 514 returned a source-only shell.
     empty_shell = "확정 데이터 기준으로 정리하면 다음과 같습니다.\n\n## 출처\n- 데이터: UBIST / IQVIA NSA"

@@ -312,6 +312,7 @@ def test_agent_loop_replaces_generic_metric_with_dual_market_quarter_query() -> 
     assert data["source_label"] == "IQVIA"
     assert data["level_segments"][0]["name"] == "가드렛"
     assert data["level_segments"][0]["value_억원"] == 35.0
+    assert "브랜드 핵심 지표" in result["markdown_response"]["fact_md"]
 
 
 def test_query_layer_preserves_explicit_source_over_market_default() -> None:

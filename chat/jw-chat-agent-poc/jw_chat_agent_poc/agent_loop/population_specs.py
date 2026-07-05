@@ -128,7 +128,8 @@ def _quarter_metric_plan(question: str, brand: str, _channel: str) -> StrictQuer
                 filters={"brand": brand, "period": period},
                 limit=10,
             ),
-        )
+        ),
+        metadata=({"contract_intent": "quarter_metric", "requested_brand": brand},),
     )
 
 

@@ -439,6 +439,9 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     elif contract_type == "source_crosscheck":
         answer = _sanitize_full_unavailable_answer(answer)
         block = _source_crosscheck_contract_block(question, fact_md)
+    elif contract_type == "quarter_metric":
+        answer = _sanitize_full_unavailable_answer(answer)
+        block = _quarter_metric_contract_block(fact_md)
     elif contract_type == "specialty_breakdown":
         block = _specialty_breakdown_contract_block(fact_md)
         if block:
@@ -466,6 +469,8 @@ def _structural_contract_type(question: str) -> str:
         return "specialty_breakdown"
     if _is_segment_compare_question(question):
         return "segment_compare"
+    if _is_quarter_metric_question(question):
+        return "quarter_metric"
     if any(token in question for token in ("영업활동", "영업 활동", "Impact", "impact", "상기 콜", "콜")):
         return "sales_activity_link"
     if any(token in question for token in ("Weekly", "Monthly", "Class", "Molecule", "용량", "제형")) and "추이" in question:
@@ -490,6 +495,7 @@ def _structural_contract_present(answer: str, contract_type: str) -> bool:
         "sales_activity_link": "## 영업-매출 연계 분석 설계",
         "segment_compare": "## 세그먼트 비교 지원 범위",
         "source_crosscheck": "## 출처별 교차 확인 범위",
+        "quarter_metric": "## 분기 지표",
         "specialty_breakdown": "## 진료과별 매출 구성",
         "trend_support_matrix": "## 추이 지원 범위",
         "change_drivers": "## 변화 요인 결론",
@@ -510,6 +516,13 @@ def _is_threat_detection_question(question: str) -> bool:
 
 def _is_specialty_breakdown_question(question: str) -> bool:
     return "진료과" in question and any(token in question for token in ("별", "구성", "매출", "처방", "비중", "상위"))
+
+
+def _is_quarter_metric_question(question: str) -> bool:
+    compact = question.replace(" ", "")
+    if not re.search(r"20\d{2}(?:-?Q[1-4]|년?[1-4]분기)", compact, flags=re.IGNORECASE):
+        return False
+    return any(token in question for token in ("매출", "점유율", "MS", "ms", "M/S"))
 
 
 def _is_news_ei_question(question: str) -> bool:
@@ -822,6 +835,20 @@ def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
     else:
         lines.extend(("", "### 교차 판정", "양 소스가 모두 확보된 범위에서만 기간·정의 차이를 확인합니다."))
     return "\n".join(lines)
+
+
+def _quarter_metric_contract_block(fact_md: str) -> str:
+    mandatory = _mandatory_rows(fact_md)
+    metric = mandatory.get("브랜드 핵심 지표") or mandatory.get("매출 추이") or mandatory.get("조회 실패")
+    if not metric:
+        return ""
+    return "\n".join(
+        (
+            "## 분기 지표",
+            f"- {_contract_cell(metric)}",
+            "- 표시된 기간·소스의 보유 fact만 사용하며, 미확인 값은 추정하지 않습니다.",
+        )
+    )
 
 
 def _specialty_breakdown_contract_block(fact_md: str) -> str:
