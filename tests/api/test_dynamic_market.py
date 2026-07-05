@@ -72,14 +72,26 @@ def test_aggregate_rows_when_period_range_limits_history() -> None:
     assert [item.total_value for item in brand_metrics] == [60.0, 30.0]
 
 
-def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(monkeypatch) -> None:
+    calls: list[str] = []
 
     def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
-        captured["sql"] = sql
-        captured["params"] = params
+        calls.append(sql)
         assert "ubist_channel_by_display" not in sql
         assert "ubist_channel_by_code" not in sql
+        assert "audit_code_matrix" not in sql
+        if "channel_specialty_matrix" in sql:
+            return [
+                {
+                    "channel_specialty_matrix": json.dumps(
+                        {
+                            "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}},
+                            "의원": {"분리되지 않은 내과": {"2026-05": 10.0}},
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            ]
         return [
             {
                 "brand_key": "a",
@@ -89,14 +101,14 @@ def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monk
                 "measure": "sales",
                 "unit_label": "KRW",
                 "raw_value_history": json.dumps({"2026-05": 100.0}),
-                "channel_specialty_matrix": json.dumps(
-                    {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
-                    ensure_ascii=False,
-                ),
             }
         ]
 
+    def fake_iter_rows(sql: str, params: tuple[object, ...]):
+        yield from fake_fetch_all(sql, params)
+
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
 
     metrics = MetricAggregator(mart_db="jw_mart").aggregate(
         brands=(BrandRef("a", "A", "C10A1"),),
@@ -106,11 +118,46 @@ def test_general_aggregate_reads_raw_matrix_without_derived_channel_columns(monk
         top_n=20,
     )
 
-    assert "channel_specialty_matrix" in str(captured["sql"])
-    assert captured["params"] == ("ubist", "sales", "a", "C10A1")
-    assert metrics.all_brands[0].channel_specialty_matrix == {
-        "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}
-    }
+    metric_sql = calls[0]
+    assert "raw_value_history" in metric_sql
+    assert "channel_specialty_matrix" not in metric_sql
+    assert metrics.all_brands[0].channel_specialty_matrix == {}
+    assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
+    assert metrics.ubist_specialty_target_channels == (
+        {
+            "code": "GH Cardio",
+            "display_name": "종합병원 순환기",
+            "facility_abbr": "GH",
+            "facility_kor": "종합병원",
+            "facility_raw_values": ["상급종합병원", "종합병원", "병원"],
+            "specialty_abbr": "Cardio",
+            "specialty_kor": "순환기",
+            "specialty_raw_values": ["순환기(Cardiology IM)"],
+        },
+        {
+            "code": "CL IGF",
+            "display_name": "의원 IGF",
+            "facility_abbr": "CL",
+            "facility_kor": "의원",
+            "facility_raw_values": ["의원"],
+            "specialty_abbr": "IGF",
+            "specialty_kor": "IGF",
+            "specialty_raw_values": [
+                "가정의학과(FM)",
+                "일반의(GP)",
+                "알레르기(Allergy IM)",
+                "내분비(Endocrinology IM)",
+                "순환기(Cardiology IM)",
+                "신장(Nephrology IM)",
+                "류마티스(Rheumatology IM)",
+                "소화기(Gastroenterology IM)",
+                "감염(Infection Disease IM)",
+                "혈액종양(Hemoto Oncology IM)",
+                "호흡기(Pulmonology IM)",
+                "분리되지 않은 내과",
+            ],
+        },
+    )
 
 
 def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:

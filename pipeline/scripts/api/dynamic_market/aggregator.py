@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
 import math
+from typing import Any
 
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
@@ -27,6 +29,20 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     quote_identifier,
 )
+from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+
+
+@dataclass(frozen=True, slots=True)
+class _AggregatedRows:
+    brand_metrics: list[BrandMetric]
+    monthly_totals: dict[str, float]
+    unit_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UbistChannelSummary:
+    specialty_channels: tuple[str, ...]
+    specialty_target_channels: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +101,9 @@ class MetricAggregator:
                 dimension_filters=dimension_filters,
             )
         else:
-            rows = self._load_metric_rows(brands=brands, source=source, measure=measure)
-        brand_metrics, monthly_totals = self._aggregate_rows(rows, period_range=period_range, channel_axis=channel_axis)
-        market_size = float(sum(monthly_totals.values()))
+            rows = self._iter_metric_rows(brands=brands, source=source, measure=measure, channel_axis=channel_axis)
+        aggregated = self._aggregate_rows_detail(rows, period_range=period_range, channel_axis=channel_axis)
+        market_size = float(sum(aggregated.monthly_totals.values()))
         ranked = tuple(
             BrandMetric(
                 brand_key=item.brand_key,
@@ -104,20 +120,32 @@ class MetricAggregator:
                 channel_specialty_matrix=item.channel_specialty_matrix,
                 audit_code_matrix=item.audit_code_matrix,
             )
-            for index, item in enumerate(sorted(brand_metrics, key=lambda row: (-row.total_value, row.brand_key)), start=1)
+            for index, item in enumerate(
+                sorted(aggregated.brand_metrics, key=lambda row: (-row.total_value, row.brand_key)),
+                start=1,
+            )
         )
-        monthly_series = tuple({"period": period, "market_size": value} for period, value in sorted(monthly_totals.items()))
-        unit_label = str(rows[0].get("unit_label", "")) if rows else ""
+        monthly_series = tuple({"period": period, "market_size": value} for period, value in sorted(aggregated.monthly_totals.items()))
+        ubist_summary = self._load_ubist_channel_summary(
+            brands=brands,
+            source=source,
+            measure=measure,
+            channel_axis=channel_axis,
+            view=view,
+            dimension_filters=dimension_filters,
+        )
         return AggregatedMetrics(
             source=source,
             measure=measure,
-            unit_label=unit_label,
+            unit_label=aggregated.unit_label,
             market_size=market_size,
             hhi=compute_hhi(ranked),
             cagr=compute_cagr(monthly_series),
             monthly_series=monthly_series,
             brands=ranked[:top_n],
             all_brands=ranked,
+            ubist_specialty_channels=ubist_summary.specialty_channels,
+            ubist_specialty_target_channels=ubist_summary.specialty_target_channels,
         )
 
     def _load_strategic_mart_metric_rows(
@@ -213,19 +241,53 @@ class MetricAggregator:
         )
         return {str(row["brand_key"]): row for row in rows}
 
-    def _load_metric_rows(
+    def _iter_metric_rows(
         self,
         *,
         brands: tuple[BrandRef, ...],
         source: str,
         measure: str,
-    ) -> list[dict]:
+        channel_axis: ChannelAxisFilter | None,
+    ) -> Iterable[dict[str, Any]]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        return db.fetch_all(
+        matrix_columns = general_metric_matrix_columns(channel_axis)
+        sql = f"""
+            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history{matrix_columns}
+            FROM {mart_db}.mart_general_brand_metric
+            WHERE source = %s
+              AND measure = %s
+              AND {scope_sql}
+            ORDER BY brand_name, brand_key
+            """
+        return db.iter_rows(
+            sql,
+            (source, measure, *scope_params),
+        )
+
+    def _load_ubist_channel_summary(
+        self,
+        *,
+        brands: tuple[BrandRef, ...],
+        source: str,
+        measure: str,
+        channel_axis: ChannelAxisFilter | None,
+        view: str,
+        dimension_filters: tuple[DimensionFilter, ...],
+    ) -> _UbistChannelSummary:
+        if (
+            view != "general"
+            or dimension_filters
+            or source != "ubist"
+            or (channel_axis is not None and channel_axis.is_active)
+        ):
+            return _UbistChannelSummary((), ())
+        mart_db = quote_identifier(self.mart_db)
+        scope_sql, scope_params = brand_scope_predicate(brands)
+        totals_by_code_period: dict[str, dict[str, float]] = {}
+        rows = db.iter_rows(
             f"""
-            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
-                   channel_specialty_matrix, audit_code_matrix
+            SELECT channel_specialty_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -233,6 +295,32 @@ class MetricAggregator:
             ORDER BY brand_name, brand_key
             """,
             (source, measure, *scope_params),
+        )
+        for row in rows:
+            collect_ubist_channel_totals(row.get("channel_specialty_matrix"), totals_by_code_period)
+        if not totals_by_code_period:
+            return _UbistChannelSummary((), ())
+        latest_period = max(period for series in totals_by_code_period.values() for period in series)
+        ranked_codes = sorted(
+            totals_by_code_period,
+            key=lambda code: totals_by_code_period[code].get(latest_period, 0.0),
+            reverse=True,
+        )
+        channels = []
+        used: set[str] = set()
+        for code in ranked_codes:
+            if len(channels) >= 4:
+                break
+            parsed = parse_channel_code(code)
+            if parsed is None or parsed.code in used:
+                continue
+            channels.append(parsed)
+            used.add(parsed.code)
+        if not channels:
+            return _UbistChannelSummary((), ())
+        return _UbistChannelSummary(
+            specialty_channels=tuple(["전체", *[channel.display_name for channel in channels]]),
+            specialty_target_channels=tuple(channel.as_dict() for channel in channels),
         )
 
     def _load_sidecar_metric_rows(
@@ -288,14 +376,27 @@ class MetricAggregator:
 
     def _aggregate_rows(
         self,
-        rows: list[dict],
+        rows: Iterable[Mapping[str, Any]],
         *,
         period_range: PeriodRange,
         channel_axis: ChannelAxisFilter | None = None,
     ) -> tuple[list[BrandMetric], dict[str, float]]:
+        aggregated = self._aggregate_rows_detail(rows, period_range=period_range, channel_axis=channel_axis)
+        return aggregated.brand_metrics, aggregated.monthly_totals
+
+    def _aggregate_rows_detail(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        period_range: PeriodRange,
+        channel_axis: ChannelAxisFilter | None = None,
+    ) -> _AggregatedRows:
         brand_metrics: list[BrandMetric] = []
         monthly_totals: dict[str, float] = {}
+        unit_label = ""
         for row in rows:
+            if not unit_label:
+                unit_label = str(row.get("unit_label") or "")
             raw_matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
             matrix = slice_channel_specialty_matrix(raw_matrix, channel_axis)
             raw_audit_matrix = parse_audit_code_matrix(row.get("audit_code_matrix"))
@@ -327,7 +428,7 @@ class MetricAggregator:
                     audit_code_matrix=audit_matrix,
                 )
             )
-        return brand_metrics, monthly_totals
+        return _AggregatedRows(brand_metrics=brand_metrics, monthly_totals=monthly_totals, unit_label=unit_label)
 
 
 def _history_for_row(
@@ -344,6 +445,40 @@ def _history_for_row(
     if channel_axis.source == "iqvia_nsa":
         return history_from_audit_code_matrix(audit_code_matrix)
     return parse_history(raw_history)
+
+
+def general_metric_matrix_columns(channel_axis: ChannelAxisFilter | None) -> str:
+    if channel_axis is None or not channel_axis.is_active:
+        return ""
+    if channel_axis.source == "ubist":
+        return ", channel_specialty_matrix"
+    if channel_axis.source == "iqvia_nsa":
+        return ", audit_code_matrix"
+    return ""
+
+
+def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict[str, float]]) -> None:
+    if isinstance(raw, dict):
+        payload = raw
+    elif isinstance(raw, str) and raw.strip():
+        payload = json.loads(raw)
+    else:
+        return
+    if not isinstance(payload, dict):
+        return
+    for facility, specialties in payload.items():
+        if not isinstance(specialties, dict):
+            continue
+        for specialty, series in specialties.items():
+            if not isinstance(series, dict):
+                continue
+            code = raw_pair_to_channel_code(facility, specialty)
+            if not code:
+                continue
+            target = totals_by_code_period.setdefault(code, {})
+            for period, value in series.items():
+                period_key = str(period)
+                target[period_key] = target.get(period_key, 0.0) + float(value or 0.0)
 
 
 def parse_history(raw: str) -> dict[str, float]:

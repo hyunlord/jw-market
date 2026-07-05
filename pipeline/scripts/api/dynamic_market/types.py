@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Final
+from typing import Any, Final
 
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 
@@ -106,6 +106,8 @@ class AggregatedMetrics:
     monthly_series: tuple[dict[str, float | str], ...]
     brands: tuple[BrandMetric, ...]
     all_brands: tuple[BrandMetric, ...] = ()
+    ubist_specialty_channels: tuple[str, ...] = ()
+    ubist_specialty_target_channels: tuple[dict[str, Any], ...] = ()
 
 
 def quote_identifier(name: str) -> str:

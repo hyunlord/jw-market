@@ -134,6 +134,11 @@ def _general_ubist_channels(metrics: AggregatedMetrics, *, max_channels: int = 4
 
     if metrics.source != "ubist":
         return {"specialty_channels": [], "specialty_target_channels": []}
+    if metrics.ubist_specialty_channels:
+        return {
+            "specialty_channels": list(metrics.ubist_specialty_channels),
+            "specialty_target_channels": list(metrics.ubist_specialty_target_channels),
+        }
 
     channels = _general_ubist_channels_from_raw_matrix(metrics, max_channels=max_channels)
     if channels:
