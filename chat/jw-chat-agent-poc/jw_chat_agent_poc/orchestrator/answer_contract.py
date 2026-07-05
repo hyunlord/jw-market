@@ -155,6 +155,13 @@ class NewsFactor:
     direction: str
 
 
+@dataclass(frozen=True, slots=True)
+class NewsGrade:
+    row: NewsFactor
+    grade: str
+    handling: str
+
+
 def _intent(question: str) -> str | None:
     if _ranking_question(question):
         return "ranking"
@@ -294,6 +301,24 @@ def _mandatory_rows(fact_md: str) -> dict[str, str]:
     return rows
 
 
+def _mandatory_row_items(fact_md: str) -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    in_section = False
+    for line in fact_md.splitlines():
+        stripped = line.strip()
+        if stripped == "### 필수 답변 fact":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("### "):
+            break
+        if not in_section or not stripped.startswith("|") or "---" in stripped or "구분" in stripped:
+            continue
+        cells = _table_cells(stripped)
+        if len(cells) >= 2 and cells[0]:
+            rows.append((cells[0], cells[1]))
+    return tuple(rows)
+
+
 def _key_value_section(fact_md: str, title_fragment: str) -> dict[str, str]:
     lines = fact_md.splitlines()
     for index, line in enumerate(lines):
@@ -395,6 +420,7 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     contract_type = _structural_contract_type(question)
     if not contract_type or not fact_md:
         return answer
+    answer = _dedupe_substantive_lines(answer)
     if contract_type == "trend_support_matrix":
         answer = _repair_split_market_support(answer, fact_md)
     if _structural_contract_present(answer, contract_type):
@@ -412,7 +438,13 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     elif contract_type == "trend_support_matrix":
         block = _trend_support_matrix_block(fact_md)
     elif contract_type == "change_drivers":
-        block = _change_drivers_contract_block(fact_md)
+        block = _change_drivers_contract_block(question, fact_md)
+    elif contract_type == "positioning":
+        block = _positioning_contract_block(fact_md)
+    elif contract_type == "threat_detection":
+        block = _threat_detection_contract_block(fact_md)
+    elif contract_type == "news_ei":
+        block = _news_ei_contract_block(question, fact_md)
     if not block:
         return answer
     return _insert_before_source(answer, block)
@@ -434,6 +466,12 @@ def _structural_contract_type(question: str) -> str:
         return "change_drivers"
     if "change driver" in text or "market expansion" in text:
         return "change_drivers"
+    if _is_threat_detection_question(question):
+        return "threat_detection"
+    if _is_positioning_question(question):
+        return "positioning"
+    if _is_news_ei_question(question):
+        return "news_ei"
     return ""
 
 
@@ -444,8 +482,25 @@ def _structural_contract_present(answer: str, contract_type: str) -> bool:
         "source_crosscheck": "## 출처별 교차 확인 범위",
         "trend_support_matrix": "## 추이 지원 범위",
         "change_drivers": "## 변화 요인 결론",
+        "positioning": "## 포지셔닝 축",
+        "threat_detection": "## 위협 요인",
+        "news_ei": "## 뉴스 관련성 등급",
     }
     return markers.get(contract_type, "\0") in answer
+
+
+def _is_positioning_question(question: str) -> bool:
+    return any(token in question for token in ("포지셔닝", "차별점", "차별", "경쟁 대비 위치", "시장 내 위치", "positioning"))
+
+
+def _is_threat_detection_question(question: str) -> bool:
+    return any(token in question for token in ("위협", "리스크", "경쟁 위협", "threat", "risk"))
+
+
+def _is_news_ei_question(question: str) -> bool:
+    if any(token in question for token in ("변화 요인", "변화요인", "External", "Internal", "change driver", "Market expansion")):
+        return False
+    return any(token in question for token in ("뉴스", "이슈", "소식", "기사"))
 
 
 def _is_segment_compare_question(question: str) -> bool:
@@ -652,6 +707,180 @@ def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
     return "\n".join(lines)
 
 
+def _positioning_contract_block(fact_md: str) -> str:
+    rows = _positioning_rows(fact_md)
+    if not rows:
+        return ""
+    direct = _positioning_direct_answer(rows)
+    lines = [
+        "## 포지셔닝 축",
+        "| 축 | 자사/관찰 값 | 시장 상위 대비 위치 |",
+        "| --- | --- | --- |",
+        *(f"| {_contract_cell(axis)} | {_contract_cell(value)} | {_contract_cell(position)} |" for axis, value, position in rows),
+        "",
+        f"자사 위치: {direct}",
+    ]
+    return "\n".join(lines)
+
+
+def _positioning_rows(fact_md: str) -> tuple[tuple[str, str, str], ...]:
+    mandatory = _mandatory_rows(fact_md)
+    items = _mandatory_row_items(fact_md)
+    rows: list[tuple[str, str, str]] = []
+    ranking = mandatory.get("브랜드 핵심 지표", "")
+    if ranking:
+        rows.append(("시장 순위/MS", ranking, "보유 rank/MS fact 범위에서만 자사 위치를 표시합니다."))
+    growth = _first_payload_containing(items, ("share-of-growth", "성장분해", "점유"))
+    if growth:
+        rows.append(("성장성", growth, "share-of-growth 또는 점유 변화 fact 기준의 성장성 신호입니다."))
+    pressure = _first_payload_containing(items, ("cohort z-score", "백분위", "top gainer", "top faller", "시장 변화"))
+    if pressure:
+        rows.append(("경쟁 압력", pressure, "경쟁 cohort·상승/하락 브랜드 fact 기준의 압력 신호입니다."))
+    return tuple(rows)
+
+
+def _first_payload_containing(items: tuple[tuple[str, str], ...], tokens: tuple[str, ...]) -> str:
+    for label, payload in items:
+        if label != "인사이트 계산":
+            continue
+        if any(token in payload for token in tokens):
+            return payload
+    return ""
+
+
+def _positioning_direct_answer(rows: tuple[tuple[str, str, str], ...]) -> str:
+    ranking = next((value for axis, value, _ in rows if axis == "시장 순위/MS"), "")
+    growth = next((value for axis, value, _ in rows if axis == "성장성"), "")
+    pressure = next((value for axis, value, _ in rows if axis == "경쟁 압력"), "")
+    parts = [part for part in (ranking, growth, pressure) if part]
+    if not parts:
+        return "수집된 포지셔닝 fact가 없어 자사 위치를 단정하지 않습니다."
+    return " / ".join(parts[:3]) + " 기준으로만 해석합니다."
+
+
+def _threat_detection_contract_block(fact_md: str) -> str:
+    rows = _threat_rows(fact_md)
+    lines = [
+        "## 위협 요인",
+        "| 위협 요인 | 방향 | 근거 |",
+        "| --- | --- | --- |",
+    ]
+    if rows:
+        lines.extend(f"| {_contract_cell(factor)} | {direction} | {_contract_cell(basis)} |" for factor, direction, basis in rows)
+    else:
+        lines.append("| 위협 미식별 | 관찰 | 보유 signals/news fact 안에서 위협 요인을 확정할 근거가 없습니다. |")
+    return "\n".join(lines)
+
+
+def _threat_rows(fact_md: str) -> tuple[tuple[str, str, str], ...]:
+    rows: list[tuple[str, str, str]] = []
+    for label, payload in _mandatory_row_items(fact_md):
+        if label != "인사이트 계산":
+            continue
+        lower = payload.lower()
+        if "top gainer" in lower or "share-of-growth" in payload or "cohort z-score" in lower or "백분위" in payload:
+            rows.append(("경쟁 브랜드 점유 확대", _threat_direction(payload), payload))
+    for news in _news_factor_rows(fact_md):
+        if news.direction == "위협":
+            rows.append(("뉴스 기반 경쟁/시장 위협", "확대", _news_factor_basis(news)))
+    return tuple(rows[:5])
+
+
+def _threat_direction(text: str) -> str:
+    if re.search(r"[+]\d", text) or any(token in text for token in ("확대", "상승", "증가", "top gainer")):
+        return "확대"
+    if re.search(r"-\d", text) or any(token in text for token in ("축소", "하락", "감소", "top faller")):
+        return "축소"
+    return "관찰"
+
+
+def _news_ei_contract_block(question: str, fact_md: str) -> str:
+    rows = _news_grade_rows(question, fact_md)
+    if not rows:
+        return ""
+    lines = [
+        "## 뉴스 관련성 등급",
+        "| 관련성 등급 | 기사 | 방향 | 근거 | 처리 상한 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for graded in rows:
+        news = graded.row
+        basis = _news_factor_basis(news)
+        lines.append(
+            f"| {graded.grade} | {_contract_cell(news.title)} | {_contract_cell(news.direction)} | {_contract_cell(basis)} | {_contract_cell(graded.handling)} |"
+        )
+    lines.extend(
+        (
+            "",
+            "뉴스는 기사 제목·요약·발췌 범위의 정성 근거이며, 입증/확인됨/달성으로 단정하지 않습니다.",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _news_grade_rows(question: str, fact_md: str) -> tuple[NewsGrade, ...]:
+    brand = _brand_from_question(question) or _brand_from_fact_md(fact_md)
+    rows: list[NewsGrade] = []
+    for row in _news_factor_rows(fact_md):
+        grade = _news_relevance_grade(row, brand)
+        rows.append(NewsGrade(row=row, grade=grade, handling=_news_grade_handling(grade)))
+    return tuple(rows)
+
+
+def _news_relevance_grade(row: NewsFactor, brand: str) -> str:
+    text = " ".join((row.title, row.summary))
+    if brand and re.search(rf"{re.escape(brand)}(?![가-힣A-Za-z0-9])", text):
+        return "direct"
+    if brand and brand in text:
+        return "family"
+    if any(token in text for token in ("이상지질혈증", "고지혈증", "스타틴", "Statin", "복합제", "에제티미브", "피타바스타틴", "시장", "경쟁")):
+        return "market"
+    if any(token in text for token in ("의약품", "제약", "급여", "약가", "정책")):
+        return "background"
+    return "noise"
+
+
+def _news_grade_handling(grade: str) -> str:
+    if grade == "direct":
+        return "브랜드 직접 관련 뉴스로만 정성 참고합니다."
+    if grade == "family":
+        return "브랜드 패밀리 관련 맥락으로만 참고합니다."
+    if grade == "market":
+        return "시장/경쟁 맥락으로만 참고합니다."
+    if grade == "background":
+        return "배경 정보로 분리하고 브랜드 fact로 승격하지 않습니다."
+    return "잡음 후보로 본문 요약 근거에서 제외합니다."
+
+
+def _brand_from_question(question: str) -> str:
+    bracket = re.search(r"\[([^\]]+)\]", question)
+    if bracket:
+        return bracket.group(1).strip()
+    for brand in ("리바로", "악템라", "페린젝트", "리바로젯"):
+        if brand in question:
+            return brand
+    return ""
+
+
+def _brand_from_fact_md(fact_md: str) -> str:
+    ranking = _mandatory_row_payload(fact_md, "브랜드 핵심 지표")
+    parsed = _ranking_from_text(ranking) if ranking else None
+    return parsed.brand if parsed else ""
+
+
+def _dedupe_substantive_lines(answer: str) -> str:
+    seen: set[str] = set()
+    kept: list[str] = []
+    for raw in answer.splitlines():
+        key = re.sub(r"\s+", " ", raw.strip(" -*\t")).strip()
+        if len(key) >= 45 and not raw.lstrip().startswith("|"):
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(raw)
+    return "\n".join(kept)
+
+
 def _sanitize_full_unavailable_answer(answer: str) -> str:
     blocked_tokens = ("확보되지 않아 분석 불가능", "분석 불가능합니다", "확인 불가합니다", "수행할 수 없습니다")
     kept: list[str] = []
@@ -772,7 +1001,7 @@ def _split_market_structure_note(fact_md: str) -> str:
     return ""
 
 
-def _change_drivers_contract_block(fact_md: str) -> str:
+def _change_drivers_contract_block(question: str, fact_md: str) -> str:
     trend = _trend_fact(fact_md)
     proxy = _sales_activity_proxy_text(trend) if trend is not None else "보유 정량 fact 범위에서 매출·MS·채널 proxy만 확인 가능합니다."
     news_rows = _news_factor_rows(fact_md)
@@ -782,17 +1011,19 @@ def _change_drivers_contract_block(fact_md: str) -> str:
         else "반환된 뉴스 fact가 없어 보유 UBIST/IQVIA proxy와 미보유 항목을 분리해 표시합니다."
     )
     table_rows = [
-        "| 구분(E/I) | 요인 | 근거(뉴스명·인용 or UBIST or 미보유) | 영향방향 | 확인 필요 데이터 |",
-        "| --- | --- | --- | --- | --- |",
+        "| 구분(E/I) | 요인 | 관련성 등급 | 근거(뉴스명·인용 or UBIST or 미보유) | 영향방향 | 확인 필요 데이터 |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
+    brand = _brand_from_question(question) or _brand_from_fact_md(fact_md)
     for row in news_rows:
+        grade = _news_relevance_grade(row, brand)
         table_rows.append(
-            f"| {_contract_cell(row.category)} | {_contract_cell(row.factor)} | {_contract_cell(_news_factor_basis(row))} | {_contract_cell(row.direction)} | 기사 원문, 동일 기간 처방·매출 변동 |"
+            f"| {_contract_cell(row.category)} | {_contract_cell(row.factor)} | {grade} | {_contract_cell(_news_factor_basis(row))} | {_contract_cell(row.direction)} | 기사 원문, 동일 기간 처방·매출 변동 |"
         )
     table_rows.extend(
         (
-            "| External | 정책/약가 변화 | 미보유 | 불확실 | 정책 변경일, 약가/급여 변화, 경쟁품 처방 변화 |",
-            f"| Internal | 자사 영업/채널 활동 | UBIST proxy: {proxy} | 불확실 | 채널별 활동량, 세그먼트별 처방량 |",
+            "| External | 정책/약가 변화 | 미보유 | 미보유 | 불확실 | 정책 변경일, 약가/급여 변화, 경쟁품 처방 변화 |",
+            f"| Internal | 자사 영업/채널 활동 | 보유 fact | UBIST proxy: {proxy} | 불확실 | 채널별 활동량, 세그먼트별 처방량 |",
         )
     )
     return "\n".join(

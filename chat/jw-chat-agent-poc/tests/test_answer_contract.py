@@ -121,6 +121,47 @@ SOURCE_CROSSCHECK_FACT_MD = """## 확정 fact set
 """
 
 
+POSITIONING_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | 리바로 2026-04 매출 84.93억원 시장점유율 3.76% 순위 6/470 |
+| 인사이트 계산 | 리바로젯 share-of-growth +0.53%p, cohort z-score 1.24, 백분위 82% |
+| 인사이트 계산 | 시장 변화 top gainer 리바로젯 +0.53%p, top faller 리피토 -0.56%p |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2026-04, 시장 ml_006, view market_landscape |
+"""
+
+
+THREAT_FACT_MD = POSITIONING_FACT_MD + """
+
+### 인사이트 근거 fact - 뉴스/이슈
+| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-06-20 | 이상지질혈증 복합제 경쟁 심화 | 데일리팜 | https://example.test/threat/1 | 복합제 경쟁이 확대된다는 내용 | 경쟁 심화 |
+"""
+
+
+E1_NEWS_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | 리바로 2026-04 매출 84.93억원 시장점유율 3.76% 순위 6/470 |
+
+### 인사이트 근거 fact - 뉴스/이슈
+| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-06-25 | JW중외제약 리바로 영업 채널 확대 | 메디칼타임즈 | https://example.test/news/2 | 의원 채널 활동을 확대한다는 내용 | 영업 채널 확대 |
+| 2026-06-20 | 이상지질혈증 복합제 경쟁 심화 | 데일리팜 | https://example.test/news/1 | 로수바스타틴 복합제가 시장 경쟁을 키웠다는 내용 | 경쟁 심화 |
+| 2026-06-18 | 디지털 헬스케어 RAG 기술 소개 | IT뉴스 | https://example.test/news/3 | 검색 증강 생성 기술 기사 | RAG |
+"""
+
+
 def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell() -> None:
     # Given: verified trend facts exist, but final 514 returned a source-only shell.
     empty_shell = "확정 데이터 기준으로 정리하면 다음과 같습니다.\n\n## 출처\n- 데이터: UBIST / IQVIA NSA"
@@ -329,10 +370,12 @@ def test_change_drivers_contract_classifies_news_into_grounded_rows() -> None:
     assert "이상지질혈증 복합제 경쟁 심화" in revised
     assert "https://example.test/news/1" in revised
     assert "| External | 경쟁/시장 뉴스 |" in revised
+    assert "관련성 등급" in revised
+    assert "| External | 경쟁/시장 뉴스 | market |" in revised
     assert "JW중외제약 리바로 영업 채널 확대" in revised
     assert "https://example.test/news/2" in revised
-    assert "| Internal | 자사 영업/채널 뉴스 |" in revised
-    assert "| External | 정책/약가 변화 | 미보유 | 불확실 |" in revised
+    assert "| Internal | 자사 영업/채널 뉴스 | direct |" in revised
+    assert "| External | 정책/약가 변화 | 미보유 | 미보유 | 불확실 |" in revised
 
 
 def test_change_drivers_contract_can_be_reapplied_after_channel_claim_policy() -> None:
@@ -682,3 +725,64 @@ def test_trend_support_matrix_reflects_split_market_structure_on_query_failure()
 
     assert "| Class | 지원(구조) | Class 구분 존재: 운영 노출은 Class 2 기준 분모 26; 전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음 |" in revised
     assert "| Class | 미지원 |" not in revised
+
+
+def test_positioning_contract_adds_axis_table_and_dedupes_substantive_lines() -> None:
+    answer = (
+        "인사이트: 리바로젯 share-of-growth +0.53%p, cohort z-score 1.24입니다.\n"
+        "인사이트: 리바로젯 share-of-growth +0.53%p, cohort z-score 1.24입니다.\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로의 경쟁 대비 포지셔닝과 차별점은?",
+        answer,
+        {"fact_md": POSITIONING_FACT_MD},
+    )
+
+    assert revised.count("인사이트: 리바로젯 share-of-growth +0.53%p, cohort z-score 1.24입니다.") == 1
+    assert "## 포지셔닝 축" in revised
+    assert "| 시장 순위/MS |" in revised
+    assert "| 성장성 |" in revised
+    assert "| 경쟁 압력 |" in revised
+    assert "자사 위치:" in revised
+    assert "84.93억원" in revised
+    assert "3.76%" in revised
+
+
+def test_threat_detection_contract_adds_factor_direction_basis_table() -> None:
+    revised = enforce_answer_contract(
+        "리바로의 경쟁 위협 요인은 무엇인가?",
+        "경쟁 브랜드를 모니터링해야 합니다.\n\n## 출처\n- 데이터: UBIST",
+        {"fact_md": THREAT_FACT_MD},
+    )
+
+    assert "## 위협 요인" in revised
+    assert "| 위협 요인 | 방향 | 근거 |" in revised
+    assert "경쟁 브랜드 점유 확대" in revised
+    assert "확대" in revised
+    assert "데일리팜" in revised
+    assert "https://example.test/threat/1" in revised
+
+
+def test_news_ei_contract_adds_relevance_grade_without_stealing_change_drivers() -> None:
+    revised = enforce_answer_contract(
+        "리바로 관련 최근 뉴스와 이슈를 정리해줘",
+        "뉴스는 시장 상황을 보여줍니다.\n\n## 출처\n- 데이터: 뉴스",
+        {"fact_md": E1_NEWS_FACT_MD},
+    )
+
+    assert "## 뉴스 관련성 등급" in revised
+    assert "| 관련성 등급 | 기사 | 방향 | 근거 | 처리 상한 |" in revised
+    assert "direct" in revised
+    assert "market" in revised
+    assert "noise" in revised
+    assert "입증/확인됨/달성으로 단정하지 않습니다" in revised
+
+    id7_revised = enforce_answer_contract(
+        "리바로 목표 시장의 변화 요인을 External/Internal로 분류해줘",
+        "시장 변화를 요약합니다.\n\n## 출처\n- 데이터: 뉴스",
+        {"fact_md": E1_NEWS_FACT_MD},
+    )
+    assert "## 변화 요인 결론" in id7_revised
+    assert "## 뉴스 관련성 등급" not in id7_revised

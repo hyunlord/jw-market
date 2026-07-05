@@ -27,6 +27,7 @@ FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
     "news_context": (
         "quantified_sales_impact",
         "causal_market_impact_without_metric",
+        "news_claim_elevation",
     ),
 }
 
@@ -47,6 +48,7 @@ _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
     "causal_competition_win": re.compile(r"(경쟁(?:에서)?\s*(?:이겨|승리|우위).{0,30}점유율.{0,20}(?:가져|확보)|점유율을\s*(?:가져왔|빼앗|탈환))"),
     "quantified_sales_impact": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|영향으로|기인해).{0,40}(?:매출|점유율).{0,20}\d[\d,.]*(?:억원|%|%p).{0,20}(?:증가|감소|상승|하락)"),
     "causal_market_impact_without_metric": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|기인|유발|견인|주도).{0,40}(?:매출|점유율|시장|처방)"),
+    "news_claim_elevation": re.compile(r"(뉴스|이슈|기사).{0,80}(?:입증|증명|확인됨|확인됐|달성)"),
 }
 
 _CHANNEL_FACT_RE: Final = re.compile(r"(?m)^\|\s*channel\s+상위\s*\|")

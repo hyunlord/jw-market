@@ -181,6 +181,7 @@ def test_claim_policy_registers_competitive_and_news_fact_types_without_new_bran
     assert FORBIDDEN_BY_FACT_TYPE["news_context"] == (
         "quantified_sales_impact",
         "causal_market_impact_without_metric",
+        "news_claim_elevation",
     )
 
 
@@ -240,4 +241,17 @@ def test_news_context_policy_blocks_quantified_news_sales_impact_claim() -> None
     revised = apply_claim_policy("리바로 관련 최근 이슈", answer, fact_md)
 
     assert "12억원 감소" not in revised
+    assert "기사 제목과 요약은 시장 동향 참고 자료입니다" in revised
+
+
+def test_news_context_policy_blocks_claim_elevation_language() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "뉴스로 리바로의 시장 확대가 입증되었습니다. "
+        "기사 제목과 요약은 시장 동향 참고 자료입니다."
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+
+    assert "입증" not in revised
     assert "기사 제목과 요약은 시장 동향 참고 자료입니다" in revised
