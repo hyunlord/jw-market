@@ -15,7 +15,10 @@ from pipeline.scripts.etl.brand_activity.raw_extract import CsdSourceRow
 from pipeline.scripts.etl.brand_activity.raw_schema import RAW_DDL
 from pipeline.scripts.etl.brand_activity.raw_stage_refresh import refresh_stage
 from pipeline.scripts.etl.brand_activity.raw_staging import (
+    StageDataset,
+    StageScope,
     csd_dedup_key,
+    datasets_for_stage_scope,
     keyword_dedup_key,
 )
 
@@ -62,12 +65,13 @@ def quote_stage_name(schema: str, expected: str) -> str:
     return schema
 
 
-def load_sources(config: DbConfig, rows: SourceRows, window: tuple[str, str]) -> LoadStats:
+def load_sources(config: DbConfig, rows: SourceRows, window: tuple[str, str], stage_scope: StageScope = "all") -> LoadStats:
     """Insert raw rows idempotently and refresh derived stage tables."""
     import pymysql
 
     raw_schema = quote_stage_name(config.raw_schema, "jw_brand_activity_raw_stage")
     stage_schema = quote_stage_name(config.stage_schema, "jw_brand_activity_stage")
+    datasets = datasets_for_stage_scope(stage_scope)
     connection = pymysql.connect(
         host=config.host,
         port=config.port,
@@ -80,15 +84,18 @@ def load_sources(config: DbConfig, rows: SourceRows, window: tuple[str, str]) ->
     try:
         with connection.cursor() as cursor:
             _execute_ddl(cursor, RAW_DDL.format(raw_schema=raw_schema))
-            _execute_ddl(cursor, csd_stage_ddl(stage_schema))
-            _execute_ddl(cursor, keyword_stage_ddl(stage_schema))
-            before = _raw_counts(cursor, raw_schema)
-            inserted = {
-                "raw_csd_channel_dynamics": _insert_csd(cursor, raw_schema, rows.csd),
-                "raw_keyword_events": _insert_keyword(cursor, raw_schema, rows.keyword),
-            }
-            after = _raw_counts(cursor, raw_schema)
-            stage_rows = refresh_stage(cursor, raw_schema, stage_schema, window)
+            if "csd" in datasets:
+                _execute_ddl(cursor, csd_stage_ddl(stage_schema))
+            if "keyword" in datasets:
+                _execute_ddl(cursor, keyword_stage_ddl(stage_schema))
+            before = _raw_counts(cursor, raw_schema, datasets)
+            inserted: dict[str, int] = {}
+            if "csd" in datasets:
+                inserted["raw_csd_channel_dynamics"] = _insert_csd(cursor, raw_schema, rows.csd)
+            if "keyword" in datasets:
+                inserted["raw_keyword_events"] = _insert_keyword(cursor, raw_schema, rows.keyword)
+            after = _raw_counts(cursor, raw_schema, datasets)
+            stage_rows = refresh_stage(cursor, raw_schema, stage_schema, window, stage_scope=stage_scope)
         connection.commit()
         return LoadStats(raw_before=before, raw_after=after, inserted=inserted, stage_rows=stage_rows)
     except pymysql.MySQLError:
@@ -106,13 +113,23 @@ def _execute_ddl(cursor: object, ddl: str) -> None:
             cursor.execute(sql)
 
 
-def _raw_counts(cursor: object, schema: str) -> dict[str, int]:
-    """Count raw rows in all brand-activity raw tables."""
+def _raw_counts(cursor: object, schema: str, datasets: tuple[StageDataset, ...] = ("csd", "keyword")) -> dict[str, int]:
+    """Count raw rows in the brand-activity raw tables touched by this load."""
     result: dict[str, int] = {}
-    for table in ("raw_csd_channel_dynamics", "raw_keyword_events"):
+    for table in _raw_tables_for_datasets(datasets):
         cursor.execute(f"SELECT COUNT(*) FROM `{schema}`.`{table}`")
         result[table] = int(cursor.fetchone()[0])
     return result
+
+
+def _raw_tables_for_datasets(datasets: tuple[StageDataset, ...]) -> tuple[str, ...]:
+    """Map source datasets to raw storage tables."""
+    tables: list[str] = []
+    if "csd" in datasets:
+        tables.append("raw_csd_channel_dynamics")
+    if "keyword" in datasets:
+        tables.append("raw_keyword_events")
+    return tuple(tables)
 
 
 def _insert_csd(cursor: object, schema: str, rows: list[CsdSourceRow]) -> int:

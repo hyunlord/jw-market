@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from pipeline.scripts.etl.brand_activity.km_core import JsonValue, KeywordEvent, source_period_from_name
-from pipeline.scripts.etl.brand_activity.raw_extract import KEYWORD_WORKBOOK_PATTERN, SourceRoots, discover_source_files
+from pipeline.scripts.etl.brand_activity.raw_extract import (
+    KEYWORD_WORKBOOK_PATTERN,
+    SourceRoots,
+    discover_csd_source_files,
+    discover_keyword_source_files,
+    discover_source_files,
+)
+from pipeline.scripts.etl.brand_activity.raw_staging import StageScope
 
 
 TARGET_MARKETS: dict[str, tuple[str, ...]] = {
@@ -64,6 +71,29 @@ def discover_combined_source_files(roots: SourceRoots, legacy_root: Path) -> dic
     }
     _ensure_unique_event_filenames(combined)
     return combined
+
+
+def discover_combined_keyword_source_files(roots: SourceRoots, legacy_root: Path) -> list[Path]:
+    """Return new+old Keyword files without scanning CSD folders."""
+    legacy = resolve_legacy_keyword_root(legacy_root)
+    files = {
+        "keyword": _sorted_km_workbooks((*discover_keyword_source_files(roots), *_source_workbooks(legacy.keyword, KEYWORD_WORKBOOK_PATTERN))),
+    }
+    _ensure_unique_event_filenames(files)
+    return files["keyword"]
+
+
+def discover_scoped_source_files(roots: SourceRoots, legacy_root: Path, stage_scope: StageScope) -> dict[str, list[Path]]:
+    """Return only the source workbook families needed by a rebuild scope."""
+    match stage_scope:
+        case "all":
+            return discover_combined_source_files(roots, legacy_root)
+        case "csd":
+            return {"csd": discover_csd_source_files(roots)}
+        case "keyword":
+            return {"keyword": discover_combined_keyword_source_files(roots, legacy_root)}
+        case _:
+            raise ValueError(f"unsupported stage scope: {stage_scope!r}")
 
 
 def resolve_legacy_keyword_root(root: Path) -> LegacyKeywordRoot:
