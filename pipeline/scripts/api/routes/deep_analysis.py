@@ -74,7 +74,7 @@ def _load_brand_strength(brand: str) -> dict:
             f"""
             SELECT strength_summary_json, generated_at, workflow_rev
             FROM {schema}.agent3_brand_strength
-            WHERE brand_name = %s
+            WHERE serving_brand_name = %s
             LIMIT 1
             """,
             [brand],

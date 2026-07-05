@@ -55,6 +55,8 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
         if "cache_deep_analysis_ai_analysis" in sql:
             return _ai_row()
         if "agent3_brand_strength" in sql:
+            assert "WHERE serving_brand_name = %s" in sql
+            assert "WHERE brand_name = %s" not in sql
             assert params == ["리바로"]
             return _strength_row()
         return _cache_row()
