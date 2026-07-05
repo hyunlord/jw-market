@@ -2115,6 +2115,42 @@ def try_merge_article_without_llm(
         return True
 
 
+def merge_keyword_context_for_existing_url(
+    output_dir: str,
+    site_name: str,
+    url: str,
+    search_kw: str | None,
+    *,
+    keyword_contexts: dict[str, list[dict]] | None = None,
+) -> bool:
+    """Merge search provenance when URL history skips an already-saved article."""
+    if not search_kw:
+        return False
+    try:
+        names = os.listdir(output_dir)
+    except OSError:
+        return False
+    stub = _apply_keyword_context({"search_keyword": search_kw}, search_kw, keyword_contexts)
+    for name in names:
+        if not name.endswith(".json") or name.startswith("_title_mismatch__"):
+            continue
+        path = os.path.join(output_dir, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        source_urls = {(source.get("url") or "").strip() for source in _sources_list_from_doc(doc)}
+        if url not in source_urls and (doc.get("url") or "").strip() != url:
+            continue
+        _append_source_url(doc, site_name, url)
+        _merge_article_meta(doc, stub)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=2)
+        return True
+    return False
+
+
 def crawl_once(
     months: int | None,
     days: int | None,
@@ -2241,6 +2277,13 @@ def crawl_once(
                     ):
                         row_list_date = (link_row[2] or "").strip()
                     if url in saved_urls or url in seen_on_site:
+                        merge_keyword_context_for_existing_url(
+                            output_dir,
+                            _normalized_source_name(site_name),
+                            url,
+                            kw,
+                            keyword_contexts=keyword_contexts,
+                        )
                         continue
                     seen_on_site.add(url)
 

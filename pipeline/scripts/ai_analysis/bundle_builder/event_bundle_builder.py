@@ -7,11 +7,12 @@ from typing import Dict, Optional, Tuple
 from .config import EventConfig
 
 TAGS = ["신약/R&D", "정책/규제", "공급/생산", "자본/경영", "외부/트렌드", "기타"]
-DIRECT_EVENT_SOURCE_PROCESSORS = ("workflow_196_optionB",)
+DIRECT_EVENT_SOURCE_PROCESSORS = ("workflow_196_optionB", "tier2_llm_v1")
 CROSS_MATCH_SOURCE_PROCESSORS = ("cross_match_adapter_v1",)
-# Future LLM-promoted Tier2 evidence belongs in DIRECT_EVENT_SOURCE_PROCESSORS
-# after it is written as tier2_llm_v1. The rule-only tier2_exact_rule_v1
-# processor is intentionally excluded from Agent2 narrative evidence.
+# Tier2 processor policy:
+# - tier2_llm_v1 is LLM-confirmed brand/article evidence and is visible to Agent2.
+# - tier2_exact_rule_v1 is search/exact-rule provenance only and intentionally
+#   stays outside Agent2 narrative evidence.
 
 
 def _sql_placeholders(values) -> str:
