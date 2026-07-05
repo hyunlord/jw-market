@@ -79,6 +79,9 @@ _LEVEL_DISPLAY_NAMES: Final[dict[str, str]] = {
     "channel": "채널",
     "specialty": "진료과",
     "company": "회사",
+    "manufacturer": "제조사",
+    "fish_oil": "오메가3/Fish oil",
+    "strength_pack": "용량/포장",
     "nhi_type": "급여유형",
     "ox_gx": "오리지널/제네릭",
 }
@@ -107,4 +110,7 @@ def dimension_value(record: MartRecord, key: str) -> str:
         return record.nhi_type() or "unknown"
     if key == "ox_gx":
         return record.ox_gx() or "unknown"
+    value = record.by_dimension.get(key)
+    if value not in {None, ""}:
+        return str(value)
     return record.brand_name

@@ -80,10 +80,13 @@ class MartSnapshot:
         return None
 
     def source_for_market(self, market_id: str) -> str:
-        sources = sorted({record.source for record in self.records if record.ml_id == market_id})
+        sources = self.sources_for_market(market_id)
         if "ubist" in sources:
             return "ubist"
         return sources[0] if sources else "ubist"
+
+    def sources_for_market(self, market_id: str) -> tuple[str, ...]:
+        return tuple(sorted({record.source for record in self.records if record.ml_id == market_id}))
 
     def market_records(self, market_id: str, source: str = "ubist", measure: str = "sales") -> tuple[MartRecord, ...]:
         source_key = _source_key(source)

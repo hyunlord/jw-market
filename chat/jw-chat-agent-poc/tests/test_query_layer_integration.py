@@ -80,6 +80,102 @@ def test_query_schema_injects_market_catalog_enums() -> None:
     assert "nhi_type" not in dimension_enum
 
 
+def test_query_catalog_exposes_mart_dimension_keys_without_metadata_keys() -> None:
+    """Given mart by_dimension keys, the catalog exposes business axes but not metadata."""
+
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_extra_dimensions(
+                    "리바로",
+                    {
+                        "manufacturer": "JW중외제약",
+                        "fish_oil": "비어유",
+                        "strength_pack": "2mg",
+                        "catalog_brand_id": "internal-1",
+                        "raw_company": "JW raw",
+                    },
+                ),
+            )
+        )
+    )
+
+    catalog = layer.catalog_for_brand("리바로")
+
+    assert "manufacturer" in catalog.dimensions
+    assert "fish_oil" in catalog.dimensions
+    assert "strength_pack" in catalog.dimensions
+    assert "catalog_brand_id" not in catalog.dimensions
+    assert "raw_company" not in catalog.dimensions
+
+
+def test_query_schema_exposes_all_sources_for_brand_market() -> None:
+    """Given a market has UBIST and IQVIA rows, query schema permits both sources."""
+
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_market("ml_003", "듀얼소스", (1_000_000_000.0,), ("2026-04",), [1_000_000_000.0]),
+                _record_with_status_history(
+                    "ml_003",
+                    "듀얼소스",
+                    {"2025-Q4": {"raw_value": 2_000_000_000.0, "ms": 100.0, "source_status": "OK"}},
+                    source="iqvia_nsa",
+                ),
+            )
+        )
+    )
+
+    schemas = tool_schemas(("듀얼소스",), ("latest", "2026-04"), layer.catalog_for_brand("듀얼소스"))
+    query_schema = next(schema for schema in schemas if schema["function"]["name"] == "query")
+    source_enum = query_schema["function"]["parameters"]["properties"]["spec"]["properties"]["source"]["enum"]
+
+    assert source_enum == ["iqvia_nsa", "ubist"]
+
+
+def test_query_layer_runs_iqvia_quarterly_source_when_present() -> None:
+    """Given IQVIA quarterly facts exist, source-explicit query(spec) returns them."""
+
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_status_history(
+                    "ml_011",
+                    "악템라",
+                    {"2025-Q4": {"raw_value": 4_819_000_000.0, "ms": 4.34, "source_status": "OK"}},
+                    source="iqvia_nsa",
+                ),
+                _record_with_status_history(
+                    "ml_011",
+                    "케브자라",
+                    {"2025-Q4": {"raw_value": 106_239_000_000.0, "ms": 95.66, "source_status": "OK"}},
+                    source="iqvia_nsa",
+                ),
+            )
+        )
+    )
+
+    call = layer.query(
+        {
+            "market": "ml_011",
+            "source": "iqvia_nsa",
+            "dimensions": ["product"],
+            "group_by": ["product"],
+            "metrics": ["sales"],
+            "filters": {"period": "2025-Q4"},
+            "limit": 5,
+        },
+        fallback_brand="악템라",
+    )
+
+    data = call["render_data"]
+    assert call["source"] == "IQVIA"
+    assert data["period"] == "2025-Q4"
+    assert data["level_segments"][0]["name"] == "케브자라"
+    assert data["level_segments"][1]["name"] == "악템라"
+    assert data["level_segments"][1]["value_억원"] == 48.19
+
+
 def test_query_catalog_exposes_class2_only_for_split_market() -> None:
     """Given a dual-class market, catalog preserves split metadata while exposing Class 2 for grouping."""
 
@@ -217,6 +313,27 @@ def test_facade_prefers_query_layer_for_strategic_metric() -> None:
     assert livaro["from_ms_pct"] == livaro["series"][0]["ms_pct"]
     assert livaro["to_period"] == livaro["series"][-1]["period"]
     assert livaro["to_ms_pct"] == livaro["series"][-1]["ms_pct"]
+
+
+def test_facade_exposes_narrow_channel_and_specialty_breakdown_tools() -> None:
+    """Given uploaded mart axes exist, narrow tools reuse query-spec facts."""
+
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=_query_layer(),
+    )
+
+    channel = facade.execute("get_brand_channel_breakdown", {"brand": "리바로"})
+    specialty = facade.execute("get_brand_specialty_breakdown", {"brand": "리바로"})
+
+    assert channel.status == "ok"
+    assert specialty.status == "ok"
+    assert channel.call["render_data"]["level"] == "channel"
+    assert specialty.call["render_data"]["level"] == "specialty"
+    assert channel.call["render_data"]["applied_filters"] == {"brand": "리바로", "period": "2026-04"}
+    assert specialty.call["render_data"]["applied_filters"] == {"brand": "리바로", "period": "2026-04"}
 
 
 def test_query_layer_blocks_failed_latest_zero_metric() -> None:
@@ -661,6 +778,72 @@ def test_segment_compare_collects_axis_facts_instead_of_unsupported_only() -> No
     assert "제형 지원" in fact_md
     assert "Class 미지원" in fact_md
     assert "용량 미지원" in fact_md
+
+
+def test_segment_compare_uses_market_default_source_for_split_market_axes() -> None:
+    """Given the market default source is IQVIA, segment comparison must not force UBIST."""
+
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(tool_calls=(ToolCallPlan(name="get_metric", arguments={"brand": "악템라", "measure": "sales", "period": "latest"}, reason="generic metric"),)),
+            AgentDecision(final_answer="done"),
+        )
+    )
+    agent = ToolUseAgent(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        planner=planner,
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records())),
+    )
+
+    result = agent.answer("악템라 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘")
+
+    query_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("metric") == "query_spec"
+    ]
+    axes = {call["render_data"].get("requested_axis") for call in query_calls}
+    assert {"Class", "Molecule", "브랜드"}.issubset(axes)
+    for call in query_calls:
+        assert call["render_data"]["source_label"] == "IQVIA"
+    failed_axes = {
+        call.get("render_data", {}).get("requested_axis")
+        for call in result["tool_calls"]
+        if call.get("tool") == "query_failed"
+    }
+    assert {"용량", "제형"}.issubset(failed_axes)
+    fact_md = result["markdown_response"]["fact_md"]
+    assert "Class 지원" in fact_md
+    assert "Molecule 지원" in fact_md
+    assert "브랜드 지원" in fact_md
+    assert "용량 미지원" in fact_md
+    assert "제형 미지원" in fact_md
+
+
+def test_specialty_question_collects_anchor_brand_specialty_directly() -> None:
+    """Given a brand specialty question, deterministic routing should use the anchor brand."""
+
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(tool_calls=(ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}, reason="generic metric"),)),
+            AgentDecision(final_answer="done"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, query_layer=_query_layer())
+
+    result = agent.answer("리바로 진료과별 매출 구성 알려줘")
+
+    query_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "get_brand_metric" and call.get("render_data", {}).get("metric") == "query_spec"
+    ]
+    assert len(query_calls) == 1
+    data = query_calls[0]["render_data"]
+    assert data["level"] == "specialty"
+    assert data["applied_filters"]["brand"] == "리바로"
+    assert data["level_segments"][0]["name"] == "순환기"
 
 
 def test_source_crosscheck_collects_ubist_and_iqvia_separately() -> None:
@@ -1128,6 +1311,21 @@ def _record_with_status_history(
         specialty_data={},
         dimension_data={},
         by_dimension={"company": "테스트제약", "molecule": f"{brand}성분", "dosage_form": "테스트"},
+    )
+
+
+def _record_with_extra_dimensions(brand: str, extra: dict[str, str]) -> MartRecord:
+    record = _record(brand, (1_000_000_000.0,), ("2026-04",), [1_000_000_000.0])
+    return MartRecord(
+        ml_id=record.ml_id,
+        brand_name=record.brand_name,
+        source=record.source,
+        measure=record.measure,
+        metric_history=record.metric_history,
+        channel_data=record.channel_data,
+        specialty_data=record.specialty_data,
+        dimension_data=record.dimension_data,
+        by_dimension={**record.by_dimension, **extra},
     )
 
 

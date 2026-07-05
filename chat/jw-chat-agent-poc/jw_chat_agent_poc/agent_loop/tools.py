@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, procedure_stats_call, search_news_call, web_search_call
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding, display_period, require_available_period, resolve_relative_expression
-from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, query_spec, top_brands
+from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, query_spec, top_brands
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tool_helpers import closest_allowed_brand, ground_news_query, market_members, metric_measure, period_filters, system_current_month
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -92,6 +92,10 @@ class AgentToolFacade:
                 return self._compare_brands_series(grounded_arguments)
             if name == "get_top_brands":
                 return self._top_brands(grounded_arguments)
+            if name == "get_brand_channel_breakdown":
+                return self._dimension_breakdown(grounded_arguments, "channel")
+            if name == "get_brand_specialty_breakdown":
+                return self._dimension_breakdown(grounded_arguments, "specialty")
             if name == "query":
                 return self._query_spec(grounded_arguments)
         except UnsupportedBrandError as exc:
@@ -265,6 +269,11 @@ class AgentToolFacade:
     def _top_brands(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
         result = top_brands(self._query_layer, brand, arguments.get("limit"))
+        return ToolExecution("ok", result.preview, result.call, arguments)
+
+    def _dimension_breakdown(self, arguments: Mapping[str, str], dimension: str) -> ToolExecution:
+        brand = self._brand(arguments)
+        result = dimension_breakdown(self._query_layer, brand, dimension, arguments)
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _query_spec(self, arguments: Mapping[str, str]) -> ToolExecution:

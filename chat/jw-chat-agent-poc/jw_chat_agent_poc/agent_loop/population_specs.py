@@ -104,7 +104,7 @@ def _segment_compare_plan(question: str, _brand: str, _channel: str) -> StrictQu
     specs: list[QuerySpec] = []
     metadata: list[dict[str, str]] = []
     for axis, dimension in axes:
-        specs.append(_spec(dimension, metric="sales", limit=5))
+        specs.append(_spec(dimension, source="", metric="sales", limit=5))
         metadata.append({"contract_intent": "segment_compare", "requested_axis": axis, "requested_dimension": dimension})
     return StrictQueryPlan(specs=tuple(specs), metadata=tuple(metadata))
 
@@ -129,16 +129,16 @@ def _channel_molecule_plan(question: str, _brand: str, channel: str) -> StrictQu
 
 def _channel_share_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if "채널별" in question and "점유율" in question:
-        specs = [_spec("channel", metric="share", filters={"brand": brand})]
+        specs = [_spec("channel", source="", metric="share", filters={"brand": brand})]
         if "아토젯" in question:
-            specs.append(_spec("channel", metric="share", filters={"brand": "아토젯"}))
+            specs.append(_spec("channel", source="", metric="share", filters={"brand": "아토젯"}))
         return StrictQueryPlan(specs=tuple(specs))
     return None
 
 
 def _channel_distribution_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_channel_distribution(question, brand):
-        return StrictQueryPlan(specs=(_spec("channel", metric="sales", filters={"brand": brand}),))
+        return StrictQueryPlan(specs=(_spec("channel", source="", metric="sales", filters={"brand": brand}),))
     return None
 
 
@@ -150,7 +150,7 @@ def _origin_generic_plan(question: str, _brand: str, _channel: str) -> StrictQue
 
 def _specialty_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if "진료과" in question:
-        return StrictQueryPlan(needs_top_competitor_specialty=True)
+        return StrictQueryPlan(specs=(_spec("specialty", source="", metric="sales", filters={"brand": _brand}),))
     return None
 
 

@@ -21,6 +21,8 @@ BRAND_TOOLS = {
     "get_brand_series",
     "compare_brands_series",
     "get_top_brands",
+    "get_brand_channel_breakdown",
+    "get_brand_specialty_breakdown",
 }
 PERIOD_TOOLS = {"get_metric", "get_brand_sales", "get_brand_share", "get_brand_series"}
 
@@ -58,6 +60,18 @@ def top_brands(layer: StrategicQueryLayer | None, brand: str, limit: str | None)
     active_layer = required_layer(layer)
     call = active_layer.top_brands(brand, int_arg(limit, 5))
     return QueryToolResult(f"{brand} top brands query-layer", call)
+
+
+def dimension_breakdown(layer: StrategicQueryLayer | None, brand: str, dimension: str, arguments: Mapping[str, str]) -> QueryToolResult:
+    active_layer = required_layer(layer)
+    call = active_layer.dimension_breakdown(
+        brand,
+        dimension,
+        source=arguments.get("source", ""),
+        period=arguments.get("period", "latest"),
+        limit=int_arg(arguments.get("limit"), 10),
+    )
+    return QueryToolResult(f"{brand} {dimension} breakdown query-layer", call)
 
 
 def query_spec(layer: StrategicQueryLayer | None, arguments: Mapping[str, str], fallback_brand: str) -> QueryToolResult:

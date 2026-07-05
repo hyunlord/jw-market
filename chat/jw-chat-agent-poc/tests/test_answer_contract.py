@@ -162,6 +162,38 @@ E1_NEWS_FACT_MD = """## 확정 fact set
 """
 
 
+SPECIALTY_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| specialty 상위 | 1위 분리되지 않은 내과 시장점유율 3.54% 매출 31.80억원 |
+| specialty 상위 | 2위 내분비 시장점유율 1.20% 매출 10.83억원 |
+| specialty 상위 | 3위 순환기 시장점유율 1.17% 매출 10.54억원 |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2026-04, 시장 ml_006, view market_landscape |
+"""
+
+
+SPECIALTY_DATA_TABLE_MD = """## 확정 fact set
+
+### 분석 기준별 점유율
+| 순위 | 구분 | MS | 매출 |
+| --- | --- | --- | --- |
+| 1 | 분리되지 않은 내과 | 3.54% | 31.80억원 |
+| 2 | 내분비 | 1.20% | 10.83억원 |
+| 3 | 순환기 | 1.17% | 10.54억원 |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2026-04, 시장 ml_006, view market_landscape |
+"""
+
+
 def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell() -> None:
     # Given: verified trend facts exist, but final 514 returned a source-only shell.
     empty_shell = "확정 데이터 기준으로 정리하면 다음과 같습니다.\n\n## 출처\n- 데이터: UBIST / IQVIA NSA"
@@ -297,6 +329,126 @@ def test_segment_compare_contract_surfaces_supported_and_missing_axes() -> None:
     )
     assert status["structural_contract"] == "segment_compare"
     assert status["status"] == "pass"
+
+
+def test_segment_compare_contract_handles_company_manufacturer_axes() -> None:
+    answer = (
+        "회사 및 제조사 정보는 데이터 미보유입니다.\n"
+        "| 순위 | 구분(성분 조합) | 매출 | 시장점유율 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | Statin/EZE | 1,332.65억원 | 59.05% |\n"
+        "| 2 | Statin | 924.13억원 | 40.95% |\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로 회사와 제조사, 제형별 처방 세그먼트를 비교해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "## 세그먼트 비교 지원 범위" in revised
+    assert "| 회사 | 미지원 |" in revised
+    assert "| 제조사 | 미지원 |" in revised
+    assert "| 제형 | 지원 |" in revised
+    assert "### 미지원 축 처리" in revised
+    assert "Statin/EZE vs Statin" in revised
+
+
+def test_specialty_breakdown_contract_surfaces_existing_specialty_rows() -> None:
+    answer = "진료과별 데이터는 현재 제공된 데이터가 없어 수행할 수 없습니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "리바로 진료과별 매출 구성을 알려줘",
+        answer,
+        {"fact_md": SPECIALTY_FACT_MD},
+    )
+
+    assert "## 진료과별 매출 구성" in revised
+    assert "| 진료과 | 순위/값 |" in revised
+    assert "분리되지 않은 내과" in revised
+    assert "31.80억원" in revised
+    assert "순환기" in revised
+    assert "수행할 수 없습니다" not in revised
+    assert revised.index("## 진료과별 매출 구성") < revised.index("## 출처")
+    status = evaluate_answer_contract(
+        "리바로 진료과별 매출 구성을 알려줘",
+        revised,
+        {"fact_md": SPECIALTY_FACT_MD},
+    )
+    assert status["structural_contract"] == "specialty_breakdown"
+    assert status["status"] == "pass"
+
+
+def test_specialty_breakdown_contract_uses_data_md_when_fact_md_is_summary_only() -> None:
+    answer = "진료과별 데이터는 현재 제공된 데이터가 없어 수행할 수 없습니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "리바로 진료과별 매출 구성을 알려줘",
+        answer,
+        {"fact_md": "## 확정 fact set\n\n요약만 존재", "data_md": SPECIALTY_FACT_MD},
+    )
+
+    assert "## 진료과별 매출 구성" in revised
+    assert "분리되지 않은 내과" in revised
+    assert "31.80억원" in revised
+    assert "수행할 수 없습니다" not in revised
+
+
+def test_specialty_breakdown_contract_reads_specialty_fact_table() -> None:
+    answer = "진료과별 데이터는 현재 제공된 데이터가 없어 수행할 수 없습니다.\n\n## 출처\n- 데이터: UBIST"
+
+    revised = enforce_answer_contract(
+        "리바로 진료과별 매출 구성을 알려줘",
+        answer,
+        {"fact_md": "## 확정 fact set\n\n요약만 존재", "data_md": SPECIALTY_DATA_TABLE_MD},
+    )
+
+    assert "## 진료과별 매출 구성" in revised
+    assert "분리되지 않은 내과" in revised
+    assert "31.80억원" in revised
+    assert "수행할 수 없습니다" not in revised
+
+
+def test_general_dosage_combination_note_fires_outside_segment_contract() -> None:
+    answer = (
+        "### 리바로 제형별(성분 조합) 시장 현황\n"
+        "| 제형 | 매출 | MS |\n"
+        "| --- | --- | --- |\n"
+        "| Statin/EZE | 1332.65억원 | 59.05% |\n"
+        "| Statin | 923.67억원 | 40.95% |\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로 제형별 회사 구성을 비교해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "※ 본 시장의 제형 구분은 성분 조합 기준" in revised
+    assert "Statin/EZE vs Statin" in revised
+    assert revised.index("※ 본 시장의 제형 구분") < revised.index("## 출처")
+
+
+def test_general_dosage_combination_note_ignores_rank_table_headers() -> None:
+    answer = (
+        "### 리바로 제형별(성분 조합) 시장 현황\n"
+        "| 순위 | 구분 | 매출 | MS |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | Statin/EZE | 1332.65억원 | 59.05% |\n"
+        "| 2 | Statin | 923.67억원 | 40.95% |\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로 제형별 회사 구성을 비교해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "Statin/EZE vs Statin" in revised
+    assert "Statin/EZE vs 순위" not in revised
 
 
 def test_source_crosscheck_contract_keeps_single_source_values_without_cross_claim() -> None:

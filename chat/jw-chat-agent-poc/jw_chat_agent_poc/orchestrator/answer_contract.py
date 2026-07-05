@@ -5,7 +5,7 @@ import re
 from typing import Any, Final, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
-from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
+from jw_chat_agent_poc.orchestrator.dosage_notes import DOSAGE_COMBINATION_NOTE_PREFIX, dosage_combination_note
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +73,7 @@ def enforce_answer_contract(question: str, answer: str, markdown_response: Mappi
             fact = _trend_fact(fact_md)
             if fact is not None and len(fact.rows) >= rule.min_rows and not _trend_surface_ok(answer, fact, rule):
                 repaired = _join_blocks(_trend_answer(fact), _source_block(fact_md))
-    return _enforce_structural_contract(question, repaired, fact_md)
+    return _append_general_dosage_combination_note(_enforce_structural_contract(question, repaired, fact_md))
 
 
 def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -185,8 +185,12 @@ def _trend_question(question: str) -> bool:
 def _fact_markdown(markdown_response: Mapping[str, Any] | None) -> str:
     if not isinstance(markdown_response, Mapping):
         return ""
-    value = markdown_response.get("fact_md") or markdown_response.get("data_md") or ""
-    return value if isinstance(value, str) else ""
+    parts: list[str] = []
+    for key in ("fact_md", "data_md"):
+        value = markdown_response.get(key)
+        if isinstance(value, str) and value.strip() and value not in parts:
+            parts.append(value)
+    return "\n\n".join(parts)
 
 
 def _has_ranking_fact(calls: list[dict[str, Any]], brand: str) -> bool:
@@ -435,6 +439,10 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     elif contract_type == "source_crosscheck":
         answer = _sanitize_full_unavailable_answer(answer)
         block = _source_crosscheck_contract_block(question, fact_md)
+    elif contract_type == "specialty_breakdown":
+        block = _specialty_breakdown_contract_block(fact_md)
+        if block:
+            answer = _sanitize_specialty_unavailable_answer(answer)
     elif contract_type == "trend_support_matrix":
         block = _trend_support_matrix_block(fact_md)
     elif contract_type == "change_drivers":
@@ -454,6 +462,8 @@ def _structural_contract_type(question: str) -> str:
     text = question.lower()
     if _is_source_crosscheck_question(question):
         return "source_crosscheck"
+    if _is_specialty_breakdown_question(question):
+        return "specialty_breakdown"
     if _is_segment_compare_question(question):
         return "segment_compare"
     if any(token in question for token in ("영업활동", "영업 활동", "Impact", "impact", "상기 콜", "콜")):
@@ -480,6 +490,7 @@ def _structural_contract_present(answer: str, contract_type: str) -> bool:
         "sales_activity_link": "## 영업-매출 연계 분석 설계",
         "segment_compare": "## 세그먼트 비교 지원 범위",
         "source_crosscheck": "## 출처별 교차 확인 범위",
+        "specialty_breakdown": "## 진료과별 매출 구성",
         "trend_support_matrix": "## 추이 지원 범위",
         "change_drivers": "## 변화 요인 결론",
         "positioning": "## 포지셔닝 축",
@@ -495,6 +506,10 @@ def _is_positioning_question(question: str) -> bool:
 
 def _is_threat_detection_question(question: str) -> bool:
     return any(token in question for token in ("위협", "리스크", "경쟁 위협", "threat", "risk"))
+
+
+def _is_specialty_breakdown_question(question: str) -> bool:
+    return "진료과" in question and any(token in question for token in ("별", "구성", "매출", "처방", "비중", "상위"))
 
 
 def _is_news_ei_question(question: str) -> bool:
@@ -517,6 +532,8 @@ def _requested_segment_axes(question: str) -> tuple[str, ...]:
         ("Class", ("Class", "class", "클래스")),
         ("Molecule", ("Molecule", "molecule", "성분")),
         ("브랜드", ("브랜드", "Brand", "brand")),
+        ("회사", ("회사", "Company", "company")),
+        ("제조사", ("제조사", "Manufacturer", "manufacturer")),
         ("용량", ("용량", "Dose", "dose")),
         ("제형", ("제형", "Form", "form")),
     )
@@ -541,6 +558,8 @@ def _requested_sources(question: str) -> tuple[str, ...]:
 
 
 def _insert_before_source(answer: str, block: str) -> str:
+    if answer.startswith("## 출처"):
+        return _join_blocks(block, answer)
     marker = "\n## 출처"
     if marker not in answer:
         return _join_blocks(answer, block)
@@ -582,7 +601,7 @@ def _segment_compare_contract_block(question: str, fact_md: str, answer: str = "
     for axis in axes:
         supported = mandatory.get(f"{axis} 지원", "")
         unsupported = mandatory.get(f"{axis} 미지원", "")
-        if not supported:
+        if not supported and not unsupported:
             supported = _segment_compare_answer_payload(axis, answer)
         if supported:
             rows.append((axis, "지원", supported))
@@ -620,6 +639,10 @@ def _segment_compare_contract_block(question: str, fact_md: str, answer: str = "
 def _segment_compare_answer_payload(axis: str, answer: str) -> str:
     if not answer:
         return ""
+    if axis == "제형":
+        dosage_payload = _dosage_combination_payload_from_answer(answer)
+        if dosage_payload:
+            return dosage_payload
     answer = answer.split("### 미보유 데이터 처리", 1)[0].split("## 세그먼트 비교 지원 범위", 1)[0]
     axis_re = re.compile(rf"(?:\\*\\*)?{re.escape(axis)}(?:\\*\\*)?[^\\n|]*(?:매출|MS|점유율)[^\\n]*")
     for raw in answer.splitlines():
@@ -659,16 +682,110 @@ def _segment_compare_answer_payload(axis: str, answer: str) -> str:
 def _segment_compare_dosage_note(axis: str, answer: str) -> str:
     if axis != "제형":
         return ""
+    return dosage_combination_note(axis, _dosage_combination_values_from_answer(answer))
+
+
+def _append_general_dosage_combination_note(answer: str) -> str:
+    if DOSAGE_COMBINATION_NOTE_PREFIX in answer or "제형" not in answer:
+        return answer
+    note = dosage_combination_note("제형", _dosage_combination_values_from_answer(answer))
+    if not note:
+        return answer
+    return _insert_before_source(answer, note)
+
+
+def _dosage_combination_values_from_answer(answer: str) -> tuple[str, ...]:
     values: list[str] = []
-    for match in re.finditer(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+/[A-Za-z가-힣]+)(?![A-Za-z가-힣])", answer):
-        value = match.group(1)
-        if value not in values:
+    for raw in answer.splitlines():
+        if not _is_dosage_combination_context(raw):
+            continue
+        for match in re.finditer(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+/[A-Za-z가-힣]+)(?![A-Za-z가-힣])", raw):
+            value = match.group(1)
+            if _is_dosage_table_header_value(value) or not _is_dosage_combination_value(value):
+                continue
+            if value not in values:
+                values.append(value)
+        for match in re.finditer(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+)\s*단일", raw):
+            value = match.group(1)
+            if value not in values and _is_dosage_combination_value(value):
+                values.append(value)
+    in_dosage_table = False
+    for raw in answer.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("### "):
+            in_dosage_table = "제형" in stripped or "성분 조합" in stripped
+            continue
+        if stripped.startswith("|") and ("제형" in stripped or "성분 조합" in stripped):
+            in_dosage_table = True
+            continue
+        if not in_dosage_table or not stripped.startswith("|") or "---" in stripped or "제형" in stripped:
+            continue
+        cells = _table_cells(stripped)
+        if not cells:
+            continue
+        value = _dosage_combination_value_from_table_cells(cells)
+        if value and _is_dosage_combination_value(value) and value not in values:
             values.append(value)
-    for match in re.finditer(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+)\s*단일", answer):
-        value = match.group(1)
-        if value not in values:
-            values.append(value)
-    return dosage_combination_note(axis, values)
+    return tuple(values)
+
+
+def _dosage_combination_value_from_table_cells(cells: list[str]) -> str:
+    header_tokens = {"순위", "구분", "제형", "매출", "MS", "시장점유율", "기간", "출처", "값", "축", "지원 여부", "근거/값"}
+    for cell in cells:
+        value = cell.strip()
+        if not value:
+            continue
+        if value in header_tokens or _is_dosage_table_header_value(value) or "구분" in value:
+            continue
+        if re.fullmatch(r"\d+(?:위)?", value):
+            continue
+        if any(token in value for token in ("억원", "%", "MS", "시장점유율", "매출")):
+            continue
+        if value in {"지원", "미지원"}:
+            continue
+        return value
+    return ""
+
+
+def _is_dosage_table_header_value(value: str) -> bool:
+    return value in {"근거/값", "지원/미지원"} or any(token in value for token in ("근거", "지원 여부", "구분", "시장점유율"))
+
+
+def _is_dosage_combination_value(value: str) -> bool:
+    if not value or value == "제형":
+        return False
+    blocked_tokens = (
+        "catalog",
+        "query",
+        "UBIST",
+        "IQVIA",
+        "Class",
+        "Molecule",
+        "브랜드",
+        "용량",
+        "제형",
+        "채널",
+        "주간",
+        "월간",
+        "기간",
+        "시장",
+        "원천",
+    )
+    return not any(token in value for token in blocked_tokens)
+
+
+def _is_dosage_combination_context(line: str) -> bool:
+    if not any(token in line for token in ("제형", "성분 조합")):
+        return False
+    blocked_tokens = ("미지원", "미보유", "확인 필요", "수행할 분석", "해석 가능한", "조회 성공하지 못")
+    return not any(token in line for token in blocked_tokens)
+
+
+def _dosage_combination_payload_from_answer(answer: str) -> str:
+    values = _dosage_combination_values_from_answer(answer)
+    if not values:
+        return ""
+    return f"성분 조합 기준 제형 축: {', '.join(values[:5])}"
 
 
 def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
@@ -705,6 +822,67 @@ def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
     else:
         lines.extend(("", "### 교차 판정", "양 소스가 모두 확보된 범위에서만 기간·정의 차이를 확인합니다."))
     return "\n".join(lines)
+
+
+def _specialty_breakdown_contract_block(fact_md: str) -> str:
+    rows = _specialty_breakdown_rows(fact_md)
+    if not rows:
+        return ""
+    lines = [
+        "## 진료과별 매출 구성",
+        "| 진료과 | 순위/값 |",
+        "| --- | --- |",
+        *(f"| {_contract_cell(name)} | {_contract_cell(payload)} |" for name, payload in rows),
+        "",
+        "진료과 구분은 보유 mart fact 범위에서만 표시하며, 미반환 진료과 값은 추정하지 않습니다.",
+    ]
+    return "\n".join(lines)
+
+
+def _specialty_breakdown_rows(fact_md: str) -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    for label, payload in _mandatory_row_items(fact_md):
+        normalized = label.lower()
+        if "specialty" not in normalized and "진료과" not in label:
+            continue
+        name = _specialty_name_from_payload(payload)
+        rows.append((name or "진료과", payload))
+    if not rows:
+        rows.extend(_specialty_rows_from_fact_tables(fact_md))
+    return tuple(rows[:8])
+
+
+def _specialty_name_from_payload(payload: str) -> str:
+    match = re.search(r"\d+위\s+(?P<name>.+?)\s+(?:시장점유율|MS|매출)", payload)
+    if match is None:
+        return ""
+    return match.group("name").strip()
+
+
+def _specialty_rows_from_fact_tables(fact_md: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    in_specialty_table = False
+    for raw in fact_md.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("### "):
+            heading = stripped.lower()
+            in_specialty_table = "specialty" in heading or "진료과" in stripped or "분석 기준별" in stripped
+            continue
+        if not in_specialty_table:
+            continue
+        if not stripped.startswith("|") or "---" in stripped:
+            continue
+        cells = _table_cells(stripped)
+        if len(cells) < 4:
+            continue
+        if any(cell in {"순위", "구분", "시장점유율", "매출"} for cell in cells):
+            continue
+        rank, name, share, sales = cells[:4]
+        if not name:
+            continue
+        parts = [part for part in (f"{rank}위" if rank and not rank.endswith("위") else rank, name, f"시장점유율 {share}" if share else "", f"매출 {sales}" if sales else "") if part]
+        rows.append((name, " ".join(parts)))
+    return rows
 
 
 def _positioning_contract_block(fact_md: str) -> str:
@@ -886,6 +1064,27 @@ def _sanitize_full_unavailable_answer(answer: str) -> str:
     kept: list[str] = []
     for raw in answer.splitlines():
         if any(token in raw for token in blocked_tokens):
+            continue
+        kept.append(raw)
+    return "\n".join(kept).strip()
+
+
+def _sanitize_specialty_unavailable_answer(answer: str) -> str:
+    answer = _sanitize_full_unavailable_answer(answer)
+    blocked_heading_tokens = ("분석의 한계", "한계 및 시사점")
+    blocked_body_tokens = ("진료과별", "데이터 부재", "데이터가 부재", "현재 데이터 부재", "추후 데이터")
+    kept: list[str] = []
+    skip_until_blank = False
+    for raw in answer.splitlines():
+        stripped = raw.strip()
+        if skip_until_blank:
+            if not stripped:
+                skip_until_blank = False
+            continue
+        if stripped.startswith("**") and any(token in stripped for token in blocked_heading_tokens):
+            skip_until_blank = True
+            continue
+        if "진료과별" in raw and any(token in raw for token in blocked_body_tokens):
             continue
         kept.append(raw)
     return "\n".join(kept).strip()

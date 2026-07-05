@@ -146,16 +146,16 @@ def _legacy_strict_query_plan(question: str, brand: str) -> StrictQueryPlan | No
     if channel and "성분" in question:
         return StrictQueryPlan(specs=(_spec("molecule", metric="share", filters={"channel": channel}),))
     if "채널별" in question and "점유율" in question:
-        specs = [_spec("channel", metric="share", filters={"brand": brand})]
+        specs = [_spec("channel", source="", metric="share", filters={"brand": brand})]
         if "아토젯" in question:
-            specs.append(_spec("channel", metric="share", filters={"brand": "아토젯"}))
+            specs.append(_spec("channel", source="", metric="share", filters={"brand": "아토젯"}))
         return StrictQueryPlan(specs=tuple(specs))
     if _asks_channel_distribution(question, brand):
-        return StrictQueryPlan(specs=(_spec("channel", metric="sales", filters={"brand": brand}),))
+        return StrictQueryPlan(specs=(_spec("channel", source="", metric="sales", filters={"brand": brand}),))
     if any(token in question for token in ("오리지널", "제네릭", "Original", "Generic")):
         return StrictQueryPlan(specs=(_spec("ox_gx", metric="share"),))
     if "진료과" in question:
-        return StrictQueryPlan(needs_top_competitor_specialty=True)
+        return StrictQueryPlan(specs=(_spec("specialty", source="", metric="sales", filters={"brand": brand}),))
     if _asks_form_sales_trend(question):
         return StrictQueryPlan(specs=(_spec("dosage_form", metric="sales", group_by=("dosage_form", "period"), derive=("trend",), filters={"periods": "12"}),))
     if "회사" in question:
@@ -166,6 +166,7 @@ def _legacy_strict_query_plan(question: str, brand: str) -> StrictQueryPlan | No
 def _spec(
     dimension: str,
     *,
+    source: str = "ubist",
     metric: str,
     group_by: tuple[str, ...] | None = None,
     derive: tuple[str, ...] = (),
@@ -173,7 +174,7 @@ def _spec(
     limit: int = 10,
 ) -> QuerySpec:
     return {
-        "source": "ubist",
+        "source": source,
         "view": "market_landscape",
         "dimensions": [dimension],
         "group_by": list(group_by or (dimension,)),

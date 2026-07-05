@@ -60,6 +60,7 @@ def _properties(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...
             "description": "Use only this code-grounded period enum; never invent unavailable months.",
         },
         "view": {"type": "string", "enum": ["market_landscape", "competitive_dynamics"]},
+        "source": {"type": "string", "description": "Optional mart source such as ubist or iqvia_nsa when the question explicitly asks for it."},
         "expression": {"type": "string"},
         "query": {"type": "string", "description": "Optional text query for news issue/search terms, not a brand."},
     }
@@ -80,6 +81,8 @@ def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, 
         _schema_with_props("get_brand_series", "query layer로 전략뷰 브랜드 월별 매출·점유율 시계열을 조회합니다.", ("brand",), props),
         _schema_with_props("compare_brands_series", "query layer로 두 브랜드의 월별 매출·점유율 시계열을 비교합니다.", ("brand", "comparison_brand"), props),
         _schema_with_props("get_top_brands", "query layer로 전략뷰 시장 상위 브랜드를 조회합니다.", ("brand",), props),
+        _schema_with_props("get_brand_channel_breakdown", "query layer로 브랜드의 채널별 매출 구성을 조회합니다.", ("brand",), props),
+        _schema_with_props("get_brand_specialty_breakdown", "query layer로 브랜드의 진료과별 매출 구성을 조회합니다.", ("brand",), props),
         _schema_with_props("query", "catalog enum에 맞는 query(spec)를 전략 mart에 실행합니다.", ("spec",), props),
     )
 

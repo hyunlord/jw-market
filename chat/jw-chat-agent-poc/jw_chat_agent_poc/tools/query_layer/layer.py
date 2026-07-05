@@ -191,6 +191,27 @@ class StrategicQueryLayer:
         data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
+    def dimension_breakdown(self, brand: str, dimension: str, *, source: str = "", period: str = "latest", limit: int = 10) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        market = _required_market(snapshot, brand)
+        selected_source = source or snapshot.source_for_market(market)
+        selected_period = _actual_period(snapshot, market, selected_source, period)
+        spec = {
+            "source": selected_source,
+            "view": "market_landscape",
+            "market": market,
+            "dimensions": [dimension],
+            "group_by": [dimension],
+            "metrics": ["sales"],
+            "filters": {"brand": brand, "period": selected_period},
+            "limit": limit,
+        }
+        call = self.query(spec, fallback_brand=brand)
+        data = call.setdefault("render_data", {})
+        if isinstance(data, dict):
+            data["requested_dimension"] = dimension
+        return call
+
     def competitor_molecule_candidates(self, brand: str, limit: int = 5) -> list[dict[str, Any]]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand)

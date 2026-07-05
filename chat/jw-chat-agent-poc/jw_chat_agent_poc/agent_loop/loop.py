@@ -1511,6 +1511,8 @@ _SUFFICIENT_METRIC_TOOLS = {
     "get_brand_series",
     "compare_brands_series",
     "get_top_brands",
+    "get_brand_channel_breakdown",
+    "get_brand_specialty_breakdown",
     "query",
 }
 _FOLLOWUP_CONTEXT_TOKENS = (

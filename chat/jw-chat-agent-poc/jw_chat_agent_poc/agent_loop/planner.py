@@ -174,6 +174,8 @@ _METRIC_TOOL_NAMES = (
     "query",
     "compare_brands_series",
     "get_top_brands",
+    "get_brand_channel_breakdown",
+    "get_brand_specialty_breakdown",
 )
 _MARKET_TOOL_NAMES = ("get_market_scope",)
 _RELATIVE_DATE_TOOL_NAMES = ("resolve_relative_date",)
