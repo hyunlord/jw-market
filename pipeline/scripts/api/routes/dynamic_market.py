@@ -11,7 +11,13 @@ from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
-from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, PeriodRange, clamp_top_n
+from pipeline.scripts.api.dynamic_market.types import (
+    DynamicMarketInputError,
+    DynamicMarketScopeTooBroadError,
+    MarketDefinition,
+    PeriodRange,
+    clamp_top_n,
+)
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
 from pipeline.scripts.api.openapi_docs import (
     COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
@@ -64,6 +70,7 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
     )
     try:
         definition = _resolve_definition(payload)
+        _enforce_scope_size_limit(definition, limit=config.dynamic_max_brand_rows)
         metrics = aggregator.aggregate(
             brands=definition.brands,
             source=definition.source,
@@ -75,10 +82,26 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
             view=definition.view,
             strategic_market_id=definition.strategic_market_id,
         )
+    except DynamicMarketScopeTooBroadError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "dynamic_scope_too_broad",
+                "message": str(exc),
+                "resolved_brand_rows": exc.resolved_brand_rows,
+                "limit": exc.limit,
+            },
+        ) from exc
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
     result = composer.compose(definition=definition, metrics=metrics)
     return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+
+
+def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:
+    resolved_brand_rows = len(definition.brands)
+    if resolved_brand_rows > limit:
+        raise DynamicMarketScopeTooBroadError(resolved_brand_rows=resolved_brand_rows, limit=limit)
 
 
 def _resolve_definition(payload: DynamicMarketRequest):

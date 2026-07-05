@@ -30,6 +30,7 @@ class APIConfig:
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     cache_ttl_seconds: int = 86400
+    dynamic_max_brand_rows: int = 3000
 
 
 ApiSettings = APIConfig
@@ -52,6 +53,7 @@ def load_config() -> APIConfig:
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=_env_int("API_PORT", 8000),
+        dynamic_max_brand_rows=_env_int("DYNAMIC_MAX_BRAND_ROWS", 3000),
     )
 
 

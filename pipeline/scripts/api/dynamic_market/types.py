@@ -18,6 +18,15 @@ class DynamicMarketInputError(Exception):
     """Raised when a dynamic-market request cannot be parsed safely."""
 
 
+class DynamicMarketScopeTooBroadError(DynamicMarketInputError):
+    """Raised when a resolved dynamic-market scope is too large to aggregate safely."""
+
+    def __init__(self, *, resolved_brand_rows: int, limit: int) -> None:
+        self.resolved_brand_rows = resolved_brand_rows
+        self.limit = limit
+        super().__init__("시장 범위가 너무 넓습니다. 범위를 좁혀주세요.")
+
+
 @dataclass(frozen=True, slots=True)
 class PeriodRange:
     """Inclusive month range used by the runtime metric window."""

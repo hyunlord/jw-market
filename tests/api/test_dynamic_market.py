@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -273,6 +275,97 @@ def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypat
 
     assert response == {"status": "SUCCESS", "result": bare_payload}
     assert "data" not in response
+
+
+def test_dynamic_market_route_allows_scope_at_brand_row_limit(monkeypatch) -> None:
+    bare_payload = {
+        "brand": "리바로",
+        "source": "UBIST",
+        "measure": "sales",
+        "market_meta": {"market_id": "dynamic_general_safe"},
+        "data": {"kpi": {"market_size_recent": 100.0}},
+    }
+    definition = SimpleNamespace(
+        brands=(
+            BrandRef("a", "A", "C10A1"),
+            BrandRef("b", "B", "C10A1"),
+        ),
+        source="ubist",
+        measure="sales",
+        dimension_filters=(),
+        channel_axis=None,
+        view="general",
+        strategic_market_id=None,
+    )
+    aggregate_calls: list[object] = []
+
+    class FakeAggregator:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def aggregate(self, **kwargs: object) -> object:
+            aggregate_calls.append(kwargs)
+            return object()
+
+    class FakeComposer:
+        def compose(self, **_: object) -> dict:
+            return dict(bare_payload)
+
+    monkeypatch.setattr(
+        dynamic_market_route,
+        "config",
+        SimpleNamespace(db_name="jw_mart", strategic_dimension_db_name="jw_mart", dynamic_max_brand_rows=2),
+    )
+    monkeypatch.setattr(dynamic_market_route, "_resolve_definition", lambda payload: definition)
+    monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FakeAggregator)
+    monkeypatch.setattr(dynamic_market_route, "ResponseComposer", FakeComposer)
+
+    response = dynamic_market_route.dynamic_market(DynamicMarketRequest())
+
+    assert response == {"status": "SUCCESS", "result": bare_payload}
+    assert len(aggregate_calls) == 1
+
+
+def test_dynamic_market_route_rejects_scope_before_aggregation_when_brand_row_limit_exceeded(monkeypatch) -> None:
+    definition = SimpleNamespace(
+        brands=(
+            BrandRef("a", "A", "C10A1"),
+            BrandRef("b", "B", "C10A1"),
+            BrandRef("c", "C", "C10A1"),
+        ),
+        source="ubist",
+        measure="sales",
+        dimension_filters=(),
+        channel_axis=None,
+        view="general",
+        strategic_market_id=None,
+    )
+
+    class FakeAggregator:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def aggregate(self, **_: object) -> object:
+            raise AssertionError("scope guard must reject before aggregation")
+
+    monkeypatch.setattr(
+        dynamic_market_route,
+        "config",
+        SimpleNamespace(db_name="jw_mart", strategic_dimension_db_name="jw_mart", dynamic_max_brand_rows=2),
+    )
+    monkeypatch.setattr(dynamic_market_route, "_resolve_definition", lambda payload: definition)
+    monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FakeAggregator)
+
+    with pytest.raises(dynamic_market_route.HTTPException) as exc_info:
+        dynamic_market_route.dynamic_market(DynamicMarketRequest())
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "error": "dynamic_scope_too_broad",
+        "message": "시장 범위가 너무 넓습니다. 범위를 좁혀주세요.",
+        "resolved_brand_rows": 3,
+        "limit": 2,
+    }
 
 
 def test_compose_emits_only_portal_read_cause_sections() -> None:
