@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import re
 from typing import Any
 
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
@@ -29,7 +30,12 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     quote_identifier,
 )
-from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+from pipeline.scripts.utils.ubist_channel_mapping import (
+    UBIST_FACILITY_MAPPING,
+    UBIST_SPECIALTY_MAPPING,
+    parse_channel_code,
+    raw_pair_to_channel_code,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,6 +493,8 @@ def collect_ubist_channel_latest_totals(raw: Any, latest_period: str, totals_by_
     if isinstance(raw, dict):
         payload = raw
     elif isinstance(raw, str) and raw.strip():
+        if collect_ubist_channel_latest_totals_from_json(raw, latest_period, totals_by_code):
+            return
         payload = json.loads(raw)
     else:
         return
@@ -505,6 +513,118 @@ def collect_ubist_channel_latest_totals(raw: Any, latest_period: str, totals_by_
             if not code:
                 continue
             totals_by_code[code] = totals_by_code.get(code, 0.0) + float(value or 0.0)
+
+
+_JSON_NUMBER_RE = re.compile(r"\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|null)")
+_RAW_CHANNEL_PAIRS: tuple[tuple[str, str, str], ...] = tuple(
+    dict.fromkeys(
+        (str(facility), str(specialty), code)
+        for facility_meta in UBIST_FACILITY_MAPPING.values()
+        for facility in facility_meta["raw_values"]
+        for specialty in {
+            str(raw_value)
+            for specialty_meta in UBIST_SPECIALTY_MAPPING.values()
+            for raw_value in specialty_meta["raw_values"]
+        }
+        for code in (raw_pair_to_channel_code(facility, specialty),)
+        if code
+    )
+)
+
+
+def collect_ubist_channel_latest_totals_from_json(raw: str, latest_period: str, totals_by_code: dict[str, float]) -> bool:
+    """Collect latest-period UBIST channel totals without materializing matrix JSON.
+
+    This preserves the existing attribution rule by using the same
+    ``raw_pair_to_channel_code`` pair set as the full parser. It intentionally
+    extracts only one period because general dynamic responses only need the
+    latest top-channel labels.
+    """
+
+    text = raw.strip()
+    if not text or text[0] != "{":
+        return False
+    period_key = _json_key_variants(latest_period)
+    try:
+        for facility, specialty, code in _RAW_CHANNEL_PAIRS:
+            facility_bounds = _object_bounds_for_key(text, _json_key_variants(facility), 0, len(text))
+            if facility_bounds is None:
+                continue
+            specialty_bounds = _object_bounds_for_key(text, _json_key_variants(specialty), *facility_bounds)
+            if specialty_bounds is None:
+                continue
+            value = _number_for_key(text, period_key, *specialty_bounds)
+            if value is not None:
+                totals_by_code[code] = totals_by_code.get(code, 0.0) + value
+    except ValueError:
+        return False
+    return True
+
+
+def _json_key_variants(value: str) -> tuple[str, ...]:
+    variants = (json.dumps(value, ensure_ascii=False), json.dumps(value, ensure_ascii=True))
+    return variants if variants[0] != variants[1] else (variants[0],)
+
+
+def _object_bounds_for_key(text: str, keys: tuple[str, ...], start: int, end: int) -> tuple[int, int] | None:
+    found = _find_key(text, keys, start, end)
+    if found is None:
+        return None
+    colon = text.find(":", found, end)
+    if colon < 0:
+        raise ValueError("missing object colon")
+    pos = colon + 1
+    while pos < end and text[pos].isspace():
+        pos += 1
+    if pos >= end or text[pos] != "{":
+        raise ValueError("expected object")
+    return _matching_object_bounds(text, pos, end)
+
+
+def _number_for_key(text: str, keys: tuple[str, ...], start: int, end: int) -> float | None:
+    found = _find_key(text, keys, start, end)
+    if found is None:
+        return None
+    colon = text.find(":", found, end)
+    if colon < 0:
+        raise ValueError("missing number colon")
+    match = _JSON_NUMBER_RE.match(text, colon + 1, end)
+    if match is None:
+        raise ValueError("expected number")
+    token = match.group(1)
+    if token == "null":
+        return None
+    return float(token)
+
+
+def _find_key(text: str, keys: tuple[str, ...], start: int, end: int) -> int | None:
+    matches = [pos for key in keys if (pos := text.find(key, start, end)) >= 0]
+    return min(matches) if matches else None
+
+
+def _matching_object_bounds(text: str, open_pos: int, end: int) -> tuple[int, int]:
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(open_pos, end):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return open_pos, index + 1
+    raise ValueError("unterminated object")
 
 
 def parse_history(raw: str) -> dict[str, float]:

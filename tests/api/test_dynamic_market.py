@@ -11,7 +11,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import cause_payload, resolvers
-from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator, compute_cagr, compute_hhi
+from pipeline.scripts.api.dynamic_market.aggregator import (
+    MetricAggregator,
+    collect_ubist_channel_latest_totals,
+    compute_cagr,
+    compute_hhi,
+)
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
@@ -225,6 +230,30 @@ def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
     )
     assert brand_metrics[0].channel_specialty_matrix == {
         "종합병원": {"순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0}}
+    }
+
+
+def test_collect_ubist_channel_latest_totals_reads_only_latest_period_without_double_counting() -> None:
+    matrix = {
+        "종합병원": {
+            "순환기(Cardiology IM)": {"2026-04": 30.0, "2026-05": 40.0},
+            "내분비(Endocrinology IM)": {"2026-05": 70.0},
+            "내과(IM)": {"2026-05": 999.0},
+        },
+        "의원": {
+            "가정의학과(FM)": {"2026-05": 10.0},
+            "일반의(GP)": {"2026-05": 20.0},
+            "분리되지 않은 내과": {"2026-05": 30.0},
+        },
+    }
+
+    totals: dict[str, float] = {}
+    collect_ubist_channel_latest_totals(json.dumps(matrix, ensure_ascii=True), "2026-05", totals)
+
+    assert totals == {
+        "GH Cardio": 40.0,
+        "GH Endo": 70.0,
+        "CL IGF": 60.0,
     }
 
 
