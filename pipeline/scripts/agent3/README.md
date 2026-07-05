@@ -57,9 +57,30 @@ loader path is used, but the universe is limited to the explicit list.
 ## Idempotency
 
 Full mode computes `input_hash = sha256(profile + candidates + workflow_rev)`.
-If the existing row has the same `input_hash` and `workflow_rev`, wf316 is not
-called and the row is skipped. Regular reruns therefore pay only for changed
-inputs.
+`agent3_brand_strength` is keyed by `brand_key`, not display name, because
+`mart_general_brand_metric.brand_key` is the stable general-view universe while
+display names are not 1:1. If the existing row for the same `brand_key` has the
+same `input_hash` and `workflow_rev`, wf316 is not called and the row is
+skipped. Regular reruns therefore pay only for changed inputs.
+
+When a `brand_key` maps to multiple display names, the runner chooses the
+canonical `brand_name` from `mart_general_brand_metric` by the highest latest
+sales value and stores it as display-only metadata. The key remains the only
+idempotency and upsert identity.
+
+## Schema Reset
+
+The brand-key schema is stored in
+`pipeline/scripts/agent3/sql/002_recreate_agent3_brand_strength_brand_key.sql`.
+For the JW25 pilot reset, dump the old 25 rows as evidence, run:
+
+```sql
+DROP TABLE IF EXISTS agent3_brand_strength;
+```
+
+then apply the `002` DDL and rerun the JW25 pilot. Do not put `DROP TABLE` in the
+runner path; `ensure_table()` is intentionally create-only so routine Agent3
+runs cannot erase prior rows.
 
 ## Kubernetes
 

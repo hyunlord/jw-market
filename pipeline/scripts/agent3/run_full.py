@@ -11,7 +11,7 @@ from pipeline.scripts.agent3.config import WORKFLOW_ID, resolve_workflow_rev
 from pipeline.scripts.agent3.db import DbConfig
 from pipeline.scripts.agent3.loader import Agent3Loader, compute_input_hash, make_record
 from pipeline.scripts.agent3.profile_provider import build_profile
-from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
+from pipeline.scripts.agent3.repository import Agent3Repository, BrandIdentity, metric_rows_from_general
 from pipeline.scripts.agent3.strength_candidate_extractor import CandidateFloors, extract_strength_candidates
 from pipeline.scripts.agent3.summary_postprocess import (
     SummaryValidationError,
@@ -45,28 +45,36 @@ def run_full(
     repo = Agent3Repository(DbConfig.from_env())
     loader = Agent3Loader(DbConfig.from_env())
     universe = explicit_brands or _brand_universe(repo, brand_source)
-    brands = universe[chunk_index * chunk_size : (chunk_index + 1) * chunk_size]
+    identities = repo.resolve_brand_identities(universe, _display_aliases_by_name())
+    chunk = identities[chunk_index * chunk_size : (chunk_index + 1) * chunk_size]
+    brand_keys = [identity.brand_key for identity in chunk]
+    brand_names = [identity.brand_name for identity in chunk]
     if mode == "full":
         loader.ensure_table()
-    existing = loader.load_existing_hashes(brands) if mode == "full" else {}
-    general_by_brand = repo.load_general_rows_for_brands(brands)
-    strategic_by_brand = repo.load_strategic_rows_for_brands(brands)
-    molecule_by_brand = repo.load_molecule_rows_for_brands(brands)
+    existing = loader.load_existing_hashes(brand_keys) if mode == "full" else {}
+    general_by_brand = repo.load_general_rows_for_brands(brand_keys)
+    strategic_by_brand = repo.load_strategic_rows_for_brands(brand_keys)
+    molecule_by_brand = repo.load_molecule_rows_for_brands(brand_names)
 
     client = Agent3WorkflowClient(workflow_id=WORKFLOW_ID)
     records = []
     pending_records = []
     counts = {"workflow_calls": 0, "skipped_same_hash": 0, "profile_only": 0, "candidate_brands": 0}
-    for index, brand in enumerate(brands, start=1):
-        print(f"[agent3-full] chunk={chunk_index} {index:04d}/{len(brands)} {brand}", file=sys.stderr, flush=True)
+    for index, identity in enumerate(chunk, start=1):
+        brand = identity.brand_name
+        print(
+            f"[agent3-full] chunk={chunk_index} {index:04d}/{len(chunk)} {identity.brand_key} {brand}",
+            file=sys.stderr,
+            flush=True,
+        )
         profile = build_profile(
             brand_name=brand,
-            general_rows=general_by_brand.get(brand, []),
-            strategic_rows=strategic_by_brand.get(brand, []),
+            general_rows=general_by_brand.get(identity.brand_key, []),
+            strategic_rows=strategic_by_brand.get(identity.brand_key, []),
             molecule_rows=molecule_by_brand.get(brand, []),
         )
         candidates = extract_strength_candidates(
-            metric_rows_from_general(general_by_brand.get(brand, [])),
+            metric_rows_from_general(general_by_brand.get(identity.brand_key, [])),
             floors=CandidateFloors(),
             top_n=top_n,
         )
@@ -75,10 +83,10 @@ def run_full(
         else:
             counts["profile_only"] += 1
         input_hash = compute_input_hash(profile, candidates, workflow_rev)
-        old = existing.get(brand)
+        old = existing.get(identity.brand_key)
         if old == (input_hash, workflow_rev):
             counts["skipped_same_hash"] += 1
-            records.append(_record_summary(brand, candidates, input_hash, "skipped_same_hash", None, 0))
+            records.append(_record_summary(identity, candidates, input_hash, "skipped_same_hash", None, 0))
             continue
         if mode == "full" and candidates:
             summary, meta = client.run(build_agent3_input(profile, candidates))
@@ -91,6 +99,7 @@ def run_full(
             summary = _profile_only_summary(brand, profile, candidates, mode)
             meta = {"workflow_skipped": True, "mode": mode}
         record = make_record(
+            brand_key=identity.brand_key,
             brand_name=brand,
             profile=profile,
             candidates=candidates,
@@ -100,7 +109,7 @@ def run_full(
         )
         if mode == "full":
             pending_records.append(record)
-        records.append(_record_summary(brand, candidates, record.input_hash, "ready", meta, 0))
+        records.append(_record_summary(identity, candidates, record.input_hash, "ready", meta, 0))
     affected = loader.upsert_many(pending_records, batch_size=200) if mode == "full" else 0
     result = {
         "brand_source": brand_source,
@@ -108,7 +117,7 @@ def run_full(
         "chunk_index": chunk_index,
         "chunk_size": chunk_size,
         "universe_count": len(universe),
-        "chunk_brand_count": len(brands),
+        "chunk_brand_count": len(chunk),
         "workflow_id": WORKFLOW_ID,
         "workflow_rev": workflow_rev,
         "affected": affected,
@@ -129,13 +138,17 @@ def _brand_universe(repo: Agent3Repository, source: BrandSource) -> list[str]:
             return repo.load_brand_universe(source)
 
 
+def _display_aliases_by_name() -> dict[str, tuple[str, ...]]:
+    return {item.brand_name: item.layer3_aliases for item in DISPLAY_BRANDS if item.layer3_aliases}
+
+
 def _profile_only_summary(brand: str, profile: dict[str, Any], candidates: list[dict[str, Any]], mode: RunMode) -> dict[str, Any]:
     reason = "dry-run: wf316 호출 없이 후보 통계만 산출" if mode == "dry-run" else "strength candidate 0건: wf316 호출 없이 profile-only 저장"
     return {"brand": brand, "profile_display": profile, "strength_items": [], "limitations": [reason], "candidate_count": len(candidates)}
 
 
 def _record_summary(
-    brand: str,
+    identity: BrandIdentity,
     candidates: list[dict[str, Any]],
     input_hash: str,
     status: str,
@@ -143,7 +156,8 @@ def _record_summary(
     affected: int,
 ) -> dict[str, Any]:
     return {
-        "brand": brand,
+        "brand_key": identity.brand_key,
+        "brand": identity.brand_name,
         "candidate_count": len(candidates),
         "low_base_candidates": sum(1 for item in candidates if item.get("low_base")),
         "slices": [str(item["slice"]) for item in candidates],

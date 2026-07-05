@@ -11,11 +11,12 @@ from .db import DbConfig, connect
 from .json_util import canonical_json
 
 
-DDL_PATH = Path(__file__).resolve().parent / "sql" / "001_create_agent3_brand_strength.sql"
+DDL_PATH = Path(__file__).resolve().parent / "sql" / "002_recreate_agent3_brand_strength_brand_key.sql"
 
 
 @dataclass(frozen=True, slots=True)
 class Agent3Record:
+    brand_key: str
     brand_name: str
     profile_json: dict[str, Any]
     strength_candidates_json: list[dict[str, Any]]
@@ -48,10 +49,11 @@ class Agent3Loader:
                 affected = cursor.execute(
                     """
                     INSERT INTO agent3_brand_strength
-                      (brand_name, profile_json, strength_candidates_json, strength_summary_json,
+                      (brand_key, brand_name, profile_json, strength_candidates_json, strength_summary_json,
                        workflow_id, workflow_rev, input_hash, generated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
+                      brand_name=VALUES(brand_name),
                       profile_json=VALUES(profile_json),
                       strength_candidates_json=VALUES(strength_candidates_json),
                       strength_summary_json=VALUES(strength_summary_json),
@@ -61,6 +63,7 @@ class Agent3Loader:
                       generated_at=VALUES(generated_at)
                     """,
                     (
+                        record.brand_key,
                         record.brand_name,
                         json.dumps(record.profile_json, ensure_ascii=False, sort_keys=True),
                         json.dumps(record.strength_candidates_json, ensure_ascii=False, sort_keys=True),
@@ -74,22 +77,22 @@ class Agent3Loader:
             conn.commit()
         return int(affected)
 
-    def load_existing_hashes(self, brand_names: list[str]) -> dict[str, tuple[str, int]]:
-        if not brand_names:
+    def load_existing_hashes(self, brand_keys: list[str]) -> dict[str, tuple[str, int]]:
+        if not brand_keys:
             return {}
-        placeholders = ", ".join(["%s"] * len(brand_names))
+        placeholders = ", ".join(["%s"] * len(brand_keys))
         with connect(self.config) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT brand_name, input_hash, workflow_rev
+                    SELECT brand_key, input_hash, workflow_rev
                     FROM agent3_brand_strength
-                    WHERE brand_name IN ({placeholders})
+                    WHERE brand_key IN ({placeholders})
                     """,
-                    tuple(brand_names),
+                    tuple(brand_keys),
                 )
                 return {
-                    str(row["brand_name"]): (str(row["input_hash"]), int(row["workflow_rev"]))
+                    str(row["brand_key"]): (str(row["input_hash"]), int(row["workflow_rev"]))
                     for row in cursor.fetchall()
                 }
 
@@ -99,10 +102,11 @@ class Agent3Loader:
             return total
         sql = """
             INSERT INTO agent3_brand_strength
-              (brand_name, profile_json, strength_candidates_json, strength_summary_json,
+              (brand_key, brand_name, profile_json, strength_candidates_json, strength_summary_json,
                workflow_id, workflow_rev, input_hash, generated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+              brand_name=VALUES(brand_name),
               profile_json=VALUES(profile_json),
               strength_candidates_json=VALUES(strength_candidates_json),
               strength_summary_json=VALUES(strength_summary_json),
@@ -122,6 +126,7 @@ class Agent3Loader:
 
 def make_record(
     *,
+    brand_key: str,
     brand_name: str,
     profile: dict[str, Any],
     candidates: list[dict[str, Any]],
@@ -130,6 +135,7 @@ def make_record(
     workflow_rev: int,
 ) -> Agent3Record:
     return Agent3Record(
+        brand_key=brand_key,
         brand_name=brand_name,
         profile_json=profile,
         strength_candidates_json=candidates,
@@ -141,8 +147,9 @@ def make_record(
     )
 
 
-def _record_params(record: Agent3Record) -> tuple[str, str, str, str, int, int, str, str]:
+def _record_params(record: Agent3Record) -> tuple[str, str, str, str, str, int, int, str, str]:
     return (
+        record.brand_key,
         record.brand_name,
         json.dumps(record.profile_json, ensure_ascii=False, sort_keys=True),
         json.dumps(record.strength_candidates_json, ensure_ascii=False, sort_keys=True),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .db import DbConfig, connect
@@ -9,6 +10,12 @@ from .strength_candidate_extractor import MetricRow
 
 
 BrandSource = str
+
+
+@dataclass(frozen=True, slots=True)
+class BrandIdentity:
+    brand_key: str
+    brand_name: str
 
 
 class Agent3Repository:
@@ -73,6 +80,51 @@ class Agent3Repository:
             with conn.cursor() as cursor:
                 cursor.execute(sql)
                 return [str(row["brand_name"]) for row in cursor.fetchall()]
+
+    def resolve_brand_identities(
+        self,
+        brand_refs: list[str],
+        aliases_by_ref: dict[str, tuple[str, ...]] | None = None,
+    ) -> list[BrandIdentity]:
+        if not brand_refs:
+            return []
+        aliases = aliases_by_ref or {}
+        query_refs = _query_refs_with_aliases(brand_refs, aliases)
+        placeholders = ", ".join(["%s"] * len(query_refs))
+        with connect(self.config) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT brand_key, brand_name, raw_value_history
+                    FROM mart_general_brand_metric
+                    WHERE (brand_key IN ({placeholders}) OR brand_name IN ({placeholders}))
+                      AND measure='sales'
+                      AND brand_key IS NOT NULL AND brand_key <> ''
+                    """,
+                    tuple(query_refs) + tuple(query_refs),
+                )
+                rows = list(cursor.fetchall())
+        canonical = canonical_brand_names_from_rows(rows)
+        by_ref: dict[str, BrandIdentity] = {}
+        for row in rows:
+            brand_key = str(row.get("brand_key") or "")
+            brand_name = str(row.get("brand_name") or "")
+            if not brand_key:
+                continue
+            identity = BrandIdentity(brand_key=brand_key, brand_name=canonical.get(brand_key, brand_name or brand_key))
+            by_ref.setdefault(brand_key, identity)
+            if brand_name:
+                by_ref.setdefault(brand_name, identity)
+        result = []
+        for ref in brand_refs:
+            identity = by_ref.get(ref)
+            if identity is None:
+                for alias in aliases.get(ref, ()):
+                    identity = by_ref.get(alias)
+                    if identity is not None:
+                        break
+            result.append(identity or BrandIdentity(brand_key=ref, brand_name=ref))
+        return result
 
     def load_strategic_rows(self, brand_name: str) -> list[dict[str, Any]]:
         with connect(self.config) as conn:
@@ -175,6 +227,34 @@ def metric_rows_from_general(rows: list[dict[str, Any]]) -> list[MetricRow]:
         )
         for row in rows
     ]
+
+
+def canonical_brand_names_from_rows(rows: list[dict[str, Any]]) -> dict[str, str]:
+    totals: dict[str, dict[str, float]] = {}
+    for row in rows:
+        brand_key = str(row.get("brand_key") or "")
+        brand_name = str(row.get("brand_name") or "")
+        if not brand_key or not brand_name:
+            continue
+        history = parse_history(row.get("raw_value_history"))
+        latest_value = history[max(history)] if history else 0.0
+        totals.setdefault(brand_key, {})
+        totals[brand_key][brand_name] = totals[brand_key].get(brand_name, 0.0) + latest_value
+    result: dict[str, str] = {}
+    for brand_key, values_by_name in totals.items():
+        result[brand_key] = sorted(values_by_name.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    return result
+
+
+def _query_refs_with_aliases(brand_refs: list[str], aliases_by_ref: dict[str, tuple[str, ...]]) -> list[str]:
+    seen: set[str] = set()
+    result = []
+    for ref in brand_refs:
+        for value in (ref, *aliases_by_ref.get(ref, ())):
+            if value and value not in seen:
+                result.append(value)
+                seen.add(value)
+    return result
 
 
 def _group_by_requested_brand(rows: list[dict[str, Any]], requested: list[str]) -> dict[str, list[dict[str, Any]]]:

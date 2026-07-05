@@ -36,19 +36,24 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
     brands = [item.brand_name for item in DISPLAY_BRANDS]
     if len(brands) != 25:
         raise RuntimeError(f"JW25 catalog guard failed: expected 25 brands, got {len(brands)}")
+    aliases_by_brand = {item.brand_name: item.layer3_aliases for item in DISPLAY_BRANDS if item.layer3_aliases}
+    identities = repo.resolve_brand_identities(brands, aliases_by_brand)
+    brand_keys = [identity.brand_key for identity in identities]
+    brand_names = [identity.brand_name for identity in identities]
     if apply:
         loader.ensure_table()
-    general_by_brand = repo.load_general_rows_for_brands(brands)
-    strategic_by_brand = repo.load_strategic_rows_for_brands(brands)
-    molecule_by_brand = repo.load_molecule_rows_for_brands(brands)
+    general_by_brand = repo.load_general_rows_for_brands(brand_keys)
+    strategic_by_brand = repo.load_strategic_rows_for_brands(brand_keys)
+    molecule_by_brand = repo.load_molecule_rows_for_brands(brand_names)
 
     records: list[dict[str, Any]] = []
     wf_calls = 0
     workflow_rev = resolve_workflow_rev()
-    for index, brand in enumerate(brands, start=1):
-        print(f"[agent3] {index:02d}/{len(brands)} {brand}", file=sys.stderr, flush=True)
-        general_rows = general_by_brand.get(brand, [])
-        strategic_rows = strategic_by_brand.get(brand, [])
+    for index, identity in enumerate(identities, start=1):
+        brand = identity.brand_name
+        print(f"[agent3] {index:02d}/{len(identities)} {identity.brand_key} {brand}", file=sys.stderr, flush=True)
+        general_rows = general_by_brand.get(identity.brand_key, [])
+        strategic_rows = strategic_by_brand.get(identity.brand_key, [])
         molecule_rows = molecule_by_brand.get(brand, [])
         profile = build_profile(
             brand_name=brand,
@@ -81,6 +86,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
             }
             meta = {"skipped_workflow": True, "skip_workflow": skip_workflow}
         record = make_record(
+            brand_key=identity.brand_key,
             brand_name=brand,
             profile=profile,
             candidates=candidates,
@@ -92,6 +98,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
         records.append(
             {
                 "brand": brand,
+                "brand_key": identity.brand_key,
                 "candidate_count": len(candidates),
                 "workflow_called": bool(candidates),
                 "affected": affected,
