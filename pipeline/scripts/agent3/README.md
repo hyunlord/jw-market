@@ -49,9 +49,9 @@ docker push asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos
 
 Current full-run image:
 
-- Tag: `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.60-agent3-4b094b65-20260706`
-- Digest: `sha256:ff72e63bb6ec75acb67ba51a37d9f355b90f138e576799f6401b77e6472669b5`
-- Runtime code baseline: `4b094b65` (wf316 HTTP retry plus workflow_error recovery)
+- Tag: `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.61-agent3-7ee58ac3-20260706`
+- Digest: `sha256:8c8ecd0ebdbbbca6e4bb2a8436dc9065fc998698f58f2f26348b36e2c2514bc5`
+- Runtime code baseline: `7ee58ac3` (display aliases plus wf316 HTTP retry/workflow_error recovery)
 
 ## Runner
 
