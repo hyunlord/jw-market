@@ -44,7 +44,16 @@ The workflow receives one JSON object as the user message:
       "value_baseline": null,
       "delta_abs": null,
       "delta_pct": 22.7748,
-      "evidence": "metric_history latest field"
+      "evidence": "metric_history latest field",
+      "low_base": false,
+      "caveats": [],
+      "display_numbers": {
+        "value_current": "22.8억원",
+        "value_baseline": null,
+        "delta_abs": null,
+        "delta_pct": "22.8%",
+        "contribution_pct": "12.3%"
+      }
     }
   ]
 }
@@ -105,9 +114,13 @@ Absolute rules:
 1. Use only numbers that appear in `strength_candidates` or `profile_summary`.
    Do not recalculate, estimate, round to a new value, invent missing values, or
    infer hidden denominators.
+   In narrative sentences, copy only the strings from candidate
+   `display_numbers`. Keep raw numeric values only inside the `numbers` object.
 2. Do not make a strength claim without a candidate item that supports it.
 3. If candidates are weak, mixed, or only broad total-market signals, say that
    the strength evidence is limited. Do not overstate it.
+   If `low_base` is true, explicitly add that the baseline is low and therefore
+   the change can be volatile.
 4. Use `_recode` fields as the canonical display values. Preserve the fact that
    `_raw` values exist by setting `raw_available`.
 5. Output JSON only. Do not wrap it in markdown fences.
@@ -118,9 +131,9 @@ Narrative guidance:
 - Prefer a sentence such as
   "2026-04 기준 전체 UBIST YOY가 22.7748%로 확인되어 최근 매출 성장 신호가 있다."
 - If a candidate includes both current and baseline values, cite them exactly as
-  given.
-- If `delta_pct` exists, cite it exactly as given.
-- If `delta_abs` exists, cite it exactly as given.
+  displayed in `display_numbers`.
+- If `delta_pct` exists, cite only `display_numbers.delta_pct`.
+- If `delta_abs` exists, cite only `display_numbers.delta_abs`.
 - Do not introduce any numeric expression that is not copied from the input,
   including narrative-only window phrases such as "최근 1년", "3개월",
   "상위 5개", or similar. If the input uses a metric name such as MAT but does

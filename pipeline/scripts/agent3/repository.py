@@ -8,6 +8,9 @@ from .profile_provider import MoleculeRow
 from .strength_candidate_extractor import MetricRow
 
 
+BrandSource = str
+
+
 class Agent3Repository:
     def __init__(self, config: DbConfig | None = None) -> None:
         self.config = config or DbConfig.from_env()
@@ -21,10 +24,10 @@ class Agent3Repository:
                            raw_value_history, channel_data, specialty_data,
                            channel_specialty_matrix, dimension_data
                     FROM mart_general_brand_metric
-                    WHERE brand_name=%s AND measure='sales'
+                    WHERE (brand_name=%s OR brand_key=%s) AND measure='sales'
                     ORDER BY source, atc4_code, brand_key
                     """,
-                    (brand_name,),
+                    (brand_name, brand_name),
                 )
                 return list(cursor.fetchall())
 
@@ -40,13 +43,36 @@ class Agent3Repository:
                            raw_value_history, channel_data, specialty_data,
                            channel_specialty_matrix, dimension_data
                     FROM mart_general_brand_metric
-                    WHERE brand_name IN ({placeholders}) AND measure='sales'
-                    ORDER BY brand_name, source, atc4_code, brand_key
+                    WHERE (brand_key IN ({placeholders}) OR brand_name IN ({placeholders})) AND measure='sales'
+                    ORDER BY brand_key, brand_name, source, atc4_code
                     """,
-                    tuple(brand_names),
+                    tuple(brand_names) + tuple(brand_names),
                 )
                 rows = list(cursor.fetchall())
-        return _group_by_brand(rows)
+        return _group_by_requested_brand(rows, brand_names)
+
+    def load_brand_universe(self, source: BrandSource) -> list[str]:
+        match source:
+            case "strategic_ml":
+                sql = """
+                    SELECT DISTINCT brand_name
+                    FROM mart_strategic_ml_brand_metric
+                    WHERE measure='sales' AND brand_name IS NOT NULL AND brand_name <> ''
+                    ORDER BY brand_name
+                """
+            case "general_all":
+                sql = """
+                    SELECT DISTINCT brand_key AS brand_name
+                    FROM mart_general_brand_metric
+                    WHERE measure='sales' AND brand_key IS NOT NULL AND brand_key <> ''
+                    ORDER BY brand_key
+                """
+            case _:
+                raise ValueError(f"unsupported brand source: {source}")  # noqa: GENERIC_ERR_OK
+        with connect(self.config) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                return [str(row["brand_name"]) for row in cursor.fetchall()]
 
     def load_strategic_rows(self, brand_name: str) -> list[dict[str, Any]]:
         with connect(self.config) as conn:
@@ -55,10 +81,10 @@ class Agent3Repository:
                     """
                     SELECT ml_id, brand_key, brand_name, source, measure, overlay_data, dimension_data, raw_value_history
                     FROM mart_strategic_ml_brand_metric
-                    WHERE brand_name=%s AND measure='sales'
+                    WHERE (brand_name=%s OR brand_key=%s) AND measure='sales'
                     ORDER BY source, ml_id, brand_key
                     """,
-                    (brand_name,),
+                    (brand_name, brand_name),
                 )
                 return list(cursor.fetchall())
 
@@ -72,13 +98,13 @@ class Agent3Repository:
                     f"""
                     SELECT ml_id, brand_key, brand_name, source, measure, overlay_data, dimension_data, raw_value_history
                     FROM mart_strategic_ml_brand_metric
-                    WHERE brand_name IN ({placeholders}) AND measure='sales'
-                    ORDER BY brand_name, source, ml_id, brand_key
+                    WHERE (brand_key IN ({placeholders}) OR brand_name IN ({placeholders})) AND measure='sales'
+                    ORDER BY brand_key, brand_name, source, ml_id
                     """,
-                    tuple(brand_names),
+                    tuple(brand_names) + tuple(brand_names),
                 )
                 rows = list(cursor.fetchall())
-        return _group_by_brand(rows)
+        return _group_by_requested_brand(rows, brand_names)
 
     def load_molecule_rows(self, brand_name: str) -> list[MoleculeRow]:
         with connect(self.config) as conn:
@@ -151,8 +177,19 @@ def metric_rows_from_general(rows: list[dict[str, Any]]) -> list[MetricRow]:
     ]
 
 
-def _group_by_brand(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
+def _group_by_requested_brand(rows: list[dict[str, Any]], requested: list[str]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {brand: [] for brand in requested}
+    requested_set = set(requested)
     for row in rows:
-        grouped.setdefault(str(row.get("brand_name") or ""), []).append(row)
+        brand_key = str(row.get("brand_key") or "")
+        brand_name = str(row.get("brand_name") or "")
+        matched = False
+        if brand_key in requested_set:
+            grouped.setdefault(brand_key, []).append(row)
+            matched = True
+        if brand_name in requested_set and brand_name != brand_key:
+            grouped.setdefault(brand_name, []).append(row)
+            matched = True
+        if not matched and brand_name:
+            grouped.setdefault(brand_name, []).append(row)
     return grouped

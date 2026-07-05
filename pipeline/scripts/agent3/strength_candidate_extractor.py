@@ -23,6 +23,11 @@ class CandidateFloors:
     min_delta_pct: float = 5.0
     min_recent_value: float = 100_000_000.0
     min_contribution_pct: float = 1.0
+    # Low-base guard: if a slice baseline is below 1% of the brand/source
+    # recent total, large percentage jumps are volatile rather than a stable
+    # strength signal.
+    low_base_baseline_contribution_pct: float = 1.0
+    low_base_score_multiplier: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +66,8 @@ def extract_strength_candidates(
             )
             if candidate is not None:
                 candidates.append(candidate)
-    return sorted(candidates, key=lambda item: (-float(item["candidate_score"]), item["slice"]))[:top_n]
+    deduped = _deduplicate_identical_values(candidates)
+    return sorted(deduped, key=lambda item: (-float(item["candidate_score"]), item["slice"]))[:top_n]
 
 
 def _iter_slices(row: MetricRow) -> list[tuple[str, str, dict[str, float]]]:
@@ -120,6 +126,8 @@ def _candidate_from_history(
     if not _passes_floors(current, delta_abs, delta_pct, contribution, floors):
         return None
     score = _score(current=current, delta_abs=delta_abs, delta_pct=delta_pct, contribution=contribution, yoy_delta_pct=yoy_delta_pct)
+    low_base = _is_low_base(previous, total_recent, floors)
+    final_score = round(score * floors.low_base_score_multiplier, 6) if low_base else score
     return {
         "brand": row.brand_name,
         "source": row.source,
@@ -137,7 +145,10 @@ def _candidate_from_history(
         "yoy_delta_abs": yoy_delta_abs,
         "yoy_delta_pct": yoy_delta_pct,
         "contribution_pct": contribution,
-        "candidate_score": score,
+        "candidate_score": final_score,
+        "candidate_score_before_low_base_penalty": score,
+        "low_base": low_base,
+        "caveats": ["기저가 낮아 변동성이 큼"] if low_base else [],
         "evidence": evidence,
         "display_numbers": {
             "value_current": _display_number(current),
@@ -183,6 +194,34 @@ def _score(
     value_component = min(current / 100_000_000.0, 50.0)
     delta_component = min(delta_abs / 10_000_000.0, 50.0)
     return round(pct_component + yoy_component + contribution_component + value_component + delta_component, 6)
+
+
+def _is_low_base(baseline: float, total_recent: float | None, floors: CandidateFloors) -> bool:
+    if total_recent is None or total_recent <= 0:
+        return False
+    return baseline / total_recent * 100 < floors.low_base_baseline_contribution_pct
+
+
+def _deduplicate_identical_values(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_by_values: dict[tuple[float, float, float], dict[str, Any]] = {}
+    for candidate in candidates:
+        key = (
+            float(candidate["value_current"]),
+            float(candidate["value_baseline"]),
+            float(candidate["delta_abs"]),
+        )
+        current = best_by_values.get(key)
+        if current is None or _slice_specificity(candidate["slice"]) > _slice_specificity(current["slice"]):
+            best_by_values[key] = candidate
+    return list(best_by_values.values())
+
+
+def _slice_specificity(slice_name: str) -> int:
+    if "×" in slice_name:
+        return 3
+    if ":" in slice_name:
+        return 2
+    return 1
 
 
 def _normalize_history(value: Any) -> dict[str, float]:

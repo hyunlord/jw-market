@@ -126,3 +126,90 @@ def test_iqvia_dimension_candidates_include_audit_and_reimbursement() -> None:
 
     assert any(item["slice"] == "IQVIA audit_code: KHPA" for item in candidates)
     assert any(item["slice"] == "IQVIA 급여: NHI" for item in candidates)
+
+
+def test_candidates_include_display_numbers_for_narrative_copy() -> None:
+    row = MetricRow(
+        brand_name="리바로젯",
+        brand_key="리바로젯",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 100_000_000.0, "2026-04": 250_000_000.0},
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=10.0,
+            min_delta_pct=10.0,
+            min_recent_value=20.0,
+            min_contribution_pct=10.0,
+        ),
+    )
+
+    assert candidates[0]["display_numbers"]["value_current"] == "2.5억원"
+    assert candidates[0]["display_numbers"]["delta_abs"] == "1.5억원"
+    assert candidates[0]["display_numbers"]["delta_pct"] == "150.0%"
+
+
+def test_low_base_candidates_are_flagged_and_penalized() -> None:
+    row = MetricRow(
+        brand_name="저기저",
+        brand_key="low-base",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 1_000_000_000.0, "2026-04": 2_000_000_000.0},
+        channel_data={
+            "작은채널": {
+                "2026-03": {"raw_value": 1_000_000.0},
+                "2026-04": {"raw_value": 100_000_000.0},
+            }
+        },
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=10.0,
+            min_delta_pct=10.0,
+            min_recent_value=20.0,
+            min_contribution_pct=1.0,
+        ),
+        top_n=5,
+    )
+
+    low_base = next(item for item in candidates if item["slice"] == "UBIST 종별: 작은채널")
+    assert low_base["low_base"] is True
+    assert "기저가 낮아 변동성이 큼" in low_base["caveats"]
+    assert low_base["candidate_score"] < low_base["candidate_score_before_low_base_penalty"]
+
+
+def test_deduplicates_identical_slice_values_to_more_specific_slice() -> None:
+    row = MetricRow(
+        brand_name="중복",
+        brand_key="dedup",
+        source="iqvia_nsa",
+        measure="sales",
+        raw_value_history={"2026-Q1": 100_000_000.0, "2026-Q2": 200_000_000.0},
+        dimension_data={
+            "nhi_type": {
+                "NHI": {
+                    "2026-Q1": {"raw_value": 100_000_000.0},
+                    "2026-Q2": {"raw_value": 200_000_000.0},
+                }
+            }
+        },
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=10.0,
+            min_delta_pct=10.0,
+            min_recent_value=20.0,
+            min_contribution_pct=10.0,
+        ),
+        top_n=5,
+    )
+
+    assert [item["slice"] for item in candidates] == ["IQVIA 급여: NHI"]

@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-agent3-refresh-daily
+  namespace: llmops
+  labels:
+    app: jw-agent3
+    component: brand-strength
+spec:
+  schedule: "0 21 * * *" # 06:00 KST, after crawl and cache-refresh windows
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600
+      template:
+        metadata:
+          labels:
+            app: jw-agent3
+            component: brand-strength
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: "enabled"
+          containers:
+            - name: agent3
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:AGENT3_IMAGE_TAG
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "2"
+                  memory: "4Gi"
+              env:
+                - name: AGENT3_DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: AGENT3_DB_PORT
+                  value: "3306"
+                - name: AGENT3_DB_USER
+                  value: llmops
+                - name: AGENT3_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: galera-mariadb-galera
+                      key: mariadb-password
+                - name: AGENT3_DB_NAME
+                  value: jw_mart
+                - name: WF316_DIRECT_RUN_URL
+                  value: http://workflow-316.llmops.svc.cluster.local:8080/run/v2
+              command: ["/bin/bash", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+                  cd /app
+                  python -m pipeline.scripts.agent3.run_full \
+                    --brand-source general_all \
+                    --mode full \
+                    --chunk-index 0 \
+                    --chunk-size 30000 \
+                    --output /tmp/agent3_refresh_result.json
+                  cat /tmp/agent3_refresh_result.json
