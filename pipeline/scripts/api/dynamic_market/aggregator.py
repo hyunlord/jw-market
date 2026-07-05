@@ -469,21 +469,26 @@ def ubist_channel_latest_select(latest_period: str) -> tuple[str, tuple[str, ...
     selects: list[str] = []
     path_params: list[str] = []
     code_order: list[str] = []
-    for facility_abbr in UBIST_FACILITY_MAPPING:
-        for specialty_abbr in UBIST_SPECIALTY_MAPPING:
-            code = f"{facility_abbr} {specialty_abbr}"
-            parsed = parse_channel_code(code)
-            if parsed is None:
-                continue
-            terms = []
-            for facility in parsed.facility_raw_values:
-                for specialty in parsed.specialty_raw_values:
-                    terms.append("COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(channel_specialty_matrix, %s)) AS DECIMAL(38, 10)), 0)")
-                    path_params.append(_json_path(facility, specialty, latest_period))
-            if not terms:
-                continue
-            selects.append(f"SUM({' + '.join(terms)}) AS {quote_identifier(f'ch_{len(code_order)}')}")
-            code_order.append(parsed.code)
+    paths_by_code: dict[str, list[str]] = {}
+    for facility_meta in UBIST_FACILITY_MAPPING.values():
+        for specialty_meta in UBIST_SPECIALTY_MAPPING.values():
+            for facility in facility_meta["raw_values"]:
+                for specialty in specialty_meta["raw_values"]:
+                    code = raw_pair_to_channel_code(str(facility), str(specialty))
+                    if not code:
+                        continue
+                    if code not in paths_by_code:
+                        paths_by_code[code] = []
+                    paths_by_code[code].append(_json_path(str(facility), str(specialty), latest_period))
+    for code, paths in paths_by_code.items():
+        terms = []
+        for path in paths:
+            terms.append("COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(channel_specialty_matrix, %s)) AS DECIMAL(38, 10)), 0)")
+            path_params.append(path)
+        if not terms:
+            continue
+        selects.append(f"SUM({' + '.join(terms)}) AS {quote_identifier(f'ch_{len(code_order)}')}")
+        code_order.append(code)
     return ", ".join(selects), tuple(path_params), tuple(code_order)
 
 
