@@ -176,6 +176,112 @@ def test_query_layer_runs_iqvia_quarterly_source_when_present() -> None:
     assert data["level_segments"][1]["value_억원"] == 48.19
 
 
+def test_query_layer_defaults_to_single_iqvia_source_when_source_is_omitted() -> None:
+    """Given a brand belongs to an IQVIA-only market, omitted source must resolve to IQVIA."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_split_class_records()))
+
+    call = layer.query(
+        {
+            "market": "ml_011",
+            "source": "",
+            "dimensions": ["class_2"],
+            "group_by": ["class_2"],
+            "metrics": ["sales"],
+            "limit": 5,
+        },
+        fallback_brand="악템라",
+    )
+
+    data = call["render_data"]
+    assert call["source"] == "IQVIA"
+    assert data["source_label"] == "IQVIA"
+    assert data["level_segments"][0]["name"] == "IL-6"
+
+
+def test_query_layer_defaults_dual_market_channel_questions_to_ubist() -> None:
+    """Given a dual-source market, channel breakdowns keep the UBIST default."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_dual_source_records()))
+
+    call = layer.query(
+        {
+            "market": "ml_003",
+            "source": "",
+            "dimensions": ["channel"],
+            "group_by": ["channel"],
+            "metrics": ["sales"],
+            "filters": {"brand": "듀얼소스"},
+            "limit": 5,
+        },
+        fallback_brand="듀얼소스",
+    )
+
+    data = call["render_data"]
+    assert call["source"] == "UBIST"
+    assert data["source_label"] == "UBIST"
+    names = {row["name"] for row in data["level_segments"]}
+    assert "의원" in names
+
+
+def test_query_layer_defaults_dual_market_quarterly_questions_to_iqvia() -> None:
+    """Given a dual-source market and a quarterly period, omitted source resolves to IQVIA."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_dual_source_records()))
+
+    call = layer.query(
+        {
+            "market": "ml_003",
+            "source": "",
+            "dimensions": ["product"],
+            "group_by": ["product"],
+            "metrics": ["sales"],
+            "filters": {"period": "2025-Q4"},
+            "limit": 5,
+        },
+        fallback_brand="듀얼소스",
+    )
+
+    data = call["render_data"]
+    assert call["source"] == "IQVIA"
+    assert data["source_label"] == "IQVIA"
+    assert data["period"] == "2025-Q4"
+    assert data["level_segments"][0]["value_억원"] == 20.0
+
+
+def test_brand_metric_defaults_dual_market_quarterly_period_to_iqvia() -> None:
+    """Given a dual-source market metric asks for a quarter, the metric path uses IQVIA."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_dual_source_records()))
+
+    call = layer.brand_metric("듀얼소스", "sales", "2025-Q4")
+
+    data = call["render_data"]
+    assert call["source"] == "IQVIA"
+    assert data["period"] == "2025-Q4"
+    assert data["sales_억원"] == 20.0
+
+
+def test_query_layer_preserves_explicit_source_over_market_default() -> None:
+    """Given the caller explicitly asks for UBIST, market defaults must not override it."""
+
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_dual_source_records()))
+
+    call = layer.query(
+        {
+            "market": "ml_003",
+            "source": "ubist",
+            "dimensions": ["product"],
+            "group_by": ["product"],
+            "metrics": ["sales"],
+            "limit": 5,
+        },
+        fallback_brand="듀얼소스",
+    )
+
+    assert call["source"] == "UBIST"
+
+
 def test_query_catalog_exposes_class2_only_for_split_market() -> None:
     """Given a dual-class market, catalog preserves split metadata while exposing Class 2 for grouping."""
 
@@ -1203,6 +1309,17 @@ def _split_class_records() -> tuple[MartRecord, ...]:
         _split_record(brand, float(value), periods[0], total, class_1, class_2)
         for brand, (value, class_1, class_2) in values.items()
     )
+
+
+def _dual_source_records() -> tuple[MartRecord, ...]:
+    ubist = _record_with_market("ml_003", "듀얼소스", (1_000_000_000.0,), ("2026-04",), [1_000_000_000.0])
+    iqvia = _record_with_status_history(
+        "ml_003",
+        "듀얼소스",
+        {"2025-Q4": {"raw_value": 2_000_000_000.0, "ms": 100.0, "source_status": "OK"}},
+        source="iqvia_nsa",
+    )
+    return (ubist, iqvia)
 
 
 def _split_market_ubist_records_without_class() -> tuple[MartRecord, ...]:
