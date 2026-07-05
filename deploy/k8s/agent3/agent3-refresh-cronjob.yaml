@@ -29,7 +29,7 @@ spec:
             genos: "enabled"
           containers:
             - name: agent3
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.58-agent3-e34ddb26-20260705
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.59-agent3-90015ca5-20260706
               imagePullPolicy: Always
               resources:
                 requests:
