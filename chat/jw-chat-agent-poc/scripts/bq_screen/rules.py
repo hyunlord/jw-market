@@ -57,7 +57,8 @@ DUAL_CLASS_TERMS: tuple[str, ...] = (
 URL_RE = re.compile(r"https?://\S+")
 PCT_RE = re.compile(r"(?<![\d.])(-?\d+(?:\.\d+)?)%")
 VISIBLE_FAILED_ZERO_RE = re.compile(
-    r"(?:0\.00\s*(?:억\s*원|억원|%|%p)|매출\s*0\.00|시장점유율\s*0\.00|MS\s*0\.00)",
+    r"(?<![\d.])0\.00\s*(?:억\s*원|억원|%|%p)|"
+    r"(?:매출|시장점유율|MS)\s*(?<![\d.])0\.00(?![\d.])",
 )
 
 

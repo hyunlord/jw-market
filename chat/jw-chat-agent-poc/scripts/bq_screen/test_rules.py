@@ -59,6 +59,17 @@ def test_query_failed_rule_does_not_fire_after_block_message_without_value_surfa
     assert "market_structure_split_missing" not in result.confirm_needed
 
 
+def test_query_failed_rule_ignores_one_hundred_percent() -> None:
+    text = (
+        "브랜드 핵심 지표: IQVIA 2025-Q4 기준 가드렛 매출 3.91억원 "
+        "MS 100.00% 순위 1위입니다.\n"
+        "표시된 기간·소스의 보유 fact만 사용합니다.\n"
+    )
+    result = screen_answer(_input(text, brand="가드렛", question="가드렛 2025-Q4 매출 알려줘"))
+
+    assert "query_failed_value_surface" not in result.flags
+
+
 def test_detects_requested_source_mismatch() -> None:
     text = (
         "Cortellis 기준 파이프라인 현황입니다.\n"
