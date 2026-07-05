@@ -84,15 +84,27 @@ def test_topic_endpoint_returns_null_data_when_scope_is_missing(monkeypatch) -> 
 
 def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
     expected = {"scope": {"view": "general"}, "brands": []}
-    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", lambda _payload: expected)
+    captured: dict[str, Any] = {}
+
+    def fake_get_topic_brand_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return expected
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
 
     response = TestClient(app).post(
         "/api/brand-activity/topics",
-        json={"view": "general", "market_id": "C10A1", "selected_brand": "리바로"},
+        json={
+            "view": "general",
+            "market_id": "C10A1",
+            "selected_brand": "리바로",
+            "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
+        },
     )
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
+    assert captured["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
 def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:

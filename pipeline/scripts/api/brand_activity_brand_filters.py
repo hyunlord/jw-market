@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Final, Mapping
 
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
-from pipeline.scripts.api.brand_activity_channel_axis import channel_axis_echo, parse_ubist_channel_axis
+from pipeline.scripts.api.brand_activity_channel_axis import audit_code_axis_echo, parse_audit_code_axis
 from pipeline.scripts.api.brand_activity_csd_shared import JsonMap, text
 
 
@@ -21,9 +21,9 @@ def applied_brand_filter(view_name: str, market_id: str, filter_payload: Mapping
         values = _normalized_filter_values(dimension, filter_payload.get(dimension))
         if values:
             applied[dimension] = list(values)
-    channel_axis = parse_ubist_channel_axis(filter_payload)
+    channel_axis = parse_audit_code_axis(filter_payload) if view_name == "general" else None
     if channel_axis:
-        applied["channel_axis"] = channel_axis_echo(channel_axis)
+        applied["channel_axis"] = audit_code_axis_echo(channel_axis)
     if view_name == "general" and "atc4" not in applied:
         applied["atc4"] = [market_id.strip().upper()]
     return applied

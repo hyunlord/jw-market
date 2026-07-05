@@ -66,7 +66,7 @@ class CsdActivitySeriesRequest(BaseModel):
     view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
     market_id: str | None = Field(default=None, description="일반뷰 ATC4 또는 전략 ml_id. general은 filters.atc4 첫 값으로 대체 가능.")
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
-    filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
+    filters: dict[str, JsonValue] = Field(default_factory=dict, description='시장·차원 필터. 일반뷰 IQVIA ranking slice는 channel_axis.iqvia.audit_code 리스트를 사용하며 UBIST channel_axis 키는 무시됩니다.')
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
     entity_level: str = Field(default="brand", description="brand 또는 company. company면 representing_company 단위로 활동량을 합산합니다.")
     csd_channel: str = Field(default="TOTAL", description="CSD 원본 jw_channel 값. TOTAL/GH/SHPPI/CPPI/GH+SHPPI.")

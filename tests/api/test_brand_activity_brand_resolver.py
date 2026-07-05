@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
-
 from pipeline.scripts.api.brand_activity_brand_filters import applied_brand_filter
-from pipeline.scripts.api import db
-from pipeline.scripts.api.brand_activity_brand_resolver import BrandCandidate, _fetch_channel_axis_rows, _select_choices, view_config
-from pipeline.scripts.api.brand_activity_channel_axis import channel_axis_sales_value, parse_ubist_channel_axis
+from pipeline.scripts.api.brand_activity_brand_resolver import (
+    BrandCandidate,
+    BrandSetInputError,
+    _brand_candidates,
+    _select_choices,
+    validate_audit_code_axis,
+)
+from pipeline.scripts.api.brand_activity_channel_axis import (
+    audit_code_sales_value,
+    parse_audit_code_axis,
+)
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
 
 
@@ -29,70 +35,91 @@ def test_general_default_filter_applies_market_atc4() -> None:
     assert applied_brand_filter("general", "c10a1", {}) == {"atc4": ["C10A1"]}
 
 
-def test_applied_filter_echoes_ubist_channel_axis_without_breaking_dimension_filters() -> None:
-    payload = {"channel_axis": {"ubist": {"facility": ["의원"], "specialty": ["순환기(Cardiology IM)"]}}}
+def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> None:
+    payload = {
+        "channel_axis": {
+            "iqvia": {"audit_code": ["khpa", "KCPA", "khpa"]},
+            "ubist": {"facility": ["의원"], "specialty": ["순환기(Cardiology IM)"]},
+        }
+    }
 
     applied = applied_brand_filter("general", "C10A1", payload)
 
     assert applied["atc4"] == ["C10A1"]
-    assert applied["channel_axis"] == {
-        "source": "ubist",
-        "facility": ["의원"],
-        "specialty": ["순환기(Cardiology IM)"],
-        "pairs": [],
+    assert applied["channel_axis"] == {"source": "iqvia_nsa", "audit_code": ["KHPA", "KCPA"]}
+    assert applied_brand_filter("general", "C10A1", {"channel_axis": {"ubist": {"facility": ["의원"]}}}) == {
+        "atc4": ["C10A1"]
     }
+    assert "channel_axis" not in applied_brand_filter("strategic_ml", "ml_006", payload)
 
 
-def test_channel_axis_sales_value_uses_raw_ubist_matrix_slice() -> None:
-    channel_axis = parse_ubist_channel_axis(
-        {"channel_axis": {"ubist": {"facility": ["종합병원"], "specialty": ["순환기(Cardiology IM)"]}}}
-    )
+def test_audit_code_sales_value_sums_selected_matrix_codes_for_quarter() -> None:
+    channel_axis = parse_audit_code_axis({"channel_axis": {"iqvia": {"audit_code": ["KHPA", "KCPA"]}}})
     row = {
-        "channel_specialty_matrix": {
-            "종합병원": {"순환기(Cardiology IM)": {"2026-04": 10, "2026-05": 20}},
-            "의원": {"순환기(Cardiology IM)": {"2026-05": 100}},
+        "audit_code_matrix": {
+            "KHPA": {"2026-04": 10, "2026-05": 20},
+            "KCPA": {"2026-Q2": 7},
+            "KPA": {"2026-Q2": 100},
         }
     }
 
-    assert channel_axis_sales_value(row, channel_axis, "2026-Q2") == 30.0
+    assert audit_code_sales_value(row, channel_axis, "2026-Q2") == 37.0
 
 
-def test_channel_axis_sql_uses_only_columns_present_on_general_mart(monkeypatch) -> None:
-    captured: dict[str, Any] = {}
+def test_unknown_audit_code_is_rejected_from_dynamic_matrix_keys() -> None:
+    channel_axis = parse_audit_code_axis({"channel_axis": {"iqvia": {"audit_code": ["BAD"]}}})
 
-    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
-        captured["sql"] = sql
-        captured["params"] = params
-        return []
-
-    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
-
-    _fetch_channel_axis_rows(view_config("general"), "C10A1")
-
-    sql = str(captured["sql"])
-    assert "channel_specialty_matrix" in sql
-    assert "NULL AS ubist_channel_by_display" in sql
-    assert "NULL AS ubist_channel_by_code" in sql
-    assert captured["params"] == ("C10A1", "ubist", "sales")
+    try:
+        validate_audit_code_axis(({"audit_code_matrix": {"KHPA": {"2026-Q2": 1}}},), channel_axis)
+    except BrandSetInputError as exc:
+        assert "unsupported audit_code" in str(exc)
+        assert "BAD" in str(exc)
+    else:
+        raise AssertionError("unknown audit_code must be rejected")
 
 
-def test_channel_axis_sql_uses_only_columns_present_on_strategic_mart(monkeypatch) -> None:
-    captured: dict[str, Any] = {}
+def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",
+        lambda _metas: {},
+    )
+    rows = (
+        {
+            "brand_key": "선택",
+            "by_dimension": {"products": [{"product_code": "SEL"}], "atc4_code": ["C10A1"]},
+            "metric_history": {"2026-Q2": {"raw_value": 1, "rank": 99}},
+            "audit_code_matrix": {"KHPA": {"2026-Q2": 1}},
+        },
+        {
+            "brand_key": "A",
+            "by_dimension": {"products": [{"product_code": "A"}], "atc4_code": ["C10A1"]},
+            "metric_history": {"2026-Q2": {"raw_value": 100, "rank": 1}},
+            "audit_code_matrix": {"KHPA": {"2026-Q2": 3}},
+        },
+        {
+            "brand_key": "B",
+            "by_dimension": {"products": [{"product_code": "B"}], "atc4_code": ["C10A1"]},
+            "metric_history": {"2026-Q2": {"raw_value": 20, "rank": 2}},
+            "audit_code_matrix": {"KHPA": {"2026-Q2": 50}},
+        },
+    )
+    metas = {
+        str(row["brand_key"]): BrandMeta(str(row["brand_key"]), str(row["brand_key"]), (str(row["brand_key"]),), False)
+        for row in rows
+    }
+    channel_axis = parse_audit_code_axis({"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}})
 
-    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
-        captured["sql"] = sql
-        captured["params"] = params
-        return []
+    candidates = _brand_candidates(
+        "general",
+        rows,
+        metas,
+        {"quarter": "2026-Q2", "items": [{"brand_key": "A", "rank": 1, "raw_value": 100}]},
+        audit_code_axis=channel_axis,
+    )
+    choices = _select_choices(candidates, selected_brand="선택", applied_filter={"atc4": ["C10A1"]})
 
-    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
-
-    _fetch_channel_axis_rows(view_config("strategic_ml"), "ml_006")
-
-    sql = str(captured["sql"])
-    assert "NULL AS channel_specialty_matrix" in sql
-    assert "ubist_channel_by_display" in sql
-    assert "ubist_channel_by_code" in sql
-    assert captured["params"] == ("ml_006", "ubist", "sales")
+    assert [candidate.sales_value for candidate in candidates] == [1.0, 3.0, 50.0]
+    assert [choice.brand_key for choice in choices] == ["선택", "B", "A"]
 
 
 def _candidate(brand_key: str, *, rank: int, sales: float, dimensions: dict[str, tuple[str, ...]]) -> BrandCandidate:

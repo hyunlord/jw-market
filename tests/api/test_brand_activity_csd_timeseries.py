@@ -69,17 +69,29 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
         "brands": [],
         "market_totals": {},
     }
-    monkeypatch.setattr(brand_activity, "get_csd_timeseries", lambda _payload: expected)
+    captured: dict[str, object] = {}
+
+    def fake_get_csd_timeseries(payload: dict[str, object]) -> dict[str, object]:
+        captured.update(payload)
+        return expected
+
+    monkeypatch.setattr(brand_activity, "get_csd_timeseries", fake_get_csd_timeseries)
     app = FastAPI()
     app.include_router(brand_activity.router)
 
     response = TestClient(app).post(
         "/api/brand-activity/csd-timeseries",
-        json={"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "filter": {}},
+        json={
+            "view": "general",
+            "market_id": "C10A1",
+            "selected_brand": "리바로",
+            "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
+        },
     )
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
+    assert captured["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
 def test_csd_timeseries_route_returns_null_for_missing_market(monkeypatch) -> None:

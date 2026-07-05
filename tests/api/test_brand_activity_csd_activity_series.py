@@ -90,6 +90,39 @@ def test_activity_series_top5_basis_changes_competitor_order(monkeypatch) -> Non
     assert [entity["key"] for entity in activity_count["entities"][:3]] == ["LIVALO", "A", "LIVALOZET"]
 
 
+def test_activity_series_ignores_audit_code_for_csd_based_top5(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": period} for period in _months()]
+        if "GROUP BY market, master_product" in sql:
+            return [{"market": "LIVALO Market", "master_product": product} for product in ("LIVALO", "A", "B", "C")]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            return _activity_rows()
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    def fake_resolve_brand_set(**kwargs: Any) -> BrandSetResolution:
+        captured["filter_payload"] = kwargs["filter_payload"]
+        return _brand_set()
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", fake_resolve_brand_set)
+
+    payload = service.get_csd_activity_series(
+        {
+            "view": "general",
+            "market_id": "C10A1",
+            "selected_brand": "LIVALO",
+            "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["BAD"]}}},
+            "top5_basis": "activity_count",
+        }
+    )
+
+    assert payload is not None
+    assert captured["filter_payload"] == {"atc4": ["C10A1"]}
+
+
 def test_requested_quarters_defaults_to_one_year_and_clamps_to_three_years() -> None:
     all_quarters = tuple(f"{year}-Q{quarter}" for year in (2022, 2023, 2024, 2025) for quarter in range(1, 5))
 
@@ -120,6 +153,7 @@ def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "LIVALO",
+            "filters": {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}},
             "entity_level": "brand",
             "csd_channel": "CPPI",
             "top5_basis": "csd_market",
@@ -129,6 +163,7 @@ def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"data": expected}
     assert captured["payload"]["csd_channel"] == "CPPI"
+    assert captured["payload"]["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
 def test_csd_activity_series_service_uses_select_only_sql() -> None:

@@ -57,7 +57,7 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
             view_name=request.view,
             market_id=request.market_id,
             selected_brand=request.selected_brand,
-            filter_payload=request.filter_payload,
+            filter_payload=_brand_set_filter_payload(request),
             ranking_quarters=quarters,
         )
     except BrandSetInputError as exc:
@@ -100,6 +100,12 @@ def _quarter_text(value: Any) -> str:
     if len(raw) == 6 and raw[4] == "Q":
         return f"{raw[:4]}-{raw[4:]}"
     return raw
+
+
+def _brand_set_filter_payload(request: ParsedCsdActivityRequest) -> JsonMap:
+    if request.top5_basis == "iqvia_sales":
+        return request.filter_payload
+    return {key: value for key, value in request.filter_payload.items() if key != "channel_axis"}
 
 
 def _fetch_activity_rows(crosswalk: CsdCrosswalk, csd_channel: str) -> list[JsonMap]:
