@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import re
+from json.decoder import scanstring
 from typing import Any
 
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
@@ -515,7 +516,8 @@ def collect_ubist_channel_latest_totals(raw: Any, latest_period: str, totals_by_
             totals_by_code[code] = totals_by_code.get(code, 0.0) + float(value or 0.0)
 
 
-_JSON_NUMBER_RE = re.compile(r"\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|null)")
+_JSON_NUMBER_RE = re.compile(r"\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|true|false|null)")
+_RAW_FACILITY_VALUES = frozenset(str(raw) for meta in UBIST_FACILITY_MAPPING.values() for raw in meta["raw_values"])
 _RAW_CHANNEL_PAIRS: tuple[tuple[str, str, str], ...] = tuple(
     dict.fromkeys(
         (str(facility), str(specialty), code)
@@ -544,69 +546,117 @@ def collect_ubist_channel_latest_totals_from_json(raw: str, latest_period: str, 
     text = raw.strip()
     if not text or text[0] != "{":
         return False
-    period_key = _json_key_variants(latest_period)
     try:
-        for facility, specialty, code in _RAW_CHANNEL_PAIRS:
-            facility_bounds = _object_bounds_for_key(text, _json_key_variants(facility), 0, len(text))
-            if facility_bounds is None:
-                continue
-            specialty_bounds = _object_bounds_for_key(text, _json_key_variants(specialty), *facility_bounds)
-            if specialty_bounds is None:
-                continue
-            value = _number_for_key(text, period_key, *specialty_bounds)
-            if value is not None:
-                totals_by_code[code] = totals_by_code.get(code, 0.0) + value
+        _collect_ubist_matrix_object(text, 0, latest_period, totals_by_code)
     except ValueError:
         return False
     return True
 
 
-def _json_key_variants(value: str) -> tuple[str, ...]:
-    variants = (json.dumps(value, ensure_ascii=False), json.dumps(value, ensure_ascii=True))
-    return variants if variants[0] != variants[1] else (variants[0],)
+def _collect_ubist_matrix_object(text: str, pos: int, latest_period: str, totals_by_code: dict[str, float]) -> int:
+    pos = _expect_char(text, _skip_ws(text, pos), "{") + 1
+    while True:
+        pos = _skip_ws(text, pos)
+        if pos >= len(text):
+            raise ValueError("unterminated matrix object")
+        if text[pos] == "}":
+            return pos + 1
+        facility, pos = _read_json_key(text, pos)
+        pos = _expect_char(text, _skip_ws(text, pos), ":") + 1
+        pos = _skip_ws(text, pos)
+        if facility in _RAW_FACILITY_VALUES and pos < len(text) and text[pos] == "{":
+            pos = _collect_facility_object(text, pos, facility, latest_period, totals_by_code)
+        else:
+            pos = _skip_json_value(text, pos)
+        pos = _consume_member_separator(text, pos)
 
 
-def _object_bounds_for_key(text: str, keys: tuple[str, ...], start: int, end: int) -> tuple[int, int] | None:
-    found = _find_key(text, keys, start, end)
-    if found is None:
-        return None
-    colon = text.find(":", found, end)
-    if colon < 0:
-        raise ValueError("missing object colon")
-    pos = colon + 1
-    while pos < end and text[pos].isspace():
-        pos += 1
-    if pos >= end or text[pos] != "{":
-        raise ValueError("expected object")
-    return _matching_object_bounds(text, pos, end)
+def _collect_facility_object(
+    text: str,
+    pos: int,
+    facility: str,
+    latest_period: str,
+    totals_by_code: dict[str, float],
+) -> int:
+    pos = _expect_char(text, _skip_ws(text, pos), "{") + 1
+    while True:
+        pos = _skip_ws(text, pos)
+        if pos >= len(text):
+            raise ValueError("unterminated facility object")
+        if text[pos] == "}":
+            return pos + 1
+        specialty, pos = _read_json_key(text, pos)
+        pos = _expect_char(text, _skip_ws(text, pos), ":") + 1
+        pos = _skip_ws(text, pos)
+        code = raw_pair_to_channel_code(facility, specialty)
+        if code and pos < len(text) and text[pos] == "{":
+            value, pos = _read_latest_period_value(text, pos, latest_period)
+            if value is not None:
+                totals_by_code[code] = totals_by_code.get(code, 0.0) + value
+        else:
+            pos = _skip_json_value(text, pos)
+        pos = _consume_member_separator(text, pos)
 
 
-def _number_for_key(text: str, keys: tuple[str, ...], start: int, end: int) -> float | None:
-    found = _find_key(text, keys, start, end)
-    if found is None:
-        return None
-    colon = text.find(":", found, end)
-    if colon < 0:
-        raise ValueError("missing number colon")
-    match = _JSON_NUMBER_RE.match(text, colon + 1, end)
+def _read_latest_period_value(text: str, pos: int, latest_period: str) -> tuple[float | None, int]:
+    latest_value: float | None = None
+    pos = _expect_char(text, _skip_ws(text, pos), "{") + 1
+    while True:
+        pos = _skip_ws(text, pos)
+        if pos >= len(text):
+            raise ValueError("unterminated period object")
+        if text[pos] == "}":
+            return latest_value, pos + 1
+        period, pos = _read_json_key(text, pos)
+        pos = _expect_char(text, _skip_ws(text, pos), ":") + 1
+        value, pos = _read_json_scalar(text, pos)
+        if period == latest_period:
+            latest_value = value
+        pos = _consume_member_separator(text, pos)
+
+
+def _read_json_key(text: str, pos: int) -> tuple[str, int]:
+    pos = _skip_ws(text, pos)
+    if pos >= len(text) or text[pos] != '"':
+        raise ValueError("expected string key")
+    value, end = scanstring(text, pos + 1, True)
+    return str(value), end + 1
+
+
+def _read_json_scalar(text: str, pos: int) -> tuple[float | None, int]:
+    match = _JSON_NUMBER_RE.match(text, pos)
     if match is None:
-        raise ValueError("expected number")
+        raise ValueError("expected scalar")
     token = match.group(1)
-    if token == "null":
-        return None
-    return float(token)
+    end = match.end()
+    if token in {"null", "true", "false"}:
+        return None, end
+    return float(token), end
 
 
-def _find_key(text: str, keys: tuple[str, ...], start: int, end: int) -> int | None:
-    matches = [pos for key in keys if (pos := text.find(key, start, end)) >= 0]
-    return min(matches) if matches else None
+def _skip_json_value(text: str, pos: int) -> int:
+    pos = _skip_ws(text, pos)
+    if pos >= len(text):
+        raise ValueError("missing value")
+    if text[pos] == '"':
+        _, end = scanstring(text, pos + 1, True)
+        return end + 1
+    if text[pos] == "{":
+        return _skip_json_container(text, pos, "{", "}")
+    if text[pos] == "[":
+        return _skip_json_container(text, pos, "[", "]")
+    match = _JSON_NUMBER_RE.match(text, pos)
+    if match is None:
+        raise ValueError("unknown value")
+    return match.end()
 
 
-def _matching_object_bounds(text: str, open_pos: int, end: int) -> tuple[int, int]:
+def _skip_json_container(text: str, pos: int, open_char: str, close_char: str) -> int:
+    pos = _expect_char(text, pos, open_char)
     depth = 0
     in_string = False
     escaped = False
-    for index in range(open_pos, end):
+    for index in range(pos, len(text)):
         char = text[index]
         if in_string:
             if escaped:
@@ -618,13 +668,32 @@ def _matching_object_bounds(text: str, open_pos: int, end: int) -> tuple[int, in
             continue
         if char == '"':
             in_string = True
-        elif char == "{":
+        elif char == open_char:
             depth += 1
-        elif char == "}":
+        elif char == close_char:
             depth -= 1
             if depth == 0:
-                return open_pos, index + 1
-    raise ValueError("unterminated object")
+                return index + 1
+    raise ValueError("unterminated container")
+
+
+def _consume_member_separator(text: str, pos: int) -> int:
+    pos = _skip_ws(text, pos)
+    if pos < len(text) and text[pos] == ",":
+        return pos + 1
+    return pos
+
+
+def _expect_char(text: str, pos: int, expected: str) -> int:
+    if pos >= len(text) or text[pos] != expected:
+        raise ValueError(f"expected {expected!r}")
+    return pos
+
+
+def _skip_ws(text: str, pos: int) -> int:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return pos
 
 
 def parse_history(raw: str) -> dict[str, float]:
