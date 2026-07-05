@@ -3,6 +3,7 @@ from __future__ import annotations
 from pipeline.scripts.agent3.strength_candidate_extractor import (
     CandidateFloors,
     MetricRow,
+    _display_pct,
     extract_strength_candidates,
 )
 
@@ -150,6 +151,55 @@ def test_candidates_include_display_numbers_for_narrative_copy() -> None:
     assert candidates[0]["display_numbers"]["value_current"] == "2.5억원"
     assert candidates[0]["display_numbers"]["delta_abs"] == "1.5억원"
     assert candidates[0]["display_numbers"]["delta_pct"] == "150.0%"
+
+
+def test_tiny_percent_display_keeps_two_significant_digits() -> None:
+    row = MetricRow(
+        brand_name="극소퍼센트",
+        brand_key="tiny-pct",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 100_000_000.0, "2026-04": 100_050_000.0},
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=10.0,
+            min_delta_pct=0.01,
+            min_recent_value=20.0,
+            min_contribution_pct=10.0,
+        ),
+    )
+
+    assert candidates[0]["delta_pct"] == 0.05
+    assert candidates[0]["display_numbers"]["delta_pct"] == "0.05%"
+
+
+def test_very_small_percent_display_avoids_scientific_notation() -> None:
+    row = MetricRow(
+        brand_name="제로퍼센트",
+        brand_key="zero-pct",
+        source="ubist",
+        measure="sales",
+        raw_value_history={"2026-03": 100_000_000.0, "2026-04": 100_000_001.0},
+    )
+
+    candidates = extract_strength_candidates(
+        [row],
+        floors=CandidateFloors(
+            min_delta_abs=0.0,
+            min_delta_pct=0.0,
+            min_recent_value=20.0,
+            min_contribution_pct=10.0,
+        ),
+    )
+
+    assert candidates[0]["display_numbers"]["delta_pct"] == "0.000001%"
+
+
+def test_zero_percent_display_stays_zero() -> None:
+    assert _display_pct(0.0) == "0%"
 
 
 def test_low_base_candidates_are_flagged_and_penalized() -> None:

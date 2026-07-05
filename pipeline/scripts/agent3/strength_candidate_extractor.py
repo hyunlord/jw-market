@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 from .json_util import parse_history, parse_json_object
@@ -265,4 +266,17 @@ def _display_number(value: float | None) -> str | None:
 def _display_pct(value: float | None) -> str | None:
     if value is None:
         return None
+    if value == 0:
+        return "0%"
+    if abs(value) < 0.1:
+        return f"{_format_small_percent(value)}%"
     return f"{value:.1f}%"
+
+
+def _format_small_percent(value: float) -> str:
+    # Preserve two significant digits for tiny percentages; one-decimal
+    # formatting turns 0.05% signals into 0.0%, which wf316 cannot quote
+    # without failing display-number validation.
+    magnitude = abs(value)
+    decimals = max(2, min(6, 1 - math.floor(math.log10(magnitude))))
+    return f"{value:.{decimals}f}".rstrip("0").rstrip(".")

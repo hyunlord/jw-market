@@ -15,6 +15,15 @@ Revision `5365` is the live prompt revision that asks wf316 to return `candidate
 `AGENT3_WORKFLOW_REV` aligned with the live revision so idempotency hashes are
 rev-aware.
 
+wf316 narrative validation stays strict: every numeric token in a narrative must
+come from the candidate `display_numbers`, and raw high-precision decimals are
+rejected. If a brand fails validation during a full run, the runner retries that
+brand once with the same input. If the retry also fails, the brand is stored as
+profile-only with `unavailable_reason="validation_failed"` in
+`strength_summary_json`, and the failure is logged in the run output. A chunk
+should pause for PL review when validation-isolated brands exceed 2% of
+wf-call targets or 10 brands, whichever is stricter for the chunk.
+
 ## Build the Job Image
 
 The Agent3 runner is packaged in the backend image and used only by Agent3

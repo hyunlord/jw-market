@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import sys
@@ -15,13 +16,25 @@ from pipeline.scripts.agent3.brand_identity import BrandIdentity, serving_brand_
 from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
 from pipeline.scripts.agent3.strength_candidate_extractor import CandidateFloors, extract_strength_candidates
 from pipeline.scripts.agent3.summary_postprocess import (
-    SummaryValidationError,
     inject_candidate_numbers,
     validate_display_number_narratives,
 )
 from pipeline.scripts.agent3.workflow_client import Agent3WorkflowClient
 BrandSource = Literal["jw25", "strategic_ml", "general_all"]
 RunMode = Literal["dry-run", "full"]
+VALIDATION_ISOLATION_RATE_LIMIT = 0.02
+VALIDATION_ISOLATION_ABSOLUTE_LIMIT = 10
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowValidationResult:
+    summary: dict[str, Any]
+    meta: dict[str, Any]
+    status: str
+    workflow_calls: int
+    validation_retried: int
+    validation_isolated: int
+    isolation_log: list[dict[str, Any]]
 
 
 def build_agent3_input(profile: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -61,7 +74,15 @@ def run_full(
     client = Agent3WorkflowClient(workflow_id=WORKFLOW_ID)
     records = []
     pending_records = []
-    counts = {"workflow_calls": 0, "skipped_same_hash": 0, "profile_only": 0, "candidate_brands": 0}
+    counts = {
+        "workflow_calls": 0,
+        "skipped_same_hash": 0,
+        "profile_only": 0,
+        "candidate_brands": 0,
+        "validation_retried": 0,
+        "validation_isolated": 0,
+    }
+    validation_isolations: list[dict[str, Any]] = []
     for index, identity in enumerate(chunk, start=1):
         brand = identity.brand_name
         print(
@@ -90,13 +111,24 @@ def run_full(
             counts["skipped_same_hash"] += 1
             records.append(_record_summary(identity, candidates, input_hash, "skipped_same_hash", None, 0))
             continue
+        status = "ready"
         if mode == "full" and candidates:
-            summary, meta = client.run(build_agent3_input(profile, candidates))
-            summary = inject_candidate_numbers(summary, candidates)
-            validation_errors = validate_display_number_narratives(summary, candidates)
-            if validation_errors:
-                raise SummaryValidationError(brand=brand, errors=validation_errors)
-            counts["workflow_calls"] += 1
+            workflow_result = _run_workflow_with_validation(
+                client=client,
+                profile=profile,
+                candidates=candidates,
+                brand=brand,
+            )
+            summary = workflow_result.summary
+            meta = workflow_result.meta
+            status = workflow_result.status
+            counts["workflow_calls"] += workflow_result.workflow_calls
+            counts["validation_retried"] += workflow_result.validation_retried
+            counts["validation_isolated"] += workflow_result.validation_isolated
+            validation_isolations.extend(
+                {"brand_key": identity.brand_key, "brand": brand, **item}
+                for item in workflow_result.isolation_log
+            )
         else:
             summary = _profile_only_summary(brand, profile, candidates, mode)
             meta = {"workflow_skipped": True, "mode": mode}
@@ -112,8 +144,12 @@ def run_full(
         )
         if mode == "full":
             pending_records.append(record)
-        records.append(_record_summary(identity, candidates, record.input_hash, "ready", meta, 0))
+        records.append(_record_summary(identity, candidates, record.input_hash, status, meta, 0))
     affected = loader.upsert_many(pending_records, batch_size=200) if mode == "full" else 0
+    isolation_limit_exceeded = _isolation_limit_exceeded(
+        isolated=counts["validation_isolated"],
+        workflow_targets=counts["candidate_brands"] - counts["skipped_same_hash"],
+    )
     result = {
         "brand_source": brand_source,
         "mode": mode,
@@ -126,6 +162,8 @@ def run_full(
         "affected": affected,
         **counts,
         "estimated_cost_krw": counts["workflow_calls"] * 3.39 if mode == "full" else counts["candidate_brands"] * 3.39,
+        "validation_isolation_limit_exceeded": isolation_limit_exceeded,
+        "validation_isolations": validation_isolations,
         "records": records,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +186,110 @@ def _display_aliases_by_name() -> dict[str, tuple[str, ...]]:
 def _profile_only_summary(brand: str, profile: dict[str, Any], candidates: list[dict[str, Any]], mode: RunMode) -> dict[str, Any]:
     reason = "dry-run: wf316 호출 없이 후보 통계만 산출" if mode == "dry-run" else "strength candidate 0건: wf316 호출 없이 profile-only 저장"
     return {"brand": brand, "profile_display": profile, "strength_items": [], "limitations": [reason], "candidate_count": len(candidates)}
+
+
+def _validation_failed_summary(
+    brand: str,
+    profile: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    errors: list[str],
+) -> dict[str, Any]:
+    return {
+        "brand": brand,
+        "profile_display": profile,
+        "strength_items": [],
+        "limitations": ["wf316 summary validation failed after one retry; stored as profile-only"],
+        "candidate_count": len(candidates),
+        "unavailable_reason": "validation_failed",
+        "validation_errors": errors,
+    }
+
+
+def _run_workflow_with_validation(
+    *,
+    client: Agent3WorkflowClient,
+    profile: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    brand: str,
+) -> WorkflowValidationResult:
+    first_summary, first_meta = _call_and_validate(client, profile, candidates)
+    first_errors = validate_display_number_narratives(first_summary, candidates)
+    if not first_errors:
+        return WorkflowValidationResult(
+            summary=first_summary,
+            meta=first_meta,
+            status="ready",
+            workflow_calls=1,
+            validation_retried=0,
+            validation_isolated=0,
+            isolation_log=[],
+        )
+
+    retry_summary, retry_meta = _call_and_validate(client, profile, candidates)
+    retry_errors = validate_display_number_narratives(retry_summary, candidates)
+    if not retry_errors:
+        retry_meta = {
+            **retry_meta,
+            "validation_retry": True,
+            "initial_validation_errors": first_errors,
+        }
+        return WorkflowValidationResult(
+            summary=retry_summary,
+            meta=retry_meta,
+            status="ready",
+            workflow_calls=2,
+            validation_retried=1,
+            validation_isolated=0,
+            isolation_log=[],
+        )
+
+    isolation = {
+        "initial_errors": first_errors,
+        "retry_errors": retry_errors,
+        "initial_narratives": _summary_narratives(first_summary),
+        "retry_narratives": _summary_narratives(retry_summary),
+    }
+    summary = _validation_failed_summary(brand, profile, candidates, retry_errors)
+    meta = {
+        **retry_meta,
+        "validation_retry": True,
+        "validation_isolated": True,
+        "initial_validation_errors": first_errors,
+        "retry_validation_errors": retry_errors,
+    }
+    return WorkflowValidationResult(
+        summary=summary,
+        meta=meta,
+        status="validation_isolated",
+        workflow_calls=2,
+        validation_retried=1,
+        validation_isolated=1,
+        isolation_log=[isolation],
+    )
+
+
+def _call_and_validate(
+    client: Agent3WorkflowClient,
+    profile: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    summary, meta = client.run(build_agent3_input(profile, candidates))
+    return inject_candidate_numbers(summary, candidates), meta
+
+
+def _summary_narratives(summary: dict[str, Any]) -> list[str]:
+    items = summary.get("strength_items")
+    if not isinstance(items, list):
+        return []
+    return [str(item.get("narrative") or "") for item in items if isinstance(item, dict)]
+
+
+def _isolation_limit_exceeded(*, isolated: int, workflow_targets: int) -> bool:
+    if isolated > VALIDATION_ISOLATION_ABSOLUTE_LIMIT:
+        return True
+    if workflow_targets <= 0:
+        return False
+    return isolated / workflow_targets > VALIDATION_ISOLATION_RATE_LIMIT
 
 
 def _record_summary(
