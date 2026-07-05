@@ -95,3 +95,83 @@ def test_validate_display_number_narratives_accepts_display_strings() -> None:
     }
 
     assert validate_display_number_narratives(summary, [_candidate()]) == []
+
+
+def test_validate_display_number_narratives_accepts_slice_label_number() -> None:
+    candidate = {
+        "slice": "IQVIA 성분용량: 0.05%",
+        "metric": "recent_growth",
+        "display_numbers": {
+            "value_current": "1.7억원",
+            "value_baseline": "1.2억원",
+            "delta_abs": "55,873,286",
+            "delta_pct": "46.9%",
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "IQVIA 성분용량: 0.05%",
+                "metric": "recent_growth",
+                "narrative": "0.05% 성분용량 매출이 1.7억원으로 46.9% 증가했습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == []
+
+
+def test_validate_display_number_narratives_still_rejects_raw_metric_number() -> None:
+    candidate = {
+        "slice": "IQVIA 성분용량: 0.05%",
+        "metric": "recent_growth",
+        "display_numbers": {
+            "value_current": "1.7억원",
+            "value_baseline": "1.2억원",
+            "delta_abs": "55,873,286",
+            "delta_pct": "46.9%",
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "IQVIA 성분용량: 0.05%",
+                "metric": "recent_growth",
+                "narrative": "0.05% 성분용량 매출이 1.7억원으로 46.944% 증가했습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == [
+        "item 0 narrative number is not in display_numbers: 46.944%"
+    ]
+
+
+def test_validate_display_number_narratives_does_not_whitelist_evidence_numbers() -> None:
+    candidate = {
+        "slice": "IQVIA 성분용량: 0.05%",
+        "metric": "recent_growth",
+        "evidence": "원 수치 delta_pct=46.944%",
+        "display_numbers": {
+            "value_current": "1.7억원",
+            "value_baseline": "1.2억원",
+            "delta_abs": "55,873,286",
+            "delta_pct": "46.9%",
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "IQVIA 성분용량: 0.05%",
+                "metric": "recent_growth",
+                "narrative": "0.05% 성분용량 매출이 46.944% 증가했습니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == [
+        "item 0 narrative number is not in display_numbers: 46.944%"
+    ]

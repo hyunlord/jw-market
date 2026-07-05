@@ -7,7 +7,9 @@ from pipeline.scripts.agent3.run_full import (
     VALIDATION_ISOLATION_RATE_LIMIT,
     _isolation_limit_exceeded,
     _run_workflow_with_validation,
+    _should_skip_existing,
 )
+from pipeline.scripts.agent3.loader import ExistingAgent3State
 
 
 def _candidate() -> dict[str, Any]:
@@ -56,7 +58,7 @@ class FakeClient:
 def test_validation_retry_uses_second_valid_summary() -> None:
     client = FakeClient(
         [
-            _summary("0.05% 용량에서 46.9% 성장했습니다."),
+            _summary("46.944% 성장했습니다."),
             _summary("성분용량 구간에서 46.9% 성장했습니다."),
         ]
     )
@@ -78,8 +80,8 @@ def test_validation_retry_uses_second_valid_summary() -> None:
 def test_validation_failure_after_retry_is_profile_only_isolation() -> None:
     client = FakeClient(
         [
-            _summary("0.05% 용량에서 46.9% 성장했습니다."),
-            _summary("0.05% 성분용량 매출이 46.9% 증가했습니다."),
+            _summary("46.944% 성장했습니다."),
+            _summary("46.944% 증가했습니다."),
         ]
     )
 
@@ -96,17 +98,31 @@ def test_validation_failure_after_retry_is_profile_only_isolation() -> None:
     assert result.validation_isolated == 1
     assert result.summary["strength_items"] == []
     assert result.summary["unavailable_reason"] == "validation_failed"
-    assert "0.05%" in result.isolation_log[0]["retry_errors"][0]
+    assert "46.944%" in result.isolation_log[0]["retry_errors"][0]
 
 
 def test_isolation_limit_triggers_on_rate_or_absolute_limit() -> None:
-    assert _isolation_limit_exceeded(isolated=1, workflow_targets=100) is False
+    assert _isolation_limit_exceeded(isolated=1, workflow_targets=27) is False
     assert _isolation_limit_exceeded(isolated=3, workflow_targets=100) is True
     assert _isolation_limit_exceeded(
-        isolated=VALIDATION_ISOLATION_ABSOLUTE_LIMIT + 1,
+        isolated=VALIDATION_ISOLATION_ABSOLUTE_LIMIT,
         workflow_targets=1000,
     ) is True
     assert _isolation_limit_exceeded(
         isolated=int(VALIDATION_ISOLATION_RATE_LIMIT * 100),
         workflow_targets=100,
     ) is False
+
+
+def test_validation_failed_existing_row_is_not_skipped() -> None:
+    existing = ExistingAgent3State(input_hash="same", workflow_rev=5365, validation_failed=True)
+
+    assert _should_skip_existing(existing, input_hash="same", workflow_rev=5365) is False
+    assert (
+        _should_skip_existing(
+            ExistingAgent3State(input_hash="same", workflow_rev=5365, validation_failed=False),
+            input_hash="same",
+            workflow_rev=5365,
+        )
+        is True
+    )

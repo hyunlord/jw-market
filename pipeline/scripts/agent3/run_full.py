@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pipeline.scripts.api.catalog import DISPLAY_BRANDS
 from pipeline.scripts.agent3.config import WORKFLOW_ID, resolve_workflow_rev
 from pipeline.scripts.agent3.db import DbConfig
-from pipeline.scripts.agent3.loader import Agent3Loader, compute_input_hash, make_record
+from pipeline.scripts.agent3.loader import Agent3Loader, ExistingAgent3State, compute_input_hash, make_record
 from pipeline.scripts.agent3.profile_provider import build_profile
 from pipeline.scripts.agent3.brand_identity import BrandIdentity, serving_brand_names_for_identities
 from pipeline.scripts.agent3.repository import Agent3Repository, metric_rows_from_general
@@ -107,7 +107,7 @@ def run_full(
             counts["profile_only"] += 1
         input_hash = compute_input_hash(profile, candidates, workflow_rev)
         old = existing.get(identity.brand_key)
-        if old == (input_hash, workflow_rev):
+        if _should_skip_existing(old, input_hash=input_hash, workflow_rev=workflow_rev):
             counts["skipped_same_hash"] += 1
             records.append(_record_summary(identity, candidates, input_hash, "skipped_same_hash", None, 0))
             continue
@@ -213,7 +213,7 @@ def _run_workflow_with_validation(
     brand: str,
 ) -> WorkflowValidationResult:
     first_summary, first_meta = _call_and_validate(client, profile, candidates)
-    first_errors = validate_display_number_narratives(first_summary, candidates)
+    first_errors = validate_display_number_narratives(first_summary, candidates, profile)
     if not first_errors:
         return WorkflowValidationResult(
             summary=first_summary,
@@ -226,7 +226,7 @@ def _run_workflow_with_validation(
         )
 
     retry_summary, retry_meta = _call_and_validate(client, profile, candidates)
-    retry_errors = validate_display_number_narratives(retry_summary, candidates)
+    retry_errors = validate_display_number_narratives(retry_summary, candidates, profile)
     if not retry_errors:
         retry_meta = {
             **retry_meta,
@@ -285,11 +285,17 @@ def _summary_narratives(summary: dict[str, Any]) -> list[str]:
 
 
 def _isolation_limit_exceeded(*, isolated: int, workflow_targets: int) -> bool:
-    if isolated > VALIDATION_ISOLATION_ABSOLUTE_LIMIT:
+    if isolated >= VALIDATION_ISOLATION_ABSOLUTE_LIMIT:
         return True
     if workflow_targets <= 0:
         return False
-    return isolated / workflow_targets > VALIDATION_ISOLATION_RATE_LIMIT
+    # Small chunks can trip a pure ratio with one isolated brand. Pause only
+    # when repeated failures show a pattern or the absolute cap is reached.
+    return isolated >= 3 and isolated / workflow_targets > VALIDATION_ISOLATION_RATE_LIMIT
+
+
+def _should_skip_existing(old: ExistingAgent3State | None, *, input_hash: str, workflow_rev: int) -> bool:
+    return old is not None and old.input_hash == input_hash and old.workflow_rev == workflow_rev and not old.validation_failed
 
 
 def _record_summary(

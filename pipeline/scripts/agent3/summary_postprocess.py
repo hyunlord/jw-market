@@ -25,7 +25,10 @@ class SummaryValidationError(RuntimeError):
 
 NUMBER_KEYS = ("value_current", "value_baseline", "delta_abs", "delta_pct")
 RAW_DECIMAL_RE = re.compile(r"\d+\.\d{5,}")
-DISPLAY_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?:억원|원|%|건|개|명)")
+DISPLAY_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?:억원|원|%|건|개|명|MG|MCG|G|ML|IU)",
+    re.IGNORECASE,
+)
 
 
 def inject_candidate_numbers(summary: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -41,7 +44,11 @@ def inject_candidate_numbers(summary: dict[str, Any], candidates: list[dict[str,
     return enriched
 
 
-def validate_display_number_narratives(summary: dict[str, Any], candidates: list[dict[str, Any]]) -> list[str]:
+def validate_display_number_narratives(
+    summary: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    profile: dict[str, Any] | None = None,
+) -> list[str]:
     errors: list[str] = []
     items = summary.get("strength_items")
     if not isinstance(items, list):
@@ -64,8 +71,9 @@ def validate_display_number_narratives(summary: dict[str, Any], candidates: list
             for value in (candidate.get("display_numbers") or {}).values()
             if value not in (None, "")
         }
+        label_values = _label_number_tokens(candidate, profile or summary.get("profile_display"))
         for token in DISPLAY_NUMBER_RE.findall(narrative):
-            if token not in display_values:
+            if token not in display_values and token not in label_values:
                 errors.append(f"item {index} narrative number is not in display_numbers: {token}")
     return errors
 
@@ -84,3 +92,25 @@ def _match_candidate(item: dict[str, Any], candidates: list[dict[str, Any]]) -> 
     if len(matches) == 1:
         return matches[0]
     raise CandidateMatchError(f"candidate match failed for slice={item_slice!r}, metric={item_metric!r}")
+
+
+def _label_number_tokens(candidate: dict[str, Any], profile: Any) -> set[str]:
+    """Return numeric tokens that are labels, not metric values."""
+    sources = [candidate.get("slice"), *_profile_strings(profile)]
+    return {token for source in sources if isinstance(source, str) for token in DISPLAY_NUMBER_RE.findall(source)}
+
+
+def _profile_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for nested in value.values():
+            strings.extend(_profile_strings(nested))
+        return strings
+    if isinstance(value, list):
+        strings = []
+        for nested in value:
+            strings.extend(_profile_strings(nested))
+        return strings
+    return []

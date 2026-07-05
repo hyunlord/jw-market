@@ -30,7 +30,7 @@ class FakeCursor:
         self.params = params
 
     def fetchall(self) -> list[dict[str, Any]]:
-        return [{"brand_key": "BK-001", "input_hash": "abc123", "workflow_rev": 5365}]
+        return [{"brand_key": "BK-001", "input_hash": "abc123", "workflow_rev": 5365, "validation_failed": 1}]
 
 
 class FakeConnection:
@@ -91,8 +91,13 @@ def test_load_existing_hashes_uses_brand_key(monkeypatch: Any) -> None:
 
     result = Agent3Loader().load_existing_hashes(["BK-001"])
 
-    assert result == {"BK-001": ("abc123", 5365)}
-    assert "SELECT brand_key, input_hash, workflow_rev" in fake_cursor.sql
+    assert result["BK-001"].input_hash == "abc123"
+    assert result["BK-001"].workflow_rev == 5365
+    assert result["BK-001"].validation_failed is True
+    assert "brand_key" in fake_cursor.sql
+    assert "input_hash" in fake_cursor.sql
+    assert "workflow_rev" in fake_cursor.sql
+    assert "validation_failed" in fake_cursor.sql
     assert "WHERE brand_key IN (%s)" in " ".join(fake_cursor.sql.split())
     assert fake_cursor.params == ("BK-001",)
 

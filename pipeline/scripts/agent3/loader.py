@@ -31,6 +31,13 @@ class Agent3Record:
     generated_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ExistingAgent3State:
+    input_hash: str
+    workflow_rev: int
+    validation_failed: bool
+
+
 def compute_input_hash(profile: dict[str, Any], candidates: list[dict[str, Any]], workflow_rev: int) -> str:
     payload = {"profile": profile, "candidates": candidates, "workflow_rev": workflow_rev}
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
@@ -85,7 +92,7 @@ class Agent3Loader:
             conn.commit()
         return int(affected)
 
-    def load_existing_hashes(self, brand_keys: list[str]) -> dict[str, tuple[str, int]]:
+    def load_existing_hashes(self, brand_keys: list[str]) -> dict[str, ExistingAgent3State]:
         if not brand_keys:
             return {}
         placeholders = ", ".join(["%s"] * len(brand_keys))
@@ -93,14 +100,23 @@ class Agent3Loader:
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT brand_key, input_hash, workflow_rev
+                    SELECT
+                      brand_key,
+                      input_hash,
+                      workflow_rev,
+                      JSON_UNQUOTE(JSON_EXTRACT(strength_summary_json, '$.unavailable_reason')) = 'validation_failed'
+                        AS validation_failed
                     FROM agent3_brand_strength
                     WHERE brand_key IN ({placeholders})
                     """,
                     tuple(brand_keys),
                 )
                 return {
-                    str(row["brand_key"]): (str(row["input_hash"]), int(row["workflow_rev"]))
+                    str(row["brand_key"]): ExistingAgent3State(
+                        input_hash=str(row["input_hash"]),
+                        workflow_rev=int(row["workflow_rev"]),
+                        validation_failed=bool(row["validation_failed"]),
+                    )
                     for row in cursor.fetchall()
                 }
 
