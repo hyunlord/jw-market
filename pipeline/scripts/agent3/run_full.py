@@ -19,11 +19,12 @@ from pipeline.scripts.agent3.summary_postprocess import (
     inject_candidate_numbers,
     validate_display_number_narratives,
 )
-from pipeline.scripts.agent3.workflow_client import Agent3WorkflowClient
+from pipeline.scripts.agent3.workflow_client import Agent3WorkflowClient, WorkflowRetryExhaustedError
 BrandSource = Literal["jw25", "strategic_ml", "general_all"]
 RunMode = Literal["dry-run", "full"]
 VALIDATION_ISOLATION_RATE_LIMIT = 0.02
 VALIDATION_ISOLATION_ABSOLUTE_LIMIT = 10
+WORKFLOW_ERROR_CONSECUTIVE_LIMIT = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,8 +82,11 @@ def run_full(
         "candidate_brands": 0,
         "validation_retried": 0,
         "validation_isolated": 0,
+        "workflow_error_isolated": 0,
     }
     validation_isolations: list[dict[str, Any]] = []
+    workflow_errors: list[dict[str, Any]] = []
+    consecutive_workflow_errors = 0
     for index, identity in enumerate(chunk, start=1):
         brand = identity.brand_name
         print(
@@ -113,22 +117,47 @@ def run_full(
             continue
         status = "ready"
         if mode == "full" and candidates:
-            workflow_result = _run_workflow_with_validation(
-                client=client,
-                profile=profile,
-                candidates=candidates,
-                brand=brand,
-            )
-            summary = workflow_result.summary
-            meta = workflow_result.meta
-            status = workflow_result.status
-            counts["workflow_calls"] += workflow_result.workflow_calls
-            counts["validation_retried"] += workflow_result.validation_retried
-            counts["validation_isolated"] += workflow_result.validation_isolated
-            validation_isolations.extend(
-                {"brand_key": identity.brand_key, "brand": brand, **item}
-                for item in workflow_result.isolation_log
-            )
+            try:
+                workflow_result = _run_workflow_with_validation(
+                    client=client,
+                    profile=profile,
+                    candidates=candidates,
+                    brand=brand,
+                )
+                consecutive_workflow_errors = 0
+                summary = workflow_result.summary
+                meta = workflow_result.meta
+                status = workflow_result.status
+                counts["workflow_calls"] += workflow_result.workflow_calls
+                counts["validation_retried"] += workflow_result.validation_retried
+                counts["validation_isolated"] += workflow_result.validation_isolated
+                validation_isolations.extend(
+                    {"brand_key": identity.brand_key, "brand": brand, **item}
+                    for item in workflow_result.isolation_log
+                )
+            except WorkflowRetryExhaustedError as exc:
+                consecutive_workflow_errors += 1
+                counts["workflow_calls"] += exc.attempts
+                counts["workflow_error_isolated"] += 1
+                summary = _workflow_error_summary(brand, profile, candidates, exc)
+                meta = {
+                    "workflow_error_isolated": True,
+                    "workflow_attempts": exc.attempts,
+                    "workflow_error": exc.last_error,
+                }
+                status = "workflow_error_isolated"
+                workflow_errors.append(
+                    {
+                        "brand_key": identity.brand_key,
+                        "brand": brand,
+                        "attempts": exc.attempts,
+                        "error": exc.last_error,
+                    }
+                )
+                if _workflow_error_limit_exceeded(consecutive_workflow_errors):
+                    raise RuntimeError(
+                        f"wf316 transport failures reached {consecutive_workflow_errors} consecutive brands; aborting chunk"
+                    ) from exc
         else:
             summary = _profile_only_summary(brand, profile, candidates, mode)
             meta = {"workflow_skipped": True, "mode": mode}
@@ -164,6 +193,7 @@ def run_full(
         "estimated_cost_krw": counts["workflow_calls"] * 3.39 if mode == "full" else counts["candidate_brands"] * 3.39,
         "validation_isolation_limit_exceeded": isolation_limit_exceeded,
         "validation_isolations": validation_isolations,
+        "workflow_errors": workflow_errors,
         "records": records,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +232,26 @@ def _validation_failed_summary(
         "candidate_count": len(candidates),
         "unavailable_reason": "validation_failed",
         "validation_errors": errors,
+    }
+
+
+def _workflow_error_summary(
+    brand: str,
+    profile: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    exc: WorkflowRetryExhaustedError,
+) -> dict[str, Any]:
+    return {
+        "brand": brand,
+        "profile_display": profile,
+        "strength_items": [],
+        "limitations": ["wf316 workflow transport failed after retries; stored as profile-only"],
+        "candidate_count": len(candidates),
+        "unavailable_reason": "workflow_error",
+        "workflow_error": {
+            "attempts": exc.attempts,
+            "last_error": exc.last_error,
+        },
     }
 
 
@@ -292,6 +342,10 @@ def _isolation_limit_exceeded(*, isolated: int, workflow_targets: int) -> bool:
     # Small chunks can trip a pure ratio with one isolated brand. Pause only
     # when repeated failures show a pattern or the absolute cap is reached.
     return isolated >= 3 and isolated / workflow_targets > VALIDATION_ISOLATION_RATE_LIMIT
+
+
+def _workflow_error_limit_exceeded(consecutive_errors: int) -> bool:
+    return consecutive_errors >= WORKFLOW_ERROR_CONSECUTIVE_LIMIT
 
 
 def _should_skip_existing(old: ExistingAgent3State | None, *, input_hash: str, workflow_rev: int) -> bool:

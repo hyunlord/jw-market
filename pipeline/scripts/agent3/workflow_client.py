@@ -8,6 +8,23 @@ import urllib.request
 import uuid
 from typing import Any
 
+RETRY_DELAYS_S = (5, 15, 45)
+
+
+class WorkflowHttpError(RuntimeError):
+    def __init__(self, message: str, *, status: int, attempts: int, body: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.attempts = attempts
+        self.body = body
+
+
+class WorkflowRetryExhaustedError(RuntimeError):
+    def __init__(self, message: str, *, attempts: int, last_error: str) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.last_error = last_error
+
 
 def find_response_text(value: Any) -> str | None:
     if isinstance(value, str):
@@ -86,9 +103,7 @@ class Agent3WorkflowClient:
             headers=self.headers,
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-            status = response.status
-            raw_bytes = response.read()
+        status, raw_bytes, attempts = self._urlopen_with_retry(request)
         raw = json.loads(raw_bytes.decode("utf-8"))
         text = find_response_text(raw)
         if not text:
@@ -100,5 +115,47 @@ class Agent3WorkflowClient:
             "http_status": status,
             "elapsed_ms": int((time.monotonic() - started) * 1000),
             "endpoint": self.endpoint,
+            "http_attempts": attempts,
         }
         return parsed, meta
+
+    def _urlopen_with_retry(self, request: urllib.request.Request) -> tuple[int, bytes, int]:
+        max_attempts = len(RETRY_DELAYS_S) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                    return int(response.status), response.read(), attempt
+            except urllib.error.HTTPError as exc:
+                body = _read_error_body(exc)
+                if 500 <= exc.code <= 599:
+                    if attempt < max_attempts:
+                        time.sleep(RETRY_DELAYS_S[attempt - 1])
+                        continue
+                    raise WorkflowRetryExhaustedError(
+                        f"wf316 HTTP {exc.code} after {attempt} attempts",
+                        attempts=attempt,
+                        last_error=body or str(exc),
+                    ) from exc
+                raise WorkflowHttpError(
+                    f"wf316 HTTP {exc.code}: {body or exc.reason}",
+                    status=int(exc.code),
+                    attempts=attempt,
+                    body=body,
+                ) from exc
+            except (ConnectionError, TimeoutError, urllib.error.URLError) as exc:
+                if attempt < max_attempts:
+                    time.sleep(RETRY_DELAYS_S[attempt - 1])
+                    continue
+                raise WorkflowRetryExhaustedError(
+                    f"wf316 transport error after {attempt} attempts",
+                    attempts=attempt,
+                    last_error=str(exc),
+                ) from exc
+        raise RuntimeError("unreachable wf316 retry state")
+
+
+def _read_error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""

@@ -98,6 +98,7 @@ def test_load_existing_hashes_uses_brand_key(monkeypatch: Any) -> None:
     assert "input_hash" in fake_cursor.sql
     assert "workflow_rev" in fake_cursor.sql
     assert "validation_failed" in fake_cursor.sql
+    assert "'workflow_error'" in fake_cursor.sql
     assert "WHERE brand_key IN (%s)" in " ".join(fake_cursor.sql.split())
     assert fake_cursor.params == ("BK-001",)
 

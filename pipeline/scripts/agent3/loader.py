@@ -104,7 +104,8 @@ class Agent3Loader:
                       brand_key,
                       input_hash,
                       workflow_rev,
-                      JSON_UNQUOTE(JSON_EXTRACT(strength_summary_json, '$.unavailable_reason')) = 'validation_failed'
+                      JSON_UNQUOTE(JSON_EXTRACT(strength_summary_json, '$.unavailable_reason'))
+                        IN ('validation_failed', 'workflow_error')
                         AS validation_failed
                     FROM agent3_brand_strength
                     WHERE brand_key IN ({placeholders})

@@ -24,6 +24,15 @@ profile-only with `unavailable_reason="validation_failed"` in
 should pause for PL review when validation-isolated brands exceed 2% of
 wf-call targets or 10 brands, whichever is stricter for the chunk.
 
+wf316 transport failures are retried at HTTP level for 5xx, timeouts, and
+connection errors with 5s/15s/45s backoff. 4xx responses still fail immediately
+because they indicate a contract error. If all transport retries are exhausted,
+the brand is stored as profile-only with `unavailable_reason="workflow_error"`;
+the same idempotency recovery path as `validation_failed` will retry it on a
+future run. If three different wf-call brands consecutively exhaust transport
+retries, the chunk aborts as a service-down signal instead of filling the table
+with isolated rows.
+
 ## Build the Job Image
 
 The Agent3 runner is packaged in the backend image and used only by Agent3
@@ -40,9 +49,9 @@ docker push asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos
 
 Current full-run image:
 
-- Tag: `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.59-agent3-90015ca5-20260706`
-- Digest: `sha256:67344fa150eae6c7046b2dd115a2525693f43670e8dced7d2d5b1142f54a00a0`
-- Runtime code baseline: `90015ca5` (slice-label validator fix plus validation_failed recovery)
+- Tag: `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.60-agent3-<commit8>-20260706`
+- Digest: update after build/push
+- Runtime code baseline: pending commit (wf316 HTTP retry plus workflow_error recovery)
 
 ## Runner
 

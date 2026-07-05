@@ -5,11 +5,15 @@ from typing import Any
 from pipeline.scripts.agent3.run_full import (
     VALIDATION_ISOLATION_ABSOLUTE_LIMIT,
     VALIDATION_ISOLATION_RATE_LIMIT,
+    WORKFLOW_ERROR_CONSECUTIVE_LIMIT,
     _isolation_limit_exceeded,
     _run_workflow_with_validation,
     _should_skip_existing,
+    _workflow_error_limit_exceeded,
+    _workflow_error_summary,
 )
 from pipeline.scripts.agent3.loader import ExistingAgent3State
+from pipeline.scripts.agent3.workflow_client import WorkflowRetryExhaustedError
 
 
 def _candidate() -> dict[str, Any]:
@@ -126,3 +130,26 @@ def test_validation_failed_existing_row_is_not_skipped() -> None:
         )
         is True
     )
+
+
+def test_workflow_error_summary_is_profile_only_and_retriable() -> None:
+    summary = _workflow_error_summary(
+        "대웅 몬테루카스트",
+        {"brand": "대웅 몬테루카스트"},
+        [_candidate()],
+        WorkflowRetryExhaustedError("failed", attempts=4, last_error="HTTP 500"),
+    )
+
+    assert summary["strength_items"] == []
+    assert summary["unavailable_reason"] == "workflow_error"
+    assert summary["workflow_error"]["attempts"] == 4
+    assert _should_skip_existing(
+        ExistingAgent3State(input_hash="same", workflow_rev=5365, validation_failed=True),
+        input_hash="same",
+        workflow_rev=5365,
+    ) is False
+
+
+def test_workflow_error_service_down_guard_triggers_on_three_consecutive_brands() -> None:
+    assert _workflow_error_limit_exceeded(WORKFLOW_ERROR_CONSECUTIVE_LIMIT - 1) is False
+    assert _workflow_error_limit_exceeded(WORKFLOW_ERROR_CONSECUTIVE_LIMIT) is True
