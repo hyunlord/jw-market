@@ -29,6 +29,12 @@ docker build --platform linux/amd64 -f api/Dockerfile \
 docker push asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.XX-agent3-<commit8>-<YYYYMMDD>
 ```
 
+Current full-run image:
+
+- Tag: `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.57-agent3-5e2a9910-20260705`
+- Digest: `sha256:a4fdb9a434789edbf608b95339840e7f7f07a1eb7a7180868009f0ad93cf0ac6`
+- Runtime code baseline: `5e2a9910` (`brand_key` PK and `serving_brand_name` unique schema support)
+
 ## Runner
 
 ```bash
