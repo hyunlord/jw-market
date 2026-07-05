@@ -5,6 +5,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandCandidate,
     BrandSetInputError,
     _brand_candidates,
+    _ml_id_for_brand,
     _select_choices,
     validate_audit_code_axis,
 )
@@ -76,6 +77,27 @@ def test_unknown_audit_code_is_rejected_from_dynamic_matrix_keys() -> None:
         assert "BAD" in str(exc)
     else:
         raise AssertionError("unknown audit_code must be rejected")
+
+
+def test_single_ml_brand_resolves_market(monkeypatch) -> None:
+    rows = [{"ml_id": "ml_006"}]
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", lambda *_args, **_kwargs: rows)
+
+    assert _ml_id_for_brand("가드렛") == "ml_006"
+
+
+def test_ambiguous_ml_brand_raises_without_market_id_escape_hatch(monkeypatch) -> None:
+    rows = [{"ml_id": "ml_010"}, {"ml_id": "ml_002"}, {"ml_id": "ml_006"}]
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", lambda *_args, **_kwargs: rows)
+
+    try:
+        _ml_id_for_brand("가드렛")
+    except BrandSetInputError as exc:
+        message = str(exc)
+        assert message == "ambiguous ml market for brand: ml_010, ml_002, ml_006"
+        assert "pass market_id" not in message
+    else:
+        raise AssertionError("ambiguous ML brand must fail loudly")
 
 
 def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> None:

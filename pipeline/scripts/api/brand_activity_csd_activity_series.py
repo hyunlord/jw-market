@@ -71,7 +71,7 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
     rows = _fetch_activity_rows(crosswalk, request.csd_channel)
     activity = _activity_rows(rows, quarters, all_quarters)
     selected_key = _selected_entity_key(request.entity_level, request.selected_brand, selected_meta, brand_set)
-    entity_keys = _entity_keys(request, selected_key, brand_set, activity)
+    entity_keys = _entity_keys(request, selected_key, brand_set)
     rank_source = activity.by_company if request.entity_level == "company" else _brand_activity_by_key(brand_set, activity)
     ranks = _ranks_by_quarter(rank_source, quarters)
     values = rank_source
@@ -79,10 +79,9 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
         "scope": _scope_payload(request, brand_set, crosswalk, quarters),
         "entity_level": request.entity_level,
         "channel": request.csd_channel,
-        "top5_basis": request.top5_basis,
         "period": {"quarters": list(quarters), "max_quarters": MAX_QUARTERS, "default_quarters": DEFAULT_QUARTERS},
         "entities": [_entity_payload(key, selected_key, values.get(key, {}), activity.totals, ranks, quarters, brand_set) for key in entity_keys],
-        "applied": {"csd_channel": request.csd_channel, "top5_basis": request.top5_basis, "entity_level": request.entity_level},
+        "applied": {"csd_channel": request.csd_channel, "entity_level": request.entity_level},
     }
 
 
@@ -103,9 +102,7 @@ def _quarter_text(value: Any) -> str:
 
 
 def _brand_set_filter_payload(request: ParsedCsdActivityRequest) -> JsonMap:
-    if request.top5_basis == "iqvia_sales":
-        return request.filter_payload
-    return {key: value for key, value in request.filter_payload.items() if key != "channel_axis"}
+    return request.filter_payload
 
 
 def _fetch_activity_rows(crosswalk: CsdCrosswalk, csd_channel: str) -> list[JsonMap]:
@@ -130,20 +127,12 @@ def _activity_rows(rows: list[JsonMap], quarters: tuple[str, ...], all_quarters:
     return ActivityRows(quarters=quarters, all_quarters=all_quarters, totals=totals, by_product=by_product, by_company=by_company)
 
 
-def _entity_keys(request: ParsedCsdActivityRequest, selected_key: str, brand_set: BrandSetResolution, activity: ActivityRows) -> tuple[str, ...]:
+def _entity_keys(request: ParsedCsdActivityRequest, selected_key: str, brand_set: BrandSetResolution) -> tuple[str, ...]:
     if request.selected_entities:
         return request.selected_entities
-    ranked = _basis_keys(request, brand_set, activity)
+    ranked = _iqvia_sales_keys(request.entity_level, brand_set)
     ordered = [selected_key, *(key for key in ranked if key != selected_key)]
     return tuple(_unique(ordered)[:MAX_ENTITIES])
-
-
-def _basis_keys(request: ParsedCsdActivityRequest, brand_set: BrandSetResolution, activity: ActivityRows) -> tuple[str, ...]:
-    if request.top5_basis == "iqvia_sales":
-        return _iqvia_sales_keys(request.entity_level, brand_set)
-    values = activity.by_company if request.entity_level == "company" else _brand_activity_by_key(brand_set, activity)
-    basis_quarters = activity.quarters if request.top5_basis == "activity_count" else activity.all_quarters
-    return tuple(key for key, _value in _ranked_totals(values, tuple(basis_quarters)))
 
 
 def _iqvia_sales_keys(entity_level: CsdEntityLevel, brand_set: BrandSetResolution) -> tuple[str, ...]:
@@ -202,11 +191,6 @@ def _ranks_by_quarter(values: dict[str, dict[str, float]], quarters: tuple[str, 
         ranked = sorted(((key, series.get(quarter, 0.0)) for key, series in values.items()), key=lambda item: (-item[1], item[0]))
         ranks[quarter] = {key: index + 1 for index, (key, _value) in enumerate(ranked) if _value > 0.0}
     return ranks
-
-
-def _ranked_totals(values: dict[str, dict[str, float]], quarters: tuple[str, ...]) -> list[tuple[str, float]]:
-    totals = [(key, sum(series.get(quarter, 0.0) for quarter in quarters)) for key, series in values.items()]
-    return sorted((item for item in totals if item[1] > 0.0), key=lambda item: (-item[1], item[0]))
 
 
 def _scope_payload(request: ParsedCsdActivityRequest, brand_set: BrandSetResolution, crosswalk: CsdCrosswalk, quarters: tuple[str, ...]) -> JsonMap:

@@ -59,7 +59,6 @@ class CsdTimeseriesRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    market_id: str | None = Field(default=None, description="일반뷰 ATC4 또는 전략 ml_id. general은 filters.atc4 첫 값으로 대체 가능.")
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
     filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
@@ -74,7 +73,6 @@ class BrandActivityTopicsRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    market_id: str | None = Field(default=None, description="일반뷰 ATC4 또는 전략 ml_id. general은 filters.atc4 첫 값으로 대체 가능.")
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
     filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
@@ -104,7 +102,6 @@ class BrandActivityInterestRxRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    market_id: str | None = Field(default=None, description="일반뷰 ATC4 또는 전략 ml_id. general은 filters.atc4 첫 값으로 대체 가능.")
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
     filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
     filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
@@ -197,7 +194,7 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     summary="CSD 활동량·비율·순위 추세",
     description=(
         "문서 Section 1 CSD Channeldynamics 시계열 API입니다. "
-        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, top5 기준, 활동량 rank series를 제공합니다."
+        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 활동량 rank series를 제공합니다."
     ),
     response_model=None,
     openapi_extra={"requestBody": {"content": {"application/json": {"example": CSD_ACTIVITY_SERIES_EXAMPLE}}}},

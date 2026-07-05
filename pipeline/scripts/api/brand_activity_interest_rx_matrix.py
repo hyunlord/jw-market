@@ -110,13 +110,11 @@ def _parse_request(payload: Mapping[str, Any]) -> MatrixRequest:
     view = text(payload.get("view"))
     if view not in {"general", "strategic_ml"}:
         raise InterestRxMatrixInputError(f"unsupported view: {view}")
-    market_id = text(payload.get("market_id"))
     selected_brand = text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
-    if view == "general" and not market_id:
-        market_id = _first_filter_value(filter_payload, "atc4")
+    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else None
     if not selected_brand or (view == "general" and not market_id):
-        raise InterestRxMatrixInputError("market_id or filters.atc4, and selected_brand are required")
+        raise InterestRxMatrixInputError("filters.atc4 and selected_brand are required")
     weights = payload.get("weights")
     return MatrixRequest(
         view=view,

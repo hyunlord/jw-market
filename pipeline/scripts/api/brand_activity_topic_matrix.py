@@ -105,13 +105,11 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
 def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Parse the POST topic request into a normalized service dictionary."""
     view = _text(payload.get("view"))
-    market_id = _text(payload.get("market_id"))
     selected_brand = _text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
-    if view == "general" and not market_id:
-        market_id = _first_filter_value(filter_payload, "atc4")
+    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else ""
     if not view or not selected_brand or (view == "general" and not market_id):
-        raise TopicRequestError("view, market_id or filters.atc4, and selected_brand are required")
+        raise TopicRequestError("view, filters.atc4, and selected_brand are required")
     top_n = _integer(payload.get("top_n") or 5)
     return {
         "view": view,

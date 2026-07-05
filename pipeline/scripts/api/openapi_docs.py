@@ -168,7 +168,6 @@ BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
 
 BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE: Final = {
     "view": "general",
-    "market_id": "C10A1",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
     "visit_location": "전체",
@@ -179,7 +178,6 @@ BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE: Final = {
 
 BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
     "view": "general",
-    "market_id": "C10A1",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
     "mode": "absolute",
@@ -189,7 +187,6 @@ BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
 
 BRAND_ACTIVITY_INTEREST_RX_REQUEST_EXAMPLE: Final = {
     "view": "general",
-    "market_id": "C10A1",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
     "visit_location": "전체",
@@ -284,7 +281,7 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
             }
         },
     },
-    400: {"description": "view/market_id/selected_brand/filter 조합이 유효하지 않음"},
+    400: {"description": "view/selected_brand/filter 조합이 유효하지 않음"},
 }
 
 
@@ -350,7 +347,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
             }
         },
     },
-    400: {"description": "view/market_id/selected_brand/filter/window 조합이 유효하지 않음"},
+    400: {"description": "view/selected_brand/filter/window 조합이 유효하지 않음"},
 }
 
 
@@ -404,7 +401,7 @@ BRAND_ACTIVITY_INTEREST_RX_RESPONSES: Final = {
             }
         },
     },
-    400: {"description": "view/market_id/selected_brand/filter/period 조합이 유효하지 않음"},
+    400: {"description": "view/selected_brand/filter/period 조합이 유효하지 않음"},
 }
 
 

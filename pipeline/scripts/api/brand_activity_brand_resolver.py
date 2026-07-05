@@ -144,7 +144,11 @@ def _ml_id_for_brand(brand: str) -> str:
     if not market_ids:
         raise BrandSetInputError("brand not in any ml market")
     if len(market_ids) > 1:
-        raise BrandSetInputError(f"ambiguous ml market for brand; pass market_id: {', '.join(market_ids)}")
+        # Expected 1:1 in the IQVIA sales scope. If violated, fail loudly
+        # rather than silently returning a possibly-wrong market.
+        raise BrandSetInputError(
+            f"ambiguous ml market for brand: {', '.join(market_ids)}"
+        )
     return market_ids[0]
 
 

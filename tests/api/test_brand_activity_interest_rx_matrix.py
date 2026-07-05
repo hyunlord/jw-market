@@ -33,8 +33,8 @@ def test_interest_rx_route_wraps_success_envelope(monkeypatch) -> None:
         "/api/brand-activity/interest-rx-matrix",
         json={
             "view": "general",
-            "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
         },
     )
@@ -42,7 +42,8 @@ def test_interest_rx_route_wraps_success_envelope(monkeypatch) -> None:
     # Then
     assert response.status_code == 200
     assert response.json() == {"data": expected}
-    assert captured["filters"] == {"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert "market_id" not in captured
+    assert captured["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
 
 
 def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(monkeypatch) -> None:
@@ -56,7 +57,7 @@ def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(mon
     monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
 
     # When
-    payload = service.get_interest_rx_matrix({"view": "general", "market_id": "C10A1", "selected_brand": "리바로"})
+    payload = service.get_interest_rx_matrix({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
 
     # Then
     assert payload is not None
@@ -96,7 +97,7 @@ def test_interest_rx_service_rebuilds_distribution_for_specialty_filter(monkeypa
 
     # When
     payload = service.get_interest_rx_matrix(
-        {"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "specialty": "Cardio"}
+        {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}, "specialty": "Cardio"}
     )
 
     # Then
@@ -121,9 +122,8 @@ def test_interest_rx_service_ignores_nested_ubist_channel_axis_for_keyword_filte
     payload = service.get_interest_rx_matrix(
         {
             "view": "general",
-            "market_id": "C10A1",
             "selected_brand": "리바로",
-            "filters": {
+            "filters": {"atc4": ["C10A1"],
                 "channel_axis": {
                     "ubist": {
                         "facility": ["의원"],
@@ -154,8 +154,8 @@ def test_interest_rx_service_applies_weight_overrides(monkeypatch) -> None:
     payload = service.get_interest_rx_matrix(
         {
             "view": "general",
-            "market_id": "C10A1",
             "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
             "weights": {"interest": {"SOMEWHAT USEFUL": 0.25}, "rx_frequency": {"occasionally": 0.2}},
         }
     )
@@ -180,7 +180,7 @@ def test_interest_rx_service_marks_thin_slice_insufficient(monkeypatch) -> None:
 
     # When
     payload = service.get_interest_rx_matrix(
-        {"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "specialty": "Psy"}
+        {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}, "specialty": "Psy"}
     )
 
     # Then
