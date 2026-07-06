@@ -36,7 +36,7 @@ phase_zeta_runner:
     db_host: "localhost"
     db_port: 3308
     db_user: "root"
-    db_name: "jw_mart"
+    db_name: "jw_mart_d2_stage_20260630_r2"
 
   retry:
     max_attempts: 2

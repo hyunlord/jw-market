@@ -39,4 +39,4 @@ db:
   port: 3308
   user_env: DB_USER
   password_env: DB_ROOT_PASSWORD
-  database: jw_mart
+  database: jw_mart_d2_stage_20260630_r2

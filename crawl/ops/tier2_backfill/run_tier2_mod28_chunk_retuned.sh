@@ -3,11 +3,13 @@ set -euo pipefail
 IDX="${1:?index required}"
 STAMP="$(date +%Y%m%d%H%M%S)"
 NS=llmops
+DB_NAME="${DB_NAME:-jw_mart_d2_stage_20260630_r2}"
+DB_USER="${DB_USER:-jw_mart_d2_writer}"
 IMAGE="asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268"
 JOB="jw-news-crawl-tier2-backfill-m28-${IDX}-${STAMP}"
 EVID="/tmp/tier2_mod28_${IDX}_${STAMP}"
 mkdir -p "$EVID"
-DB_PASS="$(kubectl -n "$NS" get secret galera-mariadb-galera -o jsonpath='{.data.mariadb-password}' | base64 -d)"
+DB_PASS="$(kubectl -n "$NS" get secret jw-mart-d2-writer -o jsonpath='{.data.password}' | base64 -d)"
 cat > "$EVID/baseline.sql" <<'SQL'
 SELECT 'count','news_raw',COUNT(*) FROM news_raw;
 SELECT 'count','events',COUNT(*) FROM events;
@@ -20,7 +22,7 @@ SELECT 'hash','events_old',MD5(CONCAT_WS('|',event_id,COALESCE(news_id,''),COALE
 SELECT 'hash','scores_old',MD5(CONCAT_WS('|',COALESCE(event_id,''),COALESCE(news_id,''),COALESCE(brand_canonical,''),COALESCE(derivation,''),COALESCE(source_processor,''),COALESCE(CAST(score AS CHAR),''),COALESCE(CAST(tier AS CHAR),''),COALESCE(CAST(collected_at AS CHAR),''),COALESCE(CAST(expire_at AS CHAR),''))) FROM event_brand_scores WHERE tier IS NULL ORDER BY event_id, news_id, brand_canonical LIMIT 1;
 SQL
 kubectl -n "$NS" cp "$EVID/baseline.sql" galera-mariadb-galera-0:/tmp/tier2_baseline_${IDX}.sql -c mariadb-galera >/dev/null
-kubectl -n "$NS" exec galera-mariadb-galera-0 -c mariadb-galera -- sh -lc "MYSQL_PWD=\"$DB_PASS\" /opt/bitnami/mariadb/bin/mariadb -u llmops -N -B jw_mart < /tmp/tier2_baseline_${IDX}.sql" > "$EVID/baseline.tsv"
+kubectl -n "$NS" exec galera-mariadb-galera-0 -c mariadb-galera -- sh -lc "MYSQL_PWD=\"$DB_PASS\" /opt/bitnami/mariadb/bin/mariadb -u "$DB_USER" -N -B "$DB_NAME" < /tmp/tier2_baseline_${IDX}.sql" > "$EVID/baseline.tsv"
 cat > "$EVID/job.yaml" <<YAML
 apiVersion: batch/v1
 kind: Job
@@ -62,15 +64,28 @@ spec:
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: DB_PORT
               value: "3306"
+            - name: D2_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: D2_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
             - name: DB_USER
-              value: llmops
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: galera-mariadb-galera
-                  key: mariadb-password
+                  name: jw-mart-d2-writer
+                  key: password
             - name: DB_NAME
-              value: jw_mart
+              value: ${DB_NAME}
           command: ["/bin/sh", "-lc"]
           args:
             - |
@@ -91,7 +106,7 @@ spec:
                   port=int(os.environ.get("DB_PORT", "3306")),
                   user=os.environ["DB_USER"],
                   password=os.environ["DB_PASSWORD"],
-                  database=os.environ.get("DB_NAME", "jw_mart"),
+                  database=os.environ.get("DB_NAME", "jw_mart_d2_stage_20260630_r2"),
                   charset="utf8mb4",
                   cursorclass=pymysql.cursors.Cursor,
               )
@@ -173,7 +188,7 @@ spec:
                   port=int(os.environ.get("DB_PORT", "3306")),
                   user=os.environ["DB_USER"],
                   password=os.environ["DB_PASSWORD"],
-                  database=os.environ.get("DB_NAME", "jw_mart"),
+                  database=os.environ.get("DB_NAME", "jw_mart_d2_stage_20260630_r2"),
                   charset="utf8mb4",
                   cursorclass=pymysql.cursors.DictCursor,
               )
@@ -220,7 +235,7 @@ spec:
                 --scored-dir "\$SCORED_NEW" \
                 --catalog crawl/config/_catalog.json \
                 --output "\$WORK/load_summary.json" \
-                --db-name jw_mart \
+                --db-name "$DB_NAME" \
                 --tier 2 \
                 --processed-by tier2_exact_rule_v1
               cat "\$WORK/candidate_gate.json"
@@ -272,7 +287,7 @@ SELECT 'hash','scores_old',MD5(CONCAT_WS('|',COALESCE(event_id,''),COALESCE(news
 SELECT 'sample',n.news_id,n.source_name,LEFT(n.title,80),n.collected_at,n.expire_at,s.brand_canonical,s.source_processor,s.derivation,s.score FROM news_raw n JOIN event_brand_scores s ON s.news_id=n.news_id WHERE n.tier=2 ORDER BY n.collected_at DESC LIMIT 10;
 SQL
 kubectl -n "$NS" cp "$EVID/post.sql" galera-mariadb-galera-0:/tmp/tier2_post_${IDX}.sql -c mariadb-galera >/dev/null
-kubectl -n "$NS" exec galera-mariadb-galera-0 -c mariadb-galera -- sh -lc "MYSQL_PWD=\"$DB_PASS\" /opt/bitnami/mariadb/bin/mariadb -u llmops -N -B jw_mart < /tmp/tier2_post_${IDX}.sql" > "$EVID/post.tsv"
+kubectl -n "$NS" exec galera-mariadb-galera-0 -c mariadb-galera -- sh -lc "MYSQL_PWD=\"$DB_PASS\" /opt/bitnami/mariadb/bin/mariadb -u "$DB_USER" -N -B "$DB_NAME" < /tmp/tier2_post_${IDX}.sql" > "$EVID/post.tsv"
 if [ "${STATUS}" = Complete ]; then
   kubectl -n "$NS" delete job "$JOB" --ignore-not-found=true > "$EVID/delete.txt"
 fi

@@ -525,7 +525,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Validate and summarize without DB writes.")
     parser.add_argument("--db-host", default=os.getenv("DB_HOST", "127.0.0.1"))
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3308")))
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart"))
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d2_stage_20260630_r2"))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
     parser.add_argument("--db-password", default=os.getenv("DB_PASSWORD", ""))
     parser.add_argument("--batch-size", type=int, default=500)

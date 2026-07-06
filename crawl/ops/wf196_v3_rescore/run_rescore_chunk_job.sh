@@ -29,11 +29,19 @@ spec:
         env:
         - {name: DB_HOST, value: llmops-mariadb-service.llmops.svc.cluster.local}
         - {name: DB_PORT, value: "3306"}
-        - {name: DB_USER, value: llmops}
+        - name: D2_WRITER_USER
+          valueFrom:
+            secretKeyRef: {name: jw-mart-d2-writer, key: username}
+        - name: D2_WRITER_PASSWORD
+          valueFrom:
+            secretKeyRef: {name: jw-mart-d2-writer, key: password}
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef: {name: jw-mart-d2-writer, key: username}
         - name: DB_PASSWORD
           valueFrom:
-            secretKeyRef: {name: galera-mariadb-galera, key: mariadb-password}
-        - {name: DB_NAME, value: jw_mart}
+            secretKeyRef: {name: jw-mart-d2-writer, key: password}
+        - {name: DB_NAME, value: jw_mart_d2_stage_20260630_r2}
         - {name: CHUNK_INDEX, value: "${CHUNK}"}
         - {name: PYTHONUNBUFFERED, value: "1"}
         - {name: MALLOC_ARENA_MAX, value: "2"}

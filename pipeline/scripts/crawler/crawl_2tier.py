@@ -226,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drug-profile-dir", default=str(CRAWLER_DIR / "drug_profiles"))
     parser.add_argument("--db-host", default=os.getenv("DB_HOST", "127.0.0.1"))
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3306")))
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d1_stage_20260625_173115"))
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d2_stage_20260630_r2"))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
     parser.add_argument("--db-password", default=os.getenv("DB_PASSWORD", ""))
     return parser

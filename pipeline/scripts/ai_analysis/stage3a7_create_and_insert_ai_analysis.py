@@ -459,7 +459,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3308")))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
     parser.add_argument("--db-password", default=os.getenv("DB_ROOT_PASSWORD", ""))
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart"))
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d2_stage_20260630_r2"))
     parser.add_argument("--audit-dir", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
