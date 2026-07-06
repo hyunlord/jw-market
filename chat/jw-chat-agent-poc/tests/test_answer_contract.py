@@ -482,6 +482,79 @@ def test_general_dosage_combination_note_ignores_rank_table_headers() -> None:
     assert "Statin/EZE vs 순위" not in revised
 
 
+def test_general_dosage_combination_note_reads_rows_labeled_with_dosage_axis() -> None:
+    answer = (
+        "## 세그먼트 비교 지원 범위\n"
+        "| 축 | 지원 여부 | 근거/값 |\n"
+        "| --- | --- | --- |\n"
+        "| 제형 | 지원 | **제형** / Statin/EZE / 1,332.65억원 / 59.05% |\n\n"
+        "## 출처\n"
+        "| 수치 | 소스 | 기간 | 시장정의 | 축 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| RSV/EZE 매출 749.07억원 | UBIST | 2026-04 | ml_006 | Molecule |"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "※ 본 시장의 제형 구분은 성분 조합 기준" in revised
+    assert "Statin/EZE" in revised.split("※ 본 시장의 제형 구분", 1)[1].split("입니다.", 1)[0]
+    assert "RSV/EZE" not in revised.split("※ 본 시장의 제형 구분", 1)[1].split("입니다.", 1)[0]
+
+
+def test_dosage_combination_note_ignores_value_level_source_table() -> None:
+    answer = (
+        "### 리바로 제형별(성분 조합) 시장 현황\n"
+        "| 순위 | 구분 | 매출 | MS |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1 | Statin/EZE | 1332.65억원 | 59.05% |\n"
+        "| 2 | Statin | 923.67억원 | 40.95% |\n\n"
+        "## 출처\n"
+        "| 수치 | 소스 | 기간 | 시장정의 | 축 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| RSV/EZE 순위 1 | UBIST | 2026-04 | ml_006 | Molecule |\n"
+        "| ATV 순위 2 | UBIST | 2026-04 | ml_006 | Molecule |\n\n"
+        "### 미지원 축 처리\n"
+        "| 단계 | 내용 |\n"
+        "| --- | --- |\n"
+        "| 5. 확보 시 수행할 분석 | 같은 기간·같은 시장 기준으로 지원 축과 미지원 축을 병렬 비교합니다. |"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로 제형별 회사 구성을 비교해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "Statin/EZE vs Statin" in revised
+    note_payload = revised.split("※ 본 시장의 제형 구분", 1)[1].split("입니다.", 1)[0]
+    assert "RSV/EZE" not in note_payload
+    assert "ATV" not in note_payload
+    assert "확보 시 수행할 분석" not in note_payload
+
+
+def test_segment_compare_does_not_mark_dosage_axis_supported_without_numeric_value() -> None:
+    answer = (
+        "※ 본 시장의 제형 구분은 성분 조합 기준(예: Statin/EZE vs Statin)입니다.\n\n"
+        "## 출처\n"
+        "| 수치 | 소스 | 기간 | 시장정의 | 축 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| RSV/EZE 순위 1 | UBIST | 2026-04 | ml_006 | Molecule |"
+    )
+
+    revised = enforce_answer_contract(
+        "리바로 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘",
+        answer,
+        {"fact_md": RANKING_FACT_MD},
+    )
+
+    assert "| 제형 | 지원 |" not in revised
+    assert "| 제형 | 미지원 |" in revised
+
+
 def test_source_crosscheck_contract_keeps_single_source_values_without_cross_claim() -> None:
     answer = "UBIST와 IQVIA 교차 확인은 불가합니다.\n\n## 출처\n- 데이터: UBIST"
 

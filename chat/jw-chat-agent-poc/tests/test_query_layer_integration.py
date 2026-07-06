@@ -7,6 +7,7 @@ import pytest
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
+from jw_chat_agent_poc.agent_loop.loop import _sources
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
@@ -78,6 +79,28 @@ def test_query_schema_injects_market_catalog_enums() -> None:
     assert "product" in dimension_enum
     assert "company" in dimension_enum
     assert "nhi_type" not in dimension_enum
+
+
+def test_agent_sources_exclude_query_failed_cache_status() -> None:
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "iqvia_nsa",
+            "render_data": {"status": "ok", "source_label": "IQVIA", "period": "2025-Q4"},
+        },
+        {
+            "tool": "query_failed",
+            "source": "cache",
+            "render_data": {"status": "query_failed", "requested_axis": "용량"},
+        },
+        {
+            "tool": "unsupported_metric",
+            "source": "cache",
+            "render_data": {"status": "unsupported", "requested_axis": "제형"},
+        },
+    ]
+
+    assert _sources(calls) == ["iqvia_nsa"]
 
 
 def test_query_catalog_exposes_mart_dimension_keys_without_metadata_keys() -> None:

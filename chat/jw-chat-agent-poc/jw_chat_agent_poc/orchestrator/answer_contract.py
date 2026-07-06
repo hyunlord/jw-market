@@ -654,8 +654,11 @@ def _segment_compare_answer_payload(axis: str, answer: str) -> str:
         return ""
     if axis == "제형":
         dosage_payload = _dosage_combination_payload_from_answer(answer)
-        if dosage_payload:
+        if dosage_payload and any(token in dosage_payload for token in ("억원", "%", "MS", "점유율")):
             return dosage_payload
+        table_payload = _dosage_combination_table_payload_from_answer(answer)
+        if table_payload:
+            return table_payload
     answer = answer.split("### 미보유 데이터 처리", 1)[0].split("## 세그먼트 비교 지원 범위", 1)[0]
     axis_re = re.compile(rf"(?:\\*\\*)?{re.escape(axis)}(?:\\*\\*)?[^\\n|]*(?:매출|MS|점유율)[^\\n]*")
     for raw in answer.splitlines():
@@ -692,6 +695,37 @@ def _segment_compare_answer_payload(axis: str, answer: str) -> str:
     return ""
 
 
+def _dosage_combination_table_payload_from_answer(answer: str) -> str:
+    in_dosage_table = False
+    for raw in answer.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("## 출처"):
+            return ""
+        if stripped.startswith("### "):
+            in_dosage_table = "제형" in stripped or "성분 조합" in stripped
+            continue
+        if stripped.startswith("|") and ("제형" in stripped or "성분 조합" in stripped):
+            in_dosage_table = True
+        if not in_dosage_table or not stripped.startswith("|") or "---" in stripped:
+            continue
+        cells = _table_cells(stripped)
+        if len(cells) < 2:
+            continue
+        value = _dosage_combination_value_from_table_cells(cells)
+        if not value or not _is_dosage_combination_value(value):
+            continue
+        sales = next((cell for cell in cells if "억원" in cell), "")
+        share = next((cell for cell in cells if "%" in cell), "")
+        parts = [
+            f"성분 조합 기준 제형 축: {value}",
+            f"매출 {sales}" if sales else "",
+            f"MS {share}" if share else "",
+        ]
+        payload = " ".join(part for part in parts if part)
+        return payload if sales or share else ""
+    return ""
+
+
 def _segment_compare_dosage_note(axis: str, answer: str) -> str:
     if axis != "제형":
         return ""
@@ -725,13 +759,16 @@ def _dosage_combination_values_from_answer(answer: str) -> tuple[str, ...]:
     in_dosage_table = False
     for raw in answer.splitlines():
         stripped = raw.strip()
+        if stripped.startswith("## 출처") or stripped.startswith("### 수치별 출처"):
+            in_dosage_table = False
+            continue
         if stripped.startswith("### "):
             in_dosage_table = "제형" in stripped or "성분 조합" in stripped
             continue
         if stripped.startswith("|") and ("제형" in stripped or "성분 조합" in stripped):
             in_dosage_table = True
             continue
-        if not in_dosage_table or not stripped.startswith("|") or "---" in stripped or "제형" in stripped:
+        if not in_dosage_table or not stripped.startswith("|") or "---" in stripped:
             continue
         cells = _table_cells(stripped)
         if not cells:
@@ -750,6 +787,9 @@ def _dosage_combination_value_from_table_cells(cells: list[str]) -> str:
             continue
         if value in header_tokens or _is_dosage_table_header_value(value) or "구분" in value:
             continue
+        embedded = re.search(r"(?<![A-Za-z가-힣])([A-Za-z가-힣]+/[A-Za-z가-힣]+)(?![A-Za-z가-힣])", value)
+        if embedded and _is_dosage_combination_value(embedded.group(1)):
+            return embedded.group(1)
         if re.fullmatch(r"\d+(?:위)?", value):
             continue
         if any(token in value for token in ("억원", "%", "MS", "시장점유율", "매출")):
@@ -783,6 +823,10 @@ def _is_dosage_combination_value(value: str) -> bool:
         "기간",
         "시장",
         "원천",
+        "확보",
+        "proxy",
+        "상한선",
+        "수행할 분석",
     )
     return not any(token in value for token in blocked_tokens)
 

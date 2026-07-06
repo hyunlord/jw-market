@@ -1583,7 +1583,25 @@ def _metric_observation_has_answer_fact(item: AgentObservation) -> bool:
 
 
 def _sources(calls: list[dict[str, Any]]) -> list[str]:
-    return sorted({str(call.get("source")) for call in calls if call.get("source")})
+    sources: set[str] = set()
+    for call in calls:
+        source = str(call.get("source") or "")
+        if not source:
+            continue
+        data = call.get("render_data")
+        status = str(data.get("status") or "") if isinstance(data, dict) else ""
+        tool = str(call.get("tool") or "")
+        if tool in {"query_failed", "unsupported_metric"} or status in {
+            "error",
+            "query_failed",
+            "unsupported",
+            "mapping_failed",
+            "missing",
+            "incomplete_split",
+        }:
+            continue
+        sources.add(source)
+    return sorted(sources)
 
 
 def _tool_selection(question: str, calls: list[dict[str, Any]]) -> dict[str, Any]:

@@ -724,6 +724,54 @@ def test_deterministic_source_block_lists_news_articles_without_internal_names()
     assert "cache" not in block
 
 
+def test_metric_source_block_preserves_value_level_provenance_without_overlabeling() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "cache",
+                "render_data": {
+                    "brand": "악템라",
+                    "metric": "query_spec",
+                    "period": "2025-Q4",
+                    "level": "Class",
+                    "requested_axis": "Class",
+                    "source_label": "IQVIA",
+                    "market_id": "ml_011",
+                    "query_result_id": "qr_act_c2_class",
+                    "level_segments": [
+                        {"rank": 1, "name": "TNF-a", "ms_recent_pct": 61.92, "value_억원": 687.75},
+                    ],
+                },
+            },
+            {
+                "tool": "query_failed",
+                "source": "cache",
+                "render_data": {
+                    "status": "query_failed",
+                    "requested_axis": "용량",
+                    "source_label": "cache",
+                    "market_id": "ml_011",
+                    "message": "용량 축은 조회 성공하지 못했습니다.",
+                },
+            },
+        ],
+        ["UBIST", "cache"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "### 수치별 출처 fact" in fact_md
+    assert "| TNF-a 매출 687.75억원 | IQVIA NSA | 2025-Q4 | ml_011 | Class | qr_act_c2_class |" in fact_md
+    assert "용량 축은 조회 성공하지 못했습니다" in fact_md
+    assert "## 출처" in block
+    assert "| 수치 | 소스 | 기간 | 시장정의 | 축 |" in block
+    assert "| TNF-a 매출 687.75억원 | IQVIA NSA | 2025-Q4 | ml_011 | Class |" in block
+    assert "UBIST" not in block
+    assert "cache" not in block
+    assert "query_failed" not in block
+
+
 def test_source_block_renders_hira_call_metadata_from_nested_calls() -> None:
     fact_md = answer_fact_markdown(
         [

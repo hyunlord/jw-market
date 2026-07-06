@@ -82,6 +82,18 @@ class AxisFact:
 
 
 @dataclass(frozen=True, slots=True)
+class ValueProvenanceFact:
+    """One surfaced numeric value and the query metadata that produced it."""
+
+    value_label: str
+    source: str
+    period: str
+    market: str
+    axis: str
+    tool_call_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TopTrendShareDelta:
     from_period: str
     from_ms_pct: Any
@@ -226,7 +238,7 @@ def _segment_compare_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
         return ()
     source = str(data.get("source_label") or data.get("source") or "보유 소스")
     period = str(data.get("period") or "최신 기간")
-    name = str(top.get("name") or top.get("brand") or "상위 세그먼트")
+    name = _segment_display_name(top.get("name") or top.get("brand") or "상위 세그먼트")
     sales = eok_value(top.get("value_억원") or top.get("value_recent_억원"), top.get("value") or top.get("value_recent"))
     share = pct_value(top.get("ms_recent_pct") or top.get("to_ms_pct"))
     parts = [
@@ -249,6 +261,10 @@ def _segment_compare_rows(data: RenderData) -> list[dict[str, Any]]:
     if isinstance(trends, list) and trends:
         return [item for item in trends if isinstance(item, dict)]
     return []
+
+
+def _segment_display_name(value: Any) -> str:
+    return re.sub(r"\s*\\?\|\s*", " / ", str(value or "")).strip()
 
 
 def _source_crosscheck_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
@@ -1236,12 +1252,12 @@ def _level_segments(data: dict[str, Any], subject: str) -> str:
         return ""
     level = str(data.get("level") or "분석 기준")
     rows = tuple(
-        (
-            rank_value(item.get("rank"), None),
-            item.get("name"),
-            pct_value(item.get("ms_recent_pct")),
-            eok_value(None, item.get("value")),
-        )
+            (
+                rank_value(item.get("rank"), None),
+                _segment_display_name(item.get("name")),
+                pct_value(item.get("ms_recent_pct")),
+                eok_value(None, item.get("value")),
+            )
         for item in segments[:TABLE_LIMIT]
         if isinstance(item, dict)
     )
@@ -1892,15 +1908,146 @@ def _generic_facts(tool: str, data: dict[str, Any]) -> str:
 
 
 def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
-    rows = _data_source_rows(calls, sources)
+    blocks: list[str] = []
+    value_rows = _value_provenance_rows(calls)
+    if value_rows:
+        blocks.append(
+            table(
+                "### 수치별 출처 fact",
+                ("수치", "소스", "기간", "시장정의", "축", "tool_call_id"),
+                tuple(
+                    (
+                        row.value_label,
+                        row.source,
+                        row.period,
+                        row.market,
+                        row.axis,
+                        row.tool_call_id,
+                    )
+                    for row in value_rows
+                ),
+            )
+        )
+    rows = _data_source_rows(calls, [] if value_rows else sources)
     rows.extend(_news_source_rows(calls))
     rows.extend(_hira_source_rows(calls))
     rows.extend(_hira_procedure_source_rows(calls))
     rows.extend(_external_source_rows(calls))
     rows.extend(_fallback_source_rows(sources, rows))
-    if not rows:
+    if rows:
+        blocks.append(table("### 출처 유형 fact", ("출처", "상세"), tuple(rows)))
+    return "\n\n".join(blocks)
+
+
+def _value_provenance_rows(calls: list[dict[str, Any]]) -> list[ValueProvenanceFact]:
+    rows: list[ValueProvenanceFact] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for index, call in enumerate(calls, start=1):
+        data = call.get("render_data")
+        if not isinstance(data, dict) or _is_failed_metric_status(data):
+            continue
+        source = _value_source_label(data, call)
+        if not source:
+            continue
+        period = _value_period(data)
+        market = _value_market(data)
+        axis = _value_axis(data)
+        tool_call_id = _value_tool_call_id(data, index)
+        for value_label in _numeric_value_labels(data):
+            key = (value_label, source, period, market, axis)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                ValueProvenanceFact(
+                    value_label=value_label,
+                    source=source,
+                    period=period,
+                    market=market,
+                    axis=axis,
+                    tool_call_id=tool_call_id,
+                )
+            )
+    return rows[:TABLE_LIMIT * 3]
+
+
+def _is_failed_metric_status(data: dict[str, Any]) -> bool:
+    return str(data.get("status") or "") in {
+        "error",
+        "query_failed",
+        "unsupported",
+        "mapping_failed",
+        "missing",
+        "incomplete_split",
+    }
+
+
+def _value_source_label(data: dict[str, Any], call: dict[str, Any]) -> str:
+    raw = str(data.get("source_label") or call.get("source") or data.get("source") or "")
+    if not raw or raw == "cache":
         return ""
-    return table("### 출처 유형 fact", ("출처", "상세"), tuple(rows))
+    label = source_label(raw)
+    if label in {"IQVIA", "IQVIA NSA"}:
+        return "IQVIA NSA"
+    if label == "UBIST":
+        return "UBIST"
+    return label
+
+
+def _value_period(data: dict[str, Any]) -> str:
+    period = str(data.get("period") or "").strip()
+    if period:
+        return period
+    for key in ("to_period", "fallback_period", "requested_period"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return "-"
+
+
+def _value_market(data: dict[str, Any]) -> str:
+    query_spec = data.get("query_spec")
+    if isinstance(query_spec, dict):
+        market = str(query_spec.get("market") or query_spec.get("market_id") or "").strip()
+        if market:
+            return market
+    return str(data.get("market") or data.get("market_id") or "-")
+
+
+def _value_axis(data: dict[str, Any]) -> str:
+    return str(data.get("requested_axis") or data.get("level") or data.get("metric") or "-")
+
+
+def _value_tool_call_id(data: dict[str, Any], index: int) -> str:
+    return str(data.get("tool_call_id") or data.get("query_result_id") or f"tool_call_{index}")
+
+
+def _numeric_value_labels(data: dict[str, Any]) -> list[str]:
+    rows: list[str] = []
+    subject = str(data.get("brand") or data.get("market_name") or data.get("market_id") or "").strip()
+    sales = eok_value(data.get("sales_억원"), data.get("sales_krw"))
+    if subject and sales:
+        rows.append(f"{subject} 매출 {sales}")
+    share = pct_value(data.get("ms_recent_pct", data.get("market_share")))
+    if subject and share:
+        rows.append(f"{subject} MS {share}")
+    rank = rank_value(data.get("rank"), data.get("total_brands_in_market"))
+    if subject and rank:
+        rows.append(f"{subject} 순위 {rank}")
+    for item in _segment_compare_rows(data)[:TABLE_LIMIT]:
+        name = _segment_display_name(item.get("name") or item.get("brand") or item.get("product"))
+        if not name:
+            continue
+        item_sales = eok_value(item.get("value_억원") or item.get("value_recent_억원"), item.get("value") or item.get("value_recent"))
+        if item_sales:
+            rows.append(f"{name} 매출 {item_sales}")
+        item_share = pct_value(item.get("ms_recent_pct") or item.get("to_ms_pct"))
+        if item_share:
+            rows.append(f"{name} MS {item_share}")
+        item_rank = rank_value(item.get("rank"), None)
+        if item_rank:
+            rows.append(f"{name} 순위 {item_rank}")
+    return rows
 
 
 def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[tuple[str, str]]:
@@ -1909,8 +2056,10 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
         data = call.get("render_data")
         if not isinstance(data, dict):
             continue
+        if _is_failed_metric_status(data):
+            continue
         label = source_label(str(data.get("source_label") or call.get("source") or ""))
-        if label in {"UBIST", "IQVIA"}:
+        if label in {"UBIST", "IQVIA", "IQVIA NSA"}:
             labels.add(label)
     data_labels = sorted(label for label in labels if label in {"UBIST", "IQVIA", "IQVIA NSA"})
     if not data_labels:
