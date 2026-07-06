@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from typing import Final
 
 import pymysql
+
+
+DEFAULT_AGENT3_DB_NAME: Final = "jw_mart_d2_stage_20260630_r2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +25,7 @@ class DbConfig:
             port=int(os.environ.get("AGENT3_DB_PORT") or os.environ.get("DB_PORT", "3306")),
             user=os.environ.get("AGENT3_DB_USER") or os.environ.get("DB_USER", "root"),
             password=os.environ.get("AGENT3_DB_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
-            database=os.environ.get("AGENT3_DB_NAME") or os.environ.get("DB_NAME", "jw_mart"),
+            database=os.environ.get("AGENT3_DB_NAME") or os.environ.get("DB_NAME", DEFAULT_AGENT3_DB_NAME),
         )
 
 
@@ -37,4 +41,3 @@ def connect(config: DbConfig | None = None) -> pymysql.connections.Connection:
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=False,
     )
-
