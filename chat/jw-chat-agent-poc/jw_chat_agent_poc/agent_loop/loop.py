@@ -9,7 +9,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
-from jw_chat_agent_poc.agent_loop.progress import ProgressCallback, tool_progress_payload
+from jw_chat_agent_poc.agent_loop.progress import ProgressCallback, emit_progress, stage_progress_payload, tool_progress_payload
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
@@ -82,6 +82,8 @@ class ToolUseAgent:
                 external=self.external,
                 query_layer=self.query_layer,
             )
+            if step == 1:
+                emit_progress(progress_callback, stage_progress_payload("planner"))
             with stage(timing, "llm_plan", f"step={step}"):
                 decision = planner.decide(question, tuple(observations), facade.schemas(), allowed_brands, period_grounding.schema_periods)
             if not decision.tool_calls:
@@ -206,9 +208,7 @@ def _execute_grounded(facade: AgentToolFacade, plan: ToolCallPlan) -> ToolExecut
 
 
 def _emit_tool_progress(callback: ProgressCallback | None, tool_name: str, *, index: int, total: int) -> None:
-    if callback is None:
-        return
-    callback(tool_progress_payload(tool_name, index=index, total=total))
+    emit_progress(callback, tool_progress_payload(tool_name, index=index, total=total))
 
 
 def _portfolio_decline_call(

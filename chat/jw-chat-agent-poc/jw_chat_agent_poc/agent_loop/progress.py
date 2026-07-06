@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, TypedDict
+from typing import Final, NotRequired, TypedDict
 
 
 class ToolProgressPayload(TypedDict):
     event: str
     stage: str
-    tool: str
     label: str
-    index: int
-    total: int
+    tool: NotRequired[str]
+    index: NotRequired[int]
+    total: NotRequired[int]
 
 
 ProgressCallback = Callable[[ToolProgressPayload], None]
@@ -51,6 +51,10 @@ TOOL_LABEL_RULES: Final[tuple[ToolLabelRule, ...]] = (
 )
 
 DEFAULT_TOOL_PROGRESS_LABEL: Final = "데이터 조회 중"
+STAGE_PROGRESS_LABELS: Final[dict[str, str]] = {
+    "planner": "질문 분석 중",
+    "synthesis": "답변 작성 중",
+}
 
 
 def tool_progress_label(tool_name: str) -> str:
@@ -69,3 +73,20 @@ def tool_progress_payload(tool_name: str, *, index: int, total: int) -> ToolProg
         "index": index,
         "total": total,
     }
+
+
+def stage_progress_payload(stage: str) -> ToolProgressPayload:
+    return {
+        "event": "progress",
+        "stage": stage,
+        "label": STAGE_PROGRESS_LABELS[stage],
+    }
+
+
+def emit_progress(callback: ProgressCallback | None, payload: ToolProgressPayload) -> None:
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception:
+        return

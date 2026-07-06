@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from jw_chat_agent_poc.agent_loop.progress import tool_progress_label
+from jw_chat_agent_poc.agent_loop.progress import stage_progress_payload, tool_progress_label
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.answer_safety import chunk_text
 from jw_chat_agent_poc.service import app as service_app
@@ -758,6 +758,7 @@ def test_stream_endpoint_emits_progress_before_final_answer(monkeypatch) -> None
     class Loop:
         def answer(self, question: str, *, progress_callback=None) -> dict:
             if progress_callback is not None:
+                progress_callback(stage_progress_payload("planner"))
                 progress_callback(
                     {
                         "event": "progress",
@@ -786,10 +787,29 @@ def test_stream_endpoint_emits_progress_before_final_answer(monkeypatch) -> None
     assert response.status_code == 200
     sse = response.text
     assert sse.index("event: conversation") < sse.index("event: progress") < sse.index("event: sources")
+    assert sse.index("event: sources") < sse.rindex("event: progress") < sse.index("event: delta")
     progress_blocks = [block for block in sse.split("\n\n") if block.startswith("event: progress\n")]
-    assert len(progress_blocks) == 1
-    payload = json.loads(progress_blocks[0].split("data: ", 1)[1])
-    assert payload == {
+    assert [json.loads(block.split("data: ", 1)[1]) for block in progress_blocks] == [
+        {
+            "event": "progress",
+            "stage": "planner",
+            "label": "질문 분석 중",
+        },
+        {
+            "event": "progress",
+            "stage": "tool",
+            "tool": "web_search",
+            "label": "웹 검색 중",
+            "index": 1,
+            "total": 1,
+        },
+        {
+            "event": "progress",
+            "stage": "synthesis",
+            "label": "답변 작성 중",
+        },
+    ]
+    assert json.loads(progress_blocks[1].split("data: ", 1)[1]) == {
         "event": "progress",
         "stage": "tool",
         "tool": "web_search",

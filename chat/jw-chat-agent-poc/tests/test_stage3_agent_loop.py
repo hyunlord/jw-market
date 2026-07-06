@@ -880,6 +880,11 @@ def test_agent_loop_emits_progress_before_each_planned_tool() -> None:
     assert progress_events == [
         {
             "event": "progress",
+            "stage": "planner",
+            "label": "질문 분석 중",
+        },
+        {
+            "event": "progress",
             "stage": "tool",
             "tool": "get_metric",
             "label": "시장 지표 조회 중",
@@ -895,6 +900,28 @@ def test_agent_loop_emits_progress_before_each_planned_tool() -> None:
             "total": 2,
         },
     ]
+
+
+def test_agent_loop_progress_callback_failure_does_not_block_answer() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner)
+
+    def fail_progress(_payload: dict[str, object]) -> None:
+        raise RuntimeError("frontend disconnected")
+
+    result = agent.answer("리바로 매출", progress_callback=fail_progress)
+
+    assert result["agent_loop_metrics"]["tool_calls"] >= 1
+    assert "get_brand_metric" in _tool_names(result)
 
 
 def test_external_intent_schema_filter_does_not_add_metric_fallback() -> None:

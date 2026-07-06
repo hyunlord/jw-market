@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
-from jw_chat_agent_poc.agent_loop.progress import ProgressCallback
+from jw_chat_agent_poc.agent_loop.progress import ProgressCallback, stage_progress_payload
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
@@ -598,6 +598,7 @@ def _sse_events(question: str, result: dict, conversation_id: str | None = None,
     if include_conversation and conversation_id:
         yield f"event: conversation\ndata: {conversation_id}\n\n"
     yield f"event: sources\ndata: {','.join(source_labels(result.get('sources', [])))}\n\n"
+    yield _sse_json_event("progress", stage_progress_payload("synthesis"))
     final_answer = compute_final_answer(question, result, conversation_id)
     yield from iter_markdown_sse_events(final_answer.text)
     if final_answer.charts:
