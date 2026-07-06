@@ -62,6 +62,30 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
     return rows[:100]
 
 
+def display_matrix_rows(
+    rows: list[dict[str, Any]],
+    *,
+    focus: BrandMetric | None,
+    top_n: int = 5,
+) -> list[dict[str, Any]]:
+    """Select the portal-visible matrix rows without mutating row values.
+
+    The cached /api/cause builder pins the target brand first, then appends the
+    top five competitors by recent value, and intentionally omits the others
+    aggregate for these two matrix cards.
+    """
+
+    focus_key = focus.brand_key if focus else None
+    target = next((row for row in rows if focus_key and row.get("brand_key") == focus_key), None)
+    competitors = [
+        row
+        for row in sorted(rows, key=lambda item: float(item.get("value_recent") or 0.0), reverse=True)
+        if row is not target
+    ]
+    selected = ([target] if target else []) + competitors[:top_n]
+    return [row for row in selected if row is not None]
+
+
 def brand_ranking(brands: tuple[BrandMetric, ...], *, focus: BrandMetric | None) -> dict[str, Any]:
     return _ranking(brands, focus=focus, entity_key="brand", name_attr="brand_name")
 

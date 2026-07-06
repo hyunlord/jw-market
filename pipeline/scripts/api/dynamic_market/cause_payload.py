@@ -8,6 +8,7 @@ from typing import Any
 from pipeline.scripts.api.dynamic_market.cause_sections import (
     brand_ranking,
     company_ranking,
+    display_matrix_rows,
     growth_contribution,
     kpi,
     matrix_rows,
@@ -66,6 +67,7 @@ def build_cause_data(
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
     hhi = hhi_series(metrics.all_brands, source=metrics.source)
     matrix = matrix_rows(metrics=metrics, focus=focus)
+    display_matrix = display_matrix_rows(matrix, focus=focus)
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     levels = empty_analysis_levels(series)
@@ -82,9 +84,17 @@ def build_cause_data(
         },
         "company_ranking": company,
         "company_ranking_stacked": company,
-        "ei_ms_matrix": {"data": matrix, "ms_avg_pct": avg_share(matrix), "share_avg_pct": avg_share(matrix)},
+        "ei_ms_matrix": {
+            "data": display_matrix,
+            "ms_avg_pct": avg_share(display_matrix),
+            "share_avg_pct": avg_share(display_matrix),
+        },
         "growth_contribution": growth_contribution(metrics.all_brands, focus=focus),
-        "growth_contribution_ms_matrix": {"data": matrix, "ms_avg_pct": avg_share(matrix), "share_avg_pct": avg_share(matrix)},
+        "growth_contribution_ms_matrix": {
+            "data": display_matrix,
+            "ms_avg_pct": avg_share(display_matrix),
+            "share_avg_pct": avg_share(display_matrix),
+        },
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,
         "kpi": kpi(metrics=metrics, matrix=matrix, focus=focus, hhi_recent=hhi_recent),

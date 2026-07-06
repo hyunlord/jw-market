@@ -19,6 +19,7 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
 )
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
+from pipeline.scripts.api.dynamic_market.cause_sections import display_matrix_rows
 from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import (
@@ -236,6 +237,101 @@ def test_history_prefers_cached_history_by_period() -> None:
     )
 
     assert cause_time.history(brand) == {"2026-01": 1.0, "2026-02": 2.0}
+
+
+def test_display_matrix_rows_pins_focus_then_top_competitors_without_mutating_values() -> None:
+    focus = BrandMetric("focus", "Focus", "C10A1", 10.0, 1.0, 8, "2026-05", 10.0)
+    rows = [
+        {
+            "brand": f"Brand {index}",
+            "brand_key": f"b{index}",
+            "value_recent": float(100 - index),
+            "share_pct": float(index),
+            "is_others": False,
+        }
+        for index in range(1, 8)
+    ]
+    focus_row = {
+        "brand": "Focus",
+        "brand_key": "focus",
+        "value_recent": 10.0,
+        "share_pct": 99.0,
+        "is_others": False,
+    }
+    rows.append(focus_row)
+
+    selected = display_matrix_rows(rows, focus=focus)
+
+    assert [row["brand_key"] for row in selected] == ["focus", "b1", "b2", "b3", "b4", "b5"]
+    assert selected[0] is focus_row
+    assert selected[0]["share_pct"] == 99.0
+    assert all(not row.get("is_others") for row in selected)
+
+
+def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> None:
+    brands = tuple(
+        BrandMetric(
+            f"b{index}",
+            f"Brand {index}",
+            "C10A1",
+            float(100 - index),
+            0.0,
+            index,
+            "2026-05",
+            float(100 - index),
+            monthly_series=(
+                {"period": "2026-04", "value": float(80 - index)},
+                {"period": "2026-05", "value": float(100 - index)},
+            ),
+        )
+        for index in range(1, 8)
+    )
+    focus = BrandMetric(
+        "focus",
+        "Focus",
+        "C10A1",
+        10.0,
+        0.0,
+        8,
+        "2026-05",
+        10.0,
+        monthly_series=(
+            {"period": "2026-04", "value": 8.0},
+            {"period": "2026-05", "value": 10.0},
+        ),
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=0.0,
+        hhi=None,
+        cagr=10.0,
+        monthly_series=(
+            {"period": "2026-04", "market_size": 512.0},
+            {"period": "2026-05", "market_size": 689.0},
+        ),
+        brands=brands,
+        all_brands=brands + (focus,),
+    )
+    data = cause_payload.build_cause_data(
+        definition=MarketDefinition(view="general", filter_echo={}, source="ubist", measure="sales"),
+        metrics=metrics,
+        focus=focus,
+    )
+
+    assert [row["brand_key"] for row in data["ei_ms_matrix"]["data"]] == ["focus", "b1", "b2", "b3", "b4", "b5"]
+    assert [row["brand_key"] for row in data["growth_contribution_ms_matrix"]["data"]] == [
+        "focus",
+        "b1",
+        "b2",
+        "b3",
+        "b4",
+        "b5",
+    ]
+    assert data["ei_ms_matrix"]["data"][0]["value_recent"] == 10.0
+    assert data["kpi"]["target_brand"] == "Focus"
+    assert data["kpi"]["brand_value_recent"] == 10.0
 
 
 def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
