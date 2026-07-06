@@ -31,6 +31,10 @@ ANSWER_CONTRACT: Final[dict[str, ContractRule]] = {
     ),
 }
 
+_MI_IMPLICATION_CONTRACTS: Final[frozenset[str]] = frozenset(
+    {"segment_compare", "source_crosscheck", "positioning", "threat_detection", "news_ei"}
+)
+
 
 def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[dict[str, Any]]) -> tuple[ToolCallPlan, ...]:
     """Return deterministic tool calls needed before final answer generation."""
@@ -160,6 +164,13 @@ class NewsGrade:
     row: NewsFactor
     grade: str
     handling: str
+
+
+@dataclass(frozen=True, slots=True)
+class MiImplicationRow:
+    observation: str
+    implication: str
+    next_data: str
 
 
 def _intent(question: str) -> str | None:
@@ -347,6 +358,167 @@ def _table_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def _mi_implication_for_contract(contract_type: str, question: str, fact_md: str) -> str:
+    match contract_type:
+        case "segment_compare":
+            rows = _segment_compare_support_rows(question, fact_md)
+            return _mi_implication_block(_segment_compare_mi_rows(rows, _missing_axes_from_support_rows(rows)))
+        case "source_crosscheck":
+            rows = _source_crosscheck_support_rows(question, fact_md)
+            return _mi_implication_block(_source_crosscheck_mi_rows(rows))
+        case "positioning":
+            return _mi_implication_block(_positioning_mi_rows(_positioning_rows(fact_md)))
+        case "threat_detection":
+            rows = _threat_rows(fact_md)
+            if not rows:
+                rows = (("위협 미식별", "관찰", "보유 signals/news fact 안에서 위협 요인을 확정할 근거가 없습니다."),)
+            return _mi_implication_block(_threat_mi_rows(rows))
+        case "news_ei":
+            return _mi_implication_block(_news_ei_mi_rows(_news_grade_rows(question, fact_md)))
+        case _:
+            return ""
+
+
+def _mi_implication_block(rows: tuple[MiImplicationRow, ...]) -> str:
+    if not rows:
+        return ""
+    lines = [
+        "## MI implication",
+        "| 관찰 | 가능한 의미 | 확인 필요 |",
+        "| --- | --- | --- |",
+    ]
+    lines.extend(
+        f"| {_contract_cell(row.observation)} | {_contract_cell(row.implication)} | {_contract_cell(row.next_data)} |"
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+def _segment_compare_support_rows(question: str, fact_md: str) -> tuple[tuple[str, str, str], ...]:
+    mandatory = _mandatory_rows(fact_md)
+    rows: list[tuple[str, str, str]] = []
+    for axis in _requested_segment_axes(question):
+        supported = mandatory.get(f"{axis} 지원", "")
+        unsupported = mandatory.get(f"{axis} 미지원", "")
+        if supported:
+            rows.append((axis, "지원", supported))
+        elif unsupported:
+            rows.append((axis, "미지원", unsupported))
+        else:
+            rows.append((axis, "미지원", f"{axis} 축은 이번 fact set에 조회 결과가 없어 값을 추정하지 않습니다."))
+    return tuple(rows)
+
+
+def _missing_axes_from_support_rows(rows: tuple[tuple[str, str, str], ...] | list[tuple[str, str, str]]) -> tuple[str, ...]:
+    return tuple(axis for axis, status, _ in rows if status != "지원")
+
+
+def _segment_compare_mi_rows(
+    rows: tuple[tuple[str, str, str], ...] | list[tuple[str, str, str]],
+    missing: tuple[str, ...] | list[str],
+) -> tuple[MiImplicationRow, ...]:
+    supported = tuple((axis, note) for axis, status, note in rows if status == "지원" and note)
+    if not supported:
+        return ()
+    missing_text = ", ".join(missing)
+    next_data = (
+        f"{missing_text} 데이터가 포함된 동일 기간 market mart 또는 catalog 매핑"
+        if missing_text
+        else "동일 기간 경쟁 브랜드의 동일 축 반복 관측"
+    )
+    return tuple(
+        MiImplicationRow(
+            observation=f"{axis} 축: {note}",
+            implication="지원 축 안에서만 구성·집중도 후보를 관찰하며 미지원 축 값을 대체하지 않습니다.",
+            next_data=next_data,
+        )
+        for axis, note in supported[:5]
+    )
+
+
+def _source_crosscheck_support_rows(question: str, fact_md: str) -> tuple[tuple[str, str, str], ...]:
+    mandatory = _mandatory_rows(fact_md)
+    rows: list[tuple[str, str, str]] = []
+    for source in _requested_sources(question):
+        supported = mandatory.get(f"{source} 보유", "")
+        missing = mandatory.get(f"{source} 미보유", "")
+        if supported:
+            rows.append((source, "보유", supported))
+        elif missing:
+            rows.append((source, "미보유", missing))
+        else:
+            rows.append((source, "미보유", f"{source} 출처는 이번 fact set에 조회 결과가 없어 값을 추정하지 않습니다."))
+    return tuple(rows)
+
+
+def _source_crosscheck_mi_rows(rows: tuple[tuple[str, str, str], ...] | list[tuple[str, str, str]]) -> tuple[MiImplicationRow, ...]:
+    supported = tuple((source, note) for source, status, note in rows if status == "보유" and note)
+    missing = tuple(source for source, status, _ in rows if status != "보유")
+    if not supported:
+        return ()
+    implication = (
+        "양 소스가 모두 보유된 범위에서 기간·정의 차이를 분리해 비교 후보만 확인합니다."
+        if len(supported) >= 2
+        else "단일 출처 값만 관찰하며 교차 판정은 단정하지 않습니다."
+    )
+    next_data = (
+        f"{', '.join(missing)}의 동일 기간·동일 시장정의 값"
+        if missing
+        else "양 소스의 기간 정렬 기준과 집계 정의"
+    )
+    return tuple(
+        MiImplicationRow(
+            observation=f"{source} 출처: {note}",
+            implication=implication,
+            next_data=next_data,
+        )
+        for source, note in supported
+    )
+
+
+def _positioning_mi_rows(rows: tuple[tuple[str, str, str], ...]) -> tuple[MiImplicationRow, ...]:
+    result: list[MiImplicationRow] = []
+    for axis, value, _ in rows:
+        if axis == "시장 순위/MS":
+            implication = "현재 시장 내 위치를 읽는 기준점이며 성장이나 방어를 단독으로 판단하지 않습니다."
+            next_data = "동일 기간 경쟁 브랜드의 MS·순위 변화"
+        elif axis == "성장성":
+            implication = "성장 기여 후보로 관찰되며 지속성은 반복 기간에서 확인해야 합니다."
+            next_data = "월별 share-of-growth 반복 관측과 채널·세그먼트 분해"
+        else:
+            implication = "경쟁 압력 후보로 관찰되며 자사 변화의 원인으로 단정하지 않습니다."
+            next_data = "경쟁 cohort의 이벤트 전후 처방·매출 변화"
+        result.append(MiImplicationRow(observation=f"{axis}: {value}", implication=implication, next_data=next_data))
+    return tuple(result[:5])
+
+
+def _threat_mi_rows(rows: tuple[tuple[str, str, str], ...]) -> tuple[MiImplicationRow, ...]:
+    return tuple(
+        MiImplicationRow(
+            observation=f"{factor}: {basis}",
+            implication=f"{direction} 방향의 위협 후보로만 관찰하며 상업적 영향은 아직 분리 확인이 필요합니다.",
+            next_data="이벤트 전후 처방·매출, 채널 변화, 경쟁품 세그먼트 추이",
+        )
+        for factor, direction, basis in rows[:5]
+    )
+
+
+def _news_ei_mi_rows(rows: tuple[NewsGrade, ...]) -> tuple[MiImplicationRow, ...]:
+    result: list[MiImplicationRow] = []
+    for graded in rows:
+        if graded.grade == "noise":
+            continue
+        news = graded.row
+        result.append(
+            MiImplicationRow(
+                observation=f"{graded.grade}: {news.title} - {news.summary}",
+                implication="뉴스 범위의 정성 이슈 후보이며 내부 지표 변화와 연결될 때만 MI 판단 재료로 사용합니다.",
+                next_data="기사 이벤트일과 동일 기간 처방·매출·MS, 원문 기사 확인",
+            )
+        )
+    return tuple(result[:5])
+
+
 def _ranking_surface_ok(answer: str, fact: RankingFact, rule: ContractRule) -> bool:
     if any(forbidden in answer for forbidden in rule.forbidden_outputs):
         return False
@@ -428,6 +600,10 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     if contract_type == "trend_support_matrix":
         answer = _repair_split_market_support(answer, fact_md)
     if _structural_contract_present(answer, contract_type):
+        if contract_type in _MI_IMPLICATION_CONTRACTS and "## MI implication" not in answer:
+            implication = _mi_implication_for_contract(contract_type, question, fact_md)
+            if implication:
+                return _insert_before_source(answer, implication)
         return answer
     block = ""
     if contract_type == "sales_activity_link":
@@ -646,6 +822,9 @@ def _segment_compare_contract_block(question: str, fact_md: str, answer: str = "
                 "| 5. 확보 시 수행할 분석 | 같은 기간·같은 시장 기준으로 지원 축과 미지원 축을 병렬 비교합니다. |",
             )
         )
+    implication = _mi_implication_block(_segment_compare_mi_rows(rows, missing))
+    if implication:
+        lines.extend(("", implication))
     return "\n".join(lines)
 
 
@@ -846,20 +1025,8 @@ def _dosage_combination_payload_from_answer(answer: str) -> str:
 
 
 def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
-    mandatory = _mandatory_rows(fact_md)
-    sources = _requested_sources(question)
-    rows: list[tuple[str, str, str]] = []
-    supported_count = 0
-    for source in sources:
-        supported = mandatory.get(f"{source} 보유", "")
-        missing = mandatory.get(f"{source} 미보유", "")
-        if supported:
-            supported_count += 1
-            rows.append((source, "보유", supported))
-        elif missing:
-            rows.append((source, "미보유", missing))
-        else:
-            rows.append((source, "미보유", f"{source} 출처는 이번 fact set에 조회 결과가 없어 값을 추정하지 않습니다."))
+    rows = _source_crosscheck_support_rows(question, fact_md)
+    supported_count = sum(1 for _, status, _ in rows if status == "보유")
     if not rows:
         return ""
     lines = [
@@ -878,6 +1045,9 @@ def _source_crosscheck_contract_block(question: str, fact_md: str) -> str:
         )
     else:
         lines.extend(("", "### 교차 판정", "양 소스가 모두 확보된 범위에서만 기간·정의 차이를 확인합니다."))
+    implication = _mi_implication_block(_source_crosscheck_mi_rows(rows))
+    if implication:
+        lines.extend(("", implication))
     return "\n".join(lines)
 
 
@@ -969,6 +1139,9 @@ def _positioning_contract_block(fact_md: str) -> str:
         "",
         f"자사 위치: {direct}",
     ]
+    implication = _mi_implication_block(_positioning_mi_rows(rows))
+    if implication:
+        lines.extend(("", implication))
     return "\n".join(lines)
 
 
@@ -1018,6 +1191,8 @@ def _threat_detection_contract_block(fact_md: str) -> str:
         lines.extend(f"| {_contract_cell(factor)} | {direction} | {_contract_cell(basis)} |" for factor, direction, basis in rows)
     else:
         lines.append("| 위협 미식별 | 관찰 | 보유 signals/news fact 안에서 위협 요인을 확정할 근거가 없습니다. |")
+    implication_rows = rows or (("위협 미식별", "관찰", "보유 signals/news fact 안에서 위협 요인을 확정할 근거가 없습니다."),)
+    lines.extend(("", _mi_implication_block(_threat_mi_rows(implication_rows))))
     return "\n".join(lines)
 
 
@@ -1064,6 +1239,9 @@ def _news_ei_contract_block(question: str, fact_md: str) -> str:
             "뉴스는 기사 제목·요약·발췌 범위의 정성 근거이며, 입증/확인됨/달성으로 단정하지 않습니다.",
         )
     )
+    implication = _mi_implication_block(_news_ei_mi_rows(rows))
+    if implication:
+        lines.extend(("", implication))
     return "\n".join(lines)
 
 

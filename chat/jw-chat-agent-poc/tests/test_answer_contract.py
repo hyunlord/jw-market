@@ -1004,6 +1004,10 @@ def test_positioning_contract_adds_axis_table_and_dedupes_substantive_lines() ->
     assert "자사 위치:" in revised
     assert "84.93억원" in revised
     assert "3.76%" in revised
+    assert "## MI implication" in revised
+    assert "| 관찰 | 가능한 의미 | 확인 필요 |" in revised
+    assert "share-of-growth +0.53%p" in revised
+    assert "경쟁 압력 후보" in revised
 
 
 def test_threat_detection_contract_adds_factor_direction_basis_table() -> None:
@@ -1019,6 +1023,9 @@ def test_threat_detection_contract_adds_factor_direction_basis_table() -> None:
     assert "확대" in revised
     assert "데일리팜" in revised
     assert "https://example.test/threat/1" in revised
+    assert "## MI implication" in revised
+    assert "위협 후보" in revised
+    assert "이벤트 전후 처방" in revised
 
 
 def test_news_ei_contract_adds_relevance_grade_without_stealing_change_drivers() -> None:
@@ -1034,6 +1041,12 @@ def test_news_ei_contract_adds_relevance_grade_without_stealing_change_drivers()
     assert "market" in revised
     assert "noise" in revised
     assert "입증/확인됨/달성으로 단정하지 않습니다" in revised
+    assert "## MI implication" in revised
+    implication = revised.split("## MI implication", 1)[1]
+    assert "JW중외제약 리바로 영업 채널 확대" in implication
+    assert "이상지질혈증 복합제 경쟁 심화" in implication
+    assert "디지털 헬스케어 RAG 기술 소개" not in implication
+    assert "확인 필요" in implication
 
     id7_revised = enforce_answer_contract(
         "리바로 목표 시장의 변화 요인을 External/Internal로 분류해줘",
@@ -1042,3 +1055,36 @@ def test_news_ei_contract_adds_relevance_grade_without_stealing_change_drivers()
     )
     assert "## 변화 요인 결론" in id7_revised
     assert "## 뉴스 관련성 등급" not in id7_revised
+
+
+def test_segment_compare_implication_uses_supported_axes_only() -> None:
+    revised = enforce_answer_contract(
+        "리바로 처방을 Class/Molecule/브랜드/용량/제형 세그먼트별로 비교해줘",
+        "세그먼트 비교가 필요합니다.\n\n## 출처\n- 데이터: UBIST",
+        {"fact_md": SEGMENT_COMPARE_FACT_MD},
+    )
+
+    assert "## MI implication" in revised
+    implication = revised.split("## MI implication", 1)[1]
+    assert "Molecule 축" in implication
+    assert "브랜드 축" in implication
+    assert "제형 축" in implication
+    assert "Class 축" not in implication
+    assert "용량 축" not in implication
+    assert "지원 축 안에서만" in implication
+
+
+def test_source_crosscheck_implication_keeps_single_source_bounded() -> None:
+    revised = enforce_answer_contract(
+        "리바로 매출을 UBIST와 IQVIA 출처별로 교차 확인해줘",
+        "출처별 확인이 필요합니다.\n\n## 출처\n- 데이터: UBIST",
+        {"fact_md": SOURCE_CROSSCHECK_FACT_MD},
+    )
+
+    assert "## MI implication" in revised
+    implication = revised.split("## MI implication", 1)[1]
+    assert "UBIST 출처" in implication
+    assert "단일 출처" in implication
+    assert "IQVIA" in implication
+    assert "일치합니다" not in implication
+    assert "불일치합니다" not in implication
