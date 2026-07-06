@@ -431,6 +431,7 @@ def _ranked_topics(stored: dict[str, JsonValue] | None, *, top_n: int) -> list[d
             "topic_id": _text(share.get("topic_id")),
             "label": _text(share.get("label")),
             "share_pct": _number(share.get("share_pct")),
+            "row_count": _topic_row_count(share),
         }
         for index, share in enumerate(shares[:top_n], start=1)
     ]
@@ -449,10 +450,15 @@ def _brand_specific_topics(stored: dict[str, JsonValue] | None) -> list[dict[str
                 "label": _text(topic.get("label")),
                 "definition": _text(topic.get("definition")),
                 "share_pct": _number(topic.get("share_pct")),
-                "row_count": _integer(topic.get("row_count")),
+                "row_count": _topic_row_count(topic),
             }
         )
     return topics
+
+
+def _topic_row_count(topic: dict[str, JsonValue]) -> int:
+    """Return affected rows for one topic; topic totals are independent, not brand-event totals."""
+    return _integer(topic.get("row_count") or topic.get("affected_row_count"))
 
 
 def _filter_values(value: JsonValue) -> tuple[str, ...]:

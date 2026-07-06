@@ -151,7 +151,11 @@ def test_post_topic_service_matches_topics_by_product_code(monkeypatch) -> None:
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
     assert payload["scope"]["sliced"] is False
     assert payload["brands"][0]["brand_key"] == "리바로"
-    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5}]
+    assert payload["brands"][0]["topic_shares"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "row_count": 616}]
+    assert payload["brands"][0]["topics"] == payload["brands"][0]["topic_shares"]
+    assert payload["brands"][0]["brand_specific_topics"] == [
+        {"topic_id": "B1", "label": "리바로 고유", "definition": "리바로 특화", "share_pct": 12.5, "row_count": 123}
+    ]
     assert payload["brands"][1]["brand_key"] == "리피토"
     assert payload["brands"][1]["topics"] == []
 
@@ -324,7 +328,8 @@ def test_post_topic_service_rejects_unknown_filter_values(monkeypatch) -> None:
 def assert_public_brand_contract(payload: dict[str, Any]) -> None:
     """Assert that internal diagnostics are not exposed anywhere under brands."""
     brand = payload["brands"][0]
-    assert set(brand) == {"brand", "is_jw", "etc_pct", "topic_shares", "brand_specific_topics"}
+    assert set(brand) == {"brand", "is_jw", "etc_pct", "topic_shares", "topics", "brand_specific_topics"}
+    assert brand["topics"] == brand["topic_shares"]
     assert set(brand["topic_shares"][0]) == {"topic_id", "label", "share_pct", "row_count"}
     assert set(brand["brand_specific_topics"][0]) == {"topic_id", "label", "definition", "share_pct", "row_count"}
     serialized = json.dumps(payload, ensure_ascii=False)
@@ -360,11 +365,11 @@ def _row(scope_id: str) -> dict[str, str]:
                 "is_jw": None,
                 "etc_pct": 5.0,
                 "topic_shares": [
-                    {"topic_id": "T02", "label": "복약 편의", "share_pct": 25.0, "row_count": 5},
-                    {"topic_id": "T01", "label": "안전성", "share_pct": 70.0, "row_count": 14},
+                    {"topic_id": "T02", "label": "복약 편의", "share_pct": 25.0, "affected_row_count": 5},
+                    {"topic_id": "T01", "label": "안전성", "share_pct": 70.0, "affected_row_count": 14},
                 ],
                 "brand_specific_topics": [
-                    {"topic_id": "B1", "label": "브랜드 가치", "definition": "특화", "share_pct": 0.0, "row_count": 0, "source": "llm"}
+                    {"topic_id": "B1", "label": "브랜드 가치", "definition": "특화", "share_pct": 0.0, "affected_row_count": 0, "source": "llm"}
                 ],
                 "qc": {"guard": "pass"},
                 "denominator": 20,
@@ -425,10 +430,12 @@ def _post_topic_row() -> dict[str, str]:
                 "brand": "LIVALO",
                 "row_count": 473,
                 "top5_topic_shares": [
-                    {"topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "row_count": 10},
-                    {"topic_id": "T02", "label": "LDL 조절", "share_pct": 20.0, "row_count": 4},
+                    {"topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "affected_row_count": 616},
+                    {"topic_id": "T02", "label": "LDL 조절", "share_pct": 20.0, "affected_row_count": 283},
                 ],
-                "brand_specific_topics": [{"topic_id": "B1", "label": "리바로 고유", "definition": "리바로 특화"}],
+                "brand_specific_topics": [
+                    {"topic_id": "B1", "label": "리바로 고유", "definition": "리바로 특화", "share_pct": 12.5, "affected_row_count": 123}
+                ],
             }
         ]
     }
