@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
@@ -91,7 +92,6 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
-        assert "ubist_channel_by_code" not in sql
         assert "audit_code_matrix" not in sql
         if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
             yield {
@@ -135,7 +135,7 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
     assert "dimension_channel_data" not in metric_sql
     assert "channel_data" not in metric_sql
     assert "channel_specialty_matrix" not in metric_sql
-    assert "ubist_channel_by_code" not in metric_sql
+    assert "channel_specialty_matrix" not in metric_sql
     assert metrics.all_brands[0].channel_specialty_matrix == {}
     assert metrics.all_brands[0].analysis_row["by_dimension"] is None
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
@@ -465,7 +465,7 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
                 "brand_key": "a",
                 "atc4_code": "C10C0",
                 "channel_specialty_matrix": json.dumps(
-                    {"의원": {"분리되지 않은 내과": {"2026-05": 999.0}}},
+                    {"의원": {"가정의학과(FM)": {"2026-05": 999.0}}},
                     ensure_ascii=False,
                 ),
             }
@@ -589,6 +589,55 @@ def test_collect_ubist_channel_latest_totals_reads_only_latest_period_without_do
         "GH Endo": 70.0,
         "CL IGF": 60.0,
     }
+
+
+def test_collect_ubist_channel_latest_totals_accepts_quoted_numbers() -> None:
+    matrix = {
+        "종합병원": {
+            "순환기(Cardiology IM)": {"2026-04": "30.0", "2026-05": "40.0"},
+            "내분비(Endocrinology IM)": {"2026-05": "70.0"},
+        },
+        "의원": {
+            "가정의학과(FM)": {"2026-05": "10.0"},
+            "일반의(GP)": {"2026-05": "20.0"},
+        },
+    }
+    raw = json.dumps(matrix, ensure_ascii=True)
+
+    totals: dict[str, float] = {}
+    collect_ubist_channel_latest_totals(raw, "2026-05", totals)
+
+    assert totals == {
+        "GH Cardio": 40.0,
+        "GH Endo": 70.0,
+        "CL IGF": 30.0,
+    }
+
+
+def test_collect_ubist_channel_latest_totals_reuses_pair_mapping_cache(monkeypatch) -> None:
+    raw = json.dumps(
+        {
+            "종합병원": {
+                "순환기(Cardiology IM)": {"2026-05": 40.0},
+            },
+        },
+        ensure_ascii=True,
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_raw_pair_to_channel_code(facility: str, specialty: str) -> str | None:
+        calls.append((facility, specialty))
+        return "GH Cardio"
+
+    monkeypatch.setattr(aggregator_module, "raw_pair_to_channel_code", fake_raw_pair_to_channel_code)
+
+    totals: dict[str, float] = {}
+    cache: dict[tuple[str, str], str | None] = {}
+    collect_ubist_channel_latest_totals(raw, "2026-05", totals, channel_code_cache=cache)
+    collect_ubist_channel_latest_totals(raw, "2026-05", totals, channel_code_cache=cache)
+
+    assert totals == {"GH Cardio": 80.0}
+    assert calls == [("종합병원", "순환기(Cardiology IM)")]
 
 
 def test_sidecar_rows_keep_channel_matrix_for_channel_axis_slice() -> None:

@@ -8,8 +8,6 @@ import hashlib
 import json
 import logging
 import math
-import re
-from json.decoder import scanstring
 from typing import Any
 
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
@@ -53,6 +51,9 @@ class _AggregatedRows:
 class _UbistChannelSummary:
     specialty_channels: tuple[str, ...]
     specialty_target_channels: tuple[dict[str, Any], ...]
+
+
+_ChannelCodeCache = dict[tuple[str, str], str | None]
 
 
 def _filter_metric_pair_scope(
@@ -319,6 +320,7 @@ class MetricAggregator:
         scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
         totals_by_code: dict[str, float] = {}
         filtered_rows = 0
+        channel_code_cache: _ChannelCodeCache = {}
         rows = db.iter_rows(
             f"""
             SELECT brand_key, atc4_code, channel_specialty_matrix
@@ -334,7 +336,12 @@ class MetricAggregator:
             if pair_scope and (str(row["brand_key"]), str(row["atc4_code"])) not in pair_scope:
                 filtered_rows += 1
                 continue
-            collect_ubist_channel_latest_totals(row.get("channel_specialty_matrix"), latest_period, totals_by_code)
+            collect_ubist_channel_latest_totals(
+                row.get("channel_specialty_matrix"),
+                latest_period,
+                totals_by_code,
+                channel_code_cache=channel_code_cache,
+            )
         logger.debug("ubist_channel_summary_pair_filter filtered_rows=%s", filtered_rows)
         if not totals_by_code:
             return _UbistChannelSummary((), ())
@@ -539,13 +546,19 @@ def _json_object(raw: Any) -> dict[str, Any]:
     return {}
 
 
-def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict[str, float]]) -> None:
+def collect_ubist_channel_totals(
+    raw: Any,
+    totals_by_code_period: dict[str, dict[str, float]],
+    *,
+    channel_code_cache: _ChannelCodeCache | None = None,
+) -> None:
     if isinstance(raw, dict):
         payload = raw
     elif isinstance(raw, str) and raw.strip():
         payload = json.loads(raw)
     else:
         return
+    code_cache = channel_code_cache if channel_code_cache is not None else {}
     if not isinstance(payload, dict):
         return
     for facility, specialties in payload.items():
@@ -554,7 +567,7 @@ def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict
         for specialty, series in specialties.items():
             if not isinstance(series, dict):
                 continue
-            code = raw_pair_to_channel_code(facility, specialty)
+            code = _cached_raw_pair_to_channel_code(facility, specialty, code_cache)
             if not code:
                 continue
             target = totals_by_code_period.setdefault(code, {})
@@ -563,12 +576,17 @@ def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict
                 target[period_key] = target.get(period_key, 0.0) + float(value or 0.0)
 
 
-def collect_ubist_channel_latest_totals(raw: Any, latest_period: str, totals_by_code: dict[str, float]) -> None:
+def collect_ubist_channel_latest_totals(
+    raw: Any,
+    latest_period: str,
+    totals_by_code: dict[str, float],
+    *,
+    channel_code_cache: _ChannelCodeCache | None = None,
+) -> None:
+    code_cache = channel_code_cache if channel_code_cache is not None else {}
     if isinstance(raw, dict):
         payload = raw
     elif isinstance(raw, str) and raw.strip():
-        if collect_ubist_channel_latest_totals_from_json(raw, latest_period, totals_by_code):
-            return
         payload = json.loads(raw)
     else:
         return
@@ -583,190 +601,21 @@ def collect_ubist_channel_latest_totals(raw: Any, latest_period: str, totals_by_
             value = series.get(latest_period)
             if value is None:
                 continue
-            code = raw_pair_to_channel_code(facility, specialty)
+            code = _cached_raw_pair_to_channel_code(facility, specialty, code_cache)
             if not code:
                 continue
             totals_by_code[code] = totals_by_code.get(code, 0.0) + float(value or 0.0)
 
 
-_JSON_NUMBER_RE = re.compile(r"\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|true|false|null)")
-_RAW_FACILITY_VALUES = frozenset(str(raw) for meta in UBIST_FACILITY_MAPPING.values() for raw in meta["raw_values"])
-_RAW_CHANNEL_PAIRS: tuple[tuple[str, str, str], ...] = tuple(
-    dict.fromkeys(
-        (str(facility), str(specialty), code)
-        for facility_meta in UBIST_FACILITY_MAPPING.values()
-        for facility in facility_meta["raw_values"]
-        for specialty in {
-            str(raw_value)
-            for specialty_meta in UBIST_SPECIALTY_MAPPING.values()
-            for raw_value in specialty_meta["raw_values"]
-        }
-        for code in (raw_pair_to_channel_code(facility, specialty),)
-        if code
-    )
-)
-
-
-def collect_ubist_channel_latest_totals_from_json(raw: str, latest_period: str, totals_by_code: dict[str, float]) -> bool:
-    """Collect latest-period UBIST channel totals without materializing matrix JSON.
-
-    This preserves the existing attribution rule by using the same
-    ``raw_pair_to_channel_code`` pair set as the full parser. It intentionally
-    extracts only one period because general dynamic responses only need the
-    latest top-channel labels.
-    """
-
-    text = raw.strip()
-    if not text or text[0] != "{":
-        return False
-    try:
-        _collect_ubist_matrix_object(text, 0, latest_period, totals_by_code)
-    except ValueError:
-        return False
-    return True
-
-
-def _collect_ubist_matrix_object(text: str, pos: int, latest_period: str, totals_by_code: dict[str, float]) -> int:
-    pos = _expect_char(text, _skip_ws(text, pos), "{") + 1
-    while True:
-        pos = _skip_ws(text, pos)
-        if pos >= len(text):
-            raise ValueError("unterminated matrix object")
-        if text[pos] == "}":
-            return pos + 1
-        facility, pos = _read_json_key(text, pos)
-        pos = _expect_char(text, _skip_ws(text, pos), ":") + 1
-        pos = _skip_ws(text, pos)
-        if facility in _RAW_FACILITY_VALUES and pos < len(text) and text[pos] == "{":
-            pos = _collect_facility_object(text, pos, facility, latest_period, totals_by_code)
-        else:
-            pos = _skip_json_value(text, pos)
-        pos = _consume_member_separator(text, pos)
-
-
-def _collect_facility_object(
-    text: str,
-    pos: int,
-    facility: str,
-    latest_period: str,
-    totals_by_code: dict[str, float],
-) -> int:
-    pos = _expect_char(text, _skip_ws(text, pos), "{") + 1
-    while True:
-        pos = _skip_ws(text, pos)
-        if pos >= len(text):
-            raise ValueError("unterminated facility object")
-        if text[pos] == "}":
-            return pos + 1
-        specialty, pos = _read_json_key(text, pos)
-        pos = _expect_char(text, _skip_ws(text, pos), ":") + 1
-        pos = _skip_ws(text, pos)
-        code = raw_pair_to_channel_code(facility, specialty)
-        if code and pos < len(text) and text[pos] == "{":
-            value, pos = _read_latest_period_value(text, pos, latest_period)
-            if value is not None:
-                totals_by_code[code] = totals_by_code.get(code, 0.0) + value
-        else:
-            pos = _skip_json_value(text, pos)
-        pos = _consume_member_separator(text, pos)
-
-
-def _read_latest_period_value(text: str, pos: int, latest_period: str) -> tuple[float | None, int]:
-    latest_value: float | None = None
-    pos = _expect_char(text, _skip_ws(text, pos), "{") + 1
-    while True:
-        pos = _skip_ws(text, pos)
-        if pos >= len(text):
-            raise ValueError("unterminated period object")
-        if text[pos] == "}":
-            return latest_value, pos + 1
-        period, pos = _read_json_key(text, pos)
-        pos = _expect_char(text, _skip_ws(text, pos), ":") + 1
-        value, pos = _read_json_scalar(text, pos)
-        if period == latest_period:
-            latest_value = value
-        pos = _consume_member_separator(text, pos)
-
-
-def _read_json_key(text: str, pos: int) -> tuple[str, int]:
-    pos = _skip_ws(text, pos)
-    if pos >= len(text) or text[pos] != '"':
-        raise ValueError("expected string key")
-    value, end = scanstring(text, pos + 1, True)
-    return str(value), end + 1
-
-
-def _read_json_scalar(text: str, pos: int) -> tuple[float | None, int]:
-    match = _JSON_NUMBER_RE.match(text, pos)
-    if match is None:
-        raise ValueError("expected scalar")
-    token = match.group(1)
-    end = match.end()
-    if token in {"null", "true", "false"}:
-        return None, end
-    return float(token), end
-
-
-def _skip_json_value(text: str, pos: int) -> int:
-    pos = _skip_ws(text, pos)
-    if pos >= len(text):
-        raise ValueError("missing value")
-    if text[pos] == '"':
-        _, end = scanstring(text, pos + 1, True)
-        return end + 1
-    if text[pos] == "{":
-        return _skip_json_container(text, pos, "{", "}")
-    if text[pos] == "[":
-        return _skip_json_container(text, pos, "[", "]")
-    match = _JSON_NUMBER_RE.match(text, pos)
-    if match is None:
-        raise ValueError("unknown value")
-    return match.end()
-
-
-def _skip_json_container(text: str, pos: int, open_char: str, close_char: str) -> int:
-    pos = _expect_char(text, pos, open_char)
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(pos, len(text)):
-        char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == open_char:
-            depth += 1
-        elif char == close_char:
-            depth -= 1
-            if depth == 0:
-                return index + 1
-    raise ValueError("unterminated container")
-
-
-def _consume_member_separator(text: str, pos: int) -> int:
-    pos = _skip_ws(text, pos)
-    if pos < len(text) and text[pos] == ",":
-        return pos + 1
-    return pos
-
-
-def _expect_char(text: str, pos: int, expected: str) -> int:
-    if pos >= len(text) or text[pos] != expected:
-        raise ValueError(f"expected {expected!r}")
-    return pos
-
-
-def _skip_ws(text: str, pos: int) -> int:
-    while pos < len(text) and text[pos].isspace():
-        pos += 1
-    return pos
+def _cached_raw_pair_to_channel_code(
+    facility_raw: Any,
+    specialty_raw: Any,
+    cache: _ChannelCodeCache,
+) -> str | None:
+    key = (str(facility_raw or "").strip(), str(specialty_raw or "").strip())
+    if key not in cache:
+        cache[key] = raw_pair_to_channel_code(key[0], key[1])
+    return cache[key]
 
 
 def parse_history(raw: str) -> dict[str, float]:
