@@ -559,10 +559,13 @@ def _stream_session_events(
 
     state = store.conversations.get_or_create(conversation_id)
     yield f"event: conversation\ndata: {state.conversation_id}\n\n"
+    yield _sse_json_event("progress", stage_progress_payload("planner"))
 
     queue: Queue[str | StreamAnswerResult | StreamAnswerError] = Queue()
 
     def emit_progress(payload) -> None:
+        if isinstance(payload, dict) and payload.get("stage") == "planner":
+            return
         queue.put(_sse_json_event("progress", payload))
 
     def run_answer() -> None:
