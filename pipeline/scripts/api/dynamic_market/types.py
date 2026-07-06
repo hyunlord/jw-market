@@ -72,6 +72,7 @@ class MarketDefinition:
     focus_brand_key: str | None = None
     strategic_market_kind: str | None = None
     strategic_market_id: str | None = None
+    market_catalog_row: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,7 @@ class BrandMetric:
     channel_specialty_matrix: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
     audit_code_matrix: dict[str, dict[str, float]] = field(default_factory=dict)
     history_by_period: dict[str, float] = field(default_factory=dict)
+    analysis_row: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

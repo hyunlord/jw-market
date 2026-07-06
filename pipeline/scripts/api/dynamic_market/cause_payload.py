@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from pipeline.scripts.api.config import config
+from pipeline.scripts.api.dynamic_market.analysis_levels import build_analysis_level_sections
 from pipeline.scripts.api.dynamic_market.cause_sections import (
     brand_ranking,
     company_ranking,
@@ -71,10 +73,20 @@ def build_cause_data(
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     levels = empty_analysis_levels(series)
+    analysis_sections = build_analysis_level_sections(
+        definition=definition,
+        metrics=metrics,
+        focus=focus,
+        mart_db=config.db_name,
+    )
+    if analysis_sections:
+        levels = analysis_sections["analysis_levels"]
     ubist_channels = _general_ubist_channels(metrics)
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     data = {
-        "analysis_level_market_status": levels,
+        "analysis_level_market_status": (
+            analysis_sections["analysis_level_market_status"] if analysis_sections else levels
+        ),
         "analysis_levels": levels,
         "brand_ranking": ranking,
         "brand_ranking_stacked": ranking,
@@ -98,12 +110,16 @@ def build_cause_data(
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,
         "kpi": kpi(metrics=metrics, matrix=matrix, focus=focus, hhi_recent=hhi_recent),
-        "level_top5_trend": {
-            "available_levels": [],
-            "default_level": None,
-            "by_level": {},
-            "note": "동적 일반뷰는 ATC4/molecule filter로 정의되므로 MI Master 전략 레벨 overlay를 적용하지 않는다.",
-        },
+        "level_top5_trend": (
+            analysis_sections["level_top5_trend"]
+            if analysis_sections
+            else {
+                "available_levels": [],
+                "default_level": None,
+                "by_level": {},
+                "note": "동적 일반뷰는 ATC4/molecule filter로 정의되므로 MI Master 전략 레벨 overlay를 적용하지 않는다.",
+            }
+        ),
         "market_size_series": series,
         "market_yoy_recent_pct": recent_yoy(series),
         "market_yoy_series": yoy_series,

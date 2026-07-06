@@ -145,6 +145,7 @@ class MetricAggregator:
                 channel_specialty_matrix=item.channel_specialty_matrix,
                 audit_code_matrix=item.audit_code_matrix,
                 history_by_period=item.history_by_period,
+                analysis_row=item.analysis_row,
             )
             for index, item in enumerate(
                 sorted(aggregated.brand_metrics, key=lambda row: (-row.total_value, row.brand_key)),
@@ -190,7 +191,8 @@ class MetricAggregator:
         id_column = "ml_id" if strategic_kind_for_view(view) == "ml" else "cd_market_id"
         return db.fetch_all(
             f"""
-            SELECT brand_key, brand_name, '' AS atc4_code, source, measure, unit_label, raw_value_history
+            SELECT brand_key, brand_name, '' AS atc4_code, source, measure, unit_label, raw_value_history,
+                   by_dimension, dimension_data, dimension_channel_data, channel_data
             FROM {mart_db}.{table}
             WHERE {id_column} = %s
               AND source = %s
@@ -275,7 +277,7 @@ class MetricAggregator:
         source: str,
         measure: str,
         channel_axis: ChannelAxisFilter | None,
-        ) -> Iterable[dict[str, Any]]:
+    ) -> Iterable[dict[str, Any]]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
         extra_columns = general_metric_extra_columns(channel_axis=channel_axis)
@@ -287,14 +289,12 @@ class MetricAggregator:
               AND {scope_sql}
             ORDER BY brand_name, brand_key
             """
-        return _filter_metric_pair_scope(
-            db.iter_rows(
-                sql,
-                (source, measure, *scope_params),
-            ),
+        rows = _filter_metric_pair_scope(
+            db.iter_rows(sql, (source, measure, *scope_params)),
             pair_scope=pair_scope,
             label="general_metric_rows",
         )
+        return rows
 
     def _load_ubist_channel_summary(
         self,
@@ -465,6 +465,7 @@ class MetricAggregator:
                     channel_specialty_matrix=matrix,
                     audit_code_matrix=audit_matrix,
                     history_by_period=history_by_period,
+                    analysis_row=analysis_row_for_builder(row, history_by_period=history_by_period),
                 )
             )
         return _AggregatedRows(brand_metrics=brand_metrics, monthly_totals=monthly_totals, unit_label=unit_label)
@@ -494,6 +495,48 @@ def general_metric_extra_columns(*, channel_axis: ChannelAxisFilter | None) -> s
     if channel_axis.source == "iqvia_nsa":
         return ", audit_code_matrix"
     return ""
+
+
+def analysis_row_for_builder(row: Mapping[str, Any], *, history_by_period: Mapping[str, float]) -> dict[str, Any]:
+    """Return the mart-shaped row expected by the cache-cause level builders."""
+
+    return {
+        "brand_key": row.get("brand_key"),
+        "brand_name": row.get("brand_name"),
+        "atc4_code": row.get("atc4_code"),
+        "source": row.get("source"),
+        "measure": row.get("measure"),
+        "unit_label": row.get("unit_label"),
+        "by_dimension": row.get("by_dimension"),
+        "dimension_data": row.get("dimension_data"),
+        "dimension_channel_data": row.get("dimension_channel_data"),
+        "channel_data": row.get("channel_data"),
+        "metric_history": {
+            str(period): {"raw_value": float(value or 0.0)}
+            for period, value in history_by_period.items()
+        },
+    }
+
+
+def merge_json_object(existing: Any, extra: Any) -> str:
+    merged = _json_object(existing)
+    for key, value in _json_object(extra).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return json.dumps(merged, ensure_ascii=False, sort_keys=True)
+
+
+def _json_object(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        payload = json.loads(raw)
+        return dict(payload) if isinstance(payload, dict) else {}
+    return {}
 
 
 def collect_ubist_channel_totals(raw: Any, totals_by_code_period: dict[str, dict[str, float]]) -> None:

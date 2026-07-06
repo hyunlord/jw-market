@@ -130,9 +130,14 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
 
     metric_sql = calls[0]
     assert "raw_value_history" in metric_sql
+    assert "by_dimension" not in metric_sql
+    assert "dimension_data" not in metric_sql
+    assert "dimension_channel_data" not in metric_sql
+    assert "channel_data" not in metric_sql
     assert "channel_specialty_matrix" not in metric_sql
     assert "ubist_channel_by_code" not in metric_sql
     assert metrics.all_brands[0].channel_specialty_matrix == {}
+    assert metrics.all_brands[0].analysis_row["by_dimension"] is None
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
     assert metrics.ubist_specialty_target_channels == (
         {
@@ -206,6 +211,7 @@ def test_general_metric_rows_use_superset_scope_with_pair_filter(monkeypatch) ->
         }
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", lambda *_: [])
 
     rows = list(
         MetricAggregator(mart_db="jw_mart")._iter_metric_rows(
@@ -334,8 +340,112 @@ def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> N
     assert data["kpi"]["brand_value_recent"] == 10.0
 
 
+def test_build_cause_data_fills_analysis_levels_from_focus_ml_market(monkeypatch) -> None:
+    analysis_row = {
+        "source": "ubist",
+        "measure": "sales",
+        "unit_label": "KRW",
+        "dimension_data": json.dumps({}),
+        "dimension_channel_data": json.dumps({}),
+        "channel_data": json.dumps({"의원": {"2026-04": {"raw_value": 80.0}, "2026-05": {"raw_value": 100.0}}}),
+        "overlay_data": json.dumps({}),
+    }
+    strategic_rows = [
+        {
+            "brand_key": "focus",
+            "brand_name": "Focus",
+            "by_dimension": json.dumps({"class": "DPP4", "molecule": "Sitagliptin"}),
+            "is_jw": 1,
+        }
+    ]
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        if "mart_general_brand_metric" in sql:
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus",
+                    "atc4_code": "A10N1",
+                    **analysis_row,
+                }
+            ]
+        if "mart_general_filter_dimension_metric" in sql:
+            return []
+        return [dict(row) for row in strategic_rows]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", fake_fetch_all)
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=10.0,
+        monthly_series=(
+            {"period": "2026-04", "market_size": 80.0},
+            {"period": "2026-05", "market_size": 100.0},
+        ),
+        brands=(
+            BrandMetric(
+                "focus",
+                "Focus",
+                "A10N1",
+                100.0,
+                100.0,
+                1,
+                "2026-05",
+                100.0,
+                monthly_series=({"period": "2026-05", "value": 100.0},),
+                history_by_period={"2026-04": 80.0, "2026-05": 100.0},
+                analysis_row=analysis_row,
+            ),
+        ),
+        all_brands=(
+            BrandMetric(
+                "focus",
+                "Focus",
+                "A10N1",
+                100.0,
+                100.0,
+                1,
+                "2026-05",
+                100.0,
+                monthly_series=({"period": "2026-05", "value": 100.0},),
+                history_by_period={"2026-04": 80.0, "2026-05": 100.0},
+                analysis_row=analysis_row,
+            ),
+        ),
+    )
+
+    data = cause_payload.build_cause_data(
+        definition=MarketDefinition(
+            view="general",
+            filter_echo={},
+            source="ubist",
+            measure="sales",
+            focus_brand_key="focus",
+            market_catalog_row={"ml_id": "ml_999", "analyze_class": True, "analyze_molecule": True},
+        ),
+        metrics=metrics,
+        focus=metrics.all_brands[0],
+    )
+
+    assert any(call[1] == ("ml_999", "ubist", "sales") for call in calls)
+    class_segments = data["analysis_levels"]["data"]["Class"]["by_channel"]["전체"]
+    molecule_segments = data["analysis_levels"]["data"]["Molecule"]["by_channel"]["전체"]
+    assert [item["name"] for item in class_segments] == ["전체", "DPP4"]
+    assert [item["name"] for item in molecule_segments] == ["전체", "Sitagliptin"]
+    assert data["level_top5_trend"]["by_level"]["Class"]["values"][1]["value"] == "DPP4"
+
+
 def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        return []
 
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append((sql, params))
@@ -370,6 +480,7 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
             "raw_value_history": json.dumps({"2026-05": 100.0}),
         }
 
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
 
     with caplog.at_level("DEBUG", logger="pipeline.scripts.api.dynamic_market.aggregator"):
@@ -381,7 +492,11 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
             top_n=20,
         )
 
-    summary_sql, summary_params = calls[1]
+    summary_sql, summary_params = next(
+        (sql, params)
+        for sql, params in calls
+        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql
+    )
     assert summary_params == ("ubist", "sales", "a", "C10A1")
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기")
     assert "filtered_rows=1" in caplog.text
@@ -713,6 +828,94 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     assert {"data"}.issubset(data["ei_ms_matrix"])
     assert {"data"}.issubset(data["growth_contribution_ms_matrix"])
     assert {"targets"}.issubset(data["target_customer_competition"])
+
+
+def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["A10N1"], "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+        focus_brand_key="focus",
+        market_catalog_row={
+            "ml_id": "ml_003",
+            "analyze_class": 1,
+            "analyze_molecule": 1,
+            "analyze_dosage_form": 0,
+            "analyze_strength_pack": 0,
+            "analyze_nhi_type": 0,
+            "analyze_ox_gx": 0,
+        },
+    )
+    periods = ("2026-01", "2026-02")
+    class_series = {
+        period: {"raw_value": value}
+        for period, value in zip(periods, (100.0, 120.0))
+    }
+    class_channel_series = {"종합병원": class_series, "의원": {"2026-01": {"raw_value": 10.0}, "2026-02": {"raw_value": 20.0}}}
+    focus = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "A10N1",
+        220.0,
+        55.0,
+        1,
+        "2026-02",
+        120.0,
+        ({"period": "2026-01", "value": 100.0}, {"period": "2026-02", "value": 120.0}),
+        history_by_period={"2026-01": 100.0, "2026-02": 120.0},
+        analysis_row={
+            "by_dimension": json.dumps({"class": "DPP4", "molecule": "Anagliptin", "company": "JW"}, ensure_ascii=False),
+            "dimension_data": json.dumps({"class": {"DPP4": class_series}, "molecule": {"Anagliptin": class_series}}, ensure_ascii=False),
+            "dimension_channel_data": json.dumps({"class": {"DPP4": class_channel_series}}, ensure_ascii=False),
+            "channel_data": json.dumps(class_channel_series, ensure_ascii=False),
+        },
+    )
+    competitor = BrandMetric(
+        "comp",
+        "Competitor",
+        "A10N1",
+        180.0,
+        45.0,
+        2,
+        "2026-02",
+        80.0,
+        ({"period": "2026-01", "value": 100.0}, {"period": "2026-02", "value": 80.0}),
+        history_by_period={"2026-01": 100.0, "2026-02": 80.0},
+        analysis_row={
+            "by_dimension": json.dumps({"class": "DPP4", "molecule": "Other", "company": "Other Co"}, ensure_ascii=False),
+            "dimension_data": json.dumps({"class": {"DPP4": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}}}, ensure_ascii=False),
+            "dimension_channel_data": json.dumps({}, ensure_ascii=False),
+            "channel_data": json.dumps({"종합병원": {"2026-01": {"raw_value": 50.0}, "2026-02": {"raw_value": 40.0}}}, ensure_ascii=False),
+        },
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=400.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 200.0}, {"period": "2026-02", "market_size": 200.0}),
+        brands=(focus, competitor),
+        all_brands=(focus, competitor),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    analysis_levels = payload["data"]["analysis_levels"]
+    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
+    assert analysis_levels["levels"][:3] == ["Class", "Molecule", "Brand"]
+    assert any(
+        segment["name"] == "DPP4"
+        for segment in analysis_levels["data"]["Class"]["by_channel"]["전체"]
+    )
+    assert analysis_levels["data"]["Class"]["by_channel"]["종병"]
+    assert "종합병원 순환기" not in analysis_levels["channels"]
+    assert payload["data"]["analysis_level_market_status"]["channels"] == analysis_levels["channels"]
+    assert payload["data"]["level_top5_trend"]["by_level"]["Class"]["values"]
 
 
 def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_top5() -> None:
@@ -1258,6 +1461,42 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
     assert any("mart_general_filter_dimension_metric" in sql for sql in calls)
 
 
+def test_unfiltered_general_aggregation_keeps_metric_fetch_slim(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_iter_rows(sql: str, params: tuple[str, ...]):
+        calls.append(sql)
+        yield {
+            "brand_key": "brand-a",
+            "brand_name": "Brand A",
+            "atc4_code": "A10A1",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-01": 100, "2026-02": 120}),
+        }
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        calls.append(sql)
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("brand-a", "Brand A", "A10A1"),),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+    )
+
+    analysis_row = metrics.all_brands[0].analysis_row
+    assert metrics.market_size == 220.0
+    assert analysis_row["dimension_data"] is None
+    assert not any("mart_general_filter_dimension_metric" in sql for sql in calls)
+
+
 def test_strategic_resolver_requires_view_specific_market_id() -> None:
     resolver = StrategicViewResolver(mart_db="jw_mart")
 
@@ -1361,6 +1600,7 @@ def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) 
         return [{"brand_key": "brand-cd", "brand_name": "CD Brand", "atc4_code": ""}]
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_one", lambda *_args, **_kwargs: {"cd_id": "cd_002"})
     definition = StrategicViewResolver(mart_db="jw_mart").resolve(
         view_kind="competitive_dynamics",
         ml_id=None,

@@ -16,6 +16,7 @@ from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_val
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.api import db
+from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import (
     BrandRef,
@@ -125,6 +126,10 @@ class GeneralViewResolver:
             dimension_filters=dimension_filters,
             channel_axis=channel_axis,
             focus_brand_key=normalized_focus_brand,
+            market_catalog_row=self._market_catalog_row_for_focus(
+                focus_brand_key=normalized_focus_brand,
+                brands=brands,
+            ),
         )
 
     def _resolve_brands(
@@ -215,6 +220,36 @@ class GeneralViewResolver:
         raise DynamicMarketInputError(
             f"focus brand spans multiple ATC4 buckets; send filters.atc4 explicitly: {focus_brand_key}"
         )
+
+    def _market_catalog_row_for_focus(
+        self,
+        *,
+        focus_brand_key: str | None,
+        brands: tuple[BrandRef, ...],
+    ) -> dict[str, object] | None:
+        if not focus_brand_key:
+            return None
+        candidates = [focus_brand_key]
+        requested = focus_brand_key.strip()
+        for brand in brands:
+            if requested in {brand.brand_key, brand.brand_name}:
+                candidates.append(brand.brand_name)
+                break
+        for candidate in candidates:
+            display_brand = get_display_brand(candidate.strip())
+            if display_brand is None:
+                continue
+            row = db.fetch_one(
+                """
+                SELECT *
+                FROM catalog_ml_market
+                WHERE ml_id = %s
+                LIMIT 1
+                """,
+                (display_brand.ml_id,),
+            )
+            return dict(row) if row else None
+        return None
 
     def _dimension_filters(
         self,
@@ -346,7 +381,27 @@ class StrategicViewResolver:
             focus_brand_key=focus_brand_key,
             strategic_market_kind=market_kind,
             strategic_market_id=market_id,
+            market_catalog_row=self._market_catalog_row(market_kind=market_kind, market_id=market_id),
         )
+
+    def _market_catalog_row(self, *, market_kind: str, market_id: str) -> dict[str, object] | None:
+        table = "catalog_cd_market" if market_kind == "cd" else "catalog_ml_market"
+        id_column = "cd_id" if market_kind == "cd" else "ml_id"
+        row = db.fetch_one(
+            f"""
+            SELECT *
+            FROM {table}
+            WHERE {id_column} = %s
+            LIMIT 1
+            """,
+            (market_id,),
+        )
+        if not row:
+            return None
+        record = dict(row)
+        if market_kind == "cd":
+            record["cd_market_id"] = record.get("cd_id")
+        return record
 
 
 def placeholders(values: tuple[str, ...]) -> str:
