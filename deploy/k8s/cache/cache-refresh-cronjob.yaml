@@ -43,15 +43,28 @@ spec:
                   value: llmops-mariadb-service.llmops.svc.cluster.local
                 - name: MARIADB_PORT
                   value: "3306"
+                - name: MARIADB_DATABASE
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: D2_WRITER_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: D2_WRITER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
                 - name: MARIADB_USER
-                  value: llmops
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
                 - name: MARIADB_PASSWORD
                   valueFrom:
                     secretKeyRef:
-                      name: galera-mariadb-galera
-                      key: mariadb-password
-                - name: MARIADB_DATABASE
-                  value: jw_mart
+                      name: jw-mart-d2-writer
+                      key: password
               volumeMounts:
                 - name: cache-refresh-validator
                   mountPath: /opt/cache-refresh
@@ -63,8 +76,8 @@ spec:
 
                   RUN_ID="$(date -u +%Y%m%d%H%M%S)"
                   LIVE_TABLE="cache_deep_analysis"
-                  STAGING_TABLE="cache_deep_analysis_events_staging"
-                  BACKUP_TABLE="cache_deep_analysis_events_backup_${RUN_ID}"
+                  STAGING_TABLE="cache_deep_analysis_events_staging_${RUN_ID}"
+                  BACKUP_TABLE="cache_deep_analysis_bak_d2_prev3_${RUN_ID}"
                   export LIVE_TABLE STAGING_TABLE BACKUP_TABLE RUN_ID
 
                   if [ -f /app/pipeline/scripts/etl/build_cache_deep_analysis.py ]; then
@@ -77,18 +90,41 @@ spec:
                     echo "ABORT: build_cache_deep_analysis.py not found in image"
                     exit 20
                   fi
+                  PYTHON_BIN="${PYTHON_BIN:-python3}"
+                  if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+                    PYTHON_BIN=python
+                  fi
 
-                  echo "CACHE_REFRESH_START run_id=${RUN_ID} target=${STAGING_TABLE}"
-                  python pipeline/scripts/etl/build_cache_deep_analysis.py \
-                    --events-only \
-                    --target-table "${STAGING_TABLE}" \
-                    --verbose
+                  echo "CACHE_REFRESH_START run_id=${RUN_ID} database=${MARIADB_DATABASE} staging=${STAGING_TABLE}"
+                  test "${MARIADB_DATABASE}" = "jw_mart_d2_stage_20260630_r2"
 
-                  python /opt/cache-refresh/cache_deep_analysis_refresh_validate.py \
+                  "${PYTHON_BIN}" /opt/cache-refresh/cache_deep_analysis_events_update.py \
                     --live-table "${LIVE_TABLE}" \
                     --staging-table "${STAGING_TABLE}" \
+                    --build-staging
+
+                  "${PYTHON_BIN}" /opt/cache-refresh/cache_deep_analysis_refresh_validate.py \
+                    --live-table "${LIVE_TABLE}" \
+                    --staging-table "${STAGING_TABLE}"
+
+                  "${PYTHON_BIN}" /opt/cache-refresh/cache_deep_analysis_events_update.py \
+                    --live-table "${LIVE_TABLE}" \
                     --backup-table "${BACKUP_TABLE}" \
-                    --swap
+                    --backup-live
+
+                  "${PYTHON_BIN}" /opt/cache-refresh/cache_deep_analysis_events_update.py \
+                    --live-table "${LIVE_TABLE}" \
+                    --staging-table "${STAGING_TABLE}" \
+                    --apply-update
+
+                  "${PYTHON_BIN}" /opt/cache-refresh/cache_deep_analysis_events_update.py \
+                    --live-table "${LIVE_TABLE}" \
+                    --backup-table "${BACKUP_TABLE}" \
+                    --post-verify
+
+                  "${PYTHON_BIN}" /opt/cache-refresh/cache_deep_analysis_events_update.py \
+                    --staging-table "${STAGING_TABLE}" \
+                    --drop-staging
 
                   echo "CACHE_REFRESH_DONE run_id=${RUN_ID}"
           volumes:

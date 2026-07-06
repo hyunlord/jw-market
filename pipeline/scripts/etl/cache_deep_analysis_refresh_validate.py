@@ -249,21 +249,10 @@ def connect_db() -> Any:
     )
 
 
-def swap_tables(conn: Any, live_table: str, staging_table: str, backup_table: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(f"DROP TABLE IF EXISTS {quote_ident(backup_table)}")
-        cur.execute(
-            f"RENAME TABLE {quote_ident(live_table)} TO {quote_ident(backup_table)}, "
-            f"{quote_ident(staging_table)} TO {quote_ident(live_table)}"
-        )
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate and optionally swap cache_deep_analysis events-only staging.")
+    parser = argparse.ArgumentParser(description="Validate cache_deep_analysis events-only staging without modifying live.")
     parser.add_argument("--live-table", default=os.environ.get("LIVE_TABLE", "cache_deep_analysis"))
     parser.add_argument("--staging-table", default=os.environ.get("STAGING_TABLE"))
-    parser.add_argument("--backup-table", default=os.environ.get("BACKUP_TABLE"))
-    parser.add_argument("--swap", action="store_true")
     args = parser.parse_args()
     if not args.staging_table:
         raise CacheRefreshValidationError("--staging-table or STAGING_TABLE is required")
@@ -275,13 +264,9 @@ def main() -> None:
     conn = connect_db()
     try:
         summary = validate_tables(conn, args.live_table, args.staging_table)
-        if args.swap:
-            if not args.backup_table:
-                raise CacheRefreshValidationError("--swap requires --backup-table")
-            swap_tables(conn, args.live_table, args.staging_table, args.backup_table)
         print(
             "CACHE_REFRESH_VALIDATE_JSON="
-            + json.dumps({**summary.to_json(), "backup_table": args.backup_table, "swapped": bool(args.swap)}, ensure_ascii=False)
+            + json.dumps({**summary.to_json(), "modified_live": False}, ensure_ascii=False)
         )
     finally:
         conn.close()
