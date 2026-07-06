@@ -411,7 +411,6 @@ def _append_in_filter(filters: list[str], params: list[object], column: str, val
     filters.append(f"{column} IN ({placeholders})")
     params.extend(values)
 
-
 def _filter_values(value: JsonValue) -> tuple[str, ...]:
     """Normalize scalar-or-list keyword filters into a deduplicated tuple."""
     if isinstance(value, list):

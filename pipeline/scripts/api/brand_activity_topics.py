@@ -108,6 +108,7 @@ def _public_brand(value: JsonValue) -> dict[str, JsonValue]:
         "is_jw": _bool(brand.get("is_jw")),
         "etc_pct": _number(brand.get("etc_pct")),
         "topic_shares": shares,
+        "topics": shares,
         "brand_specific_topics": [_public_brand_specific(topic) for topic in _json_list(brand.get("brand_specific_topics"))],
     }
 
@@ -119,7 +120,7 @@ def _public_topic_share(value: JsonValue) -> dict[str, JsonValue]:
         "topic_id": _text(share.get("topic_id")),
         "label": _text(share.get("label")),
         "share_pct": _number(share.get("share_pct")),
-        "row_count": _integer(share.get("row_count")),
+        "row_count": _topic_row_count(share),
     }
 
 
@@ -131,8 +132,13 @@ def _public_brand_specific(value: JsonValue) -> dict[str, JsonValue]:
         "label": _text(topic.get("label")),
         "definition": _text(topic.get("definition")),
         "share_pct": _number(topic.get("share_pct")),
-        "row_count": _integer(topic.get("row_count")),
+        "row_count": _topic_row_count(topic),
     }
+
+
+def _topic_row_count(topic: dict[str, JsonValue]) -> int:
+    """Return affected rows for one topic; topic totals are independent, not brand-event totals."""
+    return _integer(topic.get("row_count") or topic.get("affected_row_count"))
 
 
 def _json_row(row: dict[str, object]) -> dict[str, JsonValue]:
