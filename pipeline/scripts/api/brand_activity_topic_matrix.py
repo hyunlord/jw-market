@@ -59,6 +59,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
     aliases = _alias_lookup()
     topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows, aliases=aliases)
     is_sliced = _is_sliced_request(request)
+    payload_source = "row_topic_assignment_filtered" if is_sliced else "row_topic_assignment_unfiltered"
     return {
         "scope": {
             "view": request["view"],
@@ -80,7 +81,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             "topic_set_version": topic_scope.get("topic_set_version"),
             "filter_effect": {
                 "brand_set": "channel_axis_applied" if brand_set.channel_axis else "base",
-                "payload": "row_topic_assignment_filtered" if is_sliced else "precomputed_scope_not_resliced",
+                "payload": payload_source,
             },
         },
         "brands": [
@@ -94,8 +95,8 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                     aliases=aliases,
                     top_n=int(request["top_n"]),
                 )
-                if is_sliced and topic_scope
-                else _topic_brand_item(brand_set, choice_key=choice.brand_key, topic_index=topic_index, aliases=aliases, top_n=int(request["top_n"]))
+                if topic_scope
+                else _empty_topic_brand_item(brand_set, choice_key=choice.brand_key)
             )
             for choice in brand_set.choices
         ],
@@ -139,31 +140,24 @@ def _topic_brand_index(topic_rows: Sequence[dict[str, JsonValue]] | None = None)
     return index
 
 
-def _topic_brand_item(
+def _empty_topic_brand_item(
     brand_set: BrandSetResolution,
     *,
     choice_key: str,
-    topic_index: dict[str, dict[str, JsonValue]],
-    aliases: dict[str, str],
-    top_n: int,
 ) -> dict[str, JsonValue]:
-    """Project one resolved brand with topic shares matched by product code."""
-    meta = brand_set.brand_meta[choice_key]
+    """Project an empty topic payload when no assignment scope is available."""
     choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
-    stored = _stored_brand_topics(meta, topic_index, aliases)
-    event_count = _integer(stored.get("row_count")) if stored is not None else 0
-    topic_shares = _ranked_topics(stored, top_n=top_n)
     return {
         "brand_key": choice.brand_key,
         "brand_name": choice.brand_name,
-        "is_jw": meta.is_jw,
+        "is_jw": brand_set.brand_meta[choice_key].is_jw,
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
-        "event_count": event_count,
-        "topic_shares": topic_shares,
-        "topics": topic_shares,
-        "etc_pct": max(0.0, 100.0 - sum(_number(topic.get("share_pct")) for topic in topic_shares)),
-        "brand_specific_topics": _brand_specific_topics(stored),
+        "event_count": 0,
+        "topic_shares": [],
+        "topics": [],
+        "etc_pct": 100.0,
+        "brand_specific_topics": [],
     }
 
 
@@ -416,43 +410,6 @@ def _append_in_filter(filters: list[str], params: list[object], column: str, val
     placeholders = ", ".join(["%s"] * len(values))
     filters.append(f"{column} IN ({placeholders})")
     params.extend(values)
-
-
-def _ranked_topics(stored: dict[str, JsonValue] | None, *, top_n: int) -> list[dict[str, JsonValue]]:
-    """Return top-N stored topic shares with API rank labels."""
-    if stored is None:
-        return []
-    raw_shares = _json_list(stored.get("top5_topic_shares") or stored.get("topic_shares"))
-    shares = [_json_object(share) for share in raw_shares]
-    shares.sort(key=lambda share: _number(share.get("share_pct")), reverse=True)
-    return [
-        {
-            "rank": index,
-            "topic_id": _text(share.get("topic_id")),
-            "label": _text(share.get("label")),
-            "share_pct": _number(share.get("share_pct")),
-        }
-        for index, share in enumerate(shares[:top_n], start=1)
-    ]
-
-
-def _brand_specific_topics(stored: dict[str, JsonValue] | None) -> list[dict[str, JsonValue]]:
-    if stored is None:
-        return []
-    raw_topics = _json_list(stored.get("brand_specific_topics"))
-    topics: list[dict[str, JsonValue]] = []
-    for raw_topic in raw_topics:
-        topic = _json_object(raw_topic)
-        topics.append(
-            {
-                "topic_id": _text(topic.get("topic_id")),
-                "label": _text(topic.get("label")),
-                "definition": _text(topic.get("definition")),
-                "share_pct": _number(topic.get("share_pct")),
-                "row_count": _integer(topic.get("row_count")),
-            }
-        )
-    return topics
 
 
 def _filter_values(value: JsonValue) -> tuple[str, ...]:

@@ -12,41 +12,33 @@ from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolutio
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, ViewConfig
 
 
-def test_post_topic_service_emits_confidence_from_brand_row_count(monkeypatch) -> None:
+def test_post_topic_service_emits_event_count_from_assignment_rows(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _confidence_brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: [_confidence_topic_row()])
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", _confidence_fetch_all)
 
-    payload = topic_matrix.get_topic_brand_payload({"view": "general", "market_id": "K01A3", "selected_brand": "플라주오피"})
+    payload = topic_matrix.get_topic_brand_payload({"view": "general", "selected_brand": "플라주오피", "filters": {"atc4": ["K01A3"]}})
 
     assert payload is not None
     brands = {brand["brand_key"]: brand for brand in payload["brands"]}
     assert brands["플라주오피"]["event_count"] == 1
-    assert brands["플라주오피"]["confidence"] == "insufficient"
     assert brands["엔커버"]["event_count"] == 4
-    assert brands["엔커버"]["confidence"] == "insufficient"
     assert brands["가스모틴"]["event_count"] == 31
-    assert brands["가스모틴"]["confidence"] == "low"
     assert brands["가나칸"]["event_count"] == 34
-    assert brands["가나칸"]["confidence"] == "low"
     assert brands["리바로브이"]["event_count"] == 50
-    assert brands["리바로브이"]["confidence"] == "reliable"
     assert brands["리바로"]["event_count"] == 473
-    assert brands["리바로"]["confidence"] == "reliable"
     assert brands["리피토"]["event_count"] == 990
-    assert brands["리피토"]["confidence"] == "reliable"
     assert brands["미매칭"]["event_count"] == 0
-    assert brands["미매칭"]["confidence"] == "insufficient"
     assert brands["미매칭"]["topics"] == []
-    assert brands["플라주오피"]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "수액", "share": 100.0}]
+    assert brands["플라주오피"]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "수액", "share_pct": 100.0, "row_count": 1}]
 
 
-def test_post_topic_service_only_adds_confidence_keys_to_brand_contract(monkeypatch) -> None:
+def test_post_topic_service_keeps_topic_brand_contract(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _confidence_brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: [_confidence_topic_row()])
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", _confidence_fetch_all)
 
-    payload = topic_matrix.get_topic_brand_payload({"view": "general", "market_id": "K01A3", "selected_brand": "플라주오피"})
+    payload = topic_matrix.get_topic_brand_payload({"view": "general", "selected_brand": "플라주오피", "filters": {"atc4": ["K01A3"]}})
 
     assert payload is not None
     assert set(payload["brands"][0]) == {
@@ -56,8 +48,10 @@ def test_post_topic_service_only_adds_confidence_keys_to_brand_contract(monkeypa
         "is_selected",
         "sales_rank",
         "topics",
+        "topic_shares",
         "event_count",
-        "confidence",
+        "etc_pct",
+        "brand_specific_topics",
     }
 
 
@@ -99,6 +93,12 @@ def _confidence_brand_set() -> BrandSetResolution:
 
 def _confidence_topic_row() -> dict[str, str]:
     payload = {
+        "scope": {"scope_id": "atc4:K01A3", "atc4_values": ["K01A3"]},
+        "axis": {
+            "topics": [
+                {"topic_id": "T01", "label": "수액", "definition": "수액"},
+            ]
+        },
         "brands": [
             {"brand": "PLAJU OP", "row_count": 1, "topic_shares": [_topic("T01", "수액", 100.0)]},
             {"brand": "ENCOVER", "row_count": 4, "topic_shares": [_topic("T01", "영양공급", 75.0)]},
@@ -114,9 +114,29 @@ def _confidence_topic_row() -> dict[str, str]:
         "display_name": "PLAJU OP Market",
         "quality_grade": "A",
         "source_row_count": "1",
+        "run_id": "brand_activity_replay_20260703_125045",
         "payload": json.dumps(payload, ensure_ascii=False),
     }
 
 
 def _topic(topic_id: str, label: str, share_pct: float) -> dict[str, str | float | int]:
     return {"topic_id": topic_id, "label": label, "share_pct": share_pct, "row_count": 1}
+
+
+def _confidence_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, str | int]]:
+    if "row_topic_assignment" not in sql:
+        return [_confidence_topic_row()]
+    product = str(params[1]) if params else ""
+    counts = {
+        "PLAJU OP": 1,
+        "ENCOVER": 4,
+        "GASMOTIN": 31,
+        "GANAKHAN": 34,
+        "LIVALO V": 50,
+        "LIVALO": 473,
+        "LIPITOR": 990,
+    }
+    count = counts.get(product)
+    if count is None:
+        return []
+    return [{"topic_id": "T01", "affected_row_count": count, "brand_total_rows": count, "share_pct": "100.00"}]

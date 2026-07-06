@@ -140,18 +140,39 @@ def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
     assert captured["prescription_evolution"] == ["increase"]
 
 
-def test_post_topic_service_matches_topics_by_product_code(monkeypatch) -> None:
+def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: [_post_topic_row()])
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [_post_topic_row()]
+        if params and "LIPITOR" in params:
+            return []
+        assert "k.visit_location IN" not in sql
+        assert "k.specialty IN" not in sql
+        assert "k.period_ym >=" not in sql
+        assert params == ("atc4:C10A1", "LIVALO", "atc4:C10A1", "brand_activity_replay_20260703_125045")
+        return [
+            {"topic_id": "T02", "affected_row_count": 616, "brand_total_rows": 1307, "share_pct": "47.13"},
+            {"topic_id": "T01", "affected_row_count": 283, "brand_total_rows": 1307, "share_pct": "21.65"},
+            {"topic_id": "B1", "affected_row_count": 94, "brand_total_rows": 1307, "share_pct": "7.19"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
 
     payload = topic_matrix.get_topic_brand_payload({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}, "top_n": 1})
 
     assert payload is not None
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
     assert payload["scope"]["sliced"] is False
+    assert payload["scope"]["filter_effect"]["payload"] == "row_topic_assignment_unfiltered"
     assert payload["brands"][0]["brand_key"] == "리바로"
-    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5}]
+    assert payload["brands"][0]["event_count"] == 1307
+    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T02", "label": "LDL 조절", "share_pct": 47.13, "row_count": 616}]
+    assert payload["brands"][0]["brand_specific_topics"] == [
+        {"topic_id": "B1", "label": "리바로 고유", "share_pct": 7.19, "row_count": 94, "definition": "리바로 특화"}
+    ]
     assert payload["brands"][1]["brand_key"] == "리피토"
     assert payload["brands"][1]["topics"] == []
 
@@ -270,7 +291,13 @@ def test_post_topic_service_accepts_list_filters_as_or_with_axis_and(monkeypatch
 def test_post_topic_service_treats_empty_filter_lists_as_unsliced(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: [_post_topic_row()])
+
+    def fake_fetch_all(sql: str, _params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" in sql:
+            return [{"topic_id": "T02", "affected_row_count": 3, "brand_total_rows": 4, "share_pct": "75.00"}]
+        return [_post_topic_row()]
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
 
     payload = topic_matrix.get_topic_brand_payload(
         {
