@@ -137,14 +137,14 @@ def _resolve_definition(payload: DynamicMarketRequest):
 
 
 def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
-    """Resolve strategic ML markets from the catalog only when callers omit ``ml_id``.
+    """Resolve strategic ML markets from the focus brand when one is present.
 
-    Existing explicit market ids stay authoritative.  Competitive-dynamics
-    requests are intentionally not inferred because the display catalog carries
-    the strategic ML id, not a CD market id.
+    ``ml_id`` remains a compatibility/fallback input for brandless callers, but
+    the strategy market definition is anchored by the focus brand's single
+    catalog ML market.
     """
 
-    if filters.ml_id or filters.cd_market_id or not filters.focus_brand_key:
+    if filters.cd_market_id or not filters.focus_brand_key:
         return filters.ml_id
     view_kind = (filters.view_kind or "").strip().lower()
     if view_kind not in {"market_landscape", "strategic_ml", "ml"}:

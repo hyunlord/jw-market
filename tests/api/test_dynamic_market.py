@@ -1554,7 +1554,11 @@ def test_dynamic_route_resolves_brand_only_market_landscape_from_catalog(monkeyp
     assert definition.strategic_market_id == "ml_006"
 
 
-def test_dynamic_route_keeps_explicit_market_id_ahead_of_catalog(monkeypatch) -> None:
+@pytest.mark.parametrize("incoming_ml_id", ["strategy_006", "ml_003"])
+def test_dynamic_route_prefers_brand_catalog_market_over_incoming_ml_id(
+    monkeypatch: pytest.MonkeyPatch,
+    incoming_ml_id: str,
+) -> None:
     captured: dict[str, object] = {}
 
     class FakeStrategicResolver:
@@ -1577,7 +1581,7 @@ def test_dynamic_route_keeps_explicit_market_id_ahead_of_catalog(monkeypatch) ->
         {
             "filters": {
                 "view_kind": "market_landscape",
-                "ml_id": "ml_005",
+                "ml_id": incoming_ml_id,
                 "focus_brand_key": "리바로",
             },
             "source": "ubist",
@@ -1587,8 +1591,8 @@ def test_dynamic_route_keeps_explicit_market_id_ahead_of_catalog(monkeypatch) ->
 
     definition = dynamic_market_route._resolve_definition(payload)
 
-    assert captured["ml_id"] == "ml_005"
-    assert definition.strategic_market_id == "ml_005"
+    assert captured["ml_id"] == "ml_006"
+    assert definition.strategic_market_id == "ml_006"
 
 
 def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) -> None:
