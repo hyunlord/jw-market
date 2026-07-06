@@ -9,6 +9,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
+from jw_chat_agent_poc.agent_loop.progress import ProgressCallback, tool_progress_payload
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
@@ -35,7 +36,7 @@ class ToolUseAgent:
     external: ExternalApiClient | None = None
     query_layer: StrategicQueryLayer | None = None
 
-    def answer(self, question: str) -> dict[str, Any]:
+    def answer(self, question: str, *, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
         timing = new_timing()
         planner = self.planner or GenosToolPlanner(fallback=HeuristicToolPlanner())
         with stage(timing, "agent_pre_resolve", "brand and period grounding"):
@@ -88,7 +89,9 @@ class ToolUseAgent:
                 break
             batch: list[AgentObservation] = []
             duplicate = False
-            for plan in decision.tool_calls:
+            total_tools = len(decision.tool_calls)
+            for index, plan in enumerate(decision.tool_calls, start=1):
+                _emit_tool_progress(progress_callback, plan.name, index=index, total=total_tools)
                 with stage(timing, f"tool:{plan.name}", f"step={step}"):
                     execution = _execute_grounded(facade, plan)
                 key = _fingerprint(ToolCallPlan(name=plan.name, arguments=execution.arguments, reason=plan.reason))
@@ -200,6 +203,12 @@ def _execute_grounded(facade: AgentToolFacade, plan: ToolCallPlan) -> ToolExecut
     except (LookupError, TypeError, ValueError, UnsupportedBrandError):
         return facade.execute(plan.name, plan.arguments)
     return facade.execute(plan.name, grounded_arguments)
+
+
+def _emit_tool_progress(callback: ProgressCallback | None, tool_name: str, *, index: int, total: int) -> None:
+    if callback is None:
+        return
+    callback(tool_progress_payload(tool_name, index=index, total=total))
 
 
 def _portfolio_decline_call(

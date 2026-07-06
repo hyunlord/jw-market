@@ -11,6 +11,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_tool_use_agent,
     unsupported_brand_result,
 )
+from jw_chat_agent_poc.agent_loop.progress import ProgressCallback
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agentic import FilterEntry, relevance_filter_entries, relevance_question_text, validate_metric_filters
 from jw_chat_agent_poc.rag import LocalDocumentRag
@@ -76,7 +77,13 @@ class ChatAgent:
         self.query_layer = dependencies.query_layer
         self._agent_loop_dependencies = dependencies.agent_loop_dependencies()
 
-    def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
+    def answer(
+        self,
+        question: str,
+        documents: list[Path] | None = None,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         docs = documents or []
         routes = self.router.route(question, has_documents=bool(docs))
         requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
@@ -94,7 +101,7 @@ class ChatAgent:
 
         if not docs and should_use_agent_loop(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return loop.answer(question)
+            return loop.answer(question, progress_callback=progress_callback)
 
         if any("none" in route.sources for route in routes):
             return self._no_data(question, resolution, routes)

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from jw_chat_agent_poc.agent_loop.progress import tool_progress_label
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.answer_safety import chunk_text
 from jw_chat_agent_poc.service import app as service_app
@@ -729,6 +730,75 @@ def test_stream_endpoint_does_not_emit_charts_for_single_metric(monkeypatch) -> 
     assert "event: delta" in response.text
     assert "event: charts" not in response.text
     assert "event: done" in response.text
+
+
+def test_tool_progress_label_maps_known_tools_to_user_friendly_copy() -> None:
+    assert tool_progress_label("get_metric") == "시장 지표 조회 중"
+    assert tool_progress_label("get_brand_channel_breakdown") == "시장 지표 조회 중"
+    assert tool_progress_label("query") == "세그먼트 데이터 집계 중"
+    assert tool_progress_label("search_patent") == "허가·특허·임상 조회 중"
+    assert tool_progress_label("unknown_tool") == "데이터 조회 중"
+
+
+def test_stream_endpoint_emits_progress_before_final_answer(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Resolver:
+        def resolve(self, question: str, *, allow_default: bool = False):
+            captured["resolved"] = (question, allow_default)
+            return SimpleNamespace(canonical_brand="리바로")
+
+    class Dependencies:
+        router = BQRouter()
+        resolver = Resolver()
+
+        def agent_loop_dependencies(self):
+            return "loop-deps"
+
+    class Loop:
+        def answer(self, question: str, *, progress_callback=None) -> dict:
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "progress",
+                        "stage": "tool",
+                        "tool": "web_search",
+                        "label": "웹 검색 중",
+                        "index": 1,
+                        "total": 1,
+                    }
+                )
+            return {"answer": f"fact:{question}", "sources": ["cache"], "tool_calls": []}
+
+    def stream_answer(_self, _question, _result):
+        yield "최종 답변입니다."
+
+    monkeypatch.setattr(service_app, "build_chat_agent_dependencies", lambda external_mode="live": Dependencies())
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/chat/stream",
+        params={"conversation_id": "conv-progress", "question": "리바로 경쟁 구도 변화"},
+    )
+
+    assert response.status_code == 200
+    sse = response.text
+    assert sse.index("event: conversation") < sse.index("event: progress") < sse.index("event: sources")
+    progress_blocks = [block for block in sse.split("\n\n") if block.startswith("event: progress\n")]
+    assert len(progress_blocks) == 1
+    payload = json.loads(progress_blocks[0].split("data: ", 1)[1])
+    assert payload == {
+        "event": "progress",
+        "stage": "tool",
+        "tool": "web_search",
+        "label": "웹 검색 중",
+        "index": 1,
+        "total": 1,
+    }
+    assert _reconstruct_answer_from_sse(sse) == "최종 답변입니다."
+    assert "event: done" in sse
 
 
 def test_stream_endpoint_emits_trace_metadata_without_changing_answer(monkeypatch) -> None:

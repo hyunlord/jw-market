@@ -859,6 +859,44 @@ def test_clinical_and_patent_facade_tools_return_policy_scoped_facts() -> None:
     assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
 
 
+def test_agent_loop_emits_progress_before_each_planned_tool() -> None:
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="get_metric", arguments={"brand": "리바로", "measure": "sales", "period": "latest"}),
+                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "리바로 뉴스"}),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, news=_news_tool())
+    progress_events: list[dict[str, object]] = []
+
+    result = agent.answer("리바로 경쟁 구도와 관련 뉴스", progress_callback=progress_events.append)
+
+    assert result["agent_loop_metrics"]["tool_calls"] >= 2
+    assert progress_events == [
+        {
+            "event": "progress",
+            "stage": "tool",
+            "tool": "get_metric",
+            "label": "시장 지표 조회 중",
+            "index": 1,
+            "total": 2,
+        },
+        {
+            "event": "progress",
+            "stage": "tool",
+            "tool": "search_news",
+            "label": "관련 뉴스 검색 중",
+            "index": 2,
+            "total": 2,
+        },
+    ]
+
+
 def test_external_intent_schema_filter_does_not_add_metric_fallback() -> None:
     schemas = (
         {"type": "function", "function": {"name": "search_patent", "description": "", "parameters": {"type": "object"}}},

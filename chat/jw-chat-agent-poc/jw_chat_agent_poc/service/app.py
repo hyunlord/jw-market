@@ -4,7 +4,10 @@ import json
 from functools import lru_cache
 from collections.abc import Callable
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.progress import ProgressCallback
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
@@ -54,6 +58,16 @@ class FinalAnswer:
     trace: dict[str, Any]
     sources: tuple[str, ...]
     conversation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamAnswerResult:
+    item: dict
+
+
+@dataclass(frozen=True, slots=True)
+class StreamAnswerError:
+    error: Exception
 
 
 class SessionStore:
@@ -152,18 +166,17 @@ def create_app(
         external_mode: str = Query(default="live"),
         conversation_id: str | None = Query(default=None),
     ) -> StreamingResponse:
-        item = _resolve_session(
-            store,
-            resolver,
-            make_agent,
-            session_id,
-            question,
-            external_mode,
-            conversation_id,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
         return StreamingResponse(
-            _sse_events(item["question"], item["result"], item.get("conversation_id")),
+            _stream_session_events(
+                store,
+                resolver,
+                make_agent,
+                session_id,
+                question,
+                external_mode,
+                conversation_id,
+                use_direct_agent_loop=use_direct_agent_loop,
+            ),
             media_type="text/event-stream",
         )
 
@@ -220,8 +233,36 @@ def _answer_question(
     file_context: str | None = None,
     *,
     use_direct_agent_loop: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict:
     state = store.conversations.get_or_create(conversation_id)
+    return _answer_question_in_conversation(
+        store,
+        market_scope_resolver,
+        agent_factory,
+        state.conversation_id,
+        question,
+        external_mode,
+        documents,
+        file_context,
+        use_direct_agent_loop=use_direct_agent_loop,
+        progress_callback=progress_callback,
+    )
+
+
+def _answer_question_in_conversation(
+    store: SessionStore,
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    conversation_id: str,
+    question: str,
+    external_mode: str,
+    documents: list[Path] | None = None,
+    file_context: str | None = None,
+    *,
+    use_direct_agent_loop: bool = False,
+    progress_callback: ProgressCallback | None = None,
+) -> dict:
     if not question.strip() and _has_file_signal(documents, file_context):
         result = _file_only_ready_result(documents, file_context)
     else:
@@ -229,15 +270,16 @@ def _answer_question(
             store,
             market_scope_resolver,
             agent_factory,
-            state.conversation_id,
+            conversation_id,
             question,
             external_mode,
             documents,
             use_direct_agent_loop=use_direct_agent_loop,
+            progress_callback=progress_callback,
         )
         result = _attach_file_context(result, file_context)
-    store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
-    return {"question": question, "result": result, "conversation_id": state.conversation_id}
+    store.conversations.record_exchange(conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
+    return {"question": question, "result": result, "conversation_id": conversation_id}
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
@@ -327,6 +369,7 @@ def _answer_with_conversation(
     documents: list[Path] | None,
     *,
     use_direct_agent_loop: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict:
     pending = store.conversations.get_pending(conversation_id)
     if pending is not None and pending.kind == "market_view":
@@ -343,6 +386,7 @@ def _answer_with_conversation(
             documents,
             store,
             use_direct_agent_loop=use_direct_agent_loop,
+            progress_callback=progress_callback,
         )
         return _prepend_pending_notice(result)
     return _answer_without_pending(
@@ -354,6 +398,7 @@ def _answer_with_conversation(
         documents,
         store,
         use_direct_agent_loop=use_direct_agent_loop,
+        progress_callback=progress_callback,
     )
 
 
@@ -367,13 +412,14 @@ def _answer_without_pending(
     store: SessionStore,
     *,
     use_direct_agent_loop: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict:
     if requested_unavailable_source(question) is not None and not documents:
-        return agent_factory(external_mode=external_mode).answer(question, documents)
+        return _agent_answer(agent_factory(external_mode=external_mode), question, documents, progress_callback)
     if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
-        return _answer_direct_agent_loop(question, external_mode)
+        return _answer_direct_agent_loop(question, external_mode, progress_callback)
     if should_use_agent_loop(question):
-        return agent_factory(external_mode=external_mode).answer(question, documents)
+        return _agent_answer(agent_factory(external_mode=external_mode), question, documents, progress_callback)
     intent = detect_market_scope_intent(question)
     if intent is not None:
         if intent.requires_clarification:
@@ -391,10 +437,27 @@ def _answer_without_pending(
             return market_scope_resolver.clarification(question, brand=brand)
         if intent.view_type is not None:
             return market_scope_resolver.answer(question, view_type=intent.view_type)
-    return agent_factory(external_mode=external_mode).answer(question, documents)
+    return _agent_answer(agent_factory(external_mode=external_mode), question, documents, progress_callback)
 
 
-def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
+def _agent_answer(
+    agent: ChatAgent,
+    question: str,
+    documents: list[Path] | None,
+    progress_callback: ProgressCallback | None,
+) -> dict:
+    if progress_callback is not None and "progress_callback" in signature(agent.answer).parameters:
+        return agent.answer(question, documents, progress_callback=progress_callback)
+    return agent.answer(question, documents)
+
+
+def _loop_answer(loop, question: str, progress_callback: ProgressCallback | None) -> dict:
+    if progress_callback is not None and "progress_callback" in signature(loop.answer).parameters:
+        return loop.answer(question, progress_callback=progress_callback)
+    return loop.answer(question)
+
+
+def _answer_direct_agent_loop(question: str, external_mode: str, progress_callback: ProgressCallback | None = None) -> dict:
     dependencies = build_chat_agent_dependencies(external_mode=external_mode)
     routes = dependencies.router.route(question, has_documents=False)
     if not is_portfolio_decline_question(question, routes):
@@ -402,7 +465,7 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
             dependencies.resolver.resolve(question, allow_default=False)
         except UnsupportedBrandError:
             return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
-    return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
+    return _loop_answer(build_tool_use_agent(dependencies.agent_loop_dependencies()), question, progress_callback)
 
 
 def _prepend_pending_notice(result: dict) -> dict:
@@ -467,8 +530,72 @@ def _frontend_file_response(frontend_path: str) -> FileResponse:
     return FileResponse(target)
 
 
-def _sse_events(question: str, result: dict, conversation_id: str | None = None):
-    if conversation_id:
+def _stream_session_events(
+    store: SessionStore,
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    session_id: str | None,
+    question: str | None,
+    external_mode: str,
+    conversation_id: str | None = None,
+    *,
+    use_direct_agent_loop: bool = False,
+):
+    if session_id:
+        item = _resolve_session(
+            store,
+            market_scope_resolver,
+            agent_factory,
+            session_id,
+            question,
+            external_mode,
+            conversation_id,
+            use_direct_agent_loop=use_direct_agent_loop,
+        )
+        yield from _sse_events(item["question"], item["result"], item.get("conversation_id"))
+        return
+    if not question:
+        raise HTTPException(status_code=400, detail="session_id or question is required")
+
+    state = store.conversations.get_or_create(conversation_id)
+    yield f"event: conversation\ndata: {state.conversation_id}\n\n"
+
+    queue: Queue[str | StreamAnswerResult | StreamAnswerError] = Queue()
+
+    def emit_progress(payload) -> None:
+        queue.put(_sse_json_event("progress", payload))
+
+    def run_answer() -> None:
+        try:
+            item = _answer_question_in_conversation(
+                store,
+                market_scope_resolver,
+                agent_factory,
+                state.conversation_id,
+                question,
+                external_mode,
+                use_direct_agent_loop=use_direct_agent_loop,
+                progress_callback=emit_progress,
+            )
+        except Exception as exc:
+            queue.put(StreamAnswerError(exc))
+            return
+        queue.put(StreamAnswerResult(item))
+
+    Thread(target=run_answer, name="chat-progress-stream", daemon=True).start()
+    while True:
+        item = queue.get()
+        if isinstance(item, str):
+            yield item
+            continue
+        if isinstance(item, StreamAnswerError):
+            raise item.error
+        yield from _sse_events(item.item["question"], item.item["result"], item.item.get("conversation_id"), include_conversation=False)
+        return
+
+
+def _sse_events(question: str, result: dict, conversation_id: str | None = None, *, include_conversation: bool = True):
+    if include_conversation and conversation_id:
         yield f"event: conversation\ndata: {conversation_id}\n\n"
     yield f"event: sources\ndata: {','.join(source_labels(result.get('sources', [])))}\n\n"
     final_answer = compute_final_answer(question, result, conversation_id)
