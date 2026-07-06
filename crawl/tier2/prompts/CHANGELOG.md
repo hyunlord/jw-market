@@ -14,3 +14,13 @@
 - Verified repository prompt SHA, workflow revision step prompt SHA, and backing row prompt SHA all match:
   `aab7790a4d03d05cb6147c029a7783aea744b386e2694aa50b2e5fbeb3f0c43f`.
 - Smoke-tested three multi-brand articles, including `프랄런트`/`레파타`; parser validation passed with no missing or out-of-candidate brands.
+
+## 2026-07-06 — Tier2 scoring workflow registration
+
+- Added `jw_tier2_brand_scoring_prompt.md` as the Tier2 scoring prompt.
+- Registered `jw-tier2-brand-scoring` through the DB-backed GenOS workflow path.
+- Workflow id `324`, revision `5442`, deployment `1377`, serving `163`.
+- Backing Flowise chat_flow id `034e7ed0-92d3-47a1-8ff4-87207028a45d`.
+- Verified repository prompt SHA, workflow revision step prompt SHA, and backing row prompt SHA all match:
+  `a3eddd0b031614e33202cd326c883d638111a4ee7e53094e5df03c88aa67d321`.
+- Smoke-tested contract and scale only. The workflow parsed 19/19 mixed calls and 15/15 direct comparison calls. Direct wf196 comparison showed compatible broad scale with boundary drift around the 45-59 band, so full replay remains gated on accepted tolerance and runner input context.
