@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
+import types
 
 import pytest
+
+try:
+    import httpx2 as _httpx2  # noqa: F401
+except ModuleNotFoundError:
+    fake_httpx2 = types.ModuleType("httpx2")
+    fake_httpx2.HTTPError = RuntimeError
+    sys.modules["httpx2"] = fake_httpx2
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import llm
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
@@ -25,7 +34,7 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import (
     resolve_mi_master_path,
     scope_metadata_from_group_map,
 )
-from pipeline.scripts.analysis.brand_activity.auto_topic.models import KeywordRow, TopicDefinition
+from pipeline.scripts.analysis.brand_activity.auto_topic.models import BrandDescription, KeywordRow, TopicDefinition
 from pipeline.scripts.analysis.brand_activity.auto_topic.quality import (
     dictionary_cross_check,
     mechanical_guard,
@@ -35,14 +44,14 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.response import normali
 from pipeline.scripts.analysis.brand_activity.auto_topic.sampling import build_market_samples, choose_sample_brands
 from pipeline.scripts.analysis.brand_activity.auto_topic.chunking import chunk_rows_by_token_budget
 from pipeline.scripts.analysis.brand_activity.auto_topic.stability import stabilize_axis
-from pipeline.scripts.analysis.brand_activity.auto_topic.prompts import prompt_template_manifest
+from pipeline.scripts.analysis.brand_activity.auto_topic.prompts import brand_share_prompt, brand_specific_axis_prompt, prompt_template_manifest
 from pipeline.scripts.analysis.brand_activity.auto_topic.label_rules import label_quality_summary
 
 
-def _row(row_id: int, atc4: str, brand: str, text: str = "sample") -> KeywordRow:
+def _row(row_id: int, atc4: str, brand: str, text: str = "sample", period_ym: str = "2025-10") -> KeywordRow:
     return KeywordRow(
         row_id=row_id,
-        period_ym="2025-10",
+        period_ym=period_ym,
         atc4=atc4,
         brand=brand,
         keyword_text=text,
@@ -55,6 +64,18 @@ def _row(row_id: int, atc4: str, brand: str, text: str = "sample") -> KeywordRow
         specialty="내과",
         visit_location="clinic",
         stage_row_sha256=f"hash-{row_id}",
+    )
+
+
+def _description(brand: str, atc4: str = "C10C0") -> BrandDescription:
+    return BrandDescription(
+        brand=brand,
+        atc4=atc4,
+        kr_canonical=None,
+        is_jw=False,
+        molecule=(),
+        manufacturer=(),
+        representing_company=(),
     )
 
 
@@ -290,6 +311,93 @@ def test_build_market_samples_full_rows_removes_axis_and_brand_caps() -> None:
     assert len(samples["axis_samples"]["C10C0"]) == 38
     assert len(samples["brand_samples"]["C10C0:LIVALOZET"]) == 20
     assert samples["sample_summary"]["mode"] == "full_rows"
+
+
+def test_build_market_samples_uses_recent_axis_pool_and_full_brand_pool() -> None:
+    rows = [
+        _row(1, "C10C0", "LIVALOZET", period_ym="2025-05"),
+        _row(2, "C10C0", "LIVALOZET", period_ym="2025-06"),
+        _row(3, "C10C0", "ATOZET", period_ym="2026-05"),
+        _row(4, "C10C0", "ATOZET", period_ym="2024-12"),
+    ]
+
+    samples = build_market_samples(
+        rows,
+        markets=("C10C0",),
+        descriptions={},
+        axis_per_brand=10,
+        axis_rows_cap=10,
+        brand_rows=10,
+        brands_per_market=2,
+        full_rows=True,
+        axis_lookback_months=12,
+    )
+
+    assert [row.row_id for row in samples["axis_samples"]["C10C0"]] == [2, 3]
+    assert [row.row_id for row in samples["brand_samples"]["C10C0:LIVALOZET"]] == [1, 2]
+    assert [row.row_id for row in samples["brand_axis_samples"]["C10C0:LIVALOZET"]] == [2]
+    assert samples["sample_summary"]["axis_window"] == {"max_period_ym": "2026-05", "start_period_ym": "2025-06", "lookback_months": 12}
+
+
+def test_build_market_samples_falls_back_to_full_axis_rows_when_recent_market_is_empty() -> None:
+    rows = [
+        _row(1, "A03F0", "OLDONLY", period_ym="2024-03"),
+        _row(2, "A03F0", "OLDONLY", period_ym="2024-04"),
+        _row(3, "C10C0", "RECENT", period_ym="2026-05"),
+    ]
+
+    samples = build_market_samples(
+        rows,
+        markets=("A03F0", "C10C0"),
+        descriptions={},
+        axis_per_brand=10,
+        axis_rows_cap=10,
+        brand_rows=10,
+        brands_per_market=1,
+        full_rows=True,
+        axis_lookback_months=12,
+    )
+
+    assert [row.row_id for row in samples["axis_samples"]["A03F0"]] == [1, 2]
+    assert samples["axis_fallback_scopes"] == ["A03F0"]
+    assert samples["sample_summary"]["axis"]["A03F0"]["axis_source"] == "fallback_full_range"
+
+
+def test_brand_specific_axis_prompt_defines_zero_to_two_topics_only() -> None:
+    messages = brand_specific_axis_prompt(
+        atc4="C10C0",
+        brand="LIVALOZET",
+        description=_description("LIVALOZET"),
+        rows=[_row(1, "C10C0", "LIVALOZET")],
+        scope_id="atc4:C10C0",
+        market_name="LIVALOZET Market",
+        atc4_values=["C10C0"],
+    )
+    joined = "\n".join(message["content"] for message in messages)
+
+    assert "0~2개" in joined
+    assert "정의만" in joined
+    assert "affected_row_count" not in joined
+
+
+def test_brand_share_prompt_uses_fixed_market_and_brand_specific_vocab_without_generation() -> None:
+    market_topics = [TopicDefinition("T1", "효능", "효능 메시지", ())]
+    brand_topics = [TopicDefinition("B1", "제형 편의", "제형 편의 메시지", ())]
+
+    messages = brand_share_prompt(
+        atc4="C10C0",
+        brand="LIVALOZET",
+        axis_version="v1",
+        topics=market_topics,
+        brand_specific_topics=brand_topics,
+        description=_description("LIVALOZET"),
+        rows=[_row(1, "C10C0", "LIVALOZET")],
+    )
+    joined = "\n".join(message["content"] for message in messages)
+
+    assert "신규 토픽을 만들지 않는다" in joined
+    assert "B1" in joined
+    assert "제형 편의" in joined
 
 
 def test_apply_csd_market_names_uses_english_group_union_and_flags_missing() -> None:

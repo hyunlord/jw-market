@@ -300,11 +300,7 @@ def _first_call_text(call_log: list[JsonValue], key: str) -> str:
 def _serving_id(model_id: str) -> str:
     """Map the retained serving-direct model aliases to their serving ids."""
     match model_id:
-        case "genos-pro":
-            return "145"
-        case "genos-flash":
-            return "76"
-        case "genos-lite":
+        case "genos-pro" | "genos-flash" | "genos-lite":
             return "163"
         case _:
             return ""

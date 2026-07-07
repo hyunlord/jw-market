@@ -15,11 +15,11 @@ from .market_groups import source_scope_key_from_brand_sample_key
 from .market_scope import scope_id
 from .models import BrandDescription, CallLog, JsonValue, KeywordRow, TopicDefinition
 from .privacy import estimate_tokens
-from .prompts import PROMPT_VERSION, brand_share_prompt, market_axis_merge_prompt, market_axis_prompt, market_seed_dictionary
+from .prompts import PROMPT_VERSION, brand_share_prompt, brand_specific_axis_prompt, market_axis_merge_prompt, market_axis_prompt, market_seed_dictionary
 from .qc_probe import artificial_qc_probe
 from .quality import dictionary_cross_check, drift_check, mechanical_guard
 from .quarantine import axis_failed, brand_axis_quarantine
-from .response import axis_topic_label_map, normalize_axis_payload, normalize_share_payload, topics_from_axis
+from .response import axis_topic_label_map, brand_specific_topics_from_payload, normalize_axis_payload, normalize_share_payload, topics_from_axis
 from .stability import axis_similarity, max_share_delta_pp, stabilize_axis
 
 
@@ -39,6 +39,7 @@ def build_call_plan(
     markets: tuple[str, ...],
     axis_samples: dict[str, list[KeywordRow]],
     brand_samples: dict[str, list[KeywordRow]],
+    brand_axis_samples: dict[str, list[KeywordRow]] | None = None,
     large_markets: tuple[str, ...],
     scope_metadata: dict[str, JsonValue] | None = None,
     axis_chunk_token_budget: int = 8000,
@@ -51,6 +52,9 @@ def build_call_plan(
         rows.extend(_axis_plan_rows("market_axis", "flash", scope_key, sample_rows, f"{_scope_id(scope_key, metadata)}:new", metadata, token_budget=axis_chunk_token_budget))
     for sample_key, sample_rows in brand_samples.items():
         scope_key, atc4, brand = source_scope_key_from_brand_sample_key(sample_key)
+        brand_axis_rows = (brand_axis_samples or {}).get(sample_key, [])
+        if brand_axis_rows:
+            rows.extend(_share_plan_rows("brand_specific_axis", "flash", scope_key, atc4, brand, brand_axis_rows, f"{_scope_id(scope_key, metadata)}:brand-specific", metadata, token_budget=brand_batch_token_budget))
         rows.extend(_share_plan_rows("brand_share", "flash", scope_key, atc4, brand, sample_rows, f"{_scope_id(scope_key, metadata)}:new", metadata, token_budget=brand_batch_token_budget))
     for scope_key in large_markets:
         sample_rows = axis_samples[scope_key]
@@ -71,6 +75,7 @@ def execute_calls(
     dictionary: dict[str, JsonValue],
     axis_samples: dict[str, list[KeywordRow]],
     brand_samples: dict[str, list[KeywordRow]],
+    brand_axis_samples: dict[str, list[KeywordRow]] | None = None,
     descriptions: dict[str, BrandDescription],
     markets: tuple[str, ...],
     large_markets: tuple[str, ...],
@@ -86,6 +91,7 @@ def execute_calls(
     dictionary_results = _dictionary_results(dictionary, brand_samples)
     call_logs: list[CallLog] = []
     axis_topics: dict[str, list[TopicDefinition]] = {}
+    brand_specific_topics: dict[str, list[TopicDefinition]] = {}
     failed_scopes: set[str] = set()
     for scope_key, sample_rows in axis_samples.items():
         payload, logs = _call_axis_map_reduce(token, dictionary, scope_key, metadata, sample_rows, task="market_axis", model_key="flash", token_budget=axis_chunk_token_budget)
@@ -112,9 +118,12 @@ def execute_calls(
             brand_results[sample_key].update(_brand_metadata(description))
             continue
         description = descriptions[f"{atc4}:{brand}"]
-        normalized, logs = _call_share_batches(token, scope_key, metadata, atc4, brand, sample_rows, description, axis_topics[scope_key], "flash", task="brand_share", token_budget=brand_batch_token_budget)
+        generated_topics, logs = _call_brand_specific_axis_if_needed(token, scope_key, metadata, atc4, brand, (brand_axis_samples or {}).get(sample_key, []), description, axis_topics[scope_key], "flash")
         call_logs.extend(logs)
-        valid_ids = {topic.topic_id for topic in axis_topics[scope_key]}
+        brand_specific_topics[sample_key] = generated_topics
+        normalized, logs = _call_share_batches(token, scope_key, metadata, atc4, brand, sample_rows, description, axis_topics[scope_key], generated_topics, "flash", task="brand_share", token_budget=brand_batch_token_budget)
+        call_logs.extend(logs)
+        valid_ids = {topic.topic_id for topic in axis_topics[scope_key]} | {topic.topic_id for topic in generated_topics}
         normalized["scope_key"] = scope_key
         normalized["display_name"] = _display_name(scope_key, metadata)
         normalized["atc4_values"] = _scope_atc4_values(scope_key, metadata)
@@ -132,7 +141,7 @@ def execute_calls(
         first_brand_key = _first_brand_key_for_scope(brand_samples, scope_key)
         if first_brand_key:
             _source_scope, atc4, brand = source_scope_key_from_brand_sample_key(first_brand_key)
-            brand_results.update(_tier_share_recheck(token, scope_key, metadata, atc4, brand, first_brand_key, brand_samples[first_brand_key], descriptions[f"{atc4}:{brand}"], axis_topics[scope_key], call_logs, token_budget=brand_batch_token_budget))
+            brand_results.update(_tier_share_recheck(token, scope_key, metadata, atc4, brand, first_brand_key, brand_samples[first_brand_key], descriptions[f"{atc4}:{brand}"], axis_topics[scope_key], brand_specific_topics.get(first_brand_key, []), call_logs, token_budget=brand_batch_token_budget))
     for scope_key in large_markets[:2]:
         if scope_key in failed_scopes:
             continue
@@ -195,6 +204,7 @@ def _call_share(
     rows: list[KeywordRow],
     description: BrandDescription,
     topics: list[TopicDefinition],
+    brand_specific_topics: list[TopicDefinition],
     model_key: str,
     *,
     task: str,
@@ -202,7 +212,8 @@ def _call_share(
     """Call one model for a brand-share payload and normalize it."""
     spec = MODEL_SPECS[model_key]
     axis_version = f"{_scope_id(scope_key, scope_metadata)}:{PROMPT_VERSION}"
-    input_hash = stable_input_hash(rows, prompt_version=PROMPT_VERSION, axis_version=axis_version, extra={"task": task, "model": model_key, "scope": scope_key, "topics": [topic.topic_id for topic in topics]})
+    all_topics = topics + brand_specific_topics
+    input_hash = stable_input_hash(rows, prompt_version=PROMPT_VERSION, axis_version=axis_version, extra={"task": task, "model": model_key, "scope": scope_key, "topics": [topic.topic_id for topic in all_topics]})
     payload, log = call_genos_json(
         token=token,
         spec=spec,
@@ -210,11 +221,60 @@ def _call_share(
         scope_id=_scope_id(scope_key, scope_metadata),
         atc4=atc4,
         brand=brand,
-        messages=brand_share_prompt(atc4=atc4, brand=brand, axis_version=axis_version, topics=topics, description=description, rows=rows, scope_id=_scope_id(scope_key, scope_metadata), market_name=_display_name(scope_key, scope_metadata), atc4_values=_scope_atc4_values(scope_key, scope_metadata)),
+        messages=brand_share_prompt(atc4=atc4, brand=brand, axis_version=axis_version, topics=topics, brand_specific_topics=brand_specific_topics, description=description, rows=rows, scope_id=_scope_id(scope_key, scope_metadata), market_name=_display_name(scope_key, scope_metadata), atc4_values=_scope_atc4_values(scope_key, scope_metadata)),
         rows=rows,
         input_hash=input_hash,
     )
-    return normalize_share_payload(payload, brand=brand, atc4=atc4, scope_id=_scope_id(scope_key, scope_metadata), axis_version=axis_version, row_count=len(rows), axis_topics=topics), log
+    return normalize_share_payload(payload, brand=brand, atc4=atc4, scope_id=_scope_id(scope_key, scope_metadata), axis_version=axis_version, row_count=len(rows), axis_topics=all_topics), log
+
+
+def _call_brand_specific_axis_if_needed(
+    token: str,
+    scope_key: str,
+    scope_metadata: dict[str, dict[str, JsonValue]],
+    atc4: str,
+    brand: str,
+    rows: list[KeywordRow],
+    description: BrandDescription,
+    market_topics: list[TopicDefinition],
+    model_key: str,
+) -> tuple[list[TopicDefinition], list[CallLog]]:
+    """Generate definition-only brand-specific topics for recent rows."""
+    if not rows:
+        return [], []
+    topics, log = _call_brand_specific_axis(token, scope_key, scope_metadata, atc4, brand, rows, description, market_topics, model_key, task="brand_specific_axis")
+    return topics, [log]
+
+
+def _call_brand_specific_axis(
+    token: str,
+    scope_key: str,
+    scope_metadata: dict[str, dict[str, JsonValue]],
+    atc4: str,
+    brand: str,
+    rows: list[KeywordRow],
+    description: BrandDescription,
+    market_topics: list[TopicDefinition],
+    model_key: str,
+    *,
+    task: str,
+) -> tuple[list[TopicDefinition], CallLog]:
+    """Call one model for definition-only brand-specific topics."""
+    spec = MODEL_SPECS[model_key]
+    axis_version = f"{_scope_id(scope_key, scope_metadata)}:{PROMPT_VERSION}"
+    input_hash = stable_input_hash(rows, prompt_version=PROMPT_VERSION, axis_version=axis_version, extra={"task": task, "model": model_key, "scope": scope_key, "brand": brand, "market_topics": [topic.topic_id for topic in market_topics]})
+    payload, log = call_genos_json(
+        token=token,
+        spec=spec,
+        task=task,
+        scope_id=_scope_id(scope_key, scope_metadata),
+        atc4=atc4,
+        brand=brand,
+        messages=brand_specific_axis_prompt(atc4=atc4, brand=brand, rows=rows, description=description, market_topics=market_topics, scope_id=_scope_id(scope_key, scope_metadata), market_name=_display_name(scope_key, scope_metadata), atc4_values=_scope_atc4_values(scope_key, scope_metadata)),
+        rows=rows,
+        input_hash=input_hash,
+    )
+    return brand_specific_topics_from_payload(payload, fallback_label=f"{brand} 특화"), log
 
 
 def _call_axis_map_reduce(
@@ -286,6 +346,7 @@ def _call_share_batches(
     rows: list[KeywordRow],
     description: BrandDescription,
     topics: list[TopicDefinition],
+    brand_specific_topics: list[TopicDefinition],
     model_key: str,
     *,
     task: str,
@@ -299,7 +360,7 @@ def _call_share_batches(
         batch_logs: list[CallLog] = []
         normalized: dict[str, JsonValue] = {}
         for attempt in range(1, 3):
-            normalized, log = _call_share(token, scope_key, scope_metadata, atc4, brand, list(batch), description, topics, model_key, task=task if len(batches) == 1 else f"{task}_batch")
+            normalized, log = _call_share(token, scope_key, scope_metadata, atc4, brand, list(batch), description, topics, brand_specific_topics, model_key, task=task if len(batches) == 1 else f"{task}_batch")
             batch_logs.append(log)
             if normalized.get("status") == "ok":
                 break
@@ -312,7 +373,7 @@ def _call_share_batches(
     if len(normalized_batches) == 1:
         normalized_batches[0]["batching"] = {"mode": "single_call", **chunk_summary(batches, token_budget=token_budget), "batch_attempts": int(normalized_batches[0].get("batch_attempts") or 1)}
         return normalized_batches[0], logs
-    aggregated = _aggregate_share_batches(normalized_batches, brand=brand, atc4=atc4, scope_id=_scope_id(scope_key, scope_metadata), axis_version=f"{_scope_id(scope_key, scope_metadata)}:{PROMPT_VERSION}", topics=topics, token_budget=token_budget)
+    aggregated = _aggregate_share_batches(normalized_batches, brand=brand, atc4=atc4, scope_id=_scope_id(scope_key, scope_metadata), axis_version=f"{_scope_id(scope_key, scope_metadata)}:{PROMPT_VERSION}", topics=topics, brand_specific_topics=brand_specific_topics, token_budget=token_budget)
     return aggregated, logs
 
 
@@ -324,6 +385,7 @@ def _aggregate_share_batches(
     scope_id: str,
     axis_version: str,
     topics: list[TopicDefinition],
+    brand_specific_topics: list[TopicDefinition] | None = None,
     token_budget: int,
 ) -> dict[str, JsonValue]:
     """Aggregate batch-level independent topic influence into full-brand percentages."""
@@ -332,12 +394,12 @@ def _aggregate_share_batches(
     topic_counts = {topic.topic_id: 0.0 for topic in topics}
     topic_labels = {topic.topic_id: topic.label for topic in topics}
     brand_counts: dict[str, float] = {}
-    brand_labels: dict[str, str] = {}
+    brand_labels = {topic.topic_id: topic.label for topic in brand_specific_topics or ()}
     empty_successes = 0
     backfill_count = sum(int(batch.get("topic_id_backfill_count") or 0) for batch in successful)
     unmatched_labels: list[str] = []
     for batch in successful:
-        batch_topic_counts, batch_brand_counts, batch_backfills, batch_unmatched = _batch_distribution(batch, topics)
+        batch_topic_counts, batch_brand_counts, batch_backfills, batch_unmatched = _batch_distribution(batch, topics, brand_specific_topics or ())
         backfill_count += batch_backfills
         unmatched_labels.extend(batch_unmatched)
         if sum(batch_topic_counts.values()) + sum(batch_brand_counts.values()) <= 0.0:
@@ -347,7 +409,7 @@ def _aggregate_share_batches(
             topic_counts[topic_id] += count
         for label, count in batch_brand_counts.items():
             brand_counts[label] = brand_counts.get(label, 0.0) + count
-            brand_labels[label] = label
+            brand_labels.setdefault(label, label)
     failed_count = len(batches) - len(successful) + empty_successes
     if total_rows <= 0:
         return {"status": "quarantined_invalid_schema", "brand": brand, "atc4": atc4, "scope_id": scope_id, "axis_version": axis_version, "row_count": 0, "source_row_count": total_rows, "reason": "empty_successful_brand_batches", "topic_shares": [], "partial_failure": bool(failed_count)}
@@ -363,13 +425,13 @@ def _aggregate_share_batches(
     ]
     brand_specific_candidates = [
         {
-            "topic_id": f"B{index}",
-            "label": brand_labels[label],
+            "topic_id": topic_id,
+            "label": brand_labels[topic_id],
             "affected_row_count": int(min(round(count), total_rows)),
             "share_pct": round(min(round(count), total_rows) * 100.0 / total_rows, 1),
             "source": "brand_specific",
         }
-        for index, (label, count) in enumerate(sorted(brand_counts.items(), key=lambda item: (-item[1], item[0])), start=1)
+        for index, (topic_id, count) in enumerate(sorted(brand_counts.items(), key=lambda item: (-item[1], item[0])), start=1)
         if count > 0.0
     ]
     brand_specific, brand_dedup_log = collapse_brand_specific_topics(brand_specific_candidates)
@@ -407,7 +469,7 @@ def _aggregate_share_batches(
     }
 
 
-def _batch_distribution(batch: dict[str, JsonValue], topics: Iterable[TopicDefinition]) -> tuple[dict[str, float], dict[str, float], int, list[str]]:
+def _batch_distribution(batch: dict[str, JsonValue], topics: Iterable[TopicDefinition], brand_specific_topics: Iterable[TopicDefinition] = ()) -> tuple[dict[str, float], dict[str, float], int, list[str]]:
     """Return market-topic and brand-topic affected row counts for one batch."""
     topic_list = list(topics)
     topic_counts = {topic.topic_id: 0.0 for topic in topic_list}
@@ -427,14 +489,23 @@ def _batch_distribution(batch: dict[str, JsonValue], topics: Iterable[TopicDefin
         if topic_id in topic_counts:
             affected = float(item.get("affected_row_count") or item.get("row_count") or 0.0)
             topic_counts[topic_id] += max(0.0, affected)
+    brand_topic_list = list(brand_specific_topics)
+    brand_topic_ids = {topic.topic_id for topic in brand_topic_list}
+    brand_label_map = axis_topic_label_map(brand_topic_list)
     brand_counts: dict[str, float] = {}
     for share in _list(batch.get("brand_specific_topics")):
         item = _dict(share)
-        label, _rewritten = single_concept_label(str(item.get("label") or item.get("topic_id") or ""))
-        if not label:
+        topic_id = str(item.get("topic_id") or "")
+        if brand_topic_ids and topic_id not in brand_topic_ids:
+            label, _rewritten = single_concept_label(str(item.get("label") or ""))
+            topic_id = brand_label_map.get("".join(label.split()).casefold(), "")
+        elif not brand_topic_ids:
+            label, _rewritten = single_concept_label(str(item.get("label") or topic_id))
+            topic_id = label
+        if not topic_id:
             continue
         affected = float(item.get("affected_row_count") or item.get("row_count") or 0.0)
-        brand_counts[label] = brand_counts.get(label, 0.0) + max(0.0, affected)
+        brand_counts[topic_id] = brand_counts.get(topic_id, 0.0) + max(0.0, affected)
     return topic_counts, brand_counts, backfill_count, unmatched_labels
 
 
@@ -483,6 +554,7 @@ def _tier_share_recheck(
     rows: list[KeywordRow],
     description: BrandDescription,
     topics: list[TopicDefinition],
+    brand_specific_topics: list[TopicDefinition],
     call_logs: list[CallLog],
     *,
     token_budget: int,
@@ -490,7 +562,7 @@ def _tier_share_recheck(
     """Run the flash-lite brand-share recheck for the first sampled large-market brand."""
     results: dict[str, JsonValue] = {}
     for model_key in ("lite",):
-        payload, logs = _call_share_batches(token, scope_key, scope_metadata, atc4, brand, rows, description, topics, model_key, task="brand_share_tier_recheck", token_budget=token_budget)
+        payload, logs = _call_share_batches(token, scope_key, scope_metadata, atc4, brand, rows, description, topics, brand_specific_topics, model_key, task="brand_share_tier_recheck", token_budget=token_budget)
         payload.update(_brand_metadata(description))
         call_logs.extend(logs)
         results[f"{sample_key}:{model_key}"] = payload
