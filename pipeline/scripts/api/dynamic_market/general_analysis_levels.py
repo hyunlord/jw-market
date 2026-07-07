@@ -155,6 +155,13 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
     dimension_data = _json_object(clone.get("dimension_data"))
     dimension_channel_data = _json_object(clone.get("dimension_channel_data"))
     dimension_specialty_data = _json_object(clone.get("dimension_specialty_data"))
+    if _uses_source_specific_dimensions(specs):
+        for spec in specs:
+            canonical_field = FIELD_BY_CANONICAL_LEVEL[spec.canonical_level]
+            by_dimension.pop(canonical_field, None)
+            dimension_data.pop(canonical_field, None)
+            dimension_channel_data.pop(canonical_field, None)
+            dimension_specialty_data.pop(canonical_field, None)
     for spec in specs:
         canonical_field = FIELD_BY_CANONICAL_LEVEL[spec.canonical_level]
         source_value = by_dimension.get(spec.source_field)
@@ -171,6 +178,10 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
     for key in ("__by_dimension", "__dimension_data", "__dimension_channel_data", "__dimension_specialty_data"):
         clone.pop(key, None)
     return clone
+
+
+def _uses_source_specific_dimensions(specs: tuple[GeneralLevelSpec, ...]) -> bool:
+    return any(spec.source_field not in FIELD_BY_CANONICAL_LEVEL.values() for spec in specs)
 
 
 def _rows_from_metrics(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> list[dict[str, Any]]:

@@ -20,6 +20,8 @@ from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMe
 
 logger = logging.getLogger(__name__)
 
+IQVIA_GENERAL_DIMENSIONS = frozenset({"mfr", "molecule_type", "molecule_desc", "strength", "nhi"})
+
 
 def build_analysis_rows(
     *,
@@ -31,6 +33,7 @@ def build_analysis_rows(
     """Return cache-cause mart rows enriched for analysis-level builders."""
 
     general_dimensions = _general_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
+    sidecar_dimensions = _general_sidecar_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
     strategic_dimensions = _strategic_dimensions_by_brand(
         definition=definition,
         source=metrics.source,
@@ -41,6 +44,7 @@ def build_analysis_rows(
         metrics=metrics,
         focus=focus,
         general_dimensions=general_dimensions,
+        sidecar_dimensions=sidecar_dimensions,
         strategic_dimensions=strategic_dimensions,
     )
     return rows
@@ -85,6 +89,49 @@ def _general_dimensions_by_pair(
     return payloads
 
 
+def _general_sidecar_dimensions_by_pair(
+    *,
+    metrics: AggregatedMetrics,
+    mart_db: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if metrics.source != "iqvia_nsa" or not metrics.all_brands:
+        return {}
+    scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(_brand_refs(metrics))
+    rows = db.fetch_all(
+        f"""
+        SELECT brand_key, brand_name, atc4_code, dimension_type, dimension_value, raw_value_history
+        FROM {quote_identifier(mart_db)}.mart_general_filter_dimension_metric
+        WHERE source = %s
+          AND measure = %s
+          AND dimension_type IN %s
+          AND {scope_sql}
+        ORDER BY brand_name, brand_key, dimension_type, dimension_value
+        """,
+        (metrics.source, metrics.measure, tuple(sorted(IQVIA_GENERAL_DIMENSIONS)), *scope_params),
+    )
+    payloads: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row["brand_key"]), str(row["atc4_code"]))
+        if pair_scope and key not in pair_scope:
+            continue
+        dimension_type = str(row.get("dimension_type") or "")
+        dimension_value = str(row.get("dimension_value") or "").strip()
+        if dimension_type not in IQVIA_GENERAL_DIMENSIONS or not dimension_value:
+            continue
+        payload = payloads.setdefault(key, {"by_dimension": {}, "dimension_data": {}})
+        payload["by_dimension"].setdefault(dimension_type, dimension_value)
+        field_data = payload["dimension_data"].setdefault(dimension_type, {})
+        field_data.setdefault(dimension_value, {})
+        _add_history(field_data[dimension_value], row.get("raw_value_history"))
+    return {
+        key: {
+            "by_dimension": json.dumps(value["by_dimension"], ensure_ascii=False, sort_keys=True),
+            "dimension_data": json.dumps(value["dimension_data"], ensure_ascii=False, sort_keys=True),
+        }
+        for key, value in payloads.items()
+    }
+
+
 def _strategic_dimensions_by_brand(
     *,
     definition: MarketDefinition,
@@ -127,6 +174,7 @@ def _analysis_rows(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     general_dimensions: dict[tuple[str, str], dict[str, Any]],
+    sidecar_dimensions: dict[tuple[str, str], dict[str, Any]],
     strategic_dimensions: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     totals_by_period = {
@@ -138,6 +186,7 @@ def _analysis_rows(
         row = _base_analysis_row(brand=brand, metrics=metrics, focus=focus)
         key = (brand.brand_key, brand.atc4_code)
         row = _merge_dimension_payload(row, general_dimensions.get(key))
+        row = _merge_dimension_payload(row, sidecar_dimensions.get(key))
         strategic = strategic_dimensions.get(brand.brand_key) or strategic_dimensions.get(brand.brand_name) or {}
         if strategic.get("by_dimension"):
             row["by_dimension"] = _merge_dimension_labels(row.get("by_dimension"), strategic["by_dimension"])
@@ -205,6 +254,22 @@ def _merge_dimension_labels(existing: Any, extra: Any) -> str:
             continue
         merged[key] = value
     return json.dumps(merged, ensure_ascii=False, sort_keys=True)
+
+
+def _add_history(target: dict[str, Any], raw_history: Any) -> None:
+    history = _json_object(raw_history)
+    for period, item in history.items():
+        bucket = target.setdefault(str(period), {"raw_value": 0.0})
+        if not isinstance(bucket, dict):
+            continue
+        if isinstance(item, dict):
+            value = item.get("raw_value") or item.get("value") or 0.0
+        else:
+            value = item or 0.0
+        try:
+            bucket["raw_value"] = float(bucket.get("raw_value") or 0.0) + float(value or 0.0)
+        except (TypeError, ValueError):
+            continue
 
 
 def _is_empty_dimension_value(value: Any) -> bool:

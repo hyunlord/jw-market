@@ -93,11 +93,12 @@ def build_cause_data(
     ubist_channels = _general_ubist_channels(metrics)
     if analysis_sections and isinstance(analysis_sections.get("ubist_channel_context"), dict):
         ubist_channels = _ubist_channels_from_context(analysis_sections["ubist_channel_context"], fallback=ubist_channels)
+    target_channels = _general_target_customer_channels(metrics=metrics, ubist_channels=ubist_channels)
     target_competition_by_channel = _target_customer_competition_by_channel(
         analysis_sections=analysis_sections,
         metrics=metrics,
         focus=focus,
-        channels=ubist_channels["specialty_channels"],
+        channels=target_channels,
     )
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     data = {
@@ -184,7 +185,7 @@ def _target_customer_competition_by_channel(
     focus: BrandMetric | None,
     channels: list[Any],
 ) -> dict[str, Any]:
-    if metrics.source != "ubist" or not analysis_sections or not channels:
+    if metrics.source not in {"ubist", "iqvia_nsa"} or not analysis_sections or not channels:
         return {}
     rows = analysis_sections.get("rows")
     if not isinstance(rows, list):
@@ -197,6 +198,19 @@ def _target_customer_competition_by_channel(
         periods=periods,
         channels=[str(channel) for channel in channels if str(channel)],
     )
+
+
+def _general_target_customer_channels(
+    *,
+    metrics: AggregatedMetrics,
+    ubist_channels: dict[str, list[Any]],
+) -> list[Any]:
+    if metrics.source == "ubist":
+        return ubist_channels["specialty_channels"]
+    if metrics.source != "iqvia_nsa":
+        return []
+    channels = _general_iqvia_audit_channel_names(metrics)
+    return channels or cause_builder._channels_for_source("IQVIA")
 
 
 def _general_ubist_channels(metrics: AggregatedMetrics, *, max_channels: int = 4) -> dict[str, list[Any]]:
@@ -313,6 +327,16 @@ def _general_iqvia_audit_codes(metrics: AggregatedMetrics) -> list[dict[str, Any
             }
         )
     return summaries
+
+
+def _general_iqvia_audit_channel_names(metrics: AggregatedMetrics) -> list[str]:
+    channels = [item["audit_code"] for item in _general_iqvia_audit_codes(metrics) if item.get("audit_code")]
+    if not channels:
+        return []
+    ordered = [channel for channel in cause_builder._channels_for_source("IQVIA") if channel == "전체" or channel in channels]
+    if "전체" not in ordered:
+        ordered.insert(0, "전체")
+    return ordered
 
 
 def _latest_audit_matrix_period(metrics: AggregatedMetrics) -> str | None:

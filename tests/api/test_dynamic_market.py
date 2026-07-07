@@ -1153,6 +1153,191 @@ def test_cause_payload_uses_iqvia_source_levels_without_pack_desc(monkeypatch) -
     assert "PACK DESC" not in payload["data"]["analysis_levels"]["data"]
 
 
+def test_cause_payload_uses_iqvia_sidecar_values_over_canonical_dimensions(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: object = ()) -> list[dict[str, object]]:
+        if "mart_general_filter_dimension_metric" in sql:
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10B1",
+                    "dimension_type": "mfr",
+                    "dimension_value": "JW중외제약",
+                    "raw_value_history": json.dumps({"2026-Q1": 100.0, "2026-Q2": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10B1",
+                    "dimension_type": "molecule_type",
+                    "dimension_value": "SINGLE",
+                    "raw_value_history": json.dumps({"2026-Q1": 100.0, "2026-Q2": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10B1",
+                    "dimension_type": "molecule_desc",
+                    "dimension_value": "ANAGLIPTIN",
+                    "raw_value_history": json.dumps({"2026-Q1": 100.0, "2026-Q2": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10B1",
+                    "dimension_type": "strength",
+                    "dimension_value": "100MG",
+                    "raw_value_history": json.dumps({"2026-Q1": 100.0, "2026-Q2": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10B1",
+                    "dimension_type": "nhi",
+                    "dimension_value": "NHI",
+                    "raw_value_history": json.dumps({"2026-Q1": 100.0, "2026-Q2": 120.0}),
+                },
+            ]
+        if "mart_general_brand_metric" in sql:
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10B1",
+                    "source": "iqvia_nsa",
+                    "measure": "sales",
+                    "unit_label": "KRW",
+                    "by_dimension": json.dumps(
+                        {
+                            "company": "JW중외제약",
+                            "molecule": "TENELIGLIPTIN",
+                            "dosage_form": "Oral Solid Ordinary Tablets",
+                            "nhi_type": "NON-NHI",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "dimension_data": json.dumps(
+                        {
+                            "molecule": {"TENELIGLIPTIN": {"2026-Q1": {"raw_value": 100.0}, "2026-Q2": {"raw_value": 120.0}}},
+                            "dosage_form": {
+                                "Oral Solid Ordinary Tablets": {"2026-Q1": {"raw_value": 100.0}, "2026-Q2": {"raw_value": 120.0}}
+                            },
+                            "nhi_type": {"NON-NHI": {"2026-Q1": {"raw_value": 100.0}, "2026-Q2": {"raw_value": 120.0}}},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "dimension_channel_data": json.dumps({}, ensure_ascii=False),
+                    "channel_data": json.dumps({}, ensure_ascii=False),
+                    "channel_specialty_matrix": json.dumps({}, ensure_ascii=False),
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", fake_fetch_all)
+
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["A10B1"], "source": "iqvia_nsa", "measure": "sales"},
+        source="iqvia_nsa",
+        measure="sales",
+    )
+    focus = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "A10B1",
+        120.0,
+        60.0,
+        1,
+        "2026-Q2",
+        120.0,
+        ({"period": "2026-Q1", "value": 100.0}, {"period": "2026-Q2", "value": 120.0}),
+        history_by_period={"2026-Q1": 100.0, "2026-Q2": 120.0},
+        analysis_row={"by_dimension": "{}", "dimension_data": "{}", "dimension_channel_data": "{}", "channel_data": "{}"},
+    )
+    metrics = AggregatedMetrics(
+        source="iqvia_nsa",
+        measure="sales",
+        unit_label="KRW",
+        market_size=200.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-Q1", "market_size": 100.0}, {"period": "2026-Q2", "market_size": 200.0}),
+        brands=(focus,),
+        all_brands=(focus,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    by_level = payload["data"]["level_top5_trend"]["by_level"]
+    assert by_level["MFR NAME KOR"]["all_options"] == ["전체", "JW중외제약"]
+    assert by_level["MOLECULE TYPE"]["all_options"] == ["전체", "SINGLE"]
+    assert by_level["MOLECULE DESC"]["all_options"] == ["전체", "ANAGLIPTIN"]
+    assert by_level["STRENGTH"]["all_options"] == ["전체", "100MG"]
+    assert by_level["NHI TYPE"]["all_options"] == ["전체", "NHI"]
+    assert "TENELIGLIPTIN" not in by_level["MOLECULE TYPE"]["all_options"]
+    assert "Oral Solid Ordinary Tablets" not in by_level["MOLECULE DESC"]["all_options"]
+    assert "NON-NHI" not in by_level["STRENGTH"]["all_options"]
+
+
+def test_cause_payload_builds_iqvia_target_customer_from_audit_channels(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["A10B1"], "source": "iqvia_nsa", "measure": "sales"},
+        source="iqvia_nsa",
+        measure="sales",
+    )
+    focus = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "A10B1",
+        120.0,
+        60.0,
+        1,
+        "2026-Q2",
+        120.0,
+        ({"period": "2026-Q1", "value": 100.0}, {"period": "2026-Q2", "value": 120.0}),
+        history_by_period={"2026-Q1": 100.0, "2026-Q2": 120.0},
+        analysis_row={
+            "by_dimension": json.dumps({"mfr": "JW중외제약"}, ensure_ascii=False),
+            "dimension_data": json.dumps({"mfr": {"JW중외제약": {"2026-Q1": {"raw_value": 100.0}, "2026-Q2": {"raw_value": 120.0}}}}, ensure_ascii=False),
+            "dimension_channel_data": json.dumps({}, ensure_ascii=False),
+            "channel_data": json.dumps(
+                {
+                    "KHPA": {"2026-Q1": {"raw_value": 40.0}, "2026-Q2": {"raw_value": 50.0}},
+                    "KCPA": {"2026-Q1": {"raw_value": 20.0}, "2026-Q2": {"raw_value": 30.0}},
+                    "KPA": {"2026-Q1": {"raw_value": 40.0}, "2026-Q2": {"raw_value": 40.0}},
+                },
+                ensure_ascii=False,
+            ),
+        },
+        audit_code_matrix={
+            "KHPA": {"2026-Q1": 40.0, "2026-Q2": 50.0},
+            "KCPA": {"2026-Q1": 20.0, "2026-Q2": 30.0},
+            "KPA": {"2026-Q1": 40.0, "2026-Q2": 40.0},
+        },
+    )
+    metrics = AggregatedMetrics(
+        source="iqvia_nsa",
+        measure="sales",
+        unit_label="KRW",
+        market_size=200.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-Q1", "market_size": 100.0}, {"period": "2026-Q2", "market_size": 200.0}),
+        brands=(focus,),
+        all_brands=(focus,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    target_competition = payload["data"]["target_customer_competition_by_channel"]
+    assert target_competition["targets"] == ["전체", "KHPA", "KCPA", "KPA"]
+    assert [view["target_name"] for view in target_competition["views"]] == ["전체", "KHPA", "KCPA", "KPA"]
+    assert payload["data"]["target_customer_competition"] == target_competition
+
+
 def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_top5() -> None:
     definition = MarketDefinition(
         view="strategic_ml",
