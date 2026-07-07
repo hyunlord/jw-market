@@ -21,6 +21,11 @@ from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMe
 logger = logging.getLogger(__name__)
 
 IQVIA_GENERAL_DIMENSIONS = frozenset({"mfr", "molecule_type", "molecule_desc", "strength", "nhi"})
+UBIST_GENERAL_DIMENSIONS = frozenset({"seller", "molecule_strength", "form", "route", "reimbursement"})
+GENERAL_SIDECAR_DIMENSIONS_BY_SOURCE = {
+    "iqvia_nsa": IQVIA_GENERAL_DIMENSIONS,
+    "ubist": UBIST_GENERAL_DIMENSIONS,
+}
 
 
 def build_analysis_rows(
@@ -94,7 +99,8 @@ def _general_sidecar_dimensions_by_pair(
     metrics: AggregatedMetrics,
     mart_db: str,
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    if metrics.source != "iqvia_nsa" or not metrics.all_brands:
+    dimension_types = GENERAL_SIDECAR_DIMENSIONS_BY_SOURCE.get(metrics.source)
+    if not dimension_types or not metrics.all_brands:
         return {}
     scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(_brand_refs(metrics))
     rows = db.fetch_all(
@@ -107,7 +113,7 @@ def _general_sidecar_dimensions_by_pair(
           AND {scope_sql}
         ORDER BY brand_name, brand_key, dimension_type, dimension_value
         """,
-        (metrics.source, metrics.measure, tuple(sorted(IQVIA_GENERAL_DIMENSIONS)), *scope_params),
+        (metrics.source, metrics.measure, tuple(sorted(dimension_types)), *scope_params),
     )
     payloads: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
@@ -116,7 +122,7 @@ def _general_sidecar_dimensions_by_pair(
             continue
         dimension_type = str(row.get("dimension_type") or "")
         dimension_value = str(row.get("dimension_value") or "").strip()
-        if dimension_type not in IQVIA_GENERAL_DIMENSIONS or not dimension_value:
+        if dimension_type not in dimension_types or not dimension_value:
             continue
         payload = payloads.setdefault(key, {"by_dimension": {}, "dimension_data": {}})
         payload["by_dimension"].setdefault(dimension_type, dimension_value)

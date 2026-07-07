@@ -84,7 +84,11 @@ def build_general_analysis_level_sections(
     channels = list(cause_builder._channels_for_source(source_api))
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
-        ubist_channel_context = resolve_market_channels(rows=canonical_rows, market={}, measure=metrics.measure)
+        ubist_channel_context = resolve_market_channels(
+            rows=canonical_rows,
+            market=dict(definition.market_catalog_row or {}),
+            measure=metrics.measure,
+        )
     analysis_levels = _rename_analysis_levels(
         cause_builder._build_analysis_levels_from_mart(
             rows=canonical_rows,

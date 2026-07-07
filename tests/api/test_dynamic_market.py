@@ -1279,6 +1279,190 @@ def test_cause_payload_uses_iqvia_sidecar_values_over_canonical_dimensions(monke
     assert "NON-NHI" not in by_level["STRENGTH"]["all_options"]
 
 
+def test_cause_payload_uses_ubist_sidecar_values_for_source_levels(monkeypatch) -> None:
+    queries: list[tuple[str, object]] = []
+
+    def fake_fetch_all(sql: str, params: object = ()) -> list[dict[str, object]]:
+        queries.append((sql, params))
+        if "mart_general_filter_dimension_metric" in sql:
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "seller",
+                    "dimension_value": "JW중외제약",
+                    "raw_value_history": json.dumps({"2026-01": 100.0, "2026-02": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "molecule_strength",
+                    "dimension_value": "PITAVASTATIN 2MG",
+                    "raw_value_history": json.dumps({"2026-01": 100.0, "2026-02": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "form",
+                    "dimension_value": "정제",
+                    "raw_value_history": json.dumps({"2026-01": 100.0, "2026-02": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "route",
+                    "dimension_value": "경구",
+                    "raw_value_history": json.dumps({"2026-01": 100.0, "2026-02": 120.0}),
+                },
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "reimbursement",
+                    "dimension_value": "급여",
+                    "raw_value_history": json.dumps({"2026-01": 100.0, "2026-02": 120.0}),
+                },
+            ]
+        if "mart_general_brand_metric" in sql:
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus Brand",
+                    "atc4_code": "A10N1",
+                    "source": "ubist",
+                    "measure": "sales",
+                    "unit_label": "KRW",
+                    "by_dimension": "{}",
+                    "dimension_data": "{}",
+                    "dimension_channel_data": "{}",
+                    "channel_data": "{}",
+                    "channel_specialty_matrix": "{}",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", fake_fetch_all)
+
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["A10N1"], "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+    )
+    focus = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "A10N1",
+        120.0,
+        60.0,
+        1,
+        "2026-02",
+        120.0,
+        ({"period": "2026-01", "value": 100.0}, {"period": "2026-02", "value": 120.0}),
+        history_by_period={"2026-01": 100.0, "2026-02": 120.0},
+        analysis_row={"by_dimension": "{}", "dimension_data": "{}", "dimension_channel_data": "{}", "channel_data": "{}"},
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=200.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 100.0}, {"period": "2026-02", "market_size": 200.0}),
+        brands=(focus,),
+        all_brands=(focus,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    by_level = payload["data"]["level_top5_trend"]["by_level"]
+    assert by_level["판매사"]["all_options"] == ["전체", "JW중외제약"]
+    assert by_level["성분용량"]["all_options"] == ["전체", "PITAVASTATIN 2MG"]
+    assert by_level["제형"]["all_options"] == ["전체", "정제"]
+    assert by_level["투여경로"]["all_options"] == ["전체", "경구"]
+    assert by_level["급여구분"]["all_options"] == ["전체", "급여"]
+    assert all(by_level[level]["values"] for level in ["판매사", "성분용량", "제형", "투여경로", "급여구분"])
+    analysis_levels = payload["data"]["analysis_levels"]
+    assert analysis_levels["data"]["판매사"]["segments"]
+    assert analysis_levels["data"]["성분용량"]["segments"]
+    assert any("mart_general_filter_dimension_metric" in sql for sql, _params in queries)
+
+
+def test_general_ubist_specialty_uses_market_catalog_for_channel_resolution(monkeypatch) -> None:
+    captured_markets: list[dict[str, object]] = []
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+
+    def fake_resolve_market_channels(*, rows: object, market: dict[str, object], measure: str) -> dict[str, object]:
+        captured_markets.append(dict(market))
+        return {
+            "specialty_channels": ["전체", "주요고객 종합병원 내분비", "의원 IGF"],
+            "specialty_target_channels": [
+                {"code": "TGH_ENDO", "display_name": "주요고객 종합병원 내분비"},
+                {"code": "CLINIC_IGF", "display_name": "의원 IGF"},
+            ],
+        }
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.general_analysis_levels.resolve_market_channels",
+        fake_resolve_market_channels,
+    )
+
+    market_catalog_row = {
+        "ml_id": "ml_006",
+        "target_customer": "주요고객 종합병원 내분비",
+        "target_customers": [{"display_name": "주요고객 종합병원 내분비"}],
+    }
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["A10N1"], "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+        market_catalog_row=market_catalog_row,
+    )
+    focus = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "A10N1",
+        120.0,
+        60.0,
+        1,
+        "2026-02",
+        120.0,
+        ({"period": "2026-01", "value": 100.0}, {"period": "2026-02", "value": 120.0}),
+        history_by_period={"2026-01": 100.0, "2026-02": 120.0},
+        analysis_row={
+            "by_dimension": json.dumps({"seller": "JW중외제약"}, ensure_ascii=False),
+            "dimension_data": json.dumps(
+                {"seller": {"JW중외제약": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 120.0}}}},
+                ensure_ascii=False,
+            ),
+            "dimension_channel_data": "{}",
+            "channel_data": "{}",
+        },
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=200.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 100.0}, {"period": "2026-02", "market_size": 200.0}),
+        brands=(focus,),
+        all_brands=(focus,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    assert captured_markets == [market_catalog_row]
+    assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 내분비", "의원 IGF"]
+
+
 def test_cause_payload_builds_iqvia_target_customer_from_audit_channels(monkeypatch) -> None:
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
 
