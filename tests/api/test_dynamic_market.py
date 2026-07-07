@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -1089,6 +1090,42 @@ def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:
         raise AssertionError("disabled molecule dimension was accepted")
 
 
+def test_build_dimension_filters_accepts_ubist_atc_narrowing_dimensions() -> None:
+    filters = resolvers.build_dimension_filters(
+        analysis_level={"ubist": {"atc3": ["A10N"], "atc4": ["A10N1", "A10N3"]}},
+        source="ubist",
+    )
+
+    assert filters == (
+        DimensionFilter("atc3", ("A10N",)),
+        DimensionFilter("atc4", ("A10N1", "A10N3")),
+    )
+
+
+def test_strategic_resolver_accepts_ubist_atc4_narrowing_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        assert params[:3] == ("ml_003", "ubist", "sales")
+        return [{"brand_key": "guardlet", "brand_name": "가드렛", "atc4_code": ""}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_one", lambda *_args, **_kwargs: {"ml_id": "ml_003"})
+
+    definition = StrategicViewResolver(mart_db="jw_mart").resolve(
+        view_kind="market_landscape",
+        ml_id="ml_003",
+        cd_market_id=None,
+        atc4=[],
+        molecule=[],
+        analysis_level={"ubist": {"atc4": ["A10N1", "A10N3", "A10N9"]}},
+        focus_brand_key="가드렛",
+        source="ubist",
+        measure="sales",
+    )
+
+    assert definition.dimension_filters == (DimensionFilter("atc4", ("A10N1", "A10N3", "A10N9")),)
+    assert definition.filter_echo["analysis_level"] == {"atc4": ["A10N1", "A10N3", "A10N9"]}
+
+
 def test_default_focus_brand_requires_one_unambiguous_atc4(monkeypatch) -> None:
     resolver = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart")
 
@@ -1708,3 +1745,42 @@ def test_strategic_sidecar_aggregation_keeps_recode_product_history(monkeypatch)
     assert metrics.brands[0].total_value == 31_282_626.06
     assert any("mart_strategic_filter_dimension_metric" in sql for sql in calls)
     assert not any("mart_general_filter_dimension_metric" in sql for sql in calls)
+
+
+def test_strategic_sidecar_aggregation_hashes_atc_filters_like_sidecar(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    expected_hash = hashlib.sha256("a10n1".encode("utf-8")).hexdigest()
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        calls.append((sql, params))
+        if "mart_strategic_filter_dimension_metric" in sql:
+            assert expected_hash in params
+            assert hashlib.sha256("A10N1".encode("utf-8")).hexdigest() not in params
+            return [
+                {
+                    "brand_key": "가드렛",
+                    "brand_name": "가드렛",
+                    "product_code": "644913980",
+                    "dimension_type": "atc4",
+                    "raw_value_history": json.dumps({"2026-04": 123.0}),
+                }
+            ]
+        if "mart_strategic_ml_brand_metric" in sql:
+            return [{"brand_key": "가드렛", "unit_label": "KRW"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("가드렛", "가드렛", ""),),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange("2026-04", "2026-04"),
+        top_n=20,
+        dimension_filters=(DimensionFilter("atc4", ("A10N1",)),),
+        view="strategic_ml",
+        strategic_market_id="ml_003",
+    )
+
+    assert metrics.market_size == 123.0
+    assert metrics.brands[0].brand_name == "가드렛"
+    assert any("mart_strategic_filter_dimension_metric" in sql for sql, _params in calls)

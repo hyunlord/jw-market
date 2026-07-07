@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from typing import Any
 
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
@@ -836,7 +837,8 @@ def strategic_table_for_view(view: str) -> str:
 
 
 def _dimension_value_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    normalized = re.sub(r"\s+", " ", value.strip()).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def compute_hhi(brands: tuple[BrandMetric, ...]) -> float | None:

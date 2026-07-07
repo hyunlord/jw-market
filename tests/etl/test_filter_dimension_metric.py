@@ -10,7 +10,7 @@ def test_ubist_registry_exposes_enabled_dimensions_and_keeps_molecule_disabled()
     enabled = sidecar.enabled_dimension_specs("ubist")
     names = {spec.dimension_type for spec in enabled}
 
-    assert names == {"seller", "molecule_strength", "form", "route", "reimbursement"}
+    assert names == {"atc3", "atc4", "seller", "molecule_strength", "form", "route", "reimbursement"}
     assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is False
 
 
@@ -71,9 +71,13 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
         for row in rows
         if row["dimension_type"] == "form" and row["dimension_value_norm"] == "정제"
     )
+    atc3 = next(row for row in rows if row["dimension_type"] == "atc3" and row["product_code"] == "P1")
+    atc4 = next(row for row in rows if row["dimension_type"] == "atc4" and row["product_code"] == "P1")
 
     assert tablet["product_code"] == "P1"
     assert tablet["raw_value_history"] == {"2025-01": 100.0}
+    assert atc3["dimension_value_norm"] == "A10X"
+    assert atc4["dimension_value_norm"] == "A10X0"
 
 
 def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:

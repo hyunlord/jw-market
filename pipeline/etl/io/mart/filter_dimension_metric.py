@@ -47,6 +47,22 @@ class DimensionSpec:
 
 DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
     "ubist": {
+        "atc3": DimensionSpec(
+            dimension_type="atc3",
+            display_name="ATC3",
+            source_columns=("atc4_code",),
+            enabled=True,
+            source="ubist",
+            notes="ATC4 코드의 4자리 prefix로 생성하는 UBIST ATC3 narrowing 축.",
+        ),
+        "atc4": DimensionSpec(
+            dimension_type="atc4",
+            display_name="ATC4",
+            source_columns=("atc4_code",),
+            enabled=True,
+            source="ubist",
+            notes="전략뷰/일반뷰 공통 ATC4 narrowing 축. mart atc4_code와 직접 정합한다.",
+        ),
         "seller": DimensionSpec(
             dimension_type="seller",
             display_name="판매사",
@@ -259,8 +275,17 @@ def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Se
         if column not in frame:
             continue
         values = frame[column].map(normalize_dimension_value)
+        if spec.dimension_type == "atc3":
+            values = values.map(_atc3_from_atc4)
         result = result.where(result.notna(), values)
     return result
+
+
+def _atc3_from_atc4(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip().upper()
+    return text[:4] if len(text) >= 4 else None
 
 
 def _first_sorted_label(series: pd.Series) -> str:

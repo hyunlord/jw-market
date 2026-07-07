@@ -476,6 +476,8 @@ def _other_source_has_values(analysis_level: dict[str, dict[str, list[str]]], so
 def _api_dimension_names(source: str) -> dict[str, str]:
     if source == "ubist":
         return {
+            "atc3": "atc3",
+            "atc4": "atc4",
             "seller": "seller",
             "molecule": "molecule",
             "molecule_strength": "molecule_strength",
