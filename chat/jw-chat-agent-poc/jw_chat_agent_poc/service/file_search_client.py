@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Any
+
+import requests
+
+
+@dataclass(frozen=True, slots=True)
+class UploadedFileSearchResult:
+    file_context: str
+    file_sources: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+def search_uploaded_files(question: str, conversation_id: str | None) -> UploadedFileSearchResult | None:
+    """Query wf301 file bridge by conversation/session id.
+
+    The bridge owns file-session isolation. Chat only forwards the stable
+    conversation id as both chat_id and app_session_id, then consumes the
+    unified file_context it returns (wiki-first inside 235, VDB fallback there).
+    """
+    if not conversation_id or os.getenv("JW_CHAT_FILE_SEARCH_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+        return None
+    base_url = os.getenv("JW_CHAT_FILE_SEARCH_BASE", "http://code-serving-235:8080").rstrip("/")
+    workflow_id = int(os.getenv("JW_CHAT_FILE_WORKFLOW_ID", "301"))
+    timeout_s = float(os.getenv("JW_CHAT_FILE_SEARCH_TIMEOUT_S", "3"))
+    payload: dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "app_session_id": conversation_id,
+        "chat_id": conversation_id,
+        "question": question,
+    }
+    try:
+        response = requests.post(f"{base_url}/search", json=payload, timeout=timeout_s)
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    context = str(body.get("file_context") or "").strip()
+    if not context:
+        return None
+    raw_sources = body.get("file_sources") or []
+    sources = []
+    if isinstance(raw_sources, list):
+        for source in raw_sources:
+            if isinstance(source, dict):
+                name = str(source.get("file_name") or source.get("chunk_id") or "uploaded file")
+                if name:
+                    sources.append(name)
+    errors = body.get("errors") or []
+    return UploadedFileSearchResult(
+        file_context=context,
+        file_sources=tuple(dict.fromkeys(sources)),
+        errors=tuple(str(error) for error in errors if error),
+    )

@@ -31,6 +31,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 )
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
+from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
@@ -223,8 +224,9 @@ def _answer_question(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     state = store.conversations.get_or_create(conversation_id)
-    if not question.strip() and _has_file_signal(documents, file_context):
-        result = _file_only_ready_result(documents, file_context)
+    delegated_file_context = _delegated_file_context(question, state.conversation_id, file_context)
+    if not question.strip() and _has_file_signal(documents, delegated_file_context):
+        result = _file_only_ready_result(documents, delegated_file_context)
     else:
         result = _answer_with_conversation(
             store,
@@ -233,12 +235,25 @@ def _answer_question(
             state.conversation_id,
             question,
             external_mode,
-            documents,
+            [],
             use_direct_agent_loop=use_direct_agent_loop,
         )
-        result = _attach_file_context(result, file_context)
+        result = _attach_file_context(result, delegated_file_context)
     store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
     return {"question": question, "result": result, "conversation_id": state.conversation_id}
+
+
+def _delegated_file_context(question: str, conversation_id: str | None, file_context: str | None) -> str | None:
+    contexts: list[str] = []
+    uploaded = search_uploaded_files(question, conversation_id)
+    if uploaded is not None and uploaded.file_context.strip():
+        contexts.append(uploaded.file_context.strip())
+    provided = (file_context or "").strip()
+    if provided:
+        contexts.append(provided)
+    if not contexts:
+        return None
+    return "\n\n".join(dict.fromkeys(contexts))
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
