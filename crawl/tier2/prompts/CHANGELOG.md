@@ -24,3 +24,21 @@
 - Verified repository prompt SHA, workflow revision step prompt SHA, and backing row prompt SHA all match:
   `a3eddd0b031614e33202cd326c883d638111a4ee7e53094e5df03c88aa67d321`.
 - Smoke-tested contract and scale only. The workflow parsed 19/19 mixed calls and 15/15 direct comparison calls. Direct wf196 comparison showed compatible broad scale with boundary drift around the 45-59 band, so full replay remains gated on accepted tolerance and runner input context.
+
+## 2026-07-07 — Tier2 scoring category-output revision
+
+- Updated `jw_tier2_brand_scoring_prompt.md` so `jw-tier2-brand-scoring` emits both
+  wf196-compatible score and wf196-compatible news classification.
+- Output contract now requires `tag`, `category_label`, and `category_code`; `tag`
+  and `category_label` must match, and `기타` maps to `category_code=external`.
+- Copied the wf196 six-label classification rubric into the Tier2 scoring prompt.
+- Registered workflow id `324`, revision `5490`, deployment `1389`, serving `163`.
+- Backing Flowise chat_flow id remains `034e7ed0-92d3-47a1-8ff4-87207028a45d`
+  and type `AGENTFLOW`.
+- Verified repository prompt SHA, workflow revision step prompt SHA, and backing row
+  prompt SHA all match:
+  `4bc6bb852ed0d6bc2ef280e1a89a7a3d6f3ee3639129c526ee52abfddc97a8e1`.
+- Runtime smoke passed on 15/15 Tier2 match samples. Each response returned valid
+  JSON with integer `score`, valid `tag`, matching `category_label`, and the
+  expected `category_code` mapping. Full replay remains gated on the separate bulk
+  runner and event_brand_scores replacement procedure.

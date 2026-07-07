@@ -39,8 +39,8 @@ responses without candidate omissions, out-of-candidate brands, or missing
 
 - Workflow: `jw-tier2-brand-scoring`
 - Workflow id: `324`
-- Revision: `5442`
-- Deployment: `1377`
+- Revision: `5490`
+- Deployment: `1389`
 - Serving: `163`
 - Backing Flowise chat_flow id: `034e7ed0-92d3-47a1-8ff4-87207028a45d`
 - Endpoint inside the cluster: `http://workflow-324.llmops.svc.cluster.local:8080/run/v2`
@@ -48,20 +48,20 @@ responses without candidate omissions, out-of-candidate brands, or missing
 This workflow is the Tier2 scoring counterpart to wf196 v3. It copies the
 wf196 v3 relatedness-gate and importance rubric, but scores exactly one
 `target_brand` supplied by the Tier2 replay runner instead of emitting the
-JW25-oriented `matches[]` contract. wf196 itself remains untouched.
+JW25-oriented `matches[]` contract. It also emits the wf196 news classification
+contract: `tag`, `category_label`, and `category_code`. `tag` and
+`category_label` must be identical, and `기타` maps to `category_code=external`.
+wf196 itself remains untouched.
 
 The repository prompt, workflow revision step prompt, and Flowise backing row
 prompt all have SHA256
-`a3eddd0b031614e33202cd326c883d638111a4ee7e53094e5df03c88aa67d321`.
+`4bc6bb852ed0d6bc2ef280e1a89a7a3d6f3ee3639129c526ee52abfddc97a8e1`.
 The Flowise backing row is an `AGENTFLOW` row.
 
-Smoke validation was intentionally limited to contract and scale validation;
-the full Tier2 replay was not run. The workflow returned valid JSON for 19/19
-mixed smoke calls and 15/15 direct wf196-comparison calls. Direct comparison
-against existing wf196 v3 rows showed the same broad scoring scale, with
-stronger agreement in the high bands than around the 45-59 boundary. Full replay
-must remain gated on runner input context and the accepted score-drift
-tolerance.
+Runtime smoke for revision `5490` passed on 15/15 Tier2 match samples. Each
+response returned valid JSON with integer `score`, valid `tag`, matching
+`category_label`, and the expected `category_code` mapping. Full replay remains
+gated on the separate bulk runner and event_brand_scores replacement procedure.
 
 ## Body-exact match staging
 
