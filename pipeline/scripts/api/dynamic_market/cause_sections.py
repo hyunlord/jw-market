@@ -20,7 +20,9 @@ from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMe
 def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> list[dict[str, Any]]:
     """Build EI/MS and growth/MS entries used by two cause matrix cards."""
 
-    latest_market = latest_market_value(market_size_series(metrics))
+    market_series = market_size_series(metrics)
+    latest_market = latest_market_value(market_series)
+    market_growth = period_delta({str(item["period"]): float(item["value"]) for item in market_series})
     rows: list[dict[str, Any]] = []
     for brand in metrics.all_brands:
         hist = history(brand)
@@ -29,6 +31,7 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
         brand_growth = brand_cagr(hist)
         ei = (brand_growth / metrics.cagr * 100) if brand_growth is not None and metrics.cagr not in (None, 0) else None
         contribution = period_delta(hist)
+        contribution_pct = safe_pct(contribution, market_growth)
         row = {
             "brand": brand.brand_name,
             "brand_key": brand.brand_key,
@@ -54,9 +57,9 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
             "cagr_basis": "first positive month to latest month",
             "momentum_score": _momentum(hist),
             "growth_contribution": contribution,
-            "growth_contribution_pct": None,
+            "growth_contribution_pct": contribution_pct,
             "contribution": contribution,
-            "contribution_pct": None,
+            "contribution_pct": contribution_pct,
         }
         rows.append(row)
     return rows[:100]

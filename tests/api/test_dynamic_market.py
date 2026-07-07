@@ -21,7 +21,7 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
 )
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.cause_sections import display_matrix_rows
+from pipeline.scripts.api.dynamic_market.cause_sections import display_matrix_rows, matrix_rows
 from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import (
@@ -279,6 +279,55 @@ def test_display_matrix_rows_pins_focus_then_top_competitors_without_mutating_va
     assert selected[0] is focus_row
     assert selected[0]["share_pct"] == 99.0
     assert all(not row.get("is_others") for row in selected)
+
+
+def test_matrix_rows_populates_growth_contribution_percent_for_chart_points() -> None:
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=160.0,
+        hhi=None,
+        cagr=10.0,
+        monthly_series=(
+            {"period": "2026-04", "market_size": 100.0},
+            {"period": "2026-05", "market_size": 160.0},
+        ),
+        brands=(),
+        all_brands=(
+            BrandMetric(
+                "a",
+                "A",
+                "C10A1",
+                40.0,
+                25.0,
+                1,
+                "2026-05",
+                40.0,
+                history_by_period={"2026-04": 10.0, "2026-05": 40.0},
+            ),
+            BrandMetric(
+                "b",
+                "B",
+                "C10A1",
+                120.0,
+                75.0,
+                2,
+                "2026-05",
+                120.0,
+                history_by_period={"2026-04": 90.0, "2026-05": 120.0},
+            ),
+        ),
+    )
+
+    rows = matrix_rows(metrics=metrics, focus=metrics.all_brands[0])
+
+    assert rows[0]["growth_contribution"] == 30.0
+    assert rows[0]["contribution"] == 30.0
+    assert rows[0]["growth_contribution_pct"] == pytest.approx(50.0)
+    assert rows[0]["contribution_pct"] == pytest.approx(50.0)
+    assert rows[1]["growth_contribution_pct"] == pytest.approx(50.0)
+    assert rows[1]["contribution_pct"] == pytest.approx(50.0)
 
 
 def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> None:
