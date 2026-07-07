@@ -1226,6 +1226,13 @@ def _add_series(target: dict[str, list[float]], series: dict[str, Any], periods:
         target[period][0] += _value_from_period_item(series.get(period))
 
 
+def _latest_valid_share_pct(value_series: list[float], total_series: list[float]) -> float:
+    for value, total in reversed(list(zip(value_series, total_series))):
+        if value and total:
+            return round(value / total * 100, 4)
+    return 0.0
+
+
 def _segment_rows_for_level(
     *,
     rows: list[dict[str, Any]],
@@ -1235,6 +1242,7 @@ def _segment_rows_for_level(
     channel: str,
     target_name: str | None,
     top_n: int | None = 5,
+    use_latest_valid_share: bool = False,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, list[float]]] = {}
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
@@ -1332,7 +1340,11 @@ def _segment_rows_for_level(
             {
                 "name": name,
                 "rank": rank,
-                "recent_share_pct": series_pct[-1] if series_pct else 0.0,
+                "recent_share_pct": (
+                    _latest_valid_share_pct(value_series, [totals[period][0] for period in periods])
+                    if use_latest_valid_share
+                    else series_pct[-1] if series_pct else 0.0
+                ),
                 "series_pct": series_pct,
                 "value_series": value_series,
             }
@@ -1611,6 +1623,7 @@ def _build_analysis_levels_from_mart(
     target_name: str | None,
     fallback_level_top5: dict[str, Any],
     channels_override: list[str] | None = None,
+    use_latest_valid_share: bool = False,
 ) -> dict[str, Any]:
     levels = _response_levels(market, view_source_id)
     enabled_levels = set(_strategic_levels(market, view_source_id))
@@ -1629,6 +1642,7 @@ def _build_analysis_levels_from_mart(
                     channel=channel,
                     target_name=target_name if level == "Brand" else None,
                     top_n=None if channel == "전체" and level != "Brand" else 5,
+                    use_latest_valid_share=use_latest_valid_share,
                 )
                 for channel in channels
             }
@@ -2387,6 +2401,7 @@ def _level_trend_brand_payloads(
     periods: list[str],
     target_name: str | None,
     total_series: list[float],
+    use_latest_valid_share: bool = False,
 ) -> list[dict[str, Any]]:
     brand_entries = _display_brand_rows(
         option_rows,
@@ -2432,7 +2447,11 @@ def _level_trend_brand_payloads(
                 "is_others": entry.get("is_others"),
                 "rank": entry.get("rank"),
                 "rank_series_10pt": rank_series,
-                "ms_recent_pct": safe_float(entry.get("share_pct")) or 0.0,
+                "ms_recent_pct": (
+                    _latest_valid_share_pct(series, total_series)
+                    if use_latest_valid_share
+                    else safe_float(entry.get("share_pct")) or 0.0
+                ),
                 "value_recent": safe_float(entry.get("value_recent")) or 0.0,
                 "raw_value": safe_float(entry.get("raw_value")) or safe_float(entry.get("value_recent")) or 0.0,
                 "value_recent_100m": round((safe_float(entry.get("value_recent")) or 0.0) / 100_000_000, 4),
@@ -2457,6 +2476,7 @@ def _level_top5_trend(
     rows_by_level: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
     include_all_options: bool = False,
     channel: str = "전체",
+    use_latest_valid_share: bool = False,
 ) -> dict[str, Any]:
     levels = analysis_levels.get("levels") or []
     periods = (analysis_levels.get("periods_monthly") or analysis_levels.get("periods_quarterly") or [])[-10:]
@@ -2503,6 +2523,7 @@ def _level_top5_trend(
                         # 전체 시장 기준 chart8과 달라져 기각했다.
                         target_name=target_name,
                         total_series=overall_value_series,
+                        use_latest_valid_share=use_latest_valid_share,
                     ),
                 }
             )
@@ -2536,6 +2557,7 @@ def _level_top5_trend(
                         # target_name을 비운다.
                         target_name=None,
                         total_series=segment_total_series,
+                        use_latest_valid_share=use_latest_valid_share,
                     ),
                 }
             )

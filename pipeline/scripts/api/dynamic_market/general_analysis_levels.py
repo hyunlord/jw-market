@@ -98,6 +98,7 @@ def build_general_analysis_level_sections(
             target_name=None,
             fallback_level_top5={},
             channels_override=channels,
+            use_latest_valid_share=True,
         ),
         specs,
     )
@@ -112,6 +113,7 @@ def build_general_analysis_level_sections(
             rows_by_level=rows_by_level,
             include_all_options=bool(focus),
             channel="전체",
+            use_latest_valid_share=True,
         ),
         specs,
     )
@@ -131,6 +133,7 @@ def build_general_analysis_level_sections(
                 target_name=None,
                 fallback_level_top5={},
                 channels_override=status_channels,
+                use_latest_valid_share=True,
             ),
             specs,
         )

@@ -1393,6 +1393,111 @@ def test_cause_payload_uses_ubist_sidecar_values_for_source_levels(monkeypatch) 
     assert any("mart_general_filter_dimension_metric" in sql for sql, _params in queries)
 
 
+
+@pytest.mark.parametrize(
+    ("source", "atc4", "periods", "level", "fields"),
+    [
+        (
+            "ubist",
+            "A10N1",
+            ("2026-01", "2026-02", "2026-03"),
+            "판매사",
+            ("seller", "JW중외제약", "경쟁사"),
+        ),
+        (
+            "iqvia_nsa",
+            "C10A1",
+            ("2026-Q1", "2026-Q2", "2026-Q3"),
+            "MFR NAME KOR",
+            ("mfr", "JW중외제약", "경쟁사"),
+        ),
+    ],
+)
+def test_general_source_level_current_share_uses_latest_valid_sidecar_period(
+    monkeypatch,
+    source: str,
+    atc4: str,
+    periods: tuple[str, str, str],
+    level: str,
+    fields: tuple[str, str, str],
+) -> None:
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+    field, focus_value, competitor_value = fields
+
+    def make_brand(key: str, name: str, values: tuple[float, float, float], dimension_value: str) -> BrandMetric:
+        return BrandMetric(
+            key,
+            name,
+            atc4,
+            0.0,
+            0.0,
+            1 if key == "focus" else 2,
+            periods[-1],
+            0.0,
+            tuple({"period": period, "value": value} for period, value in zip(periods, values)),
+            history_by_period=dict(zip(periods, values)),
+            analysis_row={
+                "by_dimension": json.dumps({field: dimension_value}, ensure_ascii=False),
+                "dimension_data": json.dumps(
+                    {field: {dimension_value: {period: {"raw_value": value} for period, value in zip(periods, values)}}},
+                    ensure_ascii=False,
+                ),
+                "dimension_channel_data": "{}",
+                "channel_data": "{}",
+            },
+        )
+
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": [atc4], "source": source, "measure": "sales"},
+        source=source,
+        measure="sales",
+    )
+    metrics = AggregatedMetrics(
+        source=source,
+        measure="sales",
+        unit_label="KRW",
+        market_size=0.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=tuple(
+            {"period": period, "market_size": value} for period, value in zip(periods, (200.0, 200.0, 0.0))
+        ),
+        brands=(
+            make_brand("focus", "Focus Brand", (100.0, 120.0, 0.0), focus_value),
+            make_brand("competitor", "Competitor Brand", (100.0, 80.0, 0.0), competitor_value),
+        ),
+        all_brands=(
+            make_brand("focus", "Focus Brand", (100.0, 120.0, 0.0), focus_value),
+            make_brand("competitor", "Competitor Brand", (100.0, 80.0, 0.0), competitor_value),
+        ),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    segments = payload["data"]["analysis_levels"]["data"][level]["by_channel"]["전체"]
+    focus_segment = next(segment for segment in segments if segment["name"] == focus_value)
+    competitor_segment = next(segment for segment in segments if segment["name"] == competitor_value)
+    assert focus_segment["value_series"] == [100.0, 120.0, 0.0]
+    assert competitor_segment["value_series"] == [100.0, 80.0, 0.0]
+    assert focus_segment["series_pct"] == [50.0, 60.0, 0.0]
+    assert focus_segment["recent_share_pct"] == 60.0
+    assert competitor_segment["recent_share_pct"] == 40.0
+
+    status_segment = next(
+        segment
+        for segment in payload["data"]["analysis_level_market_status"]["data"][level]["by_channel"]["전체"]
+        if segment["name"] == focus_value
+    )
+    assert status_segment["recent_share_pct"] == 60.0
+
+    trend_values = payload["data"]["level_top5_trend"]["by_level"][level]["values"]
+    trend_focus = next(value for value in trend_values if value["value"] == focus_value)
+    trend_competitor = next(value for value in trend_values if value["value"] == competitor_value)
+    assert trend_focus["ms_pct"] == 60.0
+    assert trend_competitor["ms_pct"] == 40.0
+    assert trend_focus["brands_in_value"][0]["ms_recent_pct"] == 100.0
+
 def test_general_ubist_specialty_uses_market_catalog_for_channel_resolution(monkeypatch) -> None:
     captured_markets: list[dict[str, object]] = []
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
