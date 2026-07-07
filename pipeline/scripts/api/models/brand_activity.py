@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from typing import TypeAlias
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 
 class AtcFilter(BaseModel):
@@ -81,6 +78,10 @@ class MarketFilter(BaseModel):
         default_factory=ChannelFilter,
         description="채널 필터. [프론트] 종별/진료과/AUDIT CODE 멀티선택. 데이터를 채널 단위로 좁힘.",
     )
+    channel_axis: dict[str, Any] = Field(
+        default_factory=dict,
+        description='동적 시장 API와 같은 value-slice 채널 축 필터. 예: {"iqvia":{"audit_code":["KPA"]}}.',
+    )
 
 
 class CsdTimeseriesWindow(BaseModel):
@@ -101,7 +102,6 @@ class BrandActivityBaseRequest(BaseModel):
         "general",
         description="분석 뷰. [입력] general=일반뷰, strategic_ml=전략뷰-시장조망, strategic_cd=전략뷰-경쟁구도.",
     )
-    market_id: str | None = Field(default=None, description="선택 시장 id. 일반뷰는 ATC4, 전략뷰는 ml_/cd_ id. 생략 시 브랜드 기반 해석.")
     selected_brand: str = Field(..., description="선택 브랜드. [프론트] 강조 대상이며 전략뷰에서는 시장 결정자.")
     filters: MarketFilter = Field(
         default_factory=MarketFilter,
@@ -110,6 +110,10 @@ class BrandActivityBaseRequest(BaseModel):
     filter: MarketFilter = Field(
         default_factory=MarketFilter,
         description="Legacy 단수 필터 입력. 신규 호출은 filters를 사용하되 기존 클라이언트 호환을 위해 유지.",
+    )
+    channel_axis: dict[str, Any] = Field(
+        default_factory=dict,
+        description='Top-level legacy 채널 축 필터. 있으면 filters.channel_axis로 병합된다. 예: {"iqvia":{"audit_code":["KPA","KHPA"]}}.',
     )
 
 
@@ -126,8 +130,12 @@ class CsdTimeseriesRequest(BrandActivityBaseRequest):
 class BrandActivityTopicsRequest(BrandActivityBaseRequest):
     """Request body for the filtered Brand Activity topic route."""
 
-    visit_location: str = Field("전체", description="종별 단일 선택 shortcut. filters.channel.visit_location과 병행 호환.")
-    specialty: str = Field("전체", description="진료과 단일 선택 shortcut. filters.channel.specialty와 병행 호환.")
+    visit_location: str | list[str] = Field("전체", description="종별 shortcut. 문자열 또는 OR 리스트이며 filters.channel.visit_location과 병행 호환.")
+    specialty: str | list[str] = Field("전체", description="진료과 shortcut. 문자열 또는 OR 리스트이며 filters.channel.specialty와 병행 호환.")
+    interest: str | list[str] = Field("전체", description="키워드 유용성 shortcut. 문자열 또는 OR 리스트.")
+    prescription_evolution: str | list[str] = Field("전체", description="처방 변화 shortcut. 문자열 또는 OR 리스트.")
+    period_start: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
+    period_end: str | None = Field(default=None, description="키워드 집계 종료월 YYYY-MM.")
     top_n: int = Field(default=5, ge=1, le=10, description="브랜드 카드에 보여줄 상위 토픽 개수. [입력] 1~10, 기본 5.")
 
 

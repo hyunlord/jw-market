@@ -13,6 +13,7 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
     schema = app.openapi()
 
     assert sorted(schema["paths"]) == [
+        "/api/brand-activity/csd-activity-series",
         "/api/brand-activity/csd-timeseries",
         "/api/brand-activity/interest-rx-matrix",
         "/api/brand-activity/topics",
@@ -20,6 +21,7 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
         "/api/cause/{brand_name}",
         "/api/deep-analysis/{brand_name}",
         "/api/dynamic-market",
+        "/api/dynamic-market/brand-option-check",
         "/api/dynamic-market/filter-options",
         "/api/health",
         "/api/market-filter/atc-options",
@@ -33,7 +35,6 @@ def test_openapi_hides_internal_legacy_and_experimental_routes() -> None:
 
     hidden_paths = {
         "/api/brand-activity/topics/{scope_id}",
-        "/api/dynamic-market/brand-option-check",
         "/api/market-scope/cause",
         "/api/market-scope/options",
         "/api/market-scope/resolve",
@@ -48,17 +49,20 @@ def test_shared_dynamic_routes_document_without_response_model_trimming() -> Non
     cause = schema["paths"]["/api/cause/{brand_name}"]["get"]
     dynamic = schema["paths"]["/api/dynamic-market"]["post"]
     filter_options = schema["paths"]["/api/dynamic-market/filter-options"]["get"]
+    brand_option_check = schema["paths"]["/api/dynamic-market/brand-option-check"]["get"]
 
     assert cause["tags"] == ["Portal-Core"]
     assert dynamic["tags"] == ["Dynamic-Market"]
     assert filter_options["tags"] == ["Dynamic-Market"]
+    assert brand_option_check["tags"] == ["Dynamic-Market"]
     assert "markets" in str(cause["responses"]["200"])
     assert "23섹션" in str(dynamic["responses"]["200"])
     assert "brand_matched" in str(filter_options["responses"]["200"])
+    assert "brand_matched" in str(brand_option_check["responses"]["200"])
 
     for route in app.routes:
         path = getattr(route, "path", "")
-        if path in {"/api/cause/{brand_name}", "/api/dynamic-market", "/api/dynamic-market/filter-options"}:
+        if path in {"/api/cause/{brand_name}", "/api/dynamic-market", "/api/dynamic-market/filter-options", "/api/dynamic-market/brand-option-check"}:
             assert getattr(route, "response_model", None) is None
 
 
@@ -67,17 +71,22 @@ def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
 
     topics = schema["paths"]["/api/brand-activity/topics"]["post"]
     timeseries = schema["paths"]["/api/brand-activity/csd-timeseries"]["post"]
+    activity_series = schema["paths"]["/api/brand-activity/csd-activity-series"]["post"]
     matrix = schema["paths"]["/api/brand-activity/interest-rx-matrix"]["post"]
 
     assert topics["tags"] == ["Brand-Activity"]
     assert timeseries["tags"] == ["Brand-Activity"]
+    assert activity_series["tags"] == ["Brand-Activity"]
     assert matrix["tags"] == ["Brand-Activity"]
     assert "브랜드별 토픽 그리드" in topics["summary"]
     assert "region=TOTAL" in timeseries["description"]
+    assert "CSD 활동량" in activity_series["summary"]
     assert "interest×처방빈도" in matrix["summary"]
     assert "topic_shares" in str(topics["responses"]["200"])
     assert "market_totals" in str(timeseries["responses"]["200"])
     assert "market_average" in str(matrix["responses"]["200"])
+    assert "channel_axis" in str(topics["requestBody"])
+    assert "analysis_level" in str(timeseries["requestBody"])
 
     for route in app.routes:
         path = getattr(route, "path", "")
@@ -85,6 +94,7 @@ def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
         if "POST" in methods and path in {
             "/api/brand-activity/topics",
             "/api/brand-activity/csd-timeseries",
+            "/api/brand-activity/csd-activity-series",
             "/api/brand-activity/interest-rx-matrix",
         }:
             assert getattr(route, "response_model", None) is None

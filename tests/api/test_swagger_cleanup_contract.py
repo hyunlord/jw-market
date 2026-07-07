@@ -16,17 +16,17 @@ def test_openapi_hides_internal_and_alias_routes() -> None:
     schema = app.openapi()
     paths = schema["paths"]
 
-    assert "/api/health" not in paths
+    assert "/api/health" in paths
     assert "/api/market-scope/options" not in paths
     assert "/api/market-scope/resolve" not in paths
     assert "/api/market-scope/cause" not in paths
-    assert "/api/dynamic-market/brand-option-check" not in paths
     assert set(paths["/api/brand-activity/topics"]) == {"post"}
     assert "/api/brand-activity/topics/{scope_id}" not in paths
 
     assert "/api/brands" in paths
     assert "/api/dynamic-market" in paths
     assert "/api/dynamic-market/filter-options" in paths
+    assert "/api/dynamic-market/brand-option-check" in paths
     assert "/api/brand-activity/csd-timeseries" in paths
     assert "/api/brand-activity/interest-rx-matrix" in paths
 
@@ -39,6 +39,8 @@ def test_brand_activity_filter_schema_exposes_nested_descriptions() -> None:
     assert "판매사" in schemas["pipeline__scripts__api__models__brand_activity__UbistAnalysisLevel"]["properties"]["seller"]["description"]
     assert "성분명" in schemas["pipeline__scripts__api__models__brand_activity__IqviaAnalysisLevel"]["properties"]["molecule_desc"]["description"]
     assert "채널 필터" in schemas["MarketFilter"]["properties"]["channel"]["description"]
+    assert "채널 축" in schemas["BrandActivityTopicsRequest"]["properties"]["channel_axis"]["description"]
+    assert "channel_axis" in schemas["MarketFilter"]["properties"]
 
 
 def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatch) -> None:

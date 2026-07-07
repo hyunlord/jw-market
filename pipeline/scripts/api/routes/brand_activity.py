@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesAmbiguousMarketError,
@@ -30,6 +29,11 @@ from pipeline.scripts.api.brand_activity_topics import (
     get_topic_payload,
     list_topic_payloads,
 )
+from pipeline.scripts.api.models.brand_activity import (
+    BrandActivityInterestRxRequest,
+    BrandActivityTopicsRequest,
+    CsdTimeseriesRequest,
+)
 from pipeline.scripts.api.openapi_docs import (
     BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE,
     BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES,
@@ -42,75 +46,6 @@ from pipeline.scripts.api.openapi_docs import (
 
 
 router = APIRouter()
-
-
-class CsdTimeseriesWindow(BaseModel):
-    """Optional inclusive quarter window for Brand Activity CSD timeseries."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    start: str | None = Field(default=None, description="포함 시작 분기. 예: 2024Q1")
-    end: str | None = Field(default=None, description="포함 종료 분기. 예: 2025Q4")
-
-
-class CsdTimeseriesRequest(BaseModel):
-    """Request body for the Brand Activity integrated CSD timeseries route."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    selected_brand: str = Field(description="강조/시장 결정 브랜드.")
-    filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
-    filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
-    channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description='IQVIA audit_code value-slice 필터. {"iqvia":{"audit_code":[...]}} 형식이며 UBIST 키는 무시됩니다. filters.channel_axis와 동일하게 처리됩니다.')
-    mode: str = Field(default="absolute", description="absolute 또는 share. 화면에서 series.absolute/ratio 선택에 사용.")
-    window: CsdTimeseriesWindow | None = Field(default=None, description="분기 window. 미지정 시 CSD full quarter 범위.")
-
-
-class BrandActivityTopicsRequest(BaseModel):
-    """Request body for the filtered Brand Activity topic route."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    selected_brand: str = Field(description="강조/시장 결정 브랜드.")
-    filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
-    filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
-    channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description='IQVIA audit_code value-slice 필터. {"iqvia":{"audit_code":[...]}} 형식이며 UBIST 키는 무시됩니다. filters.channel_axis와 동일하게 처리됩니다.')
-    visit_location: str | list[str] = Field(default="전체", description="키워드 설문 방문 장소 필터. 문자열 또는 OR 리스트.")
-    specialty: str | list[str] = Field(default="전체", description="키워드 설문 진료과 필터. 문자열 또는 OR 리스트.")
-    interest: str | list[str] = Field(default="전체", description="키워드 유용성 필터. 문자열 또는 OR 리스트.")
-    prescription_evolution: str | list[str] = Field(default="전체", description="처방 변화 필터. 문자열 또는 OR 리스트.")
-    period_start: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
-    period_end: str | None = Field(default=None, description="키워드 집계 종료월 YYYY-MM.")
-    top_n: int = Field(default=5, ge=1, le=10, description="브랜드 카드당 상위 토픽 개수.")
-
-
-class InterestRxWeights(BaseModel):
-    """Optional score-weight overrides for interest/Rx matrix axes."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    interest: dict[str, float] = Field(default_factory=dict, description="interest 레벨별 score 가중치 override.")
-    rx_frequency: dict[str, float] = Field(default_factory=dict, description="처방빈도 레벨별 score 가중치 override.")
-    prescription_evolution: dict[str, float] = Field(default_factory=dict, description="처방 변화 레벨별 score 가중치 override.")
-
-
-class BrandActivityInterestRxRequest(BaseModel):
-    """Request body for the Brand Activity interest/Rx matrix route."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    selected_brand: str = Field(description="강조/시장 결정 브랜드.")
-    filters: dict[str, JsonValue] = Field(default_factory=dict, description="시장·차원 필터. 신규 계약 필드.")
-    filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
-    channel_axis: dict[str, JsonValue] = Field(default_factory=dict, description='IQVIA audit_code value-slice 필터. {"iqvia":{"audit_code":[...]}} 형식이며 UBIST 키는 무시됩니다. filters.channel_axis와 동일하게 처리됩니다.')
-    visit_location: str = Field(default="전체", description="키워드 설문 방문 장소 필터.")
-    specialty: str = Field(default="전체", description="키워드 설문 진료과 필터.")
-    period_start: str | None = Field(default=None, description="집계 시작월 YYYY-MM.")
-    period_end: str | None = Field(default=None, description="집계 종료월 YYYY-MM.")
-    weights: InterestRxWeights | None = Field(default=None, description="score 계산 가중치 override. 미지정 시 서버 기본값.")
 
 
 @router.get("/api/brand-activity/topics", include_in_schema=False)
@@ -250,6 +185,10 @@ def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | 
         normalized = {**normalized, "channel_axis": channel_axis}
     data["filters"] = normalized
     data["filter"] = normalized
+    # The service layer resolves market scope from selected_brand + filters.
+    # Keep market_id documented as compatibility input, but do not change the
+    # historical service payload contract for existing Brand Activity handlers.
+    data.pop("market_id", None)
     return data
 
 

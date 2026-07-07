@@ -243,7 +243,19 @@ def dynamic_market_filter_options(
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_filter_options_request", "message": str(exc)}) from exc
 
 
-@router.get("/api/dynamic-market/brand-option-check", include_in_schema=False, deprecated=True)
+@router.get(
+    "/api/dynamic-market/brand-option-check",
+    tags=[DYNAMIC_MARKET_TAG],
+    summary="브랜드 기준 필터 옵션·기본 선택 확인",
+    description=(
+        "포탈 옵션 불러오기/기본 체크 상태 확인용 API입니다. "
+        "`filter-options`와 같은 option list contract를 반환하며, `brand_matched`에는 선택 브랜드가 실제로 가진 "
+        "ATC4·분석레벨 값이 들어갑니다. 신규 화면은 가능하면 `/api/dynamic-market/filter-options`를 사용하되, "
+        "브랜드 선택 직후 기본값 진단에는 이 endpoint를 호출할 수 있습니다."
+    ),
+    response_model=None,
+    responses=FILTER_OPTIONS_RESPONSES,
+)
 def dynamic_market_brand_option_check(brand: str, view: str = "general", source: str = "ubist", market_id: str | None = None) -> dict:
     """Return option values and the sidecar values already matched by a brand.
 

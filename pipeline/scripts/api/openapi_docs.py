@@ -160,9 +160,29 @@ DYNAMIC_MARKET_RESPONSES: Final = {
 
 
 BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
-    "atc4": ["C10A1"],
-    "molecule": ["PITAVASTATIN"],
-    "channel": ["TOTAL"],
+    "atc": {"atc4": ["C10A1"]},
+    "analysis_level": {
+        "ubist": {
+            "seller": ["JW중외제약"],
+            "molecule_strength": ["pitavastatin calcium 2mg [470901ATB]"],
+        },
+        "iqvia": {
+            "mfr_name_kor": ["제이더블유중외제약"],
+            "molecule_type": ["SINGLE"],
+            "molecule_desc": ["PITAVASTATIN"],
+            "strength": ["2MG"],
+            "nhi_type": ["NHI"],
+        },
+    },
+    "channel": {
+        "visit_location": ["의원"],
+        "specialty": ["순환기(Cardiology IM)"],
+        "audit_code": ["KPA"],
+    },
+    "channel_axis": {
+        "ubist": {"facility": ["의원"], "specialty": ["순환기(Cardiology IM)"]},
+        "iqvia": {"audit_code": ["KPA", "KHPA"]},
+    },
 }
 
 
@@ -180,6 +200,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
     "view": "general",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
+    "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
     "mode": "absolute",
     "window": {"start": "2024Q1", "end": "2025Q4"},
 }
@@ -406,22 +427,36 @@ BRAND_ACTIVITY_INTEREST_RX_RESPONSES: Final = {
 
 
 FILTER_OPTIONS_EXAMPLE: Final = {
-    "view": "strategic",
+    "view": "general",
     "source": "ubist",
-    "market_id": "ml_006",
-    "brand": "리바로",
+    "market_id": "M1C",
+    "brand": "악템라",
     "dimensions": [
         {
-            "dimension_type": "class",
-            "label": "class",
-            "values": [{"key": "statin", "value": "Statin", "row_count": 10, "default": True, "selected": True, "flag": True}],
+            "dimension_type": "seller",
+            "label": "판매사",
+            "values": [{"key": "jw중외제약", "value": "JW중외제약", "row_count": 1, "default": False, "selected": False, "flag": True}],
+        },
+        {
+            "dimension_type": "molecule_strength",
+            "label": "성분용량",
+            "values": [
+                {
+                    "key": "tocilizumab 162㎎/0.9㎖ [520433BIJ]",
+                    "value": "tocilizumab 162㎎/0.9㎖ [520433BIJ]",
+                    "row_count": 1,
+                    "default": False,
+                    "selected": False,
+                    "flag": True,
+                }
+            ],
         }
     ],
     "atc": {
-        "atc1": [{"key": "C", "value": "C", "label": "C", "level": "atc1", "parent": None, "default": True, "selected": True, "flag": True}],
+        "atc1": [{"key": "M", "value": "M", "label": "M", "level": "atc1", "parent": None, "default": True, "selected": True, "flag": True}],
         "atc2": [],
         "atc3": [],
-        "atc4": [],
+        "atc4": [{"key": "M1C", "value": "M1C", "label": "M1C", "level": "atc4", "parent": "M01", "default": True, "selected": True, "flag": True}],
         "selectable_levels": ["atc3", "atc4"],
     },
     "channel_axis": {
@@ -446,9 +481,16 @@ FILTER_OPTIONS_EXAMPLE: Final = {
             ]
         },
     },
-    "default_selections": {"class": ["statin"], "atc1": ["C"]},
-    "applied_selections": {"class": ["statin"], "atc1": ["C"]},
-    "brand_matched": {"class": ["statin"], "atc4": ["C10A1"]},
+    "default_selections": {"atc4": ["M1C"]},
+    "applied_selections": {"atc4": ["M1C"]},
+    "brand_matched": {
+        "atc4": ["M1C"],
+        "seller": ["JW중외제약"],
+        "form": ["주사제(IJ)"],
+        "route": ["주사"],
+        "reimbursement": ["급여"],
+        "molecule_strength": ["tocilizumab 162㎎/0.9㎖ [520433BIJ]"],
+    },
 }
 
 

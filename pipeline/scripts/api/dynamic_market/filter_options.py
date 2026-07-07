@@ -15,6 +15,7 @@ from time import monotonic
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import parse_audit_code_matrix, parse_channel_specialty_matrix
+from pipeline.scripts.api.dynamic_market.general_brand_aliases import sidecar_brand_aliases
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
@@ -922,14 +923,28 @@ def _load_brand_dimension_matches(
     atc4_codes: Sequence[str] | None = None,
 ) -> dict[str, list[str]]:
     table = GENERAL_DIMENSION_TABLE if view == "general" else STRATEGIC_DIMENSION_TABLE
+    atc4_values: tuple[str, ...] = ()
+    if view == "general":
+        atc4_values = _parse_atc4_codes(market_id, atc4_codes)
+    brand_predicate = (
+        "(brand_name = %s OR brand_key = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')) "
+        "OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))"
+    )
+    params: list[object] = [source, measure, brand, brand, brand, brand]
+    aliases = sidecar_brand_aliases(
+        source=source,
+        atc4_codes=atc4_values,
+        brand_key=_general_brand_alias_key(brand),
+    )
+    if aliases:
+        brand_predicate = f"({brand_predicate} OR brand_key IN ({', '.join(['%s'] * len(aliases))}))"
+        params.extend(aliases)
     where = [
         "source = %s",
         "measure = %s",
-        "(brand_name = %s OR brand_key = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')) OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))",
+        brand_predicate,
     ]
-    params: list[object] = [source, measure, brand, brand, brand, brand]
     if view == "general":
-        atc4_values = _parse_atc4_codes(market_id, atc4_codes)
         if atc4_values:
             where.append(f"atc4_code IN ({', '.join(['%s'] * len(atc4_values))})")
             params.extend(atc4_values)
@@ -955,6 +970,12 @@ def _load_brand_dimension_matches(
         if value:
             grouped.setdefault(dimension_type, []).append(value)
     return {dimension_type: values for dimension_type, values in grouped.items() if values}
+
+
+def _general_brand_alias_key(brand: str) -> str:
+    """Normalize a display brand into the explicit alias table key."""
+
+    return brand.replace(" ", "").lower()
 
 
 def _load_atc_rows(

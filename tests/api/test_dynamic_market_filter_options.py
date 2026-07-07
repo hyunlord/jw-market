@@ -227,6 +227,45 @@ def test_general_filter_options_splits_comma_atc4_codes_and_flags_all_defaults(m
     assert payload["brand_matched"]["atc4"] == ["C10A1", "C10C0"]
 
 
+def test_general_brand_dimension_matches_use_explicit_sidecar_alias(monkeypatch) -> None:
+    captured_params: list[object] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        nonlocal captured_params
+        captured_params = params
+        assert "brand_key IN (%s)" in sql
+        return [
+            {"dimension_type": "seller", "dimension_value_norm": "JW중외제약"},
+            {"dimension_type": "form", "dimension_value_norm": "주사제(IJ)"},
+            {"dimension_type": "route", "dimension_value_norm": "주사"},
+            {"dimension_type": "reimbursement", "dimension_value_norm": "급여"},
+            {
+                "dimension_type": "molecule_strength",
+                "dimension_value_norm": "tocilizumab 162㎎/0.9㎖ [520433BIJ]",
+            },
+        ]
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    matches = filter_options._load_brand_dimension_matches(
+        dimension_db="jw_mart",
+        brand="악템라",
+        view="general",
+        source="ubist",
+        market_id="M1C",
+        measure="sales",
+    )
+
+    assert "악템라피하" in captured_params
+    assert matches == {
+        "seller": ["JW중외제약"],
+        "form": ["주사제(IJ)"],
+        "route": ["주사"],
+        "reimbursement": ["급여"],
+        "molecule_strength": ["tocilizumab 162㎎/0.9㎖ [520433BIJ]"],
+    }
+
+
 def test_general_filter_options_adds_ubist_channel_axis_registry_from_raw_matrix(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
 
