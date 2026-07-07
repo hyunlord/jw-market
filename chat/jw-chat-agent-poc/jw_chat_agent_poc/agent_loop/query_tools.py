@@ -13,7 +13,6 @@ BRAND_TOOLS = {
     "get_disease_stats",
     "get_procedure_stats",
     "search_clinical",
-    "search_patent",
     "search_drug_info",
     "web_search",
     "get_brand_sales",

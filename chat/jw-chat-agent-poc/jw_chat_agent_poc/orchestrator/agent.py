@@ -26,7 +26,7 @@ from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_tr
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter, LLMFirstBQRouter
-from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.external.policy import (
     annotate_clinical_call,
     clinical_scope_notice,
@@ -79,6 +79,9 @@ class ChatAgent:
     def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
         docs = documents or []
         routes = self.router.route(question, has_documents=bool(docs))
+        if not docs and _is_known_ingredient_patent_question(question):
+            loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
+            return loop.answer(question)
         requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
         portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
         try:
@@ -463,6 +466,12 @@ def _single_brand_focus_question(question: str) -> bool:
         "랑",
     )
     return not any(token in question for token in widening_tokens)
+
+
+def _is_known_ingredient_patent_question(question: str) -> bool:
+    lower = question.lower()
+    asks_patent = "특허" in question or "patent" in lower or "orange" in lower
+    return asks_patent and resolve_patent_ingredient_query(question) is not None
 
 
 def _answer_scope(question: str) -> str | None:

@@ -14,7 +14,7 @@ def tool_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ..
         _schema("get_disease_stats", "브랜드의 확정 KCD 매핑 기반 HIRA 질병 환자 통계를 조회합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema("get_procedure_stats", "HIRA 진료행위정보서비스에서 5단 행위코드(st5Cd) 기준 진료행위 통계를 조회합니다. 질문에 행위코드가 있을 때만 사용합니다.", ("brand", "query"), allowed_brands, allowed_periods),
         _schema("search_clinical", "브랜드 성분 기준 국내외 임상 근거를 조회하고 성분 범위 고지를 포함합니다.", ("brand",), allowed_brands, allowed_periods),
-        _schema("search_patent", "브랜드 성분 기준 특허/Orange Book 근거를 조회하고 성분 범위 고지를 포함합니다.", ("brand",), allowed_brands, allowed_periods),
+        _schema("search_patent", "브랜드 또는 확인된 성분 기준 특허/Orange Book 근거를 조회합니다. 브랜드가 없고 ingredient가 있으면 ingredient를 사용합니다.", ("query",), allowed_brands, allowed_periods),
         _schema("search_drug_info", "브랜드 기준 국내 식약처/MFDS 허가 품목 정보를 조회합니다. e약은요 경로는 사용하지 않습니다.", ("brand",), allowed_brands, allowed_periods),
         _schema("web_search", "내부 API가 덮지 못하는 외부 동향·디테일링·KOL 질문에 대해 웹 검색 결과를 URL/snippet으로 분리 조회합니다. 수치를 내부 fact로 승격하지 않습니다.", ("brand", "query"), allowed_brands, allowed_periods),
     )
@@ -63,6 +63,7 @@ def _properties(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...
         "source": {"type": "string", "description": "Optional mart source such as ubist or iqvia_nsa when the question explicitly asks for it."},
         "expression": {"type": "string"},
         "query": {"type": "string", "description": "Optional text query for news issue/search terms, not a brand."},
+        "ingredient": {"type": "string", "description": "Code-grounded English ingredient for patent lookup when no canonical brand is present."},
     }
 
 

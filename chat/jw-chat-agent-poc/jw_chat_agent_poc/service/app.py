@@ -398,12 +398,18 @@ def _answer_without_pending(
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     dependencies = build_chat_agent_dependencies(external_mode=external_mode)
     routes = dependencies.router.route(question, has_documents=False)
-    if not is_portfolio_decline_question(question, routes):
+    if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
         try:
             dependencies.resolver.resolve(question, allow_default=False)
         except UnsupportedBrandError:
             return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
     return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
+
+
+def _is_known_ingredient_patent_question(question: str) -> bool:
+    lower = question.lower()
+    asks_patent = "특허" in question or "patent" in lower or "orange" in lower
+    return asks_patent and resolve_patent_ingredient_query(question) is not None
 
 
 def _prepend_pending_notice(result: dict) -> dict:

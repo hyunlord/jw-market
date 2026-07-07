@@ -8,10 +8,11 @@ import pytest
 import requests
 
 from jw_chat_agent_poc import ChatAgent
+from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.orchestrator.agent import HIRA_DISEASE_MAPPINGS
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.router import BQRouter
-from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "jw_chat_agent_poc" / "fixtures"
@@ -334,6 +335,48 @@ def test_mfds_patent_mcp_calls_use_schema_argument_names(monkeypatch):
     assert "query" not in orangebook_args
     assert domestic.status == "live"
     assert orangebook.status == "live"
+
+
+def test_search_patent_accepts_grounded_ingredient_without_brand():
+    calls: list[str] = []
+
+    class FakeExternal:
+        def mfds_patent(self, ingredient: str) -> ExternalCall:
+            calls.append(f"domestic:{ingredient}")
+            return ExternalCall("mfds_patent", "nedrug_mcp", "live", "domestic", {"items": [{"DOMESTIC_PATENT_NO": "10-0777553"}]})
+
+        def mfds_fda_orangebook(self, ingredient: str) -> ExternalCall:
+            calls.append(f"orangebook:{ingredient}")
+            return ExternalCall("mfds_fda_orangebook", "nedrug_mcp", "live", "orangebook", {"items": [{"KOR_PAT_NO": "8557993"}]})
+
+    facade = AgentToolFacade(metrics=object(), resolver=object(), external=FakeExternal())
+
+    execution = facade.execute("search_patent", {"query": "피타바스타틴 특허", "ingredient": "Pitavastatin"})
+
+    assert execution.status == "ok"
+    assert execution.arguments == {"query": "피타바스타틴 특허", "ingredient": "Pitavastatin"}
+    assert calls == ["domestic:Pitavastatin", "orangebook:Pitavastatin"]
+    assert execution.call["status"] == "ok"
+    assert [call["status"] for call in execution.call["render_data"]["calls"]] == ["live", "live"]
+
+
+def test_chat_agent_allows_grounded_ingredient_patent_question():
+    calls: list[str] = []
+
+    class FakeExternal:
+        def mfds_patent(self, ingredient: str) -> ExternalCall:
+            calls.append(f"domestic:{ingredient}")
+            return ExternalCall("mfds_patent", "nedrug_mcp", "live", "domestic", {"items": [{"DOMESTIC_PATENT_NO": "10-0777553"}]})
+
+        def mfds_fda_orangebook(self, ingredient: str) -> ExternalCall:
+            calls.append(f"orangebook:{ingredient}")
+            return ExternalCall("mfds_fda_orangebook", "nedrug_mcp", "live", "orangebook", {"items": [{"KOR_PAT_NO": "8557993"}]})
+
+    result = ChatAgent(external=FakeExternal()).answer("피타바스타틴 특허와 오렌지북 특허 정보를 알려줘")
+
+    assert result["sources"] != ["unsupported_brand"]
+    assert calls == ["domestic:Pitavastatin", "orangebook:Pitavastatin"]
+    assert [call.get("tool") for call in result["tool_calls"]] == ["search_patent"]
 
 
 def test_live_mcp_error_does_not_require_data_go_key(monkeypatch):

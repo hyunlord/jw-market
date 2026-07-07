@@ -25,6 +25,12 @@ MFDS_PATENT_QUERY_ALIASES = {
     "pitavastatin": "리바로",
     "ezetimibe": "리바로젯",
 }
+MFDS_PATENT_INGREDIENT_ALIASES = {
+    "pitavastatin": "Pitavastatin",
+    "pitavastatin calcium": "Pitavastatin",
+    "피타바스타틴": "Pitavastatin",
+    "피타바스타틴칼슘": "Pitavastatin",
+}
 HIRA_DISEASE_SOURCE = "hira_disease"
 HIRA_PROCEDURE_SOURCE = "hira_procedure"
 WEB_SEARCH_SOURCE = "web_search"
@@ -39,6 +45,15 @@ OPENFDA_MCP_SOURCE = "openfda_mcp"
 NEDRUG_MCP_SOURCE = "nedrug_mcp"
 HIRA_MCP_SOURCE = "hira_mcp"
 CLINICAL_TRIALS_MCP_SOURCE = "clinicaltrials_mcp"
+
+def resolve_patent_ingredient_query(text: str) -> str | None:
+    normalized = " ".join(str(text or "").casefold().replace("-", " ").split())
+    compact = normalized.replace(" ", "")
+    for alias, ingredient in MFDS_PATENT_INGREDIENT_ALIASES.items():
+        alias_norm = " ".join(alias.casefold().replace("-", " ").split())
+        if alias_norm in normalized or alias_norm.replace(" ", "") in compact:
+            return ingredient
+    return None
 
 
 @dataclass(frozen=True)
@@ -106,6 +121,7 @@ class ExternalApiClient:
             safe_url=call.safe_url,
             elapsed_ms=call.elapsed_ms,
         )
+
 
     def mfds_patent(self, ingredient_en: str) -> ExternalCall:
         item_name = MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())

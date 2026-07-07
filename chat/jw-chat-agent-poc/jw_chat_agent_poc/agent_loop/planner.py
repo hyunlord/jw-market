@@ -9,6 +9,7 @@ from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation,
 from jw_chat_agent_poc.agent_loop.news_query import normalize_news_query
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
+from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,7 +585,13 @@ def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed
     if _asks_drug_info(question):
         calls.append(ToolCallPlan("search_drug_info", {"brand": brand}, "식약처 허가정보 확인"))
     if _asks_patent(question):
-        calls.append(ToolCallPlan("search_patent", {"brand": brand, "query": question}, "특허/라벨 근거 확인"))
+        patent_args = {"query": question}
+        ingredient = resolve_patent_ingredient_query(question)
+        if ingredient and not any(allowed_brand in question for allowed_brand in allowed_brands):
+            patent_args["ingredient"] = ingredient
+        else:
+            patent_args["brand"] = brand
+        calls.append(ToolCallPlan("search_patent", patent_args, "특허/라벨 근거 확인"))
     if _asks_web_search(question):
         calls.append(ToolCallPlan("web_search", {"brand": brand, "query": question}, "웹 검색 결과 확인"))
     if _asks_series_metric(question) or any(token in question for token in ("매출", "점유율", "순위", "시장")):
