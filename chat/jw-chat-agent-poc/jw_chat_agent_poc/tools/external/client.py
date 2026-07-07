@@ -7,16 +7,16 @@ import os
 import re
 import time
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
-
 import requests
 
-from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient
-from jw_chat_agent_poc.tools.external.response_parsing import parse_response, render_payload, summary
+from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient, McpToolResult
 
 
-DATA_GO_KR_KEY_ENV = "DATA_GO_KR_KEY"
-CLINICAL_TRIALS_MCP_URL_ENV = "CLINICAL_TRIALS_MCP_URL"
+GENOS_MCP_GATEWAY_BASE_ENV = "GENOS_MCP_GATEWAY_BASE"
+OPENFDA_MCP_RESOURCE_ENV = "OPENFDA_MCP_RESOURCE_ID"
+NEDRUG_MCP_RESOURCE_ENV = "NEDRUG_MCP_RESOURCE_ID"
+HIRA_MCP_RESOURCE_ENV = "HIRA_MCP_RESOURCE_ID"
+CLINICAL_TRIALS_MCP_RESOURCE_ENV = "CLINICAL_TRIALS_MCP_RESOURCE_ID"
 WEB_SEARCH_PROVIDER_ENV = "WEB_SEARCH_PROVIDER"
 TAVILY_API_KEY_ENV = "TAVILY_API_KEY"
 SERPER_API_KEY_ENV = "SERPER_API_KEY"
@@ -30,6 +30,15 @@ HIRA_PROCEDURE_SOURCE = "hira_procedure"
 WEB_SEARCH_SOURCE = "web_search"
 WEB_SEARCH_MAX_RESULTS = 5
 TAVILY_TIMEOUT_CAP_S = 5
+DEFAULT_MCP_GATEWAY_BASE = "http://llmops-gateway-api-service:8080"
+OPENFDA_MCP_DEFAULT_RESOURCE = "184"
+NEDRUG_MCP_DEFAULT_RESOURCE = "250"
+HIRA_MCP_DEFAULT_RESOURCE = "253"
+CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE = "169"
+OPENFDA_MCP_SOURCE = "openfda_mcp"
+NEDRUG_MCP_SOURCE = "nedrug_mcp"
+HIRA_MCP_SOURCE = "hira_mcp"
+CLINICAL_TRIALS_MCP_SOURCE = "clinicaltrials_mcp"
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,7 @@ class ExternalApiClient:
         self.timeout_s = timeout_s
         path = fixture_path or Path(__file__).resolve().parents[2] / "fixtures" / "external_api_fixtures.json"
         self.fixtures = json.loads(path.read_text(encoding="utf-8"))
+        self.mcp_gateway_base = os.environ.get(GENOS_MCP_GATEWAY_BASE_ENV, DEFAULT_MCP_GATEWAY_BASE).rstrip("/")
 
     @staticmethod
     def redact_url(url: str) -> str:
@@ -75,8 +85,6 @@ class ExternalApiClient:
         return self._fixture_or_live("mfds_clinical_trial_kr", {"keyword": keyword})
 
     def clinicaltrials_v2_search(self, query_intr: str) -> ExternalCall:
-        if self.mode == "live":
-            return self._clinicaltrials_mcp_search(query_intr)
         return self._fixture_or_live("clinicaltrials_v2_search", {"query.intr": query_intr})
 
     def openfda_label_search(self, substance_name: str) -> ExternalCall:
@@ -201,62 +209,24 @@ class ExternalApiClient:
                 safe_url=data.get("safe_url"),
                 elapsed_ms=0.0,
             )
-        return self._live_get(tool, params, xml=xml)
+        return self._live_mcp_call(tool, params)
 
-    def _clinicaltrials_mcp_search(self, query_intr: str) -> ExternalCall:
-        url = os.environ.get(CLINICAL_TRIALS_MCP_URL_ENV)
-        if not url:
-            return self._clinicaltrials_fail_closed(
-                query_intr,
-                f"{CLINICAL_TRIALS_MCP_URL_ENV} is not configured",
-                elapsed_ms=0.0,
-            )
+    def _live_mcp_call(self, tool: str, params: dict[str, str]) -> ExternalCall:
+        spec = _mcp_tool_spec(tool, params)
+        url = self._mcp_url(spec["resource_id"])
         start = time.monotonic()
         try:
-            result = McpJsonClient(url, timeout_s=self.timeout_s).call_tool(
-                "search_studies",
-                {"intervention": query_intr, "pageSize": 5},
-            )
+            result = McpJsonClient(url, timeout_s=self.timeout_s).call_tool(spec["mcp_tool"], spec["arguments"])
         except McpClientError as exc:
             elapsed = round((time.monotonic() - start) * 1000, 1)
-            return self._clinicaltrials_fail_closed(query_intr, exc.message, elapsed_ms=elapsed, safe_url=url)
+            if tool == "clinicaltrials_v2_search":
+                return _clinicaltrials_failed_call(params, spec["mcp_tool"], exc.message, url, elapsed)
+            return _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], exc.message, url, elapsed)
         elapsed = round((time.monotonic() - start) * 1000, 1)
-        payload = _clinicaltrials_mcp_payload(result.content_text)
-        studies = payload.get("studies", [])
-        if not isinstance(studies, list) or not studies:
-            return ExternalCall(
-                tool="clinicaltrials_v2_search",
-                source="external_api",
-                status="no_data",
-                summary_text="ClinicalTrials MCP 조회 결과가 없어 외부 임상 근거를 생성하지 않습니다.",
-                render_data={
-                    "request": {"query.intr": query_intr},
-                    "payload": {"studies": []},
-                    "mcp": {"tool": "search_studies", "content_text": result.content_text},
-                    "external_claim_policy": "fail_closed_no_source_rows",
-                    "message": "ClinicalTrials MCP 조회 결과 없음",
-                },
-                safe_url=url,
-                elapsed_ms=elapsed,
-            )
-        nct_ids = _nct_ids_from_studies(studies)
-        return ExternalCall(
-            tool="clinicaltrials_v2_search",
-            source="external_api",
-            status="live",
-            summary_text=f"ClinicalTrials MCP에서 {query_intr} 관련 NCT 원문 결과를 확인했습니다: {','.join(nct_ids[:3])}",
-            render_data={
-                "request": {"query.intr": query_intr},
-                "payload": payload,
-                "nct_ids": nct_ids,
-                "briefTitle": _first_study_value(studies, "briefTitle"),
-                "overallStatus": _first_study_value(studies, "overallStatus"),
-                "mcp": {"tool": "search_studies", "content_text": result.content_text},
-                "external_claim_policy": "source_relay_only",
-            },
-            safe_url=url,
-            elapsed_ms=elapsed,
-        )
+        return _mcp_external_call(tool, spec["source"], params, spec["mcp_tool"], result, url, elapsed)
+
+    def _mcp_url(self, resource_id: str) -> str:
+        return f"{self.mcp_gateway_base}/mcp/{resource_id}/mcp"
 
     def _live_web_search(self, query: str, max_results: int = 5) -> ExternalCall:
         provider = os.environ.get(WEB_SEARCH_PROVIDER_ENV, "tavily").strip().lower()
@@ -352,90 +322,233 @@ class ExternalApiClient:
         ]
         return _web_call("brave", query, items, elapsed)
 
-    @staticmethod
-    def _clinicaltrials_fail_closed(
-        query_intr: str,
-        reason: str,
-        *,
-        elapsed_ms: float | None,
-        safe_url: str | None = None,
-    ) -> ExternalCall:
+
+def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
+    match tool:
+        case "clinicaltrials_v2_search":
+            return {
+                "resource_id": os.environ.get(CLINICAL_TRIALS_MCP_RESOURCE_ENV, CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE),
+                "source": CLINICAL_TRIALS_MCP_SOURCE,
+                "mcp_tool": "search_studies",
+                "arguments": {"intervention": params.get("query.intr", ""), "pageSize": 5},
+            }
+        case "openfda_label_search":
+            return {
+                "resource_id": os.environ.get(OPENFDA_MCP_RESOURCE_ENV, OPENFDA_MCP_DEFAULT_RESOURCE),
+                "source": OPENFDA_MCP_SOURCE,
+                "mcp_tool": "search_drug_labels",
+                "arguments": {"active_ingredient": _openfda_active_ingredient(params), "limit": 5},
+            }
+        case "mfds_permission_search":
+            return _nedrug_spec(tool, "search_drug_permission_list", {"item_name": params.get("brand"), "limit": 10})
+        case "mfds_permission_detail":
+            return _nedrug_spec(tool, "get_drug_permission_detail", {"item_seq": params.get("item_seq"), "limit": 5})
+        case "mfds_composition":
+            return _nedrug_spec(tool, "get_drug_main_ingredient", {"item_seq": params.get("item_seq"), "limit": 5})
+        case "mfds_easy_drug":
+            return _nedrug_spec(tool, "search_easy_drug_info", {"item_seq": params.get("item_seq"), "limit": 5})
+        case "mfds_clinical_trial_kr":
+            return _nedrug_spec(tool, "search_clinical_test_info", {"goods_name": params.get("keyword"), "limit": 5})
+        case "mfds_patent":
+            return _nedrug_spec(tool, "search_korea_drug_patent", {"item_name": params.get("query"), "ingr_name": params.get("query"), "limit": 5})
+        case "mfds_fda_orangebook":
+            return _nedrug_spec(tool, "search_fda_orangebook_patent", {"ingr_name": params.get("query"), "limit": 5})
+        case "hira_disease_name_code":
+            return _hira_spec(tool, "search_disease_code", {"search_text": params.get("sickCd", ""), "disease_type": "SICK_CD", "sick_type": "1", "med_tp": "1", "num_of_rows": 10})
+        case "hira_disease_hospitalization_outpatient_stats":
+            return _hira_spec(tool, "get_disease_stats_by_patient_type", _hira_disease_args(params))
+        case "hira_disease_gender_age_stats":
+            return _hira_spec(tool, "get_disease_stats_by_age_gender", _hira_disease_args(params))
+        case "hira_disease_institution_class_stats":
+            return _hira_spec(tool, "get_disease_stats_by_institution_class", _hira_disease_args(params))
+        case "hira_disease_area_stats":
+            return _hira_spec(tool, "get_disease_stats_by_region", _hira_disease_args(params))
+        case "hira_procedure_gender_ipat_opat_stats":
+            return _hira_spec(tool, "get_treatment_stats_by_patient_type", _hira_procedure_args(params))
+        case "hira_procedure_gender_age_stats":
+            return _hira_spec(tool, "get_treatment_stats_by_age_gender", _hira_procedure_args(params))
+        case "hira_procedure_institution_class_stats":
+            return _hira_spec(tool, "get_treatment_stats_by_institution_class", _hira_procedure_args(params))
+        case "hira_procedure_area_stats":
+            return _hira_spec(tool, "get_treatment_stats_by_region", _hira_procedure_args(params))
+        case unreachable:
+            raise McpClientError(f"No MCP mapping for external tool: {unreachable}")
+
+
+def _nedrug_spec(tool: str, mcp_tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "resource_id": os.environ.get(NEDRUG_MCP_RESOURCE_ENV, NEDRUG_MCP_DEFAULT_RESOURCE),
+        "source": NEDRUG_MCP_SOURCE,
+        "mcp_tool": mcp_tool,
+        "arguments": _strip_none_arguments(arguments),
+    }
+
+
+def _hira_spec(tool: str, mcp_tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "resource_id": os.environ.get(HIRA_MCP_RESOURCE_ENV, HIRA_MCP_DEFAULT_RESOURCE),
+        "source": HIRA_MCP_SOURCE,
+        "mcp_tool": mcp_tool,
+        "arguments": _strip_none_arguments(arguments),
+    }
+
+
+def _hira_disease_args(params: dict[str, str]) -> dict[str, Any]:
+    return {"sick_cd": params.get("sickCd", ""), "year": params.get("year"), "sick_type": "1", "med_tp": "1", "num_of_rows": 20}
+
+
+def _hira_procedure_args(params: dict[str, str]) -> dict[str, Any]:
+    return {"st5_cd": params.get("st5Cd", ""), "year": params.get("year"), "std_type": params.get("stdType"), "num_of_rows": 20}
+
+
+def _strip_none_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in arguments.items() if value not in {None, ""}}
+
+
+def _openfda_active_ingredient(params: dict[str, str]) -> str:
+    search = params.get("search", "")
+    match = re.search(r'openfda\.substance_name:"([^"]+)"', search)
+    return match.group(1) if match else search
+
+
+def _mcp_external_call(
+    tool: str,
+    source: str,
+    params: dict[str, str],
+    mcp_tool: str,
+    result: McpToolResult,
+    url: str,
+    elapsed: float,
+) -> ExternalCall:
+    if result.raw_result.get("isError") is True:
+        return _mcp_failed_call(tool, source, params, mcp_tool, result.content_text, url, elapsed, no_data="No results" in result.content_text)
+    if tool == "clinicaltrials_v2_search":
+        return _clinicaltrials_call_from_mcp(params, mcp_tool, result, url, elapsed)
+    payload = _mcp_payload(result)
+    render_data = _mcp_render_data(payload, params, mcp_tool, result.content_text)
+    has_items = bool(render_data.get("items") or render_data.get("payload", {}).get("results"))
+    status = "live" if has_items else "no_data"
+    if not has_items:
+        render_data["message"] = "MCP 조회 결과 없음"
+    return ExternalCall(
+        tool=tool,
+        source=source,
+        status=status,
+        summary_text=_mcp_summary(tool, status, render_data),
+        render_data=render_data,
+        safe_url=url,
+        elapsed_ms=elapsed,
+    )
+
+
+def _clinicaltrials_failed_call(params: dict[str, str], mcp_tool: str, reason: str, url: str, elapsed: float) -> ExternalCall:
+    return ExternalCall(
+        tool="clinicaltrials_v2_search",
+        source=CLINICAL_TRIALS_MCP_SOURCE,
+        status="error",
+        summary_text=f"ClinicalTrials MCP 조회 실패: {reason}",
+        render_data={
+            "request": params,
+            "payload": {"studies": []},
+            "mcp": {"tool": mcp_tool},
+            "error": reason,
+            "external_claim_policy": "fail_closed_error",
+        },
+        safe_url=url,
+        elapsed_ms=elapsed,
+    )
+
+
+def _clinicaltrials_call_from_mcp(params: dict[str, str], mcp_tool: str, result: McpToolResult, url: str, elapsed: float) -> ExternalCall:
+    payload = _clinicaltrials_mcp_payload(result.content_text)
+    studies = payload.get("studies", [])
+    render_data = {
+        "request": params,
+        "payload": payload,
+        "mcp": {"tool": mcp_tool, "content_text": result.content_text},
+        "external_claim_policy": "source_relay_only",
+    }
+    if not isinstance(studies, list) or not studies:
         return ExternalCall(
             tool="clinicaltrials_v2_search",
-            source="external_api",
-            status="error",
-            summary_text=f"ClinicalTrials MCP 조회 실패: {reason}. 외부 임상 근거를 생성하지 않습니다.",
-            render_data={
-                "request": {"query.intr": query_intr},
-                "payload": {"studies": []},
-                "error": reason,
-                "external_claim_policy": "fail_closed_error",
-                "message": "ClinicalTrials MCP 조회 실패",
-            },
-            safe_url=safe_url,
-            elapsed_ms=elapsed_ms,
-        )
-
-    def _live_get(self, tool: str, params: dict[str, str], xml: bool = False) -> ExternalCall:
-        spec = self.fixtures[tool]["live"]
-        query = self._live_query(spec, params)
-        if spec.get("requires_service_key"):
-            key = os.environ.get(DATA_GO_KR_KEY_ENV)
-            if not key:
-                raise RuntimeError(f"{DATA_GO_KR_KEY_ENV} is required for live {tool}")
-            query["serviceKey"] = key
-        url = self._url_with_query(spec["url"], query)
-        start = time.monotonic()
-        last_error: Exception | None = None
-        for _ in range(2):
-            try:
-                response = requests.get(url, timeout=self.timeout_s)
-                elapsed = round((time.monotonic() - start) * 1000, 1)
-                response.raise_for_status()
-                payload = parse_response(response, xml or spec.get("format") == "xml")
-                return ExternalCall(
-                    tool=tool,
-                    source="external_api",
-                    status="live",
-                    summary_text=summary(tool, response.status_code, payload),
-                    render_data={**render_payload(payload), "request": params},
-                    safe_url=self.redact_url(url),
-                    elapsed_ms=elapsed,
-                )
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.2)
-        elapsed = round((time.monotonic() - start) * 1000, 1)
-        error_text = self.redact_url(str(last_error)) if last_error else "unknown"
-        return ExternalCall(
-            tool=tool,
-            source="external_api",
-            status="error",
-            summary_text=f"{tool} failed: {error_text}",
-            render_data={"error": error_text, "request": params},
-            safe_url=self.redact_url(url),
+            source=CLINICAL_TRIALS_MCP_SOURCE,
+            status="no_data",
+            summary_text="ClinicalTrials MCP 조회 결과가 없어 외부 임상 근거를 생성하지 않습니다.",
+            render_data={**render_data, "payload": {"studies": []}, "message": "ClinicalTrials MCP 조회 결과 없음"},
+            safe_url=url,
             elapsed_ms=elapsed,
         )
+    nct_ids = _nct_ids_from_studies(studies)
+    return ExternalCall(
+        tool="clinicaltrials_v2_search",
+        source=CLINICAL_TRIALS_MCP_SOURCE,
+        status="live",
+        summary_text=f"ClinicalTrials MCP에서 {params.get('query.intr', '')} 관련 NCT 원문 결과를 확인했습니다: {','.join(nct_ids[:3])}",
+        render_data={**render_data, "nct_ids": nct_ids, "briefTitle": _first_study_value(studies, "briefTitle"), "overallStatus": _first_study_value(studies, "overallStatus")},
+        safe_url=url,
+        elapsed_ms=elapsed,
+    )
 
-    @staticmethod
-    def _live_query(spec: dict[str, Any], params: dict[str, str]) -> dict[str, str]:
-        mapped: dict[str, str] = {}
-        for key, value in spec.get("default_params", {}).items():
-            mapped[key] = str(value)
-        param_map = spec.get("param_map", {})
-        for key, value in params.items():
-            target = param_map.get(key, key)
-            if target:
-                mapped[target] = value
-        return mapped
 
-    @staticmethod
-    def _url_with_query(url: str, query: dict[str, str]) -> str:
-        parts = urlsplit(url)
-        existing = dict(parse_qsl(parts.query, keep_blank_values=True))
-        existing.update(query)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query and urlencode(existing) or urlencode(existing), parts.fragment))
+def _mcp_failed_call(
+    tool: str,
+    source: str,
+    params: dict[str, str],
+    mcp_tool: str,
+    reason: str,
+    url: str,
+    elapsed: float,
+    *,
+    no_data: bool = False,
+) -> ExternalCall:
+    status = "no_data" if no_data else "error"
+    return ExternalCall(
+        tool=tool,
+        source=source,
+        status=status,
+        summary_text=f"{mcp_tool} MCP 조회 {'결과 없음' if no_data else '실패'}: {reason}",
+        render_data={"request": params, "mcp": {"tool": mcp_tool}, "error": reason, "message": "MCP 조회 결과 없음" if no_data else "MCP 조회 실패"},
+        safe_url=url,
+        elapsed_ms=elapsed,
+    )
 
+
+def _mcp_payload(result: McpToolResult) -> Any:
+    structured = result.raw_result.get("structuredContent")
+    if isinstance(structured, dict) and isinstance(structured.get("result"), str):
+        return _json_or_text(structured["result"])
+    return _json_or_text(result.content_text)
+
+
+def _json_or_text(text: str) -> Any:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return {"text": stripped}
+
+
+def _mcp_render_data(payload: Any, params: dict[str, str], mcp_tool: str, content_text: str) -> dict[str, Any]:
+    if isinstance(payload, list):
+        return {"request": params, "resultCode": "00", "totalCount": len(payload), "items": payload[:5], "mcp": {"tool": mcp_tool, "content_text": content_text}}
+    if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+        return {"request": params, "payload": {"meta": payload.get("meta", {}), "results": payload["results"][:5]}, "mcp": {"tool": mcp_tool, "content_text": content_text}}
+    if isinstance(payload, dict):
+        return {"request": params, "payload": payload, "mcp": {"tool": mcp_tool, "content_text": content_text}}
+    return {"request": params, "payload": {"value": payload}, "mcp": {"tool": mcp_tool, "content_text": content_text}}
+
+
+def _mcp_summary(tool: str, status: str, render_data: dict[str, Any]) -> str:
+    if status == "no_data":
+        return f"{tool} MCP returned no results"
+    if "items" in render_data:
+        return f"{tool} MCP returned totalCount={render_data.get('totalCount')}"
+    payload = render_data.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+        return f"{tool} MCP returned results={len(payload['results'])}"
+    return f"{tool} MCP returned data"
 
 def _clinicaltrials_mcp_payload(text: str) -> dict[str, Any]:
     studies: list[dict[str, Any]] = []

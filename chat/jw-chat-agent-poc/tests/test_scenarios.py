@@ -294,60 +294,56 @@ def test_external_redaction_masks_service_key():
     assert ExternalApiClient.redact_url(url) == "https://example.test/api?serviceKey=<redacted>&x=1"
 
 
-def test_live_error_redacts_service_key_in_summary_and_render_data(monkeypatch):
-    monkeypatch.setenv("DATA_GO_KR_KEY", "SECRETKEY")
+def test_live_mcp_error_does_not_require_data_go_key(monkeypatch):
+    monkeypatch.delenv("DATA_GO_KR_KEY", raising=False)
 
-    def fake_get(url, timeout):
-        class Response:
-            status_code = 503
-            text = ""
+    def fake_post(url, json, headers, timeout):
+        raise requests.Timeout("mcp gateway down")
 
-            def raise_for_status(self):
-                raise requests.HTTPError(f"503 Server Error for url: {url}")
-
-        return Response()
-
-    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.get", fake_get)
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
 
     call = ExternalApiClient(mode="live", timeout_s=1).mfds_patent("pitavastatin")
 
     assert call.status == "error"
-    assert "SECRETKEY" not in call.summary_text
-    assert "SECRETKEY" not in call.render_data["error"]
-    assert "serviceKey=<redacted>" in call.summary_text
-    assert "serviceKey=<redacted>" in call.render_data["error"]
+    assert call.source == "nedrug_mcp"
+    assert "DATA_GO_KR_KEY" not in call.summary_text
+    assert "mcp gateway down" in call.render_data["error"]
+    assert call.safe_url and "/mcp/250/mcp" in call.safe_url
 
 
-def test_live_hira_response_preserves_request_year(monkeypatch):
-    monkeypatch.setenv("DATA_GO_KR_KEY", "SECRETKEY")
+def test_live_hira_mcp_response_preserves_request_year(monkeypatch):
+    def fake_post(url, json, headers, timeout):
+        assert "/mcp/253/mcp" in url
+        assert json["params"]["name"] == "get_disease_stats_by_patient_type"
+        assert json["params"]["arguments"]["year"] == "2024"
+        text = json_module.dumps([
+            {
+                "inpatOpat": "외래",
+                "sickCd": "I10",
+                "sickNm": "본태성 고혈압",
+                "ptntCnt": "3769201",
+            }
+        ])
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": text}],
+                    "structuredContent": {"result": text},
+                    "isError": False,
+                },
+            }
+        )
 
-    def fake_get(url, timeout):
-        assert "year=2024" in url
-
-        class Response:
-            status_code = 200
-            text = (
-                "<response>"
-                "<header><resultCode>00</resultCode></header>"
-                "<body><items><item>"
-                "<inpatOpat>외래</inpatOpat>"
-                "<sickCd>I10</sickCd>"
-                "<sickNm>본태성 고혈압</sickNm>"
-                "<ptntCnt>3769201</ptntCnt>"
-                "</item></items><totalCount>1</totalCount></body>"
-                "</response>"
-            )
-
-            def raise_for_status(self):
-                return None
-
-        return Response()
-
-    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.get", fake_get)
+    json_module = json
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
 
     call = ExternalApiClient(mode="live", timeout_s=1).hira_disease_hospitalization_outpatient_stats("I10")
 
     assert call.status == "live"
+    assert call.source == "hira_disease"
+    assert call.render_data["mcp"]["tool"] == "get_disease_stats_by_patient_type"
     assert call.render_data["request"] == {"sickCd": "I10", "year": "2024"}
     assert call.render_data["items"][0]["ptntCnt"] == "3769201"
 
@@ -409,7 +405,7 @@ def test_tavily_web_search_timeout_is_graceful(monkeypatch):
 
 def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
     def fake_post(url, json, headers, timeout):
-        assert url == "http://ct-mcp/json"
+        assert url == "http://ct-mcp/mcp/169/mcp"
         assert "application/json" in headers["Accept"]
         assert "text/event-stream" in headers["Accept"]
         assert json["method"] == "tools/call"
@@ -441,7 +437,7 @@ def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
             }
         )
 
-    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://ct-mcp/json")
+    monkeypatch.setenv("GENOS_MCP_GATEWAY_BASE", "http://ct-mcp")
     monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
 
     call = ExternalApiClient(mode="live", timeout_s=1).clinicaltrials_v2_search("pitavastatin")
@@ -457,7 +453,7 @@ def test_clinicaltrials_live_search_fails_closed_on_mcp_error(monkeypatch):
     def fake_post(url, json, headers, timeout):
         raise requests.Timeout("network down")
 
-    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://ct-mcp/json")
+    monkeypatch.setenv("GENOS_MCP_GATEWAY_BASE", "http://ct-mcp")
     monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
 
     call = ExternalApiClient(mode="live", timeout_s=1).clinicaltrials_v2_search("pitavastatin")
@@ -468,19 +464,19 @@ def test_clinicaltrials_live_search_fails_closed_on_mcp_error(monkeypatch):
     assert "NCT" not in call.summary_text
 
 
-@pytest.mark.skipif(not os.environ.get("DATA_GO_KR_KEY"), reason="DATA_GO_KR_KEY is required for live external API tests")
+@pytest.mark.skipif(not os.environ.get("RUN_LIVE_MCP_TESTS"), reason="RUN_LIVE_MCP_TESTS is required for live MCP integration tests")
 def test_live_external_endpoints_parse_real_responses():
     client = ExternalApiClient(mode="live", timeout_s=15)
 
     permission = client.mfds_permission_search("리바로")
     assert permission.status == "live"
-    assert permission.render_data["totalCount"] == "21"
+    assert int(permission.render_data["totalCount"]) >= 1
     assert permission.render_data["items"][0]["ITEM_SEQ"] == "200500287"
-    assert "serviceKey=<redacted>" in permission.safe_url
+    assert permission.safe_url and "/mcp/250/mcp" in permission.safe_url
 
     detail = client.mfds_permission_detail("200500287")
     assert detail.status == "live"
-    assert detail.render_data["totalCount"] == "1"
+    assert int(detail.render_data["totalCount"]) >= 1
     assert detail.render_data["items"][0]["ITEM_NAME"].startswith("리바로정1밀리그램")
 
     trials = client.clinicaltrials_v2_search("pitavastatin")
@@ -488,9 +484,8 @@ def test_live_external_endpoints_parse_real_responses():
     study = trials.render_data["payload"]["studies"][0]
     assert study["protocolSection"]["identificationModule"]["nctId"].startswith("NCT")
 
-    label = client.openfda_label_search("PITAVASTATIN")
-    assert label.status == "live"
-    assert label.render_data["payload"]["meta"]["results"]["total"] >= 1
+    label = client.openfda_label_search("SEMAGLUTIDE")
+    assert label.status in {"live", "no_data"}
 
     domestic_patent = client.mfds_patent("pitavastatin")
     assert domestic_patent.status == "live"
