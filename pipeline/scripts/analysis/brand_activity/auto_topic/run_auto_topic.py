@@ -106,6 +106,7 @@ def main(
     axis_rows_cap: int = typer.Option(240, "--axis-rows-cap", min=30, max=300, help="Hard cap for total sampled rows in each market-axis prompt."),
     brand_rows: int = typer.Option(15, "--brand-rows", min=3, max=60, help="Rows sampled per brand-share call."),
     brands_per_market: int = typer.Option(DEFAULT_BRANDS_PER_MARKET, "--brands-per-market", min=1, help="Configured brands per market; set high enough to include every keyword-bearing brand."),
+    axis_lookback_months: int = typer.Option(12, "--axis-lookback-months", min=1, max=36, help="Rolling month window for market-axis and brand-specific topic generation."),
     large_market_limit: int = typer.Option(3, "--large-market-limit", min=0, max=3, help="Large markets receiving Pro/Lite recheck."),
     full_rows: bool = typer.Option(True, "--full-rows/--capped-rows", help="Use all rows for selected scopes, with chunking/batching for GenOS calls."),
     axis_chunk_token_budget: int = typer.Option(8000, "--axis-chunk-token-budget", min=1000, max=20000, help="Estimated input-token cap for one market-axis chunk."),
@@ -126,6 +127,7 @@ def main(
         axis_rows_cap=axis_rows_cap,
         brand_rows=brand_rows,
         brands_per_market=brands_per_market,
+        axis_lookback_months=axis_lookback_months,
         large_market_limit=large_market_limit,
         full_rows=full_rows,
         axis_chunk_token_budget=axis_chunk_token_budget,
@@ -149,6 +151,7 @@ def run_pipeline(
     axis_rows_cap: int,
     brand_rows: int,
     brands_per_market: int,
+    axis_lookback_months: int,
     large_market_limit: int,
     full_rows: bool,
     axis_chunk_token_budget: int,
@@ -176,12 +179,13 @@ def run_pipeline(
     if _dict(group_map.get("sanity_checks")).get("status") != "pass":
         raise SafetyError(f"MI Master group sanity failed: {group_map.get('sanity_checks')}")
     scope_metadata = scope_metadata_from_group_map(group_map)
-    samples = build_market_samples(rows, markets, descriptions, axis_per_brand=axis_per_brand, axis_rows_cap=axis_rows_cap, brand_rows=brand_rows, brands_per_market=brands_per_market, full_rows=full_rows, group_map=group_map)
+    samples = build_market_samples(rows, markets, descriptions, axis_per_brand=axis_per_brand, axis_rows_cap=axis_rows_cap, brand_rows=brand_rows, brands_per_market=brands_per_market, full_rows=full_rows, group_map=group_map, axis_lookback_months=axis_lookback_months)
     axis_samples = _typed_samples(samples["axis_samples"])
     brand_samples = _typed_samples(samples["brand_samples"])
+    brand_axis_samples = _typed_samples(samples["brand_axis_samples"])
     scope_metadata = _dict(samples.get("scope_metadata")) or scope_metadata
     large_markets = large_scopes_by_row_count(axis_samples, limit=large_market_limit)
-    call_plan = build_call_plan(markets=markets, axis_samples=axis_samples, brand_samples=brand_samples, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
+    call_plan = build_call_plan(markets=markets, axis_samples=axis_samples, brand_samples=brand_samples, brand_axis_samples=brand_axis_samples, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
     should_execute = execute and not dry_run
     if should_execute and len(call_plan) > max_real_calls:
         # Rationale: bounded PoC must fail before GenOS if scope drifts toward a full brand run.
@@ -193,7 +197,7 @@ def run_pipeline(
     plan_summary = _plan_summary(call_plan)
     _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, dictionary_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge)
     if should_execute:
-        execution = execute_calls(token=token, dictionary=dictionary, axis_samples=axis_samples, brand_samples=brand_samples, descriptions=descriptions, markets=markets, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
+        execution = execute_calls(token=token, dictionary=dictionary, axis_samples=axis_samples, brand_samples=brand_samples, brand_axis_samples=brand_axis_samples, descriptions=descriptions, markets=markets, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
     else:
         execution = skipped_execution(dictionary, brand_samples)
     summary = execution_summary(execution, call_plan)
@@ -216,12 +220,12 @@ def run_pipeline(
         csd_bridge=csd_bridge,
         open_questions=_open_questions(alias_source, should_execute),
     )
-    payload["source_text_sanitize"] = sanitize_source_text_carryover(payload, _all_sampled_rows(axis_samples, brand_samples))
+    payload["source_text_sanitize"] = sanitize_source_text_carryover(payload, _all_sampled_rows(axis_samples, brand_samples, brand_axis_samples))
     _write_reports_and_audit(docs_dir, run_audit_dir, payload, rows, summary, auth_mode, token_env, group_map, scope_metadata)
     static_quality = inspect_package(REPO_ROOT / "pipeline/scripts/analysis/brand_activity/auto_topic")
     write_json(run_audit_dir / "static_quality.json", static_quality)
     paths = generated_files(docs_dir, run_audit_dir)
-    scan = raw_text_scan(paths, _all_sampled_rows(axis_samples, brand_samples))
+    scan = raw_text_scan(paths, _all_sampled_rows(axis_samples, brand_samples, brand_axis_samples))
     write_json(run_audit_dir / "raw_text_scan.json", scan)
     if scan.get("leak_count") != 0:
         # Rationale: source messages may enter prompts but must never survive into audit/docs/html.
@@ -239,6 +243,9 @@ def run_pipeline(
         "scope_count": len(axis_samples),
         "group_scope_count": len([row for row in scope_metadata.values() if isinstance(row, dict) and row.get("scope_type") == "market_group"]),
         "sampled_brand_count": len(brand_samples),
+        "brand_axis_sampled_count": len([rows for rows in brand_axis_samples.values() if rows]),
+        "axis_window": samples.get("axis_window"),
+        "axis_fallback_scopes": samples.get("axis_fallback_scopes"),
         "planned_call_count": len(call_plan),
         "planned_estimated_input_tokens": plan_summary.get("estimated_input_tokens"),
         "executed_call_count": len(execution.call_logs),
@@ -412,12 +419,14 @@ def _render_design_tokens() -> str:
     )
 
 
-def _all_sampled_rows(axis_samples: dict[str, list[KeywordRow]], brand_samples: dict[str, list[KeywordRow]]) -> list[KeywordRow]:
+def _all_sampled_rows(axis_samples: dict[str, list[KeywordRow]], brand_samples: dict[str, list[KeywordRow]], brand_axis_samples: dict[str, list[KeywordRow]] | None = None) -> list[KeywordRow]:
     """Flatten sampled rows for exact raw-text leakage scanning."""
     rows: list[KeywordRow] = []
     for sample_rows in axis_samples.values():
         rows.extend(sample_rows)
     for sample_rows in brand_samples.values():
+        rows.extend(sample_rows)
+    for sample_rows in (brand_axis_samples or {}).values():
         rows.extend(sample_rows)
     return rows
 

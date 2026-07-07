@@ -107,6 +107,7 @@ def brand_share_prompt(
     brand: str,
     axis_version: str,
     topics: list[TopicDefinition],
+    brand_specific_topics: list[TopicDefinition] | None = None,
     description: BrandDescription,
     rows: list[KeywordRow],
     scope_id: str | None = None,
@@ -115,6 +116,7 @@ def brand_share_prompt(
 ) -> list[dict[str, str]]:
     """Create the brand-share prompt against a fixed market axis."""
     resolved_scope_id = scope_id or f"atc4:{atc4}"
+    fixed_brand_topics = brand_specific_topics or []
     payload: dict[str, JsonValue] = {
         "scope_id": resolved_scope_id,
         "atc4": atc4,
@@ -130,6 +132,8 @@ def brand_share_prompt(
         },
         "axis_version": axis_version,
         "topics": [_topic_for_prompt(topic) for topic in topics],
+        "brand_specific_topics": [_topic_for_prompt(topic) for topic in fixed_brand_topics],
+        "allowed_topic_ids": [topic.topic_id for topic in topics] + [topic.topic_id for topic in fixed_brand_topics],
         "rows": [_row_for_prompt(row) for row in rows],
         "output_schema": {
             "brand": brand,
@@ -137,7 +141,7 @@ def brand_share_prompt(
             "axis_version": axis_version,
             "denominator": "brand_total_row_count",
             "topic_shares": [{"topic_id": "T1", "label": "한국어", "affected_row_count": 0}],
-            "brand_specific_topics": [{"topic_id": "B1", "label": "브랜드 특화 한국어", "definition": "시장축 밖 브랜드 대표 의미", "affected_row_count": 0}],
+            "brand_specific_topics": [{"topic_id": "B1", "label": "사전 정의된 브랜드 특화 한국어", "affected_row_count": 0}],
             "cross_insights": {"evolution": [], "interest": [], "promotional": []},
             "evidence_note": "원문 인용 없이 표본 한계와 판단 기준만 설명",
         },
@@ -151,9 +155,9 @@ def brand_share_prompt(
                 "한 행은 여러 토픽에 동시에 관련될 수 있고, 어느 토픽에도 관련되지 않을 수 있다. "
                 "토픽들은 서로 배타적이지 않으며, 관련 행수의 합이 전체 행수와 같을 필요가 없다. "
                 "각 토픽·brand_specific 항목의 affected_row_count는 0 이상이고 입력 행 수를 넘을 수 없다. "
-                "시장 축에는 없는 브랜드 대표 의미가 있으면 brand_specific_topics에 최대 2개만 추가한다. "
-                "topic_shares와 brand_specific_topics의 label은 짧은 명사구 1개념만 담고 '및', '/', ','를 쓰지 않는다. "
-                "brand_specific_topics 2개는 서로 명확히 다른 개념이어야 하며, 표현만 다른 근접중복이면 1개로 병합한다. "
+                "brand_specific_topics는 별도 생성 pass에서 이미 정의된 고정 어휘만 사용한다. "
+                "신규 토픽을 만들지 않는다. 주어진 allowed_topic_ids 밖의 topic_id를 절대 출력하지 않는다. "
+                "topic_shares와 brand_specific_topics의 label은 입력된 정의의 짧은 명사구를 유지한다. "
                 "시장 축과 의미가 겹치는 개념은 brand_specific_topics로 빼지 말고 해당 시장 topic_id로 분류한다. "
                 "기타/other/etc 항목은 만들지 않는다. 비율(share_pct)은 시스템이 계산하므로 출력하지 않는다. "
                 "시장 topic_shares에는 축에 없는 topic_id를 만들지 말고, "
@@ -164,6 +168,67 @@ def brand_share_prompt(
     ]
 
 
+def brand_specific_axis_prompt(
+    *,
+    atc4: str,
+    brand: str,
+    rows: list[KeywordRow],
+    description: BrandDescription,
+    market_topics: list[TopicDefinition] | None = None,
+    scope_id: str | None = None,
+    market_name: str | None = None,
+    atc4_values: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """Create the definition-only prompt for brand-specific topics."""
+    resolved_scope_id = scope_id or f"atc4:{atc4}"
+    payload: dict[str, JsonValue] = {
+        "scope_id": resolved_scope_id,
+        "atc4": atc4,
+        "atc4_values": atc4_values or [atc4],
+        "market_name": market_name or atc4,
+        "brand": brand,
+        "brand_description": {
+            "kr_canonical": description.kr_canonical,
+            "is_jw": description.is_jw,
+            "molecule": list(description.molecule),
+            "manufacturer": list(description.manufacturer),
+            "representing_company": list(description.representing_company),
+        },
+        "market_topics": [_topic_for_prompt(topic) for topic in market_topics or []],
+        "window": "recent_1_year",
+        "rows": [_row_for_prompt(row) for row in rows],
+        "output_schema": {
+            "brand": brand,
+            "atc4": atc4,
+            "brand_specific_topics": [
+                {
+                    "topic_id": "B1",
+                    "label": "짧은 한국어",
+                    "definition": "시장 공통축 밖 브랜드 대표 의미 1문장",
+                    "keywords": ["대표어"],
+                }
+            ],
+            "evidence_note": "원문 인용 없이 판단 기준만 설명",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "너는 JW중외제약 MI팀의 브랜드 활동 메시지 분석가다. "
+                "브랜드별 최근 1년 rows에서 시장 공통축으로 포착하기 어려운 브랜드 특화 토픽을 정의만 생성한다. "
+                "브랜드 특화 토픽은 0~2개 가변이며, 뚜렷한 특화 의미가 없으면 빈 배열을 반환한다. "
+                "행수, 비율, 행 배정 결과를 출력하지 않는다. "
+                "market_topics와 의미가 겹치는 개념은 브랜드 특화 토픽으로 만들지 않는다. "
+                "각 라벨은 짧은 명사구 1개념만 담고 '및', '/', ','를 쓰지 않는다. "
+                "2개를 만들 때는 서로 명확히 다른 개념이어야 하며, 근접중복은 1개로 병합한다. "
+                "기타/other/etc 항목은 만들지 않는다. 원문 문장을 인용하지 말고 JSON 객체만 반환한다."
+            ),
+        },
+        {"role": "user", "content": "다음 입력으로 브랜드 특화 토픽 정의만 생성하라.\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)},
+    ]
+
+
 def prompt_template_manifest() -> dict[str, JsonValue]:
     """Return prompt policy metadata without any filled prompt or source text."""
     return {
@@ -171,6 +236,7 @@ def prompt_template_manifest() -> dict[str, JsonValue]:
         "temperature": 0.0,
         "axis_contract": "market axis up to 7 concise single-meaning topics; small markets may return 3-5 with low-confidence note",
         "share_denominator": "brand_total_row_count; share_pct = affected_row_count/brand_total_rows*100, computed in code; topics independent, no etc, no 100% normalization",
+        "brand_specific_policy": "definition-only recent-1-year pass creates 0-2 topics; full-row share pass assigns only to fixed market + brand-specific vocabulary and creates no new topics",
         "label_policy": {
             "single_concept_required": True,
             "forbidden_connectors": ["및", "/", ","],

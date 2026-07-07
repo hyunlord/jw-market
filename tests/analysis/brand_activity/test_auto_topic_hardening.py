@@ -252,7 +252,7 @@ def test_execute_calls_quarantines_market_when_axis_call_errors(monkeypatch) -> 
             ],
         }, _log(task, atc4, "*", "ok")
 
-    def fake_share(_token, _scope_key, _scope_metadata, atc4, brand, _rows, _description, _topics, _model_key, *, task):
+    def fake_share(_token, _scope_key, _scope_metadata, atc4, brand, _rows, _description, _topics, _brand_specific_topics, _model_key, *, task):
         share_calls.append((atc4, brand))
         return {
             "status": "ok",
@@ -277,6 +277,53 @@ def test_execute_calls_quarantines_market_when_axis_call_errors(monkeypatch) -> 
     assert ("A", "A_BRAND") not in share_calls
     assert ("B", "B_BRAND") in share_calls
     assert result.brand_results["A:A_BRAND"]["status"] == "quarantined_axis_failed"
+
+
+def test_execute_calls_generates_brand_specific_topics_before_fixed_vocab_share(monkeypatch) -> None:
+    observed: dict[str, JsonValue] = {"brand_specific_rows": 0, "share_topic_ids": []}
+
+    def fake_axis(_token, _dictionary, atc4, _scope_metadata, _rows, *, task, model_key):
+        return {
+            "status": "ok",
+            "topics": [
+                {"topic_id": "T1", "label": "효능", "definition": "효능", "keywords": ["효능"]},
+                {"topic_id": "T2", "label": "안전성", "definition": "안전성", "keywords": ["안전성"]},
+                {"topic_id": "T3", "label": "편의", "definition": "편의", "keywords": ["편의"]},
+            ],
+        }, _log(task, atc4, "*", "ok")
+
+    def fake_brand_specific(_token, _scope_key, _scope_metadata, atc4, brand, rows, _description, _market_topics, _model_key, *, task):
+        observed["brand_specific_rows"] = len(rows)
+        return [execution.TopicDefinition("B1", "제형 편의", "제형 편의", ())], _log(task, atc4, brand, "ok")
+
+    def fake_share(_token, _scope_key, _scope_metadata, atc4, brand, _rows, _description, topics, brand_specific_topics, _model_key, *, task):
+        observed["share_topic_ids"] = [topic.topic_id for topic in topics] + [topic.topic_id for topic in brand_specific_topics]
+        return {
+            "status": "ok",
+            "brand": brand,
+            "atc4": atc4,
+            "topic_shares": [{"topic_id": "T1", "label": "효능", "affected_row_count": len(_rows)}],
+            "brand_specific_topics": [{"topic_id": "B1", "label": "제형 편의", "affected_row_count": len(_rows)}],
+        }, _log(task, atc4, brand, "ok")
+
+    monkeypatch.setattr(execution, "_call_axis", fake_axis)
+    monkeypatch.setattr(execution, "_call_brand_specific_axis", fake_brand_specific)
+    monkeypatch.setattr(execution, "_call_share", fake_share)
+
+    result = execution.execute_calls(
+        token="",
+        dictionary={},
+        axis_samples={"A": [_row(1, "A", "A_BRAND")]},
+        brand_samples={"A:A_BRAND": [_row(2, "A", "A_BRAND"), _row(3, "A", "A_BRAND")]},
+        brand_axis_samples={"A:A_BRAND": [_row(3, "A", "A_BRAND")]},
+        descriptions={"A:A_BRAND": _description("A", "A_BRAND")},
+        markets=("A",),
+        large_markets=(),
+    )
+
+    assert observed["brand_specific_rows"] == 1
+    assert observed["share_topic_ids"] == ["T1", "T2", "T3", "B1"]
+    assert result.brand_results["A:A_BRAND"]["brand_specific_topics"][0]["topic_id"] == "B1"
 
 
 def test_aggregate_share_batches_sums_affected_rows_without_normalizing() -> None:

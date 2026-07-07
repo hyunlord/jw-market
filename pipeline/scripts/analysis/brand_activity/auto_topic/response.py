@@ -64,6 +64,35 @@ def topics_from_axis(axis_payload: dict[str, JsonValue], *, fallback_label: str)
     return result or [TopicDefinition("T1", fallback_label, "fallback topic", ())]
 
 
+def brand_specific_topics_from_payload(payload: dict[str, JsonValue], *, fallback_label: str) -> list[TopicDefinition]:
+    """Convert a definition-only brand-specific payload into up to two topics."""
+    rows = _first_list(payload, ("brand_specific_topics", "brand_topics", "topic_definitions", "topics"))
+    if rows is None:
+        return []
+    topics: list[TopicDefinition] = []
+    seen_labels: set[str] = set()
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            continue
+        label, _rewritten = single_concept_label(str(item.get("label") or item.get("topic_label") or item.get("name") or f"{fallback_label} {index}"))
+        label_key = _normalized_topic_label(label)
+        if not label_key or label_key in seen_labels:
+            continue
+        seen_labels.add(label_key)
+        keywords = _first_list(item, ("keywords", "representative_keywords", "key_terms"))
+        topics.append(
+            TopicDefinition(
+                topic_id=str(item.get("topic_id") or item.get("id") or f"B{len(topics) + 1}"),
+                label=label,
+                definition=str(item.get("definition") or item.get("description") or ""),
+                keywords=tuple(str(value) for value in keywords if isinstance(value, str)) if isinstance(keywords, list) else (),
+            )
+        )
+        if len(topics) >= 2:
+            break
+    return topics
+
+
 def normalize_share_payload(
     payload: dict[str, JsonValue],
     *,
@@ -236,4 +265,3 @@ def _first_scalar(payload: dict[str, JsonValue], keys: tuple[str, ...]) -> JsonV
         if value is not None and not isinstance(value, dict | list):
             return value
     return None
-
