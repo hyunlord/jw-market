@@ -347,12 +347,19 @@ def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> N
     assert data["kpi"]["brand_value_recent"] == 10.0
 
 
-def test_build_cause_data_fills_analysis_levels_from_focus_ml_market(monkeypatch) -> None:
+def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monkeypatch) -> None:
     analysis_row = {
         "source": "ubist",
         "measure": "sales",
         "unit_label": "KRW",
-        "dimension_data": json.dumps({}),
+        "by_dimension": json.dumps({"seller": "JW중외제약", "molecule_strength": "Sitagliptin 100mg"}, ensure_ascii=False),
+        "dimension_data": json.dumps(
+            {
+                "seller": {"JW중외제약": {"2026-04": {"raw_value": 80.0}, "2026-05": {"raw_value": 100.0}}},
+                "molecule_strength": {"Sitagliptin 100mg": {"2026-04": {"raw_value": 80.0}, "2026-05": {"raw_value": 100.0}}},
+            },
+            ensure_ascii=False,
+        ),
         "dimension_channel_data": json.dumps({}),
         "channel_data": json.dumps({"의원": {"2026-04": {"raw_value": 80.0}, "2026-05": {"raw_value": 100.0}}}),
         "overlay_data": json.dumps({}),
@@ -440,11 +447,13 @@ def test_build_cause_data_fills_analysis_levels_from_focus_ml_market(monkeypatch
     )
 
     assert any(call[1] == ("ml_999", "ubist", "sales") for call in calls)
-    class_segments = data["analysis_levels"]["data"]["Class"]["by_channel"]["전체"]
-    molecule_segments = data["analysis_levels"]["data"]["Molecule"]["by_channel"]["전체"]
-    assert [item["name"] for item in class_segments] == ["전체", "DPP4"]
-    assert [item["name"] for item in molecule_segments] == ["전체", "Sitagliptin"]
-    assert data["level_top5_trend"]["by_level"]["Class"]["values"][1]["value"] == "DPP4"
+    assert data["analysis_levels"]["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
+    assert "Class" not in data["analysis_levels"]["data"]
+    seller_segments = data["analysis_levels"]["data"]["판매사"]["by_channel"]["전체"]
+    molecule_segments = data["analysis_levels"]["data"]["성분용량"]["by_channel"]["전체"]
+    assert [item["name"] for item in seller_segments] == ["전체", "JW중외제약"]
+    assert [item["name"] for item in molecule_segments] == ["전체", "Sitagliptin 100mg"]
+    assert data["level_top5_trend"]["by_level"]["판매사"]["values"][1]["value"] == "JW중외제약"
 
 
 def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
@@ -886,7 +895,7 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     assert {"targets"}.issubset(data["target_customer_competition"])
 
 
-def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypatch) -> None:
+def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch) -> None:
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
 
     definition = MarketDefinition(
@@ -927,9 +936,27 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
         ({"period": "2026-01", "value": 100.0}, {"period": "2026-02", "value": 120.0}),
         history_by_period={"2026-01": 100.0, "2026-02": 120.0},
         analysis_row={
-            "by_dimension": json.dumps({"class": "DPP4", "molecule": "Anagliptin", "company": "JW"}, ensure_ascii=False),
-            "dimension_data": json.dumps({"class": {"DPP4": class_series}, "molecule": {"Anagliptin": class_series}}, ensure_ascii=False),
-            "dimension_channel_data": json.dumps({"class": {"DPP4": class_channel_series}}, ensure_ascii=False),
+            "by_dimension": json.dumps(
+                {
+                    "seller": "JW중외제약",
+                    "molecule_strength": "Anagliptin 100mg",
+                    "form": "정제",
+                    "route": "경구",
+                    "reimbursement": "급여",
+                },
+                ensure_ascii=False,
+            ),
+            "dimension_data": json.dumps(
+                {
+                    "seller": {"JW중외제약": class_series},
+                    "molecule_strength": {"Anagliptin 100mg": class_series},
+                    "form": {"정제": class_series},
+                    "route": {"경구": class_series},
+                    "reimbursement": {"급여": class_series},
+                },
+                ensure_ascii=False,
+            ),
+            "dimension_channel_data": json.dumps({"seller": {"JW중외제약": class_channel_series}}, ensure_ascii=False),
             "channel_data": json.dumps(class_channel_series, ensure_ascii=False),
             "channel_specialty_matrix": json.dumps(specialty_matrix, ensure_ascii=False),
         },
@@ -947,8 +974,26 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
         ({"period": "2026-01", "value": 100.0}, {"period": "2026-02", "value": 80.0}),
         history_by_period={"2026-01": 100.0, "2026-02": 80.0},
         analysis_row={
-            "by_dimension": json.dumps({"class": "DPP4", "molecule": "Other", "company": "Other Co"}, ensure_ascii=False),
-            "dimension_data": json.dumps({"class": {"DPP4": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}}}, ensure_ascii=False),
+            "by_dimension": json.dumps(
+                {
+                    "seller": "Competitor Co",
+                    "molecule_strength": "Other 100mg",
+                    "form": "정제",
+                    "route": "경구",
+                    "reimbursement": "급여",
+                },
+                ensure_ascii=False,
+            ),
+            "dimension_data": json.dumps(
+                {
+                    "seller": {"Competitor Co": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}},
+                    "molecule_strength": {"Other 100mg": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}},
+                    "form": {"정제": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}},
+                    "route": {"경구": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}},
+                    "reimbursement": {"급여": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}},
+                },
+                ensure_ascii=False,
+            ),
             "dimension_channel_data": json.dumps({}, ensure_ascii=False),
             "channel_data": json.dumps({"종합병원": {"2026-01": {"raw_value": 50.0}, "2026-02": {"raw_value": 40.0}}}, ensure_ascii=False),
             "channel_specialty_matrix": json.dumps(
@@ -973,21 +1018,90 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     analysis_levels = payload["data"]["analysis_levels"]
+    assert analysis_levels["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
     assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
-    assert analysis_levels["levels"][:3] == ["Class", "Molecule", "Brand"]
     assert any(
-        segment["name"] == "DPP4"
-        for segment in analysis_levels["data"]["Class"]["by_channel"]["전체"]
+        segment["name"] == "JW중외제약"
+        for segment in analysis_levels["data"]["판매사"]["by_channel"]["전체"]
     )
-    assert analysis_levels["data"]["Class"]["by_channel"]["종병"]
+    assert analysis_levels["data"]["판매사"]["by_channel"]["종병"]
     assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
-    assert "상급종병" not in payload["data"]["analysis_level_market_status"]["data"]["Class"]["by_channel"]
-    assert payload["data"]["analysis_level_market_status"]["data"]["Class"]["by_channel"]["주요고객 종합병원 순환기"]
+    assert "상급종병" not in payload["data"]["analysis_level_market_status"]["data"]["판매사"]["by_channel"]
+    assert payload["data"]["analysis_level_market_status"]["data"]["판매사"]["by_channel"]["주요고객 종합병원 순환기"]
     target_competition = payload["data"]["target_customer_competition_by_channel"]
     assert "주요고객 종합병원 순환기" in target_competition["targets"]
     assert any(view["target_name"] == "주요고객 종합병원 순환기" for view in target_competition["views"])
+    assert payload["data"]["target_customer_competition"] == target_competition
     assert payload["data"]["ubist_specialty_channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
-    assert payload["data"]["level_top5_trend"]["by_level"]["Class"]["values"]
+    assert payload["data"]["level_top5_trend"]["default_level"] == "판매사"
+    assert payload["data"]["level_top5_trend"]["by_level"]["판매사"]["values"]
+
+
+def test_cause_payload_uses_iqvia_source_levels_without_pack_desc(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["A10B1"], "source": "iqvia_nsa", "measure": "sales"},
+        source="iqvia_nsa",
+        measure="sales",
+    )
+    class_series = {"2026-Q1": {"raw_value": 100.0}, "2026-Q2": {"raw_value": 120.0}}
+    focus = BrandMetric(
+        "focus",
+        "Focus Brand",
+        "A10B1",
+        120.0,
+        60.0,
+        1,
+        "2026-Q2",
+        120.0,
+        ({"period": "2026-Q1", "value": 100.0}, {"period": "2026-Q2", "value": 120.0}),
+        history_by_period={"2026-Q1": 100.0, "2026-Q2": 120.0},
+        analysis_row={
+            "by_dimension": json.dumps(
+                {
+                    "mfr": "JW중외제약",
+                    "molecule_type": "SMALL MOLECULE",
+                    "molecule_desc": "ANAGLIPTIN",
+                    "strength": "100MG",
+                    "nhi": "급여",
+                },
+                ensure_ascii=False,
+            ),
+            "dimension_data": json.dumps(
+                {
+                    "mfr": {"JW중외제약": class_series},
+                    "molecule_type": {"SMALL MOLECULE": class_series},
+                    "molecule_desc": {"ANAGLIPTIN": class_series},
+                    "strength": {"100MG": class_series},
+                    "nhi": {"급여": class_series},
+                },
+                ensure_ascii=False,
+            ),
+            "dimension_channel_data": json.dumps({}, ensure_ascii=False),
+            "channel_data": json.dumps({}, ensure_ascii=False),
+        },
+    )
+    metrics = AggregatedMetrics(
+        source="iqvia_nsa",
+        measure="sales",
+        unit_label="KRW",
+        market_size=200.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-Q1", "market_size": 100.0}, {"period": "2026-Q2", "market_size": 200.0}),
+        brands=(focus,),
+        all_brands=(focus,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    expected_levels = ["MFR NAME KOR", "MOLECULE TYPE", "MOLECULE DESC", "STRENGTH", "NHI TYPE"]
+    assert payload["data"]["analysis_levels"]["levels"] == expected_levels
+    assert payload["data"]["level_top5_trend"]["default_level"] == "MFR NAME KOR"
+    assert list(payload["data"]["level_top5_trend"]["by_level"]) == expected_levels
+    assert "PACK DESC" not in payload["data"]["analysis_levels"]["data"]
 
 
 def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_top5() -> None:

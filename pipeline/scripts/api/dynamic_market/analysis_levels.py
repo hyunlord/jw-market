@@ -11,6 +11,7 @@ from pymysql.err import MySQLError
 
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import build_analysis_rows
 from pipeline.scripts.api.dynamic_market.cause_time import SOURCE_LABELS
+from pipeline.scripts.api.dynamic_market.general_analysis_levels import build_general_analysis_level_sections
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
 
 
@@ -39,6 +40,14 @@ def build_analysis_level_sections(
     expect; level selection remains data-driven from the focus brand's
     ``ml_market`` catalog row.
     """
+
+    if definition.view == "general":
+        return build_general_analysis_level_sections(
+            definition=definition,
+            metrics=metrics,
+            focus=focus,
+            mart_db=mart_db,
+        )
 
     market = definition.market_catalog_row
     if not market:

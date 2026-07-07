@@ -150,7 +150,7 @@ def build_cause_data(
             "hhi_recent": hhi_recent,
             "cagr_5y_pct": metrics.cagr,
         },
-        "target_customer_competition": {
+        "target_customer_competition": target_competition_by_channel or {
             "available_in_view": [],
             "target_type": "동적 시장",
             "targets": [],
