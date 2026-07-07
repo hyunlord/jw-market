@@ -973,15 +973,15 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     analysis_levels = payload["data"]["analysis_levels"]
-    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타", "주요고객 종합병원 순환기", "의원 IGF"]
+    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
     assert analysis_levels["levels"][:3] == ["Class", "Molecule", "Brand"]
     assert any(
         segment["name"] == "DPP4"
         for segment in analysis_levels["data"]["Class"]["by_channel"]["전체"]
     )
     assert analysis_levels["data"]["Class"]["by_channel"]["종병"]
-    assert analysis_levels["data"]["Class"]["by_channel"]["주요고객 종합병원 순환기"]
     assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
+    assert "상급종병" not in payload["data"]["analysis_level_market_status"]["data"]["Class"]["by_channel"]
     assert payload["data"]["analysis_level_market_status"]["data"]["Class"]["by_channel"]["주요고객 종합병원 순환기"]
     target_competition = payload["data"]["target_customer_competition_by_channel"]
     assert "주요고객 종합병원 순환기" in target_competition["targets"]
@@ -1422,13 +1422,10 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
     def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
         return {
-            "status": "SUCCESS",
-            "result": {
-                "data": {
-                    "ubist_specialty_channels": ["전체", "주요고객 종합병원 순환기", "의원 IGF"],
-                    "target_customer_competition_by_channel": {"주요고객 종합병원 순환기": {"views": []}},
-                }
-            },
+            "data": {
+                "ubist_specialty_channels": ["전체", "주요고객 종합병원 순환기", "의원 IGF"],
+                "target_customer_competition_by_channel": {"주요고객 종합병원 순환기": {"views": []}},
+            }
         }
 
     class FailingAggregator:

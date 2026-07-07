@@ -12,7 +12,7 @@ from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
-from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload
+from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload, success_envelope
 from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketInputError,
     DynamicMarketScopeTooBroadError,
@@ -67,15 +67,17 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
     if _is_strategic_request(payload):
         try:
             _reject_strategic_channel_axis(payload)
-            return build_cached_payload(
-                builder=build_strategic_payload,
-                mart_db=config.db_name,
-                ml_id=_resolve_catalog_ml_id(payload.filters),
-                cd_market_id=payload.filters.cd_market_id,
-                focus_brand_key=payload.filters.focus_brand_key,
-                source=payload.source,
-                measure=payload.measure,
-                analysis_level=payload.filters.analysis_level,
+            return success_envelope(
+                build_cached_payload(
+                    builder=build_strategic_payload,
+                    mart_db=config.db_name,
+                    ml_id=_resolve_catalog_ml_id(payload.filters),
+                    cd_market_id=payload.filters.cd_market_id,
+                    focus_brand_key=payload.filters.focus_brand_key,
+                    source=payload.source,
+                    measure=payload.measure,
+                    analysis_level=payload.filters.analysis_level,
+                )
             )
         except DynamicMarketInputError as exc:
             raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc

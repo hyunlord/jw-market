@@ -45,14 +45,16 @@ def build_cached_payload(
         if cached is not None:
             _CACHE.move_to_end(cache_key)
             return deepcopy(cached)
-    composed = builder(
-        mart_db=mart_db,
-        ml_id=ml_id,
-        cd_market_id=cd_market_id,
-        focus_brand_key=focus_brand_key,
-        source=source,
-        measure=measure,
-        analysis_level=analysis_level,
+    composed = success_envelope(
+        builder(
+            mart_db=mart_db,
+            ml_id=ml_id,
+            cd_market_id=cd_market_id,
+            focus_brand_key=focus_brand_key,
+            source=source,
+            measure=measure,
+            analysis_level=analysis_level,
+        )
     )
     with _CACHE_LOCK:
         _CACHE[cache_key] = deepcopy(composed)
@@ -60,6 +62,12 @@ def build_cached_payload(
         while len(_CACHE) > _CACHE_MAX:
             _CACHE.popitem(last=False)
     return composed
+
+
+def success_envelope(payload: JsonRow) -> JsonRow:
+    if payload.get("status") == "SUCCESS" and isinstance(payload.get("result"), dict):
+        return payload
+    return {"status": "SUCCESS", "result": payload}
 
 
 def _payload_cache_key(

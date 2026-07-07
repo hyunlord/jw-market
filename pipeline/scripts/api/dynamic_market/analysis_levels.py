@@ -57,13 +57,10 @@ def build_analysis_level_sections(
         return None
     source_api = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     view_source_id = _view_source_id(definition, market)
-    channels = list(cause_builder._channels_for_source(source_api))
+    analysis_level_channels = list(cause_builder._channels_for_source(source_api))
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
         ubist_channel_context = resolve_market_channels(rows=rows, market=dict(market), measure=metrics.measure)
-        specialty_channels = ubist_channel_context.get("specialty_channels")
-        if isinstance(specialty_channels, list):
-            channels = _merge_channels(channels, specialty_channels)
     try:
         analysis_levels = cause_builder._build_analysis_levels_from_mart(
             rows=rows,
@@ -72,7 +69,7 @@ def build_analysis_level_sections(
             view_source_id=view_source_id,
             target_name=None,
             fallback_level_top5={},
-            channels_override=channels,
+            channels_override=analysis_level_channels,
         )
         analysis_levels = cause_builder._ensure_split_class_alias(analysis_levels)
         rows_by_level = cause_builder._level_rows_by_segment(
@@ -90,13 +87,26 @@ def build_analysis_level_sections(
         )
         market_status_channels = _market_status_channels(
             source=source_api,
-            default_channels=channels,
+            default_channels=analysis_level_channels,
             ubist_channel_context=ubist_channel_context,
         )
+        market_status_levels = analysis_levels
+        if market_status_channels != analysis_level_channels:
+            market_status_levels = cause_builder._ensure_split_class_alias(
+                cause_builder._build_analysis_levels_from_mart(
+                    rows=rows,
+                    source=source_api,
+                    market=dict(market),
+                    view_source_id=view_source_id,
+                    target_name=None,
+                    fallback_level_top5={},
+                    channels_override=market_status_channels,
+                )
+            )
         market_status = cause_builder._ensure_analysis_level_market_status_contract(
             cause_builder._analysis_level_market_status_by_channel(
                 level_top5_trend=level_top5_trend,
-                analysis_levels=analysis_levels,
+                analysis_levels=market_status_levels,
                 rows=rows,
                 source=source_api,
                 channels=market_status_channels,
@@ -120,15 +130,6 @@ def _view_source_id(definition: MarketDefinition, market: dict[str, Any]) -> str
         return definition.strategic_market_id
     value = market.get("ml_id") or market.get("cd_id") or market.get("cd_market_id")
     return str(value) if value not in (None, "") else None
-
-
-def _merge_channels(default_channels: list[str], specialty_channels: list[Any]) -> list[str]:
-    merged = [str(channel) for channel in default_channels if str(channel)]
-    for channel in specialty_channels:
-        channel_text = str(channel)
-        if channel_text and channel_text not in merged:
-            merged.append(channel_text)
-    return merged
 
 
 def _market_status_channels(
