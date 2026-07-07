@@ -402,7 +402,7 @@ def load_scoring_inputs(
                    COALESCE(n.article_text, e.body_full, '') AS body,
                    COALESCE(n.source_name, e.source_name, '') AS source_name,
                    COALESCE(n.article_url, e.source_url, '') AS article_url,
-                   COALESCE(CAST(n.date AS CHAR), CAST(e.date AS CHAR), '') AS published_date,
+                   COALESCE(CAST(n.published_date AS CHAR), CAST(e.date AS CHAR), '') AS published_date,
                    COALESCE(e.collected_at, n.collected_at) AS collected_at,
                    COALESCE(e.expire_at, n.expire_at) AS expire_at
             FROM (
