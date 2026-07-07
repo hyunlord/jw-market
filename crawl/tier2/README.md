@@ -62,3 +62,35 @@ against existing wf196 v3 rows showed the same broad scoring scale, with
 stronger agreement in the high bands than around the 45-59 boundary. Full replay
 must remain gated on runner input context and the accepted score-drift
 tolerance.
+
+## Body-exact match staging
+
+`pipeline/scripts/crawler/tier2_body_match_runner.py` is the canonical Tier2
+body-exact matching runner for the post-cutover news model. It is match-only:
+it writes `tier2_match_staging` and never writes `event_brand_scores`.
+
+The runner scans the cutover `news_raw` title/body against the d2
+`mart_general_brand_metric` dictionary, excluding Tier1 main and competitor
+brands already represented by `workflow_196_optionB` and
+`cross_match_adapter_v1`. It applies the false-positive controls validated in
+the design audit:
+
+- longest match wins for nested names, so a longer product name suppresses its
+  shorter substring.
+- compact names of three characters or fewer and the stoplist
+  (`제로`, `케어`, `프로`, `센스`, `데일리`, `로이드`, `탑`, `트라`, `이지`,
+  `파인`, `피디`, `코미`, `웰`) are blocked on body-only hits.
+- Tier2 `collection_provenance` for the same brand/key exempts that ambiguity
+  gate and records the source as `body+search_provenance`.
+
+Operational shape:
+
+```bash
+DB_NAME=jw_mart_d2_stage_20260630_r2 \
+D2_WRITER_USER=... D2_WRITER_PASSWORD=... \
+python3 pipeline/scripts/crawler/tier2_body_match_runner.py --apply --replace-table
+```
+
+The scoring stage must consume `tier2_match_staging` and then decide how to
+replace legacy `tier2_exact_rule_v1`; this matcher deliberately leaves legacy
+score rows untouched.
