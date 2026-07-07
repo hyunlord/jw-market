@@ -1982,6 +1982,19 @@ def _is_failed_metric_status(data: dict[str, Any]) -> bool:
     }
 
 
+def _is_failed_external_source_status(call: dict[str, Any], data: dict[str, Any]) -> bool:
+    status = str(call.get("status") or data.get("status") or "")
+    return status in {
+        "error",
+        "query_failed",
+        "unsupported",
+        "mapping_failed",
+        "missing",
+        "incomplete_split",
+        "no_data",
+    }
+
+
 def _value_source_label(data: dict[str, Any], call: dict[str, Any]) -> str:
     raw = str(data.get("source_label") or call.get("source") or data.get("source") or "")
     if not raw or raw == "cache":
@@ -2258,7 +2271,7 @@ def _hira_procedure_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, 
         seen: set[tuple[str, str]] = set()
         for nested in source_calls:
             nested_data = nested.get("render_data") if isinstance(nested, dict) else None
-            if not isinstance(nested_data, dict):
+            if not isinstance(nested_data, dict) or _is_failed_external_source_status(nested, nested_data):
                 continue
             tool = str(nested.get("tool") or call.get("tool") or "get_procedure_stats")
             st5_cd = str(_request_value(nested_data, "st5Cd") or "").strip()
@@ -2278,7 +2291,7 @@ def _hira_source_rows_from_calls(calls: list[dict[str, Any]], facade_tool: str) 
     by_disease: dict[tuple[str, str], dict[str, set[str] | str]] = {}
     for call in calls:
         data = call.get("render_data")
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or _is_failed_external_source_status(call, data):
             continue
         tool = str(call.get("tool") or "")
         rows = _dedupe_hira_rows(_hira_rows(data))
@@ -2346,7 +2359,7 @@ def _external_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
                 if not isinstance(nested, dict):
                     continue
                 nested_data = nested.get("render_data")
-                if not isinstance(nested_data, dict):
+                if not isinstance(nested_data, dict) or _is_failed_external_source_status(nested, nested_data):
                     continue
                 request = nested_data.get("request")
                 request_text = _request_text(request) if isinstance(request, dict) else ""

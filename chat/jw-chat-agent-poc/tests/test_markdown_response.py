@@ -4555,6 +4555,108 @@ def test_external_aggregate_nested_calls_are_rendered_as_answer_facts() -> None:
     assert "닛산 가가쿠" in response.fact_md
 
 
+def test_external_source_block_omits_failed_or_empty_nested_calls() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "search_patent",
+                "source": "external_api",
+                "render_data": {
+                    "facade_tool": "search_patent",
+                    "calls": [
+                        {
+                            "tool": "mfds_patent",
+                            "status": "error",
+                            "render_data": {
+                                "status": "error",
+                                "request": {"query": "리바로"},
+                                "message": "MFDS returned HTTP 503",
+                            },
+                        },
+                        {
+                            "tool": "mfds_fda_orangebook",
+                            "status": "no_data",
+                            "render_data": {
+                                "status": "no_data",
+                                "request": {"query": "Pitavastatin"},
+                                "items": [],
+                            },
+                        },
+                        {
+                            "tool": "clinicaltrials_v2_search",
+                            "status": "live",
+                            "render_data": {
+                                "status": "live",
+                                "request": {"query": "pitavastatin"},
+                                "items": [{"nct_id": "NCT01764178"}],
+                            },
+                        },
+                    ],
+                },
+            }
+        ],
+        ["external_api"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "clinicaltrials_v2_search — query=pitavastatin" in block
+    assert "mfds_patent" not in block
+    assert "mfds_fda_orangebook" not in block
+    assert "query=리바로" not in block
+    assert "query=Pitavastatin" not in block
+
+
+def test_hira_source_blocks_omit_failed_nested_calls() -> None:
+    fact_md = answer_fact_markdown(
+        [
+            {
+                "tool": "get_disease_stats",
+                "source": "hira_disease",
+                "render_data": {
+                    "facade_tool": "get_disease_stats",
+                    "calls": [
+                        {
+                            "tool": "hira_disease_hospitalization_outpatient_stats",
+                            "source": "hira_disease",
+                            "status": "error",
+                            "render_data": {
+                                "status": "error",
+                                "request": {"sickCd": "I10", "year": "2024"},
+                                "mapping_sickCd": "I10",
+                                "mapping_disease_name": "본태성(원발성) 고혈압",
+                            },
+                        }
+                    ],
+                },
+            },
+            {
+                "tool": "get_procedure_stats",
+                "source": "hira_procedure",
+                "render_data": {
+                    "calls": [
+                        {
+                            "tool": "get_procedure_stats",
+                            "status": "no_data",
+                            "render_data": {
+                                "status": "no_data",
+                                "request": {"st5Cd": "M001", "year": "2024"},
+                            },
+                        }
+                    ],
+                },
+            },
+        ],
+        ["hira_disease", "hira_procedure"],
+    )
+
+    block = deterministic_source_block(fact_md)
+
+    assert "외부(HIRA" not in block
+    assert "I10" not in block
+    assert "M001" not in block
+
+
 def test_external_patent_fact_table_uses_actual_api_fields() -> None:
     response = MarkdownResponseBuilder().build(
         brand="리바로",
