@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+from typing import Any
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException
@@ -24,6 +25,7 @@ FORECAST_INTERVAL_KEYS = (
     "ci_upper_95",
     "ci_lower_95",
 )
+AI_ANALYSIS_VARIANT_KEYS = ("ai_analysis_short", "ai_analysis_long")
 
 
 def _load_ai_analysis(brand: str) -> dict:
@@ -48,6 +50,28 @@ def _load_ai_analysis(brand: str) -> dict:
     except (TypeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _normalize_ai_analysis_value(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    normalized.pop("analysis_variant", None)
+    evidence_pool = normalized.get("evidence_pool")
+    if isinstance(evidence_pool, list):
+        normalized["evidence_pool"] = [
+            {key: item_value for key, item_value in item.items() if key != "published_date"}
+            if isinstance(item, dict)
+            else item
+            for item in evidence_pool
+        ]
+    return normalized
+
+
+def _normalize_ai_analysis_variants(data: dict) -> None:
+    for key in AI_ANALYSIS_VARIANT_KEYS:
+        if key in data:
+            data[key] = _normalize_ai_analysis_value(data[key])
 
 
 def _format_generated_at(value: object) -> str:
@@ -152,5 +176,6 @@ def deep_analysis(brand_name: str) -> dict:
     _slice_forecast_horizon(payload)
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
+        _normalize_ai_analysis_variants(data)
         data["ai_analysis"] = _load_ai_analysis(brand)
     return payload
