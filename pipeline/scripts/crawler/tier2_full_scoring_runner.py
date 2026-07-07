@@ -23,7 +23,6 @@ from typing import Any, Iterable, Literal, Sequence
 import pymysql
 
 from pipeline.scripts.crawler.tier2_body_match_runner import connect_from_env
-from pipeline.scripts.crawler.tier2_llm_tagging import strip_json_fence
 
 DEFAULT_MATCH_TABLE = "tier2_match_staging"
 DEFAULT_WORKFLOW_URL = "http://workflow-324.llmops.svc.cluster.local:8080/run/v2"
@@ -45,6 +44,17 @@ CATEGORY_CODE_BY_LABEL = {
     "공급/생산": "supply",
     "기타": "external",
 }
+
+
+def strip_json_fence(text: str) -> str:
+    value = text.strip()
+    if value.startswith("```json"):
+        value = value[7:]
+    elif value.startswith("```"):
+        value = value[3:]
+    if value.endswith("```"):
+        value = value[:-3]
+    return value.strip()
 
 
 @dataclass(frozen=True)
