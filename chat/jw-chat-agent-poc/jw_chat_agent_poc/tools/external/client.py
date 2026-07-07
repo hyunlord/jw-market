@@ -108,11 +108,12 @@ class ExternalApiClient:
         )
 
     def mfds_patent(self, ingredient_en: str) -> ExternalCall:
-        query = MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower(), ingredient_en)
-        return self._fixture_or_live("mfds_patent", {"query": query}, xml=True)
+        item_name = MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())
+        params = {"item_name": item_name} if item_name else {"ingr_name": ingredient_en}
+        return self._fixture_or_live("mfds_patent", params, xml=True)
 
     def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_fda_orangebook", {"query": ingredient_en.title()}, xml=True)
+        return self._fixture_or_live("mfds_fda_orangebook", {"ingr_name": ingredient_en.title()}, xml=True)
 
     def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
         call = self._fixture_or_live("hira_disease_name_code", {"sickCd": sick_cd}, xml=True)
@@ -350,9 +351,9 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
         case "mfds_clinical_trial_kr":
             return _nedrug_spec(tool, "search_clinical_test_info", {"goods_name": params.get("keyword"), "limit": 5})
         case "mfds_patent":
-            return _nedrug_spec(tool, "search_korea_drug_patent", {"item_name": params.get("query"), "ingr_name": params.get("query"), "limit": 5})
+            return _nedrug_spec(tool, "search_korea_drug_patent", {"item_name": params.get("item_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
         case "mfds_fda_orangebook":
-            return _nedrug_spec(tool, "search_fda_orangebook_patent", {"ingr_name": params.get("query"), "limit": 5})
+            return _nedrug_spec(tool, "search_fda_orangebook_patent", {"prt_name": params.get("prt_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
         case "hira_disease_name_code":
             return _hira_spec(tool, "search_disease_code", {"search_text": params.get("sickCd", ""), "disease_type": "SICK_CD", "sick_type": "1", "med_tp": "1", "num_of_rows": 10})
         case "hira_disease_hospitalization_outpatient_stats":

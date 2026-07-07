@@ -294,6 +294,48 @@ def test_external_redaction_masks_service_key():
     assert ExternalApiClient.redact_url(url) == "https://example.test/api?serviceKey=<redacted>&x=1"
 
 
+def test_mfds_patent_mcp_calls_use_schema_argument_names(monkeypatch):
+    captured: list[dict] = []
+
+    def fake_post(url, json, headers, timeout):
+        captured.append(json["params"])
+        tool_name = json["params"]["name"]
+        text = (
+            '[{"ITEM_NAME":"리바로정2밀리그램","INGR_NAME":"피타바스타틴칼슘"}]'
+            if tool_name == "search_korea_drug_patent"
+            else '[{"INGR_NAME":"Pitavastatin Calcium","PATENT_NO":"123"}]'
+        )
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": text}],
+                    "structuredContent": {"result": text},
+                    "isError": False,
+                },
+            }
+        )
+
+    monkeypatch.setenv("GENOS_MCP_GATEWAY_BASE", "http://nedrug-mcp")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
+
+    domestic = ExternalApiClient(mode="live", timeout_s=1).mfds_patent("pitavastatin")
+    orangebook = ExternalApiClient(mode="live", timeout_s=1).mfds_fda_orangebook("Pitavastatin")
+
+    domestic_args = captured[0]["arguments"]
+    orangebook_args = captured[1]["arguments"]
+    assert captured[0]["name"] == "search_korea_drug_patent"
+    assert captured[1]["name"] == "search_fda_orangebook_patent"
+    assert domestic_args == {"item_name": "리바로", "limit": 5}
+    assert orangebook_args == {"ingr_name": "Pitavastatin", "limit": 5}
+    assert "query" not in domestic_args
+    assert "keyword" not in domestic_args
+    assert "query" not in orangebook_args
+    assert domestic.status == "live"
+    assert orangebook.status == "live"
+
+
 def test_live_mcp_error_does_not_require_data_go_key(monkeypatch):
     monkeypatch.delenv("DATA_GO_KR_KEY", raising=False)
 
