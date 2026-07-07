@@ -47,6 +47,19 @@ def build_strategic_payload(
     market_kind, view_source_id = _resolve_market_id(ml_id=ml_id, cd_market_id=cd_market_id)
     mart_source = normalize_source(source)
     source_api = cause_builder.api_source(mart_source)
+    response_market_id = _response_market_id(market_kind, view_source_id)
+    has_runtime_filter = bool(_selected_filters(source=mart_source, analysis_level=analysis_level))
+    if focus_brand_key and not has_runtime_filter:
+        cached_payload = _cached_cause_payload(
+            brand=focus_brand_key,
+            view_type=_view_type(market_kind),
+            market_id=response_market_id,
+            source=source_api,
+            measure=measure,
+        )
+        if cached_payload is not None:
+            return cached_payload
+
     brand_table, market_table, id_column = _tables_for_market_kind(market_kind)
     sibling_rows = _fetch_sibling_rows(
         mart_db=mart_db,
@@ -83,7 +96,6 @@ def build_strategic_payload(
             "strategic market total row was not found: "
             f"market_id={view_source_id}, source={mart_source}, measure={measure}"
         )
-    has_runtime_filter = len(filtered_rows) != len(sibling_rows)
     if has_runtime_filter:
         market_row = _market_row_for_filtered_rows(market_row, filtered_rows)
 
@@ -99,7 +111,6 @@ def build_strategic_payload(
     strategic_brand = _strategic_brand_catalog()
     if has_runtime_filter:
         _clear_cause_builder_runtime_caches()
-    response_market_id = _response_market_id(market_kind, view_source_id)
     with strategic_channel_totals_context(filtered_rows):
         raw_payload = cause_builder.build_response(
             brand_row=brand_row,
@@ -120,6 +131,37 @@ def build_strategic_payload(
         raise DynamicMarketInputError("strategic payload composition did not return an object")
     composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
     return composed
+
+
+def _cached_cause_payload(
+    *,
+    brand: str,
+    view_type: str,
+    market_id: str,
+    source: str,
+    measure: str,
+) -> JsonRow | None:
+    rows = db.fetch_all(
+        """
+        SELECT response_json
+        FROM cache_cause
+        WHERE brand = %s
+          AND view_type = %s
+          AND market_id = %s
+          AND source = %s
+          AND measure = %s
+        ORDER BY market_id
+        LIMIT 1
+        """,
+        [brand, view_type, market_id, source, measure],
+    )
+    if not rows:
+        return None
+    payload = compose_cached_json(rows[0]["response_json"], measure=measure)
+    if not isinstance(payload, dict):
+        return None
+    payload["markets"] = [{"market_id": market_id, "is_primary": True}]
+    return payload
 
 
 def _resolve_market_id(*, ml_id: str | None, cd_market_id: str | None) -> tuple[str, str]:

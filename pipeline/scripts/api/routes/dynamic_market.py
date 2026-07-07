@@ -11,6 +11,8 @@ from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
+from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
+from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload
 from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketInputError,
     DynamicMarketScopeTooBroadError,
@@ -62,6 +64,22 @@ router = APIRouter()
 def dynamic_market(payload: DynamicMarketRequest) -> dict:
     """Compute a caller-defined general-view market with the ``/api/cause`` response contract."""
 
+    if _is_strategic_request(payload):
+        try:
+            _reject_strategic_channel_axis(payload)
+            return build_cached_payload(
+                builder=build_strategic_payload,
+                mart_db=config.db_name,
+                ml_id=_resolve_catalog_ml_id(payload.filters),
+                cd_market_id=payload.filters.cd_market_id,
+                focus_brand_key=payload.filters.focus_brand_key,
+                source=payload.source,
+                measure=payload.measure,
+                analysis_level=payload.filters.analysis_level,
+            )
+        except DynamicMarketInputError as exc:
+            raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
+
     aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
     period_range = PeriodRange(
@@ -96,6 +114,20 @@ def dynamic_market(payload: DynamicMarketRequest) -> dict:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
     result = composer.compose(definition=definition, metrics=metrics)
     return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+
+
+def _is_strategic_request(payload: DynamicMarketRequest) -> bool:
+    filters = payload.filters
+    return bool(filters.view_kind or filters.ml_id or filters.cd_market_id)
+
+
+def _reject_strategic_channel_axis(payload: DynamicMarketRequest) -> None:
+    try:
+        channel_axis = payload.filters.channel_axis.to_filter(source=payload.source)
+    except ValueError as exc:
+        raise DynamicMarketInputError(str(exc)) from exc
+    if channel_axis is not None and channel_axis.is_active:
+        raise DynamicMarketInputError("channel_axis is supported only for general views")
 
 
 def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:

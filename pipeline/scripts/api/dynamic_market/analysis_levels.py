@@ -19,6 +19,7 @@ if str(ETL_DIR) not in sys.path:
     sys.path.insert(0, str(ETL_DIR))
 
 from pipeline.scripts.etl import build_cache_cause as cause_builder
+from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,12 @@ def build_analysis_level_sections(
     source_api = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     view_source_id = _view_source_id(definition, market)
     channels = list(cause_builder._channels_for_source(source_api))
+    ubist_channel_context: dict[str, Any] | None = None
+    if source_api == "UBIST":
+        ubist_channel_context = resolve_market_channels(rows=rows, market=dict(market), measure=metrics.measure)
+        specialty_channels = ubist_channel_context.get("specialty_channels")
+        if isinstance(specialty_channels, list):
+            channels = _merge_channels(channels, specialty_channels)
     try:
         analysis_levels = cause_builder._build_analysis_levels_from_mart(
             rows=rows,
@@ -81,8 +88,20 @@ def build_analysis_level_sections(
             include_all_options=bool(focus),
             channel="전체",
         )
+        market_status_channels = _market_status_channels(
+            source=source_api,
+            default_channels=channels,
+            ubist_channel_context=ubist_channel_context,
+        )
         market_status = cause_builder._ensure_analysis_level_market_status_contract(
-            analysis_levels
+            cause_builder._analysis_level_market_status_by_channel(
+                level_top5_trend=level_top5_trend,
+                analysis_levels=analysis_levels,
+                rows=rows,
+                source=source_api,
+                channels=market_status_channels,
+                include_all_options=bool(focus),
+            )
         )
     except (KeyError, RuntimeError, TypeError, ValueError):
         logger.warning("dynamic_analysis_level_fill_failed", exc_info=True)
@@ -91,6 +110,8 @@ def build_analysis_level_sections(
         "analysis_levels": analysis_levels,
         "analysis_level_market_status": market_status,
         "level_top5_trend": level_top5_trend,
+        "rows": rows,
+        "ubist_channel_context": ubist_channel_context,
     }
 
 
@@ -99,3 +120,25 @@ def _view_source_id(definition: MarketDefinition, market: dict[str, Any]) -> str
         return definition.strategic_market_id
     value = market.get("ml_id") or market.get("cd_id") or market.get("cd_market_id")
     return str(value) if value not in (None, "") else None
+
+
+def _merge_channels(default_channels: list[str], specialty_channels: list[Any]) -> list[str]:
+    merged = [str(channel) for channel in default_channels if str(channel)]
+    for channel in specialty_channels:
+        channel_text = str(channel)
+        if channel_text and channel_text not in merged:
+            merged.append(channel_text)
+    return merged
+
+
+def _market_status_channels(
+    *,
+    source: str,
+    default_channels: list[str],
+    ubist_channel_context: dict[str, Any] | None,
+) -> list[str]:
+    if source == "UBIST" and isinstance(ubist_channel_context, dict):
+        specialty_channels = ubist_channel_context.get("specialty_channels")
+        if isinstance(specialty_channels, list) and specialty_channels:
+            return [str(channel) for channel in specialty_channels if str(channel)]
+    return default_channels

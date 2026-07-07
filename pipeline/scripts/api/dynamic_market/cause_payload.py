@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
+import sys
 from typing import Any
 
 from pipeline.scripts.api.config import config
@@ -28,6 +30,13 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
 )
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+
+
+ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
+if str(ETL_DIR) not in sys.path:
+    sys.path.insert(0, str(ETL_DIR))
+
+from pipeline.scripts.etl import build_cache_cause as cause_builder  # noqa: E402
 
 
 PORTAL_UNUSED_DATA_KEYS = frozenset({"data_period_coverage"})
@@ -82,6 +91,14 @@ def build_cause_data(
     if analysis_sections:
         levels = analysis_sections["analysis_levels"]
     ubist_channels = _general_ubist_channels(metrics)
+    if analysis_sections and isinstance(analysis_sections.get("ubist_channel_context"), dict):
+        ubist_channels = _ubist_channels_from_context(analysis_sections["ubist_channel_context"], fallback=ubist_channels)
+    target_competition_by_channel = _target_customer_competition_by_channel(
+        analysis_sections=analysis_sections,
+        metrics=metrics,
+        focus=focus,
+        channels=ubist_channels["specialty_channels"],
+    )
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     data = {
         "analysis_level_market_status": (
@@ -140,13 +157,46 @@ def build_cause_data(
             "views": [],
             "note": "동적 일반뷰 MVP에는 전략뷰 target customer overlay가 없다.",
         },
-        "target_customer_competition_by_channel": {},
+        "target_customer_competition_by_channel": target_competition_by_channel,
         "ubist_specialty_channels": ubist_channels["specialty_channels"],
         "ubist_specialty_target_channels": ubist_channels["specialty_target_channels"],
     }
     if definition.channel_axis and definition.channel_axis.is_active and definition.channel_axis.source == "iqvia_nsa":
         data["iqvia_audit_code_channels"] = _general_iqvia_audit_codes(metrics)
     return normalize_portal_read_data(data)
+
+
+def _ubist_channels_from_context(context: dict[str, Any], *, fallback: dict[str, list[Any]]) -> dict[str, list[Any]]:
+    specialty_channels = context.get("specialty_channels")
+    specialty_target_channels = context.get("specialty_target_channels")
+    if not isinstance(specialty_channels, list) or not specialty_channels:
+        return fallback
+    return {
+        "specialty_channels": specialty_channels,
+        "specialty_target_channels": specialty_target_channels if isinstance(specialty_target_channels, list) else [],
+    }
+
+
+def _target_customer_competition_by_channel(
+    *,
+    analysis_sections: dict[str, Any] | None,
+    metrics: AggregatedMetrics,
+    focus: BrandMetric | None,
+    channels: list[Any],
+) -> dict[str, Any]:
+    if metrics.source != "ubist" or not analysis_sections or not channels:
+        return {}
+    rows = analysis_sections.get("rows")
+    if not isinstance(rows, list):
+        return {}
+    periods = [str(item["period"]) for item in market_size_series(metrics)]
+    return cause_builder._target_customer_competition(
+        rows=rows,
+        source=SOURCE_LABELS.get(metrics.source, metrics.source.upper()),
+        target_name=focus.brand_name if focus else None,
+        periods=periods,
+        channels=[str(channel) for channel in channels if str(channel)],
+    )
 
 
 def _general_ubist_channels(metrics: AggregatedMetrics, *, max_channels: int = 4) -> dict[str, list[Any]]:

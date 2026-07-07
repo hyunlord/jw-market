@@ -80,20 +80,17 @@ def test_aggregate_rows_when_period_range_limits_history() -> None:
     assert [item.total_value for item in brand_metrics] == [60.0, 30.0]
 
 
-def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(monkeypatch) -> None:
+def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
-        assert "audit_code_matrix" not in sql
-        assert "channel_specialty_matrix" not in sql
         return []
 
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
-        assert "audit_code_matrix" not in sql
         if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
             yield {
                 "brand_key": "a",
@@ -107,7 +104,8 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
                 )
             }
             return
-        assert "channel_specialty_matrix" not in sql
+        assert "channel_specialty_matrix" in sql
+        assert "audit_code_matrix" in sql
         yield {
             "brand_key": "a",
             "brand_name": "A",
@@ -116,6 +114,14 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
             "measure": "sales",
             "unit_label": "KRW",
             "raw_value_history": json.dumps({"2026-05": 100.0}),
+            "channel_specialty_matrix": json.dumps(
+                {
+                    "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}},
+                    "의원": {"가정의학과(FM)": {"2026-05": 10.0}},
+                },
+                ensure_ascii=False,
+            ),
+            "audit_code_matrix": json.dumps({}),
         }
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
@@ -135,9 +141,9 @@ def test_general_aggregate_omits_matrix_columns_when_channel_axis_is_inactive(mo
     assert "dimension_data" not in metric_sql
     assert "dimension_channel_data" not in metric_sql
     assert "channel_data" not in metric_sql
-    assert "channel_specialty_matrix" not in metric_sql
-    assert "channel_specialty_matrix" not in metric_sql
-    assert metrics.all_brands[0].channel_specialty_matrix == {}
+    assert "channel_specialty_matrix" in metric_sql
+    assert "audit_code_matrix" in metric_sql
+    assert metrics.all_brands[0].channel_specialty_matrix
     assert metrics.all_brands[0].analysis_row["by_dimension"] is None
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
     assert metrics.ubist_specialty_target_channels == (
@@ -905,6 +911,10 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
         for period, value in zip(periods, (100.0, 120.0))
     }
     class_channel_series = {"종합병원": class_series, "의원": {"2026-01": {"raw_value": 10.0}, "2026-02": {"raw_value": 20.0}}}
+    specialty_matrix = {
+        "종합병원": {"순환기(Cardiology IM)": {"2026-01": 50.0, "2026-02": 70.0}},
+        "의원": {"가정의학과(FM)": {"2026-01": 10.0, "2026-02": 20.0}},
+    }
     focus = BrandMetric(
         "focus",
         "Focus Brand",
@@ -921,7 +931,9 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
             "dimension_data": json.dumps({"class": {"DPP4": class_series}, "molecule": {"Anagliptin": class_series}}, ensure_ascii=False),
             "dimension_channel_data": json.dumps({"class": {"DPP4": class_channel_series}}, ensure_ascii=False),
             "channel_data": json.dumps(class_channel_series, ensure_ascii=False),
+            "channel_specialty_matrix": json.dumps(specialty_matrix, ensure_ascii=False),
         },
+        channel_specialty_matrix=specialty_matrix,
     )
     competitor = BrandMetric(
         "comp",
@@ -939,7 +951,12 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
             "dimension_data": json.dumps({"class": {"DPP4": {"2026-01": {"raw_value": 100.0}, "2026-02": {"raw_value": 80.0}}}}, ensure_ascii=False),
             "dimension_channel_data": json.dumps({}, ensure_ascii=False),
             "channel_data": json.dumps({"종합병원": {"2026-01": {"raw_value": 50.0}, "2026-02": {"raw_value": 40.0}}}, ensure_ascii=False),
+            "channel_specialty_matrix": json.dumps(
+                {"종합병원": {"순환기(Cardiology IM)": {"2026-01": 60.0, "2026-02": 40.0}}},
+                ensure_ascii=False,
+            ),
         },
+        channel_specialty_matrix={"종합병원": {"순환기(Cardiology IM)": {"2026-01": 60.0, "2026-02": 40.0}}},
     )
     metrics = AggregatedMetrics(
         source="ubist",
@@ -956,15 +973,20 @@ def test_cause_payload_fills_analysis_level_sections_from_focus_catalog(monkeypa
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     analysis_levels = payload["data"]["analysis_levels"]
-    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
+    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타", "주요고객 종합병원 순환기", "의원 IGF"]
     assert analysis_levels["levels"][:3] == ["Class", "Molecule", "Brand"]
     assert any(
         segment["name"] == "DPP4"
         for segment in analysis_levels["data"]["Class"]["by_channel"]["전체"]
     )
     assert analysis_levels["data"]["Class"]["by_channel"]["종병"]
-    assert "종합병원 순환기" not in analysis_levels["channels"]
-    assert payload["data"]["analysis_level_market_status"]["channels"] == analysis_levels["channels"]
+    assert analysis_levels["data"]["Class"]["by_channel"]["주요고객 종합병원 순환기"]
+    assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
+    assert payload["data"]["analysis_level_market_status"]["data"]["Class"]["by_channel"]["주요고객 종합병원 순환기"]
+    target_competition = payload["data"]["target_customer_competition_by_channel"]
+    assert "주요고객 종합병원 순환기" in target_competition["targets"]
+    assert any(view["target_name"] == "주요고객 종합병원 순환기" for view in target_competition["views"])
+    assert payload["data"]["ubist_specialty_channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
     assert payload["data"]["level_top5_trend"]["by_level"]["Class"]["values"]
 
 
@@ -1392,6 +1414,48 @@ def test_route_passes_iqvia_channel_axis_to_aggregator(monkeypatch) -> None:
     assert captured["resolver_channel_axis"].source == "iqvia_nsa"
     assert captured["resolver_channel_axis"].audit_codes == ("KPA",)
     assert captured["aggregator_channel_axis"].audit_codes == ("KPA",)
+
+
+def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "status": "SUCCESS",
+            "result": {
+                "data": {
+                    "ubist_specialty_channels": ["전체", "주요고객 종합병원 순환기", "의원 IGF"],
+                    "target_customer_competition_by_channel": {"주요고객 종합병원 순환기": {"views": []}},
+                }
+            },
+        }
+
+    class FailingAggregator:
+        def __init__(self, **_: object) -> None:
+            raise AssertionError("strategic requests must not use the generic aggregator path")
+
+    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FailingAggregator)
+
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "filters": {
+                    "view_kind": "market_landscape",
+                    "ml_id": "ml_006",
+                    "focus_brand_key": "리바로",
+                },
+                "source": "ubist",
+                "measure": "sales",
+            }
+        )
+    )
+
+    assert response["status"] == "SUCCESS"
+    assert captured["ml_id"] == "ml_006"
+    assert captured["focus_brand_key"] == "리바로"
+    assert response["result"]["data"]["ubist_specialty_channels"][1] == "주요고객 종합병원 순환기"
 
 
 def test_route_rejects_channel_axis_for_strategic_view() -> None:

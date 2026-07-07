@@ -57,7 +57,8 @@ def _general_dimensions_by_pair(
     rows = db.fetch_all(
         f"""
         SELECT brand_key, brand_name, atc4_code, source, measure, unit_label,
-               by_dimension, dimension_data, dimension_channel_data, channel_data
+               by_dimension, dimension_data, dimension_channel_data, channel_data,
+               channel_specialty_matrix
         FROM {quote_identifier(mart_db)}.mart_general_brand_metric
         WHERE source = %s
           AND measure = %s
@@ -78,6 +79,7 @@ def _general_dimensions_by_pair(
             "dimension_data": row.get("dimension_data"),
             "dimension_channel_data": row.get("dimension_channel_data"),
             "channel_data": row.get("channel_data"),
+            "channel_specialty_matrix": row.get("channel_specialty_matrix"),
         }
     logger.debug("dynamic_analysis_level_general_pair_filter filtered_rows=%s", filtered_rows)
     return payloads
@@ -183,7 +185,7 @@ def _merge_dimension_payload(row: dict[str, Any], payload: dict[str, Any] | None
     if not payload:
         return row
     merged = dict(row)
-    for key in ("by_dimension", "dimension_data", "dimension_channel_data", "channel_data"):
+    for key in ("by_dimension", "dimension_data", "dimension_channel_data", "channel_data", "channel_specialty_matrix"):
         value = payload.get(key)
         if value in (None, ""):
             continue

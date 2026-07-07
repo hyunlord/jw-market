@@ -282,9 +282,9 @@ class MetricAggregator:
     ) -> Iterable[dict[str, Any]]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
-        extra_columns = general_metric_extra_columns(channel_axis=channel_axis)
         sql = f"""
-            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history{extra_columns}
+            SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
+                   channel_specialty_matrix, audit_code_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -495,16 +495,6 @@ def _history_for_row(
     return parse_history(raw_history)
 
 
-def general_metric_extra_columns(*, channel_axis: ChannelAxisFilter | None) -> str:
-    if channel_axis is None or not channel_axis.is_active:
-        return ""
-    if channel_axis.source == "ubist":
-        return ", channel_specialty_matrix"
-    if channel_axis.source == "iqvia_nsa":
-        return ", audit_code_matrix"
-    return ""
-
-
 def analysis_row_for_builder(row: Mapping[str, Any], *, history_by_period: Mapping[str, float]) -> dict[str, Any]:
     """Return the mart-shaped row expected by the cache-cause level builders."""
 
@@ -518,7 +508,9 @@ def analysis_row_for_builder(row: Mapping[str, Any], *, history_by_period: Mappi
         "by_dimension": row.get("by_dimension"),
         "dimension_data": row.get("dimension_data"),
         "dimension_channel_data": row.get("dimension_channel_data"),
+        "dimension_specialty_data": row.get("dimension_specialty_data"),
         "channel_data": row.get("channel_data"),
+        "channel_specialty_matrix": row.get("channel_specialty_matrix"),
         "metric_history": {
             str(period): {"raw_value": float(value or 0.0)}
             for period, value in history_by_period.items()
