@@ -39,29 +39,32 @@ responses without candidate omissions, out-of-candidate brands, or missing
 
 - Workflow: `jw-tier2-brand-scoring`
 - Workflow id: `324`
-- Revision: `5490`
-- Deployment: `1389`
+- Revision: `5496`
+- Deployment: `1392`
 - Serving: `163`
 - Backing Flowise chat_flow id: `034e7ed0-92d3-47a1-8ff4-87207028a45d`
 - Endpoint inside the cluster: `http://workflow-324.llmops.svc.cluster.local:8080/run/v2`
 
 This workflow is the Tier2 scoring counterpart to wf196 v3. It copies the
-wf196 v3 relatedness-gate and importance rubric, but scores exactly one
-`target_brand` supplied by the Tier2 replay runner instead of emitting the
-JW25-oriented `matches[]` contract. It also emits the wf196 news classification
-contract: `tag`, `category_label`, and `category_code`. `tag` and
-`category_label` must be identical, and `기타` maps to `category_code=external`.
-wf196 itself remains untouched.
+wf196 v3 relatedness-gate and importance rubric, but scores the
+`target_brands[]` supplied by the Tier2 replay runner in one news-level call
+instead of emitting the JW25-oriented `matches[]` contract. It emits one
+wf196-compatible news classification (`tag`, `category_label`,
+`category_code`) and one `brand_scores[]` item per input brand. `tag` and
+`category_label` must be identical, and `기타` maps to
+`category_code=external`. wf196 itself remains untouched.
 
 The repository prompt, workflow revision step prompt, and Flowise backing row
 prompt all have SHA256
-`4bc6bb852ed0d6bc2ef280e1a89a7a3d6f3ee3639129c526ee52abfddc97a8e1`.
+`15074bf21e1e919d296fcc1da65f7f1f6a98b18a2062bb55981ea2fcf50050a3`.
 The Flowise backing row is an `AGENTFLOW` row.
 
-Runtime smoke for revision `5490` passed on 15/15 Tier2 match samples. Each
-response returned valid JSON with integer `score`, valid `tag`, matching
-`category_label`, and the expected `category_code` mapping. Full replay remains
-gated on the separate bulk runner and event_brand_scores replacement procedure.
+Runtime smoke for revision `5496` passed on 15/15 Tier2 match samples, including
+12 multi-brand news samples. Each response returned valid JSON with a valid
+news-level `tag`, matching `category_label`, expected `category_code`, and a
+`brand_scores[]` brand-key set exactly equal to the input `target_brands[]`
+brand-key set. Full replay remains gated on the separate bulk runner and
+event_brand_scores replacement procedure.
 
 ## Body-exact match staging
 

@@ -42,3 +42,22 @@
   JSON with integer `score`, valid `tag`, matching `category_label`, and the
   expected `category_code` mapping. Full replay remains gated on the separate bulk
   runner and event_brand_scores replacement procedure.
+
+## 2026-07-07 — Tier2 scoring multi-brand revision
+
+- Updated `jw_tier2_brand_scoring_prompt.md` from the single `target_brand`
+  contract to the news-level `target_brands[]` contract.
+- Output contract now requires one news-level classification plus
+  `brand_scores[]`, with exactly one score object for each input brand and no
+  out-of-candidate brands.
+- Registered workflow id `324`, revision `5496`, deployment `1392`, serving
+  `163`.
+- Backing Flowise chat_flow id remains `034e7ed0-92d3-47a1-8ff4-87207028a45d`
+  and type `AGENTFLOW`.
+- Verified repository prompt SHA, workflow revision step prompt SHA, and backing row
+  prompt SHA all match:
+  `15074bf21e1e919d296fcc1da65f7f1f6a98b18a2062bb55981ea2fcf50050a3`.
+- Runtime smoke passed on 15/15 Tier2 match samples, including 12 multi-brand
+  news samples. Input and output brand-key sets matched exactly, with valid
+  wf196-compatible classification and 0 out-of-candidate brands. Full replay is
+  now shaped as 12,781 news-level calls rather than 23,964 brand-level calls.
