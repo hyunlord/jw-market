@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
 
 from pipeline.scripts.api.config import config  # noqa: E402
 from pipeline.scripts.api.db import close_pool, init_pool  # noqa: E402
+from pipeline.scripts.api.openapi_docs import install_openapi_overrides  # noqa: E402
 from pipeline.scripts.api.routes import brand_activity, brands, cause, deep_analysis, dynamic_market, health, market_filter, market_scope, market_status  # noqa: E402
 
 
@@ -93,3 +94,5 @@ def serve_frontend() -> FileResponse:
 if config.external_path_prefix:
     app.add_api_route(_prefix_path("/"), serve_frontend, methods=["GET"], include_in_schema=False)
     app.add_api_route(config.external_path_prefix.rstrip("/"), serve_frontend, methods=["GET"], include_in_schema=False)
+
+install_openapi_overrides(app)

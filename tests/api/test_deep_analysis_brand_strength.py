@@ -173,14 +173,8 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
     # Then: the existing payload remains and brand_strength is a pass-through summary.
     assert payload["data"]["existing"] == {"value": 1}
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
-    assert payload["data"]["ai_analysis_short"] == {
-        "analysis_variant": "short",
-        "evidence_pool": [{"source": "뉴스"}],
-    }
-    assert payload["data"]["ai_analysis_long"] == {
-        "analysis_variant": "long",
-        "evidence_pool": [{"source": "뉴스"}],
-    }
+    assert payload["data"]["ai_analysis_short"] == {"evidence_pool": [{"source": "뉴스"}]}
+    assert payload["data"]["ai_analysis_long"] == {"evidence_pool": [{"source": "뉴스"}]}
     assert payload["data"]["brand_strength"] == {
         "available": True,
         "profile_display": {"headline": "strong"},
@@ -207,8 +201,8 @@ def test_deep_analysis_brand_strength_is_not_generated_when_row_absent(monkeypat
 
     # Then: the key is still present and uses the unavailable contract.
     assert payload["data"]["brand_strength"] == {"available": False, "reason": "not_generated"}
-    assert payload["data"]["ai_analysis_short"]["analysis_variant"] == "short"
-    assert payload["data"]["ai_analysis_long"]["analysis_variant"] == "long"
+    assert "analysis_variant" not in payload["data"]["ai_analysis_short"]
+    assert "analysis_variant" not in payload["data"]["ai_analysis_long"]
 
 
 def test_deep_analysis_brand_strength_handles_invalid_json(monkeypatch) -> None:
@@ -227,8 +221,8 @@ def test_deep_analysis_brand_strength_handles_invalid_json(monkeypatch) -> None:
 
     # Then: malformed Agent3 content cannot break the main response.
     assert payload["data"]["brand_strength"] == {"available": False, "reason": "not_generated"}
-    assert payload["data"]["ai_analysis_short"]["analysis_variant"] == "short"
-    assert payload["data"]["ai_analysis_long"]["analysis_variant"] == "long"
+    assert "analysis_variant" not in payload["data"]["ai_analysis_short"]
+    assert "analysis_variant" not in payload["data"]["ai_analysis_long"]
 
 
 def test_deep_analysis_brand_strength_handles_db_failure(monkeypatch) -> None:
@@ -247,8 +241,8 @@ def test_deep_analysis_brand_strength_handles_db_failure(monkeypatch) -> None:
 
     # Then: DB failure degrades only the new section.
     assert payload["data"]["brand_strength"] == {"available": False, "reason": "not_generated"}
-    assert payload["data"]["ai_analysis_short"]["analysis_variant"] == "short"
-    assert payload["data"]["ai_analysis_long"]["analysis_variant"] == "long"
+    assert "analysis_variant" not in payload["data"]["ai_analysis_short"]
+    assert "analysis_variant" not in payload["data"]["ai_analysis_long"]
 
 
 def test_deep_analysis_strip_brand_strength_matches_previous_payload(monkeypatch) -> None:

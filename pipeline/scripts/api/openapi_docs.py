@@ -10,7 +10,11 @@ unknown fields.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Final
+
+from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
 
 PORTAL_CORE_TAG: Final = "Portal-Core"
@@ -626,6 +630,49 @@ MARKET_STATUS_RESPONSES: Final = {
 }
 
 
+AI_ANALYSIS_STAGE_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "bullets": {"type": "array", "items": {}},
+        "evidence": {"type": "array", "items": {}},
+    },
+}
+
+
+AI_ANALYSIS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "phenomenon": {"$ref": "#/components/schemas/AIAnalysisStage"},
+        "cause": {"$ref": "#/components/schemas/AIAnalysisStage"},
+        "prediction": {"$ref": "#/components/schemas/AIAnalysisStage"},
+        "recommendation": {"$ref": "#/components/schemas/AIAnalysisStage"},
+        "evidence_pool": {"type": "array", "items": {}},
+    },
+}
+
+
+AI_ANALYSIS_UNAVAILABLE_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "available": {"type": "boolean", "const": False},
+        "reason": {"type": "string"},
+    },
+}
+
+
+AI_ANALYSIS_FIELD_SCHEMA: Final = {
+    "oneOf": [
+        {"$ref": "#/components/schemas/AIAnalysis"},
+        {"$ref": "#/components/schemas/AIAnalysisUnavailable"},
+    ],
+}
+
+
 DEEP_ANALYSIS_RESPONSES: Final = {
     200: {
         "description": "포탈 심층분석 payload",
@@ -640,6 +687,12 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                         "data": {
                             "type": "object",
                             "description": "forecast, ai_analysis 등 심층분석 화면 섹션.",
+                            "additionalProperties": True,
+                            "properties": {
+                                "ai_analysis": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
+                                "ai_analysis_short": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
+                                "ai_analysis_long": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
+                            },
                         },
                     },
                 },
@@ -649,3 +702,32 @@ DEEP_ANALYSIS_RESPONSES: Final = {
     },
     404: {"description": "브랜드 심층분석 cache 없음"},
 }
+
+
+def _ensure_ai_analysis_components(openapi_schema: dict) -> None:
+    components = openapi_schema.setdefault("components", {})
+    schemas = components.setdefault("schemas", {})
+    schemas["AIAnalysisStage"] = deepcopy(AI_ANALYSIS_STAGE_SCHEMA)
+    schemas["AIAnalysis"] = deepcopy(AI_ANALYSIS_SCHEMA)
+    schemas["AIAnalysisUnavailable"] = deepcopy(AI_ANALYSIS_UNAVAILABLE_SCHEMA)
+
+
+def build_openapi_schema(app: FastAPI) -> dict:
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+        description=app.description,
+    )
+    _ensure_ai_analysis_components(openapi_schema)
+    return openapi_schema
+
+
+def install_openapi_overrides(app: FastAPI) -> None:
+    def custom_openapi() -> dict:
+        if app.openapi_schema:
+            return app.openapi_schema
+        app.openapi_schema = build_openapi_schema(app)
+        return app.openapi_schema
+
+    app.openapi = custom_openapi

@@ -112,7 +112,23 @@ def _parse_ai_variant(value: object) -> dict:
         payload = json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return _not_generated_ai_variant()
-    return payload if isinstance(payload, dict) else _not_generated_ai_variant()
+    if not isinstance(payload, dict):
+        return _not_generated_ai_variant()
+    return _normalize_ai_variant_payload(payload)
+
+
+def _normalize_ai_variant_payload(payload: dict) -> dict:
+    normalized = dict(payload)
+    normalized.pop("analysis_variant", None)
+    evidence_pool = normalized.get("evidence_pool")
+    if isinstance(evidence_pool, list):
+        normalized["evidence_pool"] = [
+            {key: item_value for key, item_value in item.items() if key != "published_date"}
+            if isinstance(item, dict)
+            else item
+            for item in evidence_pool
+        ]
+    return normalized
 
 
 def _load_ai_analysis_variants(brand: str) -> tuple[dict, dict]:

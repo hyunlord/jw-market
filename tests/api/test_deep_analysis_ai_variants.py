@@ -30,6 +30,20 @@ def _legacy_ai_row() -> dict[str, str]:
     return {"ai_analysis_json": json.dumps({"summary": "ok"}, ensure_ascii=False)}
 
 
+def _generated_ai_payload(variant: str) -> dict[str, Any]:
+    return {
+        "analysis_variant": variant,
+        "phenomenon": {"title": "현상", "body": "본문", "bullets": [], "evidence": []},
+        "cause": {"title": "원인", "body": "본문", "bullets": [], "evidence": []},
+        "prediction": {"title": "예측", "body": "본문", "bullets": [], "evidence": []},
+        "recommendation": {"title": "권고", "body": "본문", "bullets": [], "evidence": []},
+        "evidence_pool": [
+            {"news_id": "n1", "title": "뉴스", "published_date": "2026-07-01", "score": 80},
+            "kept-non-dict-entry",
+        ],
+    }
+
+
 def _strength_row() -> dict[str, Any]:
     return {
         "strength_summary_json": json.dumps(
@@ -60,6 +74,36 @@ def test_deep_analysis_ai_variants_are_not_generated_when_row_absent(monkeypatch
     assert payload["data"]["ai_analysis_short"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["ai_analysis_long"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["brand_strength"]["available"] is True
+
+
+def test_deep_analysis_ai_variants_remove_generation_only_fields(monkeypatch) -> None:
+    # Given: short/long cache columns still include generation-only metadata.
+    base_analysis = _generated_ai_payload("base")
+    ai_row = {
+        "ai_analysis_json": json.dumps(base_analysis, ensure_ascii=False),
+        "ai_analysis_short_json": json.dumps(_generated_ai_payload("short"), ensure_ascii=False),
+        "ai_analysis_long_json": json.dumps(_generated_ai_payload("long"), ensure_ascii=False),
+    }
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql:
+            return ai_row
+        if "agent3_brand_strength" in sql:
+            return _strength_row()
+        return _cache_row()
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+
+    # When: deep-analysis is served.
+    payload = deep_analysis.deep_analysis("리바로")
+
+    # Then: only short/long are normalized; legacy ai_analysis remains untouched.
+    assert payload["data"]["ai_analysis"] == base_analysis
+    for key in ("ai_analysis_short", "ai_analysis_long"):
+        variant_payload = payload["data"][key]
+        assert "analysis_variant" not in variant_payload
+        assert "published_date" not in variant_payload["evidence_pool"][0]
+        assert variant_payload["evidence_pool"][1] == "kept-non-dict-entry"
 
 
 def test_deep_analysis_ai_variants_handle_invalid_json(monkeypatch) -> None:

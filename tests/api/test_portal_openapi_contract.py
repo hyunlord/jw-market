@@ -120,3 +120,28 @@ def test_market_filter_atc_options_keeps_existing_response_model_and_docs() -> N
     assert operation["summary"] == "시장필터 1단계 ATC 옵션"
     assert "flag=true" in operation["description"]
     assert "MarketFilterAtcOptionsResponse" in str(operation)
+
+
+def test_deep_analysis_documents_base_short_and_long_ai_analysis_with_same_schema() -> None:
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    data_properties = schema["paths"]["/api/deep-analysis/{brand_name}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["properties"]["data"]["properties"]
+
+    assert data_properties["ai_analysis"] == data_properties["ai_analysis_short"]
+    assert data_properties["ai_analysis"] == data_properties["ai_analysis_long"]
+    assert data_properties["ai_analysis"]["oneOf"] == [
+        {"$ref": "#/components/schemas/AIAnalysis"},
+        {"$ref": "#/components/schemas/AIAnalysisUnavailable"},
+    ]
+    assert "AIAnalysisStage" in schema["components"]["schemas"]
+
+
+def test_deep_analysis_openapi_keeps_existing_portal_docs() -> None:
+    schema = app.openapi()
+
+    assert "23섹션" in str(schema["paths"]["/api/dynamic-market"]["post"]["responses"]["200"])
+    assert "topic_shares" in str(schema["paths"]["/api/brand-activity/topics"]["post"]["responses"]["200"])
+    assert "brand_matched" in str(schema["paths"]["/api/dynamic-market/filter-options"]["get"]["responses"]["200"])
