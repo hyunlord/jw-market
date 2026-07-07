@@ -92,13 +92,17 @@ def trace_envelope(
         "surface_policy_blocks": _surface_policy_blocks(result),
         "render_status": _render_status(answer),
         "ungrounded_numeric_spans": _ungrounded_numbers(answer, markdown_response),
-        "token_usage": {
-            "available": False,
-            "reason": "GenOS streaming responses are currently parsed as deltas only; usage is not retained in genos_client._stream_chat.",
-        },
+        "token_usage": _token_usage(timing),
         "chart_count": len(charts),
         "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
     }
+
+
+def _token_usage(timing: Mapping[str, Any]) -> dict[str, Any]:
+    usage = timing.get("token_usage")
+    if isinstance(usage, dict):
+        return usage
+    return {"available": False, "calls": [], "total_input_tokens": 0, "total_output_tokens": 0, "total_tokens": 0}
 
 
 def _env(*names: str) -> str:

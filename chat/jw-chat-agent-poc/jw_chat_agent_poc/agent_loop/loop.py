@@ -18,6 +18,7 @@ from jw_chat_agent_poc.orchestrator.question_intent import allows_background_new
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import new_timing, stage
+from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
@@ -83,6 +84,7 @@ class ToolUseAgent:
             )
             with stage(timing, "llm_plan", f"step={step}"):
                 decision = planner.decide(question, tuple(observations), facade.schemas(), allowed_brands, period_grounding.schema_periods)
+                _record_planner_token_usage(timing, planner)
             if not decision.tool_calls:
                 trace.append(_trace_step(step, decision, ()))
                 break
@@ -192,6 +194,12 @@ class ToolUseAgent:
             "sources": sources or ["cache"],
             "timing": timing,
         }
+
+
+def _record_planner_token_usage(timing: dict[str, Any], planner: ToolPlanner) -> None:
+    usage = getattr(planner, "last_token_usage", None)
+    if isinstance(usage, dict):
+        record_token_usage(timing, usage)
 
 
 def _execute_grounded(facade: AgentToolFacade, plan: ToolCallPlan) -> ToolExecution:

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.news_query import normalize_news_query
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
+from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,7 @@ class GenosToolPlanner:
     base_url: str = field(default_factory=resolve_planner_genos_base_url)
     token: str | None = field(default_factory=resolve_planner_genos_token)
     timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_AGENT_TIMEOUT_S", "30")))
+    last_token_usage: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
 
     def decide(
         self,
@@ -25,6 +27,7 @@ class GenosToolPlanner:
         allowed_brands: tuple[str, ...] = (),
         allowed_periods: tuple[str, ...] = (),
     ) -> AgentDecision:
+        object.__setattr__(self, "last_token_usage", None)
         deterministic_external = _deterministic_external_decision(question, observations, allowed_brands, allowed_periods)
         if deterministic_external is not None:
             return deterministic_external
@@ -62,7 +65,9 @@ class GenosToolPlanner:
             response.raise_for_status()
         except requests.RequestException as exc:
             raise RuntimeError("GenOS tool planner request failed") from exc
-        return _decision_from_payload(response.json())
+        payload = response.json()
+        object.__setattr__(self, "last_token_usage", usage_call_from_payload(payload, base_url=self.base_url, stream=False))
+        return _decision_from_payload(payload)
 
     def _fallback(
         self,

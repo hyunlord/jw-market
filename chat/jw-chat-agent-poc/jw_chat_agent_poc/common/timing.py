@@ -5,6 +5,8 @@ from contextlib import contextmanager
 import time
 from typing import Any, Iterator
 
+from jw_chat_agent_poc.common.token_usage import public_token_usage
+
 
 Timing = MutableMapping[str, Any]
 
@@ -119,6 +121,7 @@ def public_payload(timing: Timing | None) -> dict[str, Any]:
             for item in stages
             if isinstance(item, dict)
         ],
+        "token_usage": public_token_usage(timing),
     }
 
 

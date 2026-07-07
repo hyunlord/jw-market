@@ -36,6 +36,7 @@ from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatReque
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.common.timing import ensure_timing, finish, stage
+from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
     detect_market_scope_intent,
@@ -508,6 +509,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             generated_answer = "".join(client.stream_answer(question, result))
     except requests.RequestException:
         generated_answer = finalized_fallback_fact_answer(question, result.get("markdown_response"))
+    for call in client.token_usage_calls:
+        record_token_usage(timing, call)
     with stage(timing, "answer_cleanup", "markdown cleanup"):
         safe_answer = cleanup_markdown_answer(generated_answer)
         markdown_response = result.get("markdown_response")
