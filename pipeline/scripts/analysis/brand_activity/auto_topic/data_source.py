@@ -84,7 +84,7 @@ def fetch_keyword_rows(connection: pymysql.connections.Connection, markets: Sequ
     sql = (
         "SELECT id, period_ym, visit_location, specialty, product_name, therapeutic_class, "
         "keyword_text, interest, prescription_frequency, prescription_evolution, "
-        "abstract_lit, patient_lit, promotional_lit, stage_row_sha256 "
+        "abstract_lit, patient_lit, promotional_lit, stage_row_sha256, representing_company "
         f"FROM {schema}.{KEYWORD_TABLE} "
         f"WHERE keyword_text <> '' AND therapeutic_class IN ({placeholders}) "
         "ORDER BY therapeutic_class, product_name, period_ym, id"
