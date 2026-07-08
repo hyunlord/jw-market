@@ -18,7 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, assert_never
 
 
 PHASE_ZETA_ROOT = Path(__file__).resolve().parent
@@ -26,7 +26,10 @@ if str(PHASE_ZETA_ROOT) not in sys.path:
     sys.path.insert(0, str(PHASE_ZETA_ROOT))
 
 from bundle_builder import BundleConfig, build_brand_bundle
+from bundle_builder.agent2_density_router import ProcessingMode
+from bundle_builder.agent2_zero_template import KpiSnapshot, render_zero_template
 from bundle_builder.hash_util import compute_bundle_hash
+from agent2_density_worklist import RoutedAgent2Brand, load_density_worklist
 from phase_zeta_runner.config import RunnerConfig
 from phase_zeta_runner.llm_runner import call_llm
 from phase_zeta_runner.output_composer import compose_and_persist
@@ -261,6 +264,58 @@ class Agent2RegenOrchestrator:
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         return manifest
 
+    def run_routed(self, worklist: list[RoutedAgent2Brand]) -> dict[str, Any]:
+        started_at = datetime.now(timezone.utc).isoformat()
+        manifest: dict[str, Any] = {
+            "run_id": f"agent2_regen_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "started_at": started_at,
+            "workflow_revision_id": self.workflow_revision_id,
+            "formatter_version": self.formatter_version,
+            "dry_run": self.dry_run,
+            "routing_identity": "brand_key",
+            "brands": {},
+        }
+        swap_candidates: list[str] = []
+        failures = 0
+
+        for item in worklist:
+            match item.route.mode:
+                case ProcessingMode.TEMPLATE_ZERO:
+                    record = self._run_zero_template(item)
+                case ProcessingMode.LLM_FULL | ProcessingMode.LLM_COMPACT | ProcessingMode.LLM_RECAP:
+                    record = self._run_brand(item.canonical_brand_name)
+                    record["brand_key"] = item.brand_key
+                    record["canonical_brand_name"] = item.canonical_brand_name
+                    record["density_route"] = _route_metadata(item)
+                case unreachable:
+                    assert_never(unreachable)
+            manifest["brands"][item.brand_key] = record
+            if record["status"] in ("validated", "template_zero", "skipped"):
+                swap_candidates.append(item.brand_key)
+            elif record["status"] == "failed":
+                failures += 1
+            if failures > self.fail_threshold:
+                manifest["abort_reason"] = f"failures exceeded threshold {self.fail_threshold}"
+                break
+
+        manifest["swap_plan"] = self._swap_plan(swap_candidates, failures)
+        manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
+        return manifest
+
+    def _run_zero_template(self, item: RoutedAgent2Brand) -> dict[str, Any]:
+        template = render_zero_template(KpiSnapshot(brand=item.canonical_brand_name))
+        return {
+            "brand": item.canonical_brand_name,
+            "brand_key": item.brand_key,
+            "canonical_brand_name": item.canonical_brand_name,
+            "status": "template_zero",
+            "template": template,
+            "density_route": _route_metadata(item),
+            "workflow_revision_id": self.workflow_revision_id,
+            "formatter_version": self.formatter_version,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     def _run_brand(self, brand: str) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc).isoformat()
         try:
@@ -456,6 +511,28 @@ def _load_mart_brand_universe(db_conn: Any) -> list[str]:
     return [str(row["brand"]) for row in cursor.fetchall() if row.get("brand")]
 
 
+def _route_metadata(item: RoutedAgent2Brand) -> dict[str, Any]:
+    return {
+        "brand_key": item.brand_key,
+        "canonical_brand_name": item.canonical_brand_name,
+        "bucket": item.route.bucket,
+        "mode": item.route.mode.value,
+        "evidence_count": item.route.evidence_count,
+        "included_processors": list(item.route.included_processors),
+    }
+
+
+def _route_plan_manifest(worklist: list[RoutedAgent2Brand], diagnostics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "route_plan_only",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "routing_identity": "brand_key",
+        "diagnostics": diagnostics,
+        "brand_count": len(worklist),
+        "routes": [_route_metadata(item) for item in worklist],
+    }
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json_dumps(payload) + "\n", encoding="utf-8")
@@ -550,13 +627,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--brands", nargs="*", help="Explicit brands to process. Overrides --brand-source.")
     parser.add_argument(
         "--brand-source",
-        choices=("ai-analysis-cache", "mart-universe"),
+        choices=("ai-analysis-cache", "mart-universe", "general-density"),
         default="ai-analysis-cache",
         help=(
             "Worklist source when --brands is omitted. Defaults to the existing "
             "cache_deep_analysis_ai_analysis sink for safe JW25-sized runs; use "
-            "mart-universe explicitly for all mart_strategic_ml_brand_metric brands."
+            "mart-universe explicitly for all mart_strategic_ml_brand_metric brands; "
+            "use general-density for brand_key routing over mart_general_brand_metric."
         ),
+    )
+    parser.add_argument(
+        "--route-plan-only",
+        action="store_true",
+        help="For --brand-source general-density, build the routed worklist only and do not call wf217.",
     )
     parser.add_argument("--runner-config", default=str(PHASE_ZETA_ROOT / "configs" / "genos_runner_v1.yaml"))
     parser.add_argument("--bundle-config", default=str(PHASE_ZETA_ROOT / "configs" / "phase_zeta_v1_1.yaml"))
@@ -592,16 +675,32 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.brands:
             brands = args.brands
+            routed_worklist = None
         else:
             brand_conn = _connect_bundle_db(bundle_config)
             try:
                 if args.brand_source == "mart-universe":
                     brands = _load_mart_brand_universe(brand_conn)
+                    routed_worklist = None
+                elif args.brand_source == "general-density":
+                    density_worklist = load_density_worklist(brand_conn)
+                    routed_worklist = list(density_worklist.routed)
+                    brands = [item.canonical_brand_name for item in routed_worklist]
+                    diagnostics["density_worklist"] = {
+                        "unmatched_known": list(density_worklist.evidence.unmatched_known),
+                        "unmatched_unknown": list(density_worklist.evidence.unmatched_unknown),
+                    }
                 else:
                     brands = _load_brand_list(brand_conn, bundle_config.pilot_brands)
+                    routed_worklist = None
             finally:
                 brand_conn.close()
         diagnostics["brand_worklist"] = {"source": "explicit" if args.brands else args.brand_source, "count": len(brands)}
+        if routed_worklist is not None and args.route_plan_only:
+            manifest = _route_plan_manifest(routed_worklist, diagnostics)
+            _write_json(work_dir / "run_manifest.json", manifest)
+            print(_json_dumps(manifest))
+            return 0
         orchestrator = Agent2RegenOrchestrator(
             workflow_revision_id=args.workflow_revision_id,
             formatter_version=args.formatter_version,
@@ -610,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=dry_run,
             fail_threshold=args.fail_threshold,
         )
-        manifest = orchestrator.run(list(brands))
+        manifest = orchestrator.run_routed(routed_worklist) if routed_worklist is not None else orchestrator.run(list(brands))
         manifest["diagnostics"] = diagnostics
         _write_json(work_dir / "run_manifest.json", manifest)
         print(_json_dumps(manifest))

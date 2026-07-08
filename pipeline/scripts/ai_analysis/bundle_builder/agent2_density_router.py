@@ -7,6 +7,14 @@ from typing import Final
 from .event_bundle_builder import CROSS_MATCH_SOURCE_PROCESSORS, DIRECT_EVENT_SOURCE_PROCESSORS
 
 QUALITY_SCORE_CUTOFF: Final = 50
+CATEGORY_SCORE_CUTOFFS: Final = {
+    "자본/경영": 43,
+    "외부/트렌드": 49,
+    "공급/생산": 51,
+    "신약/R&D": 54,
+    "정책/규제": 55,
+}
+EXCLUDED_EVIDENCE_TAGS: Final = frozenset({"기타"})
 FULL_MIN_EVIDENCE: Final = 10
 MID_MIN_EVIDENCE: Final = 3
 SPARSE_MIN_EVIDENCE: Final = 1
@@ -36,6 +44,7 @@ class EvidenceCount:
     derivation: str
     count: int
     score_cutoff: int = QUALITY_SCORE_CUTOFF
+    tag: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +71,30 @@ def density_bucket(evidence_count: int) -> DensityBucket:
 def is_allowed_evidence(row: EvidenceCount) -> bool:
     """Return whether a score row can feed Agent2 density routing."""
 
+    expected_cutoff = cutoff_for_tag(row.tag)
+    if expected_cutoff is None:
+        return False
     return (
-        row.score_cutoff == QUALITY_SCORE_CUTOFF
+        row.score_cutoff == expected_cutoff
         and row.source_processor in ALLOWED_PROCESSORS
         and row.derivation in ALLOWED_DERIVATIONS
     )
+
+
+def cutoff_for_tag(tag: str | None) -> int | None:
+    """Return the category-specific evidence cutoff, or None when excluded."""
+
+    normalized = (tag or "").strip()
+    if normalized in EXCLUDED_EVIDENCE_TAGS:
+        return None
+    return CATEGORY_SCORE_CUTOFFS.get(normalized, QUALITY_SCORE_CUTOFF)
+
+
+def is_score_allowed_for_density(score: int | float, tag: str | None) -> bool:
+    """Evaluate a raw score against the category-specific density cutoff."""
+
+    cutoff = cutoff_for_tag(tag)
+    return cutoff is not None and score >= cutoff
 
 
 def route_brand(brand: str, counts: tuple[EvidenceCount, ...]) -> RouteDecision:

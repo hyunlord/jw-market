@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from agent2_density_worklist import RoutedAgent2Brand
 from agent2_regen_orchestrator import (
     Agent2RegenOrchestrator,
     DependencyPorts,
@@ -12,8 +13,10 @@ from agent2_regen_orchestrator import (
     compute_idempotency_key,
     _load_brand_list,
     _load_mart_brand_universe,
+    parse_args,
     validate_formatter_contract,
 )
+from bundle_builder.agent2_density_router import ProcessingMode, RouteDecision
 
 
 def _valid_stage(body: str = "문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다."):
@@ -174,3 +177,103 @@ def test_mart_universe_worklist_is_explicit_and_reads_ml_mart():
     assert _load_mart_brand_universe(conn) == ["가드렛", "확장브랜드"]
     assert "mart_strategic_ml_brand_metric" in conn.cursor_obj.sql
     assert "brand_name" in conn.cursor_obj.sql
+
+
+def test_parse_args_accepts_general_density_source() -> None:
+    args = parse_args(["--brand-source", "general-density", "--route-plan-only"])
+
+    assert args.brand_source == "general-density"
+    assert args.route_plan_only is True
+
+
+def test_routed_run_uses_zero_template_without_llm(tmp_path) -> None:
+    calls = {"bundle": 0, "llm": 0, "compose": 0}
+
+    def build_bundle(brand: str):
+        calls["bundle"] += 1
+        return {"bundle_meta": {"bundle_hash": "sha256:test"}, "brand_context": {"brand_name": brand}}
+
+    def call_llm(bundle):
+        calls["llm"] += 1
+        return LLMCallResult(False, {}, "", 0, 0, 0.0, "", 0, "should_not_call")
+
+    def validate(parsed_output, bundle):
+        return ValidationOutcome(valid=True, summary={"verdict": "PASS"}, details={})
+
+    def compose(brand, bundle, llm_result, validation):
+        calls["compose"] += 1
+        return {}
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle, call_llm, validate, compose),
+        dry_run=True,
+    )
+    worklist = [
+        RoutedAgent2Brand(
+            brand_key="zero-key",
+            canonical_brand_name="제로브랜드",
+            route=RouteDecision("zero-key", 0, "zero", ProcessingMode.TEMPLATE_ZERO, ()),
+        )
+    ]
+
+    manifest = orchestrator.run_routed(worklist)
+
+    assert manifest["brands"]["zero-key"]["status"] == "template_zero"
+    assert manifest["brands"]["zero-key"]["canonical_brand_name"] == "제로브랜드"
+    assert manifest["brands"]["zero-key"]["template"]["phenomenon"]["evidence_none"] is True
+    assert calls == {"bundle": 0, "llm": 0, "compose": 0}
+
+
+def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
+    calls = {"brand": ""}
+
+    def build_bundle(brand: str):
+        calls["brand"] = brand
+        return {
+            "bundle_meta": {"bundle_hash": "sha256:testhash", "brand": brand},
+            "brand_context": {"brand_name": brand},
+            "market_views": [],
+        }
+
+    def call_llm(bundle):
+        return LLMCallResult(
+            success=True,
+            parsed_output=_parsed(),
+            raw_response=json.dumps({"ok": True}),
+            tokens_in=1,
+            tokens_out=2,
+            duration_sec=0.1,
+            model_version="genos_workflow_217",
+            retry_count=0,
+            error=None,
+        )
+
+    def validate(parsed_output, bundle):
+        return ValidationOutcome(valid=True, summary={"verdict": "PASS"}, details={})
+
+    def compose(brand, bundle, llm_result, validation):
+        return {"status": "ok", "cache_updated": False}
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle, call_llm, validate, compose),
+        dry_run=True,
+    )
+    worklist = [
+        RoutedAgent2Brand(
+            brand_key="capital-key",
+            canonical_brand_name="자본브랜드",
+            route=RouteDecision("capital-key", 3, "mid", ProcessingMode.LLM_COMPACT, ("tier2_llm_v1",)),
+        )
+    ]
+
+    manifest = orchestrator.run_routed(worklist)
+
+    assert calls["brand"] == "자본브랜드"
+    assert manifest["brands"]["capital-key"]["status"] == "validated"
+    assert manifest["brands"]["capital-key"]["density_route"]["mode"] == "llm_compact"
