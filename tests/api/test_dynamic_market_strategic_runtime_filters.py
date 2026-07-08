@@ -11,7 +11,7 @@ from pipeline.scripts.api.dynamic_market import strategic_runtime
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
 
 
-def test_strategic_runtime_filters_ubist_sidecar_aliases() -> None:
+def test_strategic_runtime_uses_only_atc_narrowing_filters() -> None:
     request = DynamicMarketRequest.model_validate(
         {
             "source": "ubist",
@@ -19,6 +19,7 @@ def test_strategic_runtime_filters_ubist_sidecar_aliases() -> None:
             "filters": {
                 "analysis_level": {
                     "ubist": {
+                        "atc4": ["C10A1"],
                         "molecule_strength": ["10/10mg"],
                         "form": ["정"],
                         "route": ["경구"],
@@ -35,6 +36,7 @@ def test_strategic_runtime_filters_ubist_sidecar_aliases() -> None:
             "brand_name": "매칭",
             "by_dimension": json.dumps(
                 {
+                    "atc4_code": "C10A1",
                     "strength_pack": "10/10mg",
                     "dosage_form": "정",
                     "route": "경구",
@@ -48,6 +50,7 @@ def test_strategic_runtime_filters_ubist_sidecar_aliases() -> None:
             "brand_name": "미매칭",
             "by_dimension": json.dumps(
                 {
+                    "atc4_code": "C10C0",
                     "strength_pack": "20mg",
                     "dosage_form": "정",
                     "route": "경구",

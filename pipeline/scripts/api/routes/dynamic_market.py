@@ -132,6 +132,28 @@ def _reject_strategic_channel_axis(payload: DynamicMarketRequest) -> None:
 def _reject_strategic_expansion_filters(payload: DynamicMarketRequest) -> None:
     if payload.filters.atc4:
         raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not top-level ATC4 expansion")
+    unsupported = _active_unsupported_strategic_analysis_filters(payload)
+    if unsupported:
+        joined = ", ".join(unsupported)
+        raise DynamicMarketInputError(
+            "strategic view supports only analysis_level.<source>.atc3/atc4 narrowing filters; "
+            f"unsupported filters: {joined}"
+        )
+
+
+def _active_unsupported_strategic_analysis_filters(payload: DynamicMarketRequest) -> list[str]:
+    source = payload.source.strip().lower()
+    source_key = "ubist" if source == "ubist" else "iqvia"
+    source_filters = payload.filters.analysis_level.ubist if source_key == "ubist" else payload.filters.analysis_level.iqvia
+    allowed = {"atc3", "atc4"} if source_key == "ubist" else {"atc4"}
+    channel_slice_keys = {"facility", "specialty", "pairs"} if source_key == "ubist" else {"audit_code"}
+    unsupported: list[str] = []
+    for key, values in source_filters.model_dump(by_alias=True).items():
+        if key in allowed or key in channel_slice_keys:
+            continue
+        if any(str(value).strip() for value in values):
+            unsupported.append(f"analysis_level.{source_key}.{key}")
+    return unsupported
 
 
 def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:
