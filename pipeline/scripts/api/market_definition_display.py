@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import importlib.util
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 
@@ -171,9 +173,17 @@ def _read_first_table(paths: tuple[Path, ...], columns: list[str]) -> list[dict[
 
 
 def _cd_dim_spec_rows() -> list[dict[str, Any]]:
-    from pipeline.etl.io.catalog.dim.market_competitive_dynamics_specs import CD_SPECS
+    spec_path = PROJECT_ROOT / "pipeline" / "etl" / "io" / "catalog" / "dim" / "market_competitive_dynamics_specs.py"
+    module_name = "_jw_market_competitive_dynamics_specs"
+    spec = importlib.util.spec_from_file_location(module_name, spec_path)
+    if spec is None or spec.loader is None:
+        return []
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    cd_specs = getattr(module, "CD_SPECS", ())
 
-    return [dict(row) for row in CD_SPECS]
+    return [dict(row) for row in cd_specs]
 
 
 def _parse_list(raw_value: Any) -> list[str]:
