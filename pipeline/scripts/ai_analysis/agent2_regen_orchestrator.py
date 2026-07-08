@@ -221,8 +221,9 @@ def validate_formatter_contract(
     source_mentions = sorted({source for source in source_matches if source in {"IQVIA", "UBIST"}})
 
     source_tag_count = len(source_matches)
-    source_tag_required = mode_name == PROCESSING_MODE_FULL
-    if source_tag_required and source_tag_count == 0:
+    source_tag_expected = mode_name == PROCESSING_MODE_FULL
+    source_tag_blocking = False
+    if source_tag_expected and source_tag_count == 0:
         warnings.append({"type": "inline_source_tag_missing"})
 
     return FormatterContractResult(
@@ -234,7 +235,8 @@ def validate_formatter_contract(
             "compact_tag_count": len(TAG_RE.findall(all_text)),
             "source_label_count": len(SOURCE_LABEL_RE.findall(all_text)),
             "source_tag_count": source_tag_count,
-            "source_tag_required": source_tag_required,
+            "source_tag_required": source_tag_expected,
+            "source_tag_blocking": source_tag_blocking,
             "source_mentions": source_mentions,
             "stage_count": sum(1 for stage in STAGES if isinstance(parsed_output.get(stage), dict)),
             "brand": brand,

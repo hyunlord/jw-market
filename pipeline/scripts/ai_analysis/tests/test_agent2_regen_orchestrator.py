@@ -113,6 +113,7 @@ def test_formatter_contract_warns_instead_of_blocking_when_full_source_tags_miss
 
     assert result.valid
     assert not result.errors
+    assert result.summary["source_tag_blocking"] is False
     assert any(warning["type"] == "inline_source_tag_missing" for warning in result.warnings)
 
 
@@ -124,6 +125,7 @@ def test_formatter_contract_does_not_hardcode_dual_source_brand_errors():
 
     assert result.valid
     assert not any(error["type"] == "dual_source_missing" for error in result.errors)
+    assert not any(warning["type"] == "dual_source_missing" for warning in result.warnings)
 
 
 def test_formatter_contract_accepts_full_source_label_for_compact_inline_gate():
