@@ -74,7 +74,7 @@ def test_prompt_compact_adds_mode_instruction_without_changing_full_default():
 
     assert "[출력 밀도]" not in full
     assert "[출력 밀도]" in compact
-    assert "bullets는 2-3개" in compact
+    assert "bullets는 2-4개" in compact
 
 
 def test_prompt_declares_view_label_and_evidence_contracts():

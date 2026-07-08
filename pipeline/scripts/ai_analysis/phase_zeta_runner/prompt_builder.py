@@ -42,7 +42,7 @@ def _forecast_has_all_horizons(forecast: dict[str, Any]) -> bool:
 def _mode_instruction(mode: str) -> str:
     match mode:
         case "compact":
-            return "compact 모드: 동일한 4단 구조를 유지하되 각 단락 body는 간결하게 쓰고 bullets는 2-3개만 작성하세요."
+            return "compact 모드: 동일한 4단 구조를 유지하되 각 단락 body는 간결하게 쓰고 bullets는 2-4개만 작성하세요."
         case "recap":
             return "recap 모드: 동일한 4단 구조를 유지하되 각 단락 body는 1-2문장으로 요약하고 bullets는 2개만 작성하세요."
         case _:

@@ -45,6 +45,22 @@ def test_genos_validation_accepts_observed_full_four_bullets():
     assert genos_caller.validate_genos_output(parsed, mode="full")["valid"]
 
 
+def test_genos_validation_accepts_compact_two_to_four_bullets():
+    def parsed_with_bullets(count: int):
+        return {
+            "phenomenon": {"title": "t", "body": "b", "bullets": ["x"] * count},
+            "cause": {"title": "t", "body": "b", "bullets": ["x"] * count},
+            "prediction": {"title": "t", "body": "b", "bullets": ["x"] * count},
+            "recommendation": {"title": "t", "body": "b", "bullets": ["x"] * count},
+        }
+
+    assert genos_caller.validate_genos_output(parsed_with_bullets(2), mode="compact")["valid"]
+    assert genos_caller.validate_genos_output(parsed_with_bullets(3), mode="compact")["valid"]
+    assert genos_caller.validate_genos_output(parsed_with_bullets(4), mode="compact")["valid"]
+    assert not genos_caller.validate_genos_output(parsed_with_bullets(5), mode="compact")["valid"]
+    assert not genos_caller.validate_genos_output(parsed_with_bullets(4), mode="recap")["valid"]
+
+
 def test_call_llm_routes_to_genos(monkeypatch):
     captured = {}
 

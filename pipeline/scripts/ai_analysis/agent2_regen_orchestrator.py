@@ -61,6 +61,18 @@ def _json_dumps(obj: Any, indent: int | None = 2) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=indent, default=str)
 
 
+def _llm_failure_debug(llm_result: LLMCallResult) -> dict[str, Any]:
+    return {
+        "raw_response": llm_result.raw_response,
+        "parsed_output": llm_result.parsed_output,
+        "tokens_in": llm_result.tokens_in,
+        "tokens_out": llm_result.tokens_out,
+        "duration_sec": llm_result.duration_sec,
+        "model_version": llm_result.model_version,
+        "retry_count": llm_result.retry_count,
+    }
+
+
 def compute_idempotency_key(
     brand: str,
     bundle_hash: str,
@@ -372,7 +384,13 @@ class Agent2RegenOrchestrator:
 
             llm_result = self.ports.call_llm(bundle)
             if not llm_result.success:
-                return self._record_failure(brand, idempotency_key, bundle_hash, "llm_failed", llm_result.error)
+                return self._record_failure(
+                    brand,
+                    idempotency_key,
+                    bundle_hash,
+                    "llm_failed",
+                    {"error": llm_result.error, "llm": _llm_failure_debug(llm_result)},
+                )
 
             formatter = validate_formatter_contract(llm_result.parsed_output, brand, mode_name)
             validation = self.ports.validate(llm_result.parsed_output, bundle)
@@ -385,6 +403,8 @@ class Agent2RegenOrchestrator:
                     {
                         "formatter": formatter.to_dict(),
                         "validation": validation.summary,
+                        "validation_detail": validation.details,
+                        "llm": _llm_failure_debug(llm_result),
                     },
                 )
 

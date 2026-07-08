@@ -92,6 +92,14 @@ def test_formatter_contract_keeps_full_strict_but_allows_compact_and_recap_thres
     assert recap.valid
 
 
+def test_formatter_contract_allows_two_sentence_compact_body_but_rejects_one_sentence():
+    compact_two = validate_formatter_contract(_parsed_with_counts(bullet_count=2, sentence_count=2), brand="테스트", mode="compact")
+    compact_one = validate_formatter_contract(_parsed_with_counts(bullet_count=2, sentence_count=1), brand="테스트", mode="compact")
+
+    assert compact_two.valid
+    assert any(error["type"] == "body_too_short" for error in compact_one.errors)
+
+
 def test_formatter_contract_counts_full_source_labels_for_dual_source_gate():
     parsed = _parsed_with_counts(bullet_count=4, sentence_count=6)
     parsed["phenomenon"]["body"] += " 가드렛은 0.14%(Market Landscape · UBIST 기준)입니다."
@@ -259,6 +267,96 @@ def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_pa
     assert "processing_mode" not in second["brands"]["리바로젯"]
     assert calls == {"bundle": 2, "llm": 1, "compose": 1}
     assert second["swap_plan"]["mode"] == "dry-run"
+
+
+def test_orchestrator_validation_failure_retains_raw_parsed_and_full_validation_detail(tmp_path):
+    parsed = _parsed_with_counts(bullet_count=4, sentence_count=4)
+
+    def build_bundle(brand: str):
+        return {"bundle_meta": {"bundle_hash": "sha256:testhash", "brand": brand}, "brand_context": {"brand_name": brand}}
+
+    def call_llm(bundle):
+        return LLMCallResult(
+            success=True,
+            parsed_output=parsed,
+            raw_response=json.dumps({"raw": True}),
+            tokens_in=1,
+            tokens_out=2,
+            duration_sec=0.1,
+            model_version="genos_workflow_217",
+            retry_count=0,
+            error=None,
+        )
+
+    def validate(parsed_output, bundle):
+        return ValidationOutcome(
+            valid=False,
+            summary={"layer1_valid": False, "verdict": "FAIL"},
+            details={
+                "unmatched_numbers": [{"raw_text": "999,999", "pattern": "comma_raw_value"}],
+                "layers": {"layer1_metric_validator": {"valid": False}},
+                "warnings": [{"pattern": "source_label_missing"}],
+            },
+        )
+
+    def compose(brand, bundle, llm_result, validation):
+        raise AssertionError("compose must not run after validation failure")
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle, call_llm, validate, compose),
+        dry_run=True,
+    )
+
+    manifest = orchestrator.run(["테스트"])
+    detail = manifest["brands"]["테스트"]["detail"]
+
+    assert detail["validation"] == {"layer1_valid": False, "verdict": "FAIL"}
+    assert detail["validation_detail"]["unmatched_numbers"][0]["raw_text"] == "999,999"
+    assert detail["llm"]["raw_response"] == json.dumps({"raw": True})
+    assert detail["llm"]["parsed_output"] == parsed
+
+
+def test_orchestrator_llm_failure_retains_raw_response_when_parse_fails(tmp_path):
+    def build_bundle(brand: str):
+        return {"bundle_meta": {"bundle_hash": "sha256:testhash", "brand": brand}, "brand_context": {"brand_name": brand}}
+
+    def call_llm(bundle):
+        return LLMCallResult(
+            success=False,
+            parsed_output={},
+            raw_response="not json",
+            tokens_in=0,
+            tokens_out=0,
+            duration_sec=0.1,
+            model_version="genos_workflow_217",
+            retry_count=1,
+            error="ValueError: GenOS response does not contain the required 4-stage JSON object",
+        )
+
+    def validate(parsed_output, bundle):
+        raise AssertionError("validate must not run after LLM failure")
+
+    def compose(brand, bundle, llm_result, validation):
+        raise AssertionError("compose must not run after LLM failure")
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle, call_llm, validate, compose),
+        dry_run=True,
+    )
+
+    manifest = orchestrator.run(["테스트"])
+    detail = manifest["brands"]["테스트"]["detail"]
+
+    assert detail["error"] == "ValueError: GenOS response does not contain the required 4-stage JSON object"
+    assert detail["llm"]["raw_response"] == "not json"
+    assert detail["llm"]["parsed_output"] == {}
+    assert detail["llm"]["retry_count"] == 1
 
 
 def test_upstream_freshness_requires_cache_tables_but_allows_missing_mart_tables():
