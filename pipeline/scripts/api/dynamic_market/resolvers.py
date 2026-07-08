@@ -315,6 +315,55 @@ class GeneralViewResolver:
 
 
 @dataclass(frozen=True, slots=True)
+class StrategicMarketSelection:
+    """Internal strategic market id chosen from a focus brand."""
+
+    market_kind: str
+    market_id: str
+
+
+def resolve_strategic_market_for_focus(
+    *,
+    mart_db: str,
+    view_kind: str | None,
+    focus_brand_key: str | None,
+    source: str,
+    measure: str,
+) -> StrategicMarketSelection:
+    """Resolve a public brand-based strategic request to an internal market id.
+
+    Ambiguous brand membership is intentionally deterministic: use the first
+    market id by lexical id order, matching the audit SQL's `ORDER BY` basis.
+    """
+
+    market_kind = normalize_strategic_view_kind(view_kind=view_kind, ml_id=None, cd_market_id=None)
+    focus_brand = (focus_brand_key or "").strip()
+    if not focus_brand:
+        raise DynamicMarketInputError("strategic view requires focus_brand_key")
+    normalized_source = normalize_source(source)
+    normalized_measure = normalize_measure(normalized_source, measure)
+    table = "mart_strategic_cd_brand_metric" if market_kind == "cd" else "mart_strategic_ml_brand_metric"
+    id_column = "cd_market_id" if market_kind == "cd" else "ml_id"
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT {id_column} AS market_id
+        FROM {quote_identifier(mart_db)}.{table}
+        WHERE (brand_key = %s OR brand_name = %s)
+          AND source = %s
+          AND measure = %s
+        ORDER BY {id_column}
+        """,
+        (focus_brand, focus_brand, normalized_source, normalized_measure),
+    )
+    market_ids = tuple(str(row["market_id"]) for row in rows if row.get("market_id"))
+    if not market_ids:
+        raise DynamicMarketInputError(
+            f"focus brand has no strategic {market_kind} market for {normalized_source}/{normalized_measure}: {focus_brand}"
+        )
+    return StrategicMarketSelection(market_kind=market_kind, market_id=market_ids[0])
+
+
+@dataclass(frozen=True, slots=True)
 class StrategicViewResolver:
     mart_db: str
     dimension_db: str | None = None

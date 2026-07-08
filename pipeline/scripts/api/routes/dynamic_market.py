@@ -8,13 +8,17 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
-from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
-from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
+from pipeline.scripts.api.dynamic_market.resolvers import (
+    GeneralViewResolver,
+    StrategicMarketSelection,
+    StrategicViewResolver,
+    resolve_strategic_market_for_focus,
+)
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
 from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload, success_envelope
 from pipeline.scripts.api.dynamic_market.types import (
@@ -24,7 +28,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     clamp_top_n,
 )
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
 from pipeline.scripts.api.openapi_docs import (
     DYNAMIC_MARKET_DESCRIPTION,
     DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
@@ -59,12 +63,13 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
         try:
             _reject_strategic_expansion_filters(payload)
             _reject_strategic_channel_axis(payload)
+            market_selection = _resolve_strategic_market_selection(payload)
             return success_envelope(
                 build_cached_payload(
                     builder=build_strategic_payload,
                     mart_db=config.db_name,
-                    ml_id=_resolve_catalog_ml_id(payload.filters),
-                    cd_market_id=payload.filters.cd_market_id,
+                    ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
+                    cd_market_id=market_selection.market_id if market_selection.market_kind == "cd" else None,
                     focus_brand_key=payload.filters.focus_brand_key,
                     source=payload.source,
                     measure=payload.measure,
@@ -112,7 +117,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
 
 def _is_strategic_request(payload: DynamicMarketRequest) -> bool:
     filters = payload.filters
-    return bool(filters.view_kind or filters.ml_id or filters.cd_market_id)
+    return bool(filters.view_kind)
 
 
 def _reject_strategic_channel_axis(payload: DynamicMarketRequest) -> None:
@@ -142,12 +147,12 @@ def _resolve_definition(payload: DynamicMarketRequest):
         channel_axis = filters.analysis_level.to_channel_axis(source=payload.source)
     except ValueError as exc:
         raise DynamicMarketInputError(str(exc)) from exc
-    resolved_ml_id = _resolve_catalog_ml_id(filters)
-    if filters.view_kind or filters.ml_id or filters.cd_market_id:
+    if filters.view_kind:
+        market_selection = _resolve_strategic_market_selection(payload)
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
             view_kind=filters.view_kind,
-            ml_id=resolved_ml_id,
-            cd_market_id=filters.cd_market_id,
+            ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
+            cd_market_id=market_selection.market_id if market_selection.market_kind == "cd" else None,
             atc4=filters.atc4,
             molecule=[],
             analysis_level=analysis_level,
@@ -167,23 +172,15 @@ def _resolve_definition(payload: DynamicMarketRequest):
     )
 
 
-def _resolve_catalog_ml_id(filters: DynamicMarketFilters) -> str | None:
-    """Resolve strategic ML markets from the focus brand when one is present.
-
-    ``ml_id`` remains a compatibility/fallback input for brandless callers, but
-    the strategy market definition is anchored by the focus brand's single
-    catalog ML market.
-    """
-
-    if filters.cd_market_id or not filters.focus_brand_key:
-        return filters.ml_id
-    view_kind = (filters.view_kind or "").strip().lower()
-    if view_kind not in {"market_landscape", "strategic_ml", "ml"}:
-        return filters.ml_id
-    display_brand = get_display_brand(filters.focus_brand_key.strip())
-    if display_brand is None:
-        return filters.ml_id
-    return display_brand.ml_id
+def _resolve_strategic_market_selection(payload: DynamicMarketRequest) -> StrategicMarketSelection:
+    filters = payload.filters
+    return resolve_strategic_market_for_focus(
+        mart_db=config.db_name,
+        view_kind=filters.view_kind,
+        focus_brand_key=filters.focus_brand_key,
+        source=payload.source,
+        measure=payload.measure,
+    )
 
 
 @router.get(

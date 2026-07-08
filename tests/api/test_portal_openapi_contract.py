@@ -107,8 +107,8 @@ def test_dynamic_market_documents_competitive_dynamics_contract() -> None:
     payload = str(operation)
 
     assert "competitive_dynamics" in payload
-    assert "cd_market_id" in payload
-    assert "cd_001" in payload
+    assert "cd_market_id 오름차순 첫 번째" in payload
+    assert "cd_market_id(경쟁구도 ID)" not in payload
 
 
 def test_dynamic_market_documents_field_semantics_and_source_filters() -> None:

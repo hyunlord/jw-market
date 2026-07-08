@@ -128,14 +128,12 @@ top-level `filters.atc4`를 생략하고 `focus_brand_key`를 보내면, 해당 
 |---|---|---|---|
 | `atc4(ATC4 시장 범위)` | string[] | `[]` | 일반뷰 전용 범위. 생략하면 `focus_brand_key`의 모든 ATC4를 사용합니다. 전략뷰에서 보내면 400입니다. |
 | `view_kind` | string/null | null | `market_landscape`/`strategic_ml`/`ml`은 ML 전략뷰, `competitive_dynamics`/`strategic_cd`/`cd`는 CD 전략뷰입니다. 값이 있으면 전략뷰 분기로 들어갑니다. |
-| `ml_id` | string/null | null | ML 전략 시장 id입니다. `focus_brand_key`와 ML view를 함께 보내면 브랜드 catalog의 대표 `ml_id`가 우선될 수 있습니다. |
-| `cd_market_id` | string/null | null | CD 전략 시장 id입니다. 있으면 CD 전략뷰로 계산합니다. |
 | `focus_brand_key` | string/null | null | `filters.atc4` 생략 시 브랜드 기준 ATC4 합집합을 만드는 데 사용합니다. 빈 문자열은 대부분 미입력처럼 처리됩니다. |
 | `analysis_level` | object | 빈 source 객체 | 소스별 필터 딕셔너리입니다. row filter와 값 슬라이스를 같은 source 하위에 넣습니다. |
 
 `filters` 자체를 생략하면 빈 객체로 처리됩니다. `filters:null`은 허용되지 않습니다.
 중첩 list 필드는 생략하면 `[]`, `null`이면 422, 빈 list이면 적용하지 않습니다.
-선택 string 필드(`view_kind`, `ml_id`, `cd_market_id`, `focus_brand_key`)는 missing과 null이 모두 `None`이며,
+선택 string 필드(`view_kind`, `focus_brand_key`)는 missing과 null이 모두 `None`이며,
 빈 문자열은 resolver의 truthy/strip 조건에 따라 미입력 또는 잘못된 id로 처리될 수 있으므로 보내지 않는 것을 권장합니다.
 
 ### 일반뷰 UBIST `analysis_level.ubist`
@@ -160,6 +158,11 @@ mapping에 없거나 비활성인 필드입니다.
 
 전략뷰는 top-level `filters.atc4`를 받지 않습니다. 전략 범위를 더 좁힐 때는
 `analysis_level.ubist.atc4(ATC4 좁히기)`처럼 source 하위의 narrowing 필드를 사용합니다.
+전략 시장 id(`ml_id`, `cd_market_id`)는 공개 요청 필드가 아닙니다. `focus_brand_key`와 `view_kind`만 보내면
+백엔드가 선택한 `source`/`measure`에서 브랜드가 속한 ML 또는 CD 시장을 조회합니다. 같은 브랜드가 여러 시장에
+속하면 시장 id 오름차순 첫 번째를 결정론적으로 사용합니다. 예를 들어 `ml_005, ml_008`이면 `ml_005`,
+`cd_006, cd_007`이면 `cd_006`입니다. `ml_id`나 `cd_market_id`를 요청에 포함하면 schema extra-forbid로
+422 validation error가 납니다.
 전략뷰 전용으로 `class(클래스)`, `mfr(제조사 alias)`, `nhi(NHI alias)`, `atc3/atc4(ATC 좁히기)` 같은
 by_dimension alias 필드를 허용합니다. `facility`, `specialty`, `pairs`, `audit_code` 같은 값 슬라이스 필드는
 일반뷰 전용이므로 전략뷰에서 active 값이 있으면 400입니다.
@@ -339,8 +342,6 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                     "properties": {
                         "focus_brand_key": {"type": "string", "description": "focus_brand_key(선택 브랜드)"},
                         "view_kind": {"type": "string", "enum": ["market_landscape", "competitive_dynamics", "strategic_ml", "strategic_cd", "ml", "cd"]},
-                        "ml_id": {"type": "string", "description": "ml_id(시장조망 ID)"},
-                        "cd_market_id": {"type": "string", "description": "cd_market_id(경쟁구도 ID)"},
                         "analysis_level": {
                             "type": "object",
                             "additionalProperties": False,
@@ -374,7 +375,6 @@ DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
     "measure": "sales",
     "filters": {
         "focus_brand_key": "리바로",
-        "ml_id": "ml_006",
         "view_kind": "market_landscape",
         "analysis_level": {"ubist": {"atc4": ["C10A1"]}},
     },
@@ -441,7 +441,6 @@ COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
     "measure": "sales",
     "filters": {
         "focus_brand_key": "리바로",
-        "cd_market_id": "cd_001",
         "view_kind": "competitive_dynamics",
     },
     "options": {"top_n": 20},
@@ -476,9 +475,14 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
         "description": "IQVIA는 mfr_name_kor/molecule_desc/strength/nhi_type과 audit_code 채널축을 사용합니다.",
         "value": GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE,
     },
-    "market_landscape": {"summary": "전략뷰 Market Landscape: ml_id", "value": DYNAMIC_MARKET_REQUEST_EXAMPLE},
+    "market_landscape": {
+        "summary": "전략뷰 Market Landscape: 브랜드명 기반 자동 시장 결정",
+        "description": "focus_brand_key와 view_kind만 보내면 ML 시장을 내부 조회합니다. 모호하면 ml_id 오름차순 첫 번째를 사용합니다.",
+        "value": DYNAMIC_MARKET_REQUEST_EXAMPLE,
+    },
     "competitive_dynamics": {
-        "summary": "전략뷰 Competitive Dynamics: cd_market_id",
+        "summary": "전략뷰 Competitive Dynamics: 브랜드명 기반 자동 시장 결정",
+        "description": "focus_brand_key와 view_kind만 보내면 CD 시장을 내부 조회합니다. 모호하면 cd_market_id 오름차순 첫 번째를 사용합니다.",
         "value": COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
     },
     "general_iqvia_pack_desc_filter": {

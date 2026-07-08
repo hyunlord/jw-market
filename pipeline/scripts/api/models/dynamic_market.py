@@ -188,8 +188,6 @@ class DynamicMarketFilters(BaseModel):
 
     atc4: list[str] = Field(default_factory=list, description="일반뷰 ATC4 OR 범위. 없으면 focus_brand_key로 단일 ATC4를 추론합니다.", examples=[["C10A1", "C10C0"]])
     view_kind: str | None = Field(default=None, description="전략뷰 종류. market_landscape 또는 competitive_dynamics.", examples=["market_landscape"])
-    ml_id: str | None = Field(default=None, description="전략 market_landscape id.", examples=["ml_006"])
-    cd_market_id: str | None = Field(default=None, description="전략 competitive_dynamics id.", examples=["cd_001"])
     focus_brand_key: str | None = Field(default=None, description="선택 브랜드명. narrowing 후에도 브랜드 자신을 유지할 때 사용합니다.", examples=["리바로"])
     analysis_level: DynamicMarketAnalysisLevel = Field(default_factory=DynamicMarketAnalysisLevel)
 
