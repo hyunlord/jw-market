@@ -1,0 +1,239 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iqvia-general-sidecar-quarterly-wrapper
+  namespace: llmops
+  labels:
+    app: iqvia-general-sidecar
+    component: quarterly-builder
+data:
+  run_iqvia_general_sidecar_quarterly.sh: |-
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    RUN_ID="$(date -u +%Y%m%d%H%M%S)"
+    TARGET_DB="jw_mart_dim_stage_general_refresh_${RUN_ID}"
+    AUDIT_DIR="/tmp/iqvia-general-sidecar-quarterly/${RUN_ID}"
+    MANIFEST_PATH="${AUDIT_DIR}/build_filter_dimension_metric_manifest.json"
+    COMPARISON_PATH="${AUDIT_DIR}/canonical_comparison.json"
+    export RUN_ID TARGET_DB AUDIT_DIR MANIFEST_PATH COMPARISON_PATH
+
+    mkdir -p "${AUDIT_DIR}"
+
+    if [ -d /app ] && [ -f /app/pipeline/scripts/etl/build_filter_dimension_metric.py ]; then
+      cd /app
+    elif [ -f pipeline/scripts/etl/build_filter_dimension_metric.py ]; then
+      :
+    else
+      echo "ABORT: build_filter_dimension_metric.py not found in image"
+      exit 20
+    fi
+
+    echo "IQVIA_GENERAL_SIDECAR_QUARTERLY_START run_id=${RUN_ID} target_db=${TARGET_DB}"
+    test "${MARIADB_DATABASE}" = "jw_mart_d2_stage_20260630_r2"
+
+    python - <<'PY_PREFLIGHT'
+    import os
+    import pymysql
+
+    conn = pymysql.connect(
+        host=os.environ["MARIADB_HOST"],
+        port=int(os.environ.get("MARIADB_PORT", "3306")),
+        user=os.environ["MARIADB_USER"],
+        password=os.environ["MARIADB_PASSWORD"],
+        database=os.environ["MARIADB_DATABASE"],
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DATABASE() AS db")
+            db_name = str(cur.fetchone()["db"])
+            if db_name != "jw_mart_d2_stage_20260630_r2":
+                raise SystemExit(f"ABORT: unexpected database {db_name}")
+            cur.execute("SELECT COUNT(*) AS n FROM mart_general_filter_dimension_metric WHERE source='ubist'")
+            print(f"PREFLIGHT_UBIST_CANONICAL_ROWS={int(cur.fetchone()['n'])}")
+            cur.execute("SELECT COUNT(*) AS n FROM mart_general_filter_dimension_metric WHERE source='iqvia_nsa'")
+            print(f"PREFLIGHT_IQVIA_CANONICAL_ROWS={int(cur.fetchone()['n'])}")
+    finally:
+        conn.close()
+    PY_PREFLIGHT
+
+    python pipeline/scripts/etl/build_filter_dimension_metric.py \
+      --target-db "${TARGET_DB}" \
+      --manifest-path "${MANIFEST_PATH}" \
+      --source iqvia_nsa \
+      --batch-size 200
+
+    python - <<'PY_COMPARE'
+    import json
+    import os
+    from pathlib import Path
+
+    import pymysql
+
+    target_db = os.environ["TARGET_DB"]
+    comparison_path = Path(os.environ["COMPARISON_PATH"])
+    conn = pymysql.connect(
+        host=os.environ["MARIADB_HOST"],
+        port=int(os.environ.get("MARIADB_PORT", "3306")),
+        user=os.environ["MARIADB_USER"],
+        password=os.environ["MARIADB_PASSWORD"],
+        database=os.environ["MARIADB_DATABASE"],
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
+    )
+
+    def quote_id(identifier: str) -> str:
+        return "`" + identifier.replace("`", "``") + "`"
+
+    def coverage(table_expr: str) -> list[dict[str, object]]:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT measure,
+                       dimension_type,
+                       COUNT(*) AS row_count,
+                       COUNT(DISTINCT dimension_value_hash) AS option_count,
+                       MIN(computed_at) AS min_computed_at,
+                       MAX(computed_at) AS max_computed_at
+                FROM {table_expr}
+                WHERE source='iqvia_nsa'
+                GROUP BY measure, dimension_type
+                ORDER BY measure, dimension_type
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    try:
+        canonical_table = "mart_general_filter_dimension_metric"
+        target_table = f"{quote_id(target_db)}.{quote_id('mart_general_filter_dimension_metric')}"
+        with conn.cursor() as cur:
+            cur.execute("SELECT DATABASE() AS db")
+            database = str(cur.fetchone()["db"])
+            cur.execute(f"SELECT COUNT(*) AS n FROM {target_table} WHERE source='iqvia_nsa'")
+            target_rows = int(cur.fetchone()["n"])
+            cur.execute("SELECT COUNT(*) AS n FROM mart_general_filter_dimension_metric WHERE source='iqvia_nsa'")
+            canonical_rows = int(cur.fetchone()["n"])
+            cur.execute("SELECT COUNT(*) AS n FROM mart_general_filter_dimension_metric WHERE source='ubist'")
+            ubist_rows = int(cur.fetchone()["n"])
+
+        canonical = coverage(canonical_table)
+        target = coverage(target_table)
+        canonical_keys = {
+            (str(row["measure"]), str(row["dimension_type"])): {
+                "row_count": int(row["row_count"]),
+                "option_count": int(row["option_count"]),
+            }
+            for row in canonical
+        }
+        target_keys = {
+            (str(row["measure"]), str(row["dimension_type"])): {
+                "row_count": int(row["row_count"]),
+                "option_count": int(row["option_count"]),
+            }
+            for row in target
+        }
+        all_keys = sorted(set(canonical_keys) | set(target_keys))
+        diffs = [
+            {
+                "measure": measure,
+                "dimension_type": dimension_type,
+                "canonical": canonical_keys.get((measure, dimension_type)),
+                "target": target_keys.get((measure, dimension_type)),
+            }
+            for measure, dimension_type in all_keys
+            if canonical_keys.get((measure, dimension_type)) != target_keys.get((measure, dimension_type))
+        ]
+        payload = {
+            "database": database,
+            "target_db": target_db,
+            "canonical_iqvia_rows": canonical_rows,
+            "target_iqvia_rows": target_rows,
+            "canonical_ubist_rows_observed_only": ubist_rows,
+            "canonical_coverage": canonical,
+            "target_coverage": target,
+            "diff_count": len(diffs),
+            "diffs": diffs,
+            "review_required": True,
+            "canonical_auto_apply": False,
+        }
+        comparison_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        print("IQVIA_GENERAL_SIDECAR_COMPARISON=" + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+    finally:
+        conn.close()
+    PY_COMPARE
+
+    echo "IQVIA_GENERAL_SIDECAR_QUARTERLY_DONE run_id=${RUN_ID} target_db=${TARGET_DB} manifest=${MANIFEST_PATH} comparison=${COMPARISON_PATH}"
+    echo "CANONICAL_AUTO_APPLY=false"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: iqvia-general-sidecar-quarterly
+  namespace: llmops
+  labels:
+    app: iqvia-general-sidecar
+    component: quarterly-builder
+spec:
+  suspend: true
+  schedule: "0 3 5 1,4,7,10 *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: iqvia-general-sidecar
+            component: quarterly-builder
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: enabled
+          containers:
+            - name: sidecar-builder
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:v0.9.92-prod-promote-fe87661-20260708113813
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/opt/iqvia-sidecar/run_iqvia_general_sidecar_quarterly.sh"]
+              env:
+                - name: MARIADB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_DATABASE
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: MARIADB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: MARIADB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "2Gi"
+                limits:
+                  cpu: "2"
+                  memory: "6Gi"
+              volumeMounts:
+                - name: wrapper
+                  mountPath: /opt/iqvia-sidecar
+                  readOnly: true
+          volumes:
+            - name: wrapper
+              configMap:
+                name: iqvia-general-sidecar-quarterly-wrapper
+                defaultMode: 0555
