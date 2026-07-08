@@ -37,6 +37,7 @@ DIMENSION_LABELS: dict[str, str] = {
     "mfr": "MFR NAME KOR",
     "molecule_type": "MOLECULE TYPE",
     "molecule_desc": "성분",
+    "pack": "PACK DESC",
     "strength": "STRENGTH",
     "nhi": "NHI TYPE",
 }

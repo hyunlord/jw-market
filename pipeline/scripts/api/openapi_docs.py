@@ -144,9 +144,9 @@ UBIST는 `analysis_level.ubist` 안에서 `atc3`, `atc4`, `seller`, `molecule_st
 값을 넣으면 unsupported/disabled 400이 날 수 있습니다.
 
 IQVIA는 `analysis_level.iqvia` 안에서 `mfr_name_kor`, `molecule_type`, `molecule_desc`,
-`strength`, `nhi_type`를 적용합니다. `pack_desc`는 모델과 API 이름 매핑은 존재하지만,
-현재 코드의 `pack` registry가 비활성인 빌드에서는 값 적용 시 400
-(`analysis_level dimension is disabled...`)입니다. `mfr`, `nhi`, `audit_code`는 모델 필드가 있어도
+`pack_desc`, `strength`, `nhi_type`를 적용합니다. `pack_desc`는 canonical sidecar의
+`dimension_type='pack'` 행을 조회해 PACK DESC 텍스트 단위로 제품 범위를 좁힙니다.
+`mfr`, `nhi`, `audit_code`는 모델 필드가 있어도
 현재 resolver 매핑에는 없으므로 적용 필터로 보내지 마십시오.
 
 다른 source의 객체에 값이 있으면 400입니다. 예를 들어 `source:"iqvia"` 요청에서
@@ -270,7 +270,7 @@ COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
 }
 
 
-PACK_DESC_DISABLED_REQUEST_EXAMPLE: Final = {
+GENERAL_IQVIA_PACK_DESC_FILTER_REQUEST_EXAMPLE: Final = {
     "source": "iqvia",
     "measure": "sales",
     "filters": {
@@ -303,10 +303,10 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
         "summary": "전략뷰 Competitive Dynamics: cd_market_id",
         "value": COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
     },
-    "pack_desc_currently_disabled_error": {
-        "summary": "PACK DESC 적용 시 현재 registry 비활성 빌드의 400 예시",
-        "description": "`pack_desc`는 모델/매핑은 있으나 현재 코드 registry에서 pack이 비활성인 빌드에서는 성공 예시가 아니라 400 예시입니다.",
-        "value": PACK_DESC_DISABLED_REQUEST_EXAMPLE,
+    "general_iqvia_pack_desc_filter": {
+        "summary": "일반뷰 IQVIA PACK DESC 필터",
+        "description": "`analysis_level.iqvia.pack_desc`는 PACK DESC 텍스트를 `dimension_type=pack`으로 매핑해 필터링합니다.",
+        "value": GENERAL_IQVIA_PACK_DESC_FILTER_REQUEST_EXAMPLE,
     },
 }
 
@@ -327,15 +327,6 @@ DYNAMIC_MARKET_ERROR_EXAMPLES: Final = {
             "detail": {
                 "error": "invalid_dynamic_market_request",
                 "message": "analysis_level must match selected source: iqvia_nsa",
-            }
-        },
-    },
-    "pack_disabled": {
-        "summary": "PACK DESC registry 비활성",
-        "value": {
-            "detail": {
-                "error": "invalid_dynamic_market_request",
-                "message": "analysis_level dimension is disabled for dynamic filters: pack_desc",
             }
         },
     },

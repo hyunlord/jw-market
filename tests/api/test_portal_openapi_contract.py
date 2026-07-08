@@ -122,7 +122,8 @@ def test_dynamic_market_documents_field_semantics_and_source_filters() -> None:
     assert "mfr_name_kor" in payload
     assert "molecule_strength" in payload
     assert "PACK DESC" in payload
-    assert "pack_desc_currently_disabled_error" in payload
+    assert "general_iqvia_pack_desc_filter" in payload
+    assert "analysis_level dimension is disabled for dynamic filters: pack_desc" not in payload
     assert "analysis_level must match selected source" in payload
     assert "filters.atc4" in payload
     assert set(operation["requestBody"]["content"]["application/json"]["examples"]) >= {
@@ -131,7 +132,7 @@ def test_dynamic_market_documents_field_semantics_and_source_filters() -> None:
         "general_iqvia_filters",
         "market_landscape",
         "competitive_dynamics",
-        "pack_desc_currently_disabled_error",
+        "general_iqvia_pack_desc_filter",
     }
 
 

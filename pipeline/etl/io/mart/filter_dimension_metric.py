@@ -141,9 +141,9 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             dimension_type="pack",
             display_name="PACK DESC",
             source_columns=("pack_desc",),
-            enabled=False,
+            enabled=True,
             source="iqvia_nsa",
-            notes="PL 결정으로 제외한다. pack free-form 필터는 MVP 범위 밖이다.",
+            notes="PL 결정으로 IQVIA 일반뷰 PACK DESC 분석레벨 필터를 활성화한다.",
         ),
         "strength": DimensionSpec(
             dimension_type="strength",

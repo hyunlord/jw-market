@@ -1774,6 +1774,15 @@ def test_build_dimension_filters_accepts_ubist_atc_narrowing_dimensions() -> Non
     )
 
 
+def test_build_dimension_filters_accepts_iqvia_pack_desc_dimension() -> None:
+    filters = resolvers.build_dimension_filters(
+        analysis_level={"iqvia": {"pack_desc": ["PFS 162MG/0.9ML"]}},
+        source="iqvia_nsa",
+    )
+
+    assert filters == (DimensionFilter("pack", ("PFS 162MG/0.9ML",)),)
+
+
 def test_strategic_resolver_accepts_ubist_atc4_narrowing_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
         assert params[:3] == ("ml_003", "ubist", "sales")
@@ -2256,6 +2265,44 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
 
     assert metrics.market_size == 10.0
     assert any("mart_general_filter_dimension_metric" in sql for sql in calls)
+
+
+def test_iqvia_pack_desc_filter_uses_pack_sidecar_dimension(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    expected_hash = hashlib.sha256("pfs 162mg/0.9ml".encode("utf-8")).hexdigest()
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        calls.append((sql, params))
+        if "mart_general_filter_dimension_metric" in sql:
+            assert "dimension_type = %s" in sql
+            assert "dimension_value_hash" in sql
+            assert "pack" in params
+            assert expected_hash in params
+            return [
+                {
+                    "brand_key": "악템라",
+                    "brand_name": "악템라",
+                    "atc4_code": "M01C0",
+                    "product_code": "pfs162",
+                    "dimension_type": "pack",
+                    "raw_value_history": json.dumps({"2026-Q1": 100.0}),
+                }
+            ]
+        return [{"brand_key": "악템라", "atc4_code": "M01C0", "unit_label": "KRW"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("악템라", "악템라", "M01C0"),),
+        source="iqvia_nsa",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+        dimension_filters=(DimensionFilter("pack", ("PFS 162MG/0.9ML",)),),
+    )
+
+    assert metrics.market_size == 100.0
+    assert metrics.brands[0].brand_name == "악템라"
+    assert any("mart_general_filter_dimension_metric" in sql for sql, _params in calls)
 
 
 def test_unfiltered_general_aggregation_keeps_metric_fetch_slim(monkeypatch) -> None:
