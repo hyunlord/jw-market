@@ -5,11 +5,35 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+def _dict(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _rename(data: dict[str, Any], source: str, target: str) -> None:
+    if source in data and target not in data:
+        data[target] = data.pop(source)
+
+
+def _none_to_empty_lists(data: dict[str, Any], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        if data.get(key) is None:
+            data[key] = []
+
+
 class AtcFilter(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     atc3: list[str] = Field(default_factory=list, description="ATC3 코드 멀티 선택(OR). 예: ['C10A']")
     atc4: list[str] = Field(default_factory=list, description="ATC4 코드 멀티 선택(OR). 예: ['C10A1']")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_null_lists(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        _none_to_empty_lists(data, ("atc3", "atc4"))
+        return data
 
 
 class UbistAnalysisLevel(BaseModel):
@@ -23,6 +47,16 @@ class UbistAnalysisLevel(BaseModel):
     form: list[str] = Field(default_factory=list, description='제형 멀티선택. [입력] 예 ["정제","캡슐"]')
     route: list[str] = Field(default_factory=list, description='투여경로 멀티선택. [입력] 예 ["경구","주사"]')
     reimbursement: list[str] = Field(default_factory=list, description='급여구분 멀티선택. [입력] 예 ["급여","비급여"]')
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        _rename(data, "moleculeStrength", "molecule_strength")
+        _none_to_empty_lists(data, ("seller", "molecule", "molecule_strength", "form", "route", "reimbursement"))
+        return data
 
 
 class IqviaAnalysisLevel(BaseModel):
@@ -41,6 +75,24 @@ class IqviaAnalysisLevel(BaseModel):
         description='IQVIA Audit Code(채널) 멀티선택. 비어 있으면 전체 Audit Code를 포함합니다. [입력] 예 ["KHPA"].',
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        for source, target in (
+            ("mfrNameKor", "mfr_name_kor"),
+            ("moleculeType", "molecule_type"),
+            ("moleculeDesc", "molecule_desc"),
+            ("packDesc", "pack_desc"),
+            ("nhiType", "nhi_type"),
+            ("auditCode", "audit_code"),
+        ):
+            _rename(data, source, target)
+        _none_to_empty_lists(data, ("mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"))
+        return data
+
 
 class AnalysisLevel(BaseModel):
     """분석레벨. UBIST/IQVIA 소스별 차원이 다르므로 데이터 소스에 맞는 쪽을 사용한다."""
@@ -56,6 +108,17 @@ class AnalysisLevel(BaseModel):
         description="IQVIA 소스 분석레벨(MFR/MOLECULE/STRENGTH/NHI). [프론트] IQVIA 탭 하위 멀티선택 그룹.",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_null_sources(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        for key in ("ubist", "iqvia"):
+            if data.get(key) is None:
+                data[key] = {}
+        return data
+
 
 class ChannelFilter(BaseModel):
     """PPTX p4 채널 필터. UBIST는 종별/진료과, IQVIA는 AUDIT CODE를 사용한다."""
@@ -65,6 +128,17 @@ class ChannelFilter(BaseModel):
     visit_location: list[str] = Field(default_factory=list, description="종별(상급종병/종병/병원/의원 등) 멀티선택.")
     specialty: list[str] = Field(default_factory=list, description='진료과 멀티선택. [입력] 예 ["내과","순환기내과"].')
     audit_code: list[str] = Field(default_factory=list, description="IQVIA AUDIT CODE 멀티선택.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        _rename(data, "visitLocation", "visit_location")
+        _rename(data, "auditCode", "audit_code")
+        _none_to_empty_lists(data, ("visit_location", "specialty", "audit_code"))
+        return data
 
 
 class MarketFilter(BaseModel):
@@ -86,9 +160,16 @@ class MarketFilter(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_public_channel_axis(cls, value: Any) -> Any:
-        if isinstance(value, Mapping) and "channel_axis" in value:
+        data = _dict(value)
+        if data is None:
+            return value
+        if "channel_axis" in data:
             raise ValueError("channel_axis has moved to filters.analysis_level.<source>")
-        return value
+        _rename(data, "analysisLevel", "analysis_level")
+        for key in ("atc", "analysis_level", "channel"):
+            if data.get(key) is None:
+                data[key] = {}
+        return data
 
 
 class CsdTimeseriesWindow(BaseModel):
@@ -122,9 +203,16 @@ class BrandActivityBaseRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_public_channel_axis(cls, value: Any) -> Any:
-        if isinstance(value, Mapping) and "channel_axis" in value:
+        data = _dict(value)
+        if data is None:
+            return value
+        if "channel_axis" in data:
             raise ValueError("channel_axis has moved to filters.analysis_level.<source>")
-        return value
+        _rename(data, "selectedBrand", "selected_brand")
+        for key in ("filters", "filter"):
+            if data.get(key) is None:
+                data[key] = {}
+        return data
 
 
 class CsdTimeseriesRequest(BrandActivityBaseRequest):
@@ -135,6 +223,16 @@ class CsdTimeseriesRequest(BrandActivityBaseRequest):
         description="추세 차트 표현 방식. [입력] absolute=절대값, share=시장 총합 대비 점유율.",
     )
     window: CsdTimeseriesWindow | None = Field(default=None, description="선택 조회 기간. 미지정 시 서버 기본 기간.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_null_mode(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        if data.get("mode") is None:
+            data.pop("mode", None)
+        return data
 
 
 class BrandActivityTopicsRequest(BrandActivityBaseRequest):
@@ -147,6 +245,18 @@ class BrandActivityTopicsRequest(BrandActivityBaseRequest):
     period_start: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
     period_end: str | None = Field(default=None, description="키워드 집계 종료월 YYYY-MM.")
     top_n: int = Field(default=5, ge=1, le=10, description="브랜드 카드에 보여줄 상위 토픽 개수. [입력] 1~10, 기본 5.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        for source, target in (("topN", "top_n"), ("periodStart", "period_start"), ("periodEnd", "period_end")):
+            _rename(data, source, target)
+        if data.get("top_n") is None:
+            data.pop("top_n", None)
+        return data
 
 
 class InterestRxWeights(BaseModel):
@@ -170,3 +280,13 @@ class BrandActivityInterestRxRequest(BrandActivityBaseRequest):
         default=None,
         description="범주별 가중치. 미지정 시 서버 기본 가중치로 score를 계산.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        for source, target in (("periodStart", "period_start"), ("periodEnd", "period_end"), ("visitLocation", "visit_location")):
+            _rename(data, source, target)
+        return data

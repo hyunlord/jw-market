@@ -121,6 +121,48 @@ def test_brand_activity_folds_analysis_level_audit_code_into_internal_slice(monk
     assert captured["payload"]["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
+def test_brand_activity_accepts_bff_camel_case_payload(monkeypatch) -> None:
+    captured: dict[str, dict] = {}
+
+    def fake_get_topic_brand_payload(payload: dict) -> dict:
+        captured["payload"] = payload
+        return {"brands": []}
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+
+    response = TestClient(app).post(
+        "/jw-brand-activity-mock/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selectedBrand": "리바로",
+            "topN": None,
+            "filters": {
+                "atc": {"atc3": None, "atc4": ["C10A1"]},
+                "analysisLevel": {
+                    "iqvia": {
+                        "auditCode": ["khpa"],
+                        "mfrNameKor": None,
+                        "moleculeDesc": None,
+                        "moleculeType": None,
+                        "nhiType": None,
+                        "packDesc": None,
+                        "strength": None,
+                    },
+                    "ubist": None,
+                },
+                "channel": None,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["selected_brand"] == "리바로"
+    assert captured["payload"]["top_n"] == 5
+    assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
+    assert captured["payload"]["filters"]["analysis_level"]["iqvia"]["audit_code"] == ["khpa"]
+    assert captured["payload"]["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
+
+
 def test_brand_activity_rejects_legacy_channel_axis_fields() -> None:
     client = TestClient(app)
     base_payload = {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}}
