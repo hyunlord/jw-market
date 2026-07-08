@@ -118,19 +118,19 @@ root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니�
 `iqvia_nsa`로 정규화됩니다. `measure`는 UBIST에서 `sales`, `volume`, IQVIA에서
 `sales`, `unit`, `counting_unit`, `dosage_unit`만 유효합니다.
 
-빈 `analysis_level` 차원은 그 차원을 적용하지 않는 전체 선택(select-all)입니다. 단, 일반뷰 시장 범위인
-top-level `filters.atc4`는 select-all이 아닙니다. 없으면 `focus_brand_key`로 단일 ATC4를 추론하고,
-브랜드가 여러 ATC4에 걸치면 명시적으로 `filters.atc4`를 보내야 합니다.
+빈 `analysis_level` 차원은 그 차원을 적용하지 않는 전체 선택(select-all)입니다. 일반뷰 시장 범위인
+top-level `filters.atc4`를 생략하고 `focus_brand_key`를 보내면, 해당 브랜드가 속한 모든 ATC4를
+합집합으로 사용합니다. `focus_brand_key`와 `filters.atc4`가 모두 없으면 시장 범위를 정할 수 없어 400입니다.
 
 ### 공통 `filters` 필드
 
 | 필드 | 타입 | 기본값 | 동작 |
 |---|---|---|---|
-| `atc4(ATC4 시장 범위)` | string[] | `[]` | 일반뷰 전용 범위. 전략뷰에서 보내면 400입니다. |
+| `atc4(ATC4 시장 범위)` | string[] | `[]` | 일반뷰 전용 범위. 생략하면 `focus_brand_key`의 모든 ATC4를 사용합니다. 전략뷰에서 보내면 400입니다. |
 | `view_kind` | string/null | null | `market_landscape`/`strategic_ml`/`ml`은 ML 전략뷰, `competitive_dynamics`/`strategic_cd`/`cd`는 CD 전략뷰입니다. 값이 있으면 전략뷰 분기로 들어갑니다. |
 | `ml_id` | string/null | null | ML 전략 시장 id입니다. `focus_brand_key`와 ML view를 함께 보내면 브랜드 catalog의 대표 `ml_id`가 우선될 수 있습니다. |
 | `cd_market_id` | string/null | null | CD 전략 시장 id입니다. 있으면 CD 전략뷰로 계산합니다. |
-| `focus_brand_key` | string/null | null | 브랜드 기준 기본 ATC4/시장 해석에 사용합니다. 빈 문자열은 대부분 미입력처럼 처리됩니다. |
+| `focus_brand_key` | string/null | null | `filters.atc4` 생략 시 브랜드 기준 ATC4 합집합을 만드는 데 사용합니다. 빈 문자열은 대부분 미입력처럼 처리됩니다. |
 | `analysis_level` | object | 빈 source 객체 | 소스별 필터 딕셔너리입니다. row filter와 값 슬라이스를 같은 source 하위에 넣습니다. |
 
 `filters` 자체를 생략하면 빈 객체로 처리됩니다. `filters:null`은 허용되지 않습니다.
@@ -463,7 +463,7 @@ GENERAL_IQVIA_PACK_DESC_FILTER_REQUEST_EXAMPLE: Final = {
 DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
     "general_baseline": {
         "summary": "일반뷰 기본 조회: ATC4만 지정",
-        "description": "UBIST 일반뷰에서 필터 없이 ATC4 범위만 계산합니다.",
+        "description": "UBIST 일반뷰에서 명시한 ATC4 범위를 계산합니다. ATC4를 생략하면 focus_brand_key의 ATC4 전체가 범위가 됩니다.",
         "value": GENERAL_BASELINE_REQUEST_EXAMPLE,
     },
     "general_ubist_filters": {

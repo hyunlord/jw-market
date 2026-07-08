@@ -196,10 +196,9 @@ class GeneralViewResolver:
         """Resolve the general-view default market for a selected brand.
 
         The D-1 general API keeps the existing ATC4 path as the explicit market
-        definition. When a caller only supplies a focus brand, we infer a
-        default only if the brand has one unambiguous ATC4 bucket for the source
-        and measure. Brands spanning multiple ATC4s must still send ATC4
-        explicitly so the response cannot silently choose the wrong market.
+        definition. When a caller only supplies a focus brand, missing ATC4
+        means select all ATC4 buckets attached to that brand for the source and
+        measure.
         """
 
         rows = db.fetch_all(
@@ -214,13 +213,9 @@ class GeneralViewResolver:
             (focus_brand_key, source, measure),
         )
         atc4_codes = tuple(str(row["atc4_code"]) for row in rows if row.get("atc4_code"))
-        if len(atc4_codes) == 1:
-            return atc4_codes
         if not atc4_codes:
             raise DynamicMarketInputError(f"focus brand has no general-view ATC4 for {source}/{measure}: {focus_brand_key}")
-        raise DynamicMarketInputError(
-            f"focus brand spans multiple ATC4 buckets; send filters.atc4 explicitly: {focus_brand_key}"
-        )
+        return atc4_codes
 
     def _market_catalog_row_for_focus(
         self,

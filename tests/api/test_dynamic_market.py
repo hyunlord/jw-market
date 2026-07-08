@@ -1850,6 +1850,37 @@ def test_default_focus_brand_requires_one_unambiguous_atc4(monkeypatch) -> None:
     assert definition.focus_brand_key == "brand-a"
 
 
+def test_default_focus_brand_uses_all_atc4_when_brand_spans_multiple_buckets(monkeypatch) -> None:
+    resolver = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart")
+    brand_query_params: list[str] = []
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...] | list[str]) -> list[dict]:
+        if "SELECT DISTINCT atc4_code" in sql:
+            return [{"atc4_code": "A10A1"}, {"atc4_code": "A10A3"}]
+        brand_query_params.extend(params)
+        return [
+            {"brand_key": "brand-a", "brand_name": "Brand A", "atc4_code": "A10A1"},
+            {"brand_key": "brand-a", "brand_name": "Brand A", "atc4_code": "A10A3"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all", fake_fetch_all)
+    definition = resolver.resolve(
+        atc4=[],
+        molecule=[],
+        analysis_level=None,
+        focus_brand_key="brand-a",
+        source="ubist",
+        measure="sales",
+    )
+
+    assert definition.filter_echo["atc4"] == ["A10A1", "A10A3"]
+    assert brand_query_params == ["ubist", "sales", "A10A1", "A10A3"]
+    assert [(brand.brand_key, brand.atc4_code) for brand in definition.brands] == [
+        ("brand-a", "A10A1"),
+        ("brand-a", "A10A3"),
+    ]
+
+
 def test_general_resolver_omits_inactive_channel_axis_from_identity_echo(monkeypatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
         assert "channel_axis" not in str(sql).lower()
