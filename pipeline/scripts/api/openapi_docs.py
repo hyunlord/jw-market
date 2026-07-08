@@ -142,17 +142,12 @@ top-level `filters.atc4`를 생략하고 `focus_brand_key`를 보내면, 해당 
 `molecule_strength(성분용량)`, `form(제형)`, `route(투여경로)`, `reimbursement(급여구분)`,
 `facility(종별)`, `specialty(진료과)`, `pairs(종별×진료과 pair)`.
 
-일반뷰 Swagger에서는 `class`, `molecule`, `strength_pack`, `ox_gx`를 숨깁니다. 이들은 일반 resolver
-mapping에 없거나 비활성인 필드입니다.
-
 ### 일반뷰 IQVIA `analysis_level.iqvia`
 
 허용 키: `mfr_name_kor(제조사명)`, `molecule_type(성분구분)`, `molecule_desc(성분명)`,
 `pack_desc(PACK DESC)`, `strength(함량)`, `nhi_type(NHI 구분)`, `audit_code(IQVIA audit code)`.
 `pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행을 조회해 PACK DESC 텍스트 단위로 제품 범위를 좁힙니다.
 `audit_code`는 row filter가 아니라 raw `audit_code_matrix` 값 슬라이스입니다. missing/빈 배열이면 전체 audit code를 포함합니다.
-
-일반뷰 Swagger에서는 중복/비활성 입력인 `mfr`, `nhi`를 숨깁니다.
 
 ### 전략뷰 `analysis_level`
 
@@ -561,16 +556,7 @@ DYNAMIC_MARKET_RESPONSES: Final = {
 BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
     "atc": {"atc4": ["C10A1"]},
     "analysis_level": {
-        "ubist": {
-            "seller": ["JW중외제약"],
-            "molecule_strength": ["pitavastatin calcium 2mg [470901ATB]"],
-        },
         "iqvia": {
-            "mfr_name_kor": ["제이더블유중외제약"],
-            "molecule_type": ["SINGLE"],
-            "molecule_desc": ["PITAVASTATIN"],
-            "strength": ["2MG"],
-            "nhi_type": ["NHI"],
             "audit_code": ["KPA", "KHPA"],
         },
     },
@@ -582,25 +568,112 @@ BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
 
 
 BRAND_ACTIVITY_FILTER_DESCRIPTION: Final = """
-Brand-Activity 계열은 Dynamic-Market과 같은 시장 필터 개념을 공유하지만 request model은 별도입니다.
+Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지만 request model은 별도입니다.
 
-| 구분 | Dynamic-Market | Brand-Activity |
-|---|---|---|
-| ATC4 위치 | `filters.atc4` | `filters.atc4` |
-| source 위치 | 최상위 `source` 필수/기본값 | endpoint/service가 선택 브랜드와 필터에서 해석 |
-| 분석레벨 위치 | `filters.analysis_level.ubist/iqvia` | `filters.analysis_level.ubist/iqvia` |
-| 채널축 위치 | `filters.analysis_level.{source}` 하위 value-slice 필드 | `filters.analysis_level.iqvia.audit_code` |
-| unknown field | top-level/nested 대부분 거절(`extra=forbid`) | top-level은 ignore, nested filter는 allow |
-| legacy 필터 | 없음 | `filters`가 비면 `filter`를 대신 사용 |
+- **source 입력은 없습니다.** Rx/브랜드 랭킹 쪽은 서버 코드의 `iqvia_nsa` source를 사용하고, 활동·키워드 쪽은 CSD/keyword 테이블을 결합합니다.
 
-Brand-Activity의 `filters:null`/`filter:null`은 validation error입니다. 생략하면 빈 필터 객체입니다.
-`filters`와 `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다. 일반뷰 handler는
-`filters.atc.atc4`를 flat `filters.atc4`로 정규화해 시장 id로 사용합니다. 기존 flat `filters.atc4`도 호환됩니다.
-옛 `channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
-Dynamic-Market 전략뷰와 마찬가지로 전략 시장 멤버십 자체는 catalog 정의를 사용하며, 요청 시점의 추가 narrowing은
-ATC 계열 선택만 공개 계약으로 둡니다. Brand-Activity의 `analysis_level`은 일반뷰 시장 필터와 IQVIA audit_code
-값 슬라이스를 표현하는 입력 표면입니다.
+- **시장 범위는 ATC4입니다.** `filters.atc4`를 보내거나, BFF 호환 입력인 `filters.atc.atc4`를 보내면 서버가 flat `filters.atc4`로 정규화합니다.
+
+- **지원되는 analysis_level 입력은 IQVIA audit code뿐입니다.** 채널축 값 슬라이스는 `filters.analysis_level.iqvia.audit_code`로 보냅니다. 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다.
+
+- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 토픽/interest 행을 자르는 필터입니다. `filters.channel.visit_location`과 `filters.channel.specialty`도 호환 입력으로 flat 필드에 정규화됩니다.
+
+- **missing/null 처리:** `filters`와 `filter`를 생략하면 빈 필터 객체입니다. `filters:null` 또는 `filter:null`은 validation error입니다. `filters`와 legacy `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다.
+
+- **unknown field 처리:** Brand-Activity request top-level은 알 수 없는 필드를 무시하고, 중첩 필터 객체는 호환성을 위해 추가 필드를 보존할 수 있습니다.
+
+- **PACK DESC:** `pack_desc`는 Dynamic-Market IQVIA 분석레벨 필터입니다. Brand-Activity 처리 경로에서 사용하지 않습니다.
+
+`channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
 """
+
+
+BRAND_ACTIVITY_IQVIA_ANALYSIS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "audit_code": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "IQVIA audit code 값 슬라이스. 예: KPA, KHPA. 생략하거나 빈 배열이면 전체 audit code입니다.",
+        },
+    },
+}
+
+
+BRAND_ACTIVITY_FILTER_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "일반뷰 시장 ATC4. 예: C10A1."},
+        "atc": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {
+                "atc4": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "BFF 호환 nested ATC4. 서버가 filters.atc4로 정규화합니다.",
+                },
+            },
+        },
+        "analysis_level": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"iqvia": BRAND_ACTIVITY_IQVIA_ANALYSIS_SCHEMA},
+            "description": "Brand-Activity 공개 필터에서는 IQVIA audit_code만 사용합니다.",
+        },
+        "channel": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {
+                "audit_code": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Legacy IQVIA audit_code shortcut. analysis_level.iqvia.audit_code로 정규화합니다.",
+                },
+                "visit_location": {"type": "array", "items": {"type": "string"}, "description": "Legacy 키워드 종별 행 필터."},
+                "specialty": {"type": "array", "items": {"type": "string"}, "description": "Legacy 키워드 진료과 행 필터."},
+            },
+        },
+        "visit_location": {"type": "array", "items": {"type": "string"}, "description": "키워드 종별 행 필터."},
+        "specialty": {"type": "array", "items": {"type": "string"}, "description": "키워드 진료과 행 필터."},
+        "interest": {"type": "array", "items": {"type": "string"}, "description": "키워드 관심도 행 필터."},
+        "prescription_evolution": {"type": "array", "items": {"type": "string"}, "description": "처방 변화 행 필터."},
+        "period_start": {"type": "string", "description": "행 필터 시작월 YYYY-MM."},
+        "period_end": {"type": "string", "description": "행 필터 종료월 YYYY-MM."},
+    },
+}
+
+
+BRAND_ACTIVITY_BASE_REQUEST_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": True,
+    "required": ["selected_brand"],
+    "properties": {
+        "view": {"type": "string", "enum": ["general", "strategic_ml"], "default": "general"},
+        "selected_brand": {"type": "string", "description": "선택 브랜드. 예: 리바로."},
+        "filters": BRAND_ACTIVITY_FILTER_SCHEMA,
+        "filter": {**BRAND_ACTIVITY_FILTER_SCHEMA, "description": "Legacy 단수 필터 입력. 신규 호출은 filters를 사용합니다."},
+    },
+}
+
+
+def brand_activity_request_body(extra_properties: dict[str, object], example: dict[str, object]) -> dict[str, object]:
+    return {
+        "content": {
+            "application/json": {
+                "schema": {
+                    **BRAND_ACTIVITY_BASE_REQUEST_SCHEMA,
+                    "properties": {
+                        **BRAND_ACTIVITY_BASE_REQUEST_SCHEMA["properties"],
+                        **extra_properties,
+                    },
+                },
+                "example": example,
+            }
+        }
+    }
 
 
 BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE: Final = {

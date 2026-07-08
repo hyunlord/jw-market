@@ -46,6 +46,25 @@ def test_brand_activity_filter_schema_exposes_nested_descriptions() -> None:
     assert "channel_axis" not in schemas["MarketFilter"]["properties"]
 
 
+def test_brand_activity_public_request_schema_is_iqvia_only() -> None:
+    operation = app.openapi()["paths"]["/api/brand-activity/topics"]["post"]
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    payload = str(operation)
+
+    assert "iqvia_nsa" in payload
+    assert "filters.analysis_level.iqvia.audit_code" in payload
+    assert "filters.atc.atc4" in payload
+    assert "Brand-Activity 처리 경로에서 사용하지 않습니다" in payload
+
+    schema_text = str(request_schema)
+    assert "ubist" not in schema_text
+    assert "seller" not in schema_text
+    assert "pack_desc" not in schema_text
+    assert "audit_code" in schema_text
+    assert "visit_location" in schema_text
+    assert "specialty" in schema_text
+
+
 def test_brand_activity_topics_response_documents_live_scope_and_brand_fields() -> None:
     response_schema = app.openapi()["paths"]["/api/brand-activity/topics"]["post"]["responses"]["200"]
     data_schema = response_schema["content"]["application/json"]["schema"]["properties"]["data"]["properties"]
@@ -93,6 +112,7 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
     )
     assert "audit_code" not in strategic["iqvia"]["properties"]
     assert "전략뷰 narrowing은 ATC만 지원" in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
+    assert "Swagger에서는" not in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
 
 
 def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatch) -> None:

@@ -43,6 +43,7 @@ from pipeline.scripts.api.openapi_docs import (
     BRAND_ACTIVITY_TAG,
     BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE,
     BRAND_ACTIVITY_TOPICS_RESPONSES,
+    brand_activity_request_body,
 )
 
 
@@ -89,7 +90,20 @@ def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
-    openapi_extra={"requestBody": {"content": {"application/json": {"example": BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE}}}},
+    openapi_extra={
+        "requestBody": brand_activity_request_body(
+            {
+                "visit_location": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 종별 행 필터."},
+                "specialty": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 진료과 행 필터."},
+                "interest": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 관심도 행 필터."},
+                "prescription_evolution": {"type": ["string", "array"], "items": {"type": "string"}, "description": "처방 변화 행 필터."},
+                "period_start": {"type": "string", "description": "행 필터 시작월 YYYY-MM."},
+                "period_end": {"type": "string", "description": "행 필터 종료월 YYYY-MM."},
+                "top_n": {"type": "integer", "description": "브랜드 카드별 상위 토픽 개수. 1~10으로 clamp됩니다."},
+            },
+            BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE,
+        )
+    },
     responses=BRAND_ACTIVITY_TOPICS_RESPONSES,
 )
 def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str, JsonValue]:
@@ -121,7 +135,21 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
-    openapi_extra={"requestBody": {"content": {"application/json": {"example": BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE}}}},
+    openapi_extra={
+        "requestBody": brand_activity_request_body(
+            {
+                "mode": {"type": "string", "enum": ["absolute", "share"], "default": "absolute"},
+                "window": {
+                    "type": "object",
+                    "properties": {
+                        "start": {"type": "string", "description": "조회 시작 분기 또는 월. 예: 2024-Q1, 2024-01."},
+                        "end": {"type": "string", "description": "조회 종료 분기 또는 월. 예: 2025-Q4, 2025-12."},
+                    },
+                },
+            },
+            BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE,
+        )
+    },
     responses=BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES,
 )
 def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, JsonValue]:
@@ -147,7 +175,7 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
         "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 활동량 rank series를 제공합니다."
     ),
     response_model=None,
-    openapi_extra={"requestBody": {"content": {"application/json": {"example": CSD_ACTIVITY_SERIES_EXAMPLE}}}},
+    openapi_extra={"requestBody": brand_activity_request_body({}, CSD_ACTIVITY_SERIES_EXAMPLE)},
 )
 def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dict[str, JsonValue]:
     """Return Section 1 CSD activity volume, share, and rank time series."""
@@ -178,7 +206,18 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
-    openapi_extra={"requestBody": {"content": {"application/json": {"example": BRAND_ACTIVITY_INTEREST_RX_REQUEST_EXAMPLE}}}},
+    openapi_extra={
+        "requestBody": brand_activity_request_body(
+            {
+                "visit_location": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 종별 행 필터."},
+                "specialty": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 진료과 행 필터."},
+                "period_start": {"type": "string", "description": "조회 시작월 YYYY-MM."},
+                "period_end": {"type": "string", "description": "조회 종료월 YYYY-MM."},
+                "weights": {"type": "object", "description": "interest/rx_frequency score 가중치."},
+            },
+            BRAND_ACTIVITY_INTEREST_RX_REQUEST_EXAMPLE,
+        )
+    },
     responses=BRAND_ACTIVITY_INTEREST_RX_RESPONSES,
 )
 def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
