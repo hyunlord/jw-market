@@ -900,6 +900,6 @@ def period_to_month_index(period: str) -> int | None:
 
 
 def month_distance(start: str, end: str) -> int:
-    """Return elapsed month count between two ``YYYY-MM`` labels."""
+    """Return elapsed months between supported month or quarter labels."""
 
     return period_distance(start, end)

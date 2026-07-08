@@ -18,6 +18,7 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
     collect_ubist_channel_latest_totals,
     compute_cagr,
     compute_hhi,
+    month_distance,
 )
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
@@ -53,6 +54,18 @@ def test_compute_cagr_accepts_iqvia_quarter_periods() -> None:
     )
 
     assert compute_cagr(series) == 21.0
+
+
+def test_month_distance_accepts_month_and_quarter_periods() -> None:
+    assert month_distance("2024-01", "2024-12") == 11
+    assert month_distance("2025-Q1", "2026-Q2") == 15
+
+
+def test_cause_time_cagr_helpers_accept_iqvia_quarter_periods() -> None:
+    history = {"2025-Q1": 100.0, "2026-Q2": 133.1}
+
+    assert cause_time.brand_cagr(history) == pytest.approx(25.70207430874425)
+    assert cause_time.period_years(history) == 1.25
 
 
 def test_aggregate_rows_when_period_range_limits_history() -> None:
