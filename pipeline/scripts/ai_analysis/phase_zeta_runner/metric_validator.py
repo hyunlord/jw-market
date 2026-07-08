@@ -33,6 +33,12 @@ NUMBER_PATTERNS = [
         "low_priority": False,
     },
     {
+        "name": "plain_decimal",
+        "pattern": re.compile(r"(?<![\d,])(-?\d+\.\d+)(?!\s*[%\d,])"),
+        "type": "float",
+        "low_priority": False,
+    },
+    {
         "name": "plain_int",
         "pattern": re.compile(r"(?<![\d,.])(\d{1,6})(?![\d,.])"),
         "type": "int",
@@ -59,7 +65,7 @@ PREDICTION_NEWS_TRIGGER_RE = re.compile(
     re.IGNORECASE,
 )
 NUMERIC_EVIDENCE_TAG_RE = re.compile(
-    r"\d[\d,]*(?:\.\d+)?\s*\((?:ML|CD|Market\s+Landscape|Competitive\s+Dynamics)\s*·\s*[A-Z]+",
+    r"\d[\d,]*(?:\.\d+)?\s*(?:KRW|원|₩)?\s*\([^)]*(?:ML|CD|Market\s+Landscape|Competitive\s+Dynamics|UBIST|IQVIA)",
     re.IGNORECASE,
 )
 NUMERIC_EVIDENCE_VALUE_RE = re.compile(r"(?<![\d,.])(\d+(?:,\d{3})*(?:\.\d+)?)(?![\d,.])")
@@ -403,7 +409,8 @@ def _view_label_parts_from_path(bundle: dict, matched_path: str | None) -> tuple
 
 
 def _has_view_label(text: str, display: str, source: str) -> bool:
-    return bool(re.search(rf"{re.escape(display)}\s*·\s*{re.escape(source.upper())}\s*기준", text or "", re.I))
+    del display
+    return bool(re.search(rf"(?<![A-Z0-9]){re.escape(source.upper())}(?![A-Z0-9])", text or "", re.I))
 
 
 def _is_ci_metadata_path(matched_path: str | None) -> bool:
@@ -475,6 +482,8 @@ def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValid
     bundle_index = build_bundle_path_index(bundle)
     for stage, result in stage_results.items():
         for item in result.extracted:
+            if item.get("low_priority"):
+                continue
             matched_path = _source_aware_matched_path(bundle, item, bundle_index)
             if _is_ci_metadata_path(matched_path):
                 continue
@@ -490,7 +499,7 @@ def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValid
                     item.get("context") or "view_label_policy",
                     "market_metric_missing_view_label",
                     str(item.get("raw_text") or ""),
-                    f"market metric 수치에는 '{display} · {source} 기준' View/source 표기가 필요합니다.",
+                    f"market metric 수치에는 '{source}' 출처 표기가 필요합니다.",
                 )
             )
     return issues

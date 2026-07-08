@@ -22,6 +22,7 @@ def test_extract_percent():
     extracted = extract_numbers("YoY +34.87% 성장, M/S 4.13%")
     assert any(item["value"] == pytest.approx(34.87) and item["pattern"] == "percent" for item in extracted)
     assert any(item["value"] == pytest.approx(4.13) and item["pattern"] == "percent" for item in extracted)
+    assert not [item for item in extracted if item["pattern"] == "plain_decimal"]
 
 
 def test_bundle_path_matching():
@@ -278,6 +279,32 @@ def test_market_metric_without_view_label_is_rejected():
     assert any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
 
 
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "IQVIA 매출 기준",
+        "Market Landscape · IQVIA 기준",
+        "IQVIA기준",
+        "iqvia sales basis",
+    ],
+)
+def test_market_metric_accepts_source_only_label(source_text: str):
+    parsed_output = {
+        "phenomenon": {
+            "title": f"페린젝트 M/S 58.82% ({source_text})",
+            "body": "",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
 def test_view_label_policy_ignores_forecast_ci_metadata_values():
     bundle = {
         "forecast_simulation": {
@@ -296,6 +323,27 @@ def test_view_label_policy_ignores_forecast_ci_metadata_values():
         {
             "title": "95% 신뢰구간",
             "body": "95% CI 기준으로 폭을 제시합니다.",
+            "bullets": [],
+        },
+        bundle_index,
+        RunnerConfig.default_for_tests().validator,
+    )
+
+    issues = validate_view_label_policy(bundle, {"prediction": stage_result})
+
+    assert not [
+        item for item in issues if item["pattern"] == "market_metric_missing_view_label"
+    ]
+
+
+def test_view_label_policy_ignores_low_priority_numbers():
+    bundle = _duplicate_source_metric_bundle()
+    bundle_index = build_bundle_path_index(bundle)
+    stage_result = validate_stage_output(
+        "prediction",
+        {
+            "title": "IQVIA 기준 예측",
+            "body": "2026년 1년 후 3년 후 5년 후 흐름을 설명합니다.",
             "bullets": [],
         },
         bundle_index,
@@ -400,6 +448,60 @@ def test_prediction_numeric_evidence_matches_market_or_simulation_basis():
     }
 
     result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_prediction_numeric_evidence_matches_source_only_basis():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "수치 기반 예측",
+            "body": "시장 지표를 근거로 완만한 성장이 예상됩니다.",
+            "bullets": [],
+            "evidence": [
+                {"title": "수치 근거", "basis": "314,003,008.58 KRW(IQVIA 매출 기준 1년 후 예측값)"}
+            ],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+    bundle = {
+        "market_views": [
+            {
+                "view_id": "ML.IQVIA.sales",
+                "source": "IQVIA",
+                "target_brand_metric": {
+                    "history": {"2026-Q1": {"raw_value": 314003008.58}}
+                },
+            }
+        ]
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_simulation_prediction_accepts_decimal_zero_horizon():
+    bundle = {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.IQVIA.sales": {
+                    "horizon_1y": {"base": 314003008.58},
+                    "horizon_3y": {"base": 81390234.74},
+                    "horizon_5y": {"base": 0.0},
+                }
+            },
+        }
+    }
+    parsed_output = _parsed_with_prediction(
+        "1년 후 314,003,008.58 KRW, 3년 후 81,390,234.74 KRW, "
+        "5년 후 0.00 KRW로 예측됩니다(95% CI, IQVIA 매출 기준)."
+    )
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
 
     assert result.valid
 
