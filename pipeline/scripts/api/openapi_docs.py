@@ -178,11 +178,12 @@ Pydantic 타입 검증 실패(null을 허용하지 않는 필드에 null 등)는
 
 ### Brand-Activity와의 필터 관계
 
-`/api/brand-activity/*`도 `filters.atc`, `filters.analysis_level`, `filters.channel_axis`라는 같은 시장 필터 개념을 씁니다.
-다만 같은 Pydantic 클래스를 공유하지는 않습니다. Dynamic-Market은 `filters.atc4`를 최상위 list로 받고
-알 수 없는 필드는 `extra=forbid`로 거절하지만, Brand-Activity는 `filters.atc.atc4` 구조를 쓰고
-중첩 필터 모델이 extra 값을 허용합니다. Brand-Activity에서는 `filters`가 비어 있으면 legacy `filter`를 대신 쓰며,
-둘 다 비어 있으면 빈 필터로 처리됩니다.
+`/api/brand-activity/*`도 `filters.atc4`, `filters.analysis_level`, `filters.channel_axis`라는 같은 시장 필터 개념을 씁니다.
+다만 같은 Pydantic 클래스를 공유하지는 않습니다. Dynamic-Market은 알 수 없는 필드를 `extra=forbid`로 거절하지만,
+Brand-Activity는 중첩 필터 모델이 extra 값을 허용합니다. 실제 Brand-Activity service handler는 일반뷰 시장 id를
+flat `filters.atc4`에서 읽으므로, Pydantic 모델에 보이는 nested `filters.atc.atc4`만 보내면 400
+(`filters.atc4 and selected_brand are required`)이 날 수 있습니다. Brand-Activity에서는 `filters`가 비어 있으면
+legacy `filter`를 대신 쓰며, 둘 다 비어 있으면 빈 필터로 처리됩니다.
 """
 
 
@@ -264,7 +265,6 @@ COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
         "focus_brand_key": "리바로",
         "cd_market_id": "cd_001",
         "view_kind": "competitive_dynamics",
-        "analysis_level": {"ubist": {"atc4": ["C10A1"]}},
     },
     "options": {"top_n": 20},
 }
@@ -398,7 +398,7 @@ DYNAMIC_MARKET_RESPONSES: Final = {
 
 
 BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
-    "atc": {"atc4": ["C10A1"]},
+    "atc4": ["C10A1"],
     "analysis_level": {
         "ubist": {
             "seller": ["JW중외제약"],
@@ -429,7 +429,7 @@ Brand-Activity 계열은 Dynamic-Market과 같은 시장 필터 개념을 공유
 
 | 구분 | Dynamic-Market | Brand-Activity |
 |---|---|---|
-| ATC4 위치 | `filters.atc4` | `filters.atc.atc4` |
+| ATC4 위치 | `filters.atc4` | `filters.atc4` |
 | source 위치 | 최상위 `source` 필수/기본값 | endpoint/service가 선택 브랜드와 필터에서 해석 |
 | 분석레벨 위치 | `filters.analysis_level.ubist/iqvia` | `filters.analysis_level.ubist/iqvia` |
 | 채널축 위치 | `filters.channel_axis` | `filters.channel_axis` 또는 top-level `channel_axis` |
@@ -437,8 +437,9 @@ Brand-Activity 계열은 Dynamic-Market과 같은 시장 필터 개념을 공유
 | legacy 필터 | 없음 | `filters`가 비면 `filter`를 대신 사용 |
 
 Brand-Activity의 `filters:null`/`filter:null`은 validation error입니다. 생략하면 빈 필터 객체입니다.
-`filters`와 `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다. top-level `channel_axis`는
-`filters.channel_axis`가 없을 때만 병합됩니다.
+`filters`와 `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다. 일반뷰 handler는
+flat `filters.atc4`를 시장 id로 사용합니다. `filters.atc.atc4`는 모델에 보이는 nested 호환 필드이지만
+현재 service parser의 필수 ATC4 판정에는 쓰이지 않습니다. top-level `channel_axis`는 `filters.channel_axis`가 없을 때만 병합됩니다.
 """
 
 

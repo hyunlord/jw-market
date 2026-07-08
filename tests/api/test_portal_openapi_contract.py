@@ -124,7 +124,7 @@ def test_dynamic_market_documents_field_semantics_and_source_filters() -> None:
     assert "PACK DESC" in payload
     assert "pack_desc_currently_disabled_error" in payload
     assert "analysis_level must match selected source" in payload
-    assert "filters.atc.atc4" in payload
+    assert "filters.atc4" in payload
     assert set(operation["requestBody"]["content"]["application/json"]["examples"]) >= {
         "general_baseline",
         "general_ubist_filters",
@@ -145,7 +145,7 @@ def test_brand_activity_documents_shared_filter_differences() -> None:
     for operation in (topics, timeseries, matrix):
         payload = str(operation)
         assert "Dynamic-Market과 같은 시장 필터 개념" in payload
-        assert "filters.atc.atc4" in payload
+        assert "filters.atc4" in payload
         assert "legacy" in payload
         assert "unknown field" in payload
 
