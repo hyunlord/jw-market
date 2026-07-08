@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
-from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers
+from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -2418,6 +2418,43 @@ def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) 
     assert definition.filter_echo["cd_market_id"] == "cd_002"
     assert definition.brands == (BrandRef("brand-cd", "CD Brand", ""),)
     assert any("mart_strategic_cd_brand_metric" in sql for sql in calls)
+
+
+def test_strategic_payload_adds_cd_definition_to_cached_payload(monkeypatch) -> None:
+    # Given: a brand-scoped CD request can reuse the cache-cause payload.
+    monkeypatch.setattr(strategic_runtime, "_response_market_id", lambda *_args, **_kwargs: "strategy_008")
+    monkeypatch.setattr(
+        strategic_runtime,
+        "_cached_cause_payload",
+        lambda **_kwargs: {
+            "market_meta": {
+                "view_source_id": "cd_008",
+                "market_definition_label": "old",
+                "market_definition_full": "old",
+                "atc_codes": [],
+                "atc_count": 0,
+            },
+            "data": {},
+            "markets": [{"market_id": "strategy_008", "is_primary": True}],
+        },
+    )
+
+    # When: the strategic runtime returns the cached competitive-dynamics payload.
+    result = strategic_runtime.build_strategic_payload(
+        mart_db="jw_mart",
+        ml_id=None,
+        cd_market_id="cd_008",
+        focus_brand_key="리바로하이",
+        source="ubist",
+        measure="sales",
+        analysis_level=DynamicMarketRequest().filters.analysis_level,
+    )
+
+    # Then: the response exposes the narrowed CD market definition expected by the portal.
+    assert result["market_meta"]["view_source_id"] == "cd_008"
+    assert result["market_meta"]["market_definition_label"] == "Statin/ARB/CCB"
+    assert result["market_meta"]["market_definition_full"] == "corrected explicit lookup clean(class_2) == 'Statin/ARB/CCB'"
+    assert result["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
 
 
 def test_strategic_sidecar_aggregation_keeps_recode_product_history(monkeypatch) -> None:

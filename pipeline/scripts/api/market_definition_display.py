@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import importlib.util
 import json
 from pathlib import Path
+import sys
 from typing import Any
-
-import pyarrow.parquet as pq
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -73,6 +73,22 @@ def cd_display_for_id(cd_id: str | None) -> MarketDefinitionDisplay | None:
         atc_count=1,
         cd_definition_class=label,
     )
+
+
+def apply_cd_market_definition(payload: dict[str, Any], cd_market_id: str | None = None) -> None:
+    meta = payload.get("market_meta")
+    if not isinstance(meta, dict):
+        return
+    view_source_id = cd_market_id or _valid_text(meta.get("view_source_id"))
+    if not view_source_id or not view_source_id.startswith("cd_"):
+        return
+    display = cd_display_for_id(view_source_id)
+    if display is None:
+        return
+    meta["market_definition_label"] = display.label
+    meta["market_definition_full"] = display.full
+    meta["atc_codes"] = display.atc_codes
+    meta["atc_count"] = display.atc_count
 
 
 def cd_display_for_catalog_row(catalog_row: dict[str, Any] | None) -> MarketDefinitionDisplay | None:
@@ -148,7 +164,7 @@ def _cd_dim_by_id() -> dict[str, dict[str, Any]]:
             "cd_filter_expression",
             "cd_filter_raw_json",
         ],
-    )
+    ) or _cd_dim_spec_rows()
     return {
         str(row["competitive_dynamics_id"]): row
         for row in rows
@@ -166,8 +182,28 @@ def _read_first_table(paths: tuple[Path, ...], columns: list[str]) -> list[dict[
     for path in paths:
         if not path.exists():
             continue
+        try:
+            import pyarrow.parquet as pq
+        except ModuleNotFoundError:
+            return []
+
         return pq.read_table(path, columns=columns).to_pylist()
     return []
+
+
+def _cd_dim_spec_rows() -> list[dict[str, Any]]:
+    spec_path = PROJECT_ROOT / "pipeline" / "etl" / "io" / "catalog" / "dim" / "market_competitive_dynamics_specs.py"
+    spec = importlib.util.spec_from_file_location("_jw_market_competitive_dynamics_specs", spec_path)
+    if spec is None or spec.loader is None:
+        return []
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except FileNotFoundError:
+        return []
+    cd_specs = getattr(module, "CD_SPECS", ())
+    return [dict(row) for row in cd_specs]
 
 
 def _parse_list(raw_value: Any) -> list[str]:

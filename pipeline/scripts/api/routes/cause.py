@@ -8,6 +8,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.handlers.multi_market import choose_primary_market
+from pipeline.scripts.api.market_definition_display import apply_cd_market_definition
 from pipeline.scripts.api.market_id import to_strategy_id
 from pipeline.scripts.api.openapi_docs import CAUSE_RESPONSES, PORTAL_CORE_TAG
 from pipeline.scripts.api.validators.query_params import UNIT_LABELS, validate_cause_query
@@ -92,4 +93,5 @@ def cause(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_cause"})
     payload["markets"] = markets
+    apply_cd_market_definition(payload)
     return payload

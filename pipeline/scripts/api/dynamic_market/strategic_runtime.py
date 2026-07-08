@@ -18,6 +18,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
+from pipeline.scripts.api.market_definition_display import apply_cd_market_definition
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
 
 
@@ -58,6 +59,7 @@ def build_strategic_payload(
             measure=measure,
         )
         if cached_payload is not None:
+            apply_cd_market_definition(cached_payload, view_source_id)
             return cached_payload
 
     brand_table, market_table, id_column = _tables_for_market_kind(market_kind)
@@ -130,6 +132,7 @@ def build_strategic_payload(
     if not isinstance(composed, dict):
         raise DynamicMarketInputError("strategic payload composition did not return an object")
     composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
+    apply_cd_market_definition(composed, view_source_id)
     return composed
 
 
