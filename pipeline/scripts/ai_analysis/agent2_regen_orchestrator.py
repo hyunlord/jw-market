@@ -48,6 +48,7 @@ DEFAULT_WORKFLOW_REVISION_ID = 3727
 DUAL_SOURCE_BRANDS = frozenset({"가드렛", "가드메트", "엔커버"})
 
 TAG_RE = re.compile(r"\((ML|CD)·([^()·]+)·([^()·]+)(?:·([^()·]+))?\)")
+SOURCE_LABEL_RE = re.compile(r"\b(Market Landscape|Competitive Dynamics)\s*·\s*(IQVIA|UBIST)\s*기준", re.IGNORECASE)
 PERIOD_RE = re.compile(r"^20\d{2}-(?:Q[1-4]|\d{2})$")
 DAMAGED_DATE_RE = re.compile(r"(?:2,0\d{2}\.00|20\d{2}\.00|\d,0\d{2}\.00-\d|\.00\.00)")
 THREE_PLUS_DECIMAL_RE = re.compile(r"(?<!\d)\d[\d,]*\.\d{3,}\s*(?:%p|%|배)?")
@@ -168,11 +169,21 @@ def _stage_text(stage_data: dict[str, Any]) -> str:
     return "\n".join(pieces)
 
 
+def _formatter_source_matches(text: str) -> list[str]:
+    sources: list[str] = []
+    for match in TAG_RE.finditer(text or ""):
+        sources.append(match.group(2).strip().upper())
+    for match in SOURCE_LABEL_RE.finditer(text or ""):
+        sources.append(match.group(2).strip().upper())
+    return sources
+
+
 def validate_formatter_contract(
     parsed_output: dict[str, Any],
     brand: str,
     mode: str | ProcessingMode = PROCESSING_MODE_FULL,
 ) -> FormatterContractResult:
+    mode_name = normalize_processing_mode(mode)
     policy = formatter_policy_for_mode(mode)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -207,14 +218,17 @@ def validate_formatter_contract(
         errors.append({"type": "news_id_hex_present"})
     if FORBIDDEN_CERTAINTY_RE.search(all_text):
         errors.append({"type": "prediction_certainty_phrase"})
+    source_matches = _formatter_source_matches(all_text)
+    source_mentions = sorted({source for source in source_matches if source in {"IQVIA", "UBIST"}})
     if brand in DUAL_SOURCE_BRANDS:
-        has_iqvia = bool(re.search(r"\((?:ML|CD)·IQVIA·", all_text))
-        has_ubist = bool(re.search(r"\((?:ML|CD)·UBIST·", all_text))
+        has_iqvia = "IQVIA" in source_mentions
+        has_ubist = "UBIST" in source_mentions
         if not (has_iqvia and has_ubist):
             errors.append({"type": "dual_source_missing", "has_iqvia": has_iqvia, "has_ubist": has_ubist})
 
-    tag_count = len(TAG_RE.findall(all_text))
-    if tag_count == 0:
+    source_tag_count = len(source_matches)
+    source_tag_required = mode_name == PROCESSING_MODE_FULL
+    if source_tag_required and source_tag_count == 0:
         errors.append({"type": "inline_source_tag_missing"})
 
     return FormatterContractResult(
@@ -222,7 +236,12 @@ def validate_formatter_contract(
         errors=errors,
         warnings=warnings,
         summary={
-            "tag_count": tag_count,
+            "tag_count": source_tag_count,
+            "compact_tag_count": len(TAG_RE.findall(all_text)),
+            "source_label_count": len(SOURCE_LABEL_RE.findall(all_text)),
+            "source_tag_count": source_tag_count,
+            "source_tag_required": source_tag_required,
+            "source_mentions": source_mentions,
             "stage_count": sum(1 for stage in STAGES if isinstance(parsed_output.get(stage), dict)),
             "brand": brand,
         },

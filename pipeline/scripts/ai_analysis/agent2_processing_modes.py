@@ -33,7 +33,7 @@ class CompetitorTrimLimits:
 
 
 FORMATTER_MODE_POLICIES = {
-    PROCESSING_MODE_FULL: FormatterModePolicy(PROCESSING_MODE_FULL, min_bullets=4, min_body_sentences=6),
+    PROCESSING_MODE_FULL: FormatterModePolicy(PROCESSING_MODE_FULL, min_bullets=4, min_body_sentences=4),
     PROCESSING_MODE_COMPACT: FormatterModePolicy(PROCESSING_MODE_COMPACT, min_bullets=2, min_body_sentences=3),
     PROCESSING_MODE_RECAP: FormatterModePolicy(PROCESSING_MODE_RECAP, min_bullets=1, min_body_sentences=1),
 }

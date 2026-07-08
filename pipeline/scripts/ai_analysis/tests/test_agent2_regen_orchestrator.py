@@ -68,7 +68,7 @@ def test_formatter_contract_rejects_damaged_dates_and_double_formatting():
 
 
 def test_formatter_contract_keeps_full_strict_but_allows_compact_and_recap_thresholds():
-    full = validate_formatter_contract(_parsed_with_counts(bullet_count=3, sentence_count=5), brand="테스트", mode="full")
+    full = validate_formatter_contract(_parsed_with_counts(bullet_count=3, sentence_count=3), brand="테스트", mode="full")
     compact = validate_formatter_contract(_parsed_with_counts(bullet_count=2, sentence_count=3), brand="테스트", mode="compact")
     recap = validate_formatter_contract(_parsed_with_counts(bullet_count=1, sentence_count=1), brand="테스트", mode="recap")
 
@@ -76,6 +76,52 @@ def test_formatter_contract_keeps_full_strict_but_allows_compact_and_recap_thres
     assert any(error["type"] == "body_too_short" for error in full.errors)
     assert compact.valid
     assert recap.valid
+
+
+def test_formatter_contract_counts_full_source_labels_for_dual_source_gate():
+    parsed = _parsed_with_counts(bullet_count=4, sentence_count=6)
+    parsed["phenomenon"]["body"] += " 가드렛은 0.14%(Market Landscape · UBIST 기준)입니다."
+    parsed["prediction"]["body"] += " 가드렛은 0.15%(Competitive Dynamics · IQVIA 기준)입니다."
+
+    result = validate_formatter_contract(parsed, brand="가드렛", mode="full")
+
+    assert result.valid
+    assert result.summary["source_tag_count"] >= 2
+    assert result.summary["source_mentions"] == ["IQVIA", "UBIST"]
+
+
+def test_formatter_contract_accepts_full_source_label_for_compact_inline_gate():
+    parsed = _parsed_with_counts(bullet_count=2, sentence_count=3)
+    for stage in ("phenomenon", "cause", "prediction", "recommendation"):
+        parsed[stage]["body"] = parsed[stage]["body"].replace("(ML·UBIST·매출·2026-04)", "(Market Landscape · UBIST 기준)")
+
+    result = validate_formatter_contract(parsed, brand="바스티난 엠알", mode="compact")
+
+    assert result.valid
+    assert result.summary["source_tag_count"] == 4
+    assert result.summary["source_tag_required"] is False
+
+
+def test_formatter_contract_does_not_require_source_tags_for_compact():
+    parsed = _parsed_with_counts(bullet_count=2, sentence_count=3)
+    for stage in ("phenomenon", "cause", "prediction", "recommendation"):
+        parsed[stage]["body"] = "요약입니다. 문장입니다. 문장입니다."
+
+    result = validate_formatter_contract(parsed, brand="바스티난 엠알", mode="compact")
+
+    assert result.valid
+    assert result.summary["source_tag_required"] is False
+
+
+def test_formatter_contract_exempts_recap_from_inline_source_gate():
+    parsed = _parsed_with_counts(bullet_count=1, sentence_count=1)
+    for stage in ("phenomenon", "cause", "prediction", "recommendation"):
+        parsed[stage]["body"] = "요약입니다."
+
+    result = validate_formatter_contract(parsed, brand="메디로텐", mode="recap")
+
+    assert result.valid
+    assert result.summary["source_tag_required"] is False
 
 
 def test_trim_bundle_for_mode_rehashes_trimmed_compact_bundle():
