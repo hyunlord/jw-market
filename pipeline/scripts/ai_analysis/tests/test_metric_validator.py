@@ -506,6 +506,83 @@ def test_simulation_prediction_accepts_decimal_zero_horizon():
     assert result.valid
 
 
+def test_simulation_prediction_accepts_decimal_zero_horizon_with_other_zero_candidates():
+    bundle = {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "CD.IQVIA.sales": {
+                    "horizon_1y": {
+                        "base": 869712.27,
+                        "ci_lower_95": 0.0,
+                        "ci_upper_95": 1739424.54,
+                    },
+                    "horizon_3y": {
+                        "base": 101054.97,
+                        "ci_lower_95": 0.0,
+                        "ci_upper_95": 202109.94,
+                    },
+                    "horizon_5y": {
+                        "base": 0.0,
+                        "ci_lower_95": 0.0,
+                        "ci_upper_95": 0.0,
+                    },
+                },
+                "ML.IQVIA.sales": {
+                    "horizon_1y": {"base": 0.0},
+                    "horizon_3y": {"base": 0.0},
+                    "horizon_5y": {"base": 0.0},
+                },
+            },
+        }
+    }
+    parsed_output = _parsed_with_prediction(
+        "1년 후 869,712.27(Competitive Dynamics · IQVIA 기준), "
+        "3년 후 101,054.97(Competitive Dynamics · IQVIA 기준), "
+        "5년 후 0.00(Competitive Dynamics · IQVIA 기준)으로 예측됩니다. "
+        "95% 신뢰구간 기준입니다."
+    )
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert not [
+        item
+        for item in result.unmatched_numbers
+        if item["pattern"] == "simulation_missing_horizon_5y"
+    ]
+
+
+def test_approximate_rank_bucket_expression_is_warning_only():
+    bundle = {
+        "market_views": [
+            {
+                "target_brand_metric": {
+                    "history": {"2026-Q2": {"rank_in_market": 110}}
+                }
+            }
+        ]
+    }
+    parsed_output = {
+        "phenomenon": {
+            "title": "처방 순위 약세",
+            "body": "처방 순위가 100위권 밖으로 밀려났습니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert any(
+        item["raw_text"] == "100위" and item["number_type"] == "rank"
+        for item in result.warnings
+    )
+
+
 def test_prediction_event_evidence_can_match_title_in_basis():
     parsed_output = {
         "phenomenon": {"title": "", "body": "", "bullets": []},

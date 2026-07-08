@@ -60,6 +60,11 @@ VIEW_LABEL_IN_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 SOURCE_IN_TEXT_RE = re.compile(r"(?<![A-Z])(UBIST|IQVIA)(?![A-Z])", re.IGNORECASE)
+HORIZON_TEXT_RE = {
+    "1y": re.compile(r"(?:1\s*년\s*후|1y|horizon_1y)", re.IGNORECASE),
+    "3y": re.compile(r"(?:3\s*년\s*후|3y|horizon_3y)", re.IGNORECASE),
+    "5y": re.compile(r"(?:5\s*년\s*후|5y|horizon_5y)", re.IGNORECASE),
+}
 PREDICTION_NEWS_TRIGGER_RE = re.compile(
     r"(뉴스|보도|급여|허가|출시|신약|경쟁사|진입|임상|학회|약가|정책|규제|공세|시장\s*변화)",
     re.IGNORECASE,
@@ -160,6 +165,12 @@ def _is_ci_confidence_literal(raw_text: str, full_context: str, value: float | i
     return bool(re.search(r"(신뢰구간|CI)", nearby, flags=re.IGNORECASE))
 
 
+def _is_approximate_rank_expression(raw_text: str, full_context: str) -> bool:
+    nearby = _nearby_context(raw_text, full_context, before=12, after=12)
+    after = nearby.split(raw_text, 1)[1] if raw_text in nearby else ""
+    return bool(re.match(r"^\s*권", after))
+
+
 def classify_number_context(raw_text: str, full_context: str, value: float | int) -> str:
     """Classify a rendered number so matching can use the right tolerance."""
 
@@ -235,7 +246,8 @@ def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[di
                     "number_type": number_type,
                     "tolerance": _tolerance_for_type(number_type, config),
                     "low_priority": bool(spec.get("low_priority", False))
-                    or _is_qualified_threshold(raw_text, text or ""),
+                    or _is_qualified_threshold(raw_text, text or "")
+                    or (number_type == "rank" and _is_approximate_rank_expression(raw_text, text or "")),
                     "ci_confidence_literal": _is_ci_confidence_literal(raw_text, text or "", value),
                 }
             )
@@ -451,6 +463,16 @@ def _candidate_paths_for_extracted_number(
     return paths
 
 
+def _path_matches_source_hint(bundle: dict, path: str, source_hint: str | None, display_hint: str | None) -> bool:
+    if not source_hint:
+        return True
+    parts = _view_label_parts_from_path(bundle, path)
+    if not parts:
+        return False
+    display, source = parts
+    return source == source_hint and (display_hint is None or display == display_hint)
+
+
 def _source_aware_matched_path(
     bundle: dict,
     item: dict[str, Any],
@@ -468,13 +490,67 @@ def _source_aware_matched_path(
     for candidate in _candidate_paths_for_extracted_number(item, bundle_index):
         if _is_ci_metadata_path(candidate):
             continue
-        candidate_parts = _view_label_parts_from_path(bundle, candidate)
-        if not candidate_parts:
-            continue
-        display, source = candidate_parts
-        if source == source_hint and (display_hint is None or display == display_hint):
+        if _path_matches_source_hint(bundle, candidate, source_hint, display_hint):
             return candidate
     return str(matched_path) if matched_path else None
+
+
+def _horizon_from_path(path: str) -> str | None:
+    for horizon in HORIZON_TEXT_RE:
+        if f"horizon_{horizon}" in path:
+            return horizon
+    return None
+
+
+def _context_mentions_horizon(context_text: str, raw_text: str, horizon: str) -> bool:
+    nearby = _nearby_context(raw_text, context_text, before=24, after=24)
+    return bool(HORIZON_TEXT_RE[horizon].search(nearby))
+
+
+def _simulation_candidate_paths(
+    bundle: dict,
+    bundle_index: dict[float, list[str]],
+    item: dict[str, Any],
+) -> list[tuple[str, bool]]:
+    display_hint, source_hint = _view_label_from_text(str(item.get("context_text") or ""))
+    paths: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+
+    matched_path = str(item.get("matched_path") or "")
+    if matched_path.startswith("forecast_simulation.by_view.") and _path_matches_source_hint(
+        bundle, matched_path, source_hint, display_hint
+    ):
+        paths.append((matched_path, True))
+        seen.add(matched_path)
+
+    for candidate in _candidate_paths_for_extracted_number(item, bundle_index):
+        if candidate in seen or not candidate.startswith("forecast_simulation.by_view."):
+            continue
+        if not _path_matches_source_hint(bundle, candidate, source_hint, display_hint):
+            continue
+        paths.append((candidate, False))
+        seen.add(candidate)
+    return paths
+
+
+def _simulation_horizons_used(
+    bundle: dict,
+    bundle_index: dict[float, list[str]],
+    extracted: list[dict[str, Any]],
+) -> tuple[bool, set[str]]:
+    used_horizons: set[str] = set()
+    has_simulation_value = False
+    for item in extracted:
+        for path, is_primary_match in _simulation_candidate_paths(bundle, bundle_index, item):
+            horizon = _horizon_from_path(path)
+            if not horizon:
+                continue
+            has_simulation_value = True
+            if is_primary_match or _context_mentions_horizon(
+                str(item.get("context_text") or ""), str(item.get("raw_text") or ""), horizon
+            ):
+                used_horizons.add(horizon)
+    return has_simulation_value, used_horizons
 
 
 def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValidation]) -> list[dict[str, Any]]:
@@ -657,12 +733,9 @@ def validate_simulation_prediction_policy(
             )
         )
 
-    simulation_matches = [
-        item
-        for item in prediction_result.extracted
-        if str(item.get("matched_path") or "").startswith("forecast_simulation.by_view.")
-    ]
-    if not simulation_matches:
+    bundle_index = build_bundle_path_index(bundle)
+    has_simulation_value, used_horizons = _simulation_horizons_used(bundle, bundle_index, prediction_result.extracted)
+    if not has_simulation_value:
         issues.append(
             _prediction_policy_issue(
                 "simulation_not_used",
@@ -681,9 +754,8 @@ def validate_simulation_prediction_policy(
             )
         )
 
-    matched_paths = [str(item.get("matched_path") or "") for item in simulation_matches]
     for horizon in ["1y", "3y", "5y"]:
-        if not any(f"horizon_{horizon}" in path for path in matched_paths):
+        if horizon not in used_horizons:
             issues.append(
                 _prediction_policy_issue(
                     f"simulation_missing_horizon_{horizon}",
