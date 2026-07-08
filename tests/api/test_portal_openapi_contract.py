@@ -111,6 +111,45 @@ def test_dynamic_market_documents_competitive_dynamics_contract() -> None:
     assert "cd_001" in payload
 
 
+def test_dynamic_market_documents_field_semantics_and_source_filters() -> None:
+    schema = app.openapi()
+
+    operation = schema["paths"]["/api/dynamic-market"]["post"]
+    payload = str(operation)
+
+    assert "missing 처리" in payload
+    assert "null 처리" in payload
+    assert "mfr_name_kor" in payload
+    assert "molecule_strength" in payload
+    assert "PACK DESC" in payload
+    assert "pack_desc_currently_disabled_error" in payload
+    assert "analysis_level must match selected source" in payload
+    assert "filters.atc.atc4" in payload
+    assert set(operation["requestBody"]["content"]["application/json"]["examples"]) >= {
+        "general_baseline",
+        "general_ubist_filters",
+        "general_iqvia_filters",
+        "market_landscape",
+        "competitive_dynamics",
+        "pack_desc_currently_disabled_error",
+    }
+
+
+def test_brand_activity_documents_shared_filter_differences() -> None:
+    schema = app.openapi()
+
+    topics = schema["paths"]["/api/brand-activity/topics"]["post"]
+    timeseries = schema["paths"]["/api/brand-activity/csd-timeseries"]["post"]
+    matrix = schema["paths"]["/api/brand-activity/interest-rx-matrix"]["post"]
+
+    for operation in (topics, timeseries, matrix):
+        payload = str(operation)
+        assert "Dynamic-Market과 같은 시장 필터 개념" in payload
+        assert "filters.atc.atc4" in payload
+        assert "legacy" in payload
+        assert "unknown field" in payload
+
+
 def test_market_filter_atc_options_keeps_existing_response_model_and_docs() -> None:
     schema = app.openapi()
 

@@ -22,8 +22,9 @@ from pipeline.scripts.api.dynamic_market.types import (
 )
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketFilters, DynamicMarketRequest
 from pipeline.scripts.api.openapi_docs import (
-    COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
-    DYNAMIC_MARKET_REQUEST_EXAMPLE,
+    DYNAMIC_MARKET_DESCRIPTION,
+    DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
+    DYNAMIC_MARKET_REQUEST_EXAMPLES,
     DYNAMIC_MARKET_RESPONSES,
     DYNAMIC_MARKET_TAG,
     FILTER_OPTIONS_RESPONSES,
@@ -37,24 +38,14 @@ router = APIRouter()
     "/api/dynamic-market",
     tags=[DYNAMIC_MARKET_TAG],
     summary="동적 시장 원인분석 재계산",
-    description=(
-        "전략뷰 ml_id/cd_market_id 또는 일반뷰 ATC4/molecule 범위를 입력받아 cache 없이 실시간으로 "
-        "원인분석 payload를 재계산합니다. 응답 result는 /api/cause와 같은 root/data 구조입니다. "
-        "analysis_level의 각 차원은 차원 내 OR, 차원 간 AND로 적용됩니다. "
-        "전략뷰는 market_landscape(ml_id)와 competitive_dynamics(cd_market_id)를 모두 지원합니다."
-    ),
+    description=DYNAMIC_MARKET_DESCRIPTION,
     response_model=None,
     openapi_extra={
         "requestBody": {
+            "description": DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
             "content": {
                 "application/json": {
-                    "examples": {
-                        "market_landscape": {"summary": "전략 시장조망 ml_id", "value": DYNAMIC_MARKET_REQUEST_EXAMPLE},
-                        "competitive_dynamics": {
-                            "summary": "전략 경쟁구도 cd_market_id",
-                            "value": COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
-                        },
-                    }
+                    "examples": DYNAMIC_MARKET_REQUEST_EXAMPLES,
                 }
             }
         }
