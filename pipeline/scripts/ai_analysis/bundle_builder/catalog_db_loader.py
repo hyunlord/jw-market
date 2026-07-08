@@ -5,33 +5,7 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
-ATC4_FALLBACK = {
-    "ml_001": "A02B",
-    "ml_003": "A10B",
-    "ml_006": "C10A1",
-    "ml_013": "B02D",
-}
-
-MKT_TEAM_FALLBACK = {
-    # MI Master 2026-05-18 기준. Long-term source는 catalog ETL로
-    # 통합해야 하지만, Phase ζ bundle 생성은 이 fallback을 사용한다.
-    "ml_001": "MKT 1팀",
-    "ml_002": "MKT 1팀",
-    "ml_003": "MKT 1팀",
-    "ml_004": "MKT 1팀",
-    "ml_005": "MKT 1팀",
-    "ml_006": "MKT 1팀",
-    "ml_007": "MKT 1팀",
-    "ml_008": "MKT 1팀",
-    "ml_009": "MKT 1팀",
-    "ml_010": "MKT 1팀",
-    "ml_011": "MKT 1팀",
-    "ml_012": "MKT 2팀",
-    "ml_013": "MKT 2팀",
-    "ml_014": "MKT 3팀",
-    "ml_015": "MKT 2팀",
-    "ml_016": "MKT 3팀",
-}
+from .catalog_constants import ATC4_FALLBACK, MKT_TEAM_FALLBACK
 
 
 def _json_load(value):
@@ -67,6 +41,10 @@ def _table_exists(db_conn, table_name: str) -> bool:
     with db_conn.cursor() as cur:
         cur.execute("SHOW TABLES LIKE %s", (table_name,))
         return cur.fetchone() is not None
+
+
+def _compact_brand_name(value: str) -> str:
+    return re.sub(r"\s+", "", value).lower()
 
 
 def _load_json_catalog(path: str = "docs/crawl/_catalog.json") -> dict:
@@ -237,9 +215,24 @@ def detect_available_sources(brand_name: str, db_conn) -> List[str]:
 
 
 def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
+    compact_brand_name = _compact_brand_name(brand_name)
     if _table_exists(db_conn, "catalog_strategic_brand"):
         with db_conn.cursor() as cur:
             cur.execute("SELECT * FROM catalog_strategic_brand WHERE name = %s LIMIT 1", (brand_name,))
+            row = cur.fetchone()
+        if row:
+            return dict(row)
+        with db_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM catalog_strategic_brand
+                WHERE REPLACE(LOWER(name), ' ', '') = %s
+                ORDER BY name ASC
+                LIMIT 1
+                """,
+                (compact_brand_name,),
+            )
             row = cur.fetchone()
         if row:
             return dict(row)
@@ -257,6 +250,19 @@ def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
             (brand_name,),
         )
         row = cur.fetchone()
+    if not row:
+        with db_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ml_id, brand_id, brand_key, brand_name, is_jw, overlay_data, computed_at
+                FROM mart_strategic_ml_brand_metric
+                WHERE REPLACE(LOWER(brand_name), ' ', '') = %s
+                ORDER BY ml_id ASC, computed_at DESC
+                LIMIT 1
+                """,
+                (compact_brand_name,),
+            )
+            row = cur.fetchone()
     if not row:
         raise ValueError(f"brand not found in mart/catalog: {brand_name}")
 
