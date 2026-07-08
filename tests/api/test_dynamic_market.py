@@ -1783,6 +1783,27 @@ def test_build_dimension_filters_accepts_iqvia_pack_desc_dimension() -> None:
     assert filters == (DimensionFilter("pack", ("PFS 162MG/0.9ML",)),)
 
 
+def test_general_resolver_keeps_pack_desc_filter_exact_for_focus_brand(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        assert "mart_general_filter_dimension_metric" not in sql
+        assert params == ["iqvia_nsa", "sales", "M01C0"]
+        return [{"brand_key": "악템라", "brand_name": "악템라", "atc4_code": "M01C0"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_one", lambda *_args, **_kwargs: None)
+
+    definition = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart").resolve(
+        atc4=["M01C0"],
+        molecule=[],
+        analysis_level={"iqvia": {"pack_desc": ["INFU.VIAL 200MG 10ML"]}},
+        focus_brand_key="악템라",
+        source="iqvia",
+        measure="sales",
+    )
+
+    assert definition.dimension_filters == (DimensionFilter("pack", ("INFU.VIAL 200MG 10ML",)),)
+
+
 def test_strategic_resolver_accepts_ubist_atc4_narrowing_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
         assert params[:3] == ("ml_003", "ubist", "sales")

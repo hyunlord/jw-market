@@ -31,6 +31,7 @@ VALID_MEASURES_BY_SOURCE: dict[str, frozenset[str]] = {
     "ubist": frozenset({"sales", "volume"}),
     "iqvia_nsa": frozenset({"sales", "unit", "dosage_unit", "counting_unit"}),
 }
+EXACT_MATCH_DIMENSIONS: frozenset[str] = frozenset({"pack"})
 
 
 class MarketResolver(Protocol):
@@ -289,6 +290,9 @@ class GeneralViewResolver:
         focus_brand = focus_brand_key.strip()
         if not focus_brand:
             return filters
+        expandable_filters = tuple(item for item in filters if item.dimension_type not in EXACT_MATCH_DIMENSIONS)
+        if not expandable_filters:
+            return filters
         scoped_atc4 = tuple(sorted({brand.atc4_code for brand in brands if brand.brand_key == focus_brand and brand.atc4_code}))
         if not scoped_atc4:
             return filters
@@ -301,10 +305,10 @@ class GeneralViewResolver:
               AND measure = %s
               AND brand_key = %s
               AND atc4_code IN ({placeholders(scoped_atc4)})
-              AND dimension_type IN ({placeholders(tuple(item.dimension_type for item in filters))})
+              AND dimension_type IN ({placeholders(tuple(item.dimension_type for item in expandable_filters))})
             ORDER BY dimension_type, dimension_value_norm
             """,
-            (source, measure, focus_brand, *scoped_atc4, *(item.dimension_type for item in filters)),
+            (source, measure, focus_brand, *scoped_atc4, *(item.dimension_type for item in expandable_filters)),
         )
         values_by_dimension: dict[str, set[str]] = {item.dimension_type: set(item.values) for item in filters}
         for row in rows:
