@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pyarrow.parquet as pq
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ML_MARKET_PATHS = (
@@ -148,7 +146,7 @@ def _cd_dim_by_id() -> dict[str, dict[str, Any]]:
             "cd_filter_expression",
             "cd_filter_raw_json",
         ],
-    )
+    ) or _cd_dim_spec_rows()
     return {
         str(row["competitive_dynamics_id"]): row
         for row in rows
@@ -166,8 +164,16 @@ def _read_first_table(paths: tuple[Path, ...], columns: list[str]) -> list[dict[
     for path in paths:
         if not path.exists():
             continue
+        import pyarrow.parquet as pq
+
         return pq.read_table(path, columns=columns).to_pylist()
     return []
+
+
+def _cd_dim_spec_rows() -> list[dict[str, Any]]:
+    from pipeline.etl.io.catalog.dim.market_competitive_dynamics_specs import CD_SPECS
+
+    return [dict(row) for row in CD_SPECS]
 
 
 def _parse_list(raw_value: Any) -> list[str]:
