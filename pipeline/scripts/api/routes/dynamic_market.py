@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Any
+
+from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
@@ -40,23 +44,20 @@ router = APIRouter()
     summary="동적 시장 원인분석 재계산",
     description=DYNAMIC_MARKET_DESCRIPTION,
     response_model=None,
-    openapi_extra={
-        "requestBody": {
-            "description": DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
-            "content": {
-                "application/json": {
-                    "examples": DYNAMIC_MARKET_REQUEST_EXAMPLES,
-                }
-            }
-        }
-    },
+    openapi_extra={"requestBody": DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION},
     responses=DYNAMIC_MARKET_RESPONSES,
 )
-def dynamic_market(payload: DynamicMarketRequest) -> dict:
+def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> dict:
     """Compute a caller-defined general-view market with the ``/api/cause`` response contract."""
+
+    try:
+        payload = DynamicMarketRequest.model_validate(raw_payload)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
 
     if _is_strategic_request(payload):
         try:
+            _reject_strategic_expansion_filters(payload)
             _reject_strategic_channel_axis(payload)
             return success_envelope(
                 build_cached_payload(
@@ -116,11 +117,16 @@ def _is_strategic_request(payload: DynamicMarketRequest) -> bool:
 
 def _reject_strategic_channel_axis(payload: DynamicMarketRequest) -> None:
     try:
-        channel_axis = payload.filters.channel_axis.to_filter(source=payload.source)
+        channel_axis = payload.filters.analysis_level.to_channel_axis(source=payload.source)
     except ValueError as exc:
         raise DynamicMarketInputError(str(exc)) from exc
     if channel_axis is not None and channel_axis.is_active:
-        raise DynamicMarketInputError("channel_axis is supported only for general views")
+        raise DynamicMarketInputError("analysis_level channel slice filters are supported only for general views")
+
+
+def _reject_strategic_expansion_filters(payload: DynamicMarketRequest) -> None:
+    if payload.filters.atc4:
+        raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not top-level ATC4 expansion")
 
 
 def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:
@@ -131,9 +137,9 @@ def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> No
 
 def _resolve_definition(payload: DynamicMarketRequest):
     filters = payload.filters
-    analysis_level = filters.analysis_level.model_dump()
+    analysis_level = filters.analysis_level.to_dimension_payload(source=payload.source)
     try:
-        channel_axis = filters.channel_axis.to_filter(source=payload.source)
+        channel_axis = filters.analysis_level.to_channel_axis(source=payload.source)
     except ValueError as exc:
         raise DynamicMarketInputError(str(exc)) from exc
     resolved_ml_id = _resolve_catalog_ml_id(filters)
@@ -143,7 +149,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
             ml_id=resolved_ml_id,
             cd_market_id=filters.cd_market_id,
             atc4=filters.atc4,
-            molecule=filters.molecule,
+            molecule=[],
             analysis_level=analysis_level,
             channel_axis=channel_axis,
             focus_brand_key=filters.focus_brand_key,
@@ -152,7 +158,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
         )
     return GeneralViewResolver(mart_db=config.db_name, bridge_db=config.bridge_db_name).resolve(
         atc4=filters.atc4,
-        molecule=filters.molecule,
+        molecule=[],
         analysis_level=analysis_level,
         channel_axis=channel_axis,
         focus_brand_key=filters.focus_brand_key,

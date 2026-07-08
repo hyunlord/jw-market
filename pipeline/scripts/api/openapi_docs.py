@@ -105,63 +105,72 @@ DYNAMIC_MARKET_DESCRIPTION: Final = """
 응답은 항상 `status`/`result` envelope이며, `result`는 `/api/cause/{brand}`가 돌려주는
 root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니다.
 
-### 요청 body 최상위 필드
+### 요청 body 최상위 필드와 원칙
 
 | 필드 | 타입 | 필수 | 기본값 | missing 처리 | null 처리 |
 |---|---|---:|---|---|---|
 | `source` | string | 아니오 | `ubist` | `ubist`로 계산 | 422 validation error |
 | `measure` | string | 아니오 | `sales` | `sales`로 계산 | 422 validation error |
 | `filters` | object | 아니오 | 빈 필터 객체 | 빈 필터 객체 | 422 validation error |
-| `options` | object | 아니오 | `{top_n:20, metrics:[], period_range:null}` | 기본 옵션 객체 | 422 validation error |
+| `options` | object | 아니오 | `{top_n:20, period_range:null}` | 기본 옵션 객체 | 422 validation error |
 
 `source`는 `ubist`, `iqvia`, `iqvia_nsa`, `nsa`를 받을 수 있고 내부에서는 `iqvia`/`nsa`가
 `iqvia_nsa`로 정규화됩니다. `measure`는 UBIST에서 `sales`, `volume`, IQVIA에서
 `sales`, `unit`, `counting_unit`, `dosage_unit`만 유효합니다.
 
-### `filters` 필드
+빈 `analysis_level` 차원은 그 차원을 적용하지 않는 전체 선택(select-all)입니다. 단, 일반뷰 시장 범위인
+top-level `filters.atc4`는 select-all이 아닙니다. 없으면 `focus_brand_key`로 단일 ATC4를 추론하고,
+브랜드가 여러 ATC4에 걸치면 명시적으로 `filters.atc4`를 보내야 합니다.
+
+### 공통 `filters` 필드
 
 | 필드 | 타입 | 기본값 | 동작 |
 |---|---|---|---|
-| `atc4` | string[] | `[]` | 일반뷰 범위. 공백 제거 후 대문자 dedupe. 일반뷰는 `focus_brand_key`로 단일 ATC4를 추론하지 못하면 `atc4`가 필요합니다. 전략뷰에서는 보내면 400입니다. |
-| `molecule` | string[] | `[]` | 모델 필드는 있으나 현재 D-1 동적 필터에서는 비활성입니다. 값이 있으면 400입니다. |
+| `atc4(ATC4 시장 범위)` | string[] | `[]` | 일반뷰 전용 범위. 전략뷰에서 보내면 400입니다. |
 | `view_kind` | string/null | null | `market_landscape`/`strategic_ml`/`ml`은 ML 전략뷰, `competitive_dynamics`/`strategic_cd`/`cd`는 CD 전략뷰입니다. 값이 있으면 전략뷰 분기로 들어갑니다. |
 | `ml_id` | string/null | null | ML 전략 시장 id입니다. `focus_brand_key`와 ML view를 함께 보내면 브랜드 catalog의 대표 `ml_id`가 우선될 수 있습니다. |
 | `cd_market_id` | string/null | null | CD 전략 시장 id입니다. 있으면 CD 전략뷰로 계산합니다. |
 | `focus_brand_key` | string/null | null | 브랜드 기준 기본 ATC4/시장 해석에 사용합니다. 빈 문자열은 대부분 미입력처럼 처리됩니다. |
-| `analysis_level` | object | 빈 source 객체 | 소스별 분석레벨 필터입니다. 차원 내 값은 OR, 서로 다른 차원은 AND로 적용됩니다. |
-| `channel_axis` | object | 빈 source 객체 | 일반뷰 채널축 필터입니다. 전략뷰에서는 active 값이 있으면 400입니다. |
+| `analysis_level` | object | 빈 source 객체 | 소스별 필터 딕셔너리입니다. row filter와 값 슬라이스를 같은 source 하위에 넣습니다. |
 
 `filters` 자체를 생략하면 빈 객체로 처리됩니다. `filters:null`은 허용되지 않습니다.
 중첩 list 필드는 생략하면 `[]`, `null`이면 422, 빈 list이면 적용하지 않습니다.
 선택 string 필드(`view_kind`, `ml_id`, `cd_market_id`, `focus_brand_key`)는 missing과 null이 모두 `None`이며,
 빈 문자열은 resolver의 truthy/strip 조건에 따라 미입력 또는 잘못된 id로 처리될 수 있으므로 보내지 않는 것을 권장합니다.
 
-### 일반뷰 `analysis_level` 허용 키
+### 일반뷰 UBIST `analysis_level.ubist`
 
-UBIST는 `analysis_level.ubist` 안에서 `atc3`, `atc4`, `seller`, `molecule_strength`,
-`form`, `route`, `reimbursement`를 적용할 수 있습니다. 모델에는 `class`, `molecule`,
-`strength_pack`, `ox_gx`도 보이지만 현재 resolver 매핑/registry에서는 동적 필터로 쓰지 않으며,
-값을 넣으면 unsupported/disabled 400이 날 수 있습니다.
+허용 키: `atc3(ATC3 좁히기)`, `atc4(ATC4 좁히기)`, `seller(판매사)`,
+`molecule_strength(성분용량)`, `form(제형)`, `route(투여경로)`, `reimbursement(급여구분)`,
+`facility(종별)`, `specialty(진료과)`, `pairs(종별×진료과 pair)`.
 
-IQVIA는 `analysis_level.iqvia` 안에서 `mfr_name_kor`, `molecule_type`, `molecule_desc`,
-`pack_desc`, `strength`, `nhi_type`를 적용합니다. `pack_desc`는 canonical sidecar의
-`dimension_type='pack'` 행을 조회해 PACK DESC 텍스트 단위로 제품 범위를 좁힙니다.
-`mfr`, `nhi`, `audit_code`는 모델 필드가 있어도
-현재 resolver 매핑에는 없으므로 적용 필터로 보내지 마십시오.
+일반뷰 Swagger에서는 `class`, `molecule`, `strength_pack`, `ox_gx`를 숨깁니다. 이들은 일반 resolver
+mapping에 없거나 비활성인 필드입니다.
+
+### 일반뷰 IQVIA `analysis_level.iqvia`
+
+허용 키: `mfr_name_kor(제조사명)`, `molecule_type(성분구분)`, `molecule_desc(성분명)`,
+`pack_desc(PACK DESC)`, `strength(함량)`, `nhi_type(NHI 구분)`, `audit_code(IQVIA audit code)`.
+`pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행을 조회해 PACK DESC 텍스트 단위로 제품 범위를 좁힙니다.
+`audit_code`는 row filter가 아니라 raw `audit_code_matrix` 값 슬라이스입니다. missing/빈 배열이면 전체 audit code를 포함합니다.
+
+일반뷰 Swagger에서는 중복/비활성 입력인 `mfr`, `nhi`를 숨깁니다.
+
+### 전략뷰 `analysis_level`
+
+전략뷰는 top-level `filters.atc4`를 받지 않습니다. 전략 범위를 더 좁힐 때는
+`analysis_level.ubist.atc4(ATC4 좁히기)`처럼 source 하위의 narrowing 필드를 사용합니다.
+전략뷰 전용으로 `class(클래스)`, `mfr(제조사 alias)`, `nhi(NHI alias)`, `atc3/atc4(ATC 좁히기)` 같은
+by_dimension alias 필드를 허용합니다. `facility`, `specialty`, `pairs`, `audit_code` 같은 값 슬라이스 필드는
+일반뷰 전용이므로 전략뷰에서 active 값이 있으면 400입니다.
 
 다른 source의 객체에 값이 있으면 400입니다. 예를 들어 `source:"iqvia"` 요청에서
 `analysis_level.ubist.seller`에 값이 있으면 `analysis_level must match selected source`가 반환됩니다.
 
-### `channel_axis`
-
-UBIST 일반뷰: `channel_axis.ubist.facility`, `specialty`, `pairs[{facility,specialty}]`를 지원합니다.
-IQVIA 일반뷰: `channel_axis.iqvia.audit_code`를 지원하며 값은 strip 후 대문자로 정규화됩니다.
-선택한 `source`와 다른 channel axis에 값이 있으면 400입니다. 전략뷰에서는 active channel axis 자체가 400입니다.
-
 ### `options`
 
 `top_n`은 기본 20이고 1~100 범위입니다. `top_n:null`은 런타임에서 20으로 보정됩니다.
-`metrics`는 예약 필드이며 현재 계산 로직은 사용하지 않습니다. `period_range.start/end`는 선택 기간 경계입니다.
+`period_range.start/end`는 선택 기간 경계입니다.
 `period_range`를 생략하거나 null이면 전체 기간을 사용합니다. `period_range:{}`는 시작/끝 모두 없는 전체 기간과 같습니다.
 
 ### 응답 구조
@@ -178,7 +187,7 @@ Pydantic 타입 검증 실패(null을 허용하지 않는 필드에 null 등)는
 
 ### Brand-Activity와의 필터 관계
 
-`/api/brand-activity/*`도 `filters.atc4`, `filters.analysis_level`, `filters.channel_axis`라는 같은 시장 필터 개념을 씁니다.
+`/api/brand-activity/*`도 같은 시장 필터 개념을 쓰지만 request model은 별도입니다.
 다만 같은 Pydantic 클래스를 공유하지는 않습니다. Dynamic-Market은 알 수 없는 필드를 `extra=forbid`로 거절하지만,
 Brand-Activity는 중첩 필터 모델이 extra 값을 허용합니다. 실제 Brand-Activity service handler는 일반뷰 시장 id를
 flat `filters.atc4`에서 읽으므로, Pydantic 모델에 보이는 nested `filters.atc.atc4`만 보내면 400
@@ -187,9 +196,177 @@ legacy `filter`를 대신 쓰며, 둘 다 비어 있으면 빈 필터로 처리�
 """
 
 
-DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION: Final = (
-    "동적 원인분석 요청입니다. 필드별 missing/null/빈값 처리와 source별 허용 필터는 endpoint 설명을 참조하십시오."
-)
+PUBLIC_GENERAL_UBIST_ANALYSIS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
+        "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
+        "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
+        "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
+        "route": {"type": "array", "items": {"type": "string"}, "description": "route(투여경로)"},
+        "reimbursement": {"type": "array", "items": {"type": "string"}, "description": "reimbursement(급여구분)"},
+        "facility": {"type": "array", "items": {"type": "string"}, "description": "facility(종별) 값 슬라이스"},
+        "specialty": {"type": "array", "items": {"type": "string"}, "description": "specialty(진료과) 값 슬라이스"},
+        "pairs": {
+            "type": "array",
+            "description": "pairs(종별×진료과 pair) 값 슬라이스",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"facility": {"type": "string"}, "specialty": {"type": "string"}},
+                "required": ["facility", "specialty"],
+            },
+        },
+    },
+}
+
+
+PUBLIC_GENERAL_IQVIA_ANALYSIS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "mfr_name_kor": {"type": "array", "items": {"type": "string"}, "description": "mfr_name_kor(제조사명)"},
+        "molecule_type": {"type": "array", "items": {"type": "string"}, "description": "molecule_type(성분구분)"},
+        "molecule_desc": {"type": "array", "items": {"type": "string"}, "description": "molecule_desc(성분명)"},
+        "pack_desc": {"type": "array", "items": {"type": "string"}, "description": "pack_desc(PACK DESC)"},
+        "strength": {"type": "array", "items": {"type": "string"}, "description": "strength(함량)"},
+        "nhi_type": {"type": "array", "items": {"type": "string"}, "description": "nhi_type(NHI 구분)"},
+        "audit_code": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "audit_code(IQVIA audit code). 비어 있으면 전체 audit code 포함",
+        },
+    },
+}
+
+
+PUBLIC_STRATEGIC_UBIST_ANALYSIS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "class": {"type": "array", "items": {"type": "string"}, "description": "class(전략 클래스)"},
+        "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
+        "molecule": {"type": "array", "items": {"type": "string"}, "description": "molecule(성분)"},
+        "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
+        "strength_pack": {"type": "array", "items": {"type": "string"}, "description": "strength_pack(용량/포장)"},
+        "ox_gx": {"type": "array", "items": {"type": "string"}, "description": "ox_gx(오리지널/제네릭)"},
+        "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
+        "route": {"type": "array", "items": {"type": "string"}, "description": "route(투여경로)"},
+        "reimbursement": {"type": "array", "items": {"type": "string"}, "description": "reimbursement(급여구분)"},
+        "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
+    },
+}
+
+
+PUBLIC_STRATEGIC_IQVIA_ANALYSIS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "mfr": {"type": "array", "items": {"type": "string"}, "description": "mfr(제조사 alias)"},
+        "mfr_name_kor": {"type": "array", "items": {"type": "string"}, "description": "mfr_name_kor(제조사명)"},
+        "molecule_type": {"type": "array", "items": {"type": "string"}, "description": "molecule_type(성분구분)"},
+        "molecule_desc": {"type": "array", "items": {"type": "string"}, "description": "molecule_desc(성분명)"},
+        "pack_desc": {"type": "array", "items": {"type": "string"}, "description": "pack_desc(PACK DESC)"},
+        "strength": {"type": "array", "items": {"type": "string"}, "description": "strength(함량)"},
+        "nhi": {"type": "array", "items": {"type": "string"}, "description": "nhi(NHI alias)"},
+        "nhi_type": {"type": "array", "items": {"type": "string"}, "description": "nhi_type(NHI 구분)"},
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
+    },
+}
+
+
+PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
+    "oneOf": [
+        {
+            "title": "General UBIST dynamic-market request",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "source": {"type": "string", "enum": ["ubist"], "default": "ubist"},
+                "measure": {"type": "string", "description": "measure(지표): sales 또는 volume"},
+                "filters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "focus_brand_key": {"type": "string", "description": "focus_brand_key(선택 브랜드)"},
+                        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(일반뷰 ATC4 시장 범위)"},
+                        "analysis_level": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {"ubist": PUBLIC_GENERAL_UBIST_ANALYSIS_SCHEMA},
+                        },
+                    },
+                },
+                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+            },
+        },
+        {
+            "title": "General IQVIA dynamic-market request",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "source": {"type": "string", "enum": ["iqvia", "iqvia_nsa", "nsa"], "default": "iqvia"},
+                "measure": {"type": "string", "description": "measure(지표): sales, unit, counting_unit, dosage_unit"},
+                "filters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "focus_brand_key": {"type": "string", "description": "focus_brand_key(선택 브랜드)"},
+                        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(일반뷰 ATC4 시장 범위)"},
+                        "analysis_level": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {"iqvia": PUBLIC_GENERAL_IQVIA_ANALYSIS_SCHEMA},
+                        },
+                    },
+                },
+                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+            },
+        },
+        {
+            "title": "Strategic Market Landscape / Competitive Dynamics request",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "source": {"type": "string", "enum": ["ubist", "iqvia", "iqvia_nsa", "nsa"]},
+                "measure": {"type": "string", "description": "measure(지표)"},
+                "filters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "focus_brand_key": {"type": "string", "description": "focus_brand_key(선택 브랜드)"},
+                        "view_kind": {"type": "string", "enum": ["market_landscape", "competitive_dynamics", "strategic_ml", "strategic_cd", "ml", "cd"]},
+                        "ml_id": {"type": "string", "description": "ml_id(시장조망 ID)"},
+                        "cd_market_id": {"type": "string", "description": "cd_market_id(경쟁구도 ID)"},
+                        "analysis_level": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "ubist": PUBLIC_STRATEGIC_UBIST_ANALYSIS_SCHEMA,
+                                "iqvia": PUBLIC_STRATEGIC_IQVIA_ANALYSIS_SCHEMA,
+                            },
+                        },
+                    },
+                },
+                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+            },
+        },
+    ]
+}
+
+
+DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION: Final = {
+    "description": "동적 원인분석 요청입니다. view/source별 허용 필드는 schema oneOf와 endpoint 설명을 참조하십시오.",
+    "content": {
+        "application/json": {
+            "schema": PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA,
+            "examples": {},
+        }
+    },
+}
 
 
 DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
@@ -229,9 +406,10 @@ GENERAL_UBIST_FILTER_REQUEST_EXAMPLE: Final = {
                 "form": ["정제"],
                 "route": ["경구"],
                 "reimbursement": ["급여"],
+                "facility": ["의원"],
+                "specialty": ["내분비"],
             }
         },
-        "channel_axis": {"ubist": {"facility": ["의원"], "specialty": ["내분비"]}},
     },
     "options": {"top_n": 10, "period_range": {"start": "2024-01", "end": "2026-04"}},
 }
@@ -250,9 +428,9 @@ GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE: Final = {
                 "molecule_type": ["SINGLE"],
                 "strength": ["162MG"],
                 "nhi_type": ["NHI"],
+                "audit_code": ["KHPA", "KPA"],
             }
         },
-        "channel_axis": {"iqvia": {"audit_code": ["KHPA", "KPA"]}},
     },
     "options": {"top_n": 10, "period_range": {"start": "2024-Q1", "end": "2026-Q1"}},
 }
@@ -310,6 +488,8 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
     },
 }
 
+DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION["content"]["application/json"]["examples"] = DYNAMIC_MARKET_REQUEST_EXAMPLES
+
 
 DYNAMIC_MARKET_ERROR_EXAMPLES: Final = {
     "unsupported_filter_key": {
@@ -317,7 +497,7 @@ DYNAMIC_MARKET_ERROR_EXAMPLES: Final = {
         "value": {
             "detail": {
                 "error": "invalid_dynamic_market_request",
-                "message": "unsupported analysis_level dimension for iqvia_nsa: audit_code",
+                "message": "unsupported analysis_level dimension for iqvia_nsa: unknown_dimension",
             }
         },
     },
@@ -423,7 +603,7 @@ Brand-Activity 계열은 Dynamic-Market과 같은 시장 필터 개념을 공유
 | ATC4 위치 | `filters.atc4` | `filters.atc4` |
 | source 위치 | 최상위 `source` 필수/기본값 | endpoint/service가 선택 브랜드와 필터에서 해석 |
 | 분석레벨 위치 | `filters.analysis_level.ubist/iqvia` | `filters.analysis_level.ubist/iqvia` |
-| 채널축 위치 | `filters.channel_axis` | `filters.channel_axis` 또는 top-level `channel_axis` |
+| 채널축 위치 | `filters.analysis_level.{source}` 하위 value-slice 필드 | `filters.channel_axis` 또는 top-level `channel_axis` |
 | unknown field | top-level/nested 대부분 거절(`extra=forbid`) | top-level은 ignore, nested filter는 allow |
 | legacy 필터 | 없음 | `filters`가 비면 `filter`를 대신 사용 |
 
@@ -768,7 +948,7 @@ FILTER_OPTIONS_RESPONSES: Final = {
                                 "일반뷰 source별 채널 축 registry. UBIST는 facility(종별), specialty(진료과), "
                                 "pairs(종별×진료과 조합)를 raw channel_specialty_matrix에서 동적으로 도출하고, "
                                 "IQVIA는 audit_code를 raw audit_code_matrix에서 동적으로 도출합니다. "
-                                "analysis_level과 분리된 값 슬라이스 필터입니다."
+                                "request에서는 같은 값을 filters.analysis_level.{source} 하위로 접어 보냅니다."
                             ),
                         },
                         "default_selections": {"type": "object", "description": "초기 선택값. 차원 내 값은 OR입니다."},

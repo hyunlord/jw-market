@@ -19,10 +19,6 @@ ENV APP_VERSION="${APP_VERSION}" \
 RUN groupadd -g 3000 app \
     && useradd -u 3000 -g 3000 -m -s /bin/bash app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 COPY pipeline/scripts/api/requirements.txt /app/requirements.txt
@@ -42,6 +38,6 @@ USER app
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -fsS "http://localhost:${API_PORT}${EXTERNAL_PATH_PREFIX:-}/api/health" || exit 1
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://localhost:%s%s/api/health' % (os.getenv('API_PORT', '8000'), os.getenv('EXTERNAL_PATH_PREFIX', '')), timeout=5).read()" || exit 1
 
 CMD ["sh", "-c", "exec uvicorn pipeline.scripts.api.main:app --host \"$API_HOST\" --port \"$API_PORT\" --workers 1 --log-level \"$(printf '%s' \"$LOG_LEVEL\" | tr '[:upper:]' '[:lower:]')\""]

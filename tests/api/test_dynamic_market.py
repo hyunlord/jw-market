@@ -587,7 +587,7 @@ def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
             "measure": "sales",
             "filters": {
                 "atc4": ["C10A1"],
-                "channel_axis": {
+                "analysis_level": {
                     "ubist": {
                         "facility": ["종합병원"],
                         "specialty": ["순환기(Cardiology IM)"],
@@ -631,7 +631,7 @@ def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
     brand_metrics, monthly_totals = aggregator._aggregate_rows(
         rows,
         period_range=PeriodRange(),
-        channel_axis=request.filters.channel_axis.to_filter(),
+        channel_axis=request.filters.analysis_level.to_channel_axis(source=request.source),
     )
 
     assert monthly_totals == {"2026-04": 30.0, "2026-05": 100.0}
@@ -1869,39 +1869,37 @@ def test_general_resolver_omits_inactive_channel_axis_from_identity_echo(monkeyp
     assert "channel_axis" not in definition.filter_echo
 
 
-def test_empty_channel_axis_payloads_normalize_like_missing_filter() -> None:
+def test_empty_analysis_level_channel_payloads_normalize_like_missing_filter() -> None:
     payloads = [
         {"filters": {"atc4": ["C10A1"]}, "source": "ubist", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {}}, "source": "ubist", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {}}}, "source": "ubist", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {"facility": []}}}, "source": "ubist", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {"ubist": {"specialty": [], "pairs": []}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "analysis_level": {"ubist": {}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "analysis_level": {"ubist": {"facility": []}}}, "source": "ubist", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "analysis_level": {"ubist": {"specialty": [], "pairs": []}}}, "source": "ubist", "measure": "sales"},
     ]
 
     for payload in payloads:
         request = DynamicMarketRequest.model_validate(payload)
-        assert request.filters.channel_axis.to_filter(source=request.source) is None
+        assert request.filters.analysis_level.to_channel_axis(source=request.source) is None
 
 
-def test_empty_iqvia_channel_axis_payloads_normalize_like_missing_filter() -> None:
+def test_empty_iqvia_analysis_level_audit_code_payloads_normalize_like_missing_filter() -> None:
     payloads = [
         {"filters": {"atc4": ["C10A1"]}, "source": "iqvia", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {}}, "source": "iqvia", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {}}}, "source": "iqvia", "measure": "sales"},
-        {"filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": []}}}, "source": "iqvia", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "analysis_level": {"iqvia": {}}}, "source": "iqvia", "measure": "sales"},
+        {"filters": {"atc4": ["C10A1"], "analysis_level": {"iqvia": {"audit_code": []}}}, "source": "iqvia", "measure": "sales"},
     ]
 
     for payload in payloads:
         request = DynamicMarketRequest.model_validate(payload)
-        assert request.filters.channel_axis.to_filter(source=request.source) is None
+        assert request.filters.analysis_level.to_channel_axis(source=request.source) is None
 
 
-def test_channel_axis_rejects_source_mismatch() -> None:
+def test_analysis_level_channel_slice_rejects_source_mismatch() -> None:
     request = DynamicMarketRequest.model_validate(
         {
             "filters": {
                 "atc4": ["C10A1"],
-                "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
+                "analysis_level": {"iqvia": {"audit_code": ["KPA"]}},
             },
             "source": "ubist",
             "measure": "sales",
@@ -1909,11 +1907,42 @@ def test_channel_axis_rejects_source_mismatch() -> None:
     )
 
     try:
-        request.filters.channel_axis.to_filter(source=request.source)
+        request.filters.analysis_level.to_channel_axis(source=request.source)
     except ValueError as exc:
-        assert "channel_axis.iqvia must match selected source" in str(exc)
+        assert "analysis_level.iqvia.audit_code must match selected source" in str(exc)
     else:
-        raise AssertionError("source-mismatched channel_axis must be rejected")
+        raise AssertionError("source-mismatched analysis_level channel slice must be rejected")
+
+
+def test_dynamic_market_request_rejects_removed_top_level_molecule_filter() -> None:
+    with pytest.raises(Exception) as exc_info:
+        DynamicMarketRequest.model_validate({"filters": {"molecule": ["PITAVASTATIN"]}})
+
+    assert "molecule" in str(exc_info.value)
+
+
+def test_dynamic_market_request_rejects_removed_metrics_option() -> None:
+    with pytest.raises(Exception) as exc_info:
+        DynamicMarketRequest.model_validate({"options": {"metrics": ["sales"]}})
+
+    assert "metrics" in str(exc_info.value)
+
+
+def test_general_dimension_payload_drops_iqvia_value_slice_and_nested_atc4() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "source": "iqvia",
+            "filters": {
+                "atc4": ["A10C1"],
+                "analysis_level": {"iqvia": {"atc4": ["A10C1"], "audit_code": ["KPA"], "pack_desc": ["PACK"]}},
+            },
+        }
+    )
+
+    payload = request.filters.analysis_level.to_dimension_payload(source=request.source)["iqvia"]
+    assert payload["pack_desc"] == ["PACK"]
+    assert "audit_code" not in payload
+    assert "atc4" not in payload
 
 
 def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
@@ -2019,7 +2048,7 @@ def test_route_passes_general_channel_axis_to_aggregator(monkeypatch) -> None:
                 "measure": "sales",
                 "filters": {
                     "atc4": ["C10A1"],
-                    "channel_axis": {"ubist": {"facility": ["종합병원"]}},
+                    "analysis_level": {"ubist": {"facility": ["종합병원"]}},
                 },
             }
         )
@@ -2084,7 +2113,7 @@ def test_route_passes_iqvia_channel_axis_to_aggregator(monkeypatch) -> None:
                 "measure": "sales",
                 "filters": {
                     "atc4": ["C10A1"],
-                    "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
+                    "analysis_level": {"iqvia": {"audit_code": ["KPA"]}},
                 },
             }
         )
@@ -2135,7 +2164,7 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
     assert response["result"]["data"]["ubist_specialty_channels"][1] == "주요고객 종합병원 순환기"
 
 
-def test_route_rejects_channel_axis_for_strategic_view() -> None:
+def test_route_rejects_analysis_level_channel_slice_for_strategic_view() -> None:
     try:
         dynamic_market_route.dynamic_market(
             DynamicMarketRequest.model_validate(
@@ -2144,16 +2173,38 @@ def test_route_rejects_channel_axis_for_strategic_view() -> None:
                     "measure": "sales",
                     "filters": {
                         "ml_id": "ml_006",
-                        "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
+                        "analysis_level": {"iqvia": {"audit_code": ["KPA"]}},
                     },
                 }
             )
         )
     except dynamic_market_route.HTTPException as exc:
         assert exc.status_code == 400
-        assert "channel_axis is supported only for general views" in str(exc.detail)
+        assert "analysis_level channel slice filters are supported only for general views" in str(exc.detail)
     else:
-        raise AssertionError("strategic channel_axis must be rejected")
+        raise AssertionError("strategic analysis_level channel slice must be rejected")
+
+
+def test_route_rejects_top_level_atc4_for_strategic_view() -> None:
+    try:
+        dynamic_market_route.dynamic_market(
+            DynamicMarketRequest.model_validate(
+                {
+                    "source": "ubist",
+                    "measure": "sales",
+                    "filters": {
+                        "view_kind": "market_landscape",
+                        "ml_id": "ml_006",
+                        "atc4": ["C10A1"],
+                    },
+                }
+            )
+        )
+    except dynamic_market_route.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "top-level ATC4 expansion" in str(exc.detail)
+    else:
+        raise AssertionError("strategic top-level atc4 must be rejected")
 
 
 def test_iqvia_channel_axis_response_adds_selected_audit_summary_only_when_active() -> None:
@@ -2206,9 +2257,9 @@ def test_iqvia_channel_axis_response_adds_selected_audit_summary_only_when_activ
             {
                 "source": "iqvia",
                 "measure": "sales",
-                "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KPA"]}}},
+                "filters": {"atc4": ["C10A1"], "analysis_level": {"iqvia": {"audit_code": ["KPA"]}}},
             }
-        ).filters.channel_axis.to_filter(source="iqvia"),
+        ).filters.analysis_level.to_channel_axis(source="iqvia"),
     )
 
     active_payload = cause_payload.build_cause_data(definition=active_definition, metrics=inactive_metrics, focus=None)
