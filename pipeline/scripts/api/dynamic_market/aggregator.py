@@ -217,7 +217,7 @@ class MetricAggregator:
     ) -> list[dict]:
         dimension_db = quote_identifier(self.strategic_dimension_db or self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters)
+        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters, casefold_values=True)
         market_kind = strategic_kind_for_view(view)
         rows = db.fetch_all(
             f"""
@@ -378,7 +378,7 @@ class MetricAggregator:
     ) -> list[dict]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters)
+        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters, casefold_values=False)
         rows = db.fetch_all(
             f"""
             SELECT brand_key, brand_name, atc4_code, product_code, dimension_type, raw_value_history
@@ -686,13 +686,17 @@ def brand_matrix_summary_scope(brands: tuple[BrandRef, ...]) -> tuple[str, tuple
     return scope_sql, scope_params, frozenset()
 
 
-def dimension_filter_predicate(filters: tuple[DimensionFilter, ...]) -> tuple[str, tuple[str, ...]]:
+def dimension_filter_predicate(
+    filters: tuple[DimensionFilter, ...],
+    *,
+    casefold_values: bool = False,
+) -> tuple[str, tuple[str, ...]]:
     """Return sidecar SQL implementing OR within each dimension."""
 
     parts: list[str] = []
     params: list[str] = []
     for item in filters:
-        hashes = tuple(_dimension_value_hash(value) for value in item.values)
+        hashes = tuple(_dimension_value_hash(value, casefold=casefold_values) for value in item.values)
         if not hashes:
             continue
         parts.append(f"(dimension_type = %s AND dimension_value_hash IN ({placeholders(hashes)}))")
@@ -828,8 +832,10 @@ def strategic_table_for_view(view: str) -> str:
     return "mart_strategic_ml_brand_metric" if strategic_kind_for_view(view) == "ml" else "mart_strategic_cd_brand_metric"
 
 
-def _dimension_value_hash(value: str) -> str:
+def _dimension_value_hash(value: str, *, casefold: bool = False) -> str:
     normalized = re.sub(r"\s+", " ", value.strip()).casefold()
+    if not casefold:
+        normalized = re.sub(r"\s+", " ", value.strip())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 

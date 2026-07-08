@@ -2269,7 +2269,7 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
 
 def test_iqvia_pack_desc_filter_uses_pack_sidecar_dimension(monkeypatch) -> None:
     calls: list[tuple[str, tuple[str, ...]]] = []
-    expected_hash = hashlib.sha256("pfs 162mg/0.9ml".encode("utf-8")).hexdigest()
+    expected_hash = hashlib.sha256("PFS 162MG/0.9ML".encode("utf-8")).hexdigest()
 
     def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
         calls.append((sql, params))
