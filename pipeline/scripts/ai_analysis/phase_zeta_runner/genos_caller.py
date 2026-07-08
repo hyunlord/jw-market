@@ -12,9 +12,19 @@ from .prompt_builder import build_question_string
 
 
 STAGES = ("phenomenon", "cause", "prediction", "recommendation")
+BULLET_RANGES_BY_MODE = {
+    "full": (2, 3),
+    "compact": (2, 3),
+    "recap": (1, 2),
+}
 
 
-def validate_genos_output(parsed: dict[str, Any]) -> dict[str, Any]:
+def _bullet_range_for_mode(mode: str) -> tuple[int, int]:
+    return BULLET_RANGES_BY_MODE.get(mode, BULLET_RANGES_BY_MODE["full"])
+
+
+def validate_genos_output(parsed: dict[str, Any], mode: str = "full") -> dict[str, Any]:
+    min_bullets, max_bullets = _bullet_range_for_mode(mode)
     errors: list[str] = []
     for stage in STAGES:
         stage_data = parsed.get(stage)
@@ -27,8 +37,8 @@ def validate_genos_output(parsed: dict[str, Any]) -> dict[str, Any]:
         bullets = stage_data.get("bullets")
         if not isinstance(bullets, list):
             errors.append(f"{stage}.bullets is not a list")
-        elif not 2 <= len(bullets) <= 3:
-            errors.append(f"{stage}.bullets has {len(bullets)} items; expected 2-3")
+        elif not min_bullets <= len(bullets) <= max_bullets:
+            errors.append(f"{stage}.bullets has {len(bullets)} items; expected {min_bullets}-{max_bullets}")
     return {"valid": not errors, "errors": errors}
 
 
@@ -138,17 +148,17 @@ def _extract_tokens(response_json: dict[str, Any]) -> tuple[int, int]:
     return _sum_token_keys(response_json, input_keys), _sum_token_keys(response_json, output_keys)
 
 
-def parse_genos_response(response_json: dict[str, Any]) -> dict[str, Any]:
+def parse_genos_response(response_json: dict[str, Any], mode: str = "full") -> dict[str, Any]:
     parsed = _find_stage_object(response_json)
     if parsed is None:
         raise ValueError("GenOS response does not contain the required 4-stage JSON object")
-    validation = validate_genos_output(parsed)
+    validation = validate_genos_output(parsed, mode)
     if not validation["valid"]:
         raise ValueError("; ".join(validation["errors"]))
     return parsed
 
 
-def call_genos_workflow(question: str, config: RunnerConfig) -> dict[str, Any]:
+def call_genos_workflow(question: str, config: RunnerConfig, mode: str = "full") -> dict[str, Any]:
     start = time.time()
     url = f"{config.genos.workflow_api_url}{config.genos.endpoint_path}"
     payload = _payload(question, config.genos.request_payload_mode)
@@ -165,7 +175,7 @@ def call_genos_workflow(question: str, config: RunnerConfig) -> dict[str, Any]:
             response_json = json.loads(raw_response)
         if int(response_json.get("code", 0)) != 0:
             raise ValueError(response_json.get("errMsg") or response_json)
-        parsed_output = parse_genos_response(response_json)
+        parsed_output = parse_genos_response(response_json, mode)
         tokens_in, tokens_out = _extract_tokens(response_json)
         return {
             "success": True,

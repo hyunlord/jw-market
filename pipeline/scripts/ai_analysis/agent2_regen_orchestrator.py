@@ -30,6 +30,12 @@ from bundle_builder.agent2_density_router import ProcessingMode
 from bundle_builder.agent2_zero_template import KpiSnapshot, render_zero_template
 from bundle_builder.hash_util import compute_bundle_hash
 from agent2_density_worklist import RoutedAgent2Brand, load_density_worklist
+from agent2_processing_modes import (
+    PROCESSING_MODE_FULL,
+    formatter_policy_for_mode,
+    normalize_processing_mode,
+    trim_bundle_for_mode,
+)
 from phase_zeta_runner.config import RunnerConfig
 from phase_zeta_runner.llm_runner import call_llm
 from phase_zeta_runner.output_composer import compose_and_persist
@@ -162,7 +168,12 @@ def _stage_text(stage_data: dict[str, Any]) -> str:
     return "\n".join(pieces)
 
 
-def validate_formatter_contract(parsed_output: dict[str, Any], brand: str) -> FormatterContractResult:
+def validate_formatter_contract(
+    parsed_output: dict[str, Any],
+    brand: str,
+    mode: str | ProcessingMode = PROCESSING_MODE_FULL,
+) -> FormatterContractResult:
+    policy = formatter_policy_for_mode(mode)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     all_text = "\n".join(text for _, text in _walk_strings(parsed_output))
@@ -173,9 +184,9 @@ def validate_formatter_contract(parsed_output: dict[str, Any], brand: str) -> Fo
             errors.append({"type": "missing_stage", "stage": stage})
             continue
         body = str(stage_data.get("body", ""))
-        if _body_sentence_count(body) < 6:
+        if _body_sentence_count(body) < policy.min_body_sentences:
             errors.append({"type": "body_too_short", "stage": stage, "sentence_count": _body_sentence_count(body)})
-        if len(stage_data.get("bullets", []) or []) < 4:
+        if len(stage_data.get("bullets", []) or []) < policy.min_bullets:
             errors.append({"type": "too_few_bullets", "stage": stage, "bullet_count": len(stage_data.get("bullets", []) or [])})
 
     for path, text in _walk_strings(parsed_output):
@@ -283,7 +294,7 @@ class Agent2RegenOrchestrator:
                 case ProcessingMode.TEMPLATE_ZERO:
                     record = self._run_zero_template(item)
                 case ProcessingMode.LLM_FULL | ProcessingMode.LLM_COMPACT | ProcessingMode.LLM_RECAP:
-                    record = self._run_brand(item.canonical_brand_name)
+                    record = self._run_brand(item.canonical_brand_name, item.route.mode)
                     record["brand_key"] = item.brand_key
                     record["canonical_brand_name"] = item.canonical_brand_name
                     record["density_route"] = _route_metadata(item)
@@ -316,10 +327,12 @@ class Agent2RegenOrchestrator:
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def _run_brand(self, brand: str) -> dict[str, Any]:
+    def _run_brand(self, brand: str, mode: str | ProcessingMode = PROCESSING_MODE_FULL) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc).isoformat()
+        mode_name = normalize_processing_mode(mode)
         try:
             bundle = self.ports.build_bundle(brand)
+            bundle = trim_bundle_for_mode(bundle, mode_name)
             bundle_hash = bundle.get("bundle_meta", {}).get("bundle_hash") or compute_bundle_hash(bundle)
             idempotency_key = compute_idempotency_key(
                 brand,
@@ -329,7 +342,7 @@ class Agent2RegenOrchestrator:
             )
             previous = self.run_store.get_success(idempotency_key)
             if previous:
-                return {
+                skipped_record: dict[str, Any] = {
                     "brand": brand,
                     "status": "skipped",
                     "reason": "idempotency_key_already_successful",
@@ -338,12 +351,15 @@ class Agent2RegenOrchestrator:
                     "previous": previous,
                     "started_at": started_at,
                 }
+                if mode_name != PROCESSING_MODE_FULL:
+                    skipped_record["processing_mode"] = mode_name
+                return skipped_record
 
             llm_result = self.ports.call_llm(bundle)
             if not llm_result.success:
                 return self._record_failure(brand, idempotency_key, bundle_hash, "llm_failed", llm_result.error)
 
-            formatter = validate_formatter_contract(llm_result.parsed_output, brand)
+            formatter = validate_formatter_contract(llm_result.parsed_output, brand, mode_name)
             validation = self.ports.validate(llm_result.parsed_output, bundle)
             if not formatter.valid or not validation.valid:
                 return self._record_failure(
@@ -375,6 +391,8 @@ class Agent2RegenOrchestrator:
                 "started_at": started_at,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             }
+            if mode_name != PROCESSING_MODE_FULL:
+                record["processing_mode"] = mode_name
             self.run_store.record(idempotency_key, record, success=True)
             return record
         except Exception as exc:

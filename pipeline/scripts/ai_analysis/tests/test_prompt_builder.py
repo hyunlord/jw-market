@@ -63,3 +63,15 @@ def test_prompt_determinism():
     p2 = build_question_string(bundle, config)
 
     assert p1 == p2
+
+
+def test_prompt_compact_adds_mode_instruction_without_changing_full_default():
+    bundle = sample_bundle()
+    config = RunnerConfig.default_for_tests()
+
+    full = build_question_string(bundle, config)
+    compact = build_question_string(bundle, config, mode="compact")
+
+    assert "[출력 밀도]" not in full
+    assert "[출력 밀도]" in compact
+    assert "bullets는 2-3개" in compact

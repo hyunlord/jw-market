@@ -39,14 +39,15 @@ def call_llm(bundle: dict[str, Any], config: RunnerConfig) -> LLMResult:
     """Call PL-managed GenOS workflow 217 for the 4-stage Phase ζ analysis."""
 
     start = time.time()
-    question = build_question_string(bundle, config)
+    processing_mode = str((bundle.get("bundle_meta") or {}).get("processing_mode") or "full")
+    question = build_question_string(bundle, config, mode=processing_mode)
     attempts = max(1, config.retry.max_attempts)
     last_result: dict[str, Any] | None = None
     last_attempt = 0
 
     for attempt in range(attempts):
         last_attempt = attempt
-        result = call_genos_workflow(question, config)
+        result = call_genos_workflow(question, config, mode=processing_mode)
         last_result = result
         if result["success"]:
             return LLMResult(

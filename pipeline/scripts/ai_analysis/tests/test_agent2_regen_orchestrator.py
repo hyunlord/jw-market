@@ -16,6 +16,7 @@ from agent2_regen_orchestrator import (
     parse_args,
     validate_formatter_contract,
 )
+from agent2_processing_modes import trim_bundle_for_mode
 from bundle_builder.agent2_density_router import ProcessingMode, RouteDecision
 
 
@@ -39,6 +40,18 @@ def _parsed(body: str | None = None):
     }
 
 
+def _stage_with_counts(bullet_count: int, sentence_count: int) -> dict:
+    sentences = ["근거입니다(ML·UBIST·매출·2026-04)."]
+    sentences.extend("문장입니다." for _ in range(max(sentence_count - 1, 0)))
+    body = " ".join(sentences)
+    return {"title": "제목", "body": body, "bullets": [str(idx) for idx in range(bullet_count)], "evidence": []}
+
+
+def _parsed_with_counts(bullet_count: int, sentence_count: int) -> dict:
+    stage = _stage_with_counts(bullet_count, sentence_count)
+    return {"phenomenon": stage, "cause": stage, "prediction": stage, "recommendation": stage, "evidence_pool": []}
+
+
 def test_idempotency_key_includes_brand_hash_revision_and_formatter():
     key = compute_idempotency_key("리바로젯", "sha256:abc", 3727, "wf217-order2-v10.3")
 
@@ -52,6 +65,58 @@ def test_formatter_contract_rejects_damaged_dates_and_double_formatting():
 
     assert not result.valid
     assert any(error["type"] == "damaged_date_or_double_format" for error in result.errors)
+
+
+def test_formatter_contract_keeps_full_strict_but_allows_compact_and_recap_thresholds():
+    full = validate_formatter_contract(_parsed_with_counts(bullet_count=3, sentence_count=5), brand="테스트", mode="full")
+    compact = validate_formatter_contract(_parsed_with_counts(bullet_count=2, sentence_count=3), brand="테스트", mode="compact")
+    recap = validate_formatter_contract(_parsed_with_counts(bullet_count=1, sentence_count=1), brand="테스트", mode="recap")
+
+    assert any(error["type"] == "too_few_bullets" for error in full.errors)
+    assert any(error["type"] == "body_too_short" for error in full.errors)
+    assert compact.valid
+    assert recap.valid
+
+
+def test_trim_bundle_for_mode_rehashes_trimmed_compact_bundle():
+    bundle = {
+        "bundle_meta": {"brand": "테스트", "bundle_hash": "sha256:full"},
+        "event_bundle": {
+            "events_brand_centric": [{"id": idx} for idx in range(5)],
+            "events_market_trend": [{"id": idx} for idx in range(4)],
+            "cross_match_events": [{"id": idx} for idx in range(3)],
+        },
+        "competitor_events": {
+            "by_view": {
+                "v1": {
+                    "competitors": [
+                        {"brand_name": "A", "events": [{"id": 1}, {"id": 2}]},
+                        {"brand_name": "B", "events": [{"id": 3}]},
+                    ]
+                }
+            }
+        },
+        "forecast_simulation": {"available": True, "by_view": {"v1": {"horizons": [1, 2]}, "v2": {"horizons": [3]}}},
+    }
+
+    trimmed = trim_bundle_for_mode(bundle, "compact")
+
+    assert len(trimmed["event_bundle"]["events_brand_centric"]) == 3
+    assert len(trimmed["event_bundle"]["events_market_trend"]) == 2
+    assert len(trimmed["event_bundle"]["cross_match_events"]) == 1
+    assert len(trimmed["competitor_events"]["by_view"]["v1"]["competitors"]) == 1
+    assert len(trimmed["competitor_events"]["by_view"]["v1"]["competitors"][0]["events"]) == 1
+    assert list(trimmed["forecast_simulation"]["by_view"]) == ["v1"]
+    assert trimmed["bundle_meta"]["bundle_hash"] != "sha256:full"
+
+
+def test_trim_bundle_for_mode_leaves_full_bundle_unchanged():
+    bundle = {
+        "bundle_meta": {"brand": "테스트", "bundle_hash": "sha256:full"},
+        "event_bundle": {"events_brand_centric": [{"id": 1}]},
+    }
+
+    assert trim_bundle_for_mode(bundle, "full") is bundle
 
 
 def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_path):
@@ -105,7 +170,9 @@ def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_pa
     second = orchestrator.run(["리바로젯"])
 
     assert first["brands"]["리바로젯"]["status"] == "validated"
+    assert "processing_mode" not in first["brands"]["리바로젯"]
     assert second["brands"]["리바로젯"]["status"] == "skipped"
+    assert "processing_mode" not in second["brands"]["리바로젯"]
     assert calls == {"bundle": 2, "llm": 1, "compose": 1}
     assert second["swap_plan"]["mode"] == "dry-run"
 
@@ -228,7 +295,7 @@ def test_routed_run_uses_zero_template_without_llm(tmp_path) -> None:
 
 
 def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
-    calls = {"brand": ""}
+    calls = {"brand": "", "mode": "", "brand_centric": 0}
 
     def build_bundle(brand: str):
         calls["brand"] = brand
@@ -236,12 +303,19 @@ def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
             "bundle_meta": {"bundle_hash": "sha256:testhash", "brand": brand},
             "brand_context": {"brand_name": brand},
             "market_views": [],
+            "event_bundle": {
+                "events_brand_centric": [{"id": idx} for idx in range(5)],
+                "events_market_trend": [],
+                "cross_match_events": [],
+            },
         }
 
     def call_llm(bundle):
+        calls["mode"] = bundle["bundle_meta"]["processing_mode"]
+        calls["brand_centric"] = len(bundle["event_bundle"]["events_brand_centric"])
         return LLMCallResult(
             success=True,
-            parsed_output=_parsed(),
+            parsed_output=_parsed_with_counts(bullet_count=2, sentence_count=3),
             raw_response=json.dumps({"ok": True}),
             tokens_in=1,
             tokens_out=2,
@@ -275,5 +349,7 @@ def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
     manifest = orchestrator.run_routed(worklist)
 
     assert calls["brand"] == "자본브랜드"
+    assert calls["mode"] == "compact"
+    assert calls["brand_centric"] == 3
     assert manifest["brands"]["capital-key"]["status"] == "validated"
     assert manifest["brands"]["capital-key"]["density_route"]["mode"] == "llm_compact"
