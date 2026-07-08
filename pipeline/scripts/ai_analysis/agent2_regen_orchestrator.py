@@ -725,11 +725,12 @@ def make_real_ports(
         # for output_composer. This is read-only before staging insert.
         full_validation: FullValidationResult = run_full_validation(real_llm.parsed_output, bundle, runner_conn, variant_config)
         composition = compose_and_persist(brand, snapshot_at, bundle, real_llm, full_validation, variant_config, runner_conn)
-        parsed_path = work_dir / "parsed_outputs" / f"{brand}_parsed.json"
+        file_variant = "" if analysis_variant == "legacy" else f"_{analysis_variant}"
+        parsed_path = work_dir / "parsed_outputs" / f"{brand}{file_variant}_parsed.json"
         _write_json(parsed_path, real_llm.parsed_output)
-        validation_path = work_dir / "validation" / f"{brand}_validation.json"
+        validation_path = work_dir / "validation" / f"{brand}{file_variant}_validation.json"
         _write_json(validation_path, full_validation.to_dict())
-        raw_path = work_dir / "raw_responses" / f"{brand}_raw.json"
+        raw_path = work_dir / "raw_responses" / f"{brand}{file_variant}_raw.json"
         _write_json(raw_path, {"raw_response": real_llm.raw_response})
         return composition.to_dict()
 
