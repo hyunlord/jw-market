@@ -2221,6 +2221,63 @@ def test_route_rejects_analysis_level_channel_slice_for_strategic_view() -> None
         raise AssertionError("strategic analysis_level channel slice must be rejected")
 
 
+def test_route_rejects_non_atc_analysis_level_filters_for_strategic_view() -> None:
+    try:
+        dynamic_market_route.dynamic_market(
+            DynamicMarketRequest.model_validate(
+                {
+                    "source": "ubist",
+                    "measure": "sales",
+                    "filters": {
+                        "view_kind": "market_landscape",
+                        "focus_brand_key": "리바로",
+                        "analysis_level": {"ubist": {"class": ["Statin"], "reimbursement": ["급여"]}},
+                    },
+                }
+            )
+        )
+    except dynamic_market_route.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "supports only analysis_level.<source>.atc3/atc4" in str(exc.detail)
+        assert "analysis_level.ubist.class" in str(exc.detail)
+        assert "analysis_level.ubist.reimbursement" in str(exc.detail)
+    else:
+        raise AssertionError("strategic non-ATC analysis_level filters must be rejected")
+
+
+def test_route_allows_atc_analysis_level_filters_for_strategic_view(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"data": {"kpi": {"market_size_recent": 1.0}}}
+
+    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
+        lambda *_args, **_kwargs: [{"market_id": "ml_006"}],
+    )
+
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "source": "ubist",
+                "measure": "sales",
+                "filters": {
+                    "view_kind": "market_landscape",
+                    "focus_brand_key": "리바로",
+                    "analysis_level": {"ubist": {"atc3": ["C10A"], "atc4": ["C10A1"]}},
+                },
+            }
+        )
+    )
+
+    assert response["status"] == "SUCCESS"
+    analysis_level = captured["analysis_level"]
+    assert analysis_level.ubist.atc3 == ["C10A"]
+    assert analysis_level.ubist.atc4 == ["C10A1"]
+
+
 def test_route_rejects_top_level_atc4_for_strategic_view() -> None:
     try:
         dynamic_market_route.dynamic_market(

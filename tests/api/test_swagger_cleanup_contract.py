@@ -85,9 +85,14 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
     assert {"class", "molecule", "strength_pack", "ox_gx"}.isdisjoint(general_ubist)
     assert {"mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"}.issubset(general_iqvia)
     assert {"mfr", "nhi"}.isdisjoint(general_iqvia)
-    assert {"class", "molecule", "strength_pack", "ox_gx", "atc3"}.issubset(strategic["ubist"]["properties"])
-    assert {"mfr", "nhi", "atc4"}.issubset(strategic["iqvia"]["properties"])
+    assert set(strategic["ubist"]["properties"]) == {"atc3", "atc4"}
+    assert set(strategic["iqvia"]["properties"]) == {"atc4"}
+    assert {"class", "seller", "molecule", "strength_pack", "ox_gx", "reimbursement"}.isdisjoint(strategic["ubist"]["properties"])
+    assert {"mfr", "mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi", "nhi_type"}.isdisjoint(
+        strategic["iqvia"]["properties"]
+    )
     assert "audit_code" not in strategic["iqvia"]["properties"]
+    assert "전략뷰 narrowing은 ATC만 지원" in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
 
 
 def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatch) -> None:

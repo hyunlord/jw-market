@@ -156,16 +156,19 @@ mapping에 없거나 비활성인 필드입니다.
 
 ### 전략뷰 `analysis_level`
 
-전략뷰는 top-level `filters.atc4`를 받지 않습니다. 전략 범위를 더 좁힐 때는
-`analysis_level.ubist.atc4(ATC4 좁히기)`처럼 source 하위의 narrowing 필드를 사용합니다.
+**전략뷰 narrowing은 ATC만 지원합니다.** 전략뷰는 top-level `filters.atc4`를 받지 않습니다. 전략 범위를 더 좁힐 때는
+`analysis_level.ubist.atc4(ATC4 좁히기)`처럼 source 하위의 ATC narrowing 필드를 사용합니다.
+UBIST는 `analysis_level.ubist.atc3(ATC3 좁히기)`도 받을 수 있습니다. `class(클래스)`,
+`mfr/mfr_name_kor(제조사)`, `nhi/nhi_type(NHI 구분)`, molecule/pack/strength/form/route/reimbursement 계열은
+전략뷰 요청 필터가 아니며 active 값이 있으면 400입니다. `facility`, `specialty`, `pairs`, `audit_code` 같은
+값 슬라이스 필드도 일반뷰 전용이므로 전략뷰에서 active 값이 있으면 400입니다.
+
+전략뷰에서 ATC를 전체 선택하려면 `analysis_level.<source>.atc4`를 생략하거나 빈 배열로 보내면 됩니다.
 전략 시장 id(`ml_id`, `cd_market_id`)는 공개 요청 필드가 아닙니다. `focus_brand_key`와 `view_kind`만 보내면
 백엔드가 선택한 `source`/`measure`에서 브랜드가 속한 ML 또는 CD 시장을 조회합니다. 같은 브랜드가 여러 시장에
 속하면 시장 id 오름차순 첫 번째를 결정론적으로 사용합니다. 예를 들어 `ml_005, ml_008`이면 `ml_005`,
 `cd_006, cd_007`이면 `cd_006`입니다. `ml_id`나 `cd_market_id`를 요청에 포함하면 schema extra-forbid로
 422 validation error가 납니다.
-전략뷰 전용으로 `class(클래스)`, `mfr(제조사 alias)`, `nhi(NHI alias)`, `atc3/atc4(ATC 좁히기)` 같은
-by_dimension alias 필드를 허용합니다. `facility`, `specialty`, `pairs`, `audit_code` 같은 값 슬라이스 필드는
-일반뷰 전용이므로 전략뷰에서 active 값이 있으면 400입니다.
 
 다른 source의 객체에 값이 있으면 400입니다. 예를 들어 `source:"iqvia"` 요청에서
 `analysis_level.ubist.seller`에 값이 있으면 `analysis_level must match selected source`가 반환됩니다.
@@ -249,17 +252,8 @@ PUBLIC_STRATEGIC_UBIST_ANALYSIS_SCHEMA: Final = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "class": {"type": "array", "items": {"type": "string"}, "description": "class(전략 클래스)"},
-        "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
-        "molecule": {"type": "array", "items": {"type": "string"}, "description": "molecule(성분)"},
-        "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
-        "strength_pack": {"type": "array", "items": {"type": "string"}, "description": "strength_pack(용량/포장)"},
-        "ox_gx": {"type": "array", "items": {"type": "string"}, "description": "ox_gx(오리지널/제네릭)"},
-        "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
-        "route": {"type": "array", "items": {"type": "string"}, "description": "route(투여경로)"},
-        "reimbursement": {"type": "array", "items": {"type": "string"}, "description": "reimbursement(급여구분)"},
-        "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
-        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
+        "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 전략뷰 narrowing). 비어 있으면 전체 선택"},
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 전략뷰 narrowing). 비어 있으면 전체 선택"},
     },
 }
 
@@ -268,15 +262,7 @@ PUBLIC_STRATEGIC_IQVIA_ANALYSIS_SCHEMA: Final = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "mfr": {"type": "array", "items": {"type": "string"}, "description": "mfr(제조사 alias)"},
-        "mfr_name_kor": {"type": "array", "items": {"type": "string"}, "description": "mfr_name_kor(제조사명)"},
-        "molecule_type": {"type": "array", "items": {"type": "string"}, "description": "molecule_type(성분구분)"},
-        "molecule_desc": {"type": "array", "items": {"type": "string"}, "description": "molecule_desc(성분명)"},
-        "pack_desc": {"type": "array", "items": {"type": "string"}, "description": "pack_desc(PACK DESC)"},
-        "strength": {"type": "array", "items": {"type": "string"}, "description": "strength(함량)"},
-        "nhi": {"type": "array", "items": {"type": "string"}, "description": "nhi(NHI alias)"},
-        "nhi_type": {"type": "array", "items": {"type": "string"}, "description": "nhi_type(NHI 구분)"},
-        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 전략뷰 narrowing). 비어 있으면 전체 선택"},
     },
 }
 
@@ -476,8 +462,8 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
         "value": GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE,
     },
     "market_landscape": {
-        "summary": "전략뷰 Market Landscape: 브랜드명 기반 자동 시장 결정",
-        "description": "focus_brand_key와 view_kind만 보내면 ML 시장을 내부 조회합니다. 모호하면 ml_id 오름차순 첫 번째를 사용합니다.",
+        "summary": "전략뷰 Market Landscape: 브랜드명 기반 자동 시장 결정 + ATC narrowing",
+        "description": "focus_brand_key와 view_kind로 ML 시장을 내부 조회하고, 필요하면 analysis_level.<source>.atc4로만 추가 narrowing합니다.",
         "value": DYNAMIC_MARKET_REQUEST_EXAMPLE,
     },
     "competitive_dynamics": {
@@ -611,6 +597,9 @@ Brand-Activity의 `filters:null`/`filter:null`은 validation error입니다. 생
 `filters`와 `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다. 일반뷰 handler는
 `filters.atc.atc4`를 flat `filters.atc4`로 정규화해 시장 id로 사용합니다. 기존 flat `filters.atc4`도 호환됩니다.
 옛 `channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
+Dynamic-Market 전략뷰와 마찬가지로 전략 시장 멤버십 자체는 catalog 정의를 사용하며, 요청 시점의 추가 narrowing은
+ATC 계열 선택만 공개 계약으로 둡니다. Brand-Activity의 `analysis_level`은 일반뷰 시장 필터와 IQVIA audit_code
+값 슬라이스를 표현하는 입력 표면입니다.
 """
 
 

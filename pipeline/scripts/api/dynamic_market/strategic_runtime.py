@@ -272,12 +272,17 @@ def _selected_filters(*, source: str, analysis_level: DynamicMarketAnalysisLevel
     source_filters = analysis_level.ubist if source == "ubist" else analysis_level.iqvia
     selected: dict[str, tuple[str, ...]] = {}
     for key, values in source_filters.model_dump(by_alias=True).items():
+        if key not in _STRATEGIC_NARROWING_KEYS:
+            continue
         clean = tuple(str(value).strip() for value in values if str(value).strip())
         if clean:
             if key == "atc4":
                 clean = expand_atc4_for_source(clean, source=source)
             selected[key] = clean
     return selected
+
+
+_STRATEGIC_NARROWING_KEYS = frozenset({"atc3", "atc4"})
 
 
 def _row_matches_dimension(dimensions: Mapping[str, Any], key: str, selected_values: Sequence[str]) -> bool:
