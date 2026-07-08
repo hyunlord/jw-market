@@ -280,6 +280,61 @@ def build_bundle_path_index(bundle: dict) -> dict[float, list[str]]:
     return index
 
 
+def _path_taxonomy(path: str | None) -> str:
+    value = str(path or "")
+    if not value:
+        return "unknown"
+    if (
+        ".horizon_ci_levels." in value
+        or ".ci_lower_95" in value
+        or ".ci_upper_95" in value
+        or value.endswith(".confidence_level")
+    ):
+        return "ci_metadata"
+    if (
+        "bundle_meta" in value
+        or "config_version" in value
+        or "bundle_hash" in value
+        or "snapshot_at" in value
+        or "created_at" in value
+        or "updated_at" in value
+    ):
+        return "bundle_meta"
+    if re.search(r"(?:^|\.)(?:period|date|published_date|year|month|quarter)(?:$|[.:])", value):
+        return "date_or_period"
+    if re.search(r"(?:rank|rank_in_market|순위)", value, flags=re.IGNORECASE):
+        return "rank"
+    if value.startswith("forecast_simulation.by_view."):
+        return "forecast_base"
+    if value.startswith("market_views["):
+        return "metric"
+    if value.startswith("event_bundle.") or value.startswith("competitor_events."):
+        return "event_text"
+    return "low_priority"
+
+
+BLOCKING_NUMERIC_TAXONOMIES = {"metric", "forecast_base", "rank", "event_text"}
+PATH_TAXONOMY_PRIORITY = {
+    "forecast_base": 0,
+    "metric": 1,
+    "rank": 2,
+    "event_text": 3,
+    "ci_metadata": 8,
+    "date_or_period": 9,
+    "low_priority": 10,
+    "bundle_meta": 11,
+    "unknown": 12,
+}
+
+
+def _path_priority(path: str | None) -> int:
+    return PATH_TAXONOMY_PRIORITY.get(_path_taxonomy(path), PATH_TAXONOMY_PRIORITY["unknown"])
+
+
+def _is_blocking_numeric_path(path: str | None) -> bool:
+    return _path_taxonomy(path) in BLOCKING_NUMERIC_TAXONOMIES
+
+
 def find_match(value: float | int, bundle_index: dict[float, list[str]], tolerance: float) -> str | None:
     numeric = float(value)
     best_path: str | None = None
@@ -306,14 +361,24 @@ def find_match_unit_aware(
     relative_tolerance = float(getattr(config, "relative_tolerance", 0.001))
     best_path: str | None = None
     best_delta: float | None = None
+    best_priority: int | None = None
 
     for bundle_value, paths in bundle_index.items():
         delta = abs(bundle_value - numeric)
         matches_absolute = delta <= tolerance
         matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= relative_tolerance
-        if (matches_absolute or matches_relative) and (best_delta is None or delta < best_delta):
+        if not (matches_absolute or matches_relative):
+            continue
+        path = min(paths, key=_path_priority)
+        priority = _path_priority(path)
+        if (
+            best_delta is None
+            or delta < best_delta
+            or (delta == best_delta and (best_priority is None or priority < best_priority))
+        ):
             best_delta = delta
-            best_path = paths[0]
+            best_priority = priority
+            best_path = path
     return best_path
 
 
@@ -350,6 +415,7 @@ def validate_stage_output(
                 "number_type": item["number_type"],
                 "tolerance": item["tolerance"],
                 "matched_path": matched_path,
+                "matched_path_taxonomy": _path_taxonomy(matched_path),
                 "low_priority": item["low_priority"],
             }
             extracted.append(record)
@@ -358,6 +424,8 @@ def validate_stage_output(
                     warnings.append(record)
                 else:
                     unmatched.append(record)
+            elif not _is_blocking_numeric_path(matched_path):
+                warnings.append(record)
 
     return StageValidation(valid=not unmatched, extracted=extracted, unmatched=unmatched, warnings=warnings)
 
@@ -426,12 +494,7 @@ def _has_view_label(text: str, display: str, source: str) -> bool:
 
 
 def _is_ci_metadata_path(matched_path: str | None) -> bool:
-    path = str(matched_path or "")
-    return (
-        ".horizon_ci_levels." in path
-        or ".ci_lower_95" in path
-        or ".ci_upper_95" in path
-    )
+    return _path_taxonomy(matched_path) == "ci_metadata"
 
 
 def _view_label_from_text(text: str) -> tuple[str | None, str | None]:
@@ -460,7 +523,7 @@ def _candidate_paths_for_extracted_number(
         matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= 0.001
         if matches_absolute or matches_relative:
             paths.extend(bundle_paths)
-    return paths
+    return sorted(paths, key=_path_priority)
 
 
 def _path_matches_source_hint(bundle: dict, path: str, source_hint: str | None, display_hint: str | None) -> bool:
@@ -554,7 +617,7 @@ def _simulation_horizons_used(
 
 
 def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValidation]) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     bundle_index = build_bundle_path_index(bundle)
     for stage, result in stage_results.items():
         for item in result.extracted:
@@ -569,7 +632,7 @@ def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValid
             display, source = parts
             if _has_view_label(str(item.get("context_text") or ""), display, source):
                 continue
-            issues.append(
+            warnings.append(
                 _policy_issue(
                     stage,
                     item.get("context") or "view_label_policy",
@@ -578,7 +641,7 @@ def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValid
                     f"market metric 수치에는 '{source}' 출처 표기가 필요합니다.",
                 )
             )
-    return issues
+    return warnings
 
 
 def _iter_bundle_events(bundle: dict) -> list[dict[str, Any]]:
@@ -622,8 +685,7 @@ def _matches_event_evidence(item: dict[str, Any], source_ids: set[str], source_t
 
 
 def _is_metric_or_simulation_path(path: str | None) -> bool:
-    value = str(path or "")
-    return value.startswith("market_views[") or value.startswith("forecast_simulation.")
+    return _path_taxonomy(path) in {"metric", "forecast_base"}
 
 
 def _evidence_numbers(text: str, config: ValidatorConfig) -> list[dict[str, Any]]:
@@ -653,22 +715,27 @@ def _matches_numeric_evidence(item: dict[str, Any], bundle_index: dict[float, li
     _display_hint, source_hint = _view_label_from_text(text)
     if not NUMERIC_EVIDENCE_TAG_RE.search(text) and not source_hint:
         return False
+    meaningful_numbers = []
     for number in _evidence_numbers(text, config):
+        if number.get("low_priority"):
+            continue
+        meaningful_numbers.append(number)
         matched_path = find_match_unit_aware(number["value"], bundle_index, number["number_type"], config)
-        if _is_metric_or_simulation_path(matched_path):
-            return True
-    return False
+        if not _is_metric_or_simulation_path(matched_path):
+            return False
+    return bool(meaningful_numbers)
 
 
-def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> list[dict[str, Any]]:
+def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     text = _prediction_text(parsed_output)
     bundle_events = _iter_bundle_events(bundle)
     evidence = _prediction_evidence(parsed_output)
     bundle_index = build_bundle_path_index(bundle)
     issues: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
 
     if PREDICTION_NEWS_TRIGGER_RE.search(text) and bundle_events and not evidence:
-        issues.append(
+        warnings.append(
             _prediction_policy_issue(
                 "prediction_evidence_required",
                 "",
@@ -691,28 +758,29 @@ def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, confi
                     "prediction evidence는 bundle에 포함된 source event에서만 인용할 수 있습니다.",
                 )
             )
-    return issues
+    return issues, warnings
 
 
 def validate_simulation_prediction_policy(
     parsed_output: dict,
     bundle: dict,
     prediction_result: StageValidation,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not _forecast_simulation_available(bundle):
-        return []
+        return [], []
 
     text = _prediction_text(parsed_output)
     issues: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     if not text.strip():
-        issues.append(
+        warnings.append(
             _prediction_policy_issue(
                 "simulation_prediction_missing",
                 "",
                 "forecast_simulation.available=true 이지만 prediction stage 본문이 비어 있습니다.",
             )
         )
-        return issues
+        return issues, warnings
 
     forbidden = SIMULATION_FORBIDDEN_SCENARIO_RE.search(text)
     if forbidden:
@@ -737,17 +805,17 @@ def validate_simulation_prediction_policy(
     bundle_index = build_bundle_path_index(bundle)
     has_simulation_value, used_horizons = _simulation_horizons_used(bundle, bundle_index, prediction_result.extracted)
     if not has_simulation_value:
-        issues.append(
+        warnings.append(
             _prediction_policy_issue(
                 "simulation_not_used",
                 "",
                 "forecast_simulation.available=true 이지만 prediction stage에서 simulation 수치를 사용하지 않았습니다.",
             )
         )
-        return issues
+        return issues, warnings
 
     if not SIMULATION_CI_RE.search(text):
-        issues.append(
+        warnings.append(
             _prediction_policy_issue(
                 "simulation_missing_ci_wording",
                 "",
@@ -757,14 +825,14 @@ def validate_simulation_prediction_policy(
 
     for horizon in ["1y", "3y", "5y"]:
         if horizon not in used_horizons:
-            issues.append(
+            warnings.append(
                 _prediction_policy_issue(
                     f"simulation_missing_horizon_{horizon}",
                     "",
                     f"prediction stage에서 forecast_simulation horizon_{horizon} 수치를 사용해야 합니다.",
                 )
             )
-    return issues
+    return issues, warnings
 
 
 def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> ValidationResult:
@@ -784,15 +852,17 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
         total_matched += sum(1 for item in stage_result.extracted if item.get("matched_path"))
 
     policy_issues: list[dict[str, Any]] = []
-    policy_issues.extend(
-        validate_simulation_prediction_policy(
-            parsed_output,
-            bundle,
-            stage_results.get("prediction") or StageValidation(False, [], [], []),
-        )
+    simulation_issues, simulation_warnings = validate_simulation_prediction_policy(
+        parsed_output,
+        bundle,
+        stage_results.get("prediction") or StageValidation(False, [], [], []),
     )
-    policy_issues.extend(validate_view_label_policy(bundle, stage_results))
-    policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle, config))
+    policy_issues.extend(simulation_issues)
+    all_warnings.extend(simulation_warnings)
+    all_warnings.extend(validate_view_label_policy(bundle, stage_results))
+    evidence_issues, evidence_warnings = validate_prediction_evidence_policy(parsed_output, bundle, config)
+    policy_issues.extend(evidence_issues)
+    all_warnings.extend(evidence_warnings)
 
     if policy_issues:
         prediction_result = stage_results.get("prediction")

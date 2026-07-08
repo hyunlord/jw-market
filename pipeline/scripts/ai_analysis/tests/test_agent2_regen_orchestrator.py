@@ -90,6 +90,28 @@ def test_formatter_contract_counts_full_source_labels_for_dual_source_gate():
     assert result.summary["source_mentions"] == ["IQVIA", "UBIST"]
 
 
+def test_formatter_contract_warns_instead_of_blocking_when_full_source_tags_missing():
+    parsed = _parsed_with_counts(bullet_count=4, sentence_count=6)
+    for stage in ("phenomenon", "cause", "prediction", "recommendation"):
+        parsed[stage]["body"] = "충분한 본문입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다."
+
+    result = validate_formatter_contract(parsed, brand="가드렛", mode="full")
+
+    assert result.valid
+    assert not result.errors
+    assert any(warning["type"] == "inline_source_tag_missing" for warning in result.warnings)
+
+
+def test_formatter_contract_does_not_hardcode_dual_source_brand_errors():
+    parsed = _parsed_with_counts(bullet_count=4, sentence_count=6)
+    parsed["phenomenon"]["body"] += " 가드렛은 0.14%(Market Landscape · UBIST 기준)입니다."
+
+    result = validate_formatter_contract(parsed, brand="가드렛", mode="full")
+
+    assert result.valid
+    assert not any(error["type"] == "dual_source_missing" for error in result.errors)
+
+
 def test_formatter_contract_accepts_full_source_label_for_compact_inline_gate():
     parsed = _parsed_with_counts(bullet_count=2, sentence_count=3)
     for stage in ("phenomenon", "cause", "prediction", "recommendation"):

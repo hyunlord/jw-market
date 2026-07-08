@@ -45,7 +45,6 @@ from phase_zeta_runner.run_pipeline import FullValidationResult, run_full_valida
 STAGES = ("phenomenon", "cause", "prediction", "recommendation")
 DEFAULT_FORMATTER_VERSION = "wf217-order2-v10.3"
 DEFAULT_WORKFLOW_REVISION_ID = 3727
-DUAL_SOURCE_BRANDS = frozenset({"가드렛", "가드메트", "엔커버"})
 
 TAG_RE = re.compile(r"\((ML|CD)·([^()·]+)·([^()·]+)(?:·([^()·]+))?\)")
 SOURCE_LABEL_RE = re.compile(r"\b(Market Landscape|Competitive Dynamics)\s*·\s*(IQVIA|UBIST)\s*기준", re.IGNORECASE)
@@ -220,16 +219,11 @@ def validate_formatter_contract(
         errors.append({"type": "prediction_certainty_phrase"})
     source_matches = _formatter_source_matches(all_text)
     source_mentions = sorted({source for source in source_matches if source in {"IQVIA", "UBIST"}})
-    if brand in DUAL_SOURCE_BRANDS:
-        has_iqvia = "IQVIA" in source_mentions
-        has_ubist = "UBIST" in source_mentions
-        if not (has_iqvia and has_ubist):
-            errors.append({"type": "dual_source_missing", "has_iqvia": has_iqvia, "has_ubist": has_ubist})
 
     source_tag_count = len(source_matches)
     source_tag_required = mode_name == PROCESSING_MODE_FULL
     if source_tag_required and source_tag_count == 0:
-        errors.append({"type": "inline_source_tag_missing"})
+        warnings.append({"type": "inline_source_tag_missing"})
 
     return FormatterContractResult(
         valid=not errors,

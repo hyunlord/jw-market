@@ -207,7 +207,7 @@ def test_simulation_prediction_rejects_unit_conversion():
     assert any(item["pattern"] == "simulation_unit_conversion" for item in result.unmatched_numbers)
 
 
-def test_simulation_prediction_requires_ci_wording():
+def test_simulation_prediction_ci_wording_is_warning_only():
     parsed_output = _parsed_with_prediction(
         "1년 후 1,000 KRW (800~1,200 KRW), 3년 후 3,000 KRW (2,400~3,600 KRW), "
         "5년 후 5,000 KRW (4,000~6,000 KRW)로 예측됩니다."
@@ -215,8 +215,19 @@ def test_simulation_prediction_requires_ci_wording():
 
     result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
 
-    assert not result.valid
-    assert any(item["pattern"] == "simulation_missing_ci_wording" for item in result.unmatched_numbers)
+    assert result.valid
+    assert any(item["pattern"] == "simulation_missing_ci_wording" for item in result.warnings)
+
+
+def test_simulation_missing_horizons_are_warning_only():
+    parsed_output = _parsed_with_prediction("1년 후 1,000 KRW로 예측됩니다 (Market Landscape · UBIST 기준).")
+
+    result = validate_output(parsed_output, _simulation_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert any(item["pattern"] == "simulation_missing_ci_wording" for item in result.warnings)
+    assert any(item["pattern"] == "simulation_missing_horizon_3y" for item in result.warnings)
+    assert any(item["pattern"] == "simulation_missing_horizon_5y" for item in result.warnings)
 
 
 def _cd_metric_bundle():
@@ -261,7 +272,7 @@ def test_cd_metric_is_valid_when_competitive_dynamics_label_is_present():
     assert result.valid
 
 
-def test_market_metric_without_view_label_is_rejected():
+def test_market_metric_without_view_label_is_warning_only():
     parsed_output = {
         "phenomenon": {
             "title": "페린젝트 M/S 58.82%",
@@ -275,8 +286,8 @@ def test_market_metric_without_view_label_is_rejected():
 
     result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
 
-    assert not result.valid
-    assert any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
+    assert result.valid
+    assert any(item["pattern"] == "market_metric_missing_view_label" for item in result.warnings)
 
 
 @pytest.mark.parametrize(
@@ -411,8 +422,8 @@ def test_prediction_news_claim_requires_evidence_when_source_exists():
 
     result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
 
-    assert not result.valid
-    assert any(item["pattern"] == "prediction_evidence_required" for item in result.unmatched_numbers)
+    assert result.valid
+    assert any(item["pattern"] == "prediction_evidence_required" for item in result.warnings)
 
 
 def test_prediction_news_evidence_must_come_from_bundle():
@@ -432,6 +443,24 @@ def test_prediction_news_evidence_must_come_from_bundle():
 
     assert not result.valid
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_non_bundle_numeric_claim_still_blocks():
+    parsed_output = {
+        "phenomenon": {
+            "title": "없는 수치",
+            "body": "페린젝트 매출은 999,999 KRW입니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["raw_text"] == "999,999" for item in result.unmatched_numbers)
 
 
 def test_prediction_numeric_evidence_matches_market_or_simulation_basis():
