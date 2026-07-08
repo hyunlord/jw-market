@@ -62,6 +62,37 @@ def test_evidence_counts_map_event_names_to_keys_and_exclude_unmatched_known_bra
     ]
 
 
+def test_evidence_counts_resolve_pl_confirmed_winnerf_a_plus_alias() -> None:
+    brand_rows = [
+        {"brand_key": "winnerf-a-plus-key", "brand_name": "위너프에이플러스", "raw_value_history": {"2026-04": 10}},
+    ]
+    score_rows = [
+        {
+            "brand_canonical": "위너프A+",
+            "source_processor": "workflow_196_optionB",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 54,
+        },
+        {
+            "brand_canonical": "트레시바",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        },
+    ]
+
+    result = build_evidence_counts_from_rows(brand_rows, score_rows)
+
+    assert "위너프A+" not in KNOWN_UNMATCHED_EVENT_BRANDS
+    assert result.unmatched_known == ("트레시바",)
+    assert result.unmatched_unknown == ()
+    assert [(row.brand, row.count, row.tag, row.score_cutoff) for row in result.counts] == [
+        ("winnerf-a-plus-key", 1, "신약/R&D", 54)
+    ]
+
+
 def test_route_density_worklist_returns_brand_key_routes_with_display_names() -> None:
     brand_rows = [
         {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},

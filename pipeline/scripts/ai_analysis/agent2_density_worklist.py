@@ -24,8 +24,12 @@ from pipeline.scripts.agent3.brand_identity import (
 )
 
 KNOWN_UNMATCHED_EVENT_BRANDS: Final = frozenset(
-    {"리조덱", "염화칼륨", "오메가", "위너프A+", "트레시바", "하트만"}
+    {"리조덱", "염화칼륨", "오메가", "트레시바", "하트만"}
 )
+EVENT_BRAND_NAME_ALIASES: Final = {
+    # PL-confirmed JW25 grain: event rows use "위너프A+" while mart uses the canonical brand_key/name.
+    "위너프A+": "위너프에이플러스",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +119,8 @@ def build_evidence_counts_from_rows(
         score = _number(row.get("score"))
         if not is_score_allowed_for_density(score, tag):
             continue
-        brand_name = _text(row.get("brand_canonical"))
+        event_brand_name = _text(row.get("brand_canonical"))
+        brand_name = EVENT_BRAND_NAME_ALIASES.get(event_brand_name, event_brand_name)
         brand_key = name_to_key.get(brand_name)
         if brand_key is None:
             if brand_name in KNOWN_UNMATCHED_EVENT_BRANDS:
