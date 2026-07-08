@@ -382,6 +382,15 @@ def find_match_unit_aware(
     return best_path
 
 
+def _can_match_absolute_percent(item: dict[str, Any], text: str) -> bool:
+    if item.get("number_type") not in {"percent", "percent_signed"}:
+        return False
+    if str(item.get("raw_text") or "").strip().startswith(("+", "-")):
+        return False
+    nearby = _nearby_context(str(item.get("raw_text") or ""), text, before=30, after=40)
+    return bool(re.search(r"(감소|하락|축소|역성장|줄(?:었|어|고|며|든|어든)|낮아)", nearby))
+
+
 def _stage_contexts(stage_dict: dict[str, Any]) -> dict[str, str]:
     contexts = {
         "title": str(stage_dict.get("title", "")),
@@ -405,6 +414,8 @@ def validate_stage_output(
     for context_name, text in _stage_contexts(stage_dict).items():
         for item in extract_numbers(text, config):
             matched_path = find_match_unit_aware(item["value"], bundle_index, item["number_type"], config)
+            if matched_path is None and _can_match_absolute_percent(item, text):
+                matched_path = find_match_unit_aware(-float(item["value"]), bundle_index, "percent_signed", config)
             record = {
                 "stage": stage,
                 "context": context_name,
@@ -723,7 +734,18 @@ def _matches_numeric_evidence(item: dict[str, Any], bundle_index: dict[float, li
         matched_path = find_match_unit_aware(number["value"], bundle_index, number["number_type"], config)
         if not _is_metric_or_simulation_path(matched_path):
             return False
+    if not meaningful_numbers and _is_simulation_evidence_reference(text):
+        return True
     return bool(meaningful_numbers)
+
+
+def _is_simulation_evidence_reference(text: str) -> bool:
+    if not text.strip():
+        return False
+    has_forecast_word = bool(re.search(r"(시뮬레이션|예측값|forecast|simulation|horizon)", text, re.IGNORECASE))
+    has_horizon_hint = bool(re.search(r"(?:1y|3y|5y|1\s*년|3\s*년|5\s*년)", text, re.IGNORECASE))
+    _display_hint, source_hint = _view_label_from_text(text)
+    return has_forecast_word and has_horizon_hint and bool(source_hint)
 
 
 def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

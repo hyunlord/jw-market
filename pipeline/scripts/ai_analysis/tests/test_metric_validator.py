@@ -463,6 +463,40 @@ def test_non_bundle_numeric_claim_still_blocks():
     assert any(item["raw_text"] == "999,999" for item in result.unmatched_numbers)
 
 
+def test_positive_decrease_percent_matches_negative_bundle_metric():
+    parsed_output = {
+        "phenomenon": {
+            "title": "감소율",
+            "body": "매출은 전년 대비 18.50%(Market Landscape · UBIST 기준) 감소했습니다.",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+    bundle = {
+        "market_views": [
+            {
+                "target_brand_metric": {
+                    "history": {
+                        "2026-05": {
+                            "yoy_pct": -18.497476946824285,
+                        }
+                    }
+                }
+            }
+        ]
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+    assert any(
+        item["raw_text"] == "18.50%" and item["matched_path"]
+        for item in result.stage_results["phenomenon"].extracted
+    )
+
+
 def test_prediction_numeric_evidence_matches_market_or_simulation_basis():
     parsed_output = {
         "phenomenon": {"title": "", "body": "", "bullets": []},
@@ -532,6 +566,34 @@ def test_prediction_numeric_evidence_matches_source_after_horizon_series():
         },
         "recommendation": {"title": "", "body": "", "bullets": []},
     }
+    bundle = {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.IQVIA.sales": {
+                    "horizon_1y": {"base": 314003008.58},
+                    "horizon_3y": {"base": 81390234.74},
+                    "horizon_5y": {"base": 0.0},
+                }
+            },
+        }
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_prediction_simulation_evidence_reference_without_repeated_values_is_valid():
+    parsed_output = _parsed_with_prediction(
+        "1년 후 314,003,008.58원, 3년 후 81,390,234.74원, 5년 후 0.00원으로 예측됩니다."
+    )
+    parsed_output["prediction"]["evidence"] = [
+        {
+            "title": "매출 및 처방량 시뮬레이션",
+            "basis": "1y/3y/5y 예측값(Market Landscape · IQVIA 기준)",
+        }
+    ]
     bundle = {
         "forecast_simulation": {
             "available": True,

@@ -67,6 +67,20 @@ def test_formatter_contract_rejects_damaged_dates_and_double_formatting():
     assert any(error["type"] == "damaged_date_or_double_format" for error in result.errors)
 
 
+def test_formatter_contract_warns_on_decimal_krw_or_quantity_without_blocking():
+    parsed = _parsed(
+        "가드렛 매출은 176,193,950.22원(Market Landscape · UBIST 기준)입니다. "
+        "처방량은 477,490.38Rx(Market Landscape · UBIST 기준)입니다. "
+        "문장입니다. 문장입니다. 문장입니다. 문장입니다."
+    )
+
+    result = validate_formatter_contract(parsed, brand="가드렛", mode="full")
+
+    assert result.valid
+    assert not any(error["type"] == "krw_or_qty_decimal" for error in result.errors)
+    assert any(warning["type"] == "krw_or_qty_decimal" for warning in result.warnings)
+
+
 def test_formatter_contract_keeps_full_strict_but_allows_compact_and_recap_thresholds():
     full = validate_formatter_contract(_parsed_with_counts(bullet_count=3, sentence_count=3), brand="테스트", mode="full")
     compact = validate_formatter_contract(_parsed_with_counts(bullet_count=2, sentence_count=3), brand="테스트", mode="compact")

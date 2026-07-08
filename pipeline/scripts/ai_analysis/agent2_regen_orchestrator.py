@@ -203,7 +203,7 @@ def validate_formatter_contract(
         if DAMAGED_DATE_RE.search(text):
             errors.append({"type": "damaged_date_or_double_format", "path": path})
         if KRW_QTY_DECIMAL_RE.search(text):
-            errors.append({"type": "krw_or_qty_decimal", "path": path})
+            warnings.append({"type": "krw_or_qty_decimal", "path": path})
         for match in THREE_PLUS_DECIMAL_RE.finditer(text):
             errors.append({"type": "three_plus_decimal", "path": path, "value": match.group(0)})
         if _has_duplicate_period_prefix(text):
