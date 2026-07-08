@@ -8,6 +8,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.handlers.multi_market import choose_primary_market
+from pipeline.scripts.api.market_definition_display import cd_display_for_id
 from pipeline.scripts.api.market_id import to_strategy_id
 from pipeline.scripts.api.validators.query_params import UNIT_LABELS, validate_cause_query
 
@@ -46,6 +47,22 @@ def _fetch_cause_rows(
     )
 
 
+def _apply_cd_market_definition(payload: dict) -> None:
+    meta = payload.get("market_meta")
+    if not isinstance(meta, dict):
+        return
+    view_source_id = meta.get("view_source_id")
+    if not isinstance(view_source_id, str) or not view_source_id.startswith("cd_"):
+        return
+    display = cd_display_for_id(view_source_id)
+    if display is None:
+        return
+    meta["market_definition_label"] = display.label
+    meta["market_definition_full"] = display.full
+    meta["atc_codes"] = display.atc_codes
+    meta["atc_count"] = display.atc_count
+
+
 @router.get("/api/cause/{brand_name}")
 def cause(
     brand_name: str,
@@ -81,4 +98,5 @@ def cause(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_cause"})
     payload["markets"] = markets
+    _apply_cd_market_definition(payload)
     return payload

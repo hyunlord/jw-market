@@ -18,6 +18,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
+from pipeline.scripts.api.market_definition_display import cd_display_for_id
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
 
 
@@ -109,6 +110,8 @@ def build_strategic_payload(
     composed = compose_cached_json(raw_payload, measure=measure)
     if not isinstance(composed, dict):
         raise DynamicMarketInputError("strategic payload composition did not return an object")
+    if market_kind == "cd":
+        _apply_cd_market_definition(composed, view_source_id)
     return composed
 
 
@@ -126,6 +129,19 @@ def _resolve_market_id(*, ml_id: str | None, cd_market_id: str | None) -> tuple[
             raise DynamicMarketInputError(f"unsupported market-landscape market id: {ml_id}")
         return "ml", normalized
     raise DynamicMarketInputError("strategic dynamic-market requests require ml_id or cd_market_id")
+
+
+def _apply_cd_market_definition(payload: JsonRow, cd_market_id: str) -> None:
+    meta = payload.get("market_meta")
+    if not isinstance(meta, dict):
+        return
+    display = cd_display_for_id(cd_market_id)
+    if display is None:
+        return
+    meta["market_definition_label"] = display.label
+    meta["market_definition_full"] = display.full
+    meta["atc_codes"] = display.atc_codes
+    meta["atc_count"] = display.atc_count
 
 
 def _tables_for_market_kind(market_kind: str) -> tuple[str, str, str]:
