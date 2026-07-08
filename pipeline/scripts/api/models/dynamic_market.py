@@ -50,6 +50,7 @@ class IqviaAnalysisLevel(BaseModel):
     strength: list[str] = Field(default_factory=list, description="IQVIA strength 필터.")
     nhi: list[str] = Field(default_factory=list, description="IQVIA NHI 필터.")
     nhi_type: list[str] = Field(default_factory=list, description="IQVIA NHI type 필터.")
+    atc4: list[str] = Field(default_factory=list, description="IQVIA strategic ATC4 narrowing 필터.")
     audit_code: list[str] = Field(default_factory=list, description="IQVIA audit code 값 슬라이스. 비어 있으면 전체 audit matrix를 포함합니다.")
 
 
@@ -76,6 +77,7 @@ class DynamicMarketAnalysisLevel(BaseModel):
             payload["ubist"].pop("pairs", None)
         else:
             payload["iqvia"].pop("audit_code", None)
+            payload["iqvia"].pop("atc4", None)
         return payload
 
     def to_channel_axis(self, *, source: str) -> ChannelAxisFilter | None:

@@ -60,7 +60,7 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
     assert {"mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"}.issubset(general_iqvia)
     assert {"mfr", "nhi"}.isdisjoint(general_iqvia)
     assert {"class", "molecule", "strength_pack", "ox_gx", "atc3"}.issubset(strategic["ubist"]["properties"])
-    assert {"mfr", "nhi"}.issubset(strategic["iqvia"]["properties"])
+    assert {"mfr", "nhi", "atc4"}.issubset(strategic["iqvia"]["properties"])
     assert "audit_code" not in strategic["iqvia"]["properties"]
 
 

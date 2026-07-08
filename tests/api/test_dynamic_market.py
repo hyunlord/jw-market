@@ -1928,6 +1928,23 @@ def test_dynamic_market_request_rejects_removed_metrics_option() -> None:
     assert "metrics" in str(exc_info.value)
 
 
+def test_general_dimension_payload_drops_iqvia_value_slice_and_nested_atc4() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "source": "iqvia",
+            "filters": {
+                "atc4": ["A10C1"],
+                "analysis_level": {"iqvia": {"atc4": ["A10C1"], "audit_code": ["KPA"], "pack_desc": ["PACK"]}},
+            },
+        }
+    )
+
+    payload = request.filters.analysis_level.to_dimension_payload(source=request.source)["iqvia"]
+    assert payload["pack_desc"] == ["PACK"]
+    assert "audit_code" not in payload
+    assert "atc4" not in payload
+
+
 def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
     class FakeResolver:
         def __init__(self, *, mart_db: str, bridge_db: str) -> None:

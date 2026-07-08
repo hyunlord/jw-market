@@ -160,7 +160,7 @@ mapping에 없거나 비활성인 필드입니다.
 
 전략뷰는 top-level `filters.atc4`를 받지 않습니다. 전략 범위를 더 좁힐 때는
 `analysis_level.ubist.atc4(ATC4 좁히기)`처럼 source 하위의 narrowing 필드를 사용합니다.
-전략뷰 전용으로 `class(클래스)`, `mfr(제조사 alias)`, `nhi(NHI alias)`, `atc3(ATC3)` 같은
+전략뷰 전용으로 `class(클래스)`, `mfr(제조사 alias)`, `nhi(NHI alias)`, `atc3/atc4(ATC 좁히기)` 같은
 by_dimension alias 필드를 허용합니다. `facility`, `specialty`, `pairs`, `audit_code` 같은 값 슬라이스 필드는
 일반뷰 전용이므로 전략뷰에서 active 값이 있으면 400입니다.
 
@@ -273,6 +273,7 @@ PUBLIC_STRATEGIC_IQVIA_ANALYSIS_SCHEMA: Final = {
         "strength": {"type": "array", "items": {"type": "string"}, "description": "strength(함량)"},
         "nhi": {"type": "array", "items": {"type": "string"}, "description": "nhi(NHI alias)"},
         "nhi_type": {"type": "array", "items": {"type": "string"}, "description": "nhi_type(NHI 구분)"},
+        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
     },
 }
 
