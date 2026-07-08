@@ -192,6 +192,82 @@ def test_store_summary_validation_accepts_persisted_rows() -> None:
     topic_store_db.ensure_store_summary_nonzero(summary)
 
 
+def test_upsert_topic_results_recovers_zero_topic_count_on_bounded_retry() -> None:
+    """Given a transient zero topic readback, When storing records, Then the retry evidence is used."""
+    artifacts = _artifact_payload()
+    run = topic_store.build_run_record(artifacts, artifact_sha256="sha")
+    records = topic_store.build_topic_records(artifacts)
+    connection = _StoreConnection(
+        {
+            topic_store_db.RUNS_TABLE: [1],
+            topic_store_db.TOPICS_TABLE: [0, len(records)],
+        }
+    )
+
+    summary = topic_store_db.upsert_topic_results(
+        connection,
+        schema=topic_store_db.SCHEMA,
+        run=run,
+        records=records,
+    )
+
+    assert summary.stored_topic_rows == len(records)
+    assert summary.stored_run_rows == 1
+    assert summary.count_retry_used is True
+    assert connection.count_queries[topic_store_db.TOPICS_TABLE] == 2
+    topic_store_db.ensure_store_summary_nonzero(summary)
+
+
+def test_upsert_topic_results_keeps_zero_after_bounded_retry_for_real_failure() -> None:
+    """Given repeated zero topic readbacks, When storing records, Then validation still fails loudly."""
+    artifacts = _artifact_payload()
+    run = topic_store.build_run_record(artifacts, artifact_sha256="sha")
+    records = topic_store.build_topic_records(artifacts)
+    connection = _StoreConnection(
+        {
+            topic_store_db.RUNS_TABLE: [1],
+            topic_store_db.TOPICS_TABLE: [0, 0, 0],
+        }
+    )
+
+    summary = topic_store_db.upsert_topic_results(
+        connection,
+        schema=topic_store_db.SCHEMA,
+        run=run,
+        records=records,
+    )
+
+    assert summary.stored_topic_rows == 0
+    assert summary.count_retry_used is False
+    assert connection.count_queries[topic_store_db.TOPICS_TABLE] == 3
+    with pytest.raises(topic_store.TopicStoreError, match="zero-row DB save"):
+        topic_store_db.ensure_store_summary_nonzero(summary)
+
+
+def test_upsert_topic_results_does_not_retry_nonzero_first_readback() -> None:
+    """Given nonzero readback evidence, When storing records, Then no defensive retry is used."""
+    artifacts = _artifact_payload()
+    run = topic_store.build_run_record(artifacts, artifact_sha256="sha")
+    records = topic_store.build_topic_records(artifacts)
+    connection = _StoreConnection(
+        {
+            topic_store_db.RUNS_TABLE: [1],
+            topic_store_db.TOPICS_TABLE: [len(records)],
+        }
+    )
+
+    summary = topic_store_db.upsert_topic_results(
+        connection,
+        schema=topic_store_db.SCHEMA,
+        run=run,
+        records=records,
+    )
+
+    assert summary.stored_topic_rows == len(records)
+    assert summary.count_retry_used is False
+    assert connection.count_queries[topic_store_db.TOPICS_TABLE] == 1
+
+
 def test_load_artifacts_requires_existing_audit_files(tmp_path: Path) -> None:
     """Given an incomplete audit directory, When loading artifacts, Then the missing file is explicit."""
     with pytest.raises(topic_store.TopicStoreError, match="run_summary.json"):
@@ -303,3 +379,54 @@ def test_derive_verification_file_unblocks_artifact_loading(tmp_path: Path) -> N
     assert run.total_prompt_tokens == 100
     assert run.total_completion_tokens == 25
     assert run.route == "direct_serving"
+
+
+class _StoreConnection:
+    def __init__(self, count_rows: dict[str, list[int]]) -> None:
+        self._count_rows = {table: list(values) for table, values in count_rows.items()}
+        self.count_queries = {table: 0 for table in count_rows}
+        self.commits = 0
+
+    def cursor(self) -> "_StoreCursor":
+        return _StoreCursor(self)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def next_count(self, table: str) -> int:
+        self.count_queries[table] += 1
+        values = self._count_rows[table]
+        if len(values) > 1:
+            return values.pop(0)
+        return values[0]
+
+
+class _StoreCursor:
+    def __init__(self, connection: _StoreConnection) -> None:
+        self._connection = connection
+        self._last_row = {"row_count": 0}
+
+    def __enter__(self) -> "_StoreCursor":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+        if "SELECT COUNT(*)" not in sql:
+            return
+        table = _count_table(sql)
+        self._last_row = {"row_count": self._connection.next_count(table)}
+
+    def executemany(self, sql: str, values: list[tuple[object, ...]]) -> None:
+        return None
+
+    def fetchone(self) -> dict[str, int]:
+        return self._last_row
+
+
+def _count_table(sql: str) -> str:
+    for table in (topic_store_db.RUNS_TABLE, topic_store_db.TOPICS_TABLE):
+        if f"`.`{table}`" in sql:
+            return table
+    raise AssertionError(f"unexpected count SQL: {sql}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 from typing import Final
 
 import pymysql
@@ -21,6 +22,8 @@ from .topic_store import (
 
 TOPICS_TABLE: Final = "mart_brand_activity_topics"
 RUNS_TABLE: Final = "mart_brand_activity_topic_runs"
+COUNT_READBACK_RETRY_LIMIT: Final = 2
+COUNT_READBACK_RETRY_DELAY_SECONDS: Final = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +35,7 @@ class StoreSummary:
     topic_brand_count: int
     stored_topic_rows: int
     stored_run_rows: int
+    count_retry_used: bool = False
 
 
 def ensure_topic_tables(connection: pymysql.connections.Connection, *, schema: str = SCHEMA) -> None:
@@ -76,14 +80,29 @@ def upsert_topic_results(
         cursor.executemany(_topic_upsert_sql(safe_schema), [_topic_tuple(record, run.run_id) for record in records])
     connection.commit()
     with connection.cursor() as cursor:
-        stored_run_rows = _count_rows(cursor, safe_schema, RUNS_TABLE, "run_id", run.run_id)
-        stored_topic_rows = _count_rows(cursor, safe_schema, TOPICS_TABLE, "run_id", run.run_id)
+        stored_run_rows, run_count_retry_used = _count_rows_with_bounded_retry(
+            cursor,
+            safe_schema,
+            RUNS_TABLE,
+            "run_id",
+            run.run_id,
+            expected_rows_present=True,
+        )
+        stored_topic_rows, topic_count_retry_used = _count_rows_with_bounded_retry(
+            cursor,
+            safe_schema,
+            TOPICS_TABLE,
+            "run_id",
+            run.run_id,
+            expected_rows_present=bool(records),
+        )
     return StoreSummary(
         run_id=run.run_id,
         topic_record_count=len(records),
         topic_brand_count=sum(record.brand_count for record in records),
         stored_topic_rows=stored_topic_rows,
         stored_run_rows=stored_run_rows,
+        count_retry_used=run_count_retry_used or topic_count_retry_used,
     )
 
 
@@ -123,6 +142,7 @@ def store_summary_json(summary: StoreSummary) -> dict[str, JsonValue]:
         "topic_brand_count": summary.topic_brand_count,
         "stored_topic_rows": summary.stored_topic_rows,
         "stored_run_rows": summary.stored_run_rows,
+        "count_retry_used": summary.count_retry_used,
     }
 
 
@@ -248,3 +268,27 @@ def _count_rows(cursor: pymysql.cursors.Cursor, schema: str, table: str, key: st
         value = row.get("row_count")
         return int(value) if isinstance(value, int | float) else 0
     return int(row[0])
+
+
+def _count_rows_with_bounded_retry(
+    cursor: pymysql.cursors.Cursor,
+    schema: str,
+    table: str,
+    key: str,
+    value: str,
+    *,
+    expected_rows_present: bool,
+) -> tuple[int, bool]:
+    """Recheck transient zero readbacks without assuming the unconfirmed root cause."""
+    row_count = _count_rows(cursor, schema, table, key, value)
+    if row_count > 0 or not expected_rows_present:
+        return row_count, False
+
+    # Observed false-negative readbacks exist, but the Galera/connection root cause is still unconfirmed.
+    # Keep the retry short and bounded, and only trust a nonzero value that the DB actually returns.
+    for _ in range(COUNT_READBACK_RETRY_LIMIT):
+        time.sleep(COUNT_READBACK_RETRY_DELAY_SECONDS)
+        retry_count = _count_rows(cursor, schema, table, key, value)
+        if retry_count > 0:
+            return retry_count, True
+    return row_count, False
