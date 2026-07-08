@@ -36,11 +36,32 @@ def test_brand_activity_filter_schema_exposes_nested_descriptions() -> None:
 
     assert schemas["AtcFilter"]["properties"]["atc3"]["description"].startswith("ATC3 코드")
     assert "UBIST" in schemas["AnalysisLevel"]["properties"]["ubist"]["description"]
-    assert "판매사" in schemas["pipeline__scripts__api__models__brand_activity__UbistAnalysisLevel"]["properties"]["seller"]["description"]
-    assert "성분명" in schemas["pipeline__scripts__api__models__brand_activity__IqviaAnalysisLevel"]["properties"]["molecule_desc"]["description"]
+    assert "판매사" in schemas["UbistAnalysisLevel"]["properties"]["seller"]["description"]
+    assert "성분명" in schemas["IqviaAnalysisLevel"]["properties"]["molecule_desc"]["description"]
     assert "채널 필터" in schemas["MarketFilter"]["properties"]["channel"]["description"]
     assert "채널 축" in schemas["BrandActivityTopicsRequest"]["properties"]["channel_axis"]["description"]
     assert "channel_axis" in schemas["MarketFilter"]["properties"]
+
+
+def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> None:
+    schema = app.openapi()["paths"]["/api/dynamic-market"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    request_schema_text = str(schema)
+
+    assert "channel_axis" not in request_schema_text
+    assert "metrics" not in request_schema_text
+
+    general_ubist = schema["oneOf"][0]["properties"]["filters"]["properties"]["analysis_level"]["properties"]["ubist"]["properties"]
+    general_iqvia = schema["oneOf"][1]["properties"]["filters"]["properties"]["analysis_level"]["properties"]["iqvia"]["properties"]
+    strategic = schema["oneOf"][2]["properties"]["filters"]["properties"]["analysis_level"]["properties"]
+
+    assert "molecule" not in schema["oneOf"][0]["properties"]["filters"]["properties"]
+    assert {"facility", "specialty", "pairs"}.issubset(general_ubist)
+    assert {"class", "molecule", "strength_pack", "ox_gx"}.isdisjoint(general_ubist)
+    assert {"mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"}.issubset(general_iqvia)
+    assert {"mfr", "nhi"}.isdisjoint(general_iqvia)
+    assert {"class", "molecule", "strength_pack", "ox_gx", "atc3"}.issubset(strategic["ubist"]["properties"])
+    assert {"mfr", "nhi"}.issubset(strategic["iqvia"]["properties"])
+    assert "audit_code" not in strategic["iqvia"]["properties"]
 
 
 def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatch) -> None:
