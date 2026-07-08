@@ -13,7 +13,7 @@ from .prompt_builder import build_question_string
 
 STAGES = ("phenomenon", "cause", "prediction", "recommendation")
 BULLET_RANGES_BY_MODE = {
-    "full": (2, 3),
+    "full": (4, 5),
     "compact": (2, 3),
     "recap": (1, 2),
 }

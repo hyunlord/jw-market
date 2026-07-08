@@ -34,6 +34,17 @@ def test_genos_validation_is_mode_aware_for_recap():
     assert genos_caller.validate_genos_output(parsed, mode="recap")["valid"]
 
 
+def test_genos_validation_accepts_observed_full_four_bullets():
+    parsed = {
+        "phenomenon": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+        "cause": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+        "prediction": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+        "recommendation": {"title": "t", "body": "b", "bullets": ["a", "b", "c", "d"]},
+    }
+
+    assert genos_caller.validate_genos_output(parsed, mode="full")["valid"]
+
+
 def test_call_llm_routes_to_genos(monkeypatch):
     captured = {}
 
