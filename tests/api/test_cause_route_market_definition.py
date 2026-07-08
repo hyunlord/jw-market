@@ -40,6 +40,8 @@ def test_cause_route_adds_cd_market_definition(monkeypatch) -> None:
 
     # Then: the response includes the CD-narrowed market definition fields.
     assert payload["market_meta"]["market_definition_label"] == "Statin/ARB/CCB"
-    assert payload["market_meta"]["market_definition_full"] == "corrected explicit lookup clean(class_2) == 'Statin/ARB/CCB'"
+    assert payload["market_meta"]["market_definition_full"] == (
+        "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
+    )
     assert payload["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
     assert payload["market_meta"]["atc_count"] == 1

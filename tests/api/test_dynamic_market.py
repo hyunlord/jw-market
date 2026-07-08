@@ -2453,7 +2453,9 @@ def test_strategic_payload_adds_cd_definition_to_cached_payload(monkeypatch) -> 
     # Then: the response exposes the narrowed CD market definition expected by the portal.
     assert result["market_meta"]["view_source_id"] == "cd_008"
     assert result["market_meta"]["market_definition_label"] == "Statin/ARB/CCB"
-    assert result["market_meta"]["market_definition_full"] == "corrected explicit lookup clean(class_2) == 'Statin/ARB/CCB'"
+    assert result["market_meta"]["market_definition_full"] == (
+        "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
+    )
     assert result["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
 
 

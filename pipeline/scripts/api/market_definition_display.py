@@ -62,13 +62,13 @@ def cd_display_for_id(cd_id: str | None) -> MarketDefinitionDisplay | None:
     row = _cd_dim_by_id().get(str(cd_id))
     if row is None:
         return None
-    label = _display_label(row)
+    full = _display_full(row)
+    label = _display_label(row, formal_definition=full)
     if not label:
         return None
-    full = _valid_text(row.get("cd_filter_expression")) or label
     return MarketDefinitionDisplay(
         label=label,
-        full=full,
+        full=full or label,
         atc_codes=[label],
         atc_count=1,
         cd_definition_class=label,
@@ -103,8 +103,23 @@ def cd_display_for_brand(brand_name: str, ml_id: str | None = None) -> MarketDef
     return cd_display_for_id(cd_id)
 
 
-def _display_label(row: dict[str, Any]) -> str | None:
-    return _valid_text(row.get("cd_definition_brand_class")) or _first_filter_token(row.get("cd_filter_raw_json"))
+def _display_label(row: dict[str, Any], *, formal_definition: str | None) -> str | None:
+    brand_class = _valid_text(row.get("cd_definition_brand_class"))
+    if brand_class and not _internal_or_placeholder_label(brand_class):
+        return brand_class
+    return formal_definition or _valid_text(row.get("product_name_kor")) or brand_class
+
+
+def _display_full(row: dict[str, Any]) -> str | None:
+    return _first_filter_token(row.get("cd_filter_raw_json")) or _display_label(
+        row,
+        formal_definition=None,
+    )
+
+
+def _internal_or_placeholder_label(value: str) -> bool:
+    lowered = value.lower()
+    return value in {"default", "default_sheet_all"} or "->" in value or lowered.endswith(" only")
 
 
 def _first_filter_token(raw_json: Any) -> str | None:
@@ -203,7 +218,21 @@ def _cd_dim_spec_rows() -> list[dict[str, Any]]:
     except FileNotFoundError:
         return []
     cd_specs = getattr(module, "CD_SPECS", ())
-    return [dict(row) for row in cd_specs]
+    raw_json_by_id = getattr(module, "CD_FILTER_RAW_JSON_BY_ID", {})
+    return [
+        _with_spec_raw_definition(dict(row), raw_json_by_id)
+        for row in cd_specs
+    ]
+
+
+def _with_spec_raw_definition(row: dict[str, Any], raw_json_by_id: Any) -> dict[str, Any]:
+    if row.get("cd_filter_raw_json") or not isinstance(raw_json_by_id, dict):
+        return row
+    cd_id = _valid_text(row.get("competitive_dynamics_id"))
+    raw_json = raw_json_by_id.get(cd_id) if cd_id else None
+    if raw_json:
+        row["cd_filter_raw_json"] = raw_json
+    return row
 
 
 def _parse_list(raw_value: Any) -> list[str]:
