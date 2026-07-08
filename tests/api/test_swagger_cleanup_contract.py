@@ -169,6 +169,9 @@ def test_brand_activity_post_routes_still_return_200(monkeypatch) -> None:
     assert client.post("/api/brand-activity/csd-timeseries", json=base_payload).status_code == 200
     assert client.post("/api/brand-activity/topics", json=base_payload).status_code == 200
     assert client.post("/api/brand-activity/interest-rx-matrix", json=base_payload).status_code == 200
+    assert client.post("/jw-brand-activity-mock/api/brand-activity/csd-timeseries", json=base_payload).status_code == 200
+    assert client.post("/jw-brand-activity-mock/api/brand-activity/topics", json=base_payload).status_code == 200
+    assert client.post("/jw-brand-activity-mock/api/brand-activity/interest-rx-matrix", json=base_payload).status_code == 200
 
 
 def test_filter_options_accepts_brand_and_alias_remains_callable(monkeypatch) -> None:

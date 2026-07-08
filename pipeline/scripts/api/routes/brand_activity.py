@@ -71,6 +71,10 @@ def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
 
 
 @router.post(
+    "/jw-brand-activity-mock/api/brand-activity/topics",
+    include_in_schema=False,
+)
+@router.post(
     "/api/brand-activity/topics",
     tags=[BRAND_ACTIVITY_TAG],
     summary="브랜드별 토픽 그리드",
@@ -98,6 +102,10 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     return {"data": result}
 
 
+@router.post(
+    "/jw-brand-activity-mock/api/brand-activity/csd-timeseries",
+    include_in_schema=False,
+)
 @router.post(
     "/api/brand-activity/csd-timeseries",
     tags=[BRAND_ACTIVITY_TAG],
@@ -151,6 +159,10 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
     return {"data": result}
 
 
+@router.post(
+    "/jw-brand-activity-mock/api/brand-activity/interest-rx-matrix",
+    include_in_schema=False,
+)
 @router.post(
     "/api/brand-activity/interest-rx-matrix",
     tags=[BRAND_ACTIVITY_TAG],
