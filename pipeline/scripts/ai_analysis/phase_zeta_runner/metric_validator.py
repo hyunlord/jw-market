@@ -49,6 +49,11 @@ SIMULATION_UNIT_CONVERSION_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*(?:억|�
 SIMULATION_CI_RE = re.compile(r"(95\s*%\s*(?:신뢰구간|CI)|(?:신뢰구간|CI)[^\n.]{0,20}95\s*%)", re.IGNORECASE)
 FORECAST_VIEW_PATH_RE = re.compile(r"forecast_simulation\.by_view\.([A-Z]+)\.([A-Z]+)\.([^.]+)")
 MARKET_VIEW_PATH_RE = re.compile(r"market_views\[(\d+)\]")
+VIEW_LABEL_IN_TEXT_RE = re.compile(
+    r"(Market\s+Landscape|Competitive\s+Dynamics)\s*·\s*(UBIST|IQVIA)\s*기준",
+    re.IGNORECASE,
+)
+SOURCE_IN_TEXT_RE = re.compile(r"(?<![A-Z])(UBIST|IQVIA)(?![A-Z])", re.IGNORECASE)
 PREDICTION_NEWS_TRIGGER_RE = re.compile(
     r"(뉴스|보도|급여|허가|출시|신약|경쟁사|진입|임상|학회|약가|정책|규제|공세|시장\s*변화)",
     re.IGNORECASE,
@@ -401,11 +406,79 @@ def _has_view_label(text: str, display: str, source: str) -> bool:
     return bool(re.search(rf"{re.escape(display)}\s*·\s*{re.escape(source.upper())}\s*기준", text or "", re.I))
 
 
+def _is_ci_metadata_path(matched_path: str | None) -> bool:
+    path = str(matched_path or "")
+    return (
+        ".horizon_ci_levels." in path
+        or ".ci_lower_95" in path
+        or ".ci_upper_95" in path
+    )
+
+
+def _view_label_from_text(text: str) -> tuple[str | None, str | None]:
+    label_match = VIEW_LABEL_IN_TEXT_RE.search(text or "")
+    if label_match:
+        return VIEW_DISPLAY.get(label_match.group(1), label_match.group(1)), label_match.group(2).upper()
+    sources = {match.group(1).upper() for match in SOURCE_IN_TEXT_RE.finditer(text or "")}
+    if len(sources) == 1:
+        return None, next(iter(sources))
+    return None, None
+
+
+def _candidate_paths_for_extracted_number(
+    item: dict[str, Any],
+    bundle_index: dict[float, list[str]],
+) -> list[str]:
+    value = item.get("value")
+    if value is None:
+        return []
+    numeric = float(value)
+    tolerance = float(item.get("tolerance") or 0.0)
+    paths: list[str] = []
+    for bundle_value, bundle_paths in bundle_index.items():
+        delta = abs(bundle_value - numeric)
+        matches_absolute = delta <= tolerance
+        matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= 0.001
+        if matches_absolute or matches_relative:
+            paths.extend(bundle_paths)
+    return paths
+
+
+def _source_aware_matched_path(
+    bundle: dict,
+    item: dict[str, Any],
+    bundle_index: dict[float, list[str]],
+) -> str | None:
+    matched_path = item.get("matched_path")
+    display_hint, source_hint = _view_label_from_text(str(item.get("context_text") or ""))
+    if not source_hint:
+        return str(matched_path) if matched_path else None
+
+    current_parts = _view_label_parts_from_path(bundle, str(matched_path) if matched_path else None)
+    if current_parts and current_parts[1] == source_hint and (display_hint is None or current_parts[0] == display_hint):
+        return str(matched_path)
+
+    for candidate in _candidate_paths_for_extracted_number(item, bundle_index):
+        if _is_ci_metadata_path(candidate):
+            continue
+        candidate_parts = _view_label_parts_from_path(bundle, candidate)
+        if not candidate_parts:
+            continue
+        display, source = candidate_parts
+        if source == source_hint and (display_hint is None or display == display_hint):
+            return candidate
+    return str(matched_path) if matched_path else None
+
+
 def validate_view_label_policy(bundle: dict, stage_results: dict[str, StageValidation]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    bundle_index = build_bundle_path_index(bundle)
     for stage, result in stage_results.items():
         for item in result.extracted:
-            parts = _view_label_parts_from_path(bundle, item.get("matched_path"))
+            matched_path = _source_aware_matched_path(bundle, item, bundle_index)
+            if _is_ci_metadata_path(matched_path):
+                continue
+            parts = _view_label_parts_from_path(bundle, matched_path)
             if not parts:
                 continue
             display, source = parts

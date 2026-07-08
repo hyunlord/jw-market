@@ -7,7 +7,9 @@ from phase_zeta_runner.metric_validator import (
     build_bundle_path_index,
     extract_numbers,
     find_match,
+    validate_stage_output,
     validate_output,
+    validate_view_label_policy,
 )
 
 
@@ -274,6 +276,76 @@ def test_market_metric_without_view_label_is_rejected():
 
     assert not result.valid
     assert any(item["pattern"] == "market_metric_missing_view_label" for item in result.unmatched_numbers)
+
+
+def test_view_label_policy_ignores_forecast_ci_metadata_values():
+    bundle = {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.UBIST.sales": {
+                    "horizon_ci_levels": {"note": "95% confidence interval"},
+                    "horizon_1y": {"base": 1000, "ci_lower_95": 800, "ci_upper_95": 1200},
+                }
+            },
+        }
+    }
+    bundle_index = build_bundle_path_index(bundle)
+    stage_result = validate_stage_output(
+        "prediction",
+        {
+            "title": "95% 신뢰구간",
+            "body": "95% CI 기준으로 폭을 제시합니다.",
+            "bullets": [],
+        },
+        bundle_index,
+        RunnerConfig.default_for_tests().validator,
+    )
+
+    issues = validate_view_label_policy(bundle, {"prediction": stage_result})
+
+    assert not [
+        item for item in issues if item["pattern"] == "market_metric_missing_view_label"
+    ]
+
+
+def _duplicate_source_metric_bundle():
+    return {
+        "market_views": [
+            {
+                "view_id": "ML.IQVIA.sales",
+                "source": "IQVIA",
+                "target_brand_metric": {"history": {"2026-Q1": {"ms_pct": 0.15}}},
+            },
+            {
+                "view_id": "ML.UBIST.sales",
+                "source": "UBIST",
+                "target_brand_metric": {"history": {"2026-Q1": {"ms_pct": 0.15}}},
+            },
+        ]
+    }
+
+
+@pytest.mark.parametrize("source", ["UBIST", "IQVIA"])
+def test_view_label_policy_prefers_source_written_in_context(source: str):
+    parsed_output = {
+        "phenomenon": {
+            "title": f"가드렛 점유율은 0.15% (Market Landscape · {source} 기준)입니다.",
+            "body": "",
+            "bullets": [],
+        },
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {"title": "", "body": "", "bullets": []},
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(
+        parsed_output,
+        _duplicate_source_metric_bundle(),
+        RunnerConfig.default_for_tests().validator,
+    )
+
+    assert result.valid
 
 
 def test_prediction_news_claim_requires_evidence_when_source_exists():
