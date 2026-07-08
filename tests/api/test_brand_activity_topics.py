@@ -98,15 +98,16 @@ def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
-            "filters": {"atc4": ["C10A1"]},
-            "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
+            "filters": {"atc": {"atc4": ["C10A1"]}, "analysis_level": {"iqvia": {"audit_code": ["KHPA"]}}},
         },
     )
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
     assert "market_id" not in captured
-    assert captured["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert captured["filters"]["atc4"] == ["C10A1"]
+    assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
+    assert captured["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
 def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:

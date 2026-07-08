@@ -569,7 +569,7 @@ DYNAMIC_MARKET_RESPONSES: Final = {
 
 
 BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
-    "atc4": ["C10A1"],
+    "atc": {"atc4": ["C10A1"]},
     "analysis_level": {
         "ubist": {
             "seller": ["JW중외제약"],
@@ -581,16 +581,12 @@ BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
             "molecule_desc": ["PITAVASTATIN"],
             "strength": ["2MG"],
             "nhi_type": ["NHI"],
+            "audit_code": ["KPA", "KHPA"],
         },
     },
     "channel": {
         "visit_location": ["의원"],
         "specialty": ["순환기(Cardiology IM)"],
-        "audit_code": ["KPA"],
-    },
-    "channel_axis": {
-        "ubist": {"facility": ["의원"], "specialty": ["순환기(Cardiology IM)"]},
-        "iqvia": {"audit_code": ["KPA", "KHPA"]},
     },
 }
 
@@ -603,14 +599,14 @@ Brand-Activity 계열은 Dynamic-Market과 같은 시장 필터 개념을 공유
 | ATC4 위치 | `filters.atc4` | `filters.atc4` |
 | source 위치 | 최상위 `source` 필수/기본값 | endpoint/service가 선택 브랜드와 필터에서 해석 |
 | 분석레벨 위치 | `filters.analysis_level.ubist/iqvia` | `filters.analysis_level.ubist/iqvia` |
-| 채널축 위치 | `filters.analysis_level.{source}` 하위 value-slice 필드 | `filters.channel_axis` 또는 top-level `channel_axis` |
+| 채널축 위치 | `filters.analysis_level.{source}` 하위 value-slice 필드 | `filters.analysis_level.iqvia.audit_code` |
 | unknown field | top-level/nested 대부분 거절(`extra=forbid`) | top-level은 ignore, nested filter는 allow |
 | legacy 필터 | 없음 | `filters`가 비면 `filter`를 대신 사용 |
 
 Brand-Activity의 `filters:null`/`filter:null`은 validation error입니다. 생략하면 빈 필터 객체입니다.
 `filters`와 `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다. 일반뷰 handler는
-flat `filters.atc4`를 시장 id로 사용합니다. `filters.atc.atc4`는 모델에 보이는 nested 호환 필드이지만
-현재 service parser의 필수 ATC4 판정에는 쓰이지 않습니다. top-level `channel_axis`는 `filters.channel_axis`가 없을 때만 병합됩니다.
+`filters.atc.atc4`를 flat `filters.atc4`로 정규화해 시장 id로 사용합니다. 기존 flat `filters.atc4`도 호환됩니다.
+옛 `channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
 """
 
 
@@ -628,7 +624,6 @@ BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
     "view": "general",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
-    "channel_axis": {"iqvia": {"audit_code": ["KPA"]}},
     "mode": "absolute",
     "window": {"start": "2024Q1", "end": "2025Q4"},
 }

@@ -183,10 +183,7 @@ def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | 
     data = payload.model_dump()
     filters = _compact_filter(data.get("filters")) if isinstance(data.get("filters"), dict) else {}
     legacy_filter = _compact_filter(data.get("filter")) if isinstance(data.get("filter"), dict) else {}
-    normalized = filters or legacy_filter
-    channel_axis = data.get("channel_axis") if isinstance(data.get("channel_axis"), dict) else {}
-    if channel_axis and "channel_axis" not in normalized:
-        normalized = {**normalized, "channel_axis": channel_axis}
+    normalized = _normalize_market_filter(filters or legacy_filter)
     data["filters"] = normalized
     data["filter"] = normalized
     # The service layer resolves market scope from selected_brand + filters.
@@ -194,6 +191,57 @@ def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | 
     # historical service payload contract for existing Brand Activity handlers.
     data.pop("market_id", None)
     return data
+
+
+def _normalize_market_filter(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    normalized = {key: item for key, item in value.items() if key not in {"atc", "channel"}}
+    atc = value.get("atc")
+    if isinstance(atc, dict):
+        for key in ("atc3", "atc4"):
+            if key not in normalized and atc.get(key) not in ({}, [], None):
+                normalized[key] = atc[key]
+
+    channel = value.get("channel")
+    if isinstance(channel, dict):
+        for key in ("visit_location", "specialty"):
+            if key not in normalized and channel.get(key) not in ({}, [], None):
+                normalized[key] = channel[key]
+
+    audit_codes = _analysis_level_audit_codes(value)
+    if not audit_codes:
+        audit_codes = _legacy_channel_audit_codes(value)
+    if audit_codes and "channel_axis" not in normalized:
+        normalized["channel_axis"] = {"iqvia": {"audit_code": audit_codes}}
+    return normalized
+
+
+def _analysis_level_audit_codes(value: dict[str, JsonValue]) -> list[str]:
+    analysis_level = value.get("analysis_level")
+    if not isinstance(analysis_level, dict):
+        return []
+    iqvia = analysis_level.get("iqvia")
+    if not isinstance(iqvia, dict):
+        return []
+    return _audit_code_list(iqvia.get("audit_code"))
+
+
+def _legacy_channel_audit_codes(value: dict[str, JsonValue]) -> list[str]:
+    channel = value.get("channel")
+    if not isinstance(channel, dict):
+        return []
+    return _audit_code_list(channel.get("audit_code", channel.get("auditCode")))
+
+
+def _audit_code_list(value: JsonValue) -> list[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        code = str(item).strip().upper() if item is not None else ""
+        if code and code not in seen:
+            result.append(code)
+            seen.add(code)
+    return result
 
 
 def _compact_filter(value: dict[str, JsonValue]) -> dict[str, JsonValue]:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AtcFilter(BaseModel):
@@ -36,6 +36,10 @@ class IqviaAnalysisLevel(BaseModel):
     pack_desc: list[str] = Field(default_factory=list, description='팩(제형·포장 단위) 설명 멀티선택. [입력] 예 ["TAB 30s"].')
     strength: list[str] = Field(default_factory=list, description='함량 멀티선택. [입력] 예 ["2MG"].')
     nhi_type: list[str] = Field(default_factory=list, description='급여구분(NHI) 멀티선택. [입력] 예 ["급여","비급여"]')
+    audit_code: list[str] = Field(
+        default_factory=list,
+        description='IQVIA Audit Code(채널) 멀티선택. 비어 있으면 전체 Audit Code를 포함합니다. [입력] 예 ["KHPA"].',
+    )
 
 
 class AnalysisLevel(BaseModel):
@@ -76,12 +80,15 @@ class MarketFilter(BaseModel):
     )
     channel: ChannelFilter = Field(
         default_factory=ChannelFilter,
-        description="채널 필터. [프론트] 종별/진료과/AUDIT CODE 멀티선택. 데이터를 채널 단위로 좁힘.",
+        description="채널 필터. [프론트] UBIST 종별/진료과 shortcut. IQVIA Audit Code는 analysis_level.iqvia.audit_code를 사용합니다.",
     )
-    channel_axis: dict[str, Any] = Field(
-        default_factory=dict,
-        description='동적 시장 API와 같은 value-slice 채널 축 필터. 예: {"iqvia":{"audit_code":["KPA"]}}.',
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_public_channel_axis(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "channel_axis" in value:
+            raise ValueError("channel_axis has moved to filters.analysis_level.<source>")
+        return value
 
 
 class CsdTimeseriesWindow(BaseModel):
@@ -111,10 +118,13 @@ class BrandActivityBaseRequest(BaseModel):
         default_factory=MarketFilter,
         description="Legacy 단수 필터 입력. 신규 호출은 filters를 사용하되 기존 클라이언트 호환을 위해 유지.",
     )
-    channel_axis: dict[str, Any] = Field(
-        default_factory=dict,
-        description='Top-level legacy 채널 축 필터. 있으면 filters.channel_axis로 병합된다. 예: {"iqvia":{"audit_code":["KPA","KHPA"]}}.',
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_public_channel_axis(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "channel_axis" in value:
+            raise ValueError("channel_axis has moved to filters.analysis_level.<source>")
+        return value
 
 
 class CsdTimeseriesRequest(BrandActivityBaseRequest):

@@ -38,7 +38,7 @@ def test_general_default_filter_applies_market_atc4() -> None:
 
 def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> None:
     payload = {
-        "channel_axis": {
+        "analysis_level": {
             "iqvia": {"audit_code": ["khpa", "KCPA", "khpa"]},
             "ubist": {"facility": ["의원"], "specialty": ["순환기(Cardiology IM)"]},
         }
@@ -48,14 +48,14 @@ def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> No
 
     assert applied["atc4"] == ["C10A1"]
     assert applied["channel_axis"] == {"source": "iqvia_nsa", "audit_code": ["KHPA", "KCPA"]}
-    assert applied_brand_filter("general", "C10A1", {"channel_axis": {"ubist": {"facility": ["의원"]}}}) == {
+    assert applied_brand_filter("general", "C10A1", {"analysis_level": {"ubist": {"facility": ["의원"]}}}) == {
         "atc4": ["C10A1"]
     }
     assert "channel_axis" not in applied_brand_filter("strategic_ml", "ml_006", payload)
 
 
 def test_audit_code_sales_value_sums_selected_matrix_codes_for_quarter() -> None:
-    channel_axis = parse_audit_code_axis({"channel_axis": {"iqvia": {"audit_code": ["KHPA", "KCPA"]}}})
+    channel_axis = parse_audit_code_axis({"analysis_level": {"iqvia": {"audit_code": ["KHPA", "KCPA"]}}})
     row = {
         "audit_code_matrix": {
             "KHPA": {"2026-04": 10, "2026-05": 20},
@@ -68,7 +68,7 @@ def test_audit_code_sales_value_sums_selected_matrix_codes_for_quarter() -> None
 
 
 def test_unknown_audit_code_is_rejected_from_dynamic_matrix_keys() -> None:
-    channel_axis = parse_audit_code_axis({"channel_axis": {"iqvia": {"audit_code": ["BAD"]}}})
+    channel_axis = parse_audit_code_axis({"analysis_level": {"iqvia": {"audit_code": ["BAD"]}}})
 
     try:
         validate_audit_code_axis(({"audit_code_matrix": {"KHPA": {"2026-Q2": 1}}},), channel_axis)
@@ -129,7 +129,7 @@ def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> 
         str(row["brand_key"]): BrandMeta(str(row["brand_key"]), str(row["brand_key"]), (str(row["brand_key"]),), False)
         for row in rows
     }
-    channel_axis = parse_audit_code_axis({"channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}})
+    channel_axis = parse_audit_code_axis({"analysis_level": {"iqvia": {"audit_code": ["KHPA"]}}})
 
     candidates = _brand_candidates(
         "general",

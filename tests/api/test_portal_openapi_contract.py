@@ -85,7 +85,7 @@ def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
     assert "topic_shares" in str(topics["responses"]["200"])
     assert "market_totals" in str(timeseries["responses"]["200"])
     assert "market_average" in str(matrix["responses"]["200"])
-    assert "channel_axis" in str(topics["requestBody"])
+    assert "channel_axis" not in str(topics["requestBody"])
     assert "analysis_level" in str(timeseries["requestBody"])
 
     for route in app.routes:

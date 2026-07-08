@@ -38,9 +38,12 @@ def test_brand_activity_filter_schema_exposes_nested_descriptions() -> None:
     assert "UBIST" in schemas["AnalysisLevel"]["properties"]["ubist"]["description"]
     assert "판매사" in schemas["UbistAnalysisLevel"]["properties"]["seller"]["description"]
     assert "성분명" in schemas["IqviaAnalysisLevel"]["properties"]["molecule_desc"]["description"]
+    assert "audit_code" in schemas["IqviaAnalysisLevel"]["properties"]
     assert "채널 필터" in schemas["MarketFilter"]["properties"]["channel"]["description"]
-    assert "채널 축" in schemas["BrandActivityTopicsRequest"]["properties"]["channel_axis"]["description"]
-    assert "channel_axis" in schemas["MarketFilter"]["properties"]
+    assert "channel_axis" not in schemas["BrandActivityTopicsRequest"]["properties"]
+    assert "channel_axis" not in schemas["BrandActivityInterestRxRequest"]["properties"]
+    assert "channel_axis" not in schemas["CsdTimeseriesRequest"]["properties"]
+    assert "channel_axis" not in schemas["MarketFilter"]["properties"]
 
 
 def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> None:
@@ -87,8 +90,51 @@ def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatc
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
-    assert captured["payload"]["filters"]["atc"]["atc4"] == ["C10A1"]
+    assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
     assert captured["payload"]["filter"]["analysis_level"]["ubist"]["seller"] == ["JW중외제약"]
+
+
+def test_brand_activity_folds_analysis_level_audit_code_into_internal_slice(monkeypatch) -> None:
+    captured: dict[str, dict] = {}
+    expected = {"scope": {"view": "general"}, "brands": []}
+
+    def fake_get_topic_brand_payload(payload: dict) -> dict:
+        captured["payload"] = payload
+        return expected
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {
+                "atc": {"atc4": ["C10A1"]},
+                "analysis_level": {"iqvia": {"audit_code": ["khpa"]}},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
+    assert captured["payload"]["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
+
+
+def test_brand_activity_rejects_legacy_channel_axis_fields() -> None:
+    client = TestClient(app)
+    base_payload = {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}}
+
+    for path in (
+        "/api/brand-activity/csd-timeseries",
+        "/api/brand-activity/topics",
+        "/api/brand-activity/interest-rx-matrix",
+    ):
+        top_level = {**base_payload, "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+        nested = {**base_payload, "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}}
+
+        assert client.post(path, json=top_level).status_code == 422
+        assert client.post(path, json=nested).status_code == 422
 
 
 def test_brand_activity_preserves_flat_filter_payload(monkeypatch) -> None:

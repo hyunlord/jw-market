@@ -115,13 +115,13 @@ def test_activity_series_passes_audit_code_to_iqvia_brand_resolver(monkeypatch) 
         {
             "view": "general",
             "selected_brand": "LIVALO",
-            "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["BAD"]}}},
+            "filters": {"atc4": ["C10A1"], "analysis_level": {"iqvia": {"audit_code": ["BAD"]}}},
             "top5_basis": "activity_count",
         }
     )
 
     assert payload is not None
-    assert captured["filter_payload"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["BAD"]}}}
+    assert captured["filter_payload"] == {"atc4": ["C10A1"], "analysis_level": {"iqvia": {"audit_code": ["BAD"]}}}
 
 
 def test_requested_quarters_defaults_to_one_year_and_clamps_to_three_years() -> None:
@@ -154,7 +154,7 @@ def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "LIVALO",
-            "filters": {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}},
+            "filters": {"atc4": ["C10A1"], "analysis_level": {"iqvia": {"audit_code": ["KHPA"]}}},
             "entity_level": "brand",
             "csd_channel": "CPPI",
             "top5_basis": "csd_market",
@@ -166,7 +166,9 @@ def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
     assert captured["payload"]["csd_channel"] == "CPPI"
     assert "market_id" not in captured["payload"]
     assert "top5_basis" not in captured["payload"]
-    assert captured["payload"]["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
+    assert captured["payload"]["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
+    assert captured["payload"]["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
 def test_brand_activity_openapi_hides_removed_request_fields() -> None:
