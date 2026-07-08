@@ -151,14 +151,19 @@ def parse_assignment_response_allow_missing(
         raise AssignmentParseError("assignments must be a list")
     expected_ids = {row.row_id for row in rows}
     seen_ids: set[int] = set()
+    duplicate_ids: set[int] = set()
     row_by_id = {row.row_id: row for row in rows}
     assignments: list[RowTopicAssignment] = []
     for value in items:
         if not isinstance(value, dict):
             raise AssignmentParseError("assignment item must be an object")
         row_id = _parse_row_id(value.get("row_id"))
+        if row_id in duplicate_ids:
+            continue
         if row_id in seen_ids:
-            raise AssignmentParseError(f"duplicate row_id: {row_id}")
+            duplicate_ids.add(row_id)
+            assignments = [assignment for assignment in assignments if assignment.row_id != row_id]
+            continue
         seen_ids.add(row_id)
         if row_id not in expected_ids:
             raise AssignmentParseError(f"unexpected row_id: {row_id}")
@@ -183,7 +188,7 @@ def parse_assignment_response_allow_missing(
             for topic in normalized_topics
         )
     missing = sorted(expected_ids - seen_ids)
-    return AssignmentParseResult(assignments=assignments, missing_row_ids=tuple(missing))
+    return AssignmentParseResult(assignments=assignments, missing_row_ids=tuple(sorted({*missing, *duplicate_ids})))
 
 
 def aggregate_topic_shares(

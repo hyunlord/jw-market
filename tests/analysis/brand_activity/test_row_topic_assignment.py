@@ -71,7 +71,7 @@ def test_parse_assignment_response_rejects_missing_duplicate_and_unknown_topics(
     with pytest.raises(rta.AssignmentParseError, match="missing"):
         rta.parse_assignment_response('{"assignments":[{"row_id":1,"topics":["T1"]}]}', batch, topics, "v1", "b1")
 
-    with pytest.raises(rta.AssignmentParseError, match="duplicate"):
+    with pytest.raises(rta.AssignmentParseError, match="missing"):
         rta.parse_assignment_response('{"assignments":[{"row_id":1,"topics":["T1"]},{"row_id":1,"topics":[]}]}', batch, topics, "v1", "b1")
 
     with pytest.raises(rta.AssignmentParseError, match="unknown topic"):
@@ -105,6 +105,20 @@ def test_parse_assignment_response_allow_missing_returns_assignments_and_missing
     assert parsed.missing_row_ids == (2,)
     assert [item.row_id for item in parsed.assignments] == [1]
     assert [item.topic_id for item in parsed.assignments] == ["T1"]
+
+
+def test_parse_assignment_response_allow_missing_reopens_duplicate_ids_without_guessing() -> None:
+    """Given a model repeats a row id, When parsed for fallback, Then that row is re-asked instead of guessed."""
+    parsed = rta.parse_assignment_response_allow_missing(
+        '{"assignments":[{"row_id":1,"topics":["T1"]},{"row_id":2,"topics":["T1"]},{"row_id":2,"topics":[]},{"row_id":3,"topics":[]}]}',
+        [_row(1), _row(2), _row(3)],
+        {"T1"},
+        "v1",
+        "b1",
+    )
+
+    assert parsed.missing_row_ids == (2,)
+    assert [(item.row_id, item.topic_id) for item in parsed.assignments] == [(1, "T1")]
 
 
 class _FakeAssignmentClient:
@@ -144,6 +158,45 @@ def test_execute_falls_back_to_missing_rows_only() -> None:
     assert [(item.row_id, item.topic_id) for item in parsed["assignments"]] == [(1, "T1"), (3, "T1")]
     assert "3\tTHRUPAS" in client.calls[1][1]["content"]
     assert "1\tTHRUPAS" not in client.calls[1][1]["content"]
+
+
+def test_execute_falls_back_to_duplicate_rows_only() -> None:
+    """Given repeated row ids keep recurring, When classified, Then only duplicate rows are chunk-retried."""
+    rows = (_row(1), _row(2), _row(3))
+    rubric = (rta.TopicRubric(topic_id="T1", label="axis", definition="axis"),)
+    duplicate_response = (
+        '{"assignments":['
+        '{"row_id":1,"topics":["T1"]},'
+        '{"row_id":2,"topics":["T1"]},'
+        '{"row_id":2,"topics":[]},'
+        '{"row_id":3,"topics":[]}'
+        "]}"
+    )
+    client = _FakeAssignmentClient(
+        [
+            duplicate_response,
+            '{"assignments":[{"row_id":2,"topics":["T1"]},{"row_id":2,"topics":[]}]}',
+            '{"assignments":[{"row_id":2,"topics":["T1"]}]}',
+        ]
+    )
+
+    parsed = row_topic_execute._classify_with_missing_fallback(  # noqa: SLF001 - regression covers resume-critical private helper.
+        client,
+        rubric,
+        rows,
+        "topic-set",
+        "batch-1",
+        max_calls=10,
+        calls_used=0,
+    )
+
+    assert parsed["calls"] == 3
+    assert parsed["fallback_calls"] == 2
+    assert parsed["missing_row_ids"] == []
+    assert [(item.row_id, item.topic_id) for item in parsed["assignments"]] == [(1, "T1"), (2, "T1")]
+    assert "2\tTHRUPAS" in client.calls[1][1]["content"]
+    assert "1\tTHRUPAS" not in client.calls[1][1]["content"]
+    assert "3\tTHRUPAS" not in client.calls[1][1]["content"]
 
 
 def test_execute_records_unresolved_missing_after_small_fallback() -> None:
