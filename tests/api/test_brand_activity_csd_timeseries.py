@@ -85,15 +85,16 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
             "view": "general",
             "market_id": "C10A1",
             "selected_brand": "리바로",
-            "filters": {"atc4": ["C10A1"]},
-            "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
+            "filters": {"atc": {"atc4": ["C10A1"]}, "analysis_level": {"iqvia": {"audit_code": ["KHPA"]}}},
         },
     )
 
     assert response.status_code == 200
     assert response.json() == {"data": expected}
     assert "market_id" not in captured
-    assert captured["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert captured["filters"]["atc4"] == ["C10A1"]
+    assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
+    assert captured["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
 def test_csd_timeseries_route_ignores_stale_market_id_input(monkeypatch) -> None:

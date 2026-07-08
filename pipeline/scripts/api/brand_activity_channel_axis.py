@@ -14,23 +14,41 @@ IQVIA_AUDIT_SOURCE = "iqvia_nsa"
 
 
 def parse_audit_code_axis(value: Mapping[str, Any] | None) -> ChannelAxisFilter | None:
-    """Parse Brand Activity's IQVIA audit-code channel-axis contract.
+    """Parse Brand Activity's IQVIA audit-code market-filter contract.
 
     UBIST channel-axis payloads are intentionally ignored in Brand Activity.
     """
 
     if not isinstance(value, Mapping):
         return None
-    raw_axis = value.get("channel_axis")
-    if not isinstance(raw_axis, Mapping):
-        return None
-    raw_iqvia = raw_axis.get("iqvia", raw_axis)
+    raw_iqvia = _iqvia_filter(value)
     if not isinstance(raw_iqvia, Mapping):
         return None
     codes = _audit_codes(raw_iqvia.get("audit_code"))
     if not codes:
         return None
     return ChannelAxisFilter(source=IQVIA_AUDIT_SOURCE, audit_codes=codes)
+
+
+def _iqvia_filter(value: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    analysis_level = value.get("analysis_level")
+    if isinstance(analysis_level, Mapping):
+        iqvia = analysis_level.get("iqvia")
+        if isinstance(iqvia, Mapping) and _audit_codes(iqvia.get("audit_code")):
+            return iqvia
+
+    raw_axis = value.get("channel_axis")
+    if isinstance(raw_axis, Mapping):
+        raw_iqvia = raw_axis.get("iqvia", raw_axis)
+        if isinstance(raw_iqvia, Mapping):
+            return raw_iqvia
+
+    channel = value.get("channel")
+    if isinstance(channel, Mapping):
+        audit_code = channel.get("audit_code", channel.get("auditCode"))
+        if _audit_codes(audit_code):
+            return {"audit_code": audit_code}
+    return None
 
 
 def audit_code_axis_echo(channel_axis: ChannelAxisFilter | None) -> JsonMap:

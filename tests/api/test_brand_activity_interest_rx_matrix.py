@@ -34,8 +34,7 @@ def test_interest_rx_route_wraps_success_envelope(monkeypatch) -> None:
         json={
             "view": "general",
             "selected_brand": "리바로",
-            "filters": {"atc4": ["C10A1"]},
-            "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}},
+            "filters": {"atc": {"atc4": ["C10A1"]}, "analysis_level": {"iqvia": {"audit_code": ["KHPA"]}}},
         },
     )
 
@@ -43,7 +42,9 @@ def test_interest_rx_route_wraps_success_envelope(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"data": expected}
     assert "market_id" not in captured
-    assert captured["filters"] == {"atc4": ["C10A1"], "channel_axis": {"iqvia": {"audit_code": ["KHPA"]}}}
+    assert captured["filters"]["atc4"] == ["C10A1"]
+    assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
+    assert captured["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
 def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(monkeypatch) -> None:
