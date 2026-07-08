@@ -312,3 +312,39 @@ def test_prediction_news_evidence_must_come_from_bundle():
 
     assert not result.valid
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_prediction_numeric_evidence_matches_market_or_simulation_basis():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "수치 기반 예측",
+            "body": "시장 지표를 근거로 완만한 성장이 예상됩니다.",
+            "bullets": [],
+            "evidence": [{"title": "수치 근거", "basis": "58.82(Competitive Dynamics·IQVIA·점유율)"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_prediction_event_evidence_can_match_title_in_basis():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "급여 확대 뉴스로 성장 전망",
+            "body": "급여 확대 보도에 따라 향후 처방 증가가 예상됩니다.",
+            "bullets": [],
+            "evidence": [{"title": "정책적 리스크 해소", "basis": "뉴스 '페린젝트 급여 확대'"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, _cd_metric_bundle(), RunnerConfig.default_for_tests().validator)
+
+    assert result.valid

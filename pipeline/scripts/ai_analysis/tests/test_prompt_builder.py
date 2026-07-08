@@ -75,3 +75,47 @@ def test_prompt_compact_adds_mode_instruction_without_changing_full_default():
     assert "[출력 밀도]" not in full
     assert "[출력 밀도]" in compact
     assert "bullets는 2-3개" in compact
+
+
+def test_prompt_declares_view_label_and_evidence_contracts():
+    question = build_question_string(sample_bundle(), RunnerConfig.default_for_tests())
+
+    assert "Market Landscape · {SOURCE} 기준" in question
+    assert "ML·UBIST·매출" in question
+    assert "prediction evidence" in question
+    assert "retained event 목록" in question
+
+
+def test_prompt_declares_simulation_horizon_contract_when_all_horizons_exist():
+    bundle = sample_bundle()
+    bundle["forecast_simulation"] = {
+        "available": True,
+        "by_view": {
+            "ML.UBIST.sales": {
+                "horizon_1y": {"base": 1000},
+                "horizon_3y": {"base": 3000},
+                "horizon_5y": {"base": 5000},
+            }
+        },
+    }
+
+    question = build_question_string(bundle, RunnerConfig.default_for_tests())
+
+    assert "1y/3y/5y" in question
+    assert "각 horizon의 실제 수치" in question
+
+
+def test_prompt_omits_simulation_horizon_contract_when_horizons_are_missing():
+    bundle = sample_bundle()
+    bundle["forecast_simulation"] = {
+        "available": True,
+        "by_view": {
+            "ML.UBIST.sales": {
+                "horizon_1y": {"base": 1000},
+            }
+        },
+    }
+
+    question = build_question_string(bundle, RunnerConfig.default_for_tests())
+
+    assert "각 horizon의 실제 수치" not in question

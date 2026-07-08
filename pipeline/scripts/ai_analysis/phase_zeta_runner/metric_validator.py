@@ -53,6 +53,12 @@ PREDICTION_NEWS_TRIGGER_RE = re.compile(
     r"(뉴스|보도|급여|허가|출시|신약|경쟁사|진입|임상|학회|약가|정책|규제|공세|시장\s*변화)",
     re.IGNORECASE,
 )
+NUMERIC_EVIDENCE_TAG_RE = re.compile(
+    r"\d[\d,]*(?:\.\d+)?\s*\((?:ML|CD|Market\s+Landscape|Competitive\s+Dynamics)\s*·\s*[A-Z]+",
+    re.IGNORECASE,
+)
+NUMERIC_EVIDENCE_VALUE_RE = re.compile(r"(?<![\d,.])(\d+(?:,\d{3})*(?:\.\d+)?)(?![\d,.])")
+MIN_EVENT_TITLE_MATCH_CHARS = 8
 VIEW_DISPLAY = {
     "ML": "Market Landscape",
     "CD": "Competitive Dynamics",
@@ -436,10 +442,70 @@ def _prediction_evidence(parsed_output: dict) -> list[dict[str, Any]]:
     return [item for item in prediction.get("evidence", []) or [] if isinstance(item, dict)]
 
 
-def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict) -> list[dict[str, Any]]:
+def _evidence_texts(item: dict[str, Any]) -> list[str]:
+    return [
+        str(item.get(key) or "")
+        for key in ("news_id", "title", "basis", "source")
+        if str(item.get(key) or "").strip()
+    ]
+
+
+def _matches_event_evidence(item: dict[str, Any], source_ids: set[str], source_titles: set[str]) -> bool:
+    news_id = str(item.get("news_id") or "")
+    if news_id and news_id in source_ids:
+        return True
+    for text in _evidence_texts(item):
+        if text in source_titles:
+            return True
+        for title in source_titles:
+            if len(title) >= MIN_EVENT_TITLE_MATCH_CHARS and title in text:
+                return True
+    return False
+
+
+def _is_metric_or_simulation_path(path: str | None) -> bool:
+    value = str(path or "")
+    return value.startswith("market_views[") or value.startswith("forecast_simulation.")
+
+
+def _evidence_numbers(text: str, config: ValidatorConfig) -> list[dict[str, Any]]:
+    numbers = extract_numbers(text, config)
+    seen = {str(item.get("raw_text") or "") for item in numbers}
+    for match in NUMERIC_EVIDENCE_VALUE_RE.finditer(text):
+        raw_text = match.group(1)
+        if raw_text in seen:
+            continue
+        value = _coerce_number(raw_text, "float")
+        number_type = classify_number_context(raw_text, text, value)
+        numbers.append(
+            {
+                "value": value,
+                "raw_text": raw_text,
+                "pattern": "evidence_numeric_value",
+                "number_type": number_type,
+                "tolerance": _tolerance_for_type(number_type, config),
+                "low_priority": False,
+            }
+        )
+    return numbers
+
+
+def _matches_numeric_evidence(item: dict[str, Any], bundle_index: dict[float, list[str]], config: ValidatorConfig) -> bool:
+    text = "\n".join(_evidence_texts(item))
+    if not NUMERIC_EVIDENCE_TAG_RE.search(text):
+        return False
+    for number in _evidence_numbers(text, config):
+        matched_path = find_match_unit_aware(number["value"], bundle_index, number["number_type"], config)
+        if _is_metric_or_simulation_path(matched_path):
+            return True
+    return False
+
+
+def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict, config: ValidatorConfig) -> list[dict[str, Any]]:
     text = _prediction_text(parsed_output)
     bundle_events = _iter_bundle_events(bundle)
     evidence = _prediction_evidence(parsed_output)
+    bundle_index = build_bundle_path_index(bundle)
     issues: list[dict[str, Any]] = []
 
     if PREDICTION_NEWS_TRIGGER_RE.search(text) and bundle_events and not evidence:
@@ -455,14 +521,14 @@ def validate_prediction_evidence_policy(parsed_output: dict, bundle: dict) -> li
         source_ids = {str(item.get("news_id")) for item in bundle_events if item.get("news_id")}
         source_titles = {str(item.get("title")) for item in bundle_events if item.get("title")}
         for item in evidence:
-            news_id = str(item.get("news_id") or "")
-            title = str(item.get("title") or "")
-            if (news_id and news_id in source_ids) or (title and title in source_titles):
+            if _matches_event_evidence(item, source_ids, source_titles):
+                continue
+            if _matches_numeric_evidence(item, bundle_index, config):
                 continue
             issues.append(
                 _prediction_policy_issue(
                     "prediction_evidence_not_in_bundle",
-                    news_id or title,
+                    " | ".join(_evidence_texts(item)),
                     "prediction evidence는 bundle에 포함된 source event에서만 인용할 수 있습니다.",
                 )
             )
@@ -571,7 +637,7 @@ def validate_output(parsed_output: dict, bundle: dict, config: ValidatorConfig) 
         )
     )
     policy_issues.extend(validate_view_label_policy(bundle, stage_results))
-    policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle))
+    policy_issues.extend(validate_prediction_evidence_policy(parsed_output, bundle, config))
 
     if policy_issues:
         prediction_result = stage_results.get("prediction")
