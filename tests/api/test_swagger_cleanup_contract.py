@@ -46,6 +46,29 @@ def test_brand_activity_filter_schema_exposes_nested_descriptions() -> None:
     assert "channel_axis" not in schemas["MarketFilter"]["properties"]
 
 
+def test_brand_activity_topics_response_documents_live_scope_and_brand_fields() -> None:
+    response_schema = app.openapi()["paths"]["/api/brand-activity/topics"]["post"]["responses"]["200"]
+    data_schema = response_schema["content"]["application/json"]["schema"]["properties"]["data"]["properties"]
+    scope_fields = data_schema["scope"]["properties"]
+    brand_fields = data_schema["brands"]["items"]["properties"]
+
+    for field in (
+        "applied_topic_filters",
+        "filter_effect",
+        "interest",
+        "period_end",
+        "period_start",
+        "prescription_evolution",
+        "sliced",
+        "specialty",
+        "top_n",
+        "topic_set_version",
+        "visit_location",
+    ):
+        assert field in scope_fields
+    assert "sales_rank" in brand_fields
+
+
 def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> None:
     schema = app.openapi()["paths"]["/api/dynamic-market"]["post"]["requestBody"]["content"]["application/json"]["schema"]
     request_schema_text = str(schema)

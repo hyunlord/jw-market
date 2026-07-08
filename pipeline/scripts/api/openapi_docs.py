@@ -655,6 +655,39 @@ BRAND_ACTIVITY_SCOPE_SCHEMA: Final = {
         "selected_brand": {"description": "선택 브랜드 또는 선택 브랜드 메타."},
         "applied_filter": {"type": "object", "description": "서버가 실제 적용한 필터."},
         "applied_filters": {"type": "object", "description": "applied_filter와 동일한 포탈 호환 alias."},
+        "visit_location": {
+            "type": ["string", "array"],
+            "items": {"type": "string"},
+            "description": "토픽 행 필터의 종별 표시값. 단일 선택은 문자열, 다중 선택은 문자열 배열, 미선택은 `전체`.",
+        },
+        "specialty": {
+            "type": ["string", "array"],
+            "items": {"type": "string"},
+            "description": "토픽 행 필터의 진료과 표시값. 단일 선택은 문자열, 다중 선택은 문자열 배열, 미선택은 `전체`.",
+        },
+        "interest": {
+            "type": ["string", "array"],
+            "items": {"type": "string"},
+            "description": "토픽 행 필터의 관심도 표시값. 단일 선택은 문자열, 다중 선택은 문자열 배열, 미선택은 `전체`.",
+        },
+        "prescription_evolution": {
+            "type": ["string", "array"],
+            "items": {"type": "string"},
+            "description": "토픽 행 필터의 처방 변화 표시값. 단일 선택은 문자열, 다중 선택은 문자열 배열, 미선택은 `전체`.",
+        },
+        "period_start": {"type": "string", "description": "토픽 행 필터 시작월 YYYY-MM. 미지정 시 빈 문자열."},
+        "period_end": {"type": "string", "description": "토픽 행 필터 종료월 YYYY-MM. 미지정 시 빈 문자열."},
+        "top_n": {"type": "integer", "description": "브랜드 카드에 산출한 상위 토픽 개수. 요청값은 1~10으로 clamp됩니다."},
+        "sliced": {"type": "boolean", "description": "토픽 행 필터가 적용되어 row-topic assignment를 slicing했는지 여부."},
+        "applied_topic_filters": {
+            "type": "object",
+            "description": "실제로 적용된 토픽 행 필터. visit_location/specialty/interest/prescription_evolution은 배열, 기간은 문자열입니다.",
+        },
+        "topic_set_version": {"type": ["string", "null"], "description": "선택된 topic scope의 버전. scope가 없으면 null."},
+        "filter_effect": {
+            "type": "object",
+            "description": "`brand_set`(base 또는 channel_axis_applied)과 `payload`(filtered/unfiltered assignment 경로)를 담은 필터 효과 echo.",
+        },
     },
 }
 
@@ -684,6 +717,7 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                             "is_jw": {"type": "boolean", "description": "JW 자사 브랜드 여부."},
                                             "is_selected": {"type": "boolean", "description": "선택 브랜드 여부."},
                                             "event_count": {"type": "integer", "description": "키워드 설문 응답 행 수 N."},
+                                            "sales_rank": {"type": ["integer", "null"], "description": "시장 내 매출 rank. rank를 산출할 수 없으면 null."},
                                             "topic_shares": {"type": "array", "description": "상위 토픽 막대 목록(label/share_pct/topic_id/rank)."},
                                             "topics": {"type": "array", "description": "topic_shares와 같은 포탈 호환 alias."},
                                             "etc_pct": {"type": "number", "description": "상위 토픽 외 기타 비율."},
@@ -698,13 +732,29 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                 },
                 "example": {
                     "data": {
-                        "scope": {"view": "general", "market_id": "C10A1", "selected_brand": "리바로", "top_n": 5},
+                        "scope": {
+                            "view": "general",
+                            "market_id": "C10A1",
+                            "selected_brand": "리바로",
+                            "top_n": 5,
+                            "visit_location": "전체",
+                            "specialty": "전체",
+                            "interest": "전체",
+                            "prescription_evolution": "전체",
+                            "period_start": "",
+                            "period_end": "",
+                            "sliced": False,
+                            "applied_topic_filters": {},
+                            "topic_set_version": "v1",
+                            "filter_effect": {"brand_set": "base", "payload": "row_topic_assignment_unfiltered"},
+                        },
                         "brands": [
                             {
                                 "brand_key": "리바로",
                                 "brand_name": "리바로",
                                 "is_jw": True,
                                 "is_selected": True,
+                                "sales_rank": 1,
                                 "event_count": 128,
                                 "topic_shares": [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성/NODM", "share_pct": 62.5}],
                                 "topics": [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성/NODM", "share_pct": 62.5}],

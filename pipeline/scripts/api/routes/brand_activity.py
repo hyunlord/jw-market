@@ -49,7 +49,11 @@ from pipeline.scripts.api.openapi_docs import (
 router = APIRouter()
 
 
-@router.get("/api/brand-activity/topics", include_in_schema=False)
+# Internal diagnostic/storage endpoints. The portal-facing Brand Activity contract is the POST matrix route below.
+TOPIC_DEBUG_INCLUDE_IN_SCHEMA = False
+
+
+@router.get("/api/brand-activity/topics", include_in_schema=TOPIC_DEBUG_INCLUDE_IN_SCHEMA)
 def brand_activity_topics() -> dict[str, JsonValue]:
     """Return all Brand Activity topic market payloads."""
     try:
@@ -58,7 +62,7 @@ def brand_activity_topics() -> dict[str, JsonValue]:
         raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
 
 
-@router.get("/api/brand-activity/topics/{scope_id}", include_in_schema=False)
+@router.get("/api/brand-activity/topics/{scope_id}", include_in_schema=TOPIC_DEBUG_INCLUDE_IN_SCHEMA)
 def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
     """Return one Brand Activity topic market payload."""
     try:
