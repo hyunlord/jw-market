@@ -26,6 +26,12 @@ def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str)
 
 
+def _table_has_column(db_conn: Any, table: str, column: str) -> bool:
+    cursor = db_conn.cursor()
+    cursor.execute(f"SHOW COLUMNS FROM {table} LIKE %s", (column,))
+    return cursor.fetchone() is not None
+
+
 def _status(gemini_result: GeminiResult, validation_result: ValidationResult) -> str:
     if not gemini_result.success:
         return "failed"
@@ -43,6 +49,42 @@ def _insert_run(
     validation_result: ValidationResult,
     config: RunnerConfig,
 ) -> int:
+    has_variant_column = _table_has_column(db_conn, "zeta_analysis_runs", "analysis_variant")
+    if config.analysis_variant != "legacy" and not has_variant_column:
+        raise RuntimeError("zeta_analysis_runs.analysis_variant is required for short/long Agent2 runs")
+
+    if has_variant_column:
+        sql = """
+        INSERT INTO zeta_analysis_runs (
+            brand, snapshot_at, analysis_variant, config_version, builder_version, bundle_hash,
+            model_version, status, total_tokens_in, total_tokens_out, cost_usd,
+            duration_sec, input_bundle, error_log
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """
+        cursor = db_conn.cursor()
+        cursor.execute(
+            sql,
+            (
+                brand,
+                snapshot_at,
+                config.analysis_variant,
+                config.config_version,
+                config.builder_version,
+                bundle.get("bundle_meta", {}).get("bundle_hash", ""),
+                gemini_result.model_version,
+                _status(gemini_result, validation_result),
+                gemini_result.tokens_in,
+                gemini_result.tokens_out,
+                gemini_result.cost_usd,
+                gemini_result.duration_sec,
+                _json_dumps(bundle),
+                gemini_result.error or "",
+            ),
+        )
+        return int(cursor.lastrowid)
+
     sql = """
     INSERT INTO zeta_analysis_runs (
         brand, snapshot_at, config_version, builder_version, bundle_hash,

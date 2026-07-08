@@ -77,6 +77,52 @@ def test_prompt_compact_adds_mode_instruction_without_changing_full_default():
     assert "bullets는 2-4개" in compact
 
 
+def test_prompt_combines_density_mode_and_short_variant_instruction():
+    bundle = sample_bundle()
+    bundle["forecast_simulation"] = {
+        "available": True,
+        "by_view": {
+            "ML.UBIST.sales": {
+                "horizon_1y": {"base": 1000},
+                "horizon_3y": {"base": 3000},
+                "horizon_5y": {"base": 5000},
+            }
+        },
+    }
+    config = RunnerConfig.default_for_tests().with_analysis_variant("short")
+
+    question = build_question_string(bundle, config, mode="compact")
+
+    assert "[analysis_variant: short" in question
+    assert "[출력 밀도]" in question
+    assert "horizon_1y" in question
+    assert "3년/5년 예측값" in question
+    assert "1y/3y/5y 각 horizon의 실제 수치" not in question
+
+
+def test_prompt_combines_density_mode_and_long_variant_instruction():
+    bundle = sample_bundle()
+    bundle["forecast_simulation"] = {
+        "available": True,
+        "by_view": {
+            "ML.UBIST.sales": {
+                "horizon_1y": {"base": 1000},
+                "horizon_3y": {"base": 3000},
+                "horizon_5y": {"base": 5000},
+            }
+        },
+    }
+    config = RunnerConfig.default_for_tests().with_analysis_variant("long")
+
+    question = build_question_string(bundle, config, mode="recap")
+
+    assert "[analysis_variant: long" in question
+    assert "[출력 밀도]" in question
+    assert "horizon_5y" in question
+    assert "body는 1-2문장" in question
+    assert "1y/3y/5y 각 horizon의 실제 수치" not in question
+
+
 def test_prompt_declares_view_label_and_evidence_contracts():
     question = build_question_string(sample_bundle(), RunnerConfig.default_for_tests())
 

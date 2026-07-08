@@ -60,10 +60,17 @@ CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
     brand VARCHAR(255) NOT NULL,
     market_id VARCHAR(20),
     ai_analysis_json LONGTEXT,
+    ai_analysis_short_json LONGTEXT,
+    ai_analysis_long_json LONGTEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (brand)
 );
 """
+
+ADD_VARIANT_COLUMNS_SQL = [
+    f"ALTER TABLE {TARGET_TABLE} ADD COLUMN ai_analysis_short_json LONGTEXT AFTER ai_analysis_json",
+    f"ALTER TABLE {TARGET_TABLE} ADD COLUMN ai_analysis_long_json LONGTEXT AFTER ai_analysis_short_json",
+]
 
 
 @dataclass
@@ -74,6 +81,7 @@ class SelectedRun:
     model_version: str
     created_at: Any
     bundle_hash: str
+    analysis_variant: str = "legacy"
 
 
 def _json_default(value: Any) -> Any:
@@ -138,6 +146,12 @@ def create_and_describe_table(conn: pymysql.connections.Connection) -> dict[str,
     existed_before = target_table_exists(conn)
     with conn.cursor() as cursor:
         cursor.execute(CREATE_TABLE_SQL)
+        cursor.execute(f"SHOW COLUMNS FROM {TARGET_TABLE}")
+        fields = {str(row["Field"]) for row in cursor.fetchall()}
+        for sql in ADD_VARIANT_COLUMNS_SQL:
+            column = sql.split(" ADD COLUMN ", 1)[1].split()[0]
+            if column not in fields:
+                cursor.execute(sql)
         cursor.execute(f"SHOW CREATE TABLE {TARGET_TABLE}")
         show_create = cursor.fetchone()
         cursor.execute(f"DESCRIBE {TARGET_TABLE}")
@@ -159,11 +173,11 @@ def schema_matches(describe_rows: list[dict[str, Any]]) -> bool:
         "brand": {"Null": "NO", "Key": "PRI"},
         "market_id": {"Null": "YES"},
         "ai_analysis_json": {"Null": "YES"},
+        "ai_analysis_short_json": {"Null": "YES"},
+        "ai_analysis_long_json": {"Null": "YES"},
         "updated_at": {"Null": "YES"},
     }
     by_field = {str(row["Field"]): row for row in describe_rows}
-    if list(by_field) != ["brand", "market_id", "ai_analysis_json", "updated_at"]:
-        return False
     for field, checks in expected.items():
         row = by_field.get(field)
         if row is None:
@@ -171,7 +185,12 @@ def schema_matches(describe_rows: list[dict[str, Any]]) -> bool:
         for key, expected_value in checks.items():
             if str(row.get(key)) != expected_value:
                 return False
-    return "varchar(255)" in str(by_field["brand"]["Type"]).lower() and "longtext" in str(by_field["ai_analysis_json"]["Type"]).lower()
+    return (
+        "varchar(255)" in str(by_field["brand"]["Type"]).lower()
+        and "longtext" in str(by_field["ai_analysis_json"]["Type"]).lower()
+        and "longtext" in str(by_field["ai_analysis_short_json"]["Type"]).lower()
+        and "longtext" in str(by_field["ai_analysis_long_json"]["Type"]).lower()
+    )
 
 
 def _dedupe_brands(brands: Sequence[str]) -> list[str]:
@@ -210,20 +229,35 @@ def align_stage_evidence_basis(payload: dict[str, Any]) -> dict[str, Any]:
     return aligned
 
 
-def select_latest_runs(conn: pymysql.connections.Connection, brands: Sequence[str]) -> dict[str, SelectedRun]:
+def table_has_column(conn: pymysql.connections.Connection, table: str, column: str) -> bool:
+    with conn.cursor() as cursor:
+        cursor.execute(f"SHOW COLUMNS FROM {table} LIKE %s", (column,))
+        return cursor.fetchone() is not None
+
+
+def select_latest_runs(
+    conn: pymysql.connections.Connection,
+    brands: Sequence[str],
+    analysis_variant: str = "legacy",
+) -> dict[str, SelectedRun]:
     brands = _dedupe_brands(brands)
     placeholders = ",".join(["%s"] * len(brands))
+    has_variant_column = table_has_column(conn, "zeta_analysis_runs", "analysis_variant")
+    variant_select = "analysis_variant" if has_variant_column else "'legacy' AS analysis_variant"
+    variant_filter = "AND analysis_variant = %s" if has_variant_column else ""
     sql = f"""
-    SELECT run_id, brand, status, model_version, created_at, bundle_hash
+    SELECT run_id, brand, status, model_version, created_at, bundle_hash, {variant_select}
     FROM zeta_analysis_runs
     WHERE brand IN ({placeholders})
       AND model_version = 'genos_workflow_217'
       AND created_at >= '2026-05-25 00:00:00'
       AND status IN ('ok', 'partial')
+      {variant_filter}
     ORDER BY brand, run_id DESC
     """
     with conn.cursor() as cursor:
-        cursor.execute(sql, brands)
+        params = [*brands, analysis_variant] if has_variant_column else list(brands)
+        cursor.execute(sql, params)
         rows = cursor.fetchall()
 
     selected: dict[str, SelectedRun] = {}
@@ -238,6 +272,7 @@ def select_latest_runs(conn: pymysql.connections.Connection, brands: Sequence[st
             model_version=str(row["model_version"]),
             created_at=row["created_at"],
             bundle_hash=str(row.get("bundle_hash") or ""),
+            analysis_variant=str(row.get("analysis_variant") or analysis_variant),
         )
     return selected
 
@@ -324,32 +359,109 @@ def build_ai_analysis(run: SelectedRun, parsed: dict[str, Any]) -> dict[str, Any
     return align_stage_evidence_basis(ai_analysis)
 
 
+def build_variant_ai_analysis(run: SelectedRun, parsed: dict[str, Any], analysis_variant: str) -> dict[str, Any]:
+    payload = build_ai_analysis(
+        SelectedRun(
+            brand=run.brand,
+            run_id=run.run_id,
+            status=run.status,
+            model_version=run.model_version,
+            created_at=run.created_at,
+            bundle_hash=run.bundle_hash,
+            analysis_variant=analysis_variant,
+        ),
+        parsed,
+    )
+    payload["analysis_variant"] = analysis_variant
+    return payload
+
+
 def insert_ai_analysis(
     conn: pymysql.connections.Connection,
     payloads: dict[str, dict[str, Any]],
     market_ids: dict[str, str | None],
     brands: Sequence[str],
+    short_payloads: dict[str, dict[str, Any]] | None = None,
+    long_payloads: dict[str, dict[str, Any]] | None = None,
+    variants_only: bool = False,
 ) -> list[dict[str, Any]]:
-    sql = f"""
-    INSERT INTO {TARGET_TABLE}
-        (brand, market_id, ai_analysis_json)
-    VALUES (%s, %s, %s)
-    ON DUPLICATE KEY UPDATE
-        ai_analysis_json = VALUES(ai_analysis_json),
-        market_id = VALUES(market_id)
-    """
+    include_variants = short_payloads is not None or long_payloads is not None
+    if variants_only:
+        if not include_variants:
+            raise ValueError("variants_only requires short_payloads or long_payloads")
+        sql = f"""
+        INSERT INTO {TARGET_TABLE}
+            (brand, market_id, ai_analysis_short_json, ai_analysis_long_json)
+        VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            ai_analysis_short_json = COALESCE(VALUES(ai_analysis_short_json), ai_analysis_short_json),
+            ai_analysis_long_json = COALESCE(VALUES(ai_analysis_long_json), ai_analysis_long_json),
+            market_id = VALUES(market_id)
+        """
+    elif include_variants:
+        sql = f"""
+        INSERT INTO {TARGET_TABLE}
+            (brand, market_id, ai_analysis_json, ai_analysis_short_json, ai_analysis_long_json)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            ai_analysis_json = VALUES(ai_analysis_json),
+            ai_analysis_short_json = COALESCE(VALUES(ai_analysis_short_json), ai_analysis_short_json),
+            ai_analysis_long_json = COALESCE(VALUES(ai_analysis_long_json), ai_analysis_long_json),
+            market_id = VALUES(market_id)
+        """
+    else:
+        sql = f"""
+        INSERT INTO {TARGET_TABLE}
+            (brand, market_id, ai_analysis_json)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            ai_analysis_json = VALUES(ai_analysis_json),
+            market_id = VALUES(market_id)
+        """
     rows: list[dict[str, Any]] = []
     with conn.cursor() as cursor:
         for brand in _dedupe_brands(brands):
-            payload = payloads[brand]
+            payload = payloads.get(brand)
+            short_payload = short_payloads.get(brand) if short_payloads else None
+            long_payload = long_payloads.get(brand) if long_payloads else None
             market_id = market_ids.get(brand)
-            cursor.execute(sql, (brand, market_id, _json_dumps(payload)))
+            if variants_only:
+                cursor.execute(
+                    sql,
+                    (
+                        brand,
+                        market_id,
+                        _json_dumps(short_payload) if short_payload else None,
+                        _json_dumps(long_payload) if long_payload else None,
+                    ),
+                )
+            elif include_variants:
+                if payload is None:
+                    raise KeyError(f"missing legacy payload for {brand}")
+                cursor.execute(
+                    sql,
+                    (
+                        brand,
+                        market_id,
+                        _json_dumps(payload),
+                        _json_dumps(short_payload) if short_payload else None,
+                        _json_dumps(long_payload) if long_payload else None,
+                    ),
+                )
+            else:
+                if payload is None:
+                    raise KeyError(f"missing payload for {brand}")
+                cursor.execute(sql, (brand, market_id, _json_dumps(payload)))
             rows.append(
                 {
                     "brand": brand,
                     "market_id": market_id,
-                    "run_id": payload["run_id_phase_zeta"],
-                    "phase_zeta_stage": payload["phase_zeta_stage"],
+                    "run_id": payload.get("run_id_phase_zeta") if payload else None,
+                    "short_run_id": short_payload.get("run_id_phase_zeta") if short_payload else None,
+                    "long_run_id": long_payload.get("run_id_phase_zeta") if long_payload else None,
+                    "phase_zeta_stage": (
+                        (payload or short_payload or long_payload or {}).get("phase_zeta_stage")
+                    ),
                     "affected_rows": int(cursor.rowcount),
                 }
             )
@@ -366,8 +478,14 @@ def verify_insert(conn: pymysql.connections.Connection, brands: Sequence[str]) -
             SELECT
                 brand,
                 JSON_LENGTH(ai_analysis_json) AS analysis_size,
+                JSON_LENGTH(ai_analysis_short_json) AS short_analysis_size,
+                JSON_LENGTH(ai_analysis_long_json) AS long_analysis_size,
                 JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_json, '$.phase_zeta_stage')) AS stage,
+                JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_short_json, '$.analysis_variant')) AS short_variant,
+                JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_long_json, '$.analysis_variant')) AS long_variant,
                 JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_json, '$.phenomenon.title')) AS phenomenon_title,
+                JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_short_json, '$.phenomenon.title')) AS short_phenomenon_title,
+                JSON_UNQUOTE(JSON_EXTRACT(ai_analysis_long_json, '$.phenomenon.title')) AS long_phenomenon_title,
                 market_id,
                 updated_at
             FROM {TARGET_TABLE}
@@ -468,6 +586,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Brands to insert. Defaults to the original JW25 list for backward-compatible safe runs.",
     )
+    parser.add_argument("--include-variants", action="store_true", help="Assemble short/long sibling payloads from variant zeta runs.")
+    parser.add_argument(
+        "--variants-only",
+        action="store_true",
+        help="Update only ai_analysis_short_json/ai_analysis_long_json; leave ai_analysis_json untouched.",
+    )
     return parser.parse_args()
 
 
@@ -496,48 +620,100 @@ def main() -> int:
     _write_text(audit_dir / "new_table_setup" / "initial_row_count.txt", f"{table_info['initial_row_count']}\n")
 
     selected_runs = select_latest_runs(conn, brands)
+    selected_short_runs = select_latest_runs(conn, brands, analysis_variant="short") if args.include_variants or args.variants_only else {}
+    selected_long_runs = select_latest_runs(conn, brands, analysis_variant="long") if args.include_variants or args.variants_only else {}
     market_ids, market_id_source = load_market_ids(conn, brands)
-    missing_runs = [brand for brand in brands if brand not in selected_runs]
+    missing_runs = [] if args.variants_only else [brand for brand in brands if brand not in selected_runs]
+    missing_short_runs = [brand for brand in brands if (args.include_variants or args.variants_only) and brand not in selected_short_runs]
+    missing_long_runs = [brand for brand in brands if (args.include_variants or args.variants_only) and brand not in selected_long_runs]
     parsed_by_brand: dict[str, dict[str, Any]] = {}
     payloads: dict[str, dict[str, Any]] = {}
+    short_payloads: dict[str, dict[str, Any]] = {}
+    long_payloads: dict[str, dict[str, Any]] = {}
     run_rows: list[dict[str, Any]] = []
     incomplete: list[dict[str, Any]] = []
 
-    for brand in brands:
-        run = selected_runs.get(brand)
-        if run is None:
+    if not args.variants_only:
+        for brand in brands:
+            run = selected_runs.get(brand)
+            if run is None:
+                continue
+            parsed = load_parsed_output(conn, run)
+            missing_stages = [stage for stage in STAGES if stage not in parsed]
+            run_rows.append(
+                {
+                    "brand": brand,
+                    "run_id": run.run_id,
+                    "status": run.status,
+                    "model_version": run.model_version,
+                    "created_at": run.created_at,
+                    "bundle_hash": run.bundle_hash,
+                    "analysis_variant": run.analysis_variant,
+                    "stages_present": "|".join(parsed.keys()),
+                    "missing_stages": "|".join(missing_stages),
+                    "market_id": market_ids.get(brand),
+                }
+            )
+            if missing_stages:
+                incomplete.append({"brand": brand, "run_id": run.run_id, "missing_stages": missing_stages})
+                continue
+            parsed_by_brand[brand] = parsed
+            payloads[brand] = build_ai_analysis(run, parsed)
+            _write_json(audit_dir / "parsed_outputs_used" / f"{brand}_parsed_output.json", {"run": run_rows[-1], "parsed_output": parsed})
+            _write_text(audit_dir / "narrative_previews" / f"{brand}.html", render_html(brand, run, parsed))
+
+    for variant_name, selected, target in (
+        ("short", selected_short_runs, short_payloads),
+        ("long", selected_long_runs, long_payloads),
+    ):
+        if not (args.include_variants or args.variants_only):
             continue
-        parsed = load_parsed_output(conn, run)
-        missing_stages = [stage for stage in STAGES if stage not in parsed]
-        run_rows.append(
-            {
-                "brand": brand,
-                "run_id": run.run_id,
-                "status": run.status,
-                "model_version": run.model_version,
-                "created_at": run.created_at,
-                "bundle_hash": run.bundle_hash,
-                "stages_present": "|".join(parsed.keys()),
-                "missing_stages": "|".join(missing_stages),
-                "market_id": market_ids.get(brand),
-            }
-        )
-        if missing_stages:
-            incomplete.append({"brand": brand, "run_id": run.run_id, "missing_stages": missing_stages})
-            continue
-        parsed_by_brand[brand] = parsed
-        payloads[brand] = build_ai_analysis(run, parsed)
-        _write_json(audit_dir / "parsed_outputs_used" / f"{brand}_parsed_output.json", {"run": run_rows[-1], "parsed_output": parsed})
-        _write_text(audit_dir / "narrative_previews" / f"{brand}.html", render_html(brand, run, parsed))
+        for brand in brands:
+            run = selected.get(brand)
+            if run is None:
+                continue
+            parsed = load_parsed_output(conn, run)
+            missing_stages = [stage for stage in STAGES if stage not in parsed]
+            run_rows.append(
+                {
+                    "brand": brand,
+                    "run_id": run.run_id,
+                    "status": run.status,
+                    "model_version": run.model_version,
+                    "created_at": run.created_at,
+                    "bundle_hash": run.bundle_hash,
+                    "analysis_variant": variant_name,
+                    "stages_present": "|".join(parsed.keys()),
+                    "missing_stages": "|".join(missing_stages),
+                    "market_id": market_ids.get(brand),
+                }
+            )
+            if missing_stages:
+                incomplete.append({"brand": brand, "run_id": run.run_id, "analysis_variant": variant_name, "missing_stages": missing_stages})
+                continue
+            target[brand] = build_variant_ai_analysis(run, parsed, variant_name)
+            _write_json(
+                audit_dir / "parsed_outputs_used" / f"{brand}_{variant_name}_parsed_output.json",
+                {"run": run_rows[-1], "parsed_output": parsed},
+            )
 
     _write_json(audit_dir / "parsed_outputs_used" / "selected_runs.json", run_rows)
     _write_json(audit_dir / "parsed_outputs_used" / "market_id_mapping.json", {"source": market_id_source, "market_ids": market_ids})
 
     insert_rows: list[dict[str, Any]] = []
     if args.apply:
-        if missing_runs or incomplete:
-            raise SystemExit(f"Cannot insert with missing/incomplete outputs: missing={missing_runs}, incomplete={incomplete}")
-        insert_rows = insert_ai_analysis(conn, payloads, market_ids, brands)
+        missing_all = missing_runs + missing_short_runs + missing_long_runs
+        if missing_all or incomplete:
+            raise SystemExit(f"Cannot insert with missing/incomplete outputs: missing={missing_all}, incomplete={incomplete}")
+        insert_rows = insert_ai_analysis(
+            conn,
+            payloads,
+            market_ids,
+            brands,
+            short_payloads=short_payloads if (args.include_variants or args.variants_only) else None,
+            long_payloads=long_payloads if (args.include_variants or args.variants_only) else None,
+            variants_only=args.variants_only,
+        )
     _write_csv(audit_dir / "insert_results" / "insert_log_per_brand.csv", insert_rows)
 
     verification = verify_insert(conn, brands) if args.apply else []
@@ -558,6 +734,8 @@ def main() -> int:
     stage_ok = [row for row in verification if row.get("stage") == STAGE_MARKER]
     title_ok = [row for row in verification if row.get("phenomenon_title")]
     analysis_ok = [row for row in verification if int(row.get("analysis_size") or 0) > 4]
+    short_ok = [row for row in verification if row.get("short_variant") == "short" and int(row.get("short_analysis_size") or 0) > 4]
+    long_ok = [row for row in verification if row.get("long_variant") == "long" and int(row.get("long_analysis_size") or 0) > 4]
     note_by_brand = {row["brand"]: row.get("quality_note") for row in weak_notes}
     expected_weak_notes = {brand: note for brand, note in WEAK_NARRATIVE_BRANDS.items() if brand in brands}
     weak_notes_correct = {
@@ -565,16 +743,23 @@ def main() -> int:
         for brand, note in expected_weak_notes.items()
     }
     expected_count = len(brands)
-    verdict = (
-        "PASS"
-        if args.apply
-        and len(found) == expected_count
-        and len(stage_ok) == expected_count
-        and len(title_ok) == expected_count
-        and len(analysis_ok) == expected_count
-        and all(weak_notes_correct.values())
-        else "DRY_RUN" if not args.apply else "PARTIAL"
-    )
+    if args.variants_only:
+        pass_condition = (
+            args.apply
+            and len(found) == expected_count
+            and len(short_ok) == expected_count
+            and len(long_ok) == expected_count
+        )
+    else:
+        pass_condition = (
+            args.apply
+            and len(found) == expected_count
+            and len(stage_ok) == expected_count
+            and len(title_ok) == expected_count
+            and len(analysis_ok) == expected_count
+            and all(weak_notes_correct.values())
+        )
+    verdict = "PASS" if pass_condition else "DRY_RUN" if not args.apply else "PARTIAL"
 
     audit_result = {
         "verdict": verdict,

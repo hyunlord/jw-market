@@ -58,6 +58,15 @@ def test_idempotency_key_includes_brand_hash_revision_and_formatter():
     assert key == "리바로젯|sha256:abc|rev:3727|formatter:wf217-order2-v10.3"
 
 
+def test_idempotency_key_separates_analysis_variants():
+    short = compute_idempotency_key("리바로젯", "sha256:abc", 3727, "wf217-order2-v10.3", analysis_variant="short")
+    long = compute_idempotency_key("리바로젯", "sha256:abc", 3727, "wf217-order2-v10.3", analysis_variant="long")
+
+    assert short.endswith("|variant:short")
+    assert long.endswith("|variant:long")
+    assert short != long
+
+
 def test_formatter_contract_rejects_damaged_dates_and_double_formatting():
     parsed = _parsed("HHI 지수는 2,026.00-04 기준 570.86(ML·UBIST·매출·2026-04)입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다.")
 
@@ -267,6 +276,52 @@ def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_pa
     assert "processing_mode" not in second["brands"]["리바로젯"]
     assert calls == {"bundle": 2, "llm": 1, "compose": 1}
     assert second["swap_plan"]["mode"] == "dry-run"
+
+
+def test_orchestrator_passes_analysis_variant_to_llm_and_compose(tmp_path):
+    calls = {"llm_variant": "", "compose_variant": ""}
+
+    def build_bundle(brand: str):
+        return {
+            "bundle_meta": {"bundle_hash": "sha256:testhash", "brand": brand},
+            "brand_context": {"brand_name": brand},
+            "market_views": [],
+        }
+
+    def call_llm(bundle, analysis_variant="legacy"):
+        calls["llm_variant"] = analysis_variant
+        return LLMCallResult(
+            success=True,
+            parsed_output=_parsed(),
+            raw_response=json.dumps({"ok": True}),
+            tokens_in=1,
+            tokens_out=2,
+            duration_sec=0.1,
+            model_version="genos_workflow_217",
+            retry_count=0,
+            error=None,
+        )
+
+    def validate(parsed_output, bundle):
+        return ValidationOutcome(valid=True, summary={"verdict": "PASS"}, details={})
+
+    def compose(brand, bundle, llm_result, validation, analysis_variant="legacy"):
+        calls["compose_variant"] = analysis_variant
+        return {"run_id": 101, "status": "ok", "cache_updated": False}
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle, call_llm, validate, compose),
+        dry_run=True,
+    )
+
+    record = orchestrator._run_brand("리바로젯", analysis_variant="short")
+
+    assert record["status"] == "validated"
+    assert record["analysis_variant"] == "short"
+    assert calls == {"llm_variant": "short", "compose_variant": "short"}
 
 
 def test_orchestrator_validation_failure_retains_raw_parsed_and_full_validation_detail(tmp_path):

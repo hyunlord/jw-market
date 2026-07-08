@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .config import RunnerConfig
+from .config import RunnerConfig, require_analysis_variant
 
 PROCESSING_MODE_FULL = "full"
 PROCESSING_MODE_COMPACT = "compact"
@@ -49,14 +49,43 @@ def _mode_instruction(mode: str) -> str:
             return ""
 
 
-def _validation_contract_block(forecast: dict[str, Any]) -> str:
+def _variant_instruction(analysis_variant: str) -> str:
+    variant = require_analysis_variant(analysis_variant)
+    if variant == "short":
+        return (
+            "short variant: 단기 인사이트입니다. forecast_simulation에서는 horizon_1y를 prediction의 주된 근거로 사용하세요. "
+            "1년 내 변화, 최근 이벤트, 가까운 처방/경쟁 대응, 즉시 실행 신호를 중심으로 쓰세요. "
+            "prediction은 horizon_1y 수치와 1년 신뢰구간만 사용하고, 3년/5년 예측값이나 장기 구조 전망 수치를 쓰지 마세요."
+        )
+    if variant == "long":
+        return (
+            "long variant: 장기 인사이트입니다. forecast_simulation에서는 horizon_5y를 prediction의 주된 근거로 사용하세요. "
+            "5년 구조적 추세, 지속 성장/둔화, 시장 구조 변화, 경쟁 포지션, 전략 포지셔닝과 CI 폭의 장기 리스크를 중심으로 쓰세요. "
+            "horizon_3y는 5년 전망으로 가는 중간 점검점으로만 사용하고, recommendation은 3~5년 관점으로 작성하세요."
+        )
+    return "legacy variant: 기존 운영 호환 인사이트입니다. prediction stage에 1년/3년/5년 전망을 모두 포함하세요."
+
+
+def _validation_contract_block(forecast: dict[str, Any], analysis_variant: str = "legacy") -> str:
+    variant = require_analysis_variant(analysis_variant)
     horizon_rule = ""
     if _forecast_has_all_horizons(forecast):
-        horizon_rule = (
-            "\n- forecast_simulation.available=true이고 1y/3y/5y 값이 모두 제공된 경우, "
-            "prediction stage에서 시뮬레이션을 언급할 때는 각 horizon의 실제 수치를 모두 명시하세요. "
-            "방향성 서술만 쓰지 마세요."
-        )
+        if variant == "short":
+            horizon_rule = (
+                "\n- short variant에서는 forecast_simulation.available=true일 때 prediction stage에 horizon_1y 실제 수치를 명시하세요. "
+                "3y/5y 값은 단기 판단의 주 근거로 쓰지 마세요."
+            )
+        elif variant == "long":
+            horizon_rule = (
+                "\n- long variant에서는 forecast_simulation.available=true일 때 prediction stage에 horizon_5y 실제 수치를 명시하세요. "
+                "horizon_3y는 5y 전망의 중간 점검점으로만 사용하세요."
+            )
+        else:
+            horizon_rule = (
+                "\n- forecast_simulation.available=true이고 1y/3y/5y 값이 모두 제공된 경우, "
+                "prediction stage에서 시뮬레이션을 언급할 때는 1y/3y/5y 각 horizon의 실제 수치를 모두 명시하세요. "
+                "방향성 서술만 쓰지 마세요."
+            )
     return (
         "\n\n[검증 계약]\n"
         "- market/competitive 수치를 인용할 때는 반드시 "
@@ -83,10 +112,12 @@ def build_question_string(bundle: dict[str, Any], config: RunnerConfig | None = 
     events_market_trend = event_bundle.get("events_market_trend", []) or []
     cross_match_events = event_bundle.get("cross_match_events", []) or []
     runner_config = config.config_version if config else "phase_zeta_runner_genos_v1"
+    analysis_variant = config.analysis_variant if config else "legacy"
 
     mode_instruction = _mode_instruction(mode)
     mode_block = f"\n\n[출력 밀도]\n{mode_instruction}" if mode_instruction else ""
-    validation_contract = _validation_contract_block(forecast)
+    variant_block = f"\n\n[analysis_variant: {analysis_variant}]\n{_variant_instruction(analysis_variant)}"
+    validation_contract = _validation_contract_block(forecast, analysis_variant)
 
     return f"""[분석 대상]
 brand: {brand_name}
@@ -116,5 +147,5 @@ runner_config: {runner_config}
 available: {bool(forecast.get("available", False))}
 {_dump(forecast)}
 
-위 데이터를 활용해서 phenomenon, cause, prediction, recommendation 4단 분석을 한 번에 JSON 으로 생성하세요.{validation_contract}{mode_block}
-"""
+	위 데이터를 활용해서 phenomenon, cause, prediction, recommendation 4단 분석을 한 번에 JSON 으로 생성하세요.{validation_contract}{mode_block}{variant_block}
+	"""

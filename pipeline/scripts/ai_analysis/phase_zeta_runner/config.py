@@ -1,9 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Final
 
 import yaml
+
+
+ANALYSIS_VARIANTS: Final = frozenset({"legacy", "short", "long"})
+
+
+class InvalidAnalysisVariantError(ValueError):
+    """Raised when a runner variant is outside the supported policy set."""
+
+
+def require_analysis_variant(value: str) -> str:
+    variant = value.strip().lower()
+    if variant not in ANALYSIS_VARIANTS:
+        raise InvalidAnalysisVariantError(f"Unsupported analysis_variant: {value}")
+    return variant
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,7 @@ class RunnerConfig:
     validator: ValidatorConfig
     composer: ComposerConfig
     retry: RetryConfig
+    analysis_variant: str = "legacy"
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RunnerConfig":
@@ -74,6 +90,7 @@ class RunnerConfig:
         validator_raw = root["validator"]
         composer_raw = root["composer"]
         retry_raw = root["retry"]
+        analysis_variant = require_analysis_variant(str(root.get("analysis_variant", "legacy")))
         return cls(
             config_version=str(root["config_version"]),
             builder_version=str(root["builder_version"]),
@@ -124,6 +141,7 @@ class RunnerConfig:
                 max_attempts=int(retry_raw["max_attempts"]),
                 backoff_sec=float(retry_raw["backoff_sec"]),
             ),
+            analysis_variant=analysis_variant,
         )
 
     @classmethod
@@ -149,4 +167,10 @@ class RunnerConfig:
                 db_name="jw_mart",
             ),
             retry=RetryConfig(max_attempts=2, backoff_sec=0),
+            analysis_variant="legacy",
         )
+
+    def with_analysis_variant(self, analysis_variant: str) -> "RunnerConfig":
+        variant = require_analysis_variant(analysis_variant)
+        config_version = self.config_version if variant == "legacy" else f"{self.config_version}:{variant}"
+        return replace(self, analysis_variant=variant, config_version=config_version)

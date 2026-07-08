@@ -10,6 +10,7 @@ and persist to zeta_analysis_runs/outputs, but it does not swap live cache.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import re
@@ -36,7 +37,7 @@ from agent2_processing_modes import (
     normalize_processing_mode,
     trim_bundle_for_mode,
 )
-from phase_zeta_runner.config import RunnerConfig
+from phase_zeta_runner.config import RunnerConfig, require_analysis_variant
 from phase_zeta_runner.llm_runner import call_llm
 from phase_zeta_runner.output_composer import compose_and_persist
 from phase_zeta_runner.run_pipeline import FullValidationResult, run_full_validation
@@ -78,8 +79,11 @@ def compute_idempotency_key(
     bundle_hash: str,
     workflow_revision_id: int | str,
     formatter_version: str,
+    analysis_variant: str = "legacy",
 ) -> str:
-    return f"{brand}|{bundle_hash}|rev:{workflow_revision_id}|formatter:{formatter_version}"
+    variant = require_analysis_variant(analysis_variant)
+    key = f"{brand}|{bundle_hash}|rev:{workflow_revision_id}|formatter:{formatter_version}"
+    return key if variant == "legacy" else f"{key}|variant:{variant}"
 
 
 @dataclass
@@ -142,9 +146,9 @@ class JsonRunStore:
 @dataclass
 class DependencyPorts:
     build_bundle: Callable[[str], dict[str, Any]]
-    call_llm: Callable[[dict[str, Any]], LLMCallResult]
+    call_llm: Callable[..., LLMCallResult]
     validate: Callable[[dict[str, Any], dict[str, Any]], ValidationOutcome]
-    compose: Callable[[str, dict[str, Any], LLMCallResult, ValidationOutcome], dict[str, Any]]
+    compose: Callable[..., dict[str, Any]]
 
 
 def _walk_strings(obj: Any) -> Iterable[tuple[str, str]]:
@@ -274,13 +278,15 @@ class Agent2RegenOrchestrator:
         self.dry_run = dry_run
         self.fail_threshold = fail_threshold
 
-    def run(self, brands: list[str]) -> dict[str, Any]:
+    def run(self, brands: list[str], analysis_variant: str = "legacy") -> dict[str, Any]:
+        variant = require_analysis_variant(analysis_variant)
         started_at = datetime.now(timezone.utc).isoformat()
         manifest: dict[str, Any] = {
             "run_id": f"agent2_regen_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "started_at": started_at,
             "workflow_revision_id": self.workflow_revision_id,
             "formatter_version": self.formatter_version,
+            "analysis_variant": variant,
             "dry_run": self.dry_run,
             "brands": {},
         }
@@ -288,7 +294,7 @@ class Agent2RegenOrchestrator:
         failures = 0
 
         for brand in brands:
-            record = self._run_brand(brand)
+            record = self._run_brand(brand, analysis_variant=variant)
             manifest["brands"][brand] = record
             if record["status"] == "validated":
                 swap_candidates.append(brand)
@@ -302,13 +308,15 @@ class Agent2RegenOrchestrator:
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         return manifest
 
-    def run_routed(self, worklist: list[RoutedAgent2Brand]) -> dict[str, Any]:
+    def run_routed(self, worklist: list[RoutedAgent2Brand], analysis_variant: str = "legacy") -> dict[str, Any]:
+        variant = require_analysis_variant(analysis_variant)
         started_at = datetime.now(timezone.utc).isoformat()
         manifest: dict[str, Any] = {
             "run_id": f"agent2_regen_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "started_at": started_at,
             "workflow_revision_id": self.workflow_revision_id,
             "formatter_version": self.formatter_version,
+            "analysis_variant": variant,
             "dry_run": self.dry_run,
             "routing_identity": "brand_key",
             "brands": {},
@@ -321,7 +329,7 @@ class Agent2RegenOrchestrator:
                 case ProcessingMode.TEMPLATE_ZERO:
                     record = self._run_zero_template(item)
                 case ProcessingMode.LLM_FULL | ProcessingMode.LLM_COMPACT | ProcessingMode.LLM_RECAP:
-                    record = self._run_brand(item.canonical_brand_name, item.route.mode)
+                    record = self._run_brand(item.canonical_brand_name, item.route.mode, variant)
                     record["brand_key"] = item.brand_key
                     record["canonical_brand_name"] = item.canonical_brand_name
                     record["density_route"] = _route_metadata(item)
@@ -354,9 +362,32 @@ class Agent2RegenOrchestrator:
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def _run_brand(self, brand: str, mode: str | ProcessingMode = PROCESSING_MODE_FULL) -> dict[str, Any]:
+    def _call_llm(self, bundle: dict[str, Any], analysis_variant: str) -> LLMCallResult:
+        if len(inspect.signature(self.ports.call_llm).parameters) >= 2:
+            return self.ports.call_llm(bundle, analysis_variant)
+        return self.ports.call_llm(bundle)
+
+    def _compose(
+        self,
+        brand: str,
+        bundle: dict[str, Any],
+        llm_result: LLMCallResult,
+        validation: ValidationOutcome,
+        analysis_variant: str,
+    ) -> dict[str, Any]:
+        if len(inspect.signature(self.ports.compose).parameters) >= 5:
+            return self.ports.compose(brand, bundle, llm_result, validation, analysis_variant)
+        return self.ports.compose(brand, bundle, llm_result, validation)
+
+    def _run_brand(
+        self,
+        brand: str,
+        mode: str | ProcessingMode = PROCESSING_MODE_FULL,
+        analysis_variant: str = "legacy",
+    ) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc).isoformat()
         mode_name = normalize_processing_mode(mode)
+        variant = require_analysis_variant(analysis_variant)
         try:
             bundle = self.ports.build_bundle(brand)
             bundle = trim_bundle_for_mode(bundle, mode_name)
@@ -366,6 +397,7 @@ class Agent2RegenOrchestrator:
                 bundle_hash,
                 self.workflow_revision_id,
                 self.formatter_version,
+                variant,
             )
             previous = self.run_store.get_success(idempotency_key)
             if previous:
@@ -380,9 +412,11 @@ class Agent2RegenOrchestrator:
                 }
                 if mode_name != PROCESSING_MODE_FULL:
                     skipped_record["processing_mode"] = mode_name
+                if variant != "legacy":
+                    skipped_record["analysis_variant"] = variant
                 return skipped_record
 
-            llm_result = self.ports.call_llm(bundle)
+            llm_result = self._call_llm(bundle, variant)
             if not llm_result.success:
                 return self._record_failure(
                     brand,
@@ -390,6 +424,7 @@ class Agent2RegenOrchestrator:
                     bundle_hash,
                     "llm_failed",
                     {"error": llm_result.error, "llm": _llm_failure_debug(llm_result)},
+                    analysis_variant=variant,
                 )
 
             formatter = validate_formatter_contract(llm_result.parsed_output, brand, mode_name)
@@ -406,9 +441,10 @@ class Agent2RegenOrchestrator:
                         "validation_detail": validation.details,
                         "llm": _llm_failure_debug(llm_result),
                     },
+                    analysis_variant=variant,
                 )
 
-            composition = self.ports.compose(brand, bundle, llm_result, validation)
+            composition = self._compose(brand, bundle, llm_result, validation, variant)
             record = {
                 "brand": brand,
                 "status": "validated",
@@ -428,13 +464,36 @@ class Agent2RegenOrchestrator:
             }
             if mode_name != PROCESSING_MODE_FULL:
                 record["processing_mode"] = mode_name
+            if variant != "legacy":
+                record["analysis_variant"] = variant
             self.run_store.record(idempotency_key, record, success=True)
             return record
         except Exception as exc:
-            synthetic_key = compute_idempotency_key(brand, "bundle_hash_unavailable", self.workflow_revision_id, self.formatter_version)
-            return self._record_failure(brand, synthetic_key, "bundle_hash_unavailable", "exception", f"{type(exc).__name__}: {exc}")
+            synthetic_key = compute_idempotency_key(
+                brand,
+                "bundle_hash_unavailable",
+                self.workflow_revision_id,
+                self.formatter_version,
+                variant,
+            )
+            return self._record_failure(
+                brand,
+                synthetic_key,
+                "bundle_hash_unavailable",
+                "exception",
+                f"{type(exc).__name__}: {exc}",
+                analysis_variant=variant,
+            )
 
-    def _record_failure(self, brand: str, idempotency_key: str, bundle_hash: str, reason: str, detail: Any) -> dict[str, Any]:
+    def _record_failure(
+        self,
+        brand: str,
+        idempotency_key: str,
+        bundle_hash: str,
+        reason: str,
+        detail: Any,
+        analysis_variant: str = "legacy",
+    ) -> dict[str, Any]:
         record = {
             "brand": brand,
             "status": "failed",
@@ -446,6 +505,8 @@ class Agent2RegenOrchestrator:
             "formatter_version": self.formatter_version,
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
+        if analysis_variant != "legacy":
+            record["analysis_variant"] = analysis_variant
         self.run_store.record(idempotency_key, record, success=False)
         return record
 
@@ -615,8 +676,9 @@ def make_real_ports(
         _write_json(bundle_path, bundle)
         return bundle
 
-    def call_llm_port(bundle: dict[str, Any]) -> LLMCallResult:
-        result = call_llm(bundle, runner_config)
+    def call_llm_port(bundle: dict[str, Any], analysis_variant: str = "legacy") -> LLMCallResult:
+        variant_config = runner_config.with_analysis_variant(analysis_variant)
+        result = call_llm(bundle, variant_config)
         return LLMCallResult(
             success=result.success,
             parsed_output=result.parsed_output,
@@ -638,10 +700,12 @@ def make_real_ports(
         bundle: dict[str, Any],
         llm_result: LLMCallResult,
         validation: ValidationOutcome,
+        analysis_variant: str = "legacy",
     ) -> dict[str, Any]:
         from phase_zeta_runner.llm_runner import LLMResult
         from phase_zeta_runner.run_pipeline import FullValidationResult
 
+        variant_config = runner_config.with_analysis_variant(analysis_variant)
         # compose_and_persist expects the project dataclasses. Rebuild the small
         # LLM object directly; for validation, keep the details in raw outputs
         # and use a minimal adapter carrying the required attributes.
@@ -659,8 +723,8 @@ def make_real_ports(
         )
         # Re-run full validation here to preserve stage_results dataclass shape
         # for output_composer. This is read-only before staging insert.
-        full_validation: FullValidationResult = run_full_validation(real_llm.parsed_output, bundle, runner_conn, runner_config)
-        composition = compose_and_persist(brand, snapshot_at, bundle, real_llm, full_validation, runner_config, runner_conn)
+        full_validation: FullValidationResult = run_full_validation(real_llm.parsed_output, bundle, runner_conn, variant_config)
+        composition = compose_and_persist(brand, snapshot_at, bundle, real_llm, full_validation, variant_config, runner_conn)
         parsed_path = work_dir / "parsed_outputs" / f"{brand}_parsed.json"
         _write_json(parsed_path, real_llm.parsed_output)
         validation_path = work_dir / "validation" / f"{brand}_validation.json"
@@ -701,6 +765,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--snapshot-at", default=None, help="ISO datetime. Defaults to now.")
     parser.add_argument("--workflow-revision-id", type=int, default=DEFAULT_WORKFLOW_REVISION_ID)
     parser.add_argument("--formatter-version", default=DEFAULT_FORMATTER_VERSION)
+    parser.add_argument("--analysis-variant", choices=("legacy", "short", "long"), default="legacy")
     parser.add_argument("--fail-threshold", type=int, default=5)
     return parser.parse_args(argv)
 
@@ -762,7 +827,11 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=dry_run,
             fail_threshold=args.fail_threshold,
         )
-        manifest = orchestrator.run_routed(routed_worklist) if routed_worklist is not None else orchestrator.run(list(brands))
+        manifest = (
+            orchestrator.run_routed(routed_worklist, analysis_variant=args.analysis_variant)
+            if routed_worklist is not None
+            else orchestrator.run(list(brands), analysis_variant=args.analysis_variant)
+        )
         manifest["diagnostics"] = diagnostics
         _write_json(work_dir / "run_manifest.json", manifest)
         print(_json_dumps(manifest))
