@@ -650,7 +650,8 @@ def _evidence_numbers(text: str, config: ValidatorConfig) -> list[dict[str, Any]
 
 def _matches_numeric_evidence(item: dict[str, Any], bundle_index: dict[float, list[str]], config: ValidatorConfig) -> bool:
     text = "\n".join(_evidence_texts(item))
-    if not NUMERIC_EVIDENCE_TAG_RE.search(text):
+    _display_hint, source_hint = _view_label_from_text(text)
+    if not NUMERIC_EVIDENCE_TAG_RE.search(text) and not source_hint:
         return False
     for number in _evidence_numbers(text, config):
         matched_path = find_match_unit_aware(number["value"], bundle_index, number["number_type"], config)

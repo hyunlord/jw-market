@@ -483,6 +483,44 @@ def test_prediction_numeric_evidence_matches_source_only_basis():
     assert result.valid
 
 
+def test_prediction_numeric_evidence_matches_source_after_horizon_series():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "수치 기반 예측",
+            "body": "IQVIA 기준 매출액 예측값은 1년 후 314,003,008.58원, "
+            "3년 후 81,390,234.74원, 5년 후 0.00원으로 예측됩니다. "
+            "95% 신뢰구간 기준입니다.",
+            "bullets": [],
+            "evidence": [
+                {
+                    "title": "매출 예측 시뮬레이션",
+                    "basis": "314,003,008.58원(1년), 81,390,234.74원(3년), "
+                    "0.00원(5년)(Market Landscape · IQVIA 기준)",
+                }
+            ],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+    bundle = {
+        "forecast_simulation": {
+            "available": True,
+            "by_view": {
+                "ML.IQVIA.sales": {
+                    "horizon_1y": {"base": 314003008.58},
+                    "horizon_3y": {"base": 81390234.74},
+                    "horizon_5y": {"base": 0.0},
+                }
+            },
+        }
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
 def test_simulation_prediction_accepts_decimal_zero_horizon():
     bundle = {
         "forecast_simulation": {
