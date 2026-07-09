@@ -18,25 +18,22 @@ def fallback_brand_choices(brand_key: str, brand_name: str) -> tuple[BrandChoice
     return (BrandChoice(brand_key=brand_key, brand_name=brand_name, sales_rank=None, is_selected=True),)
 
 
-def build_brand_elements(
+def build_brand_factors(
     choices: Sequence[BrandChoice],
     *,
     selected_brand_key: str,
     cached_elements_by_key: Mapping[str, Mapping[str, Any]],
     selected_factors: Mapping[str, Any],
-    selected_strength: Mapping[str, Any],
     strength_by_source_by_key: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Combine factors and strength into one six-slot response contract."""
+    """Group factors and source-level strength into source-scoped brand slots."""
 
     items: list[dict[str, Any]] = []
     for index, choice in enumerate(choices, start=1):
         is_selected = choice.is_selected or choice.brand_key == selected_brand_key
         cached = cached_elements_by_key.get(choice.brand_key, {})
         cached_factors = _dict_or_empty(cached.get("factors"))
-        cached_strength = _dict_or_empty(cached.get("strength"))
         factors = cached_factors or (dict(selected_factors) if is_selected else {})
-        strength = cached_strength or (dict(selected_strength) if is_selected else _unavailable("not_generated"))
         strength_by_source = _dict_or_empty((strength_by_source_by_key or {}).get(choice.brand_key))
         items.append(
             {
@@ -44,26 +41,29 @@ def build_brand_elements(
                 "brand_key": choice.brand_key,
                 "role": "selected" if is_selected else "competitor",
                 "rank": index,
-                "sales_rank": choice.sales_rank,
-                "factors": {
-                    "atc": _string_list(factors.get("atc")),
-                    "ubist": _source_factor_section(factors.get("ubist"), UBIST_FACTOR_KEYS),
-                    "iqvia": _source_factor_section(factors.get("iqvia"), IQVIA_FACTOR_KEYS),
-                },
-                "strength": _normalize_strength(strength),
-                "strength_by_source": strength_by_source,
+                "iqvia": _source_section(factors.get("iqvia"), strength_by_source.get("iqvia"), IQVIA_FACTOR_KEYS),
+                "ubist": _source_section(factors.get("ubist"), strength_by_source.get("ubist"), UBIST_FACTOR_KEYS),
             }
         )
     return items
 
 
+def _source_section(factors: Any, strength: Any, factor_keys: Sequence[str]) -> dict[str, Any]:
+    factor_section = _source_factor_section(factors, factor_keys)
+    strength_section = _source_strength_section(strength)
+    if not factor_section["available"] and not strength_section:
+        return {}
+    return {"factors": factor_section, "strength": strength_section}
+
+
 def _source_factor_section(value: Any, keys: Sequence[str]) -> dict[str, Any]:
     values = _factor_values(value, keys)
     available = any(values[key] for key in keys)
-    section: dict[str, Any] = {"available": available, "values": values}
-    if not available:
-        section["reason"] = "not_generated"
-    return section
+    return {
+        "available": available,
+        "reason": None if available else "not_generated",
+        "values": values,
+    }
 
 
 def _factor_values(value: Any, keys: Sequence[str]) -> dict[str, list[str]]:
@@ -80,10 +80,6 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
-def _unavailable(reason: str) -> dict[str, Any]:
-    return {"available": False, "reason": reason}
-
-
 def _dict_or_empty(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -96,10 +92,14 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _normalize_strength(value: Mapping[str, Any]) -> dict[str, Any]:
-    strength = dict(value) if isinstance(value, Mapping) else {}
+def _source_strength_section(value: Any) -> dict[str, Any]:
+    strength = _dict_or_empty(value)
     if not strength:
-        return _unavailable("not_generated")
-    if "available" not in strength:
-        strength["available"] = True
-    return strength
+        return {}
+    strength_items = strength.get("strength_items", [])
+    limitations = strength.get("limitations", [])
+    return {
+        "profile_display": _dict_or_empty(strength.get("profile_display")),
+        "strength_items": strength_items if isinstance(strength_items, list) else [],
+        "limitations": limitations if isinstance(limitations, list) else [],
+    }

@@ -19,7 +19,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     resolve_brand_set,
 )
 from pipeline.scripts.api.deep_analysis_brand_elements import (
-    build_brand_elements,
+    build_brand_factors,
     fallback_brand_choices,
 )
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
@@ -975,15 +975,15 @@ def deep_analysis(
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        selected_strength = _load_brand_strength(matched_brand)
         cached_elements = _load_cached_brand_elements([choice.brand_key for choice in brand_choices])
         strength_by_source = _load_brand_strength_by_source([choice.brand_key for choice in brand_choices])
-        data["brand_elements"] = build_brand_elements(
+        data.pop("brand_elements", None)
+        data.pop("strength_by_source", None)
+        data["brand_factors"] = build_brand_factors(
             brand_choices,
             selected_brand_key=selected_brand_key,
             cached_elements_by_key=cached_elements,
             selected_factors=selected_factors,
-            selected_strength=selected_strength,
             strength_by_source_by_key=strength_by_source,
         )
     return payload

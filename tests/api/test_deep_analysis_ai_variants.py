@@ -56,7 +56,7 @@ def _strength_row() -> dict[str, Any]:
 
 
 def _selected_strength_available(payload: dict[str, Any]) -> bool:
-    return bool(payload["data"]["brand_elements"][0]["strength"]["available"])
+    return bool(payload["data"]["brand_factors"][0]["iqvia"].get("strength"))
 
 
 def test_deep_analysis_ai_variants_are_not_generated_when_row_absent(monkeypatch) -> None:
@@ -78,7 +78,7 @@ def test_deep_analysis_ai_variants_are_not_generated_when_row_absent(monkeypatch
     assert payload["data"]["ai_analysis"] == {}
     assert payload["data"]["ai_analysis_short"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["ai_analysis_long"] == {"available": False, "reason": "not_generated"}
-    assert _selected_strength_available(payload) is True
+    assert _selected_strength_available(payload) is False
 
 
 def test_deep_analysis_ai_variants_remove_generation_only_fields(monkeypatch) -> None:
@@ -135,7 +135,7 @@ def test_deep_analysis_ai_variants_handle_invalid_json(monkeypatch) -> None:
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
     assert payload["data"]["ai_analysis_short"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["ai_analysis_long"] == {"available": False, "reason": "not_generated"}
-    assert _selected_strength_available(payload) is True
+    assert _selected_strength_available(payload) is False
 
 
 def test_deep_analysis_ai_variants_handle_db_failure(monkeypatch) -> None:
@@ -159,7 +159,7 @@ def test_deep_analysis_ai_variants_handle_db_failure(monkeypatch) -> None:
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
     assert payload["data"]["ai_analysis_short"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["ai_analysis_long"] == {"available": False, "reason": "not_generated"}
-    assert _selected_strength_available(payload) is True
+    assert _selected_strength_available(payload) is False
 
 
 def test_deep_analysis_legacy_ai_analysis_unchanged_when_variant_columns_absent(monkeypatch) -> None:
@@ -181,4 +181,4 @@ def test_deep_analysis_legacy_ai_analysis_unchanged_when_variant_columns_absent(
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
     assert payload["data"]["ai_analysis_short"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["ai_analysis_long"] == {"available": False, "reason": "not_generated"}
-    assert _selected_strength_available(payload) is True
+    assert _selected_strength_available(payload) is False

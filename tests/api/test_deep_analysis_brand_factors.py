@@ -9,7 +9,7 @@ from pipeline.scripts.api.main import app
 from pipeline.scripts.api.routes import deep_analysis
 
 
-def test_deep_analysis_route_serves_brand_elements(monkeypatch) -> None:
+def test_deep_analysis_route_serves_source_scoped_brand_factors(monkeypatch) -> None:
     rows = iter(
         [
             {
@@ -22,14 +22,6 @@ def test_deep_analysis_route_serves_brand_elements(monkeypatch) -> None:
             },
             {"ai_analysis_json": "{}"},
             {"ai_analysis_short_json": None, "ai_analysis_long_json": None},
-            {
-                "strength_summary_json": json.dumps(
-                    {"profile_display": "유지", "strength_items": ["처방 기반 강점"], "limitations": []},
-                    ensure_ascii=False,
-                ),
-                "generated_at": "2026-07-09T09:00:00+09:00",
-                "workflow_rev": "test",
-            },
             [
                 {
                     "brand_key": "크레스토",
@@ -80,10 +72,11 @@ def test_deep_analysis_route_serves_brand_elements(monkeypatch) -> None:
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert "brand_factors" not in data
+    assert "brand_elements" not in data
     assert "brand_strength" not in data
-    assert [item["role"] for item in data["brand_elements"]] == ["selected", *["competitor"] * 5]
-    assert [item["brand_key"] for item in data["brand_elements"]] == [
+    assert "strength_by_source" not in data
+    assert [item["role"] for item in data["brand_factors"]] == ["selected", *["competitor"] * 5]
+    assert [item["brand_key"] for item in data["brand_factors"]] == [
         "리바로",
         "크레스토",
         "리피토",
@@ -91,25 +84,27 @@ def test_deep_analysis_route_serves_brand_elements(monkeypatch) -> None:
         "아토젯",
         "바이토린",
     ]
-    selected = data["brand_elements"][0]
-    assert selected["factors"]["atc"] == ["C10A1"]
-    assert selected["factors"]["ubist"]["available"] is True
-    assert selected["factors"]["ubist"]["values"]["seller"] == ["JW중외제약"]
-    assert selected["strength"]["available"] is True
-    assert selected["strength"]["strength_items"] == ["처방 기반 강점"]
-    assert selected["strength_by_source"]["iqvia"]["strength_items"] == ["IQVIA 강점"]
-    competitor = data["brand_elements"][1]
-    assert competitor["factors"]["iqvia"]["available"] is True
-    assert competitor["factors"]["iqvia"]["values"]["mfr_name_kor"] == ["AZ"]
-    assert data["brand_elements"][2]["factors"]["ubist"] == {
-        "available": False,
-        "reason": "not_generated",
-        "values": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
-    }
-    assert data["brand_elements"][2]["strength"] == {"available": False, "reason": "not_generated"}
+    selected = data["brand_factors"][0]
+    assert selected["ubist"]["factors"]["available"] is True
+    assert selected["ubist"]["factors"]["reason"] is None
+    assert selected["ubist"]["factors"]["values"]["seller"] == ["JW중외제약"]
+    assert selected["ubist"]["strength"] == {}
+    assert selected["iqvia"]["factors"]["available"] is False
+    assert selected["iqvia"]["strength"]["strength_items"] == ["IQVIA 강점"]
+    assert set(selected) == {"brand", "brand_key", "role", "rank", "iqvia", "ubist"}
+    competitor = data["brand_factors"][1]
+    assert competitor["iqvia"]["factors"]["available"] is True
+    assert competitor["iqvia"]["factors"]["values"]["mfr_name_kor"] == ["AZ"]
+    assert competitor["iqvia"]["strength"] == {}
+    assert competitor["ubist"] == {}
+    assert data["brand_factors"][2]["iqvia"] == {}
+    assert data["brand_factors"][2]["ubist"] == {}
+    serialized = json.dumps(data, ensure_ascii=False)
+    assert "brand_elements" not in serialized
+    assert "strength_by_source" not in serialized
 
 
-def test_deep_analysis_openapi_documents_brand_elements() -> None:
+def test_deep_analysis_openapi_documents_source_scoped_brand_factors() -> None:
     app.openapi_schema = None
     schema = app.openapi()
 
@@ -117,18 +112,17 @@ def test_deep_analysis_openapi_documents_brand_elements() -> None:
         "application/json"
     ]["schema"]["properties"]["data"]
 
-    assert "brand_elements" in data_schema["properties"]
-    assert "brand_factors" not in data_schema["properties"]
+    assert "brand_factors" in data_schema["properties"]
+    assert "brand_elements" not in data_schema["properties"]
     assert "brand_strength" not in data_schema["properties"]
-    item = data_schema["properties"]["brand_elements"]["items"]
+    item = data_schema["properties"]["brand_factors"]["items"]
     assert item["properties"]["role"]["enum"] == ["selected", "competitor"]
-    assert "factors" in item["properties"]
-    assert "strength" in item["properties"]
-    assert "strength_by_source" in item["properties"]
-    assert "pack_desc" in item["properties"]["factors"]["properties"]["iqvia"]["properties"]["values"]["properties"]
+    assert set(item["properties"]) == {"brand", "brand_key", "role", "rank", "iqvia", "ubist"}
+    assert "pack_desc" in item["properties"]["iqvia"]["properties"]["factors"]["properties"]["values"]["properties"]
+    assert item["properties"]["iqvia"]["properties"]["strength"]["additionalProperties"] is False
     example_items = schema["paths"]["/api/deep-analysis/{brand_name}"]["get"]["responses"]["200"]["content"][
         "application/json"
-    ]["example"]["data"]["brand_elements"]
+    ]["example"]["data"]["brand_factors"]
     assert len(example_items) == 6
     assert example_items[0]["role"] == "selected"
     assert example_items[1]["role"] == "competitor"
