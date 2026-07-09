@@ -91,6 +91,7 @@ def test_stage3a7_variant_only_insert_does_not_overwrite_legacy_payload():
     assert "ai_analysis_json" not in sql.split("VALUES", 1)[0]
     assert "ai_analysis_short_json" in sql
     assert "ai_analysis_long_json" in sql
+    assert "market_id = VALUES(market_id)" not in sql
     assert params[0:2] == ("가드렛", "ML1")
     assert rows[0]["short_run_id"] is None
 

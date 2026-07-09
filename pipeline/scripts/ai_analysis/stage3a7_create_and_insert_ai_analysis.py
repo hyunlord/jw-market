@@ -395,8 +395,7 @@ def insert_ai_analysis(
         VALUES (%s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             ai_analysis_short_json = COALESCE(VALUES(ai_analysis_short_json), ai_analysis_short_json),
-            ai_analysis_long_json = COALESCE(VALUES(ai_analysis_long_json), ai_analysis_long_json),
-            market_id = VALUES(market_id)
+            ai_analysis_long_json = COALESCE(VALUES(ai_analysis_long_json), ai_analysis_long_json)
         """
     elif include_variants:
         sql = f"""
