@@ -121,6 +121,7 @@ def test_prompt_combines_density_mode_and_long_variant_instruction():
     assert "horizon_5y" in question
     assert "body는 1-2문장" in question
     assert "1y/3y/5y 각 horizon의 실제 수치" not in question
+    assert "horizon_5y가 제공되지 않은 브랜드에서는 5년 수치를 만들지 말고" in question
 
 
 def test_prompt_declares_view_label_and_evidence_contracts():

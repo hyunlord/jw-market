@@ -61,7 +61,8 @@ def _variant_instruction(analysis_variant: str) -> str:
         return (
             "long variant: 장기 인사이트입니다. forecast_simulation에서는 horizon_5y를 prediction의 주된 근거로 사용하세요. "
             "5년 구조적 추세, 지속 성장/둔화, 시장 구조 변화, 경쟁 포지션, 전략 포지셔닝과 CI 폭의 장기 리스크를 중심으로 쓰세요. "
-            "horizon_3y는 5년 전망으로 가는 중간 점검점으로만 사용하고, recommendation은 3~5년 관점으로 작성하세요."
+            "horizon_3y는 5년 전망으로 가는 중간 점검점으로만 사용하고, recommendation은 3~5년 관점으로 작성하세요. "
+            "단, horizon_5y가 제공되지 않은 브랜드에서는 5년 수치를 만들지 말고, 제공된 가장 긴 horizon 또는 market/competitive evidence로 장기 방향성을 서술하세요."
         )
     return "legacy variant: 기존 운영 호환 인사이트입니다. prediction stage에 1년/3년/5년 전망을 모두 포함하세요."
 
