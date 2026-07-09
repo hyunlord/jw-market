@@ -53,7 +53,9 @@ from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels,
 period_key = lru_cache(maxsize=None)(period_key)
 
 
-CHANNELS_5 = ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
+UBIST_TGH_FACILITY_CHANNEL = "(상급종병 + 종병)"
+UBIST_TGH_FACILITY_BUCKETS = {"상급종병", "종병"}
+CHANNELS_5 = ["전체", "상급종병", "종병", UBIST_TGH_FACILITY_CHANNEL, "병원", "의원", "보건소", "기타"]
 IQVIA_CHANNELS = ["전체", "KHPA", "KCPA", "KPA"]
 CAUSE_LEVELS_V091 = ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
 CAUSE_LEVELS_ML011 = ["Class 1", "Class 2", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
@@ -1103,7 +1105,7 @@ def _dimension_channel_series_map(row: dict[str, Any], field: str | None, source
         merged = {period: {"raw_value": 0.0} for period in _series_periods_from_channel_map(channel_map)}
         matched = False
         for raw_channel, series in channel_map.items():
-            if _channel_bucket(raw_channel, source) != channel or not isinstance(series, dict):
+            if not _channel_matches(raw_channel, source, channel) or not isinstance(series, dict):
                 continue
             matched = True
             for period, item in series.items():
@@ -1193,6 +1195,13 @@ def _channel_bucket(raw: Any, source: str) -> str | None:
     if upper in {"KHPA", "KCPA", "KPA"}:
         return upper
     return None
+
+
+def _channel_matches(raw: Any, source: str, channel: str) -> bool:
+    bucket = _channel_bucket(raw, source)
+    if channel == UBIST_TGH_FACILITY_CHANNEL:
+        return source == "UBIST" and bucket in UBIST_TGH_FACILITY_BUCKETS
+    return bucket == channel
 
 
 def _channels_for_source(source: str) -> list[str]:
@@ -1313,7 +1322,7 @@ def _segment_rows_for_level(
         if not isinstance(channel_data, dict):
             continue
         for raw_channel, series in channel_data.items():
-            if _channel_bucket(raw_channel, source) != channel:
+            if not _channel_matches(raw_channel, source, channel):
                 continue
             if isinstance(series, dict):
                 _add_series(totals, series, periods)
@@ -1370,7 +1379,7 @@ def _rows_for_channel(rows: list[dict[str, Any]], source: str, channel: str, per
                 row["__channel_data"] = channel_data
             if isinstance(channel_data, dict):
                 for raw_channel, series in channel_data.items():
-                    if _channel_bucket(raw_channel, source) != channel or not isinstance(series, dict):
+                    if not _channel_matches(raw_channel, source, channel) or not isinstance(series, dict):
                         continue
                     for period in periods:
                         history[period] += _value_from_period_item(series.get(period))

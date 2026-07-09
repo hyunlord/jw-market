@@ -22,7 +22,7 @@ from pipeline.scripts.utils.ubist_target_channel_mapping import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 UBIST_PARQUET_GLOB = PROJECT_ROOT / "output" / "ubist" / "year=*" / "month=*" / "data.parquet"
-SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
+SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "(상급종병 + 종병)", "병원", "의원", "보건소", "기타"]
 UBIST_CHANNEL_BY_DISPLAY_COLUMN = "ubist_channel_by_display"
 UBIST_CHANNEL_BY_CODE_COLUMN = "ubist_channel_by_code"
 CHANNEL_SPECIALTY_MATRIX_COLUMN = "channel_specialty_matrix"

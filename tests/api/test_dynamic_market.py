@@ -1044,7 +1044,12 @@ def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch
         period: {"raw_value": value}
         for period, value in zip(periods, (100.0, 120.0))
     }
-    class_channel_series = {"종합병원": class_series, "의원": {"2026-01": {"raw_value": 10.0}, "2026-02": {"raw_value": 20.0}}}
+    class_channel_series = {
+        "상급종합병원": {"2026-01": {"raw_value": 30.0}, "2026-02": {"raw_value": 40.0}},
+        "종합병원": class_series,
+        "병원": {"2026-01": {"raw_value": 500.0}, "2026-02": {"raw_value": 600.0}},
+        "의원": {"2026-01": {"raw_value": 10.0}, "2026-02": {"raw_value": 20.0}},
+    }
     specialty_matrix = {
         "종합병원": {"순환기(Cardiology IM)": {"2026-01": 50.0, "2026-02": 70.0}},
         "의원": {"가정의학과(FM)": {"2026-01": 10.0, "2026-02": 20.0}},
@@ -1144,12 +1149,23 @@ def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch
 
     analysis_levels = payload["data"]["analysis_levels"]
     assert analysis_levels["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
-    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"]
+    assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "(상급종병 + 종병)", "병원", "의원", "보건소", "기타"]
     assert any(
         segment["name"] == "JW중외제약"
         for segment in analysis_levels["data"]["판매사"]["by_channel"]["전체"]
     )
-    assert analysis_levels["data"]["판매사"]["by_channel"]["종병"]
+    seller_by_channel = analysis_levels["data"]["판매사"]["by_channel"]
+    assert seller_by_channel["종병"]
+    tgh_segment = next(segment for segment in seller_by_channel["(상급종병 + 종병)"] if segment["name"] == "JW중외제약")
+    th_segment = next(segment for segment in seller_by_channel["상급종병"] if segment["name"] == "JW중외제약")
+    gh_segment = next(segment for segment in seller_by_channel["종병"] if segment["name"] == "JW중외제약")
+    hospital_segment = next(segment for segment in seller_by_channel["병원"] if segment["name"] == "JW중외제약")
+    assert tgh_segment["value_series"] == [
+        th_segment["value_series"][0] + gh_segment["value_series"][0],
+        th_segment["value_series"][1] + gh_segment["value_series"][1],
+    ]
+    assert hospital_segment["value_series"] == [500.0, 600.0]
+    assert tgh_segment["value_series"] == [130.0, 160.0]
     assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
     assert "상급종병" not in payload["data"]["analysis_level_market_status"]["data"]["판매사"]["by_channel"]
     assert payload["data"]["analysis_level_market_status"]["data"]["판매사"]["by_channel"]["주요고객 종합병원 순환기"]

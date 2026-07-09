@@ -49,7 +49,7 @@ def _specialty_channels_from_mart_rows(rows: list[JsonRow], *, max_channels: int
         row["__ubist_specialty_channel_data"] = selected_series
     target_channels = [{"code": channel, "display_name": channel} for channel in selected]
     return {
-        "channels": ["전체", "상급종병", "종병", "병원", "의원", "보건소", "기타"],
+        "channels": ["전체", "상급종병", "종병", "(상급종병 + 종병)", "병원", "의원", "보건소", "기타"],
         "specialty_channels": ["전체", *selected],
         "target_channels": target_channels,
         "specialty_target_channels": target_channels,
