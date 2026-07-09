@@ -61,6 +61,10 @@ def _strength_row() -> dict[str, Any]:
     }
 
 
+def _selected_overall(payload: dict[str, Any]) -> dict[str, Any]:
+    return payload["data"]["brand_strength"][0]["overall"]
+
+
 def test_slice_forecast_horizon_keeps_five_year_monthly_prefix_and_slices_all_intervals() -> None:
     # Given: a monthly forecast with more than five years and an interval key unknown to older code.
     payload = {
@@ -176,14 +180,24 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
     assert payload["data"]["ai_analysis_short"] == {"evidence_pool": [{"source": "뉴스"}]}
     assert payload["data"]["ai_analysis_long"] == {"evidence_pool": [{"source": "뉴스"}]}
-    assert payload["data"]["brand_strength"] == {
+    assert payload["data"]["brand_strength"][0] == {
+        "brand": "리바로",
+        "brand_key": "리바로",
+        "role": "selected",
+        "rank": 1,
+        "sales_rank": None,
         "available": True,
-        "profile_display": {"headline": "strong"},
-        "strength_items": [{"axis": "growth", "score": 1}],
-        "limitations": ["pilot"],
-        "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
+        "ubist": {"available": False, "reason": "source_strength_not_generated"},
+        "iqvia": {"available": False, "reason": "source_strength_not_generated"},
+        "overall": {
+            "available": True,
+            "profile_display": {"headline": "strong"},
+            "strength_items": [{"axis": "growth", "score": 1}],
+            "limitations": ["pilot"],
+            "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
+        },
     }
-    assert "response_json" not in json.dumps(payload["data"]["brand_strength"], ensure_ascii=False)
+    assert "response_json" not in json.dumps(payload["data"]["brand_strength"][0], ensure_ascii=False)
 
 
 def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched_brand(monkeypatch) -> None:
@@ -216,7 +230,7 @@ def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched
     payload = deep_analysis.deep_analysis("리바로 브이")
 
     # Then: the compact fallback serves the cache and downstream lookups use the matched canonical brand.
-    assert payload["data"]["brand_strength"]["available"] is True
+    assert payload["data"]["brand_strength"][0]["overall"]["available"] is True
     assert any("cache_deep_analysis" in sql and "REPLACE" in sql for sql, _params in seen)
 
 
@@ -236,6 +250,13 @@ def test_deep_analysis_compact_cache_lookup_rejects_ambiguous_matches(monkeypatc
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
     monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(
+        deep_analysis,
+        "_build_general_deep_analysis_on_demand",
+        lambda brand, atc4: (_ for _ in ()).throw(
+            deep_analysis.GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="brand_not_in_general_mart")
+        ),
+    )
 
     # When / Then: ambiguous compact-only cache hits are not guessed.
     try:
@@ -316,7 +337,7 @@ def test_deep_analysis_brand_strength_is_not_generated_when_row_absent(monkeypat
     payload = deep_analysis.deep_analysis("리바로")
 
     # Then: the key is still present and uses the unavailable contract.
-    assert payload["data"]["brand_strength"] == {"available": False, "reason": "not_generated"}
+    assert _selected_overall(payload) == {"available": False, "reason": "not_generated"}
     assert "analysis_variant" not in payload["data"]["ai_analysis_short"]
     assert "analysis_variant" not in payload["data"]["ai_analysis_long"]
 
@@ -336,7 +357,7 @@ def test_deep_analysis_brand_strength_handles_invalid_json(monkeypatch) -> None:
     payload = deep_analysis.deep_analysis("리바로")
 
     # Then: malformed Agent3 content cannot break the main response.
-    assert payload["data"]["brand_strength"] == {"available": False, "reason": "not_generated"}
+    assert _selected_overall(payload) == {"available": False, "reason": "not_generated"}
     assert "analysis_variant" not in payload["data"]["ai_analysis_short"]
     assert "analysis_variant" not in payload["data"]["ai_analysis_long"]
 
@@ -356,7 +377,7 @@ def test_deep_analysis_brand_strength_handles_db_failure(monkeypatch) -> None:
     payload = deep_analysis.deep_analysis("리바로")
 
     # Then: DB failure degrades only the new section.
-    assert payload["data"]["brand_strength"] == {"available": False, "reason": "not_generated"}
+    assert _selected_overall(payload) == {"available": False, "reason": "not_generated"}
     assert "analysis_variant" not in payload["data"]["ai_analysis_short"]
     assert "analysis_variant" not in payload["data"]["ai_analysis_long"]
 
@@ -375,6 +396,7 @@ def test_deep_analysis_strip_brand_strength_matches_previous_payload(monkeypatch
     # When: callers strip the newly added field.
     payload = deep_analysis.deep_analysis("리바로")
     payload["data"].pop("brand_strength")
+    payload["data"].pop("brand_factors")
     payload["data"].pop("ai_analysis_short")
     payload["data"].pop("ai_analysis_long")
 
