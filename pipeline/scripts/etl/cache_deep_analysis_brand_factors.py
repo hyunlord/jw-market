@@ -130,7 +130,8 @@ def build_brand_factor_map(
     }
     source_compact_to_brand: dict[str, str] = {}
     ambiguous_source_compact_keys: set[str] = set()
-    for source_brand in source_brand_names:
+    exact_target_brands = set(factors)
+    for source_brand in source_brand_names - exact_target_brands:
         compact = compact_brand_name(source_brand)
         if not compact:
             continue
@@ -140,6 +141,8 @@ def build_brand_factor_map(
         elif previous != source_brand:
             ambiguous_source_compact_keys.add(compact)
 
+    logged_ambiguous_source_compact_keys: set[str] = set()
+
     def target_brand_for(row_brand: object) -> str | None:
         brand = str(row_brand or "")
         if brand in factors:
@@ -148,10 +151,12 @@ def build_brand_factor_map(
         if compact in ambiguous_compact_keys:
             return None
         if compact in ambiguous_source_compact_keys:
-            logger.warning(
-                "ambiguous compact brand factor lookup skipped",
-                extra={"source_brand": brand, "compact_brand": compact},
-            )
+            if compact not in logged_ambiguous_source_compact_keys:
+                logger.warning(
+                    "ambiguous compact brand factor lookup skipped",
+                    extra={"source_brand": brand, "compact_brand": compact},
+                )
+                logged_ambiguous_source_compact_keys.add(compact)
             return None
         return compact_to_brand.get(compact)
 

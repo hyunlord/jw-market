@@ -199,6 +199,33 @@ def test_build_brand_factor_map_rejects_ambiguous_source_compact_brand(caplog) -
     assert "ambiguous compact brand factor lookup" in caplog.text
 
 
+def test_build_brand_factor_map_allows_compact_source_when_exact_target_exists(caplog) -> None:
+    # Given: IQVIA rows use the requested exact key, while UBIST rows use the
+    # display-space variant that should compact-match into the same target.
+    rows = [
+        {
+            "brand_name": "리바로브이",
+            "source": "iqvia_nsa",
+            "dimension_type": "mfr",
+            "dimension_value": "제이더블유중외제약",
+        },
+        {
+            "brand_name": "리바로 브이",
+            "source": "ubist",
+            "dimension_type": "seller",
+            "dimension_value": "JW중외제약",
+        },
+    ]
+
+    # When: the requested brand is the compact form already present in another source.
+    factors = build_brand_factor_map(brands=["리바로브이"], atc_rows=[], dimension_rows=rows)
+
+    # Then: exact matching still wins for IQVIA, and UBIST compact fallback is not treated as ambiguous.
+    assert factors["리바로브이"]["iqvia"]["mfr_name_kor"] == ["제이더블유중외제약"]
+    assert factors["리바로브이"]["ubist"]["seller"] == ["JW중외제약"]
+    assert "ambiguous compact brand factor lookup" not in caplog.text
+
+
 def test_dump_brand_factors_is_valid_json_with_empty_default() -> None:
     assert json.loads(dump_brand_factors(None)) == empty_brand_factors()
 
