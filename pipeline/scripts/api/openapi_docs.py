@@ -1257,36 +1257,198 @@ AI_ANALYSIS_FIELD_SCHEMA: Final = {
 }
 
 
-BRAND_FACTORS_SCHEMA: Final = {
+BRAND_FACTOR_SOURCE_SCHEMA: Final = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "atc": {"type": "array", "items": {"type": "string"}},
-        "ubist": {
+        "available": {"type": "boolean", "description": "해당 source의 factor 값이 하나 이상 있으면 true입니다."},
+        "reason": {"type": "string", "description": "available=false일 때의 사유입니다.", "example": "not_generated"},
+        "values": {
             "type": "object",
-            "additionalProperties": False,
+            "additionalProperties": {"type": "array", "items": {"type": "string"}},
+            "description": "source별 catalog factor 값입니다. 다중 값 브랜드는 배열로 반환합니다.",
+        },
+    },
+    "required": ["available", "values"],
+}
+
+
+BRAND_FACTOR_ITEM_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "description": "선택 브랜드 또는 경쟁 브랜드 1개의 source별 factor snapshot입니다.",
+    "properties": {
+        "brand": {"type": "string", "description": "화면 표시 브랜드명입니다."},
+        "brand_key": {"type": "string", "description": "mart 기준 브랜드 식별자입니다."},
+        "role": {"type": "string", "enum": ["selected", "competitor"], "description": "선택 브랜드인지 경쟁 브랜드인지 구분합니다."},
+        "rank": {"type": "integer", "description": "응답 내 순서입니다. selected가 항상 1번입니다."},
+        "sales_rank": {"type": ["integer", "null"], "description": "시장 scope 내 매출 순위입니다."},
+        "atc": {"type": "array", "items": {"type": "string"}, "description": "브랜드에 매핑된 ATC 코드 배열입니다."},
+        "ubist": {
+            **deepcopy(BRAND_FACTOR_SOURCE_SCHEMA),
             "properties": {
-                "seller": {"type": "array", "items": {"type": "string"}},
-                "molecule_strength": {"type": "array", "items": {"type": "string"}},
-                "form": {"type": "array", "items": {"type": "string"}},
-                "route": {"type": "array", "items": {"type": "string"}},
-                "reimbursement": {"type": "array", "items": {"type": "string"}},
+                **deepcopy(BRAND_FACTOR_SOURCE_SCHEMA["properties"]),
+                "values": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "seller": {"type": "array", "items": {"type": "string"}},
+                        "molecule_strength": {"type": "array", "items": {"type": "string"}},
+                        "form": {"type": "array", "items": {"type": "string"}},
+                        "route": {"type": "array", "items": {"type": "string"}},
+                        "reimbursement": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
             },
         },
         "iqvia": {
-            "type": "object",
-            "additionalProperties": False,
+            **deepcopy(BRAND_FACTOR_SOURCE_SCHEMA),
             "properties": {
-                "mfr_name_kor": {"type": "array", "items": {"type": "string"}},
-                "molecule_type": {"type": "array", "items": {"type": "string"}},
-                "molecule_desc": {"type": "array", "items": {"type": "string"}},
-                "pack_desc": {"type": "array", "items": {"type": "string"}},
-                "strength": {"type": "array", "items": {"type": "string"}},
-                "nhi_type": {"type": "array", "items": {"type": "string"}},
+                **deepcopy(BRAND_FACTOR_SOURCE_SCHEMA["properties"]),
+                "values": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "mfr_name_kor": {"type": "array", "items": {"type": "string"}},
+                        "molecule_type": {"type": "array", "items": {"type": "string"}},
+                        "molecule_desc": {"type": "array", "items": {"type": "string"}},
+                        "pack_desc": {"type": "array", "items": {"type": "string"}},
+                        "strength": {"type": "array", "items": {"type": "string"}},
+                        "nhi_type": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
             },
         },
     },
+    "required": ["brand", "brand_key", "role", "rank", "sales_rank", "atc", "ubist", "iqvia"],
 }
+
+
+BRAND_FACTORS_SCHEMA: Final = {
+    "type": "array",
+    "description": "선택 브랜드 1개와 같은 시장 scope의 경쟁 상위 5개 브랜드 factor 목록입니다.",
+    "items": deepcopy(BRAND_FACTOR_ITEM_SCHEMA),
+}
+
+
+BRAND_STRENGTH_ITEM_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "description": "선택 브랜드 또는 경쟁 브랜드 1개의 강점 분석 슬롯입니다.",
+    "properties": {
+        "brand": {"type": "string"},
+        "brand_key": {"type": "string"},
+        "role": {"type": "string", "enum": ["selected", "competitor"]},
+        "rank": {"type": "integer"},
+        "sales_rank": {"type": ["integer", "null"]},
+        "available": {"type": "boolean", "description": "overall 강점 분석이 있으면 true입니다."},
+        "overall": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "기존 Agent3 brand_strength 요약입니다. 아직 source별로 쪼개지지 않은 legacy summary입니다.",
+        },
+        "ubist": deepcopy(AI_ANALYSIS_UNAVAILABLE_SCHEMA),
+        "iqvia": deepcopy(AI_ANALYSIS_UNAVAILABLE_SCHEMA),
+    },
+    "required": ["brand", "brand_key", "role", "rank", "sales_rank", "available", "overall", "ubist", "iqvia"],
+}
+
+
+BRAND_STRENGTH_SCHEMA: Final = {
+    "type": "array",
+    "description": "선택 브랜드 1개와 경쟁 상위 5개 브랜드의 강점 분석 슬롯입니다. 현 단계에서는 selected의 overall만 채워질 수 있습니다.",
+    "items": deepcopy(BRAND_STRENGTH_ITEM_SCHEMA),
+}
+
+
+DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = [
+    {
+        "brand": "리바로브이",
+        "brand_key": "리바로브이",
+        "role": "selected",
+        "rank": 1,
+        "sales_rank": 3,
+        "atc": ["C11A1"],
+        "ubist": {
+            "available": True,
+            "values": {
+                "seller": ["JW중외제약"],
+                "molecule_strength": ["pitavastatin/valsartan"],
+                "form": ["정제"],
+                "route": ["내복"],
+                "reimbursement": ["급여"],
+            },
+        },
+        "iqvia": {
+            "available": True,
+            "values": {
+                "mfr_name_kor": ["JW중외제약"],
+                "molecule_type": ["COMBINATION"],
+                "molecule_desc": ["PITAVASTATIN/VALSARTAN"],
+                "pack_desc": ["정제 포장"],
+                "strength": ["복합 용량"],
+                "nhi_type": ["급여"],
+            },
+        },
+    },
+    *[
+        {
+            "brand": brand,
+            "brand_key": brand,
+            "role": "competitor",
+            "rank": rank,
+            "sales_rank": rank - 1,
+            "atc": [],
+            "ubist": {
+                "available": False,
+                "reason": "not_generated",
+                "values": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
+            },
+            "iqvia": {
+                "available": False,
+                "reason": "not_generated",
+                "values": {
+                    "mfr_name_kor": [],
+                    "molecule_type": [],
+                    "molecule_desc": [],
+                    "pack_desc": [],
+                    "strength": [],
+                    "nhi_type": [],
+                },
+            },
+        }
+        for rank, brand in enumerate(["크레스토", "리피토", "로수바미브", "아토젯", "바이토린"], start=2)
+    ],
+]
+
+
+DEEP_ANALYSIS_BRAND_STRENGTH_EXAMPLE: Final = [
+    {
+        "brand": "리바로브이",
+        "brand_key": "리바로브이",
+        "role": "selected",
+        "rank": 1,
+        "sales_rank": 3,
+        "available": True,
+        "overall": {"available": True, "profile_display": {"headline": "처방 기반 강점"}, "strength_items": []},
+        "ubist": {"available": False, "reason": "source_strength_not_generated"},
+        "iqvia": {"available": False, "reason": "source_strength_not_generated"},
+    },
+    *[
+        {
+            "brand": brand,
+            "brand_key": brand,
+            "role": "competitor",
+            "rank": rank,
+            "sales_rank": rank - 1,
+            "available": False,
+            "overall": {"available": False, "reason": "not_generated"},
+            "ubist": {"available": False, "reason": "source_strength_not_generated"},
+            "iqvia": {"available": False, "reason": "source_strength_not_generated"},
+        }
+        for rank, brand in enumerate(["크레스토", "리피토", "로수바미브", "아토젯", "바이토린"], start=2)
+    ],
+]
 
 
 DEEP_ANALYSIS_RESPONSES: Final = {
@@ -1302,21 +1464,30 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                         "generated_at": {"type": "string", "description": "KST ISO 생성 시각"},
                         "data": {
                             "type": "object",
-                            "description": "forecast, ai_analysis 등 심층분석 화면 섹션.",
-                            "additionalProperties": True,
-                            "properties": {
+	                            "description": "forecast, ai_analysis 등 심층분석 화면 섹션.",
+	                            "additionalProperties": True,
+	                            "properties": {
                                 "ai_analysis": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "ai_analysis_short": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "ai_analysis_long": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "brand_factors": deepcopy(BRAND_FACTORS_SCHEMA),
+                                "brand_strength": deepcopy(BRAND_STRENGTH_SCHEMA),
                             },
                         },
                     },
                 },
-                "example": {"brand": "리바로", "generated_at": "2026-07-03T01:30:00+09:00", "data": {"ai_analysis": {}}},
+                "example": {
+                    "brand": "리바로브이",
+                    "generated_at": "2026-07-03T01:30:00+09:00",
+                    "data": {
+                        "ai_analysis": {},
+                        "brand_factors": deepcopy(DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE),
+                        "brand_strength": deepcopy(DEEP_ANALYSIS_BRAND_STRENGTH_EXAMPLE),
+                    },
+                },
             }
-        },
-    },
+	        },
+	    },
     404: {"description": "브랜드 심층분석 cache 없음"},
 }
 
