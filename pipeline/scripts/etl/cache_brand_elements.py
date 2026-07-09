@@ -197,10 +197,17 @@ def upsert_brand_elements(conn: Any, payloads: Sequence[BrandElementPayload], ta
     if not payloads:
         return 0
     sql = f"""
-        REPLACE INTO {quote_ident(table_name)}
+        INSERT INTO {quote_ident(table_name)}
             (brand_key, brand_name, brand_name_compact, factors_json, strength_json,
              strength_generated_at, strength_workflow_rev)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            brand_name = VALUES(brand_name),
+            brand_name_compact = VALUES(brand_name_compact),
+            factors_json = VALUES(factors_json),
+            strength_json = VALUES(strength_json),
+            strength_generated_at = VALUES(strength_generated_at),
+            strength_workflow_rev = VALUES(strength_workflow_rev)
     """
     rows = [
         (
