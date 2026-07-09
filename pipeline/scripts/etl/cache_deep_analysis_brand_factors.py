@@ -20,6 +20,7 @@ for candidate in (Path(__file__).resolve(), *Path(__file__).resolve().parents, P
         sys.path.insert(0, str(candidate))
 
 from cache_build_common import mariadb_connect
+from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
 TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
@@ -105,13 +106,34 @@ def build_brand_factor_map(
     dimension_rows: Iterable[Mapping[str, object]],
 ) -> dict[str, dict[str, Any]]:
     factors = {brand: empty_brand_factors() for brand in brands}
-    for row in atc_rows:
-        brand = str(row.get("brand_name") or "")
+    compact_to_brand: dict[str, str] = {}
+    ambiguous_compact_keys: set[str] = set()
+    for brand in brands:
+        compact = compact_brand_name(brand)
+        if not compact:
+            continue
+        previous = compact_to_brand.get(compact)
+        if previous is None:
+            compact_to_brand[compact] = brand
+        elif previous != brand:
+            ambiguous_compact_keys.add(compact)
+
+    def target_brand_for(row_brand: object) -> str | None:
+        brand = str(row_brand or "")
         if brand in factors:
+            return brand
+        compact = compact_brand_name(brand)
+        if compact in ambiguous_compact_keys:
+            return None
+        return compact_to_brand.get(compact)
+
+    for row in atc_rows:
+        brand = target_brand_for(row.get("brand_name"))
+        if brand:
             add_unique(factors[brand]["atc"], row.get("atc4_code"))
 
     for row in dimension_rows:
-        brand = str(row.get("brand_name") or "")
+        brand = target_brand_for(row.get("brand_name"))
         source = str(row.get("source") or "")
         dimension_type = str(row.get("dimension_type") or "")
         target_key = None
@@ -122,7 +144,7 @@ def build_brand_factor_map(
         elif source == "iqvia_nsa":
             target_key = IQVIA_DIMENSIONS.get(dimension_type)
             target_group = "iqvia"
-        if target_key and target_group and brand in factors:
+        if target_key and target_group and brand:
             add_unique(factors[brand][target_group][target_key], row.get("dimension_value"))
 
     for payload in factors.values():
@@ -153,29 +175,36 @@ def load_brand_factor_map(conn: Any, brands: Sequence[str]) -> dict[str, dict[st
     dimension_rows: list[Mapping[str, object]] = []
     for batch in iter_batches(list(brands)):
         placeholders = ", ".join(["%s"] * len(batch))
+        compact_batch = [compact_brand_name(brand) for brand in batch if compact_brand_name(brand)]
+        compact_placeholders = ", ".join(["%s"] * len(compact_batch))
+        compact_filter = ""
+        compact_params: tuple[str, ...] = ()
+        if compact_batch:
+            compact_filter = f" OR REPLACE(REPLACE(REPLACE(REPLACE(brand_name, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') IN ({compact_placeholders})"
+            compact_params = tuple(compact_batch)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT brand_name, atc4_code
                 FROM {quote_ident(GENERAL_BRAND_TABLE)}
-                WHERE brand_name IN ({placeholders})
+                WHERE (brand_name IN ({placeholders}){compact_filter})
                   AND NULLIF(atc4_code, '') IS NOT NULL
                 """,
-                tuple(batch),
+                tuple(batch) + compact_params,
             )
             atc_rows.extend(cur.fetchall())
             cur.execute(
                 f"""
                 SELECT brand_name, source, dimension_type, dimension_value
                 FROM {quote_ident(GENERAL_DIMENSION_TABLE)}
-                WHERE brand_name IN ({placeholders})
+                WHERE (brand_name IN ({placeholders}){compact_filter})
                   AND (
                     (source = 'ubist' AND dimension_type IN ('seller','molecule_strength','form','route','reimbursement'))
                     OR
                     (source = 'iqvia_nsa' AND dimension_type IN ('mfr','molecule_type','molecule_desc','pack','strength','nhi'))
                   )
                 """,
-                tuple(batch),
+                tuple(batch) + compact_params,
             )
             dimension_rows.extend(cur.fetchall())
     return build_brand_factor_map(brands=brands, atc_rows=atc_rows, dimension_rows=dimension_rows)

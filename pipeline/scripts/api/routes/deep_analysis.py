@@ -15,6 +15,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
+from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
 router = APIRouter()
@@ -50,6 +51,14 @@ class GeneralForecastUnavailable(Exception):
         return f"{self.reason}: brand={self.brand!r}, atc4={self.atc4!r}"
 
 
+@dataclass(frozen=True, slots=True)
+class CompactBrandLookupAmbiguous(Exception):
+    brand: str
+
+    def __str__(self) -> str:
+        return f"ambiguous compact brand lookup: {self.brand!r}"
+
+
 def _not_generated_brand_strength() -> dict:
     return {"available": False, "reason": "not_generated"}
 
@@ -60,6 +69,19 @@ def _not_generated_ai_variant() -> dict:
 
 def _quote_identifier(identifier: str) -> str:
     return "`" + identifier.replace("`", "``") + "`"
+
+
+def _compact_sql(column: str) -> str:
+    return f"REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')"
+
+
+def _single_compact_row(rows: list[dict], *, raise_on_ambiguous: bool = False, brand: str = "") -> dict | None:
+    brands = {str(row.get("brand") or row.get("serving_brand_name") or "") for row in rows}
+    if len(brands) != 1:
+        if raise_on_ambiguous and len(brands) > 1:
+            raise CompactBrandLookupAmbiguous(brand=brand)
+        return None
+    return rows[0]
 
 
 def _format_agent3_generated_at(value: object) -> str | None:
@@ -103,6 +125,19 @@ def _load_brand_strength(brand: str) -> dict:
             """,
             [brand],
         )
+        if not row:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT serving_brand_name, strength_summary_json, generated_at, workflow_rev
+                    FROM {schema}.agent3_brand_strength
+                    WHERE {_compact_sql("serving_brand_name")} = %s
+                    LIMIT 2
+                    """,
+                    [compact],
+                )
+                row = _single_compact_row(rows)
     except pymysql.MySQLError:
         logger.warning("agent3 brand_strength lookup failed", exc_info=True)
         return _not_generated_brand_strength()
@@ -115,13 +150,26 @@ def _load_ai_analysis(brand: str) -> dict:
     try:
         row = db.fetch_one(
             """
-            SELECT ai_analysis_json
+            SELECT brand, ai_analysis_json
             FROM cache_deep_analysis_ai_analysis
             WHERE brand = %s
             LIMIT 1
             """,
             [brand],
         )
+        if not row:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT brand, ai_analysis_json
+                    FROM cache_deep_analysis_ai_analysis
+                    WHERE {_compact_sql("brand")} = %s
+                    LIMIT 2
+                    """,
+                    [compact],
+                )
+                row = _single_compact_row(rows)
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] == 1146:
             return {}
@@ -163,13 +211,26 @@ def _load_ai_analysis_variants(brand: str) -> tuple[dict, dict]:
     try:
         row = db.fetch_one(
             """
-            SELECT ai_analysis_short_json, ai_analysis_long_json
+            SELECT brand, ai_analysis_short_json, ai_analysis_long_json
             FROM cache_deep_analysis_ai_analysis
             WHERE brand = %s
             LIMIT 1
             """,
             [brand],
         )
+        if not row:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT brand, ai_analysis_short_json, ai_analysis_long_json
+                    FROM cache_deep_analysis_ai_analysis
+                    WHERE {_compact_sql("brand")} = %s
+                    LIMIT 2
+                    """,
+                    [compact],
+                )
+                row = _single_compact_row(rows)
     except pymysql.MySQLError:
         logger.warning("AI analysis variant lookup failed", exc_info=True)
         return _not_generated_ai_variant(), _not_generated_ai_variant()
@@ -200,47 +261,97 @@ def _load_brand_factors(value: object) -> dict:
 
 def _fetch_deep_analysis_row(brand: str) -> dict | None:
     try:
-        return db.fetch_one(
+        row = db.fetch_one(
             """
-            SELECT response_json, brand_factors, updated_at
+            SELECT brand, response_json, brand_factors, updated_at
             FROM cache_deep_analysis
             WHERE brand = %s
             LIMIT 1
             """,
             [brand],
         )
+        if row:
+            return row
+        compact = compact_brand_name(brand)
+        if not compact or compact == brand:
+            return None
+        rows = db.fetch_all(
+            f"""
+            SELECT brand, response_json, brand_factors, updated_at
+            FROM cache_deep_analysis
+            WHERE {_compact_sql("brand")} = %s
+            LIMIT 2
+            """,
+            [compact],
+        )
+        return _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] == 1054:
-            return db.fetch_one(
+            row = db.fetch_one(
                 """
-                SELECT response_json, updated_at
+                SELECT brand, response_json, updated_at
                 FROM cache_deep_analysis
                 WHERE brand = %s
                 LIMIT 1
                 """,
                 [brand],
             )
+            if row:
+                return row
+            compact = compact_brand_name(brand)
+            if not compact or compact == brand:
+                return None
+            rows = db.fetch_all(
+                f"""
+                SELECT brand, response_json, updated_at
+                FROM cache_deep_analysis
+                WHERE {_compact_sql("brand")} = %s
+                LIMIT 2
+                """,
+                [compact],
+            )
+            return _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
         raise
 
 
 def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dict | None:
-    params: list[str] = [brand]
+    params: list[str] = [brand, brand]
     atc4_clause = ""
     if atc4:
         atc4_clause = "AND atc4_code = %s"
         params.append(atc4)
     try:
-        return db.fetch_one(
+        row = db.fetch_one(
             f"""
-            SELECT response_json, brand_factors, updated_at, atc4_code
+            SELECT brand_key, brand, response_json, brand_factors, updated_at, atc4_code
             FROM cache_deep_analysis_general
-            WHERE brand = %s
+            WHERE (brand = %s OR brand_key = %s)
               {atc4_clause}
             ORDER BY atc4_code ASC
             LIMIT 1
             """,
             params,
         )
+        if row:
+            return row
+        compact = compact_brand_name(brand)
+        if not compact or compact == brand:
+            return None
+        compact_params: list[str] = [compact, compact]
+        if atc4:
+            compact_params.append(atc4)
+        rows = db.fetch_all(
+            f"""
+            SELECT brand_key, brand, response_json, brand_factors, updated_at, atc4_code
+            FROM cache_deep_analysis_general
+            WHERE ({_compact_sql("brand")} = %s OR brand_key = %s)
+              {atc4_clause}
+            ORDER BY atc4_code ASC
+            LIMIT 2
+            """,
+            compact_params,
+        )
+        return _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
             return None
@@ -305,10 +416,11 @@ def _build_general_deep_analysis_on_demand(brand: str, atc4: str | None) -> dict
     from pipeline.scripts.etl import build_cache_deep_analysis_general as general_builder
 
     general_builder.apply_api_db_env_fallback()
-    conn = general_builder.mariadb_connect()
+    conn = None
     lock_name = _general_forecast_lock_name(brand, atc4)
     lock_acquired = False
     try:
+        conn = general_builder.mariadb_connect()
         general_builder.assert_d2_database(conn)
         general_builder.ensure_general_cache_table(conn)
         lock_acquired = _acquire_general_forecast_lock(conn, lock_name)
@@ -343,9 +455,10 @@ def _build_general_deep_analysis_on_demand(brand: str, atc4: str | None) -> dict
         logger.warning("general deep-analysis on-demand forecast failed", exc_info=True)
         raise GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="forecast_generation_failed") from exc
     finally:
-        if lock_acquired:
+        if conn is not None and lock_acquired:
             _release_general_forecast_lock(conn, lock_name)
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _forecast_unavailable_http_exception(exc: GeneralForecastUnavailable) -> HTTPException:
@@ -459,9 +572,12 @@ def deep_analysis(
     ] = None,
 ) -> dict:
     brand = unquote(brand_name)
-    row = _fetch_general_deep_analysis_row(brand, atc4) if atc4 else _fetch_deep_analysis_row(brand)
-    if not row and not atc4:
-        row = _fetch_general_deep_analysis_row(brand)
+    try:
+        row = _fetch_general_deep_analysis_row(brand, atc4) if atc4 else _fetch_deep_analysis_row(brand)
+        if not row and not atc4:
+            row = _fetch_general_deep_analysis_row(brand)
+    except CompactBrandLookupAmbiguous as exc:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand}) from exc
     if not row:
         try:
             row = _build_general_deep_analysis_on_demand(brand, atc4)
@@ -476,9 +592,10 @@ def deep_analysis(
     if isinstance(data, dict):
         if "brand_factors" in row:
             data["brand_factors"] = _load_brand_factors(row.get("brand_factors"))
-        data["ai_analysis"] = _load_ai_analysis(brand)
-        ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(brand)
+        matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
+        data["ai_analysis"] = _load_ai_analysis(matched_brand)
+        ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        data["brand_strength"] = _load_brand_strength(brand)
+        data["brand_strength"] = _load_brand_strength(matched_brand)
     return payload
