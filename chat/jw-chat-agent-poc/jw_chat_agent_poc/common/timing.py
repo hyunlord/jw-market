@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
+
+from jw_chat_agent_poc.common.token_usage import public_token_usage
 
 
 Timing = MutableMapping[str, Any]
+StageEventSink = Callable[[dict[str, Any]], None]
+_ACTIVE_STAGE_SINK: ContextVar[StageEventSink | None] = ContextVar("active_stage_sink", default=None)
 
 _PUBLIC_STAGE_NAMES = {
     "agent_pre_resolve": "질문 해석",
@@ -71,14 +76,55 @@ def ensure_timing(result: MutableMapping[str, Any]) -> Timing:
 
 
 @contextmanager
-def stage(timing: Timing | None, name: str, detail: str = "") -> Iterator[None]:
+def stage(
+    timing: Timing | None,
+    name: str,
+    detail: str = "",
+    sink: StageEventSink | None = None,
+) -> Iterator[None]:
     """Record elapsed milliseconds for one named processing stage."""
 
+    effective_sink = sink or _ACTIVE_STAGE_SINK.get()
     started = time.perf_counter()
+    _emit_stage_event(effective_sink, name, detail, "started")
     try:
         yield
     finally:
-        add_stage(timing, name, (time.perf_counter() - started) * 1000, detail)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        add_stage(timing, name, elapsed_ms, detail)
+        _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms)
+
+
+@contextmanager
+def stage_event_sink(sink: StageEventSink | None) -> Iterator[None]:
+    """Temporarily attach a request-local progress sink for nested stage calls."""
+
+    token = _ACTIVE_STAGE_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _ACTIVE_STAGE_SINK.reset(token)
+
+
+def _emit_stage_event(
+    sink: StageEventSink | None,
+    name: str,
+    detail: str,
+    status: str,
+    elapsed_ms: float | None = None,
+) -> None:
+    if sink is None:
+        return
+    event: dict[str, Any] = {
+        "name": _public_stage_name(name),
+        "detail": _public_stage_detail(detail),
+        "status": status,
+        "raw_name": name,
+        "raw_detail": detail,
+    }
+    if elapsed_ms is not None:
+        event["elapsed_ms"] = round(float(elapsed_ms), 2)
+    sink(event)
 
 
 def add_stage(timing: Timing | None, name: str, elapsed_ms: float, detail: str = "") -> None:
@@ -119,6 +165,7 @@ def public_payload(timing: Timing | None) -> dict[str, Any]:
             for item in stages
             if isinstance(item, dict)
         ],
+        "token_usage": public_token_usage(timing),
     }
 
 

@@ -38,8 +38,9 @@ Q3 처방현황:
   External API: none
 
 Q4 영업활동:
-  Sub-Q: 영업 Impact
-  Boundary: 현재 데이터로 답변 불가
+  Sub-Q: 영업활동 aggregate 콜수/활동량, 영업 Impact
+  Structured tools: CSD ChannelDynamics aggregate product_details via metrics
+  Boundary: impact level, HCP/의사별, 기관별 세부 데이터는 현재 데이터로 답변 불가
 
 Q5 개발타당성:
   Sub-Q: 타겟/허가/급여/임상/포트폴리오/사업성
@@ -71,9 +72,9 @@ class BQRouter:
             return [
                 BQSubQuestion(
                     bq="Q4",
-                    question="영업 Impact",
-                    sources=("none",),
-                    reason="BQ map marks Q4 영업활동 as 데이터 없음.",
+                    question="영업활동 aggregate 콜수/활동량",
+                    sources=("metrics",),
+                    reason="Q4 영업활동은 CSD ChannelDynamics aggregate 콜수/활동량(product_details)만 metrics로 확인하고 impact/HCP/기관별 세부는 미보유로 고지합니다.",
                 )
             ]
 

@@ -8,13 +8,19 @@ from typing import Any
 from uuid import uuid4
 
 from jw_chat_agent_poc import genos_config
-from jw_chat_agent_poc.orchestrator.answer_contract import evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
+from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
 
 
 _UNKNOWN = "unknown"
 _MODEL_FAMILY_DEFAULT = "gemini-3-flash-preview"
+_EMPTY_TOOL_STATUSES = frozenset({"no_data", "unsupported", "error"})
+_ASSEMBLY_GAP_RATIO_THRESHOLD = 0.30
+_ASSEMBLY_GAP_MIN_FACT_CHARS = 500
+_FIELD_MISSING_STATUSES = frozenset({"missing_fact_set", "missing_required_fact", "insufficient_rows"})
+
 _BROKEN_RENDER_SENTINELS = (
     "|| ---",
     "|##",
@@ -71,6 +77,19 @@ def trace_envelope(
     markdown_response = result.get("markdown_response") if isinstance(result.get("markdown_response"), Mapping) else {}
     fact_md = _markdown_field(markdown_response, "fact_md") or _markdown_field(markdown_response, "data_md")
     claim_report = claim_policy_report(answer, fact_md)
+    tools_called = _tools_called(result)
+    facts_returned = _facts_returned(markdown_response)
+    facts_surfaced = _facts_surfaced(answer)
+    answer_contract_status = evaluate_answer_contract(question, answer, markdown_response)
+    quality_taxonomy = _quality_taxonomy(
+        question=question,
+        result=result,
+        answer=answer,
+        tools_called=tools_called,
+        facts_returned=facts_returned,
+        facts_surfaced=facts_surfaced,
+        answer_contract_status=answer_contract_status,
+    )
     return {
         "trace_id": uuid4().hex,
         "conversation_id": conversation_id,
@@ -83,22 +102,200 @@ def trace_envelope(
             "final_serving_id": _serving_id(genos_config.GENOS_FINAL_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_FINAL_SERVING_ID),
             "planner_serving_id": _serving_id(genos_config.GENOS_PLANNER_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_PLANNER_SERVING_ID),
         },
-        "tools_called": _tools_called(result),
-        "facts_returned": _facts_returned(markdown_response),
-        "facts_surfaced": _facts_surfaced(answer),
-        "answer_contract_status": evaluate_answer_contract(question, answer, markdown_response),
+        "tools_called": tools_called,
+        "facts_returned": facts_returned,
+        "facts_surfaced": facts_surfaced,
+        "answer_contract_status": answer_contract_status,
+        "quality_taxonomy": quality_taxonomy,
         "claim_policy_fact_types": claim_report["active_fact_types"],
         "claim_policy_blocks": claim_report["forbidden_claims_remaining"],
         "surface_policy_blocks": _surface_policy_blocks(result),
         "render_status": _render_status(answer),
         "ungrounded_numeric_spans": _ungrounded_numbers(answer, markdown_response),
-        "token_usage": {
-            "available": False,
-            "reason": "GenOS streaming responses are currently parsed as deltas only; usage is not retained in genos_client._stream_chat.",
-        },
+        "token_usage": _token_usage(timing),
         "chart_count": len(charts),
         "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
     }
+
+
+
+def _quality_taxonomy(
+    *,
+    question: str,
+    result: Mapping[str, Any],
+    answer: str,
+    tools_called: list[str],
+    facts_returned: Mapping[str, Any],
+    facts_surfaced: Mapping[str, Any],
+    answer_contract_status: Mapping[str, Any],
+) -> dict[str, Any]:
+    source = requested_unavailable_source(question)
+    if source is not None:
+        return {
+            "label": "not_connected",
+            "source": source.key,
+            "source_label": source.label,
+            "reason": "requested_source_registry_match",
+        }
+    if _requested_csd_source(question):
+        has_successful_csd_activity = _has_successful_csd_activity(result)
+        if has_successful_csd_activity:
+            if requested_csd_unsupported_detail(question):
+                return {
+                    "label": "fields_missing",
+                    "source": "csd",
+                    "source_label": "CSD 영업활동",
+                    "reason": "csd_aggregate_connected_but_detail_fields_missing",
+                    "available_fields": ("period_ym", "market", "jw_channel", "master_product", "product_details"),
+                    "missing_fields": ("impact level", "HCP/의사별", "기관별"),
+                }
+        elif requested_csd_aggregate(question) and "csd_activity_trend" not in tools_called:
+            return {
+                "label": "not_invoked",
+                "required_tools": ("csd_activity_trend",),
+                "tools_called": tuple(tools_called),
+                "reason": "csd_aggregate_tool_not_invoked",
+            }
+        elif requested_csd_unsupported_detail(question):
+            return {
+                "label": "fields_missing",
+                "source": "csd",
+                "source_label": "CSD 영업활동",
+                "reason": "csd_detail_fields_not_available",
+                "missing_fields": ("impact level", "HCP/의사별", "기관별"),
+            }
+        if not has_successful_csd_activity and not requested_csd_aggregate(question) and not requested_csd_unsupported_detail(question):
+            return {
+                "label": "not_connected",
+                "source": "csd",
+                "source_label": "CSD 영업활동",
+                "reason": "requested_unconnected_csd_source",
+            }
+
+    required_tools = _required_tools(answer_contract_status)
+    missing_tools = tuple(tool for tool in required_tools if tool not in tools_called)
+    if required_tools and len(missing_tools) == len(required_tools):
+        return {
+            "label": "not_invoked",
+            "required_tools": required_tools,
+            "tools_called": tuple(tools_called),
+            "reason": "detected_contract_without_related_tool",
+        }
+
+    empty_calls = _empty_result_calls(result)
+    if empty_calls:
+        return {"label": "empty_result", "calls": empty_calls, "reason": "tool_status_empty"}
+
+    contract_status = str(answer_contract_status.get("status") or "")
+    if contract_status in _FIELD_MISSING_STATUSES:
+        return {
+            "label": "fields_missing",
+            "answer_contract_status": dict(answer_contract_status),
+            "reason": "answer_contract_required_fields_missing",
+        }
+
+    assembly_gap = _assembly_gap_reason(answer, facts_returned, facts_surfaced, answer_contract_status)
+    if assembly_gap:
+        if _is_low_surface_ratio_warning(assembly_gap):
+            return {"label": "low_surface_ratio_warning", **assembly_gap}
+        return {"label": "assembly_gap_suspected", **assembly_gap}
+
+    return {"label": "na", "reason": "no_quality_taxonomy_signal"}
+
+
+def _is_low_surface_ratio_warning(assembly_gap: Mapping[str, Any]) -> bool:
+    return (
+        assembly_gap.get("low_surface_ratio") is True
+        and assembly_gap.get("marker_missing") is False
+        and assembly_gap.get("contract_status") == "pass"
+    )
+
+
+def _requested_csd_source(question: str) -> bool:
+    lowered = question.lower()
+    return "csd" in lowered or requested_csd_aggregate(question) or requested_csd_unsupported_detail(question)
+
+
+def _has_successful_csd_activity(result: Mapping[str, Any]) -> bool:
+    tool_calls = result.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return False
+    for call in tool_calls:
+        if not isinstance(call, Mapping):
+            continue
+        if call.get("tool") != "csd_activity_trend":
+            continue
+        data = call.get("render_data")
+        if isinstance(data, Mapping) and data.get("status") == "ok":
+            return True
+        if call.get("status") == "ok":
+            return True
+    return False
+
+
+def _required_tools(answer_contract_status: Mapping[str, Any]) -> tuple[str, ...]:
+    structural = answer_contract_status.get("structural_contract")
+    if isinstance(structural, str) and structural:
+        return CONTRACT_REQUIRED_TOOLS.get(structural, ())
+    intent = answer_contract_status.get("intent")
+    if isinstance(intent, str) and intent:
+        return CONTRACT_REQUIRED_TOOLS.get(intent, ())
+    return ()
+
+
+def _empty_result_calls(result: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
+    calls: list[dict[str, str]] = []
+    tool_calls = result.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return ()
+    for call in tool_calls:
+        if not isinstance(call, Mapping):
+            continue
+        status = call.get("status")
+        if isinstance(status, str) and status in _EMPTY_TOOL_STATUSES:
+            calls.append({"tool": str(call.get("tool") or ""), "status": status})
+    return tuple(calls)
+
+
+def _assembly_gap_reason(
+    answer: str,
+    facts_returned: Mapping[str, Any],
+    facts_surfaced: Mapping[str, Any],
+    answer_contract_status: Mapping[str, Any],
+) -> dict[str, Any]:
+    fact_chars = _int_value(facts_returned.get("fact_md_chars"))
+    data_chars = _int_value(facts_returned.get("data_md_chars"))
+    returned_chars = fact_chars + data_chars
+    answer_chars = _int_value(facts_surfaced.get("answer_chars"))
+    ratio = (answer_chars / returned_chars) if returned_chars else 0.0
+    contract_status = str(answer_contract_status.get("status") or "")
+    structural = str(answer_contract_status.get("structural_contract") or "")
+    marker_missing = bool(structural and contract_status != "pass")
+    low_surface_ratio = returned_chars >= _ASSEMBLY_GAP_MIN_FACT_CHARS and ratio < _ASSEMBLY_GAP_RATIO_THRESHOLD
+    if not marker_missing and not low_surface_ratio:
+        return {}
+    return {
+        "reason": "contract_marker_missing_or_low_surface_ratio",
+        "returned_chars": returned_chars,
+        "answer_chars": answer_chars,
+        "surface_ratio": round(ratio, 4),
+        "threshold": _ASSEMBLY_GAP_RATIO_THRESHOLD,
+        "min_fact_chars": _ASSEMBLY_GAP_MIN_FACT_CHARS,
+        "contract_status": contract_status,
+        "structural_contract": structural,
+        "marker_missing": marker_missing,
+        "low_surface_ratio": low_surface_ratio,
+    }
+
+
+def _int_value(value: Any) -> int:
+    return value if isinstance(value, int) else 0
+
+def _token_usage(timing: Mapping[str, Any]) -> dict[str, Any]:
+    usage = timing.get("token_usage")
+    if isinstance(usage, dict):
+        return usage
+    return {"available": False, "calls": [], "total_input_tokens": 0, "total_output_tokens": 0, "total_tokens": 0}
 
 
 def _env(*names: str) -> str:
@@ -174,7 +371,19 @@ def _public_tool_name(call: Mapping[str, Any]) -> str:
         return "query_spec"
     if name == "get_market_landscape":
         return "market_scope"
+    if name == "deep_analysis_related_news" and isinstance(render_data, Mapping) and _is_public_news_search(render_data):
+        return "search_news"
     return name
+
+
+def _is_public_news_search(render_data: Mapping[str, Any]) -> bool:
+    facade_tool = render_data.get("facade_tool")
+    if facade_tool in {"search_news", "background_news_context"}:
+        return True
+    if render_data.get("context_role") == "background_insight":
+        return False
+    items = render_data.get("items")
+    return isinstance(items, list) and bool(items)
 
 
 def _facts_returned(markdown_response: Mapping[str, Any]) -> dict[str, Any]:

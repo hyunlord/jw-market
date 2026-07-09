@@ -3,10 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 import json
+import logging
 import os
+import threading
 import time
 from typing import Any, Final, Protocol
 
+
+logger = logging.getLogger(__name__)
 
 FAILED_VALUE_STATUSES: Final[frozenset[str]] = frozenset(
     {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}
@@ -80,10 +84,13 @@ class MartSnapshot:
         return None
 
     def source_for_market(self, market_id: str) -> str:
-        sources = sorted({record.source for record in self.records if record.ml_id == market_id})
+        sources = self.sources_for_market(market_id)
         if "ubist" in sources:
             return "ubist"
         return sources[0] if sources else "ubist"
+
+    def sources_for_market(self, market_id: str) -> tuple[str, ...]:
+        return tuple(sorted({record.source for record in self.records if record.ml_id == market_id}))
 
     def market_records(self, market_id: str, source: str = "ubist", measure: str = "sales") -> tuple[MartRecord, ...]:
         source_key = _source_key(source)
@@ -301,18 +308,56 @@ class MariaDbStrategicMartReader:
 
 
 class TtlStrategicMartStore:
-    def __init__(self, reader: StrategicMartReader, ttl_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        reader: StrategicMartReader,
+        ttl_seconds: int = 300,
+        prewarm: bool = True,
+    ) -> None:
         self._reader = reader
         self._ttl_seconds = ttl_seconds
         self._snapshot: MartSnapshot | None = None
+        self._snapshot_lock = threading.Lock()
+        if prewarm:
+            self.prewarm()
+
+    def prewarm(self) -> None:
+        thread = threading.Thread(
+            target=self._prewarm_snapshot,
+            name="strategic-mart-prewarm",
+            daemon=True,
+        )
+        thread.start()
+
+    def _prewarm_snapshot(self) -> None:
+        started_at = time.monotonic()
+        with self._snapshot_lock:
+            current = self._snapshot
+            now = time.monotonic()
+            if current is not None and now - current.loaded_at <= self._ttl_seconds:
+                return
+            try:
+                snapshot = self._reader.load()
+            except Exception:  # noqa: BLE001 - background prewarm must not break requests
+                logger.exception("strategic mart snapshot prewarm failed")
+                return
+            self._snapshot = snapshot
+        logger.info(
+            "strategic mart snapshot prewarmed",
+            extra={
+                "elapsed_s": round(time.monotonic() - started_at, 3),
+                "records": len(snapshot.records),
+            },
+        )
 
     def snapshot(self) -> MartSnapshot:
-        current = self._snapshot
-        now = time.monotonic()
-        if current is None or now - current.loaded_at > self._ttl_seconds:
-            current = self._reader.load()
-            self._snapshot = current
-        return current
+        with self._snapshot_lock:
+            current = self._snapshot
+            now = time.monotonic()
+            if current is None or now - current.loaded_at > self._ttl_seconds:
+                current = self._reader.load()
+                self._snapshot = current
+            return current
 
 
 def _loads(value: Any) -> dict[str, Any]:

@@ -6,7 +6,15 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agentic import MetricFilterPlan
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.metrics import MetricsTool
-from jw_chat_agent_poc.tools.metrics.cache_live import CausePayloadKey, StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.cache_live import (
+    CausePayloadKey,
+    CsdActivityTarget,
+    CsdActivityTargetLoadError,
+    StaticCausePayloadReader,
+    StaticCsdActivityReader,
+    StaticCsdActivityTargetReader,
+    StaticMetricsCacheReader,
+)
 from jw_chat_agent_poc.tools.metrics.sales_filtering import filtered_metric_result
 
 
@@ -631,3 +639,78 @@ def test_series_metric_exposes_top_brand_trends_from_level_top5_trend() -> None:
     assert atozet["to_period"] == atozet["series"][-1]["period"]
     assert atozet["to_ms_pct"] == atozet["series"][-1]["ms_pct"]
     assert atozet["share_delta_pctp"] == 0.362
+
+
+def test_csd_activity_target_catalog_supports_guardlet() -> None:
+    reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    target_reader = StaticCsdActivityTargetReader(
+        (
+            CsdActivityTarget("가드렛", "GUARDLET Market", "GUARDLET"),
+            CsdActivityTarget("리바로", "LIVALO Market", "LIVALO"),
+            CsdActivityTarget("리바로젯", "LIVALOZET Market", "LIVALOZET"),
+        )
+    )
+    activity_reader = StaticCsdActivityReader(
+        {
+            ("GUARDLET Market", "GUARDLET"): (
+                ("2026-03", 512),
+                ("2026-04", 550),
+                ("2026-05", 601),
+            )
+        }
+    )
+    tool = MetricsTool(
+        mode="cache",
+        cache_reader=reader,
+        csd_activity_reader=activity_reader,
+        csd_activity_target_reader=target_reader,
+    )
+
+    result = tool.get_csd_activity_trend("가드렛", limit=3)
+
+    assert result["status"] == "ok"
+    assert result["render_data"]["market"] == "GUARDLET Market"
+    assert result["render_data"]["master_product"] == "GUARDLET"
+    assert result["render_data"]["series"][-1] == {"period": "2026-05", "product_details": 601}
+
+
+def test_csd_activity_legacy_livalo_targets_still_work() -> None:
+    reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    tool = MetricsTool(mode="fixture", cache_reader=reader)
+
+    livalo = tool.get_csd_activity_trend("리바로", limit=2)
+    livalozet = tool.get_csd_activity_trend("리바로젯", limit=2)
+
+    assert livalo["status"] == "ok"
+    assert livalo["render_data"]["market"] == "LIVALO Market"
+    assert livalozet["status"] == "ok"
+    assert livalozet["render_data"]["market"] == "LIVALOZET Market"
+
+
+class FailingCsdActivityTargetReader:
+    def load(self) -> tuple[CsdActivityTarget, ...]:
+        raise CsdActivityTargetLoadError("fixture failure")
+
+
+def test_csd_activity_target_catalog_failure_keeps_legacy_fallback() -> None:
+    reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    tool = MetricsTool(
+        mode="cache",
+        cache_reader=reader,
+        csd_activity_reader=StaticCsdActivityReader(
+            {
+                ("LIVALO Market", "LIVALO"): (
+                    ("2026-04", 1411),
+                    ("2026-05", 1769),
+                )
+            }
+        ),
+        csd_activity_target_reader=FailingCsdActivityTargetReader(),
+    )
+
+    livalo = tool.get_csd_activity_trend("리바로", limit=2)
+    guardlet = tool.get_csd_activity_trend("가드렛", limit=2)
+
+    assert livalo["status"] == "ok"
+    assert livalo["render_data"]["master_product"] == "LIVALO"
+    assert guardlet["status"] == "unsupported"

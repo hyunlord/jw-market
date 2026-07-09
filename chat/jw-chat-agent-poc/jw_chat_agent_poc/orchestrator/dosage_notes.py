@@ -44,13 +44,14 @@ def dosage_combination_note(axis_label: str, values: Iterable[object]) -> str:
     if axis_label.strip() != "제형":
         return ""
     examples = _distinct_values(values)
-    if len(examples) < 2:
+    if len(examples) < 1:
         return ""
     if _looks_like_physical_dosage_values(examples):
         return ""
     if not any(_looks_like_combination_segment(value) for value in examples):
         return ""
-    return f"{DOSAGE_COMBINATION_NOTE_PREFIX}(예: {examples[0]} vs {examples[1]})입니다."
+    example = f"{examples[0]} vs {examples[1]}" if len(examples) >= 2 else examples[0]
+    return f"{DOSAGE_COMBINATION_NOTE_PREFIX}(예: {example})입니다."
 
 
 def is_dosage_combination_note(line: str) -> bool:

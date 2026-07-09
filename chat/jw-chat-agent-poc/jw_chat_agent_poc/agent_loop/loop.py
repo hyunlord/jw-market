@@ -13,11 +13,12 @@ from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
-from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls
+from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import new_timing, stage
+from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
@@ -83,6 +84,7 @@ class ToolUseAgent:
             )
             with stage(timing, "llm_plan", f"step={step}"):
                 decision = planner.decide(question, tuple(observations), facade.schemas(), allowed_brands, period_grounding.schema_periods)
+                _record_planner_token_usage(timing, planner)
             if not decision.tool_calls:
                 trace.append(_trace_step(step, decision, ()))
                 break
@@ -125,11 +127,44 @@ class ToolUseAgent:
                 self.external,
                 self.query_layer,
             )
+        comparison = _comparison_brand_grounding(question, self.resolver, base_allowed_brands)
+        metric_brands = tuple(dict.fromkeys((*base_allowed_brands, *comparison.supported_brands)))
         if strict_calls is not None:
             calls = strict_calls if _only_unsupported(strict_calls) else _non_metric_support_calls(calls) + strict_calls
+            with stage(timing, "answer_contract_preflight", "required fact backfill"):
+                calls.extend(
+                    _answer_contract_calls(
+                        question,
+                        calls,
+                        observations,
+                        brand,
+                        metric_brands or (brand,),
+                        self.metrics,
+                        self.resolver,
+                        self.current_month,
+                        period_grounding,
+                        self.news,
+                        self.external,
+                        self.query_layer,
+                    )
+                )
+                calls.extend(
+                    _answer_contract_required_calls(
+                        question,
+                        calls,
+                        observations,
+                        brand,
+                        metric_brands or (brand,),
+                        self.metrics,
+                        self.resolver,
+                        self.current_month,
+                        period_grounding,
+                        self.news,
+                        self.external,
+                        self.query_layer,
+                    )
+                )
         else:
-            comparison = _comparison_brand_grounding(question, self.resolver, base_allowed_brands)
-            metric_brands = tuple(dict.fromkeys((*base_allowed_brands, *comparison.supported_brands)))
             with stage(timing, "completion_queries", "deterministic metric backfill"):
                 calls.extend(
                     _completion_calls(
@@ -192,6 +227,12 @@ class ToolUseAgent:
             "sources": sources or ["cache"],
             "timing": timing,
         }
+
+
+def _record_planner_token_usage(timing: dict[str, Any], planner: ToolPlanner) -> None:
+    usage = getattr(planner, "last_token_usage", None)
+    if isinstance(usage, dict):
+        record_token_usage(timing, usage)
 
 
 def _execute_grounded(facade: AgentToolFacade, plan: ToolCallPlan) -> ToolExecution:
@@ -644,6 +685,138 @@ def _answer_contract_calls(
             data["completion_reason"] = "answer_contract_requires_ranking_facts"
         completed.append(call)
     return completed
+
+
+def _answer_contract_required_calls(
+    question: str,
+    calls: list[dict[str, Any]],
+    observations: list[AgentObservation],
+    brand: str,
+    metric_brands: tuple[str, ...],
+    metrics: MetricsTool,
+    resolver: BrandResolver,
+    current_month: Callable[[], str] | None,
+    period_grounding,
+    news: DeepAnalysisNewsTool | None,
+    external: ExternalApiClient | None,
+    query_layer: StrategicQueryLayer | None,
+) -> list[dict[str, Any]]:
+    if _has_unsupported_metric(calls):
+        return []
+    required_tools = _contract_required_tools(question)
+    if not required_tools:
+        return []
+    contract_status = evaluate_answer_contract(question, "", None)
+    structural_contract = str(contract_status.get("structural_contract") or "")
+    existing = _public_contract_tools(calls)
+    plans: list[ToolCallPlan] = []
+    seen_plans: set[str] = set()
+    for required_tool in required_tools:
+        if required_tool in existing:
+            continue
+        if required_tool == "get_brand_metric" and structural_contract == "quarter_metric" and "query_spec" in existing:
+            continue
+        plan = _required_contract_plan(required_tool, question, brand)
+        if plan is None:
+            continue
+        key = _fingerprint(plan)
+        if key in seen_plans:
+            continue
+        seen_plans.add(key)
+        plans.append(plan)
+    if not plans:
+        return []
+    facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, metric_brands, observations)
+    completed: list[dict[str, Any]] = []
+    for plan in plans:
+        if plan.name == "search_news" and not _asks_issue_context_with_quant_link(question) and news is not None:
+            call = background_news_context_call(news, brand)
+        else:
+            execution = _execute_grounded(facade, plan)
+            call = dict(execution.call)
+        data = call.setdefault("render_data", {})
+        if isinstance(data, dict):
+            data["completion_reason"] = f"contract_required_tool:{plan.reason}"
+        completed.append(call)
+    return completed
+
+
+def _contract_required_tools(question: str) -> tuple[str, ...]:
+    status = evaluate_answer_contract(question, "", None)
+    structural = status.get("structural_contract")
+    if isinstance(structural, str) and structural:
+        return CONTRACT_REQUIRED_TOOLS.get(structural, ())
+    intent = status.get("intent")
+    if isinstance(intent, str) and intent:
+        return CONTRACT_REQUIRED_TOOLS.get(intent, ())
+    return ()
+
+
+def _required_contract_plan(required_tool: str, question: str, brand: str) -> ToolCallPlan | None:
+    if required_tool == "get_brand_metric":
+        return ToolCallPlan(
+            name="get_metric",
+            arguments={"brand": brand, "measure": "sales", "period": "latest"},
+            reason=required_tool,
+        )
+    if required_tool == "market_scope":
+        return ToolCallPlan(
+            name="get_market_scope",
+            arguments={"brand": brand, "view": "market_landscape"},
+            reason=required_tool,
+        )
+    if required_tool == "search_news":
+        return ToolCallPlan(
+            name="search_news",
+            arguments={"brand": brand, "query": question},
+            reason=required_tool,
+        )
+    if required_tool in {"search_patent", "mfds_patent"}:
+        return ToolCallPlan(name="search_patent", arguments={"brand": brand}, reason=required_tool)
+    if required_tool == "mfds_permission_search":
+        return ToolCallPlan(name="search_drug_info", arguments={"brand": brand}, reason=required_tool)
+    if required_tool == "csd_activity_trend":
+        return ToolCallPlan(name="csd_activity_trend", arguments={"brand": brand}, reason=required_tool)
+    return None
+
+
+def _public_contract_tools(calls: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for call in calls:
+        tool = str(call.get("tool") or "")
+        data = call.get("render_data")
+        if tool == "get_brand_metric" and isinstance(data, dict) and data.get("metric") == "query_spec":
+            names.add("query_spec")
+            continue
+        if tool == "get_market_landscape":
+            names.add("market_scope")
+            continue
+        if tool == "deep_analysis_related_news" and isinstance(data, dict):
+            if _is_public_news_search_contract_tool(data):
+                names.add("search_news")
+            continue
+        names.add(tool)
+        if isinstance(data, dict):
+            nested = data.get("calls")
+            if isinstance(nested, list):
+                for item in nested:
+                    if isinstance(item, dict) and item.get("tool"):
+                        names.add(str(item["tool"]))
+    return names
+
+
+def _is_public_news_search_contract_tool(data: dict[str, Any]) -> bool:
+    facade_tool = data.get("facade_tool")
+    if facade_tool in {"search_news", "background_news_context"}:
+        return True
+    if data.get("context_role") == "background_insight":
+        return False
+    items = data.get("items")
+    return isinstance(items, list) and bool(items)
+
+
+def _has_unsupported_metric(calls: list[dict[str, Any]]) -> bool:
+    return any(call.get("tool") == "unsupported_metric" for call in calls)
 
 
 def _has_sales_series(calls: list[dict[str, Any]], brand: str | None = None) -> bool:
@@ -1511,6 +1684,8 @@ _SUFFICIENT_METRIC_TOOLS = {
     "get_brand_series",
     "compare_brands_series",
     "get_top_brands",
+    "get_brand_channel_breakdown",
+    "get_brand_specialty_breakdown",
     "query",
 }
 _FOLLOWUP_CONTEXT_TOKENS = (
@@ -1581,7 +1756,25 @@ def _metric_observation_has_answer_fact(item: AgentObservation) -> bool:
 
 
 def _sources(calls: list[dict[str, Any]]) -> list[str]:
-    return sorted({str(call.get("source")) for call in calls if call.get("source")})
+    sources: set[str] = set()
+    for call in calls:
+        source = str(call.get("source") or "")
+        if not source:
+            continue
+        data = call.get("render_data")
+        status = str(data.get("status") or "") if isinstance(data, dict) else ""
+        tool = str(call.get("tool") or "")
+        if tool in {"query_failed", "unsupported_metric"} or status in {
+            "error",
+            "query_failed",
+            "unsupported",
+            "mapping_failed",
+            "missing",
+            "incomplete_split",
+        }:
+            continue
+        sources.add(source)
+    return sorted(sources)
 
 
 def _tool_selection(question: str, calls: list[dict[str, Any]]) -> dict[str, Any]:

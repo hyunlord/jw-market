@@ -5,14 +5,14 @@ from dataclasses import asdict, dataclass
 import logging
 from typing import Any, Mapping
 
-from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, procedure_stats_call, search_news_call, web_search_call
+from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, patent_ingredient_call, procedure_stats_call, search_news_call, web_search_call
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding, display_period, require_available_period, resolve_relative_expression
-from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, query_spec, top_brands
+from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, query_spec, top_brands
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tool_helpers import closest_allowed_brand, ground_news_query, market_members, metric_measure, period_filters, system_current_month
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
-from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external import ExternalApiClient, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 from jw_chat_agent_poc.tools.query_layer.spec import parse_spec
@@ -80,6 +80,8 @@ class AgentToolFacade:
                 return self._patent(grounded_arguments)
             if name == "search_drug_info":
                 return self._drug_info(grounded_arguments)
+            if name == "csd_activity_trend":
+                return self._csd_activity_trend(grounded_arguments)
             if name == "web_search":
                 return self._web_search(grounded_arguments)
             if name == "get_brand_sales":
@@ -92,6 +94,10 @@ class AgentToolFacade:
                 return self._compare_brands_series(grounded_arguments)
             if name == "get_top_brands":
                 return self._top_brands(grounded_arguments)
+            if name == "get_brand_channel_breakdown":
+                return self._dimension_breakdown(grounded_arguments, "channel")
+            if name == "get_brand_specialty_breakdown":
+                return self._dimension_breakdown(grounded_arguments, "specialty")
             if name == "query":
                 return self._query_spec(grounded_arguments)
         except UnsupportedBrandError as exc:
@@ -117,6 +123,12 @@ class AgentToolFacade:
         grounded = {str(key): str(value) for key, value in arguments.items()}
         if name in BRAND_TOOLS:
             grounded["brand"] = self._brand(grounded)
+        if name == "search_patent" and "brand" not in grounded:
+            ingredient = resolve_patent_ingredient_query(grounded.get("ingredient") or grounded.get("query") or "")
+            if ingredient:
+                grounded["ingredient"] = ingredient
+            else:
+                grounded["brand"] = self._brand(grounded)
         if name == "search_news":
             grounded["query"] = ground_news_query(grounded.get("query", ""), grounded["brand"])
         if name in PERIOD_TOOLS:
@@ -227,6 +239,11 @@ class AgentToolFacade:
         return ToolExecution("ok", f"{brand} clinical", call, arguments)
 
     def _patent(self, arguments: Mapping[str, str]) -> ToolExecution:
+        ingredient = arguments.get("ingredient")
+        if ingredient and "brand" not in arguments:
+            call = patent_ingredient_call(ingredient, self._external)
+            call["render_data"]["ingredient"] = ingredient
+            return ToolExecution("ok", f"{ingredient} patent", call, arguments)
         brand = self._brand(arguments)
         resolution = self._resolver.resolve(brand, allow_default=False)
         call = patent_call(resolution, self._external)
@@ -242,6 +259,14 @@ class AgentToolFacade:
         call = drug_info_call(resolution, self._external)
         call["render_data"]["brand"] = brand
         return ToolExecution("ok", f"{brand} MFDS permission", call, arguments)
+
+    def _csd_activity_trend(self, arguments: Mapping[str, str]) -> ToolExecution:
+        brand = self._brand(arguments)
+        call = self._metrics.get_csd_activity_trend(brand)
+        status = str(call.get("status") or call.get("render_data", {}).get("status") or "ok")
+        data = call.get("render_data", {})
+        latest = data.get("latest_period") if isinstance(data, dict) else ""
+        return ToolExecution(status, f"{brand} CSD aggregate activity {latest}", call, arguments)
 
     def _web_search(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
@@ -265,6 +290,11 @@ class AgentToolFacade:
     def _top_brands(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
         result = top_brands(self._query_layer, brand, arguments.get("limit"))
+        return ToolExecution("ok", result.preview, result.call, arguments)
+
+    def _dimension_breakdown(self, arguments: Mapping[str, str], dimension: str) -> ToolExecution:
+        brand = self._brand(arguments)
+        result = dimension_breakdown(self._query_layer, brand, dimension, arguments)
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _query_spec(self, arguments: Mapping[str, str]) -> ToolExecution:

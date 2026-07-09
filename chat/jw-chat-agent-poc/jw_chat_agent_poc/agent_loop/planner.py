@@ -8,6 +8,8 @@ from typing import Any, Mapping
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.news_query import normalize_news_query
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
+from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
+from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +18,7 @@ class GenosToolPlanner:
     base_url: str = field(default_factory=resolve_planner_genos_base_url)
     token: str | None = field(default_factory=resolve_planner_genos_token)
     timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_AGENT_TIMEOUT_S", "30")))
+    last_token_usage: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
 
     def decide(
         self,
@@ -25,6 +28,7 @@ class GenosToolPlanner:
         allowed_brands: tuple[str, ...] = (),
         allowed_periods: tuple[str, ...] = (),
     ) -> AgentDecision:
+        object.__setattr__(self, "last_token_usage", None)
         deterministic_external = _deterministic_external_decision(question, observations, allowed_brands, allowed_periods)
         if deterministic_external is not None:
             return deterministic_external
@@ -62,7 +66,9 @@ class GenosToolPlanner:
             response.raise_for_status()
         except requests.RequestException as exc:
             raise RuntimeError("GenOS tool planner request failed") from exc
-        return _decision_from_payload(response.json())
+        payload = response.json()
+        object.__setattr__(self, "last_token_usage", usage_call_from_payload(payload, base_url=self.base_url, stream=False))
+        return _decision_from_payload(payload)
 
     def _fallback(
         self,
@@ -174,6 +180,8 @@ _METRIC_TOOL_NAMES = (
     "query",
     "compare_brands_series",
     "get_top_brands",
+    "get_brand_channel_breakdown",
+    "get_brand_specialty_breakdown",
 )
 _MARKET_TOOL_NAMES = ("get_market_scope",)
 _RELATIVE_DATE_TOOL_NAMES = ("resolve_relative_date",)
@@ -183,6 +191,7 @@ _HIRA_PROCEDURE_TOOL_NAMES = ("get_procedure_stats",)
 _CLINICAL_TOOL_NAMES = ("search_clinical",)
 _PATENT_TOOL_NAMES = ("search_patent",)
 _DRUG_INFO_TOOL_NAMES = ("search_drug_info",)
+_CSD_ACTIVITY_TOOL_NAMES = ("csd_activity_trend",)
 _WEB_SEARCH_TOOL_NAMES = ("web_search",)
 _CORE_OBSERVATION_KEYS = (
     "brand",
@@ -252,6 +261,8 @@ def select_candidate_tools(
         names.extend(_PATENT_TOOL_NAMES)
     if _asks_drug_info(question):
         names.extend(_DRUG_INFO_TOOL_NAMES)
+    if _asks_csd_activity(question):
+        names.extend(_CSD_ACTIVITY_TOOL_NAMES)
     if _asks_web_search(question):
         names.extend(_WEB_SEARCH_TOOL_NAMES)
     if _asks_market_scope(question):
@@ -392,7 +403,9 @@ def _asks_metric_or_analysis(question: str) -> bool:
             "impact",
             "Impact",
             "영업활동",
+            "영업 활동",
             "상기 콜",
+            "콜 수",
             "채널",
             "Class",
             "Molecule",
@@ -405,6 +418,11 @@ def _asks_metric_or_analysis(question: str) -> bool:
 
 def _asks_explicit_metric(question: str) -> bool:
     return any(token in question for token in ("매출", "점유율", "MS", "순위", "시장규모", "시장 규모"))
+
+
+def _asks_csd_activity(question: str) -> bool:
+    lowered = question.lower()
+    return any(token in question for token in ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량", "디테일링")) or "impact level" in lowered
 
 
 def _asks_news(question: str) -> bool:
@@ -558,6 +576,8 @@ def _relative_expression(question: str) -> str:
 def _needs_expanded_tools(question: str) -> bool:
     if _asks_series_metric(question):
         return True
+    if _asks_csd_activity(question):
+        return True
     if _asks_drug_info(question):
         return True
     return any(token in question for token in ("뉴스", "이슈", "환자", "질병", "질환", "HIRA", "진료행위", "행위코드", "수가코드", "검사", "수술", "임상", "특허", "라벨", "FDA", "디테일링", "KOL", "시장동향", "웹검색", "웹 검색", "검색해줘", "검색 결과", "최신 동향", "최근 동향"))
@@ -577,9 +597,17 @@ def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed
     if _asks_drug_info(question):
         calls.append(ToolCallPlan("search_drug_info", {"brand": brand}, "식약처 허가정보 확인"))
     if _asks_patent(question):
-        calls.append(ToolCallPlan("search_patent", {"brand": brand, "query": question}, "특허/라벨 근거 확인"))
+        patent_args = {"query": question}
+        ingredient = resolve_patent_ingredient_query(question)
+        if ingredient and not any(allowed_brand in question for allowed_brand in allowed_brands):
+            patent_args["ingredient"] = ingredient
+        else:
+            patent_args["brand"] = brand
+        calls.append(ToolCallPlan("search_patent", patent_args, "특허/라벨 근거 확인"))
     if _asks_web_search(question):
         calls.append(ToolCallPlan("web_search", {"brand": brand, "query": question}, "웹 검색 결과 확인"))
+    if _asks_csd_activity(question):
+        calls.append(ToolCallPlan("csd_activity_trend", {"brand": brand}, "CSD aggregate 콜수/활동량 확인"))
     if _asks_series_metric(question) or any(token in question for token in ("매출", "점유율", "순위", "시장")):
         measure = (
             "series"

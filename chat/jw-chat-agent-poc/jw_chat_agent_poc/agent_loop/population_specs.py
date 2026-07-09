@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Callable, Final, TypeAlias
 
 
@@ -43,6 +44,7 @@ CHANNEL_DISTRIBUTION_TERMS: Final[tuple[str, ...]] = (
     "유통 채널",
 )
 CHANNEL_QUESTION_TERMS: Final[tuple[str, ...]] = ("어느", "어디", "잘 팔", "많이", "매출", "판매", "실적")
+CSD_ACTIVITY_TERMS: Final[tuple[str, ...]] = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
 NON_ANALYTIC_CHANNEL_TERMS: Final[tuple[str, ...]] = ("채널 파트너", "유튜브 채널", "마케팅 채널", "홍보 채널")
 
 
@@ -104,9 +106,32 @@ def _segment_compare_plan(question: str, _brand: str, _channel: str) -> StrictQu
     specs: list[QuerySpec] = []
     metadata: list[dict[str, str]] = []
     for axis, dimension in axes:
-        specs.append(_spec(dimension, metric="sales", limit=5))
+        specs.append(_spec(dimension, source="", metric="sales", limit=5))
         metadata.append({"contract_intent": "segment_compare", "requested_axis": axis, "requested_dimension": dimension})
     return StrictQueryPlan(specs=tuple(specs), metadata=tuple(metadata))
+
+
+def _quarter_metric_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
+    period = _requested_quarter_period(question)
+    if not period or not _asks_quarter_metric(question):
+        return None
+    requested_sources = _requested_sources(question)
+    if len(requested_sources) > 1:
+        return None
+    source = requested_sources[0][1] if requested_sources else ""
+    metric = "share" if any(token in question for token in ("점유율", "MS", "ms", "M/S")) else "sales"
+    return StrictQueryPlan(
+        specs=(
+            _spec(
+                "product",
+                source=source,
+                metric=metric,
+                filters={"brand": brand, "period": period},
+                limit=10,
+            ),
+        ),
+        metadata=({"contract_intent": "quarter_metric", "requested_brand": brand},),
+    )
 
 
 def _yoy_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
@@ -129,16 +154,16 @@ def _channel_molecule_plan(question: str, _brand: str, channel: str) -> StrictQu
 
 def _channel_share_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if "채널별" in question and "점유율" in question:
-        specs = [_spec("channel", metric="share", filters={"brand": brand})]
+        specs = [_spec("channel", source="", metric="share", filters={"brand": brand})]
         if "아토젯" in question:
-            specs.append(_spec("channel", metric="share", filters={"brand": "아토젯"}))
+            specs.append(_spec("channel", source="", metric="share", filters={"brand": "아토젯"}))
         return StrictQueryPlan(specs=tuple(specs))
     return None
 
 
 def _channel_distribution_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_channel_distribution(question, brand):
-        return StrictQueryPlan(specs=(_spec("channel", metric="sales", filters={"brand": brand}),))
+        return StrictQueryPlan(specs=(_spec("channel", source="", metric="sales", filters={"brand": brand}),))
     return None
 
 
@@ -150,7 +175,7 @@ def _origin_generic_plan(question: str, _brand: str, _channel: str) -> StrictQue
 
 def _specialty_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if "진료과" in question:
-        return StrictQueryPlan(needs_top_competitor_specialty=True)
+        return StrictQueryPlan(specs=(_spec("specialty", source="", metric="sales", filters={"brand": _brand}),))
     return None
 
 
@@ -161,6 +186,8 @@ def _dosage_form_plan(question: str, _brand: str, _channel: str) -> StrictQueryP
 
 
 def _company_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
+    if any(token in question for token in CSD_ACTIVITY_TERMS):
+        return None
     if "회사" in question:
         return StrictQueryPlan(specs=(_spec("company", metric="sales", limit=3),), needs_company_molecule=True)
     return None
@@ -171,6 +198,7 @@ STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
     StrictQueryRule("nhi_unsupported", _nhi_plan),
     StrictQueryRule("source_crosscheck", _source_crosscheck_plan),
     StrictQueryRule("segment_compare", _segment_compare_plan),
+    StrictQueryRule("quarter_metric", _quarter_metric_plan),
     StrictQueryRule("yoy_product_growth", _yoy_plan),
     StrictQueryRule("average_product_share", _average_share_plan),
     StrictQueryRule("channel_molecule_share", _channel_molecule_plan),
@@ -248,6 +276,21 @@ def _asks_segment_compare(question: str) -> bool:
     if "비교" in question and len(_requested_segment_axes(question)) >= 2:
         return True
     return "비교" in question and any(token in question for token in ("Class", "Molecule", "브랜드", "용량", "제형"))
+
+
+def _asks_quarter_metric(question: str) -> bool:
+    return any(token in question for token in ("매출", "점유율", "MS", "ms", "M/S"))
+
+
+def _requested_quarter_period(question: str) -> str:
+    compact = question.replace(" ", "")
+    match = re.search(r"(20\d{2})-?Q([1-4])", compact, flags=re.IGNORECASE)
+    if match:
+        return f"{match.group(1)}-Q{match.group(2)}"
+    match = re.search(r"(20\d{2})년?([1-4])분기", compact)
+    if match:
+        return f"{match.group(1)}-Q{match.group(2)}"
+    return ""
 
 
 def _requested_segment_axes(question: str) -> tuple[tuple[str, str], ...]:

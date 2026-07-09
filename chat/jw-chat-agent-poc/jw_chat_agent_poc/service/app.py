@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import queue
+import threading
+from contextlib import nullcontext
 from functools import lru_cache
+from hmac import compare_digest
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -31,11 +37,15 @@ from jw_chat_agent_poc.service.answer_safety import (
 )
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
+from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
+from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
-from jw_chat_agent_poc.common.timing import ensure_timing, finish, stage
+from jw_chat_agent_poc.common.timing import StageEventSink, ensure_timing, finish, stage, stage_event_sink
+from jw_chat_agent_poc.common.token_usage import record_token_usage
+from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
     detect_market_scope_intent,
@@ -44,6 +54,48 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
 
 
 AgentFactory = Callable[..., ChatAgent]
+LOGGER = logging.getLogger(__name__)
+
+DIRECT_ROUTE_API_KEY_ENV = "DIRECT_ROUTE_API_KEY"
+DIRECT_ROUTE_AUTH_HOSTS_ENV = "DIRECT_ROUTE_AUTH_HOSTS"
+DEFAULT_DIRECT_ROUTE_AUTH_HOSTS = frozenset(
+    {
+        "admin.dev.ai.jwhealthcare.com",
+        "jwai-dev.jwhealthcare.com",
+    }
+)
+
+CHAT_ACCEPTED_DESCRIPTION = """
+질문을 처리하고 서버 메모리 세션에 결과를 저장한 뒤, 후속 `/chat/stream`에서 재사용할 `session_id`를 반환합니다.
+
+응답은 `session_id`, 유지된 `conversation_id`, 사용 가능한 `sources` 라벨을 포함합니다. 최종 답변 본문이 필요하면 `/chat/answer`를 사용합니다.
+"""
+
+CHAT_ANSWER_DESCRIPTION = """
+질문을 즉시 처리해 완성된 답변 JSON을 반환합니다.
+
+응답 최상위 필드는 `text`(마크다운 답변), `charts`(근거 기반 차트 스펙 배열), `trace`(라우팅·도구·타이밍 추적), `sources`(출처 라벨), `conversation_id`입니다.
+"""
+
+CHAT_STREAM_DESCRIPTION = """
+질문을 처리한 뒤 Server-Sent Events(SSE)로 답변을 스트리밍합니다. `session_id`가 있으면 `/chat`으로 저장된 결과를 재생하고, 없으면 `question`을 즉시 처리합니다.
+
+## SSE Event Contract
+
+| Event | Payload | Timing | Count |
+|---|---|---|---|
+| conversation | plain string conversation_id | first, if conversation_id exists | 0-1 |
+| step | JSON `{index, name, detail, status, raw_name, raw_detail, elapsed_ms?}` | while live question processing stages start/finish | 0-N |
+| sources | comma-separated source labels | before content | 1 |
+| delta | markdown text chunk | prose segments | 0-N |
+| markdown_block | JSON `{kind, markdown}` | table segments | 0-N |
+| charts | JSON array | if charts are present | 0-1 |
+| timing | JSON `{stages, token_usage, ...}` | after content | 1 |
+| trace | JSON full trace envelope | after timing | 1 |
+| done | plain string `ok` | last | 1 |
+
+`session_id` replay streams already-computed results and therefore does not emit new `step` progress events. Live `question` streams emit `step` events as processing stages start and finish, then reuse the same final answer event sequence.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,13 +122,51 @@ class SessionStore:
         return self._items.get(session_id)
 
 
+def _configured_direct_route_hosts() -> set[str]:
+    raw_value = os.environ.get(DIRECT_ROUTE_AUTH_HOSTS_ENV)
+    if raw_value is None:
+        return set(DEFAULT_DIRECT_ROUTE_AUTH_HOSTS)
+    return {host.strip().lower() for host in raw_value.split(",") if host.strip()}
+
+
+def _header_host(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.split(",", 1)[0].strip().split(":", 1)[0].lower()
+
+
+def _is_direct_public_request(request: Request) -> bool:
+    hosts = _configured_direct_route_hosts()
+    if not hosts:
+        return False
+    if "*" in hosts:
+        return True
+    request_host = _header_host(request.headers.get("host"))
+    forwarded_host = _header_host(request.headers.get("x-forwarded-host"))
+    return request_host in hosts or forwarded_host in hosts
+
+
+def _require_direct_route_api_key(
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> None:
+    if not _is_direct_public_request(request):
+        return
+    expected_key = os.environ.get(DIRECT_ROUTE_API_KEY_ENV)
+    if not expected_key:
+        raise HTTPException(status_code=503, detail="direct route API key is not configured")
+    if x_api_key is None or not compare_digest(x_api_key, expected_key):
+        raise HTTPException(status_code=401, detail="invalid API key")
+
+
 def create_app(
     *,
     agent_factory: AgentFactory | None = None,
     market_scope_resolver: MarketScopeResolver | None = None,
     store: SessionStore | None = None,
+    history_store: ConversationHistoryStore | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="JW Chat Agent POC", version="0.2.0")
+    app = FastAPI(title="JW Chat Agent POC", version="0.2.0", root_path="/jw-chat-agent")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -88,6 +178,7 @@ def create_app(
     resolver = market_scope_resolver or MarketScopeResolver()
     make_agent = agent_factory or _default_agent_factory
     use_direct_agent_loop = agent_factory is None
+    history = history_store or MySQLConversationHistoryStore.from_env()
 
     @app.get("/healthz", response_model=HealthResponse)
     def healthz() -> HealthResponse:
@@ -97,8 +188,13 @@ def create_app(
     def version() -> dict:
         return version_payload()
 
-    @app.post("/chat", response_model=ChatAccepted)
-    def chat(request: ChatRequest) -> ChatAccepted:
+    @app.post(
+        "/chat",
+        response_model=ChatAccepted,
+        summary="Create a chat session result",
+        description=CHAT_ACCEPTED_DESCRIPTION,
+    )
+    def chat(request: ChatRequest, _api_key: None = Depends(_require_direct_route_api_key)) -> ChatAccepted:
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
@@ -120,8 +216,13 @@ def create_app(
             sources=tuple(result["result"].get("sources", ())),
         )
 
-    @app.post("/chat/answer", response_model=ChatAnswer)
-    def chat_answer(request: ChatRequest) -> ChatAnswer:
+    @app.post(
+        "/chat/answer",
+        response_model=ChatAnswer,
+        summary="Return a completed chat answer",
+        description=CHAT_ANSWER_DESCRIPTION,
+    )
+    def chat_answer(request: ChatRequest, _api_key: None = Depends(_require_direct_route_api_key)) -> ChatAnswer:
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
@@ -137,6 +238,7 @@ def create_app(
             use_direct_agent_loop=use_direct_agent_loop,
         )
         final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+        _record_conversation_history(history, session_id=None, question=item["question"], final_answer=final_answer)
         return ChatAnswer(
             text=final_answer.text,
             charts=final_answer.charts,
@@ -145,25 +247,52 @@ def create_app(
             conversation_id=final_answer.conversation_id,
         )
 
-    @app.get("/chat/stream")
+    @app.get(
+        "/chat/stream",
+        summary="Stream a chat answer as Server-Sent Events",
+        description=CHAT_STREAM_DESCRIPTION,
+    )
     def chat_stream(
         session_id: str | None = Query(default=None),
         question: str | None = Query(default=None),
         external_mode: str = Query(default="live"),
         conversation_id: str | None = Query(default=None),
+        _api_key: None = Depends(_require_direct_route_api_key),
     ) -> StreamingResponse:
-        item = _resolve_session(
-            store,
-            resolver,
-            make_agent,
-            session_id,
-            question,
-            external_mode,
-            conversation_id,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
+        if session_id:
+            item = _resolve_session(
+                store,
+                resolver,
+                make_agent,
+                session_id,
+                None,
+                external_mode,
+                conversation_id,
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
+            return StreamingResponse(
+                _sse_events(
+                    item["question"],
+                    item["result"],
+                    item.get("conversation_id"),
+                    history_store=history,
+                    session_id=session_id,
+                ),
+                media_type="text/event-stream",
+            )
+        if not question:
+            raise HTTPException(status_code=400, detail="session_id or question is required")
         return StreamingResponse(
-            _sse_events(item["question"], item["result"], item.get("conversation_id")),
+            _stream_resolving_session_events(
+                store,
+                resolver,
+                make_agent,
+                question,
+                external_mode,
+                conversation_id,
+                use_direct_agent_loop=use_direct_agent_loop,
+                history_store=history,
+            ),
             media_type="text/event-stream",
         )
 
@@ -220,24 +349,41 @@ def _answer_question(
     file_context: str | None = None,
     *,
     use_direct_agent_loop: bool = False,
+    timing_sink: StageEventSink | None = None,
 ) -> dict:
-    state = store.conversations.get_or_create(conversation_id)
-    if not question.strip() and _has_file_signal(documents, file_context):
-        result = _file_only_ready_result(documents, file_context)
-    else:
-        result = _answer_with_conversation(
-            store,
-            market_scope_resolver,
-            agent_factory,
-            state.conversation_id,
-            question,
-            external_mode,
-            documents,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
-        result = _attach_file_context(result, file_context)
-    store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
-    return {"question": question, "result": result, "conversation_id": state.conversation_id}
+    sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
+    with sink_context:
+        state = store.conversations.get_or_create(conversation_id)
+        delegated_file_context = _delegated_file_context(question, state.conversation_id, file_context)
+        if not question.strip() and _has_file_signal(documents, delegated_file_context):
+            result = _file_only_ready_result(documents, delegated_file_context)
+        else:
+            result = _answer_with_conversation(
+                store,
+                market_scope_resolver,
+                agent_factory,
+                state.conversation_id,
+                question,
+                external_mode,
+                [],
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
+            result = _attach_file_context(result, delegated_file_context)
+        store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
+        return {"question": question, "result": result, "conversation_id": state.conversation_id}
+
+
+def _delegated_file_context(question: str, conversation_id: str | None, file_context: str | None) -> str | None:
+    contexts: list[str] = []
+    uploaded = search_uploaded_files(question, conversation_id)
+    if uploaded is not None and uploaded.file_context.strip():
+        contexts.append(uploaded.file_context.strip())
+    provided = (file_context or "").strip()
+    if provided:
+        contexts.append(provided)
+    if not contexts:
+        return None
+    return "\n\n".join(dict.fromkeys(contexts))
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
@@ -397,12 +543,18 @@ def _answer_without_pending(
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     dependencies = build_chat_agent_dependencies(external_mode=external_mode)
     routes = dependencies.router.route(question, has_documents=False)
-    if not is_portfolio_decline_question(question, routes):
+    if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
         try:
             dependencies.resolver.resolve(question, allow_default=False)
         except UnsupportedBrandError:
             return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
     return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
+
+
+def _is_known_ingredient_patent_question(question: str) -> bool:
+    lower = question.lower()
+    asks_patent = "특허" in question or "patent" in lower or "orange" in lower
+    return asks_patent and resolve_patent_ingredient_query(question) is not None
 
 
 def _prepend_pending_notice(result: dict) -> dict:
@@ -428,6 +580,74 @@ def _applied_filters(result: dict) -> tuple[tuple[str, str], ...]:
 
 def _default_agent_factory(*, external_mode: str = "live") -> ChatAgent:
     return ChatAgent(external_mode=external_mode)
+
+
+def _stream_resolving_session_events(
+    store: SessionStore,
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    question: str,
+    external_mode: str,
+    conversation_id: str | None,
+    *,
+    use_direct_agent_loop: bool = False,
+    history_store: ConversationHistoryStore | None = None,
+):
+    events: queue.Queue[dict[str, Any]] = queue.Queue()
+    step_index = 0
+
+    def emit_step(event: dict[str, Any]) -> None:
+        nonlocal step_index
+        step_index += 1
+        item = dict(event)
+        item["index"] = step_index
+        events.put({"type": "step", "item": item})
+
+    def run_worker() -> None:
+        try:
+            item = _answer_question(
+                store,
+                market_scope_resolver,
+                agent_factory,
+                question,
+                external_mode,
+                conversation_id,
+                use_direct_agent_loop=use_direct_agent_loop,
+                timing_sink=emit_step,
+            )
+            with stage_event_sink(emit_step):
+                final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+            _record_conversation_history(
+                history_store,
+                session_id=None,
+                question=item["question"],
+                final_answer=final_answer,
+            )
+            events.put({"type": "result", "item": item, "final_answer": final_answer})
+        except Exception as exc:
+            events.put({"type": "error", "error_type": type(exc).__name__, "message": str(exc)})
+
+    thread = threading.Thread(target=run_worker, name="chat-stream-answer-worker", daemon=True)
+    thread.start()
+    while True:
+        event = events.get()
+        event_type = event.get("type")
+        if event_type == "step":
+            yield _sse_json_event("step", event.get("item", {}))
+            continue
+        if event_type == "result":
+            yield from _sse_events_from_final_answer(event["final_answer"])
+            return
+        if event_type == "error":
+            yield _sse_json_event(
+                "error",
+                {
+                    "type": str(event.get("error_type") or "RuntimeError"),
+                    "message": str(event.get("message") or "chat stream failed"),
+                },
+            )
+            yield "event: done\ndata: error\n\n"
+            return
 
 
 @lru_cache(maxsize=1)
@@ -467,17 +687,52 @@ def _frontend_file_response(frontend_path: str) -> FileResponse:
     return FileResponse(target)
 
 
-def _sse_events(question: str, result: dict, conversation_id: str | None = None):
-    if conversation_id:
-        yield f"event: conversation\ndata: {conversation_id}\n\n"
-    yield f"event: sources\ndata: {','.join(source_labels(result.get('sources', [])))}\n\n"
+def _sse_events(
+    question: str,
+    result: dict,
+    conversation_id: str | None = None,
+    *,
+    history_store: ConversationHistoryStore | None = None,
+    session_id: str | None = None,
+):
     final_answer = compute_final_answer(question, result, conversation_id)
+    _record_conversation_history(history_store, session_id=session_id, question=question, final_answer=final_answer)
+    yield from _sse_events_from_final_answer(final_answer)
+
+
+def _sse_events_from_final_answer(final_answer: FinalAnswer):
+    if final_answer.conversation_id:
+        yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
+    yield f"event: sources\ndata: {','.join(source_labels(final_answer.sources))}\n\n"
     yield from iter_markdown_sse_events(final_answer.text)
     if final_answer.charts:
         yield _sse_json_event("charts", final_answer.charts)
     yield _sse_json_event("timing", final_answer.timing)
     yield _sse_json_event("trace", final_answer.trace)
     yield "event: done\ndata: ok\n\n"
+
+
+def _record_conversation_history(
+    history_store: ConversationHistoryStore | None,
+    *,
+    session_id: str | None,
+    question: str,
+    final_answer: FinalAnswer,
+) -> None:
+    if history_store is None:
+        return
+    try:
+        history_store.record_turn(
+            session_id=session_id,
+            conversation_id=final_answer.conversation_id,
+            question_text=question,
+            answer_text=final_answer.text,
+            trace=final_answer.trace,
+            timing=final_answer.timing,
+            sources=final_answer.sources,
+        )
+    except Exception:
+        LOGGER.exception("failed to persist chat conversation history")
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
@@ -508,6 +763,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             generated_answer = "".join(client.stream_answer(question, result))
     except requests.RequestException:
         generated_answer = finalized_fallback_fact_answer(question, result.get("markdown_response"))
+    for call in client.token_usage_calls:
+        record_token_usage(timing, call)
     with stage(timing, "answer_cleanup", "markdown cleanup"):
         safe_answer = cleanup_markdown_answer(generated_answer)
         markdown_response = result.get("markdown_response")

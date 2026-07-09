@@ -28,6 +28,8 @@ def call_data_md(call: dict[str, Any]) -> str:
         return news_md(render_data)
     if tool == "portfolio_decline_analysis":
         return portfolio_decline_md(render_data)
+    if tool == "csd_activity_trend":
+        return csd_activity_md(render_data)
     if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
         return metrics_md(tool, render_data)
     if tool.startswith("hira_disease") or str(call.get("source")) == "hira_disease":
@@ -99,6 +101,29 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     filter_rows = metric_filter_rows(data)
     if filter_rows:
         blocks.append(table("### 지표 필터", ("구분", "값"), filter_rows))
+    return "\n\n".join(blocks)
+
+
+def csd_activity_md(data: dict[str, Any]) -> str:
+    rows: list[tuple[str, Any]] = [
+        ("출처", data.get("source_label") or "CSD ChannelDynamics"),
+        ("범위", data.get("data_grain") or "월별 TOTAL 채널 aggregate 콜수/활동량"),
+        ("시장", data.get("market") or ""),
+        ("제품", data.get("master_product") or data.get("brand") or ""),
+    ]
+    unsupported = data.get("unsupported_fields")
+    if isinstance(unsupported, (list, tuple)):
+        rows.append(("미포함 필드", ", ".join(str(item) for item in unsupported if item)))
+    blocks = [table("### CSD 영업활동 aggregate", ("항목", "값"), tuple(row for row in rows if row[1]))]
+    series = data.get("series")
+    if isinstance(series, list):
+        series_rows = tuple(
+            (item.get("period"), number_value(item.get("product_details")))
+            for item in series[-TABLE_LIMIT:]
+            if isinstance(item, dict)
+        )
+        if series_rows:
+            blocks.append(table("### CSD 월별 aggregate 콜수/활동량", ("기간", "product_details"), series_rows))
     return "\n\n".join(blocks)
 
 

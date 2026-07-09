@@ -4,7 +4,8 @@ from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 
 
-_METRIC_TOKENS = ("매출", "점유율", "순위", "시장", "경쟁사", "경쟁", "상위", "위협")
+_CSD_ACTIVITY_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
+_METRIC_TOKENS = ("매출", "점유율", "순위", "시장", "경쟁사", "경쟁", "상위", "위협", *_CSD_ACTIVITY_TOKENS)
 _EXTERNAL_TOKENS = (
     "뉴스",
     "이슈",
@@ -69,6 +70,8 @@ def should_use_agent_loop(question: str) -> bool:
     if _issue_question_needs_quant_context(question):
         return True
     if _patient_sales_question(question):
+        return True
+    if any(token in question for token in _CSD_ACTIVITY_TOKENS):
         return True
     if any(token in question for token in ("점유율", "순위")) and not _segment_metric_question(question):
         return True

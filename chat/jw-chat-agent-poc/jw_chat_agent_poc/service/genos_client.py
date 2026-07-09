@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from jw_chat_agent_poc.genos_config import resolve_final_genos_base_url, resolve_final_genos_token
+from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels, table
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
@@ -616,6 +617,7 @@ class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
     token: str | None = field(default_factory=resolve_final_genos_token)
     timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TIMEOUT_S", "70")))
+    token_usage_calls: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def stream_answer(self, question: str, agent_result: dict[str, Any]) -> Iterator[str]:
         markdown_response = agent_result.get("markdown_response")
@@ -881,20 +883,28 @@ class GenosClient:
         response = requests.post(
             f"{self.base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.token}"},
-            json={"messages": messages, "stream": True, "temperature": 0.0},
+            json={"messages": messages, "stream": True, "temperature": 0.0, "stream_options": {"include_usage": True}},
             stream=True,
             timeout=self.timeout_s,
         )
         response.raise_for_status()
+        usage_call: dict[str, Any] | None = None
         for raw_line in response.iter_lines(decode_unicode=True):
             if not raw_line or not raw_line.startswith("data:"):
                 continue
             payload = raw_line.removeprefix("data:").strip()
             if payload == "[DONE]":
                 break
-            token = self._extract_delta(payload)
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            usage_call = usage_call_from_payload(data, base_url=self.base_url, stream=True) or usage_call
+            token = self._extract_delta_from_data(data)
             if token:
                 yield token
+        if usage_call is not None:
+            self.token_usage_calls.append(usage_call)
 
     @staticmethod
     def _extract_delta(payload: str) -> str:
@@ -902,6 +912,10 @@ class GenosClient:
             data = json.loads(payload)
         except json.JSONDecodeError:
             return ""
+        return GenosClient._extract_delta_from_data(data)
+
+    @staticmethod
+    def _extract_delta_from_data(data: dict[str, Any]) -> str:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
             return ""

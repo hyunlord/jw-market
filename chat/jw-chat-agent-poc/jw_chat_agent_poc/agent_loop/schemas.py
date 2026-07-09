@@ -14,8 +14,15 @@ def tool_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ..
         _schema("get_disease_stats", "브랜드의 확정 KCD 매핑 기반 HIRA 질병 환자 통계를 조회합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema("get_procedure_stats", "HIRA 진료행위정보서비스에서 5단 행위코드(st5Cd) 기준 진료행위 통계를 조회합니다. 질문에 행위코드가 있을 때만 사용합니다.", ("brand", "query"), allowed_brands, allowed_periods),
         _schema("search_clinical", "브랜드 성분 기준 국내외 임상 근거를 조회하고 성분 범위 고지를 포함합니다.", ("brand",), allowed_brands, allowed_periods),
-        _schema("search_patent", "브랜드 성분 기준 특허/Orange Book 근거를 조회하고 성분 범위 고지를 포함합니다.", ("brand",), allowed_brands, allowed_periods),
+        _schema("search_patent", "브랜드 또는 확인된 성분 기준 특허/Orange Book 근거를 조회합니다. 브랜드가 없고 ingredient가 있으면 ingredient를 사용합니다.", ("query",), allowed_brands, allowed_periods),
         _schema("search_drug_info", "브랜드 기준 국내 식약처/MFDS 허가 품목 정보를 조회합니다. e약은요 경로는 사용하지 않습니다.", ("brand",), allowed_brands, allowed_periods),
+        _schema(
+            "csd_activity_trend",
+            "CSD ChannelDynamics stage에서 월별 TOTAL 채널 aggregate 콜수/활동량(product_details 합계)을 조회합니다. impact level, HCP/의사별, 기관별 세부는 포함하지 않습니다.",
+            ("brand",),
+            allowed_brands,
+            allowed_periods,
+        ),
         _schema("web_search", "내부 API가 덮지 못하는 외부 동향·디테일링·KOL 질문에 대해 웹 검색 결과를 URL/snippet으로 분리 조회합니다. 수치를 내부 fact로 승격하지 않습니다.", ("brand", "query"), allowed_brands, allowed_periods),
     )
     if query_catalog is None:
@@ -60,8 +67,10 @@ def _properties(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...
             "description": "Use only this code-grounded period enum; never invent unavailable months.",
         },
         "view": {"type": "string", "enum": ["market_landscape", "competitive_dynamics"]},
+        "source": {"type": "string", "description": "Optional mart source such as ubist or iqvia_nsa when the question explicitly asks for it."},
         "expression": {"type": "string"},
         "query": {"type": "string", "description": "Optional text query for news issue/search terms, not a brand."},
+        "ingredient": {"type": "string", "description": "Code-grounded English ingredient for patent lookup when no canonical brand is present."},
     }
 
 
@@ -80,6 +89,8 @@ def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, 
         _schema_with_props("get_brand_series", "query layer로 전략뷰 브랜드 월별 매출·점유율 시계열을 조회합니다.", ("brand",), props),
         _schema_with_props("compare_brands_series", "query layer로 두 브랜드의 월별 매출·점유율 시계열을 비교합니다.", ("brand", "comparison_brand"), props),
         _schema_with_props("get_top_brands", "query layer로 전략뷰 시장 상위 브랜드를 조회합니다.", ("brand",), props),
+        _schema_with_props("get_brand_channel_breakdown", "query layer로 브랜드의 채널별 매출 구성을 조회합니다.", ("brand",), props),
+        _schema_with_props("get_brand_specialty_breakdown", "query layer로 브랜드의 진료과별 매출 구성을 조회합니다.", ("brand",), props),
         _schema_with_props("query", "catalog enum에 맞는 query(spec)를 전략 mart에 실행합니다.", ("spec",), props),
     )
 

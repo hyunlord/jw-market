@@ -41,6 +41,8 @@ REQUESTED_SOURCE_REGISTRY: tuple[RequestedSource, ...] = (
 
 _SOURCE_TRAP_MARKER = "요청 소스 미보유"
 _ALT_REFERENCE_HEADING = "### 대체 참고"
+_CSD_AGGREGATE_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량", "디테일링")
+_CSD_DETAIL_TOKENS = ("impact level", "impact", "HCP", "hcp", "의사별", "의사 별", "기관별", "기관 별", "병원별", "병원 별")
 _CLINICAL_REFERENCE_RE = re.compile(r"(?:ClinicalTrials|MFDS|NCT\d+|식약처|임상시험|임상)", re.IGNORECASE)
 _CORTELLIS_UNSUPPORTED_CLAIM_RE = re.compile(
     r"(?:Venetoclax|GSK2402968|DEB025|NCT\d+).*(?:리바로|이상지질혈증|적응증\s*확장|상업|경쟁\s*압력|위협)",
@@ -55,6 +57,15 @@ def requested_unavailable_source(question: str) -> RequestedSource | None:
         if any(token.lower() in question_lower for token in source.tokens):
             return source
     return None
+
+
+def requested_csd_aggregate(question: str) -> bool:
+    return any(token in question for token in _CSD_AGGREGATE_TOKENS)
+
+
+def requested_csd_unsupported_detail(question: str) -> bool:
+    lowered = question.lower()
+    return any(token.lower() in lowered for token in _CSD_DETAIL_TOKENS)
 
 
 def apply_requested_source_trap_gate(question: str, answer: str) -> str:

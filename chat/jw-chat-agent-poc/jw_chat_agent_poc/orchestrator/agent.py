@@ -22,11 +22,12 @@ from jw_chat_agent_poc.orchestrator.hira_disease import HIRA_DISEASE_MAPPINGS, h
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context, metric_from_question, requires_brand
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
+from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter, LLMFirstBQRouter
-from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.external.policy import (
     annotate_clinical_call,
     clinical_scope_notice,
@@ -77,12 +78,18 @@ class ChatAgent:
         self._agent_loop_dependencies = dependencies.agent_loop_dependencies()
 
     def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
+        timing = new_timing()
         docs = documents or []
-        routes = self.router.route(question, has_documents=bool(docs))
+        with stage(timing, "agent_pre_resolve", "router classification"):
+            routes = self.router.route(question, has_documents=bool(docs))
+        if not docs and _is_known_ingredient_patent_question(question):
+            loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
+            return loop.answer(question)
         requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
         portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
         try:
-            resolution = self.resolver.resolve(question, allow_default=portfolio_scope or bool(docs) or not requires_brand_flag)
+            with stage(timing, "agent_pre_resolve", "brand resolver"):
+                resolution = self.resolver.resolve(question, allow_default=portfolio_scope or bool(docs) or not requires_brand_flag)
         except UnsupportedBrandError:
             return self._unsupported_brand(question, routes)
         calls: list[dict[str, Any]] = []
@@ -113,13 +120,13 @@ class ChatAgent:
             metric_filters = tuple(entry for route in routes if "metrics" in route.sources for entry in route.filters)
             filter_plan = validate_metric_filters(metric_filters)
             effective_filters = metric_filters if filter_plan.has_effective_filter else ()
-            metric_calls = [
-                self._metric_call(
+            with stage(timing, "tool:get_brand_metric", f"metric={metric}"):
+                brand_metric_call = self._metric_call(
                     resolution.canonical_brand,
                     metric=metric,
                     filter_entries=effective_filters,
                 )
-            ]
+            metric_calls = [brand_metric_call]
             scope = _answer_scope(question)
             if scope is not None:
                 for metric_call in metric_calls:
@@ -130,7 +137,9 @@ class ChatAgent:
                         continue
                     data["answer_scope"] = scope
             if not effective_filters and metric not in {"hhi", "series", "trend", "momentum", "ei"}:
-                metric_calls.insert(0, self.metrics.get_market_landscape(market))
+                with stage(timing, "tool:get_market_landscape", f"market={market}"):
+                    market_landscape_call = self.metrics.get_market_landscape(market)
+                metric_calls.insert(0, market_landscape_call)
             for call in metric_calls:
                 calls.append(call)
                 sources.append(call["source"])
@@ -145,7 +154,7 @@ class ChatAgent:
             sources.append(call["source"])
 
         if any("external_api" in route.sources for route in routes):
-            external_calls = self._external_calls(question, resolution)
+            external_calls = self._external_calls(question, resolution, timing=timing)
             for call in external_calls:
                 calls.append(call.__dict__)
                 if call.tool == "matching_policy_notice":
@@ -157,13 +166,14 @@ class ChatAgent:
             calls.append({"tool": "document_rag", **rag_result.__dict__})
             sources.append(rag_result.source)
 
-        markdown = MarkdownResponseBuilder().build(
-            brand=resolution.canonical_brand,
-            calls=calls,
-            sources=sources,
-            notices=notices,
-        )
-        answer = apply_requested_source_trap_gate(question, markdown.markdown)
+        with stage(timing, "fact_assembly", "markdown fact set build"):
+            markdown = MarkdownResponseBuilder().build(
+                brand=resolution.canonical_brand,
+                calls=calls,
+                sources=sources,
+                notices=notices,
+            )
+            answer = apply_requested_source_trap_gate(question, markdown.markdown)
         return {
             "question": question,
             "resolution": resolution.__dict__,
@@ -173,6 +183,7 @@ class ChatAgent:
             "answer": answer,
             "markdown_response": markdown.to_dict(),
             "sources": sorted(set(sources)),
+            "timing": timing,
         }
 
     def _news_brands(self, question: str, routes: list[Any], fallback_brand: str) -> tuple[str, ...]:
@@ -210,11 +221,12 @@ class ChatAgent:
                 return True
         return False
 
-    def _external_calls(self, question: str, resolution) -> list[ExternalCall]:
+    def _external_calls(self, question: str, resolution, *, timing: Timing | None = None) -> list[ExternalCall]:
         lower = question.lower()
         calls: list[ExternalCall] = []
         if is_hira_disease_question(question):
-            return hira_disease_calls(question, resolution, self.external)
+            with stage(timing, "tool:hira_disease", resolution.canonical_brand):
+                return hira_disease_calls(question, resolution, self.external)
         needs_molecule = (
             "임상" in question
             or "clinical" in lower
@@ -231,58 +243,70 @@ class ChatAgent:
             return [inapplicable_call(resolution.canonical_brand, resolution.molecule_en)]
         if "임상" in question or "clinical" in lower:
             if resolution.is_combo:
-                calls.append(
-                    annotate_clinical_call(
-                        self.external.clinicaltrials_v2_search(combo_query(resolution.molecule_en)),
-                        resolution.canonical_brand,
-                        resolution.molecule_en,
-                        "combo_and",
-                    )
-                )
-                for molecule in resolution.molecule_en:
+                with stage(timing, "tool:clinicaltrials_v2_search", "combo_and"):
                     calls.append(
                         annotate_clinical_call(
-                            self.external.clinicaltrials_v2_search(molecule),
+                            self.external.clinicaltrials_v2_search(combo_query(resolution.molecule_en)),
                             resolution.canonical_brand,
-                            (molecule,),
-                            "component_reference",
+                            resolution.molecule_en,
+                            "combo_and",
                         )
                     )
+                for molecule in resolution.molecule_en:
+                    with stage(timing, "tool:clinicaltrials_v2_search", molecule):
+                        calls.append(
+                            annotate_clinical_call(
+                                self.external.clinicaltrials_v2_search(molecule),
+                                resolution.canonical_brand,
+                                (molecule,),
+                                "component_reference",
+                            )
+                        )
             else:
-                calls.append(
-                    annotate_clinical_call(
-                        self.external.clinicaltrials_v2_search(" OR ".join(resolution.molecule_en)),
-                        resolution.canonical_brand,
-                        resolution.molecule_en,
-                        "molecule_trend",
+                with stage(timing, "tool:clinicaltrials_v2_search", "molecule_trend"):
+                    calls.append(
+                        annotate_clinical_call(
+                            self.external.clinicaltrials_v2_search(" OR ".join(resolution.molecule_en)),
+                            resolution.canonical_brand,
+                            resolution.molecule_en,
+                            "molecule_trend",
+                        )
                     )
-                )
-            calls.append(self.external.mfds_clinical_trial_kr(resolution.canonical_brand))
-            calls.append(clinical_scope_notice(resolution.canonical_brand, resolution.molecule_en, resolution.is_combo).to_call())
+            with stage(timing, "tool:mfds_clinical_trial_kr", resolution.canonical_brand):
+                calls.append(self.external.mfds_clinical_trial_kr(resolution.canonical_brand))
+            with stage(timing, "tool:clinical_scope_notice", resolution.canonical_brand):
+                calls.append(clinical_scope_notice(resolution.canonical_brand, resolution.molecule_en, resolution.is_combo).to_call())
             if needs_seeded_false_positive_filter(resolution.canonical_brand):
                 calls.append(seeded_false_positive_notice(resolution))
         if "fda" in lower or "라벨" in question or "label" in lower:
             if resolution.is_combo:
-                calls.append(self.external.openfda_combo_label_search(resolution.molecule_en))
+                with stage(timing, "tool:openfda_combo_label_search", resolution.canonical_brand):
+                    calls.append(self.external.openfda_combo_label_search(resolution.molecule_en))
             for molecule in resolution.molecule_en:
-                calls.append(self.external.openfda_label_search(molecule))
+                with stage(timing, "tool:openfda_label_search", molecule):
+                    calls.append(self.external.openfda_label_search(molecule))
         if "특허" in question or "patent" in lower or "orange" in lower:
             for molecule in resolution.molecule_en:
-                calls.append(self.external.mfds_patent(molecule))
-                calls.append(self.external.mfds_fda_orangebook(molecule))
-            calls.append(label_patent_scope_notice(resolution.canonical_brand, resolution.molecule_en).to_call())
-            competitor_context = self._competitor_patent_context_call(question, resolution)
+                with stage(timing, "tool:mfds_patent", molecule):
+                    calls.append(self.external.mfds_patent(molecule))
+                with stage(timing, "tool:mfds_fda_orangebook", molecule):
+                    calls.append(self.external.mfds_fda_orangebook(molecule))
+            with stage(timing, "tool:matching_policy_notice", resolution.canonical_brand):
+                calls.append(label_patent_scope_notice(resolution.canonical_brand, resolution.molecule_en).to_call())
+            competitor_context = self._competitor_patent_context_call(question, resolution, timing=timing)
             if competitor_context is not None:
                 calls.append(competitor_context)
         if not calls:
-            calls.append(self.external.mfds_permission_search(resolution.canonical_brand))
+            with stage(timing, "tool:mfds_permission_search", resolution.canonical_brand):
+                calls.append(self.external.mfds_permission_search(resolution.canonical_brand))
         return calls
 
-    def _competitor_patent_context_call(self, question: str, resolution) -> ExternalCall | None:
+    def _competitor_patent_context_call(self, question: str, resolution, *, timing: Timing | None = None) -> ExternalCall | None:
         if self.query_layer is None or not _asks_competitor_ingredients(question):
             return None
         try:
-            candidates = self.query_layer.competitor_molecule_candidates(resolution.canonical_brand, limit=5)
+            with stage(timing, "tool:competitor_molecule_candidates", resolution.canonical_brand):
+                candidates = self.query_layer.competitor_molecule_candidates(resolution.canonical_brand, limit=5)
         except (LookupError, TypeError, ValueError):
             candidates = []
         nested: list[dict[str, Any]] = []
@@ -291,8 +315,10 @@ class ChatAgent:
             molecule = str(candidate.get("molecule") or "").strip()
             if not molecule or molecule.casefold() in anchor_set:
                 continue
-            nested.append(asdict(self.external.mfds_patent(molecule)))
-            nested.append(asdict(self.external.mfds_fda_orangebook(molecule)))
+            with stage(timing, "tool:mfds_patent", f"competitor:{molecule}"):
+                nested.append(asdict(self.external.mfds_patent(molecule)))
+            with stage(timing, "tool:mfds_fda_orangebook", f"competitor:{molecule}"):
+                nested.append(asdict(self.external.mfds_fda_orangebook(molecule)))
         status = "ok" if candidates else "no_data"
         return ExternalCall(
             tool="search_patent",
@@ -463,6 +489,12 @@ def _single_brand_focus_question(question: str) -> bool:
         "랑",
     )
     return not any(token in question for token in widening_tokens)
+
+
+def _is_known_ingredient_patent_question(question: str) -> bool:
+    lower = question.lower()
+    asks_patent = "특허" in question or "patent" in lower or "orange" in lower
+    return asks_patent and resolve_patent_ingredient_query(question) is not None
 
 
 def _answer_scope(question: str) -> str | None:

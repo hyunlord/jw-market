@@ -52,7 +52,11 @@ def build_system_prompt(has_documents: bool) -> str:
         "or attached material should be used. If no document is uploaded, do not choose document.\n"
         "- Uploaded guideline/file market-outlook questions MUST use the exact single string "
         "bq_ids=[\"Q1/Q5\"] and tools=[\"document\"]. Do not output separate Q1 and Q5 for this case.\n"
-        "Q4 영업활동 and Q5 포트폴리오/사업성 must set no_data_flag=true and tools=[\"none\"].\n"
+        "- Q4 영업활동 aggregate 콜수/활동량 questions MUST use bq_ids=[\"Q4\"] and tools=[\"metrics\"], "
+        "because CSD ChannelDynamics product_details aggregate is connected. If the question asks impact level, HCP/의사별, "
+        "or 기관별 detail, keep tools=[\"metrics\"] only when aggregate activity can still be shown and state that those detail fields are unavailable. "
+        "Do not invent impact/HCP/institution detail.\n"
+        "Q5 포트폴리오/사업성 must set no_data_flag=true and tools=[\"none\"].\n"
         "Do not invent tools, BQ IDs, brands, data, or numeric answers.\n"
         f"{document_hint}"
     )
