@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from difflib import SequenceMatcher
+import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -91,6 +93,97 @@ EVENT_CHART_THRESHOLD = 60
 EVENT_CHART_MIN = 5
 EVENT_CHART_MAX = 15
 BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
+
+
+def _quote_identifier(identifier: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", identifier or ""):
+        raise SystemExit(f"unsafe identifier: {identifier!r}")
+    return "`" + identifier.replace("`", "``") + "`"
+
+
+def _format_agent3_generated_at(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _parse_brand_strength_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        summary = json.loads(row.get("strength_summary_json"))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(summary, dict):
+        return None
+    return {
+        "available": True,
+        "profile_display": summary.get("profile_display"),
+        "strength_items": summary.get("strength_items", []),
+        "limitations": summary.get("limitations", []),
+        "meta": {
+            "generated_at": _format_agent3_generated_at(row.get("generated_at")),
+            "workflow_rev": row.get("workflow_rev"),
+        },
+    }
+
+
+def dump_brand_strength(value: dict[str, Any] | None) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def load_brand_strength_map(conn: Any, brands: list[str]) -> dict[str, dict[str, Any]]:
+    if not brands:
+        return {}
+    schema = _quote_identifier(os.getenv("AGENT3_DB", os.getenv("DB_NAME", "jw_mart")))
+    strengths: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(brands), 500):
+        batch = brands[start : start + 500]
+        placeholders = ", ".join(["%s"] * len(batch))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT serving_brand_name, strength_summary_json, generated_at, workflow_rev
+                FROM {schema}.agent3_brand_strength
+                WHERE serving_brand_name IN ({placeholders})
+                """,
+                tuple(batch),
+            )
+            for row in cur.fetchall():
+                payload = _parse_brand_strength_row(row)
+                if payload is not None:
+                    strengths[str(row["serving_brand_name"])] = payload
+    return strengths
+
+
+def cache_column_exists(conn: Any, column: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 'cache_deep_analysis'
+              AND column_name = %s
+            """,
+            (column,),
+        )
+        return int(cur.fetchone()["c"]) == 1
+
+
+def ensure_brand_strength_column(conn: Any) -> bool:
+    if cache_column_exists(conn, "brand_strength"):
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            ALTER TABLE cache_deep_analysis
+            ADD COLUMN brand_strength LONGTEXT NULL
+            CHECK (brand_strength IS NULL OR JSON_VALID(brand_strength))
+            AFTER brand_factors
+            """
+        )
+    return True
 
 
 def atc_codes_from_market_catalog(market: dict[str, Any]) -> list[str]:
@@ -692,10 +785,10 @@ def update_events_only(target_table: str, brands: set[str] | None = None, *, ver
     ensure_events_raw_table(conn)
     cur.execute(f"CREATE TABLE IF NOT EXISTS `{target_table}` LIKE `cache_deep_analysis`")
     cur.execute(f"DELETE FROM `{target_table}`")
-    cur.execute("SELECT brand, market_id, response_json, brand_factors FROM `cache_deep_analysis` ORDER BY brand, market_id")
+    cur.execute("SELECT brand, market_id, response_json, brand_factors, brand_strength FROM `cache_deep_analysis` ORDER BY brand, market_id")
     source_rows = list(cur.fetchall())
 
-    columns = ["brand", "market_id", "response_json", "payload_size", "brand_factors"]
+    columns = ["brand", "market_id", "response_json", "payload_size", "brand_factors", "brand_strength"]
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{column}`" for column in columns)
     sql = f"REPLACE INTO `{target_table}` ({names}) VALUES ({placeholders})"
@@ -715,6 +808,7 @@ def update_events_only(target_table: str, brands: set[str] | None = None, *, ver
             "response_json": dump_payload(payload),
             "payload_size": payload_size(payload),
             "brand_factors": row.get("brand_factors"),
+            "brand_strength": row.get("brand_strength"),
         }
         batch.append(tuple(out[column] for column in columns))
         if len(batch) >= 20:
@@ -732,6 +826,11 @@ def update_events_only(target_table: str, brands: set[str] | None = None, *, ver
 
 def main() -> None:
     args_parser = parser(__doc__)
+    args_parser.add_argument("--mode", choices=["full", "incremental"], default="full", help="full rebuild or insert-only missing-brand build.")
+    args_parser.add_argument("--confirm-full", action="store_true", help="Required with --mode full because full rebuild deletes cache_deep_analysis first.")
+    args_parser.add_argument("--ensure-schema", action="store_true", help="Add optional cache columns required by this builder before writing.")
+    args_parser.add_argument("--dry-run", action="store_true", help="Plan target brands without writing cache_deep_analysis.")
+    args_parser.add_argument("--limit-brands", type=int, help="Optional safety limit for test/dry-run execution.")
     args_parser.add_argument("--events-only", action="store_true", help="Update only data.events into --target-table from current cache_deep_analysis.")
     args_parser.add_argument("--target-table", help="Events-only staging target table name.")
     args_parser.add_argument("--brands", nargs="*", help="Optional brand names to update in events-only mode. Defaults to all rows.")
@@ -741,8 +840,9 @@ def main() -> None:
             raise SystemExit("--events-only requires --target-table")
         update_events_only(args.target_table, set(args.brands) if args.brands else None, verbose=args.verbose)
         return
+    if args.mode == "full" and not args.confirm_full:
+        raise SystemExit("--mode full requires --confirm-full because it deletes cache_deep_analysis before rebuilding")
 
-    ml_market = load_catalog("ml_market").set_index("ml_id", drop=False)
     rows = fetch_all("SELECT * FROM mart_strategic_ml_brand_metric")
     by_brand: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_market_combo: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -750,16 +850,42 @@ def main() -> None:
         by_brand[row["brand_name"]].append(row)
         by_market_combo[(row["ml_id"], row["source"], row["measure"])].append(row)
 
-    columns = ["brand", "market_id", "response_json", "payload_size", "brand_factors"]
-    placeholders = ", ".join(["%s"] * len(columns))
-    names = ", ".join(f"`{column}`" for column in columns)
-    sql = f"REPLACE INTO `cache_deep_analysis` ({names}) VALUES ({placeholders})"
     conn = mariadb_connect()
     cur = conn.cursor()
+    if args.ensure_schema:
+        added = ensure_brand_strength_column(conn)
+        if args.verbose:
+            print(f"brand_strength_column_added={added}", flush=True)
+    cur.execute("SELECT brand FROM `cache_deep_analysis`")
+    existing_brands = {str(row["brand"]) for row in cur.fetchall()}
+    target_brands = sorted(by_brand)
+    if args.mode == "incremental":
+        target_brands = [brand for brand in target_brands if brand not in existing_brands]
+    if args.limit_brands is not None:
+        target_brands = target_brands[: args.limit_brands]
+    if args.verbose or args.dry_run:
+        print(
+            f"cache_deep_analysis mode={args.mode} strategic_brands={len(by_brand)} "
+            f"existing_cache_brands={len(existing_brands)} target_brands={len(target_brands)} dry_run={args.dry_run}",
+            flush=True,
+        )
+    if args.dry_run:
+        cur.close()
+        conn.close()
+        return
+
+    ml_market = load_catalog("ml_market").set_index("ml_id", drop=False)
+    columns = ["brand", "market_id", "response_json", "payload_size", "brand_factors", "brand_strength"]
+    placeholders = ", ".join(["%s"] * len(columns))
+    names = ", ".join(f"`{column}`" for column in columns)
+    sql_verb = "REPLACE" if args.mode == "full" else "INSERT"
+    sql = f"{sql_verb} INTO `cache_deep_analysis` ({names}) VALUES ({placeholders})"
     ensure_events_raw_table(conn)
-    brand_factors_by_brand = load_brand_factor_map(conn, sorted(by_brand))
+    brand_factors_by_brand = load_brand_factor_map(conn, target_brands)
+    brand_strength_by_brand = load_brand_strength_map(conn, target_brands)
     poc_report = {"brands": {}}
-    cur.execute("DELETE FROM `cache_deep_analysis`")
+    if args.mode == "full":
+        cur.execute("DELETE FROM `cache_deep_analysis`")
     batch: list[tuple[Any, ...]] = []
     inserted = 0
 
@@ -770,7 +896,8 @@ def main() -> None:
         cur.executemany(sql, batch)
         batch = []
 
-    for brand, brand_rows in sorted(by_brand.items()):
+    for brand in target_brands:
+        brand_rows = by_brand[brand]
         base = choose_base(brand_rows)
         ml_id = base["ml_id"]
         market_id = ml_to_strategy(ml_id)
@@ -857,6 +984,7 @@ def main() -> None:
             "response_json": dump_payload(payload),
             "payload_size": payload_size(payload),
             "brand_factors": dump_brand_factors(brand_factors_by_brand.get(brand)),
+            "brand_strength": dump_brand_strength(brand_strength_by_brand.get(brand)),
         }
         batch.append(tuple(out[column] for column in columns))
         inserted += 1
@@ -868,7 +996,7 @@ def main() -> None:
     cur.close()
     conn.close()
     if args.verbose:
-        print(f"cache_deep_analysis rows={inserted}")
+        print(f"cache_deep_analysis mode={args.mode} rows_written={inserted}")
 
 
 if __name__ == "__main__":

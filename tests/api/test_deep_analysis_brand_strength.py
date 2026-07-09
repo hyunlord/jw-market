@@ -30,6 +30,21 @@ def _cache_row() -> dict[str, Any]:
     }
 
 
+def _cache_row_with_strength(generated_at: str) -> dict[str, Any]:
+    row = _cache_row()
+    row["brand_strength"] = json.dumps(
+        {
+            "available": True,
+            "profile_display": {"headline": "cached"},
+            "strength_items": [{"axis": "cached", "score": 2}],
+            "limitations": [],
+            "meta": {"generated_at": generated_at, "workflow_rev": 5000},
+        },
+        ensure_ascii=False,
+    )
+    return row
+
+
 def _ai_row() -> dict[str, str]:
     return {
         "ai_analysis_json": json.dumps({"summary": "ok"}, ensure_ascii=False),
@@ -183,6 +198,44 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
         "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
     }
     assert "response_json" not in json.dumps(payload["data"]["brand_strength"], ensure_ascii=False)
+
+
+def test_deep_analysis_uses_cached_brand_strength_when_cache_is_current(monkeypatch) -> None:
+    # Given: cache has a generated_at equal to the Agent3 row timestamp.
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql:
+            return _ai_row()
+        if "agent3_brand_strength" in sql:
+            return _strength_row()
+        return _cache_row_with_strength("2026-07-05 13:32:16")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+
+    # When: deep-analysis is requested.
+    payload = deep_analysis.deep_analysis("리바로")
+
+    # Then: the cache column is preferred while the live lookup remains available.
+    assert payload["data"]["brand_strength"]["profile_display"] == {"headline": "cached"}
+    assert payload["data"]["brand_strength"]["meta"]["workflow_rev"] == 5000
+
+
+def test_deep_analysis_uses_live_brand_strength_when_agent3_is_newer(monkeypatch) -> None:
+    # Given: cache exists, but Agent3 has a newer generated_at.
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql:
+            return _ai_row()
+        if "agent3_brand_strength" in sql:
+            return _strength_row()
+        return _cache_row_with_strength("2026-07-05 12:00:00")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+
+    # When: deep-analysis is requested.
+    payload = deep_analysis.deep_analysis("리바로")
+
+    # Then: the newer live Agent3 row wins.
+    assert payload["data"]["brand_strength"]["profile_display"] == {"headline": "strong"}
+    assert payload["data"]["brand_strength"]["meta"]["workflow_rev"] == 5365
 
 
 def test_deep_analysis_brand_strength_is_not_generated_when_row_absent(monkeypatch) -> None:

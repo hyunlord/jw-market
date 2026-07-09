@@ -74,7 +74,41 @@ def _parse_brand_strength(row: dict) -> dict:
     }
 
 
-def _load_brand_strength(brand: str) -> dict:
+def _parse_cached_brand_strength(value: object) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        payload = value
+    else:
+        try:
+            payload = json.loads(str(value))
+        except (TypeError, json.JSONDecodeError):
+            return None
+    if not isinstance(payload, dict) or payload.get("available") is not True:
+        return None
+    return payload
+
+
+def _parse_brand_strength_generated_at(payload: dict | None) -> datetime | None:
+    if not payload:
+        return None
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    raw_value = meta.get("generated_at")
+    if raw_value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw_value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=KST)
+    return parsed.astimezone(KST)
+
+
+def _load_brand_strength(brand: str, cached_value: object = None) -> dict:
+    cached = _parse_cached_brand_strength(cached_value)
     settings = get_settings()
     schema = _quote_identifier(settings.agent3_db_name)
     try:
@@ -89,10 +123,19 @@ def _load_brand_strength(brand: str) -> dict:
         )
     except pymysql.MySQLError:
         logger.warning("agent3 brand_strength lookup failed", exc_info=True)
+        if cached is not None:
+            return cached
         return _not_generated_brand_strength()
     if not row:
+        if cached is not None:
+            return cached
         return _not_generated_brand_strength()
-    return _parse_brand_strength(row)
+    live = _parse_brand_strength(row)
+    cached_generated_at = _parse_brand_strength_generated_at(cached)
+    live_generated_at = _parse_brand_strength_generated_at(live)
+    if cached is not None and cached_generated_at is not None and live_generated_at is not None and cached_generated_at >= live_generated_at:
+        return cached
+    return live
 
 
 def _load_ai_analysis(brand: str) -> dict:
@@ -186,7 +229,7 @@ def _fetch_deep_analysis_row(brand: str) -> dict | None:
     try:
         return db.fetch_one(
             """
-            SELECT response_json, brand_factors, updated_at
+            SELECT response_json, brand_factors, brand_strength, updated_at
             FROM cache_deep_analysis
             WHERE brand = %s
             LIMIT 1
@@ -197,7 +240,7 @@ def _fetch_deep_analysis_row(brand: str) -> dict | None:
         if exc.args and exc.args[0] == 1054:
             return db.fetch_one(
                 """
-                SELECT response_json, updated_at
+                SELECT response_json, brand_factors, updated_at
                 FROM cache_deep_analysis
                 WHERE brand = %s
                 LIMIT 1
@@ -316,5 +359,5 @@ def deep_analysis(brand_name: str) -> dict:
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        data["brand_strength"] = _load_brand_strength(brand)
+        data["brand_strength"] = _load_brand_strength(brand, row.get("brand_strength"))
     return payload

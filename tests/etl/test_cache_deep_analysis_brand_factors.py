@@ -11,6 +11,7 @@ from pipeline.scripts.etl.cache_deep_analysis_brand_factors import (
     empty_brand_factors,
     quote_ident,
 )
+from pipeline.scripts.etl import build_cache_deep_analysis
 
 
 def test_build_brand_factor_map_projects_requested_contract_keys() -> None:
@@ -74,3 +75,34 @@ def test_dump_brand_factors_is_valid_json_with_empty_default() -> None:
 def test_quote_ident_rejects_unsafe_identifier() -> None:
     with pytest.raises(CacheBrandFactorsError):
         quote_ident("cache_deep_analysis;DROP")
+
+
+def test_dump_brand_strength_uses_public_route_shape() -> None:
+    payload = build_cache_deep_analysis.dump_brand_strength(
+        {
+            "available": True,
+            "profile_display": {"headline": "strong"},
+            "strength_items": [{"axis": "growth"}],
+            "limitations": [],
+            "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
+        }
+    )
+
+    assert json.loads(payload) == {
+        "available": True,
+        "profile_display": {"headline": "strong"},
+        "strength_items": [{"axis": "growth"}],
+        "limitations": [],
+        "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
+    }
+
+
+def test_parse_brand_strength_row_rejects_invalid_summary() -> None:
+    assert build_cache_deep_analysis._parse_brand_strength_row({"strength_summary_json": "not-json"}) is None
+
+
+def test_full_mode_requires_explicit_confirmation(monkeypatch) -> None:
+    monkeypatch.setattr("sys.argv", ["build_cache_deep_analysis.py", "--mode", "full"])
+
+    with pytest.raises(SystemExit, match="--confirm-full"):
+        build_cache_deep_analysis.main()
