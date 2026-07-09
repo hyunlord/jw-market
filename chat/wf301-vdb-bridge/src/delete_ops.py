@@ -216,11 +216,10 @@ def delete_session_document(
             )
         try:
             with httpx.Client() as client:
-                object_ids = weaviate_ops.list_target_object_ids(
+                deleted_ids = weaviate_ops.delete_target_objects_for_document(
                     client,
                     document_id=target.document_id,
                 )
-                deleted_ids = weaviate_ops.delete_target_objects(client, object_ids=object_ids)
             ledger_updates = soft_delete_document(
                 conn,
                 document_id=target.document_id,
