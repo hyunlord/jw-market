@@ -31,6 +31,7 @@ from cache_build_common import (
     safe_float,
     source_list,
 )
+from pipeline.scripts.etl.cache_deep_analysis_brand_factors import dump_brand_factors, load_brand_factor_map
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 try:
     from phase29_events import build_events_for_cache, ensure_events_raw_table
@@ -748,13 +749,14 @@ def main() -> None:
         by_brand[row["brand_name"]].append(row)
         by_market_combo[(row["ml_id"], row["source"], row["measure"])].append(row)
 
-    columns = ["brand", "market_id", "response_json", "payload_size"]
+    columns = ["brand", "market_id", "response_json", "payload_size", "brand_factors"]
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{column}`" for column in columns)
     sql = f"REPLACE INTO `cache_deep_analysis` ({names}) VALUES ({placeholders})"
     conn = mariadb_connect()
     cur = conn.cursor()
     ensure_events_raw_table(conn)
+    brand_factors_by_brand = load_brand_factor_map(conn, sorted(by_brand))
     poc_report = {"brands": {}}
     cur.execute("DELETE FROM `cache_deep_analysis`")
     batch: list[tuple[Any, ...]] = []
@@ -853,6 +855,7 @@ def main() -> None:
             "market_id": market_id,
             "response_json": dump_payload(payload),
             "payload_size": payload_size(payload),
+            "brand_factors": dump_brand_factors(brand_factors_by_brand.get(brand)),
         }
         batch.append(tuple(out[column] for column in columns))
         inserted += 1

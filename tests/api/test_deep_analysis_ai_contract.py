@@ -66,6 +66,7 @@ def test_openapi_documents_deep_analysis_ai_variants_with_same_ref() -> None:
     for key in ("ai_analysis", "ai_analysis_short", "ai_analysis_long"):
         assert data_properties[key]["oneOf"][0] == {"$ref": "#/components/schemas/AIAnalysis"}
         assert data_properties[key]["oneOf"][1] == {"$ref": "#/components/schemas/AIAnalysisUnavailable"}
+    assert data_properties["brand_factors"] == {"$ref": "#/components/schemas/BrandFactors"}
 
 
 def test_deep_analysis_route_normalizes_short_and_long_variants(monkeypatch) -> None:
@@ -81,7 +82,11 @@ def test_deep_analysis_route_normalizes_short_and_long_variants(monkeypatch) -> 
     ai_analysis_payload["evidence_pool"][0].pop("published_date")
     rows = iter(
         [
-            {"response_json": json.dumps(cache_payload, ensure_ascii=False), "updated_at": "2026-07-07T09:00:00+09:00"},
+            {
+                "response_json": json.dumps(cache_payload, ensure_ascii=False),
+                "brand_factors": json.dumps({"atc": ["C10A1"], "ubist": {}, "iqvia": {}}, ensure_ascii=False),
+                "updated_at": "2026-07-07T09:00:00+09:00",
+            },
             {"ai_analysis_json": json.dumps(ai_analysis_payload, ensure_ascii=False)},
         ]
     )
@@ -97,3 +102,4 @@ def test_deep_analysis_route_normalizes_short_and_long_variants(monkeypatch) -> 
         payload = data[key]
         assert "analysis_variant" not in payload
         assert "published_date" not in payload["evidence_pool"][0]
+    assert data["brand_factors"]["atc"] == ["C10A1"]

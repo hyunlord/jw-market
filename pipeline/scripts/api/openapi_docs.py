@@ -46,6 +46,37 @@ AI_ANALYSIS_FIELD_SCHEMA: dict[str, Any] = {
     ]
 }
 
+BRAND_FACTORS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "atc": {"type": "array", "items": {"type": "string"}},
+        "ubist": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "seller": {"type": "array", "items": {"type": "string"}},
+                "molecule_strength": {"type": "array", "items": {"type": "string"}},
+                "form": {"type": "array", "items": {"type": "string"}},
+                "route": {"type": "array", "items": {"type": "string"}},
+                "reimbursement": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "iqvia": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mfr_name_kor": {"type": "array", "items": {"type": "string"}},
+                "molecule_type": {"type": "array", "items": {"type": "string"}},
+                "molecule_desc": {"type": "array", "items": {"type": "string"}},
+                "pack_desc": {"type": "array", "items": {"type": "string"}},
+                "strength": {"type": "array", "items": {"type": "string"}},
+                "nhi_type": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+}
+
 DEEP_ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": True,
@@ -57,6 +88,7 @@ DEEP_ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
                 "ai_analysis": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                 "ai_analysis_short": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                 "ai_analysis_long": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
+                "brand_factors": {"$ref": "#/components/schemas/BrandFactors"},
             },
         }
     },
@@ -69,6 +101,7 @@ def _ensure_components(openapi_schema: dict[str, Any]) -> None:
     schemas["AIAnalysisStage"] = deepcopy(AI_ANALYSIS_STAGE_SCHEMA)
     schemas["AIAnalysis"] = deepcopy(AI_ANALYSIS_SCHEMA)
     schemas["AIAnalysisUnavailable"] = deepcopy(AI_ANALYSIS_UNAVAILABLE_SCHEMA)
+    schemas["BrandFactors"] = deepcopy(BRAND_FACTORS_SCHEMA)
 
 
 def _apply_deep_analysis_response(openapi_schema: dict[str, Any]) -> None:

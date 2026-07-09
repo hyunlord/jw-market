@@ -60,6 +60,7 @@ def create_cache_tables(target_db: str) -> None:
                 market_id VARCHAR(20) NOT NULL,
                 response_json LONGTEXT NOT NULL CHECK (JSON_VALID(response_json)),
                 payload_size INT NOT NULL,
+                brand_factors LONGTEXT NULL CHECK (brand_factors IS NULL OR JSON_VALID(brand_factors)),
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_cache_deep_market (market_id)
