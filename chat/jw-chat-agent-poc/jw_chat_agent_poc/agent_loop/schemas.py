@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from jw_chat_agent_poc.tools.query_layer import QueryCatalog
@@ -66,12 +67,19 @@ def _properties(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...
             "enum": list(allowed_periods),
             "description": "Use only this code-grounded period enum; never invent unavailable months.",
         },
-        "view": {"type": "string", "enum": ["market_landscape", "competitive_dynamics"]},
+        "view": {"type": "string", "enum": _view_enum()},
         "source": {"type": "string", "description": "Optional mart source such as ubist or iqvia_nsa when the question explicitly asks for it."},
         "expression": {"type": "string"},
         "query": {"type": "string", "description": "Optional text query for news issue/search terms, not a brand."},
         "ingredient": {"type": "string", "description": "Code-grounded English ingredient for patent lookup when no canonical brand is present."},
     }
+
+
+def _view_enum() -> list[str]:
+    values = ["market_landscape", "competitive_dynamics"]
+    if os.environ.get("GENERAL_VIEW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        values.append("general_view")
+    return values
 
 
 def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...], catalog: QueryCatalog) -> tuple[dict[str, Any], ...]:

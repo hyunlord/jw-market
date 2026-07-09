@@ -6,6 +6,7 @@ from typing import Any, Final, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
 from jw_chat_agent_poc.orchestrator.dosage_notes import DOSAGE_COMBINATION_NOTE_PREFIX, dosage_combination_note
+from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +98,12 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
     )
 
 
-def enforce_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> str:
+def enforce_answer_contract(
+    question: str,
+    answer: str,
+    markdown_response: Mapping[str, Any] | None,
+    general_view_contract: Mapping[str, Any] | None = None,
+) -> str:
     """Repair final-model omissions when required facts already exist."""
 
     intent = _intent(question)
@@ -113,7 +119,8 @@ def enforce_answer_contract(question: str, answer: str, markdown_response: Mappi
             fact = _trend_fact(fact_md)
             if fact is not None and len(fact.rows) >= rule.min_rows and not _trend_surface_ok(answer, fact, rule):
                 repaired = _join_blocks(_trend_answer(fact), _source_block(fact_md))
-    return _append_general_dosage_combination_note(_enforce_structural_contract(question, repaired, fact_md))
+    repaired = _append_general_dosage_combination_note(_enforce_structural_contract(question, repaired, fact_md))
+    return enforce_general_view_contract(repaired, dict(general_view_contract) if general_view_contract else None)
 
 
 def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> dict[str, Any]:

@@ -6,6 +6,7 @@ import os
 import queue
 import threading
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from hmac import compare_digest
 from collections.abc import Callable
@@ -40,6 +41,7 @@ from jw_chat_agent_poc.service.conversation import ConversationStore, PendingCla
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
+from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
@@ -514,6 +516,85 @@ def _answer_without_pending(
     *,
     use_direct_agent_loop: bool = False,
 ) -> dict:
+    route_method = getattr(market_scope_resolver, "general_route", None)
+    route = route_method(question) if callable(route_method) else GeneralRoute.EXISTING
+    if route is GeneralRoute.GENERAL_ONLY:
+        return market_scope_resolver.answer_general(question, compact=False, dual=False)
+    if route is GeneralRoute.DUAL:
+        return _answer_dual_view(
+            market_scope_resolver,
+            agent_factory,
+            conversation_id,
+            question,
+            external_mode,
+            documents,
+            store,
+            use_direct_agent_loop=use_direct_agent_loop,
+        )
+    return _answer_existing_without_pending(
+        market_scope_resolver,
+        agent_factory,
+        conversation_id,
+        question,
+        external_mode,
+        documents,
+        store,
+        use_direct_agent_loop=use_direct_agent_loop,
+    )
+
+
+def _answer_dual_view(
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    conversation_id: str,
+    question: str,
+    external_mode: str,
+    documents: list[Path] | None,
+    store: SessionStore,
+    *,
+    use_direct_agent_loop: bool,
+) -> dict:
+    strategic_question = f"{question}\n\n전략뷰(market_landscape) 기준으로 주 답변을 작성하세요."
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="general-view") as executor:
+        general_future = executor.submit(
+            market_scope_resolver.answer_general,
+            question,
+            compact=True,
+            dual=True,
+        )
+        strategic = _answer_existing_without_pending(
+            market_scope_resolver,
+            agent_factory,
+            conversation_id,
+            strategic_question,
+            external_mode,
+            documents,
+            store,
+            use_direct_agent_loop=use_direct_agent_loop,
+        )
+        general = general_future.result()
+    combined = dict(strategic)
+    combined["question"] = question
+    combined["general_view_contract"] = general.get("general_view_contract")
+    combined["tool_calls"] = [*strategic.get("tool_calls", []), *general.get("tool_calls", [])]
+    combined["sources"] = list(dict.fromkeys([*strategic.get("sources", []), *general.get("sources", [])]))
+    diagnostics = dict(strategic.get("router_diagnostics") or {})
+    diagnostics["general_view_mode"] = "dual"
+    combined["router_diagnostics"] = diagnostics
+    return combined
+
+
+def _answer_existing_without_pending(
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    conversation_id: str,
+    question: str,
+    external_mode: str,
+    documents: list[Path] | None,
+    store: SessionStore,
+    *,
+    use_direct_agent_loop: bool = False,
+) -> dict:
     if requested_unavailable_source(question) is not None and not documents:
         return agent_factory(external_mode=external_mode).answer(question, documents)
     if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
@@ -738,6 +819,30 @@ def _record_conversation_history(
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     client = GenosClient()
     timing = ensure_timing(result)
+    if result.get("general_view_ready"):
+        timing_payload = finish(timing)
+        answer = enforce_answer_contract(
+            question,
+            cleanup_markdown_answer(str(result.get("answer") or "")),
+            None,
+            result.get("general_view_contract"),
+        )
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=[],
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=[],
+            timing=timing_payload,
+            trace=trace,
+            sources=tuple(result.get("sources", ())),
+            conversation_id=conversation_id,
+        )
     if result.get("file_only_ready"):
         timing_payload = finish(timing)
         answer = cleanup_markdown_answer(str(result.get("answer") or ""))
@@ -781,9 +886,9 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
-    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
+    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response)
+    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = _append_file_context_source(safe_answer, file_context_fact)
