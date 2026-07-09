@@ -20,7 +20,7 @@ for candidate in (Path(__file__).resolve(), *Path(__file__).resolve().parents, P
         sys.path.insert(0, str(candidate))
 
 from cache_build_common import mariadb_connect
-from pipeline.scripts.brand_name_normalize import compact_brand_name
+from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
 TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"

@@ -15,7 +15,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
-from pipeline.scripts.brand_name_normalize import compact_brand_name
+from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
 router = APIRouter()
