@@ -65,7 +65,7 @@ def test_deep_analysis_uses_general_cache_for_explicit_atc4(monkeypatch) -> None
     # Then: the general row is served without touching the strategic cache.
     assert payload["market_id"] == "general:A10N3"
     assert payload["data"]["scope"] == "general"
-    assert seen_params[0] == ["멀티브랜드", "A10N3"]
+    assert seen_params[0] == ["멀티브랜드", "멀티브랜드", "A10N3"]
 
 
 def test_deep_analysis_falls_back_to_first_general_atc4_when_strategic_absent(monkeypatch) -> None:

@@ -9,6 +9,7 @@ from pipeline.scripts.etl.cache_deep_analysis_brand_factors import (
     build_brand_factor_map,
     dump_brand_factors,
     empty_brand_factors,
+    load_brand_factor_map,
     quote_ident,
 )
 
@@ -65,6 +66,78 @@ def test_build_brand_factor_map_projects_requested_contract_keys() -> None:
         },
     }
     assert factors["원천없음"] == empty_brand_factors()
+
+
+def test_build_brand_factor_map_uses_compact_brand_match_when_exact_missing() -> None:
+    factors = build_brand_factor_map(
+        brands=["리바로 브이"],
+        atc_rows=[{"brand_name": "리바로브이", "atc4_code": "C10A1"}],
+        dimension_rows=[
+            {"brand_name": "리바로브이", "source": "ubist", "dimension_type": "seller", "dimension_value": "JW중외제약"}
+        ],
+    )
+
+    assert factors["리바로 브이"]["atc"] == ["C10A1"]
+    assert factors["리바로 브이"]["ubist"]["seller"] == ["JW중외제약"]
+
+
+def test_build_brand_factor_map_does_not_guess_ambiguous_compact_brand() -> None:
+    factors = build_brand_factor_map(
+        brands=["AB C", "A BC"],
+        atc_rows=[{"brand_name": "ABC", "atc4_code": "C10A1"}],
+        dimension_rows=[
+            {"brand_name": "ABC", "source": "ubist", "dimension_type": "seller", "dimension_value": "JW중외제약"}
+        ],
+    )
+
+    assert factors["AB C"] == empty_brand_factors()
+    assert factors["A BC"] == empty_brand_factors()
+
+
+def test_load_brand_factor_map_queries_compact_brand_candidates() -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[str, ...]]] = []
+            self._rows: list[dict[str, str]] = []
+
+        def __enter__(self) -> "FakeCursor":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[str, ...]) -> None:
+            self.calls.append((sql, params))
+            if "atc4_code" in sql:
+                self._rows = [{"brand_name": "리바로브이", "atc4_code": "C10A1"}]
+            else:
+                self._rows = [
+                    {
+                        "brand_name": "리바로브이",
+                        "source": "ubist",
+                        "dimension_type": "seller",
+                        "dimension_value": "JW중외제약",
+                    }
+                ]
+
+        def fetchall(self) -> list[dict[str, str]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.cursor_obj = FakeCursor()
+
+        def cursor(self) -> FakeCursor:
+            return self.cursor_obj
+
+    conn = FakeConnection()
+
+    factors = load_brand_factor_map(conn, ["리바로 브이"])
+
+    assert factors["리바로 브이"]["atc"] == ["C10A1"]
+    assert factors["리바로 브이"]["ubist"]["seller"] == ["JW중외제약"]
+    assert all("REPLACE" in sql for sql, _params in conn.cursor_obj.calls)
+    assert conn.cursor_obj.calls[0][1] == ("리바로 브이", "리바로브이")
 
 
 def test_dump_brand_factors_is_valid_json_with_empty_default() -> None:

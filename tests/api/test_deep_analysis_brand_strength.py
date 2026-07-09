@@ -6,6 +6,7 @@ import sys
 from typing import Any
 
 import pymysql
+from fastapi import HTTPException
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -183,6 +184,121 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
         "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
     }
     assert "response_json" not in json.dumps(payload["data"]["brand_strength"], ensure_ascii=False)
+
+
+def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched_brand(monkeypatch) -> None:
+    # Given: the URL has a display-space variant, while cache and Agent3 rows use the compact brand.
+    seen: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
+        seen.append((sql, params))
+        if "cache_deep_analysis_ai_analysis" in sql:
+            assert params == ["리바로브이"]
+            return _ai_row()
+        if "agent3_brand_strength" in sql:
+            assert params == ["리바로브이"]
+            return _strength_row()
+        if "cache_deep_analysis" in sql:
+            assert params == ["리바로 브이"]
+            return None
+        raise AssertionError(sql)
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        seen.append((sql, params))
+        assert "REPLACE" in sql
+        assert params == ["리바로브이"]
+        return [{**_cache_row(), "brand": "리바로브이"}]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    # When: the spaced display variant is requested.
+    payload = deep_analysis.deep_analysis("리바로 브이")
+
+    # Then: the compact fallback serves the cache and downstream lookups use the matched canonical brand.
+    assert payload["data"]["brand_strength"]["available"] is True
+    assert any("cache_deep_analysis" in sql and "REPLACE" in sql for sql, _params in seen)
+
+
+def test_deep_analysis_compact_cache_lookup_rejects_ambiguous_matches(monkeypatch) -> None:
+    # Given: compact fallback would match multiple stored brand labels.
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis" in sql:
+            return None
+        return _ai_row()
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        assert "REPLACE" in sql
+        return [
+            {**_cache_row(), "brand": "AB C"},
+            {**_cache_row(), "brand": "A BC"},
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    # When / Then: ambiguous compact-only cache hits are not guessed.
+    try:
+        deep_analysis.deep_analysis("ABC")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("expected 404")
+
+
+def test_load_brand_strength_falls_back_to_compact_serving_brand(monkeypatch) -> None:
+    # Given: Agent3 exact lookup misses, but one compact serving_brand_name row exists.
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
+        calls.append((sql, params))
+        assert "serving_brand_name = %s" in sql
+        return None
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        assert "REPLACE" in sql
+        assert params == ["리바로브이"]
+        return [_strength_row()]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    # When: the display-space variant is looked up.
+    strength = deep_analysis._load_brand_strength("리바로 브이")
+
+    # Then: the compact fallback returns the Agent3 strength row.
+    assert strength["available"] is True
+    assert len(calls) == 2
+
+
+def test_load_ai_analysis_variants_fall_back_to_compact_brand(monkeypatch) -> None:
+    # Given: AI variant exact lookup misses but compact lookup has one canonical brand row.
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
+        calls.append((sql, params))
+        assert "brand = %s" in sql
+        return None
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        assert "REPLACE" in sql
+        assert params == ["리바로브이"]
+        return [{**_ai_row(), "brand": "리바로브이"}]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    # When: the display-space variant is loaded from AI analysis cache.
+    ai_analysis = deep_analysis._load_ai_analysis("리바로 브이")
+    short, long = deep_analysis._load_ai_analysis_variants("리바로 브이")
+
+    # Then: compact fallback serves both AI analysis shapes.
+    assert ai_analysis == {"summary": "ok"}
+    assert short == {"evidence_pool": [{"source": "뉴스"}]}
+    assert long == {"evidence_pool": [{"source": "뉴스"}]}
+    assert len(calls) == 4
 
 
 def test_deep_analysis_brand_strength_is_not_generated_when_row_absent(monkeypatch) -> None:
