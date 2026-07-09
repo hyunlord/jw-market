@@ -288,7 +288,7 @@ def test_filter_options_accepts_brand_and_alias_remains_callable(monkeypatch) ->
         payload: dict[str, object] = {
             "view": kwargs["view"],
             "source": kwargs["source"],
-            "market_id": kwargs["market_id"],
+            "market_id": kwargs.get("market_id"),
             "dimensions": [],
             "atc": {"selectable_levels": ["atc3", "atc4"]},
         }
@@ -302,7 +302,7 @@ def test_filter_options_accepts_brand_and_alias_remains_callable(monkeypatch) ->
     client = TestClient(app)
     no_brand = client.get("/api/dynamic-market/filter-options?view=general&source=ubist&market_id=C10A1")
     with_brand = client.get("/api/dynamic-market/filter-options?view=general&source=ubist&market_id=C10A1&brand=리바로")
-    alias = client.get("/api/dynamic-market/brand-option-check?view=general&source=ubist&market_id=C10A1&brand=리바로")
+    alias = client.get("/api/dynamic-market/brand-option-check?view=general&source=ubist&market_id=STALE&brand=리바로")
 
     assert no_brand.status_code == 200
     assert "brand_matched" not in no_brand.json()
@@ -310,3 +310,4 @@ def test_filter_options_accepts_brand_and_alias_remains_callable(monkeypatch) ->
     assert alias.status_code == 200
     assert alias.json()["brand_matched"] == {"seller": ["JW중외제약"]}
     assert [call.get("brand") for call in calls] == [None, "리바로", "리바로"]
+    assert [call.get("market_id") for call in calls] == ["C10A1", "C10A1", None]

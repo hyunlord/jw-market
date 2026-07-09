@@ -277,18 +277,21 @@ def dynamic_market_filter_options(
         "포탈 옵션 불러오기/기본 체크 상태 확인용 API입니다. "
         "`filter-options`와 같은 option list contract를 반환하며, `brand_matched`에는 선택 브랜드가 실제로 가진 "
         "ATC4·분석레벨 값이 들어갑니다. 신규 화면은 가능하면 `/api/dynamic-market/filter-options`를 사용하되, "
-        "브랜드 선택 직후 기본값 진단에는 이 endpoint를 호출할 수 있습니다."
+        "브랜드 선택 직후 기본값 진단에는 이 endpoint를 호출할 수 있습니다. "
+        "`market_id`는 공개 입력이 아니며, 브랜드명으로 시장을 내부 해석합니다."
     ),
     response_model=None,
     responses=FILTER_OPTIONS_RESPONSES,
 )
-def dynamic_market_brand_option_check(brand: str, view: str = "general", source: str = "ubist", market_id: str | None = None) -> dict:
+def dynamic_market_brand_option_check(brand: str, view: str = "general", source: str = "ubist") -> dict:
     """Return option values and the sidecar values already matched by a brand.
 
     This endpoint exists for the test2 portal filter panel.  It keeps the
     option list contract identical to ``filter-options`` and adds
     ``brand_matched`` as dimension-type -> list, because a brand can span
     multiple product-level values (for example several forms or strengths).
+    ``market_id`` is intentionally absent from the public contract; FastAPI
+    ignores stale unknown query parameters and the route resolves by brand.
     """
 
     try:
@@ -299,7 +302,6 @@ def dynamic_market_brand_option_check(brand: str, view: str = "general", source:
             brand=brand,
             view=view,
             source=source,
-            market_id=market_id,
         )
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_brand_option_check_request", "message": str(exc)}) from exc

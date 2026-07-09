@@ -38,6 +38,17 @@ def test_build_filter_option_payload_includes_iqvia_molecule_desc_dimension() ->
     assert molecule_desc["values"] == [{"key": "carteolol", "value": "CARTEOLOL", "row_count": 2}]
 
 
+def test_filter_options_openapi_documents_key_value_request_contract() -> None:
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    payload = str(schema["paths"]["/api/dynamic-market/filter-options"]["get"]["responses"]["200"])
+
+    assert "일반 차원 요청에는 value를 다시 넣습니다" in payload
+    assert "key='carteolol', value='CARTEOLOL'" in payload
+    assert "pairs는 key='종별|진료과'" in payload
+
+
 def test_parse_atc_code_handles_deployed_source_shapes() -> None:
     assert filter_options.parse_atc_code("C07A0") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C07A0"}
     assert filter_options.parse_atc_code("C7A") == {"atc1": "C", "atc2": "C07", "atc3": "C07A", "atc4": "C7A"}

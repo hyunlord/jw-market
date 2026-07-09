@@ -1029,6 +1029,15 @@ FILTER_OPTIONS_EXAMPLE: Final = {
 }
 
 
+FILTER_OPTION_KEY_VALUE_GUIDE: Final = (
+    "옵션 항목은 key/value를 모두 가질 수 있습니다. key는 정규화 식별자 또는 UI grouping 보조값이고, "
+    "value는 포탈이 선택 상태에 저장해 다음 요청(selections, filters.analysis_level 등)에 다시 넣는 실제 값입니다. "
+    "일반 차원 요청에는 value를 다시 넣습니다. 예를 들어 IQVIA molecule_desc 옵션이 "
+    "key='carteolol', value='CARTEOLOL'이면 요청에는 value인 'CARTEOLOL'을 보냅니다. "
+    "UBIST channel_axis.pairs는 key='종별|진료과' 형태의 조합 식별자이고 value는 facility/specialty 구조를 보여주는 echo입니다."
+)
+
+
 FILTER_OPTIONS_RESPONSES: Final = {
     200: {
         "description": (
@@ -1046,20 +1055,60 @@ FILTER_OPTIONS_RESPONSES: Final = {
                         "brand": {"type": "string", "description": "입력 브랜드 echo"},
                         "dimensions": {
                             "type": "array",
-                            "description": "registry 순서의 차원 목록. values의 flag=true는 선택 브랜드 해당 값입니다.",
+                            "description": (
+                                "registry 순서의 차원 목록. values의 flag=true는 선택 브랜드 해당 값입니다. "
+                                f"{FILTER_OPTION_KEY_VALUE_GUIDE}"
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "dimension_type": {"type": "string", "description": "요청 analysis_level에서 쓰는 차원 키"},
+                                    "label": {"type": "string", "description": "화면 표시명"},
+                                    "values": {
+                                        "type": "array",
+                                        "description": "선택 가능한 값 목록. 다음 요청에는 각 항목의 value를 사용합니다.",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "key": {
+                                                    "type": "string",
+                                                    "description": "정규화 식별자 또는 grouping 보조값. 표시/동등성 비교용이며 일반 차원 요청값은 아닙니다.",
+                                                },
+                                                "value": {
+                                                    "type": "string",
+                                                    "description": "실제 요청에 다시 넣을 값. 포탈은 이 값을 selections/analysis_level 선택값으로 저장합니다.",
+                                                },
+                                                "row_count": {"type": "integer", "description": "해당 옵션을 가진 sidecar row 수"},
+                                                "default": {"type": "boolean", "description": "초기 선택값이면 true"},
+                                                "selected": {"type": "boolean", "description": "현재 selections 입력에 의해 선택됐으면 true"},
+                                                "flag": {"type": "boolean", "description": "선택 브랜드 자체가 가진 값이면 true"},
+                                            },
+                                        },
+                                    },
+                                },
+                            },
                         },
-                        "atc": {"type": "object", "description": "ATC1/2/3/4 계층. default/selected/flag 상태 포함."},
+                        "atc": {
+                            "type": "object",
+                            "description": (
+                                "ATC1/2/3/4 계층. default/selected/flag 상태 포함. ATC 옵션도 다음 요청에는 value를 사용합니다."
+                            ),
+                        },
                         "channel_axis": {
                             "type": "object",
                             "description": (
                                 "일반뷰 source별 채널 축 registry. UBIST는 facility(종별), specialty(진료과), "
                                 "pairs(종별×진료과 조합)를 raw channel_specialty_matrix에서 동적으로 도출하고, "
                                 "IQVIA는 audit_code를 raw audit_code_matrix에서 동적으로 도출합니다. "
-                                "request에서는 같은 값을 filters.analysis_level.{source} 하위로 접어 보냅니다."
+                                "request에서는 같은 값을 filters.analysis_level.{source} 하위로 접어 보냅니다. "
+                                f"{FILTER_OPTION_KEY_VALUE_GUIDE}"
                             ),
                         },
-                        "default_selections": {"type": "object", "description": "초기 선택값. 차원 내 값은 OR입니다."},
-                        "applied_selections": {"type": "object", "description": "현재 selections 입력을 반영한 선택값."},
+                        "default_selections": {"type": "object", "description": "초기 선택값. 차원 내 값은 OR이며 값은 request-ready value입니다."},
+                        "applied_selections": {
+                            "type": "object",
+                            "description": "현재 selections 입력을 반영한 선택값. 값은 request-ready value입니다.",
+                        },
                         "brand_matched": {"type": "object", "description": "브랜드 자신 값. 프론트에서 locked 처리합니다."},
                     },
                 },

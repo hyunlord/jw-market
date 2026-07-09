@@ -44,6 +44,7 @@ def test_openapi_hides_internal_legacy_and_experimental_routes() -> None:
 
 
 def test_shared_dynamic_routes_document_without_response_model_trimming() -> None:
+    app.openapi_schema = None
     schema = app.openapi()
 
     cause = schema["paths"]["/api/cause/{brand_name}"]["get"]
@@ -64,6 +65,15 @@ def test_shared_dynamic_routes_document_without_response_model_trimming() -> Non
         path = getattr(route, "path", "")
         if path in {"/api/cause/{brand_name}", "/api/dynamic-market", "/api/dynamic-market/filter-options", "/api/dynamic-market/brand-option-check"}:
             assert getattr(route, "response_model", None) is None
+
+
+def test_brand_option_check_openapi_removes_public_market_id_parameter() -> None:
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    parameters = schema["paths"]["/api/dynamic-market/brand-option-check"]["get"]["parameters"]
+
+    assert {parameter["name"] for parameter in parameters} == {"brand", "view", "source"}
 
 
 def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
