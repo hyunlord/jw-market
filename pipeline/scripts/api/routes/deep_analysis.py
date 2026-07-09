@@ -24,6 +24,46 @@ FORECAST_INTERVAL_KEYS = (
     "ci_upper_95",
     "ci_lower_95",
 )
+EMPTY_BRAND_FACTORS = {
+    "atc": [],
+    "ubist": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
+    "iqvia": {
+        "mfr_name_kor": [],
+        "molecule_type": [],
+        "molecule_desc": [],
+        "pack_desc": [],
+        "strength": [],
+        "nhi_type": [],
+    },
+}
+BRAND_FACTORS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "atc": {"type": "array", "items": {"type": "string"}},
+        "ubist": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {key: {"type": "array", "items": {"type": "string"}} for key in EMPTY_BRAND_FACTORS["ubist"]},
+        },
+        "iqvia": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {key: {"type": "array", "items": {"type": "string"}} for key in EMPTY_BRAND_FACTORS["iqvia"]},
+        },
+    },
+}
+DEEP_ANALYSIS_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "data": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {"brand_factors": BRAND_FACTORS_SCHEMA},
+        }
+    },
+}
 
 
 def _load_ai_analysis(brand: str) -> dict:
@@ -48,6 +88,44 @@ def _load_ai_analysis(brand: str) -> dict:
     except (TypeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_brand_factors(value: object) -> dict:
+    if value is None:
+        return json.loads(json.dumps(EMPTY_BRAND_FACTORS))
+    if isinstance(value, dict):
+        payload = value
+    else:
+        try:
+            payload = json.loads(str(value))
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+    return payload if isinstance(payload, dict) else json.loads(json.dumps(EMPTY_BRAND_FACTORS))
+
+
+def _fetch_deep_analysis_row(brand: str) -> dict | None:
+    try:
+        return db.fetch_one(
+            """
+            SELECT response_json, brand_factors, updated_at
+            FROM cache_deep_analysis
+            WHERE brand = %s
+            LIMIT 1
+            """,
+            [brand],
+        )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] == 1054:
+            return db.fetch_one(
+                """
+                SELECT response_json, updated_at
+                FROM cache_deep_analysis
+                WHERE brand = %s
+                LIMIT 1
+                """,
+                [brand],
+            )
+        raise
 
 
 def _format_generated_at(value: object) -> str:
@@ -131,18 +209,13 @@ def _slice_forecast_horizon(payload: dict) -> None:
         _slice_forecast_combo(combo)
 
 
-@router.get("/api/deep-analysis/{brand_name}")
+@router.get(
+    "/api/deep-analysis/{brand_name}",
+    responses={200: {"description": "Successful Response", "content": {"application/json": {"schema": DEEP_ANALYSIS_RESPONSE_SCHEMA}}}},
+)
 def deep_analysis(brand_name: str) -> dict:
     brand = unquote(brand_name)
-    row = db.fetch_one(
-        """
-        SELECT response_json, updated_at
-        FROM cache_deep_analysis
-        WHERE brand = %s
-        LIMIT 1
-        """,
-        [brand],
-    )
+    row = _fetch_deep_analysis_row(brand)
     if not row:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
     payload = compose_cached_json(row["response_json"])
@@ -152,5 +225,7 @@ def deep_analysis(brand_name: str) -> dict:
     _slice_forecast_horizon(payload)
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
+        if "brand_factors" in row:
+            data["brand_factors"] = _load_brand_factors(row.get("brand_factors"))
         data["ai_analysis"] = _load_ai_analysis(brand)
     return payload
