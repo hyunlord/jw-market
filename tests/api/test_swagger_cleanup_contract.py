@@ -110,6 +110,24 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
     assert "Swagger에서는" not in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
 
 
+def test_dynamic_market_iqvia_example_keeps_pack_desc_with_peer_filters() -> None:
+    operation = app.openapi()["paths"]["/api/dynamic-market"]["post"]
+    examples = operation["requestBody"]["content"]["application/json"]["examples"]
+
+    assert "general_iqvia_pack_desc_filter" not in examples
+    iqvia_filters = examples["general_iqvia_filters"]["value"]["filters"]["analysis_level"]["iqvia"]
+    assert {
+        "mfr_name_kor",
+        "molecule_type",
+        "molecule_desc",
+        "pack_desc",
+        "strength",
+        "nhi_type",
+        "audit_code",
+    }.issubset(iqvia_filters)
+    assert "같은 `analysis_level.iqvia` 객체" in operation["description"]
+
+
 def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatch) -> None:
     captured: dict[str, dict] = {}
     expected = {"scope": {"view": "general"}, "brands": []}
