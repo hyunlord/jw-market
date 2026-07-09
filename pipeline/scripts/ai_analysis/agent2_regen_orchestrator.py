@@ -28,8 +28,13 @@ if str(PHASE_ZETA_ROOT) not in sys.path:
 
 from bundle_builder import BundleConfig, build_brand_bundle
 from bundle_builder.agent2_density_router import ProcessingMode
-from bundle_builder.agent2_zero_template import KpiSnapshot, render_zero_template
+from bundle_builder.agent2_zero_template import render_zero_template
 from bundle_builder.hash_util import compute_bundle_hash
+from bundle_builder.zero_kpi_provider import (
+    BatchGeneralZeroKpiSnapshotProvider,
+    EmptyZeroKpiSnapshotProvider,
+    ZeroKpiSnapshotProvider,
+)
 from agent2_density_worklist import RoutedAgent2Brand, load_density_worklist
 from agent2_processing_modes import (
     PROCESSING_MODE_FULL,
@@ -268,6 +273,7 @@ class Agent2RegenOrchestrator:
         formatter_version: str,
         run_store: JsonRunStore,
         ports: DependencyPorts,
+        zero_kpi_provider: ZeroKpiSnapshotProvider | None = None,
         dry_run: bool = True,
         fail_threshold: int = 5,
     ):
@@ -275,6 +281,7 @@ class Agent2RegenOrchestrator:
         self.formatter_version = formatter_version
         self.run_store = run_store
         self.ports = ports
+        self.zero_kpi_provider = zero_kpi_provider or EmptyZeroKpiSnapshotProvider()
         self.dry_run = dry_run
         self.fail_threshold = fail_threshold
 
@@ -349,13 +356,15 @@ class Agent2RegenOrchestrator:
         return manifest
 
     def _run_zero_template(self, item: RoutedAgent2Brand) -> dict[str, Any]:
-        template = render_zero_template(KpiSnapshot(brand=item.canonical_brand_name))
+        snapshot = self.zero_kpi_provider.get_snapshot(item.brand_key, item.canonical_brand_name)
+        template = render_zero_template(snapshot)
         return {
             "brand": item.canonical_brand_name,
             "brand_key": item.brand_key,
             "canonical_brand_name": item.canonical_brand_name,
             "status": "template_zero",
             "template": template,
+            "zero_kpi_snapshot": asdict(snapshot),
             "density_route": _route_metadata(item),
             "workflow_revision_id": self.workflow_revision_id,
             "formatter_version": self.formatter_version,
@@ -659,7 +668,7 @@ def make_real_ports(
     snapshot_at: datetime,
     catalog_path: str,
     work_dir: Path,
-) -> tuple[DependencyPorts, Callable[[], None], dict[str, Any]]:
+) -> tuple[DependencyPorts, ZeroKpiSnapshotProvider, Callable[[], None], dict[str, Any]]:
     bundle_conn = _connect_bundle_db(bundle_config)
     runner_conn = _connect_runner_db(runner_config)
     diagnostics = {"upstream_freshness": check_upstream_freshness(bundle_conn)}
@@ -734,7 +743,12 @@ def make_real_ports(
         _write_json(raw_path, {"raw_response": real_llm.raw_response})
         return composition.to_dict()
 
-    return DependencyPorts(build_bundle=build_bundle_port, call_llm=call_llm_port, validate=validate_port, compose=compose_port), close, diagnostics
+    return (
+        DependencyPorts(build_bundle=build_bundle_port, call_llm=call_llm_port, validate=validate_port, compose=compose_port),
+        BatchGeneralZeroKpiSnapshotProvider(bundle_conn),
+        close,
+        diagnostics,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -780,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
     runner_config = RunnerConfig.from_yaml(args.runner_config)
     snapshot_at = datetime.fromisoformat(args.snapshot_at) if args.snapshot_at else datetime.now()
 
-    ports, close, diagnostics = make_real_ports(
+    ports, zero_kpi_provider, close, diagnostics = make_real_ports(
         bundle_config=bundle_config,
         runner_config=runner_config,
         snapshot_at=snapshot_at,
@@ -825,6 +839,7 @@ def main(argv: list[str] | None = None) -> int:
             formatter_version=args.formatter_version,
             run_store=JsonRunStore(work_dir / "idempotency_manifest.json"),
             ports=ports,
+            zero_kpi_provider=zero_kpi_provider,
             dry_run=dry_run,
             fail_threshold=args.fail_threshold,
         )

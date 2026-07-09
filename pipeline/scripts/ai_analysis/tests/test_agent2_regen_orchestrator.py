@@ -18,6 +18,7 @@ from agent2_regen_orchestrator import (
 )
 from agent2_processing_modes import trim_bundle_for_mode
 from bundle_builder.agent2_density_router import ProcessingMode, RouteDecision
+from bundle_builder.agent2_zero_template import KpiSnapshot
 
 
 def _valid_stage(body: str = "문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다. 문장입니다."):
@@ -529,6 +530,60 @@ def test_routed_run_uses_zero_template_without_llm(tmp_path) -> None:
     assert manifest["brands"]["zero-key"]["canonical_brand_name"] == "제로브랜드"
     assert manifest["brands"]["zero-key"]["template"]["phenomenon"]["evidence_none"] is True
     assert calls == {"bundle": 0, "llm": 0, "compose": 0}
+
+
+def test_routed_zero_template_uses_kpi_snapshot_without_bundle_or_llm(tmp_path) -> None:
+    calls = {"bundle": 0, "llm": 0, "compose": 0, "kpi": []}
+
+    def build_bundle(brand):
+        calls["bundle"] += 1
+        return {"bundle_meta": {"bundle_hash": "should-not-run"}, "brand_context": {"brand_name": brand}}
+
+    def call_llm(bundle):
+        calls["llm"] += 1
+        return LLMCallResult(False, {}, "", 0, 0, 0.0, "", 0, "should_not_call")
+
+    def validate(parsed_output, bundle):
+        return ValidationOutcome(valid=True, summary={"verdict": "PASS"}, details={})
+
+    def compose(brand, bundle, llm_result, validation):
+        calls["compose"] += 1
+        return {}
+
+    class FakeKpiProvider:
+        def get_snapshot(self, brand_key: str, brand_name: str):
+            calls["kpi"].append((brand_key, brand_name))
+            return KpiSnapshot(
+                brand=brand_name,
+                market_name="테스트 시장",
+                rank=2,
+                share_pct=18.4,
+                cagr_pct=0.3,
+                market_size_recent=123456.0,
+            )
+
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(build_bundle, call_llm, validate, compose),
+        zero_kpi_provider=FakeKpiProvider(),
+        dry_run=True,
+    )
+    worklist = [
+        RoutedAgent2Brand(
+            brand_key="zero-key",
+            canonical_brand_name="제로브랜드",
+            route=RouteDecision("zero-key", 0, "zero", ProcessingMode.TEMPLATE_ZERO, ()),
+        )
+    ]
+
+    manifest = orchestrator.run_routed(worklist)
+    template = manifest["brands"]["zero-key"]["template"]["phenomenon"]
+
+    assert template["template_type"] == "leader"
+    assert "2위" in template["body"]
+    assert calls == {"bundle": 0, "llm": 0, "compose": 0, "kpi": [("zero-key", "제로브랜드")]}
 
 
 def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
