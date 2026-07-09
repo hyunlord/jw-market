@@ -15,6 +15,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
+from pipeline.scripts.brand_name_normalize import compact_brand_name
 
 
 router = APIRouter()
@@ -62,6 +63,17 @@ def _quote_identifier(identifier: str) -> str:
     return "`" + identifier.replace("`", "``") + "`"
 
 
+def _compact_sql(column: str) -> str:
+    return f"REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')"
+
+
+def _single_compact_row(rows: list[dict]) -> dict | None:
+    brands = {str(row.get("brand") or row.get("serving_brand_name") or "") for row in rows}
+    if len(brands) != 1:
+        return None
+    return rows[0]
+
+
 def _format_agent3_generated_at(value: object) -> str | None:
     if value is None:
         return None
@@ -103,6 +115,19 @@ def _load_brand_strength(brand: str) -> dict:
             """,
             [brand],
         )
+        if not row:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT serving_brand_name, strength_summary_json, generated_at, workflow_rev
+                    FROM {schema}.agent3_brand_strength
+                    WHERE {_compact_sql("serving_brand_name")} = %s
+                    LIMIT 2
+                    """,
+                    [compact],
+                )
+                row = _single_compact_row(rows)
     except pymysql.MySQLError:
         logger.warning("agent3 brand_strength lookup failed", exc_info=True)
         return _not_generated_brand_strength()
@@ -115,13 +140,26 @@ def _load_ai_analysis(brand: str) -> dict:
     try:
         row = db.fetch_one(
             """
-            SELECT ai_analysis_json
+            SELECT brand, ai_analysis_json
             FROM cache_deep_analysis_ai_analysis
             WHERE brand = %s
             LIMIT 1
             """,
             [brand],
         )
+        if not row:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT brand, ai_analysis_json
+                    FROM cache_deep_analysis_ai_analysis
+                    WHERE {_compact_sql("brand")} = %s
+                    LIMIT 2
+                    """,
+                    [compact],
+                )
+                row = _single_compact_row(rows)
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] == 1146:
             return {}
@@ -163,13 +201,26 @@ def _load_ai_analysis_variants(brand: str) -> tuple[dict, dict]:
     try:
         row = db.fetch_one(
             """
-            SELECT ai_analysis_short_json, ai_analysis_long_json
+            SELECT brand, ai_analysis_short_json, ai_analysis_long_json
             FROM cache_deep_analysis_ai_analysis
             WHERE brand = %s
             LIMIT 1
             """,
             [brand],
         )
+        if not row:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT brand, ai_analysis_short_json, ai_analysis_long_json
+                    FROM cache_deep_analysis_ai_analysis
+                    WHERE {_compact_sql("brand")} = %s
+                    LIMIT 2
+                    """,
+                    [compact],
+                )
+                row = _single_compact_row(rows)
     except pymysql.MySQLError:
         logger.warning("AI analysis variant lookup failed", exc_info=True)
         return _not_generated_ai_variant(), _not_generated_ai_variant()
@@ -200,47 +251,97 @@ def _load_brand_factors(value: object) -> dict:
 
 def _fetch_deep_analysis_row(brand: str) -> dict | None:
     try:
-        return db.fetch_one(
+        row = db.fetch_one(
             """
-            SELECT response_json, brand_factors, updated_at
+            SELECT brand, response_json, brand_factors, updated_at
             FROM cache_deep_analysis
             WHERE brand = %s
             LIMIT 1
             """,
             [brand],
         )
+        if row:
+            return row
+        compact = compact_brand_name(brand)
+        if not compact or compact == brand:
+            return None
+        rows = db.fetch_all(
+            f"""
+            SELECT brand, response_json, brand_factors, updated_at
+            FROM cache_deep_analysis
+            WHERE {_compact_sql("brand")} = %s
+            LIMIT 2
+            """,
+            [compact],
+        )
+        return _single_compact_row(rows)
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] == 1054:
-            return db.fetch_one(
+            row = db.fetch_one(
                 """
-                SELECT response_json, updated_at
+                SELECT brand, response_json, updated_at
                 FROM cache_deep_analysis
                 WHERE brand = %s
                 LIMIT 1
                 """,
                 [brand],
             )
+            if row:
+                return row
+            compact = compact_brand_name(brand)
+            if not compact or compact == brand:
+                return None
+            rows = db.fetch_all(
+                f"""
+                SELECT brand, response_json, updated_at
+                FROM cache_deep_analysis
+                WHERE {_compact_sql("brand")} = %s
+                LIMIT 2
+                """,
+                [compact],
+            )
+            return _single_compact_row(rows)
         raise
 
 
 def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dict | None:
-    params: list[str] = [brand]
+    params: list[str] = [brand, brand]
     atc4_clause = ""
     if atc4:
         atc4_clause = "AND atc4_code = %s"
         params.append(atc4)
     try:
-        return db.fetch_one(
+        row = db.fetch_one(
             f"""
-            SELECT response_json, brand_factors, updated_at, atc4_code
+            SELECT brand_key, brand, response_json, brand_factors, updated_at, atc4_code
             FROM cache_deep_analysis_general
-            WHERE brand = %s
+            WHERE (brand = %s OR brand_key = %s)
               {atc4_clause}
             ORDER BY atc4_code ASC
             LIMIT 1
             """,
             params,
         )
+        if row:
+            return row
+        compact = compact_brand_name(brand)
+        if not compact or compact == brand:
+            return None
+        compact_params: list[str] = [compact, compact]
+        if atc4:
+            compact_params.append(atc4)
+        rows = db.fetch_all(
+            f"""
+            SELECT brand_key, brand, response_json, brand_factors, updated_at, atc4_code
+            FROM cache_deep_analysis_general
+            WHERE ({_compact_sql("brand")} = %s OR brand_key = %s)
+              {atc4_clause}
+            ORDER BY atc4_code ASC
+            LIMIT 2
+            """,
+            compact_params,
+        )
+        return _single_compact_row(rows)
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
             return None
@@ -476,9 +577,10 @@ def deep_analysis(
     if isinstance(data, dict):
         if "brand_factors" in row:
             data["brand_factors"] = _load_brand_factors(row.get("brand_factors"))
-        data["ai_analysis"] = _load_ai_analysis(brand)
-        ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(brand)
+        matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
+        data["ai_analysis"] = _load_ai_analysis(matched_brand)
+        ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        data["brand_strength"] = _load_brand_strength(brand)
+        data["brand_strength"] = _load_brand_strength(matched_brand)
     return payload
