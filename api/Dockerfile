@@ -11,6 +11,7 @@ FROM python:3.11-slim
 ARG APP_VERSION="local"
 
 ENV APP_VERSION="${APP_VERSION}" \
+    PROJECT_ROOT="/app" \
     PYTHONUNBUFFERED=1 \
     API_HOST="0.0.0.0" \
     API_PORT="8000" \

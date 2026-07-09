@@ -68,6 +68,136 @@ def test_cd_display_has_no_internal_market_definition_text_for_fallback_rows(tmp
         assert INTERNAL_MARKET_DEFINITION_PATTERN.search(display.full) is None
 
 
+def test_ml_equals_cd_display_uses_parent_ml_definition(monkeypatch) -> None:
+    # Given: a CD market is marked as exactly equal to its parent ML market.
+    market_definition_display._cd_dim_by_id.cache_clear()
+    market_definition_display._ml_atc_codes.cache_clear()
+    market_definition_display._ml_market_names.cache_clear()
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_006": {
+                "competitive_dynamics_id": "cd_006",
+                "parent_market_landscape_id": "ml_006",
+                "cd_definition_type": "ml_equals_cd_exact",
+                "cd_filter_raw_json": (
+                    '[{"value":"[C10C] 지질조절제 복합제제"},'
+                    '{"value":"[C10A1] 스타틴류 (HMG-CoA 환원효소 억제제)"}]'
+                ),
+                "cd_definition_brand_class": "default",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        market_definition_display,
+        "_ml_atc_codes",
+        lambda: {"ml_006": ["C10A1", "C10C"]},
+    )
+    monkeypatch.setattr(
+        market_definition_display,
+        "_ml_market_names",
+        lambda: {"ml_006": "리바로 리바로젯"},
+    )
+
+    # When: the portal-facing CD display definition is resolved.
+    display = cd_display_for_id("cd_006")
+
+    # Then: it mirrors the parent ML ATC definition, not the first raw CD label.
+    assert display is not None
+    assert display.label == "2 ATC 통합"
+    assert display.full == "리바로 리바로젯 경쟁 시장 (C10A1, C10C)"
+    assert display.atc_codes == ["C10A1", "C10C"]
+    assert display.atc_count == 2
+
+
+def test_apply_ml_equals_cd_definition_preserves_payload_atc_codes(monkeypatch) -> None:
+    # Given: the cache payload already carries the parent ML ATC list.
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_006": {
+                "competitive_dynamics_id": "cd_006",
+                "parent_market_landscape_id": "ml_006",
+                "cd_definition_type": "ml_equals_cd_exact",
+                "cd_filter_raw_json": (
+                    '[{"value":"[C10C] 지질조절제 복합제제"},'
+                    '{"value":"[C10A1] 스타틴류 (HMG-CoA 환원효소 억제제)"}]'
+                ),
+                "cd_definition_brand_class": "default",
+            }
+        },
+    )
+    monkeypatch.setattr(market_definition_display, "_ml_atc_codes", lambda: {})
+    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {})
+    payload = {
+        "market_meta": {
+            "view_source_id": "cd_006",
+            "market_name": "리바로 리바로젯",
+            "market_definition_label": "old",
+            "market_definition_full": "old",
+            "atc_codes": ["C10A1", "C10C"],
+            "atc_count": 2,
+        }
+    }
+
+    # When: the CD market definition overlay is applied.
+    apply_cd_market_definition(payload)
+
+    # Then: raw MI label text is not exposed as an ATC code.
+    assert payload["market_meta"]["market_definition_label"] == "2 ATC 통합"
+    assert payload["market_meta"]["market_definition_full"] == "리바로 리바로젯 경쟁 시장 (C10A1, C10C)"
+    assert payload["market_meta"]["atc_codes"] == ["C10A1", "C10C"]
+    assert payload["market_meta"]["atc_count"] == 2
+
+
+def test_apply_ml_equals_cd_definition_uses_parent_cache_when_payload_has_placeholder(monkeypatch) -> None:
+    # Given: a slim API image receives a CD cache payload with only a placeholder ATC value.
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_014": {
+                "competitive_dynamics_id": "cd_014",
+                "parent_market_landscape_id": "ml_011",
+                "cd_definition_type": "ml_equals_cd_by_empty",
+                "cd_filter_raw_json": '[{"value": null}]',
+                "cd_definition_brand_class": "default_sheet_all",
+            }
+        },
+    )
+    monkeypatch.setattr(market_definition_display, "_ml_atc_codes", lambda: {})
+    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {"ml_011": "악템라"})
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cached_parent_ml_atc_codes",
+        lambda payload, cd_market_id: ["L01G1", "L04B0", "L04D0", "M01C0"],
+    )
+    payload = {
+        "brand": "악템라",
+        "source": "IQVIA",
+        "measure": "sales",
+        "market_meta": {
+            "view_source_id": "cd_014",
+            "market_name": "악템라",
+            "market_definition_label": "old",
+            "market_definition_full": "old",
+            "atc_codes": ["default_sheet_all"],
+            "atc_count": 1,
+        },
+    }
+
+    # When: the CD market definition overlay is applied.
+    apply_cd_market_definition(payload)
+
+    # Then: placeholder text is replaced by the parent ML definition.
+    assert payload["market_meta"]["market_definition_label"] == "4 ATC 통합"
+    assert payload["market_meta"]["market_definition_full"] == "악템라 경쟁 시장 (L01G1, L04B0, L04D0, M01C0)"
+    assert payload["market_meta"]["atc_codes"] == ["L01G1", "L04B0", "L04D0", "M01C0"]
+    assert payload["market_meta"]["atc_count"] == 4
+
+
 def test_apply_cd_market_definition_updates_only_cd_payloads() -> None:
     # Given: one competitive-dynamics payload and one market-landscape payload.
     cd_payload = {

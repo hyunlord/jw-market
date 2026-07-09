@@ -5,8 +5,9 @@ from functools import lru_cache
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
-from typing import Any
+from typing import Any, Final
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +27,8 @@ CD_DIM_PATHS = (
     PROJECT_ROOT / "output" / "catalog" / "dim_market_competitive_dynamics" / "dim_market_competitive_dynamics.parquet",
     PROJECT_ROOT / "parquet" / "dim_market_competitive_dynamics" / "dim_market_competitive_dynamics.parquet",
 )
+ML_EQUALS_CD_TYPES: Final = {"ml_equals_cd_exact", "ml_equals_cd_by_empty"}
+ATC_CODE_PATTERN: Final = re.compile(r"^[A-Z][A-Z0-9/.-]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +59,24 @@ def ml_display_for_id(ml_id: str, market_name: str | None = None) -> MarketDefin
     )
 
 
-def cd_display_for_id(cd_id: str | None) -> MarketDefinitionDisplay | None:
+def cd_display_for_id(
+    cd_id: str | None,
+    *,
+    inherited_atc_codes: list[str] | None = None,
+    inherited_market_name: str | None = None,
+) -> MarketDefinitionDisplay | None:
     if not cd_id:
         return None
     row = _cd_dim_by_id().get(str(cd_id))
     if row is None:
         return None
+    ml_equal_display = _ml_equal_cd_display(
+        row,
+        inherited_atc_codes=inherited_atc_codes,
+        inherited_market_name=inherited_market_name,
+    )
+    if ml_equal_display is not None:
+        return ml_equal_display
     full = _display_full(row)
     label = _display_label(row, formal_definition=full)
     if not label:
@@ -82,7 +97,12 @@ def apply_cd_market_definition(payload: dict[str, Any], cd_market_id: str | None
     view_source_id = cd_market_id or _valid_text(meta.get("view_source_id"))
     if not view_source_id or not view_source_id.startswith("cd_"):
         return
-    display = cd_display_for_id(view_source_id)
+    inherited_atc_codes = _clean_atc_codes(meta.get("atc_codes")) or _cached_parent_ml_atc_codes(payload, view_source_id)
+    display = cd_display_for_id(
+        view_source_id,
+        inherited_atc_codes=inherited_atc_codes,
+        inherited_market_name=_valid_text(meta.get("market_name")),
+    )
     if display is None:
         return
     meta["market_definition_label"] = display.label
@@ -108,6 +128,140 @@ def _display_label(row: dict[str, Any], *, formal_definition: str | None) -> str
     if brand_class and not _internal_or_placeholder_label(brand_class):
         return brand_class
     return formal_definition or _valid_text(row.get("product_name_kor")) or brand_class
+
+
+def _ml_equal_cd_display(
+    row: dict[str, Any],
+    *,
+    inherited_atc_codes: list[str] | None,
+    inherited_market_name: str | None,
+) -> MarketDefinitionDisplay | None:
+    cd_definition_type = _valid_text(row.get("cd_definition_type"))
+    if cd_definition_type not in ML_EQUALS_CD_TYPES:
+        return None
+    ml_id = _parent_ml_id(row)
+    if not ml_id:
+        return None
+    atc_codes = inherited_atc_codes or ml_atc_codes(ml_id) or _raw_definition_atc_codes(row)
+    if not atc_codes:
+        return None
+    market_name = (
+        inherited_market_name
+        or _ml_market_names().get(ml_id)
+        or _valid_text(row.get("sheet_name"))
+        or _valid_text(row.get("product_name_kor"))
+    )
+    return MarketDefinitionDisplay(
+        label=market_definition_label(atc_codes),
+        full=_ml_market_definition_full(atc_codes=atc_codes, market_name=market_name),
+        atc_codes=atc_codes,
+        atc_count=len(atc_codes),
+    )
+
+
+def _parent_ml_id(row: dict[str, Any]) -> str | None:
+    parent_ml_id = _valid_text(row.get("parent_market_landscape_id"))
+    if parent_ml_id:
+        return parent_ml_id
+    strategic_market_id = _valid_text(row.get("strategic_market_id"))
+    if strategic_market_id and strategic_market_id.startswith("strategy_"):
+        return f"ml_{strategic_market_id.removeprefix('strategy_')}"
+    return None
+
+
+def _ml_market_definition_full(*, atc_codes: list[str], market_name: str | None) -> str:
+    joined_codes = ", ".join(atc_codes)
+    if market_name:
+        return f"{market_name} 경쟁 시장 ({joined_codes})"
+    return joined_codes
+
+
+def _raw_definition_atc_codes(row: dict[str, Any]) -> list[str]:
+    raw_rows = _loads_json_maybe(row.get("cd_filter_raw_json"))
+    if not isinstance(raw_rows, list):
+        return []
+    codes: list[str] = []
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        value = _valid_text(raw_row.get("value"))
+        if not value:
+            continue
+        code = _bracket_code(value)
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _cached_parent_ml_atc_codes(payload: dict[str, Any], cd_market_id: str) -> list[str] | None:
+    row = _cd_dim_by_id().get(cd_market_id)
+    if not row or _valid_text(row.get("cd_definition_type")) not in ML_EQUALS_CD_TYPES:
+        return None
+    parent_ml_id = _parent_ml_id(row)
+    parent_market_id = _strategy_id_for_ml(parent_ml_id)
+    brand = _valid_text(payload.get("brand"))
+    source = _valid_text(payload.get("source"))
+    measure = _valid_text(payload.get("measure"))
+    if not brand or not parent_market_id or not source or not measure:
+        return None
+    try:
+        from pipeline.scripts.api import db
+        from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+
+        rows = db.fetch_all(
+            """
+            SELECT response_json
+            FROM cache_cause
+            WHERE brand = %s
+              AND view_type = 'market_landscape'
+              AND market_id = %s
+              AND source = %s
+              AND measure = %s
+            ORDER BY market_id
+            LIMIT 1
+            """,
+            [brand, parent_market_id, source, measure],
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    parent_payload = compose_cached_json(rows[0].get("response_json"), measure=measure)
+    if not isinstance(parent_payload, dict):
+        return None
+    parent_meta = parent_payload.get("market_meta")
+    if not isinstance(parent_meta, dict):
+        return None
+    return _clean_atc_codes(parent_meta.get("atc_codes"))
+
+
+def _strategy_id_for_ml(ml_id: str | None) -> str | None:
+    if not ml_id or not ml_id.startswith("ml_"):
+        return None
+    suffix = ml_id.removeprefix("ml_")
+    if not suffix.isdigit():
+        return None
+    return f"strategy_{int(suffix):03d}"
+
+
+def _clean_atc_codes(value: Any) -> list[str] | None:
+    raw_codes = _parse_list(value)
+    if not raw_codes:
+        return None
+    codes = [code for code in raw_codes if _looks_like_atc_code(code)]
+    return codes or None
+
+
+def _looks_like_atc_code(value: str) -> bool:
+    return bool(ATC_CODE_PATTERN.fullmatch(value)) and any(char.isdigit() for char in value)
+
+
+def _bracket_code(value: str) -> str | None:
+    start = value.find("[")
+    end = value.find("]", start + 1)
+    if start < 0 or end <= start:
+        return None
+    return value[start + 1 : end].strip()
 
 
 def _display_full(row: dict[str, Any]) -> str | None:
@@ -170,11 +324,26 @@ def _ml_atc_codes() -> dict[str, list[str]]:
 
 
 @lru_cache(maxsize=1)
+def _ml_market_names() -> dict[str, str]:
+    rows = _read_first_table(ML_MARKET_PATHS, ["ml_id", "name"])
+    return {
+        str(row["ml_id"]): str(row["name"]).strip()
+        for row in rows
+        if row.get("ml_id") and _valid_text(row.get("name"))
+    }
+
+
+@lru_cache(maxsize=1)
 def _cd_dim_by_id() -> dict[str, dict[str, Any]]:
     rows = _read_first_table(
         CD_DIM_PATHS,
         [
             "competitive_dynamics_id",
+            "parent_market_landscape_id",
+            "strategic_market_id",
+            "sheet_name",
+            "product_name_kor",
+            "cd_definition_type",
             "cd_definition_brand_class",
             "cd_filter_expression",
             "cd_filter_raw_json",
