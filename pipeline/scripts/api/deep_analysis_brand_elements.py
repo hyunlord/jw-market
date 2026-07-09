@@ -25,6 +25,7 @@ def build_brand_elements(
     cached_elements_by_key: Mapping[str, Mapping[str, Any]],
     selected_factors: Mapping[str, Any],
     selected_strength: Mapping[str, Any],
+    strength_by_source_by_key: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Combine factors and strength into one six-slot response contract."""
 
@@ -36,6 +37,7 @@ def build_brand_elements(
         cached_strength = _dict_or_empty(cached.get("strength"))
         factors = cached_factors or (dict(selected_factors) if is_selected else {})
         strength = cached_strength or (dict(selected_strength) if is_selected else _unavailable("not_generated"))
+        strength_by_source = _dict_or_empty((strength_by_source_by_key or {}).get(choice.brand_key))
         items.append(
             {
                 "brand": choice.brand_name,
@@ -49,6 +51,7 @@ def build_brand_elements(
                     "iqvia": _source_factor_section(factors.get("iqvia"), IQVIA_FACTOR_KEYS),
                 },
                 "strength": _normalize_strength(strength),
+                "strength_by_source": strength_by_source,
             }
         )
     return items

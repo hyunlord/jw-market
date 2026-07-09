@@ -1338,8 +1338,28 @@ BRAND_ELEMENT_ITEM_SCHEMA: Final = {
             "additionalProperties": True,
             "description": "Agent3 brand_strength 요약입니다. 미생성 브랜드는 available=false와 reason을 반환합니다.",
         },
+        "strength_by_source": {
+            "type": "object",
+            "additionalProperties": False,
+            "description": (
+                "Agent3 source-level 강점 요약입니다. 키는 iqvia/ubist이며, 데이터가 없는 source는 생략합니다. "
+                "각 source에는 profile_display, strength_items, limitations만 노출하고 workflow/input hash 등 내부 메타는 노출하지 않습니다."
+            ),
+            "properties": {
+                "iqvia": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": "IQVIA 기준 강점 요약(profile_display, strength_items, limitations).",
+                },
+                "ubist": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": "UBIST 기준 강점 요약(profile_display, strength_items, limitations).",
+                },
+            },
+        },
     },
-    "required": ["brand", "brand_key", "role", "rank", "sales_rank", "factors", "strength"],
+    "required": ["brand", "brand_key", "role", "rank", "sales_rank", "factors", "strength", "strength_by_source"],
 }
 
 
@@ -1382,6 +1402,10 @@ DEEP_ANALYSIS_BRAND_ELEMENTS_EXAMPLE: Final = [
             },
         },
         "strength": {"available": True, "profile_display": {"headline": "처방 기반 강점"}, "strength_items": []},
+        "strength_by_source": {
+            "iqvia": {"profile_display": {"headline": "IQVIA 기준 강점"}, "strength_items": ["시장 내 성장"], "limitations": []},
+            "ubist": {"profile_display": {"headline": "UBIST 기준 profile"}, "strength_items": [], "limitations": ["ubist strength candidate 0건"]},
+        },
     },
     *[
         {
@@ -1411,6 +1435,7 @@ DEEP_ANALYSIS_BRAND_ELEMENTS_EXAMPLE: Final = [
                 },
             },
             "strength": {"available": False, "reason": "not_generated"},
+            "strength_by_source": {},
         }
         for rank, brand in enumerate(["크레스토", "리피토", "로수바미브", "아토젯", "바이토린"], start=2)
     ],

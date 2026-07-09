@@ -38,6 +38,8 @@ ON_DEMAND_FORECAST_WORKERS: Final[int] = 4
 ON_DEMAND_LOCK_TIMEOUT_SECONDS: Final[int] = 30
 GENERAL_CACHE_TTL_DAYS: Final[int] = 35
 BRAND_ELEMENTS_CACHE_TTL_DAYS: Final[int] = 35
+SOURCE_BRAND_STRENGTH_TABLE: Final[str] = "agent3_brand_strength_source"
+SOURCE_BRAND_STRENGTH_SOURCES: Final[tuple[str, str]] = ("iqvia", "ubist")
 EMPTY_BRAND_FACTORS = {
     "atc": [],
     "ubist": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
@@ -163,6 +165,23 @@ def _parse_brand_strength(row: dict) -> dict:
     }
 
 
+def _parse_source_brand_strength(row: dict) -> dict:
+    raw_summary = row.get("strength_summary_json")
+    try:
+        summary = json.loads(raw_summary)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(summary, dict):
+        return {}
+    strength_items = summary.get("strength_items", [])
+    limitations = summary.get("limitations", [])
+    return {
+        "profile_display": summary.get("profile_display") or {},
+        "strength_items": strength_items if isinstance(strength_items, list) else [],
+        "limitations": limitations if isinstance(limitations, list) else [],
+    }
+
+
 def _load_brand_strength(brand: str) -> dict:
     settings = get_settings()
     schema = _quote_identifier(settings.agent3_db_name)
@@ -195,6 +214,90 @@ def _load_brand_strength(brand: str) -> dict:
     if not row:
         return _not_generated_brand_strength()
     return _parse_brand_strength(row)
+
+
+def _source_strength_exact_rows(schema: str, brand_keys: list[str]) -> list[dict]:
+    placeholders = ", ".join(["%s"] * len(brand_keys))
+    source_placeholders = ", ".join(["%s"] * len(SOURCE_BRAND_STRENGTH_SOURCES))
+    return db.fetch_all(
+        f"""
+        SELECT brand_key, serving_brand_name, source, strength_summary_json
+        FROM {schema}.{_quote_identifier(SOURCE_BRAND_STRENGTH_TABLE)}
+        WHERE brand_key IN ({placeholders})
+          AND source IN ({source_placeholders})
+        """,
+        [*brand_keys, *SOURCE_BRAND_STRENGTH_SOURCES],
+    )
+
+
+def _source_strength_compact_rows(schema: str, compact_values: list[str]) -> list[dict]:
+    compact_placeholders = ", ".join(["%s"] * len(compact_values))
+    source_placeholders = ", ".join(["%s"] * len(SOURCE_BRAND_STRENGTH_SOURCES))
+    return db.fetch_all(
+        f"""
+        SELECT brand_key, serving_brand_name, source, strength_summary_json
+        FROM {schema}.{_quote_identifier(SOURCE_BRAND_STRENGTH_TABLE)}
+        WHERE {_compact_sql("serving_brand_name")} IN ({compact_placeholders})
+          AND source IN ({source_placeholders})
+        """,
+        [*compact_values, *SOURCE_BRAND_STRENGTH_SOURCES],
+    )
+
+
+def _load_brand_strength_by_source(brand_keys: list[str]) -> dict[str, dict[str, dict]]:
+    keys = [key for key in dict.fromkeys(str(value) for value in brand_keys if str(value).strip())]
+    if not keys:
+        return {}
+
+    settings = get_settings()
+    schema = _quote_identifier(settings.agent3_db_name)
+    result: dict[str, dict[str, dict]] = {key: {} for key in keys}
+    try:
+        for row in _source_strength_exact_rows(schema, keys):
+            brand_key = str(row.get("brand_key") or "")
+            source = str(row.get("source") or "")
+            if brand_key in result and source in SOURCE_BRAND_STRENGTH_SOURCES:
+                parsed = _parse_source_brand_strength(row)
+                if parsed:
+                    result[brand_key][source] = parsed
+
+        missing_by_compact: dict[str, list[str]] = {}
+        for key in keys:
+            missing_sources = [source for source in SOURCE_BRAND_STRENGTH_SOURCES if source not in result[key]]
+            if missing_sources:
+                compact = compact_brand_name(key)
+                if compact:
+                    missing_by_compact.setdefault(compact, []).append(key)
+        if missing_by_compact:
+            rows_by_lookup: dict[tuple[str, str], list[dict]] = {}
+            for row in _source_strength_compact_rows(schema, list(missing_by_compact)):
+                compact = compact_brand_name(str(row.get("serving_brand_name") or row.get("brand_key") or ""))
+                source = str(row.get("source") or "")
+                if compact and source in SOURCE_BRAND_STRENGTH_SOURCES:
+                    rows_by_lookup.setdefault((compact, source), []).append(row)
+
+            for (compact, source), rows in rows_by_lookup.items():
+                distinct_brands = {str(row.get("serving_brand_name") or row.get("brand_key") or "") for row in rows}
+                if len(distinct_brands) != 1:
+                    logger.warning(
+                        "ambiguous source brand_strength compact lookup skipped",
+                        extra={"compact_brand": compact, "source": source, "matched_brands": sorted(distinct_brands)},
+                    )
+                    continue
+                parsed = _parse_source_brand_strength(rows[0])
+                if not parsed:
+                    continue
+                for target in missing_by_compact.get(compact, []):
+                    result[target].setdefault(source, parsed)
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] in {1054, 1146}:
+            return {}
+        raise
+    except pymysql.MySQLError:
+        logger.warning("agent3 source brand_strength lookup failed", exc_info=True)
+        return {}
+
+    return {key: value for key, value in result.items() if value}
 
 
 def _parse_cached_brand_element(row: dict) -> dict:
@@ -874,11 +977,13 @@ def deep_analysis(
         data["ai_analysis_long"] = ai_analysis_long
         selected_strength = _load_brand_strength(matched_brand)
         cached_elements = _load_cached_brand_elements([choice.brand_key for choice in brand_choices])
+        strength_by_source = _load_brand_strength_by_source([choice.brand_key for choice in brand_choices])
         data["brand_elements"] = build_brand_elements(
             brand_choices,
             selected_brand_key=selected_brand_key,
             cached_elements_by_key=cached_elements,
             selected_factors=selected_factors,
             selected_strength=selected_strength,
+            strength_by_source_by_key=strength_by_source,
         )
     return payload

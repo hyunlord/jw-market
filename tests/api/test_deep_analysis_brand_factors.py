@@ -41,6 +41,18 @@ def test_deep_analysis_route_serves_brand_elements(monkeypatch) -> None:
                     "updated_at": "2026-07-09T09:00:00+09:00",
                 }
             ],
+            [
+                {
+                    "brand_key": "리바로",
+                    "serving_brand_name": "리바로",
+                    "source": "iqvia",
+                    "strength_summary_json": json.dumps(
+                        {"profile_display": {"headline": "iqvia"}, "strength_items": ["IQVIA 강점"], "limitations": []},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            [],
         ]
     )
     monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: next(rows))
@@ -85,6 +97,7 @@ def test_deep_analysis_route_serves_brand_elements(monkeypatch) -> None:
     assert selected["factors"]["ubist"]["values"]["seller"] == ["JW중외제약"]
     assert selected["strength"]["available"] is True
     assert selected["strength"]["strength_items"] == ["처방 기반 강점"]
+    assert selected["strength_by_source"]["iqvia"]["strength_items"] == ["IQVIA 강점"]
     competitor = data["brand_elements"][1]
     assert competitor["factors"]["iqvia"]["available"] is True
     assert competitor["factors"]["iqvia"]["values"]["mfr_name_kor"] == ["AZ"]
@@ -111,6 +124,7 @@ def test_deep_analysis_openapi_documents_brand_elements() -> None:
     assert item["properties"]["role"]["enum"] == ["selected", "competitor"]
     assert "factors" in item["properties"]
     assert "strength" in item["properties"]
+    assert "strength_by_source" in item["properties"]
     assert "pack_desc" in item["properties"]["factors"]["properties"]["iqvia"]["properties"]["values"]["properties"]
     example_items = schema["paths"]["/api/deep-analysis/{brand_name}"]["get"]["responses"]["200"]["content"][
         "application/json"
