@@ -167,6 +167,61 @@ def test_build_batch_rows_reuses_market_and_brand_forecasts_within_same_atc4(mon
     assert target_flags["target-2"][0] == ("타깃2", True)
 
 
+def test_market_forecasts_use_persistent_cache_for_fresh_combos(monkeypatch) -> None:
+    # Given: one ATC4/source/measure combo is already present in the market
+    # forecast cache and another combo is missing.
+    cached_key = ("A10N3", "ubist", "sales")
+    missing_key = ("A10N3", "iqvia_nsa", "sales")
+    computed_keys: list[tuple[str, str, str]] = []
+    upserted: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    monkeypatch.setattr(general_builder, "ensure_market_forecast_table", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        general_builder,
+        "load_market_forecast_cache",
+        lambda *_args, **_kwargs: {cached_key: {"cached": True}},
+    )
+
+    def fake_upsert(_conn: object, forecasts: dict[tuple[str, str, str], dict[str, Any]], *_args: object, **_kwargs: object) -> None:
+        upserted.update(forecasts)
+
+    def fake_market(rows: list[dict[str, Any]], source: str, _steps: int) -> dict[str, Any]:
+        computed_keys.append((str(rows[0]["atc4_code"]), source, str(rows[0]["measure"])))
+        return {"computed": source}
+
+    monkeypatch.setattr(general_builder, "upsert_market_forecast_cache", fake_upsert)
+    monkeypatch.setattr(general_builder, "build_market_forecast", fake_market)
+
+    # When: both combos are requested with a persistent cache connection.
+    forecasts = general_builder.build_market_forecasts_by_combo(
+        {
+            cached_key: [_row("target", "타깃", "A10N3", "ubist", "sales", 100)],
+            missing_key: [_row("target", "타깃", "A10N3", "iqvia_nsa", "sales", 100)],
+        },
+        workers=1,
+        conn=object(),
+    )
+
+    # Then: only the missing combo is computed and persisted.
+    assert forecasts[cached_key] == {"cached": True}
+    assert forecasts[missing_key] == {"computed": "IQVIA"}
+    assert computed_keys == [("A10N3", "IQVIA", "sales")]
+    assert sorted(upserted) == [missing_key]
+
+
+def test_priority_group_keys_rank_by_recent_sales_descending() -> None:
+    rows = [
+        _row("low", "낮음", "A01", "ubist", "sales", 10),
+        _row("high", "높음", "A01", "ubist", "sales", 100),
+        _row("high", "높음", "A01", "iqvia_nsa", "sales", 50),
+        _row("middle", "중간", "B02", "ubist", "sales", 70),
+    ]
+
+    selected = general_builder.priority_group_keys_from_rows(rows, limit_groups=2)
+
+    assert selected == [("high", "A01"), ("middle", "B02")]
+
+
 def test_json_safe_replaces_non_finite_numbers() -> None:
     payload = {
         "ok": 1.25,

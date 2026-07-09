@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from typing import Any
 
 from pipeline.scripts.api.routes import deep_analysis
@@ -92,6 +93,36 @@ def test_deep_analysis_generates_general_cache_for_explicit_atc4_miss(monkeypatc
     # Then: the API generates, serves, and later persists that general forecast row.
     assert payload["market_id"] == "general:A10N3"
     assert payload["data"]["scope"] == "general"
+    assert calls == [("멀티브랜드", "A10N3")]
+
+
+def test_deep_analysis_regenerates_expired_general_cache(monkeypatch) -> None:
+    # Given: a general-view cache row exists but its TTL has expired.
+    calls: list[tuple[str, str | None]] = []
+    stale_row = {
+        **_row("general", "A10N3"),
+        "expires_at": datetime.now(deep_analysis.KST) - timedelta(days=1),
+    }
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
+            return None
+        if "cache_deep_analysis_general" in sql:
+            return stale_row
+        raise AssertionError("explicit ATC4 requests should not query the strategic cache")
+
+    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
+        calls.append((brand, atc4))
+        return _row("general", "A10N3")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
+
+    # When: the stale cache row is requested.
+    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
+
+    # Then: the API rebuilds the row before responding.
+    assert payload["market_id"] == "general:A10N3"
     assert calls == [("멀티브랜드", "A10N3")]
 
 

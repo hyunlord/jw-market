@@ -8,7 +8,9 @@ import copy
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+import json
 import math
 import os
 from pathlib import Path
@@ -43,7 +45,9 @@ from pipeline.scripts.forecast.forecast_runner import (
 
 TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
 GENERAL_CACHE_TABLE: Final[str] = "cache_deep_analysis_general"
+GENERAL_MARKET_FORECAST_TABLE: Final[str] = "cache_market_forecast_general"
 GENERAL_BRAND_TABLE: Final[str] = "mart_general_brand_metric"
+DEFAULT_GENERAL_CACHE_TTL_DAYS: Final[int] = 35
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +59,8 @@ class GeneralCacheRow:
     response_json: str
     payload_size: int
     brand_factors: str
+    source_computed_at: Any | None
+    expires_at: Any | None
 
 
 GroupKey = tuple[str, str]
@@ -65,6 +71,40 @@ def quote_ident(name: str) -> str:
     if not name.replace("_", "").isalnum():
         raise SystemExit(f"unsafe identifier: {name!r}")
     return "`" + name.replace("`", "``") + "`"
+
+
+def general_cache_ttl_days() -> int:
+    raw_value = os.environ.get("GENERAL_DEEP_CACHE_TTL_DAYS", str(DEFAULT_GENERAL_CACHE_TTL_DAYS))
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return DEFAULT_GENERAL_CACHE_TTL_DAYS
+
+
+def cache_expires_at(ttl_days: int | None = None) -> datetime:
+    return datetime.now() + timedelta(days=ttl_days or general_cache_ttl_days())
+
+
+def source_computed_at(rows: list[dict[str, Any]]) -> Any | None:
+    values = [row.get("computed_at") for row in rows if row.get("computed_at") is not None]
+    return max(values) if values else None
+
+
+def _table_columns(conn: Any, table_name: str) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(f"SHOW COLUMNS FROM {quote_ident(table_name)}")
+        return {str(row.get("Field") or row.get("field") or "") for row in cur.fetchall()}
+
+
+def _ensure_columns(conn: Any, table_name: str, columns: dict[str, str]) -> None:
+    existing = _table_columns(conn, table_name)
+    table = quote_ident(table_name)
+    with conn.cursor() as cur:
+        for column, ddl in columns.items():
+            if column not in existing:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        if "expires_at" not in existing:
+            cur.execute(f"CREATE INDEX idx_cache_expires_at ON {table} (expires_at)")
 
 
 def apply_api_db_env_fallback() -> None:
@@ -93,12 +133,46 @@ def ensure_general_cache_table(conn: Any, table_name: str = GENERAL_CACHE_TABLE)
                 response_json LONGTEXT NOT NULL CHECK (JSON_VALID(response_json)),
                 payload_size INT NOT NULL,
                 brand_factors LONGTEXT NULL CHECK (brand_factors IS NULL OR JSON_VALID(brand_factors)),
+                source_computed_at TIMESTAMP NULL,
+                expires_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (brand_key, atc4_code),
                 INDEX idx_cache_deep_general_brand (brand),
                 INDEX idx_cache_deep_general_atc4 (atc4_code),
-                INDEX idx_cache_deep_general_market (market_id)
+                INDEX idx_cache_deep_general_market (market_id),
+                INDEX idx_cache_deep_general_expires (expires_at)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
+            """
+        )
+    _ensure_columns(
+        conn,
+        table_name,
+        {
+            "source_computed_at": "source_computed_at TIMESTAMP NULL",
+            "expires_at": "expires_at TIMESTAMP NULL",
+        },
+    )
+
+
+def ensure_market_forecast_table(conn: Any, table_name: str = GENERAL_MARKET_FORECAST_TABLE) -> None:
+    table = quote_ident(table_name)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                atc4_code VARCHAR(16) NOT NULL,
+                source VARCHAR(32) NOT NULL,
+                measure VARCHAR(32) NOT NULL,
+                market_forecast_json LONGTEXT NOT NULL CHECK (JSON_VALID(market_forecast_json)),
+                payload_size INT NOT NULL,
+                source_row_count INT NOT NULL,
+                source_computed_at TIMESTAMP NULL,
+                expires_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (atc4_code, source, measure),
+                INDEX idx_market_forecast_expires (expires_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
@@ -353,6 +427,8 @@ def build_general_cache_row(
         response_json=response_json,
         payload_size=len(response_json.encode("utf-8")),
         brand_factors=dump_brand_factors(brand_factors_by_brand.get(brand)),
+        source_computed_at=source_computed_at(brand_rows),
+        expires_at=cache_expires_at(),
     )
 
 
@@ -371,20 +447,169 @@ def select_groups(
     return items[:limit_groups] if limit_groups is not None else items
 
 
+def recent_numeric_value(row: dict[str, Any]) -> float:
+    value = metric_recent(decode_json(row.get("metric_history"))).get("raw_value")
+    try:
+        if value is None:
+            return 0.0
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(number) or math.isinf(number):
+        return 0.0
+    return max(0.0, number)
+
+
+def priority_group_keys_from_rows(rows: list[dict[str, Any]], *, limit_groups: int) -> list[GroupKey]:
+    totals: dict[GroupKey, float] = defaultdict(float)
+    for row in rows:
+        brand_key = str(row.get("brand_key") or "").strip()
+        atc4_code = str(row.get("atc4_code") or "").strip()
+        if not brand_key or not atc4_code:
+            continue
+        totals[(brand_key, atc4_code)] += recent_numeric_value(row)
+    return [
+        group_key
+        for group_key, _total in sorted(
+            totals.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )[: max(0, int(limit_groups))]
+    ]
+
+
+def select_priority_group_keys(conn: Any, *, limit_groups: int) -> list[GroupKey]:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT brand_key, atc4_code, metric_history
+            FROM {quote_ident(GENERAL_BRAND_TABLE)}
+            WHERE NULLIF(brand_key, '') IS NOT NULL
+              AND NULLIF(atc4_code, '') IS NOT NULL
+              AND measure = 'sales'
+            """
+        )
+        return priority_group_keys_from_rows(list(cur.fetchall()), limit_groups=limit_groups)
+
+
+def market_forecast_cache_fresh(row: dict[str, Any], *, expected_source_computed_at: Any | None) -> bool:
+    expires_at = row.get("expires_at")
+    if not isinstance(expires_at, datetime) and expires_at is not None:
+        try:
+            expires_at = datetime.fromisoformat(str(expires_at))
+        except ValueError:
+            expires_at = None
+    if isinstance(expires_at, datetime) and expires_at <= datetime.now():
+        return False
+    cached_source_computed_at = row.get("source_computed_at")
+    if expected_source_computed_at is not None and cached_source_computed_at is not None:
+        return cached_source_computed_at >= expected_source_computed_at
+    return True
+
+
+def load_market_forecast_cache(
+    conn: Any,
+    combos: dict[ComboKey, list[dict[str, Any]]],
+    *,
+    table_name: str = GENERAL_MARKET_FORECAST_TABLE,
+) -> dict[ComboKey, dict[str, Any]]:
+    if not combos:
+        return {}
+    tuple_placeholders = ", ".join(["(%s, %s, %s)"] * len(combos))
+    params = [value for combo_key in sorted(combos) for value in combo_key]
+    expected_source_by_combo = {combo_key: source_computed_at(rows) for combo_key, rows in combos.items()}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT atc4_code, source, measure, market_forecast_json, source_computed_at, expires_at
+            FROM {quote_ident(table_name)}
+            WHERE (atc4_code, source, measure) IN ({tuple_placeholders})
+            """,
+            params,
+        )
+        rows = list(cur.fetchall())
+    cached: dict[ComboKey, dict[str, Any]] = {}
+    for row in rows:
+        combo_key = (str(row["atc4_code"]), str(row["source"]), str(row["measure"]))
+        if not market_forecast_cache_fresh(row, expected_source_computed_at=expected_source_by_combo.get(combo_key)):
+            continue
+        try:
+            payload = json.loads(row.get("market_forecast_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            cached[combo_key] = payload
+    return cached
+
+
+def upsert_market_forecast_cache(
+    conn: Any,
+    forecasts: dict[ComboKey, dict[str, Any]],
+    market_rows_by_combo: dict[ComboKey, list[dict[str, Any]]],
+    *,
+    table_name: str = GENERAL_MARKET_FORECAST_TABLE,
+    ttl_days: int | None = None,
+) -> None:
+    if not forecasts:
+        return
+    expires_at = cache_expires_at(ttl_days)
+    rows: list[tuple[Any, ...]] = []
+    for combo_key, forecast in sorted(forecasts.items()):
+        atc4_code, source, measure = combo_key
+        payload = dump_payload(json_safe(forecast))
+        market_rows = market_rows_by_combo.get(combo_key, [])
+        rows.append(
+            (
+                atc4_code,
+                source,
+                measure,
+                payload,
+                len(payload.encode("utf-8")),
+                len(market_rows),
+                source_computed_at(market_rows),
+                expires_at,
+            )
+        )
+    sql = f"""
+        INSERT INTO {quote_ident(table_name)}
+            (atc4_code, source, measure, market_forecast_json, payload_size,
+             source_row_count, source_computed_at, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            market_forecast_json = VALUES(market_forecast_json),
+            payload_size = VALUES(payload_size),
+            source_row_count = VALUES(source_row_count),
+            source_computed_at = VALUES(source_computed_at),
+            expires_at = VALUES(expires_at)
+    """
+    with conn.cursor() as cur:
+        cur.executemany(sql, rows)
+    conn.commit()
+
+
 def build_market_forecasts_by_combo(
     market_rows_by_combo: dict[ComboKey, list[dict[str, Any]]],
     *,
     workers: int,
+    conn: Any | None = None,
+    table_name: str = GENERAL_MARKET_FORECAST_TABLE,
 ) -> dict[ComboKey, dict[str, Any]]:
     forecasts: dict[ComboKey, dict[str, Any]] = {}
+    if conn is not None:
+        ensure_market_forecast_table(conn, table_name)
+        forecasts.update(load_market_forecast_cache(conn, market_rows_by_combo, table_name=table_name))
+    missing = {combo_key: rows for combo_key, rows in market_rows_by_combo.items() if combo_key not in forecasts}
+    computed: dict[ComboKey, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as executor:
         futures = {
             executor.submit(build_market_forecast, rows, api_source(source), forecast_steps(api_source(source))): combo_key
-            for combo_key, rows in sorted(market_rows_by_combo.items())
+            for combo_key, rows in sorted(missing.items())
             for _atc4_code, source, _measure in [combo_key]
         }
         for future in as_completed(futures):
-            forecasts[futures[future]] = future.result()
+            computed[futures[future]] = future.result()
+    forecasts.update(computed)
+    if conn is not None and computed:
+        upsert_market_forecast_cache(conn, computed, market_rows_by_combo, table_name=table_name)
     return forecasts
 
 
@@ -467,7 +692,7 @@ def build_batch_rows(
     for row in fetch_market_rows_for_atc4s(conn, {atc4_code for _brand_key, atc4_code in group_keys}):
         market_rows_by_combo[(str(row["atc4_code"]), str(row["source"]), str(row["measure"]))].append(row)
 
-    market_forecasts = build_market_forecasts_by_combo(market_rows_by_combo, workers=workers)
+    market_forecasts = build_market_forecasts_by_combo(market_rows_by_combo, workers=workers, conn=conn)
     selected_ids_by_group_combo, entry_rows = select_entries_for_groups(grouped, market_rows_by_combo)
     entries_by_combo = build_forecast_entries_by_combo(entry_rows, workers=workers)
     selected_entries_by_group_combo: dict[tuple[GroupKey, str], list[dict[str, Any]]] = {}
@@ -510,7 +735,17 @@ def build_batch_rows(
 
 
 def write_rows(conn: Any, rows: list[GeneralCacheRow], *, table_name: str, batch_size: int) -> None:
-    columns = ["brand_key", "brand", "atc4_code", "market_id", "response_json", "payload_size", "brand_factors"]
+    columns = [
+        "brand_key",
+        "brand",
+        "atc4_code",
+        "market_id",
+        "response_json",
+        "payload_size",
+        "brand_factors",
+        "source_computed_at",
+        "expires_at",
+    ]
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{column}`" for column in columns)
     updates = ", ".join(
@@ -536,6 +771,7 @@ def parse_args() -> argparse.Namespace:
     args_parser.add_argument("--batch-size", type=int, default=100)
     args_parser.add_argument("--group-batch-size", type=int, default=100)
     args_parser.add_argument("--limit-groups", type=int)
+    args_parser.add_argument("--priority-top-groups", type=int)
     args_parser.add_argument("--brand", action="append", dest="brands")
     args_parser.add_argument("--atc4")
     args_parser.add_argument("--dry-run", action="store_true")
@@ -549,7 +785,12 @@ def main() -> None:
     try:
         assert_d2_database(conn)
         ensure_general_cache_table(conn, args.target_table)
-        selected = select_group_keys(conn, brands=set(args.brands) if args.brands else None, atc4=args.atc4, limit_groups=args.limit_groups)
+        if args.priority_top_groups is not None:
+            if args.brands or args.atc4 or args.limit_groups is not None:
+                raise SystemExit("--priority-top-groups cannot be combined with --brand, --atc4, or --limit-groups")
+            selected = select_priority_group_keys(conn, limit_groups=args.priority_top_groups)
+        else:
+            selected = select_group_keys(conn, brands=set(args.brands) if args.brands else None, atc4=args.atc4, limit_groups=args.limit_groups)
         built_count = 0
         for batch_index, group_batch in enumerate(chunked(selected, int(args.group_batch_size)), start=1):
             built = build_batch_rows(conn, group_batch, workers=args.workers, verbose=args.verbose)
