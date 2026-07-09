@@ -215,6 +215,19 @@ def test_csd_activity_series_service_uses_select_only_sql() -> None:
     assert not any(token in source.upper() for token in forbidden)
 
 
+def test_activity_series_parse_accepts_general_market_scope_without_atc4() -> None:
+    parsed = service.parse_activity_request(
+        {
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"market_scope": {"option_id": "group:livalo_family", "member": "리바로"}},
+        }
+    )
+
+    assert parsed.market_id is None
+    assert parsed.filter_payload["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
+
+
 def _request(*, period: dict[str, str]) -> dict[str, Any]:
     return {
         "view": "general",

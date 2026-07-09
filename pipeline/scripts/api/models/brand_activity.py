@@ -141,6 +141,27 @@ class ChannelFilter(BaseModel):
         return data
 
 
+class MarketScopeFilter(BaseModel):
+    """Optional catalog market-scope member filter for Brand Activity."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    option_id: str = Field(description='Market-scope catalog option id. 예: "group:livalo_family".')
+    member: str | None = Field(
+        default=None,
+        description='선택할 group member 브랜드명. Phase 1에서는 특정 member만 지원하며 "전체"/미지정은 400입니다.',
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        _rename(data, "optionId", "option_id")
+        return data
+
+
 class MarketFilter(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -156,6 +177,10 @@ class MarketFilter(BaseModel):
         default_factory=ChannelFilter,
         description="채널 필터. [프론트] UBIST 종별/진료과 shortcut. IQVIA Audit Code는 analysis_level.iqvia.audit_code를 사용합니다.",
     )
+    market_scope: MarketScopeFilter | None = Field(
+        default=None,
+        description="group:* 시장군의 특정 member만 선택하는 필터. Phase 1은 general view에서 member 단일 선택만 지원합니다.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -166,6 +191,7 @@ class MarketFilter(BaseModel):
         if "channel_axis" in data:
             raise ValueError("channel_axis has moved to filters.analysis_level.<source>")
         _rename(data, "analysisLevel", "analysis_level")
+        _rename(data, "marketScope", "market_scope")
         for key in ("atc", "analysis_level", "channel"):
             if data.get(key) is None:
                 data[key] = {}

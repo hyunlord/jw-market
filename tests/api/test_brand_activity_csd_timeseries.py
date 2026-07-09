@@ -116,3 +116,16 @@ def test_csd_timeseries_service_uses_select_only_sql() -> None:
     forbidden = ("INSERT ", "UPDATE ", "DELETE ", "DROP ", "CREATE ", "ALTER ", "TRUNCATE ", "REPLACE ")
 
     assert not any(token in source.upper() for token in forbidden)
+
+
+def test_csd_timeseries_parse_accepts_general_market_scope_without_atc4() -> None:
+    parsed = service._parse_request(
+        {
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"market_scope": {"option_id": "group:livalo_family", "member": "리바로"}},
+        }
+    )
+
+    assert parsed["market_id"] is None
+    assert parsed["filter"]["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
