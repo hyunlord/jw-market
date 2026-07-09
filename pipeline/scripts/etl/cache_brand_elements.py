@@ -109,6 +109,24 @@ def _table_columns(conn: Any, table_name: str) -> set[str]:
         return {str(row.get("Field") or row.get("field") or "") for row in cur.fetchall()}
 
 
+def _table_exists(conn: Any, table_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS table_exists
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+            """,
+            (table_name,),
+        )
+        try:
+            row = cur.fetchone()
+        except IndexError:
+            return False
+    return bool(row and int(row.get("table_exists") or 0))
+
+
 def _ensure_columns(conn: Any, table_name: str, columns: dict[str, str]) -> None:
     existing = _table_columns(conn, table_name)
     table = quote_ident(table_name)
@@ -121,6 +139,8 @@ def _ensure_columns(conn: Any, table_name: str, columns: dict[str, str]) -> None
 
 
 def ensure_cache_brand_elements_table(conn: Any, table_name: str = CACHE_TABLE) -> None:
+    if _table_exists(conn, table_name):
+        return
     table = quote_ident(table_name)
     with conn.cursor() as cur:
         cur.execute(
