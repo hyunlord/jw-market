@@ -68,6 +68,33 @@ def test_deep_analysis_uses_general_cache_for_explicit_atc4(monkeypatch) -> None
     assert seen_params[0] == ["멀티브랜드", "A10N3"]
 
 
+def test_deep_analysis_generates_general_cache_for_explicit_atc4_miss(monkeypatch) -> None:
+    # Given: the requested general-view cache row is absent but can be generated on demand.
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
+            return None
+        if "cache_deep_analysis_general" in sql:
+            return None
+        raise AssertionError("explicit ATC4 requests should not query the strategic cache")
+
+    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
+        calls.append((brand, atc4))
+        return _row("general", "A10N3")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
+
+    # When: the caller requests a cache-miss general market.
+    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
+
+    # Then: the API generates, serves, and later persists that general forecast row.
+    assert payload["market_id"] == "general:A10N3"
+    assert payload["data"]["scope"] == "general"
+    assert calls == [("멀티브랜드", "A10N3")]
+
+
 def test_deep_analysis_falls_back_to_first_general_atc4_when_strategic_absent(monkeypatch) -> None:
     # Given: no strategic cache exists, but a general cache row exists.
     queries: list[str] = []
@@ -90,3 +117,60 @@ def test_deep_analysis_falls_back_to_first_general_atc4_when_strategic_absent(mo
     assert payload["market_id"] == "general:B01C0"
     assert payload["data"]["scope"] == "general"
     assert any("cache_deep_analysis_general" in query for query in queries)
+
+
+def test_deep_analysis_generates_first_general_atc4_when_no_cache_exists(monkeypatch) -> None:
+    # Given: neither strategic nor general cache currently has the brand.
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
+            return None
+        return None
+
+    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
+        calls.append((brand, atc4))
+        return _row("general", "B01C0")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
+
+    # When: a general-only brand is requested without an ATC4 selector.
+    payload = deep_analysis.deep_analysis("멀티브랜드")
+
+    # Then: the deterministic first ATC4 market is generated and served.
+    assert payload["market_id"] == "general:B01C0"
+    assert payload["data"]["scope"] == "general"
+    assert calls == [("멀티브랜드", None)]
+
+
+def test_deep_analysis_reports_forecast_unavailable_for_uncalculable_general_brand(monkeypatch) -> None:
+    # Given: no cache row exists and the general forecast builder cannot produce one.
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
+            return None
+        return None
+
+    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
+        raise deep_analysis.GeneralForecastUnavailable(
+            brand=brand,
+            atc4=atc4,
+            reason="general_market_not_found",
+        )
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
+
+    # When/Then: the API distinguishes calculation failure from a legacy cache miss.
+    try:
+        deep_analysis.deep_analysis("미생성브랜드", atc4="Z99Z9")
+    except deep_analysis.HTTPException as exc:
+        assert exc.status_code == 404
+        assert exc.detail == {
+            "error": "forecast_unavailable",
+            "brand": "미생성브랜드",
+            "atc4": "Z99Z9",
+            "reason": "general_market_not_found",
+        }
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("expected forecast_unavailable HTTPException")
