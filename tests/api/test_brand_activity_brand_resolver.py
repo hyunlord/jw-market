@@ -54,6 +54,35 @@ def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> No
     assert "channel_axis" not in applied_brand_filter("strategic_ml", "ml_006", payload)
 
 
+def test_applied_filter_accepts_iqvia_dimension_filters() -> None:
+    payload = {
+        "analysis_level": {
+            "iqvia": {
+                "mfr_name_kor": ["제이더블유중외제약"],
+                "molecule_type": ["SINGLE"],
+                "molecule_desc": ["TOCILIZUMAB"],
+                "pack_desc": [" PFS 162MG/0.9ML "],
+                "strength": ["162MG"],
+                "nhi_type": ["NHI"],
+                "audit_code": ["khpa"],
+            }
+        }
+    }
+
+    applied = applied_brand_filter("general", "M01C0", payload)
+
+    assert applied == {
+        "atc4": ["M01C0"],
+        "mfr": ["제이더블유중외제약"],
+        "molecule_type": ["SINGLE"],
+        "molecule_desc": ["TOCILIZUMAB"],
+        "pack": ["PFS 162MG/0.9ML"],
+        "strength": ["162MG"],
+        "nhi": ["NHI"],
+        "channel_axis": {"source": "iqvia_nsa", "audit_code": ["KHPA"]},
+    }
+
+
 def test_audit_code_sales_value_sums_selected_matrix_codes_for_quarter() -> None:
     channel_axis = parse_audit_code_axis({"analysis_level": {"iqvia": {"audit_code": ["KHPA", "KCPA"]}}})
     row = {
@@ -105,6 +134,7 @@ def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> 
         "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",
         lambda _metas: {},
     )
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", lambda *_args, **_kwargs: [])
     rows = (
         {
             "brand_key": "선택",
@@ -142,6 +172,65 @@ def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> 
 
     assert [candidate.sales_value for candidate in candidates] == [1.0, 3.0, 50.0]
     assert [choice.brand_key for choice in choices] == ["선택", "B", "A"]
+
+
+def test_general_brand_candidates_load_iqvia_sidecar_dimensions(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",
+        lambda _metas: {},
+    )
+
+    def fake_fetch_all(sql: str, params: tuple) -> list[dict[str, str]]:
+        assert "mart_general_filter_dimension_metric" in sql
+        return [
+            {"brand_key": "A", "dimension_type": "mfr", "dimension_value_norm": "제이더블유중외제약"},
+            {"brand_key": "A", "dimension_type": "pack", "dimension_value_norm": "PFS 162MG/0.9ML"},
+            {"brand_key": "B", "dimension_type": "mfr", "dimension_value_norm": "경쟁사"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", fake_fetch_all)
+    rows = (
+        {
+            "brand_key": "선택",
+            "by_dimension": {"products": [{"product_code": "SEL"}], "atc4_code": ["M01C0"]},
+            "metric_history": {"2026-Q2": {"raw_value": 1, "rank": 99}},
+        },
+        {
+            "brand_key": "A",
+            "by_dimension": {"products": [{"product_code": "A"}], "atc4_code": ["M01C0"]},
+            "metric_history": {"2026-Q2": {"raw_value": 100, "rank": 1}},
+        },
+        {
+            "brand_key": "B",
+            "by_dimension": {"products": [{"product_code": "B"}], "atc4_code": ["M01C0"]},
+            "metric_history": {"2026-Q2": {"raw_value": 90, "rank": 2}},
+        },
+    )
+    metas = {
+        str(row["brand_key"]): BrandMeta(str(row["brand_key"]), str(row["brand_key"]), (str(row["brand_key"]),), False)
+        for row in rows
+    }
+
+    candidates = _brand_candidates(
+        "general",
+        rows,
+        metas,
+        {
+            "quarter": "2026-Q2",
+            "items": [
+                {"brand_key": "A", "rank": 1, "raw_value": 100},
+                {"brand_key": "B", "rank": 2, "raw_value": 90},
+            ],
+        },
+    )
+    choices = _select_choices(
+        candidates,
+        selected_brand="선택",
+        applied_filter={"atc4": ["M01C0"], "mfr": ["제이더블유중외제약"]},
+    )
+
+    assert [candidate.dimensions.get("mfr", ()) for candidate in candidates] == [(), ("제이더블유중외제약",), ("경쟁사",)]
+    assert [choice.brand_key for choice in choices] == ["선택", "A"]
 
 
 def _candidate(brand_key: str, *, rank: int, sales: float, dimensions: dict[str, tuple[str, ...]]) -> BrandCandidate:

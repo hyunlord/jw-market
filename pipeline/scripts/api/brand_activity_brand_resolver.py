@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
+from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
@@ -32,6 +33,7 @@ from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 
 MAX_BRAND_SET_SIZE: Final = 6
+GENERAL_IQVIA_SIDE_CAR_DIMENSIONS: Final = ("mfr", "molecule_type", "molecule_desc", "pack", "strength", "nhi")
 
 
 class BrandSetInputError(RuntimeError):
@@ -200,6 +202,7 @@ def _brand_candidates(
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
     general_molecules = general_molecules_by_product(metas) if view_name == "general" else {}
+    general_sidecar = _general_sidecar_dimensions(rows) if view_name == "general" else {}
     candidates: list[BrandCandidate] = []
     for row in rows:
         brand_key = str(row["brand_key"])
@@ -209,7 +212,7 @@ def _brand_candidates(
         candidates.append(
             BrandCandidate(
                 meta=meta,
-                dimensions=_dimensions(view_name, row, meta, general_molecules),
+                dimensions=_dimensions(view_name, row, meta, general_molecules, general_sidecar.get(brand_key, {})),
                 sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
                 sales_value=(
                     audit_code_sales_value(row, audit_code_axis, str(ranking["quarter"]))
@@ -261,6 +264,7 @@ def _dimensions(
     row: JsonMap,
     meta: BrandMeta,
     general_molecules: dict[str, tuple[str, ...]],
+    sidecar_dimensions: Mapping[str, tuple[str, ...]] | None = None,
 ) -> dict[str, tuple[str, ...]]:
     by_dimension = json_map(row.get("by_dimension"))
     overlay = json_map(row.get("overlay_data"))
@@ -269,6 +273,8 @@ def _dimensions(
     if view_name == "general":
         molecule_values = [value for code in meta.product_codes for value in general_molecules.get(code, ())]
         dimensions["molecule"] = _unique(molecule_values)
+        for dimension, values in (sidecar_dimensions or {}).items():
+            dimensions[dimension] = _unique(values)
         return dimensions
     dimensions["molecule"] = _unique(
         component.norm
@@ -277,6 +283,55 @@ def _dimensions(
     )
     dimensions["class"] = _unique(_text_values(by_dimension.get("class"), by_dimension.get("class_1"), by_dimension.get("class_2"), overlay.get("class"), overlay.get("class_1"), overlay.get("class_2")))
     return dimensions
+
+
+def _general_sidecar_dimensions(rows: tuple[JsonMap, ...]) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Return IQVIA product-level sidecar dimensions grouped by brand key."""
+
+    brand_keys = tuple(sorted({str(row.get("brand_key")) for row in rows if row.get("brand_key")}))
+    atc4_codes = tuple(
+        sorted(
+            {
+                value.upper()
+                for row in rows
+                for value in _text_values(json_map(row.get("by_dimension")).get("atc4_code"))
+                if value
+            }
+        )
+    )
+    if not brand_keys or not atc4_codes:
+        return {}
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT brand_key, dimension_type, dimension_value_norm
+        FROM {quote_identifier(config.db_name)}.{quote_identifier(FILTER_DIMENSION_TABLE)}
+        WHERE source = %s
+          AND measure = %s
+          AND brand_key IN ({_placeholders(brand_keys)})
+          AND atc4_code IN ({_placeholders(atc4_codes)})
+          AND dimension_type IN ({_placeholders(GENERAL_IQVIA_SIDE_CAR_DIMENSIONS)})
+        ORDER BY brand_key, dimension_type, dimension_value_norm
+        """,
+        (SOURCE, RANKING_MEASURE, *brand_keys, *atc4_codes, *GENERAL_IQVIA_SIDE_CAR_DIMENSIONS),
+    )
+    collected: dict[str, dict[str, list[str]]] = {}
+    for row in rows:
+        brand_key = text(row.get("brand_key"))
+        dimension = text(row.get("dimension_type"))
+        value = text(row.get("dimension_value_norm"))
+        if not brand_key or dimension not in GENERAL_IQVIA_SIDE_CAR_DIMENSIONS or not value:
+            continue
+        values = collected.setdefault(brand_key, {}).setdefault(dimension, [])
+        if value not in values:
+            values.append(value)
+    return {
+        brand_key: {dimension: tuple(values) for dimension, values in dimensions.items()}
+        for brand_key, dimensions in collected.items()
+    }
+
+
+def _placeholders(values: Sequence[str]) -> str:
+    return ", ".join(["%s"] * len(values))
 
 
 def _brand_meta_by_key(rows: tuple[JsonMap, ...], *, has_is_jw: bool) -> dict[str, BrandMeta]:

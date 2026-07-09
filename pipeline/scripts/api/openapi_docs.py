@@ -532,6 +532,10 @@ BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
     "atc": {"atc4": ["C10A1"]},
     "analysis_level": {
         "iqvia": {
+            "mfr_name_kor": ["JW중외제약"],
+            "molecule_desc": ["PITAVASTATIN"],
+            "pack_desc": ["TAB 2MG 30S"],
+            "strength": ["2MG"],
             "audit_code": ["KPA", "KHPA"],
         },
     },
@@ -549,7 +553,9 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 
 - **시장 범위는 ATC4입니다.** `filters.atc4`를 보내거나, BFF 호환 입력인 `filters.atc.atc4`를 보내면 서버가 flat `filters.atc4`로 정규화합니다.
 
-- **지원되는 analysis_level 입력은 IQVIA audit code뿐입니다.** 채널축 값 슬라이스는 `filters.analysis_level.iqvia.audit_code`로 보냅니다. 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다.
+- **Brand-Activity는 IQVIA 전용입니다.** 상위 경쟁 브랜드 5개를 뽑을 때 Dynamic-Market 일반뷰 IQVIA와 같은 6개 row 필터(`mfr_name_kor`, `molecule_type`, `molecule_desc`, `pack_desc`, `strength`, `nhi_type`)를 적용합니다. 각 차원 안에서는 OR, 차원끼리는 AND입니다.
+
+- **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 ranking sales를 해당 audit code 매출로 다시 정렬합니다.
 
 - **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 토픽/interest 행을 자르는 필터입니다. `filters.channel.visit_location`과 `filters.channel.specialty`도 호환 입력으로 flat 필드에 정규화됩니다.
 
@@ -557,7 +563,7 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 
 - **unknown field 처리:** Brand-Activity request top-level은 알 수 없는 필드를 무시하고, 중첩 필터 객체는 호환성을 위해 추가 필드를 보존할 수 있습니다.
 
-- **PACK DESC:** `pack_desc`는 Dynamic-Market IQVIA 분석레벨 필터입니다. Brand-Activity 처리 경로에서 사용하지 않습니다.
+- **PACK DESC:** `pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행과 매칭해 상위 경쟁 브랜드 후보를 좁힙니다.
 
 `channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
 """
@@ -567,6 +573,36 @@ BRAND_ACTIVITY_IQVIA_ANALYSIS_SCHEMA: Final = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
+        "mfr_name_kor": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "제조사명(MFR NAME KOR) row 필터. 차원 내 OR, 다른 IQVIA 차원과 AND.",
+        },
+        "molecule_type": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "성분 타입(MOLECULE TYPE) row 필터. 예: SINGLE, COMBINE.",
+        },
+        "molecule_desc": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "성분명(MOLECULE DESC) row 필터.",
+        },
+        "pack_desc": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "PACK DESC row 필터. canonical sidecar의 dimension_type=pack 값을 사용합니다.",
+        },
+        "strength": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "STRENGTH row 필터.",
+        },
+        "nhi_type": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "NHI TYPE row 필터.",
+        },
         "audit_code": {
             "type": "array",
             "items": {"type": "string"},
@@ -596,7 +632,7 @@ BRAND_ACTIVITY_FILTER_SCHEMA: Final = {
             "type": "object",
             "additionalProperties": False,
             "properties": {"iqvia": BRAND_ACTIVITY_IQVIA_ANALYSIS_SCHEMA},
-            "description": "Brand-Activity 공개 필터에서는 IQVIA audit_code만 사용합니다.",
+            "description": "Brand-Activity 공개 필터는 IQVIA 전용입니다. 6개 row dimension은 상위 경쟁 브랜드 후보를 좁히고, audit_code는 ranking 값을 채널축으로 슬라이스합니다.",
         },
         "channel": {
             "type": "object",

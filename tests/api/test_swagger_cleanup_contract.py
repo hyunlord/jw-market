@@ -53,13 +53,16 @@ def test_brand_activity_public_request_schema_is_iqvia_only() -> None:
 
     assert "iqvia_nsa" in payload
     assert "filters.analysis_level.iqvia.audit_code" in payload
+    assert "mfr_name_kor" in payload
     assert "filters.atc.atc4" in payload
-    assert "Brand-Activity 처리 경로에서 사용하지 않습니다" in payload
+    assert "Brand-Activity 처리 경로에서 사용하지 않습니다" not in payload
 
     schema_text = str(request_schema)
     assert "ubist" not in schema_text
     assert "seller" not in schema_text
-    assert "pack_desc" not in schema_text
+    assert "pack_desc" in schema_text
+    assert "mfr_name_kor" in schema_text
+    assert "nhi_type" in schema_text
     assert "audit_code" in schema_text
     assert "visit_location" in schema_text
     assert "specialty" in schema_text
