@@ -15,17 +15,23 @@ from pipeline.scripts.api.routes import brand_activity
 
 
 def test_period_ym_to_quarter_handles_boundaries() -> None:
-    assert service.period_ym_to_quarter("2025-03") == "2025-Q1"
-    assert service.period_ym_to_quarter("2025-04") == "2025-Q2"
-    assert service.period_ym_to_quarter("2025-09") == "2025-Q3"
-    assert service.period_ym_to_quarter("2025-10") == "2025-Q4"
-    assert service.period_ym_to_quarter("2025-12") == "2025-Q4"
+    assert shared.period_ym_to_quarter("2025-03") == "2025-Q1"
+    assert shared.period_ym_to_quarter("2025-04") == "2025-Q2"
+    assert shared.period_ym_to_quarter("2025-09") == "2025-Q3"
+    assert shared.period_ym_to_quarter("2025-10") == "2025-Q4"
+    assert shared.period_ym_to_quarter("2025-12") == "2025-Q4"
 
 
 def test_full_csd_quarters_excludes_partial_edges() -> None:
     months = ["2023-05", "2023-06", "2023-07", "2023-08", "2023-09", "2025-10", "2025-11", "2025-12"]
 
     assert service.full_quarters_from_months(months) == ["2023-Q3", "2025-Q4"]
+
+
+def test_months_in_quarter_window_preserves_month_keys() -> None:
+    months = ["2025-01", "2025-02", "2025-03", "2025-04"]
+
+    assert shared.months_in_quarter_window(months, ["2025-Q1"]) == ("2025-01", "2025-02", "2025-03")
 
 
 def test_select_ranked_brands_keeps_selected_and_fills_to_six() -> None:
@@ -178,3 +184,50 @@ def test_csd_timeseries_market_totals_include_sales(monkeypatch) -> None:
     assert totals["unit"] == {"2025-Q1": 300.0}
     assert totals["counting_unit"] == {"2025-Q1": 0.0}
     assert totals["dosage_unit"] == {"2025-Q1": 0.0}
+
+
+def test_csd_timeseries_activity_preserves_monthly_keys(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        assert "GROUP BY period_ym, master_product" in sql
+        assert params == ("LIVALO Market",)
+        return [
+            {"period_ym": "2025-01", "master_product": "LIVALO", "value": 10.0},
+            {"period_ym": "2025-02", "master_product": "LIVALO", "value": 20.0},
+            {"period_ym": "2025-03", "master_product": "OTHER", "value": 30.0},
+            {"period_ym": "2025-04", "master_product": "LIVALO", "value": 40.0},
+        ]
+
+    monkeypatch.setattr(service.db, "fetch_all", fake_fetch_all)
+    months = ("2025-01", "2025-02", "2025-03")
+    activity = service._activity_series(
+        "LIVALO Market",
+        [shared.BrandChoice("LIVALO", "LIVALO", 1, True)],
+        {"LIVALO": shared.BrandMeta("LIVALO", "LIVALO", ("LIVALO",), True)},
+        months,
+    )
+
+    assert activity["totals"] == {"2025-01": 10.0, "2025-02": 20.0, "2025-03": 30.0}
+    assert activity["by_brand"]["LIVALO"] == {"2025-01": 10.0, "2025-02": 20.0, "2025-03": 0.0}
+    assert service._activity_payload("LIVALO", activity, months) == {
+        "source": "csd",
+        "absolute": {"2025-01": 10.0, "2025-02": 20.0, "2025-03": 0.0},
+        "ratio": {"2025-01": 100.0, "2025-02": 100.0, "2025-03": 0.0},
+    }
+
+
+def test_csd_timeseries_scope_keeps_quarters_and_adds_activity_months() -> None:
+    view = shared.ViewConfig("brand", "market", "atc4_code", "atc4_name", "sales_rank", True)
+    payload = service._scope_payload(
+        {"view": "general", "market_id": "C10A1", "filter": {}, "mode": "absolute"},
+        view,
+        {"atc4_code": "C10A1", "atc4_name": "LIVALO"},
+        shared.BrandMeta("LIVALO", "LIVALO", ("LIVALO",), True),
+        "2025-Q1",
+        {},
+        shared.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),
+        ["2025-Q1"],
+        ("2025-01", "2025-02", "2025-03"),
+    )
+
+    assert payload["quarters"] == ["2025-Q1"]
+    assert payload["activity_months"] == ["2025-01", "2025-02", "2025-03"]

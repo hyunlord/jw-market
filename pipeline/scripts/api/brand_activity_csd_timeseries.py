@@ -22,8 +22,8 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     float_value,
     full_quarters_from_months,
     json_map,
+    months_in_quarter_window,
     normalized_product_overlap,
-    period_ym_to_quarter,
     ratio,
     text,
 )
@@ -39,6 +39,7 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     quarters = _requested_quarters(full_quarters_from_months(all_csd_months), request["window"])
     if not quarters:
         return None
+    activity_months = months_in_quarter_window(all_csd_months, quarters)
     try:
         brand_set = resolve_brand_set(
             view_name=request["view"],
@@ -59,10 +60,20 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     mart_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
     crosswalk = resolve_csd_market(mart_codes)
     rx_rows = _fetch_rx_rows(brand_set.view, brand_set.market_id, tuple(choice.brand_key for choice in choices))
-    activity = _activity_series(crosswalk.market, choices, brand_meta, quarters)
+    activity = _activity_series(crosswalk.market, choices, brand_meta, activity_months)
     return {
-        "scope": _scope_payload(request, brand_set.view, brand_set.market_row, selected_meta, brand_set.ranking_quarter, brand_set.applied_filter, crosswalk, quarters),
-        "brands": [_brand_payload(choice, brand_meta, rx_rows, activity, quarters) for choice in choices],
+        "scope": _scope_payload(
+            request,
+            brand_set.view,
+            brand_set.market_row,
+            selected_meta,
+            brand_set.ranking_quarter,
+            brand_set.applied_filter,
+            crosswalk,
+            quarters,
+            activity_months,
+        ),
+        "brands": [_brand_payload(choice, brand_meta, rx_rows, activity, quarters, activity_months) for choice in choices],
         "market_totals": _market_totals(brand_set.view, brand_set.market_id, quarters, activity["totals"]),
     }
 
@@ -118,6 +129,7 @@ def _scope_payload(
     applied_filter: JsonMap,
     crosswalk: CsdCrosswalk,
     quarters: list[str],
+    activity_months: tuple[str, ...],
 ) -> JsonMap:
     return {
         "view": request["view"],
@@ -137,6 +149,7 @@ def _scope_payload(
         },
         "resolved_market": _resolved_market_payload(request, view, market_row),
         "quarters": quarters,
+        "activity_months": list(activity_months),
         "measures": list(PUBLIC_MEASURES),
         "mode": request["mode"],
     }
@@ -206,29 +219,36 @@ def _market_totals(view: ViewConfig, market_id: str, quarters: list[str], activi
     return totals
 
 
-def _activity_series(csd_market: str, choices: list[BrandChoice], metas: dict[str, BrandMeta], quarters: list[str]) -> JsonMap:
+def _activity_series(csd_market: str, choices: list[BrandChoice], metas: dict[str, BrandMeta], activity_months: tuple[str, ...]) -> JsonMap:
     rows = db.fetch_all(_sql_csd_activity(), (csd_market,))
-    totals = {quarter: 0.0 for quarter in quarters}
-    by_brand = {choice.brand_key: {quarter: 0.0 for quarter in quarters} for choice in choices}
+    totals = {month: 0.0 for month in activity_months}
+    by_brand = {choice.brand_key: {month: 0.0 for month in activity_months} for choice in choices}
     matched = {choice.brand_key: False for choice in choices}
     code_sets = {key: set(meta.product_codes) for key, meta in metas.items()}
     for row in rows:
-        quarter = period_ym_to_quarter(str(row["period_ym"]))
-        if quarter not in totals:
+        month = str(row["period_ym"])
+        if month not in totals:
             continue
         value = float_value(row.get("value"))
-        totals[quarter] += value
+        totals[month] += value
         product = normalize_iqvia_en(str(row["master_product"]))
         for brand_key, codes in code_sets.items():
             if brand_key in by_brand and product in codes:
-                by_brand[brand_key][quarter] += value
+                by_brand[brand_key][month] += value
                 matched[brand_key] = True
     return {"totals": totals, "by_brand": by_brand, "matched": matched}
 
 
-def _brand_payload(choice: BrandChoice, metas: dict[str, BrandMeta], rx_rows: list[JsonMap], activity: JsonMap, quarters: list[str]) -> JsonMap:
+def _brand_payload(
+    choice: BrandChoice,
+    metas: dict[str, BrandMeta],
+    rx_rows: list[JsonMap],
+    activity: JsonMap,
+    quarters: list[str],
+    activity_months: tuple[str, ...],
+) -> JsonMap:
     meta = metas.get(choice.brand_key, BrandMeta(choice.brand_key, choice.brand_name, (), False))
-    series = {"activity": _activity_payload(choice.brand_key, activity, quarters)}
+    series = {"activity": _activity_payload(choice.brand_key, activity, activity_months)}
     for measure in RX_MEASURES:
         row = next((item for item in rx_rows if item["brand_key"] == choice.brand_key and item["measure"] == measure), None)
         series[measure] = _rx_payload(row, quarters)
@@ -244,10 +264,10 @@ def _brand_payload(choice: BrandChoice, metas: dict[str, BrandMeta], rx_rows: li
     }
 
 
-def _activity_payload(brand_key: str, activity: JsonMap, quarters: list[str]) -> JsonMap:
-    absolute = activity["by_brand"].get(brand_key, {quarter: 0.0 for quarter in quarters})
+def _activity_payload(brand_key: str, activity: JsonMap, activity_months: tuple[str, ...]) -> JsonMap:
+    absolute = activity["by_brand"].get(brand_key, {month: 0.0 for month in activity_months})
     totals = activity["totals"]
-    return {"source": "csd", "absolute": absolute, "ratio": {quarter: ratio(absolute[quarter], totals[quarter]) for quarter in quarters}}
+    return {"source": "csd", "absolute": absolute, "ratio": {month: ratio(absolute[month], totals[month]) for month in activity_months}}
 
 
 def _rx_payload(row: JsonMap | None, quarters: list[str]) -> JsonMap:

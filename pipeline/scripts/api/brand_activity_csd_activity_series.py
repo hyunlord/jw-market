@@ -23,7 +23,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     float_value,
     full_quarters_from_months,
     json_map,
-    period_ym_to_quarter,
+    months_in_quarter_window,
     ratio,
     text,
 )
@@ -34,10 +34,10 @@ from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 @dataclass(frozen=True, slots=True)
 class ActivityRows:
-    """Quarterly CSD activity values by product and company."""
+    """Monthly CSD activity values by product and company."""
 
-    quarters: tuple[str, ...]
-    all_quarters: tuple[str, ...]
+    months: tuple[str, ...]
+    all_months: tuple[str, ...]
     totals: dict[str, float]
     by_product: dict[str, dict[str, float]]
     by_company: dict[str, dict[str, float]]
@@ -48,10 +48,12 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
 
     request = parse_activity_request(payload)
     all_csd_months = [str(row["period_ym"]) for row in db.fetch_all(_sql_csd_months())]
+    all_months = tuple(all_csd_months)
     all_quarters = tuple(full_quarters_from_months(all_csd_months))
     quarters = _requested_quarters(all_quarters, request.period)
     if not quarters:
         return None
+    activity_months = months_in_quarter_window(all_months, quarters)
     try:
         brand_set = resolve_brand_set(
             view_name=request.view,
@@ -69,18 +71,18 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
         return None
     crosswalk = resolve_csd_market({code for meta in brand_set.brand_meta.values() for code in meta.product_codes})
     rows = _fetch_activity_rows(crosswalk, request.csd_channel)
-    activity = _activity_rows(rows, quarters, all_quarters)
+    activity = _activity_rows(rows, activity_months, all_months)
     selected_key = _selected_entity_key(request.entity_level, request.selected_brand, selected_meta, brand_set)
     entity_keys = _entity_keys(request, selected_key, brand_set)
     rank_source = activity.by_company if request.entity_level == "company" else _brand_activity_by_key(brand_set, activity)
-    ranks = _ranks_by_quarter(rank_source, quarters)
+    ranks = _ranks_by_period(rank_source, activity_months)
     values = rank_source
     return {
         "scope": _scope_payload(request, brand_set, crosswalk, quarters),
         "entity_level": request.entity_level,
         "channel": request.csd_channel,
-        "period": {"quarters": list(quarters), "max_quarters": MAX_QUARTERS, "default_quarters": DEFAULT_QUARTERS},
-        "entities": [_entity_payload(key, selected_key, values.get(key, {}), activity.totals, ranks, quarters, brand_set) for key in entity_keys],
+        "period": {"quarters": list(quarters), "months": list(activity_months), "max_quarters": MAX_QUARTERS, "default_quarters": DEFAULT_QUARTERS},
+        "entities": [_entity_payload(key, selected_key, values.get(key, {}), activity.totals, ranks, activity_months, brand_set) for key in entity_keys],
         "applied": {"csd_channel": request.csd_channel, "entity_level": request.entity_level},
     }
 
@@ -109,22 +111,21 @@ def _fetch_activity_rows(crosswalk: CsdCrosswalk, csd_channel: str) -> list[Json
     return db.fetch_all(_sql_csd_activity(), (crosswalk.market, csd_channel))
 
 
-def _activity_rows(rows: list[JsonMap], quarters: tuple[str, ...], all_quarters: tuple[str, ...]) -> ActivityRows:
-    totals = {quarter: 0.0 for quarter in quarters}
+def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tuple[str, ...]) -> ActivityRows:
+    totals = {month: 0.0 for month in months}
     by_product: dict[str, dict[str, float]] = {}
     by_company: dict[str, dict[str, float]] = {}
     for row in rows:
-        quarter = period_ym_to_quarter(str(row["period_ym"]))
-        if quarter not in all_quarters:
+        month = str(row["period_ym"])
+        if month not in all_months or month not in totals:
             continue
         product = normalize_iqvia_en(str(row["master_product"]))
         company = str(row["representing_company"])
         value = float_value(row.get("value"))
-        _add_value(by_product, product, quarter, value)
-        _add_value(by_company, company, quarter, value)
-        if quarter in totals:
-            totals[quarter] += value
-    return ActivityRows(quarters=quarters, all_quarters=all_quarters, totals=totals, by_product=by_product, by_company=by_company)
+        _add_value(by_product, product, month, value)
+        _add_value(by_company, company, month, value)
+        totals[month] += value
+    return ActivityRows(months=months, all_months=all_months, totals=totals, by_product=by_product, by_company=by_company)
 
 
 def _entity_keys(request: ParsedCsdActivityRequest, selected_key: str, brand_set: BrandSetResolution) -> tuple[str, ...]:
@@ -165,16 +166,16 @@ def _company_for_brand(brand_key: str, brand_set: BrandSetResolution) -> str:
     return company or brand_key
 
 
-def _entity_payload(key: str, selected_key: str, values: dict[str, float], totals: dict[str, float], ranks: dict[str, dict[str, int]], quarters: tuple[str, ...], brand_set: BrandSetResolution) -> JsonMap:
+def _entity_payload(key: str, selected_key: str, values: dict[str, float], totals: dict[str, float], ranks: dict[str, dict[str, int]], months: tuple[str, ...], brand_set: BrandSetResolution) -> JsonMap:
     return {
         "key": key,
         "display_name": key,
         "is_selected": key == selected_key,
         "is_jw": _is_jw(key, brand_set),
         "activity": {
-            "absolute": [{"period": quarter, "value": values.get(quarter, 0.0)} for quarter in quarters],
-            "share_pct": [{"period": quarter, "value": ratio(values.get(quarter, 0.0), totals.get(quarter, 0.0))} for quarter in quarters],
-            "rank": [{"period": quarter, "value": ranks.get(quarter, {}).get(key)} for quarter in quarters],
+            "absolute": [{"period": month, "value": values.get(month, 0.0)} for month in months],
+            "share_pct": [{"period": month, "value": ratio(values.get(month, 0.0), totals.get(month, 0.0))} for month in months],
+            "rank": [{"period": month, "value": ranks.get(month, {}).get(key)} for month in months],
         },
     }
 
@@ -185,11 +186,11 @@ def _is_jw(key: str, brand_set: BrandSetResolution) -> bool:
     return any(meta.is_jw and _company_for_brand(brand_key, brand_set) == key for brand_key, meta in brand_set.brand_meta.items())
 
 
-def _ranks_by_quarter(values: dict[str, dict[str, float]], quarters: tuple[str, ...]) -> dict[str, dict[str, int]]:
+def _ranks_by_period(values: dict[str, dict[str, float]], periods: tuple[str, ...]) -> dict[str, dict[str, int]]:
     ranks: dict[str, dict[str, int]] = {}
-    for quarter in quarters:
-        ranked = sorted(((key, series.get(quarter, 0.0)) for key, series in values.items()), key=lambda item: (-item[1], item[0]))
-        ranks[quarter] = {key: index + 1 for index, (key, _value) in enumerate(ranked) if _value > 0.0}
+    for period in periods:
+        ranked = sorted(((key, series.get(period, 0.0)) for key, series in values.items()), key=lambda item: (-item[1], item[0]))
+        ranks[period] = {key: index + 1 for index, (key, _value) in enumerate(ranked) if _value > 0.0}
     return ranks
 
 

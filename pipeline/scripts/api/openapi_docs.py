@@ -848,8 +848,8 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
 BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
     200: {
         "description": (
-            "활동·처방 추세. CSD 활동량은 csd_channel_dynamics_stage에서 jw_channel='TOTAL'(region=TOTAL)만 사용하며, "
-            "IQVIA mart의 sales/unit/counting_unit/dosage_unit을 같은 분기축으로 맞춥니다."
+            "활동·처방 추세. CSD 활동량은 csd_channel_dynamics_stage에서 jw_channel='TOTAL'(region=TOTAL)만 사용하며 월간 activity_months 축으로 반환합니다. "
+            "IQVIA mart의 sales/unit/counting_unit/dosage_unit은 기존 quarters 분기축을 유지합니다."
         ),
         "content": {
             "application/json": {
@@ -865,7 +865,8 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                     "properties": {
                                         **BRAND_ACTIVITY_SCOPE_SCHEMA["properties"],
                                         "csd_market": {"type": "string", "description": "mart product code overlap으로 결정한 CSD 시장 표시명."},
-                                        "quarters": {"type": "array", "items": {"type": "string"}, "description": "분기축. 예: 2025Q4."},
+                                        "quarters": {"type": "array", "items": {"type": "string"}, "description": "Rx measure 분기축. 예: 2025-Q4."},
+                                        "activity_months": {"type": "array", "items": {"type": "string"}, "description": "CSD activity 월간축. 요청 분기 window 안의 YYYY-MM 목록."},
                                         "mode": {"type": "string", "description": "absolute 또는 share."},
                                     },
                                 },
@@ -885,7 +886,8 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                             "view": "general",
                             "market_id": "C10A1",
                             "csd_market": "LIVALO",
-                            "quarters": ["2025Q1", "2025Q2"],
+                            "quarters": ["2025-Q1", "2025-Q2"],
+                            "activity_months": ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06"],
                             "mode": "absolute",
                         },
                         "brands": [
@@ -896,13 +898,13 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                 "is_jw": True,
                                 "csd_matched": True,
                                 "series": {
-                                    "activity": {"source": "csd", "absolute": {"2025Q1": 120.0}, "ratio": {"2025Q1": 44.1}},
-                                    "sales": {"source": "iqvia_nsa", "absolute": {"2025Q1": 500.0}, "ratio": {"2025Q1": 18.7}},
-                                    "unit": {"source": "iqvia_nsa", "absolute": {"2025Q1": 1000.0}, "ratio": {"2025Q1": 20.5}},
+                                    "activity": {"source": "csd", "absolute": {"2025-01": 40.0, "2025-02": 45.0}, "ratio": {"2025-01": 44.1, "2025-02": 45.3}},
+                                    "sales": {"source": "iqvia_nsa", "absolute": {"2025-Q1": 500.0}, "ratio": {"2025-Q1": 18.7}},
+                                    "unit": {"source": "iqvia_nsa", "absolute": {"2025-Q1": 1000.0}, "ratio": {"2025-Q1": 20.5}},
                                 },
                             }
                         ],
-                        "market_totals": {"activity": {"2025Q1": 272.0}, "sales": {"2025Q1": 2675.0}},
+                        "market_totals": {"activity": {"2025-01": 90.7, "2025-02": 99.3}, "sales": {"2025-Q1": 2675.0}},
                     }
                 },
             }
