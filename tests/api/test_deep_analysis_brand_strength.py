@@ -61,6 +61,25 @@ def _strength_row() -> dict[str, Any]:
     }
 
 
+def _source_strength_row(source: str, *, brand_key: str = "리바로", serving_brand_name: str = "리바로") -> dict[str, Any]:
+    return {
+        "brand_key": brand_key,
+        "serving_brand_name": serving_brand_name,
+        "source": source,
+        "strength_summary_json": json.dumps(
+            {
+                "brand": brand_key,
+                "profile_display": {"headline": f"{source} strong"},
+                "strength_items": [{"axis": source}],
+                "limitations": [] if source == "iqvia" else [f"{source} candidate 0건"],
+                "workflow_id": 99,
+                "input_hash": "hidden",
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+
 def _selected_overall(payload: dict[str, Any]) -> dict[str, Any]:
     return payload["data"]["brand_elements"][0]["strength"]
 
@@ -214,6 +233,7 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
             "limitations": ["pilot"],
             "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
         },
+        "strength_by_source": {},
     }
     assert "response_json" not in json.dumps(payload["data"]["brand_elements"][0], ensure_ascii=False)
 
@@ -239,6 +259,8 @@ def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched
         seen.append((sql, params))
         if "cache_brand_elements" in sql:
             return []
+        if "agent3_brand_strength_source" in sql:
+            return []
         assert "REPLACE" in sql
         assert params == ["리바로브이"]
         return [{**_cache_row(), "brand": "리바로브이"}]
@@ -263,6 +285,8 @@ def test_deep_analysis_compact_cache_lookup_rejects_ambiguous_matches(monkeypatc
 
     def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
         if "cache_brand_elements" in sql:
+            return []
+        if "agent3_brand_strength_source" in sql:
             return []
         assert "REPLACE" in sql
         return [
@@ -313,6 +337,69 @@ def test_load_brand_strength_falls_back_to_compact_serving_brand(monkeypatch) ->
     # Then: the compact fallback returns the Agent3 strength row.
     assert strength["available"] is True
     assert len(calls) == 2
+
+
+def test_load_brand_strength_by_source_projects_exact_rows(monkeypatch) -> None:
+    # Given: Agent3 source rows exist for both source values under the same brand key.
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        assert "brand_key IN (%s)" in sql
+        assert "workflow_id" not in sql
+        return [_source_strength_row("iqvia"), _source_strength_row("ubist")]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    # When: source-level strength is loaded for the six-slot brand set.
+    by_brand = deep_analysis._load_brand_strength_by_source(["리바로"])
+
+    # Then: only API-safe summary fields are exposed per source.
+    assert by_brand == {
+        "리바로": {
+            "iqvia": {"profile_display": {"headline": "iqvia strong"}, "strength_items": [{"axis": "iqvia"}], "limitations": []},
+            "ubist": {
+                "profile_display": {"headline": "ubist strong"},
+                "strength_items": [{"axis": "ubist"}],
+                "limitations": ["ubist candidate 0건"],
+            },
+        }
+    }
+    assert len(calls) == 1
+
+
+def test_load_brand_strength_by_source_uses_compact_serving_brand_for_missing_source(monkeypatch) -> None:
+    # Given: exact brand_key lookup has only IQVIA, while UBIST uses a spaced serving name.
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        if "brand_key IN" in sql:
+            return [_source_strength_row("iqvia", brand_key="리바로브이", serving_brand_name="리바로브이")]
+        assert "REPLACE" in sql
+        assert params == ["리바로브이", "iqvia", "ubist"]
+        return [_source_strength_row("ubist", brand_key="리바로 브이", serving_brand_name="리바로 브이")]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    # When: the requested key is compact but the source row serving name is spaced.
+    by_brand = deep_analysis._load_brand_strength_by_source(["리바로브이"])
+
+    # Then: exact rows win, and compact fallback fills only the missing source.
+    assert sorted(by_brand["리바로브이"]) == ["iqvia", "ubist"]
+    assert by_brand["리바로브이"]["ubist"]["limitations"] == ["ubist candidate 0건"]
+    assert len(calls) == 2
+
+
+def test_load_brand_strength_by_source_skips_absent_brand(monkeypatch) -> None:
+    # Given: the source-level table has no exact or compact rows for the brand.
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
+
+    # When: a non-buildable brand is requested.
+    by_brand = deep_analysis._load_brand_strength_by_source(["미생성브랜드"])
+
+    # Then: absence is represented as an empty mapping, not an error.
+    assert by_brand == {}
 
 
 def test_load_ai_analysis_variants_fall_back_to_compact_brand(monkeypatch) -> None:
