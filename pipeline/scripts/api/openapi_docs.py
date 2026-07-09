@@ -849,7 +849,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
     200: {
         "description": (
             "활동·처방 추세. CSD 활동량은 csd_channel_dynamics_stage에서 jw_channel='TOTAL'(region=TOTAL)만 사용하며, "
-            "처방 지표는 IQVIA mart의 unit/counting_unit/dosage_unit을 같은 분기축으로 맞춥니다."
+            "IQVIA mart의 sales/unit/counting_unit/dosage_unit을 같은 분기축으로 맞춥니다."
         ),
         "content": {
             "application/json": {
@@ -897,11 +897,12 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                 "csd_matched": True,
                                 "series": {
                                     "activity": {"source": "csd", "absolute": {"2025Q1": 120.0}, "ratio": {"2025Q1": 44.1}},
+                                    "sales": {"source": "iqvia_nsa", "absolute": {"2025Q1": 500.0}, "ratio": {"2025Q1": 18.7}},
                                     "unit": {"source": "iqvia_nsa", "absolute": {"2025Q1": 1000.0}, "ratio": {"2025Q1": 20.5}},
                                 },
                             }
                         ],
-                        "market_totals": {"activity": {"2025Q1": 272.0}},
+                        "market_totals": {"activity": {"2025Q1": 272.0}, "sales": {"2025Q1": 2675.0}},
                     }
                 },
             }

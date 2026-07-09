@@ -64,7 +64,7 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
             "ranking_quarter": "2025-Q4",
             "filter": {},
             "quarters": ["2025-Q4"],
-            "measures": ["activity", "unit", "counting_unit", "dosage_unit"],
+            "measures": ["activity", "sales", "unit", "counting_unit", "dosage_unit"],
         },
         "brands": [],
         "market_totals": {},
@@ -129,3 +129,52 @@ def test_csd_timeseries_parse_accepts_general_market_scope_without_atc4() -> Non
 
     assert parsed["market_id"] is None
     assert parsed["filter"]["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
+
+
+def test_csd_timeseries_public_measures_include_sales() -> None:
+    assert shared.RX_MEASURES == ("sales", "unit", "counting_unit", "dosage_unit")
+    assert shared.PUBLIC_MEASURES == ("activity", "sales", "unit", "counting_unit", "dosage_unit")
+
+
+def test_csd_timeseries_fetches_sales_with_dynamic_measure_placeholders(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(service.db, "fetch_all", fake_fetch_all)
+
+    service._fetch_rx_rows(
+        shared.ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_name", "sales_rank", True),
+        "C10A1",
+        ("리바로",),
+    )
+
+    assert "measure IN (%s, %s, %s, %s)" in str(captured["sql"])
+    assert captured["params"] == ("C10A1", shared.SOURCE, "sales", "unit", "counting_unit", "dosage_unit", "리바로")
+
+
+def test_csd_timeseries_market_totals_include_sales(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        assert "measure IN (%s, %s, %s, %s)" in sql
+        assert params == ("C10A1", shared.SOURCE, "sales", "unit", "counting_unit", "dosage_unit")
+        return [
+            {"measure": "sales", "market_size_series": {"2025-Q1": 1200.0}},
+            {"measure": "unit", "market_size_series": {"2025-Q1": 300.0}},
+        ]
+
+    monkeypatch.setattr(service.db, "fetch_all", fake_fetch_all)
+
+    totals = service._market_totals(
+        shared.ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_name", "sales_rank", True),
+        "C10A1",
+        ["2025-Q1"],
+        {"2025-Q1": 44.0},
+    )
+
+    assert totals["sales"] == {"2025-Q1": 1200.0}
+    assert totals["unit"] == {"2025-Q1": 300.0}
+    assert totals["counting_unit"] == {"2025-Q1": 0.0}
+    assert totals["dosage_unit"] == {"2025-Q1": 0.0}

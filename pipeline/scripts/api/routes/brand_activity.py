@@ -131,7 +131,7 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     description=(
         "mock `/jw-brand-activity-mock/api/brand-activity/csd-timeseries`와 대응되는 포탈 공유 API입니다. "
         "CSD 활동량은 `csd_channel_dynamics_stage`의 `jw_channel='TOTAL'`만 사용하므로 화면 관점의 region=TOTAL입니다. "
-        "IQVIA 처방 지표(unit/counting_unit/dosage_unit)는 같은 분기축으로 정렬됩니다.\n\n"
+        "IQVIA 매출/처방 지표(sales/unit/counting_unit/dosage_unit)는 같은 분기축으로 정렬됩니다.\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,

@@ -174,24 +174,26 @@ def _resolved_market_payload(request: JsonMap, view: ViewConfig, market_row: Jso
 def _fetch_rx_rows(view: ViewConfig, market_id: str, brand_keys: tuple[str, ...]) -> list[JsonMap]:
     if not brand_keys:
         return []
+    measure_placeholders = ", ".join(["%s"] * len(RX_MEASURES))
     placeholders = ", ".join(["%s"] * len(brand_keys))
     return db.fetch_all(
         f"""
         SELECT brand_key, measure, raw_value_history, metric_history
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
         WHERE {view.market_key} = %s AND source = %s
-          AND measure IN (%s, %s, %s) AND brand_key IN ({placeholders})
+          AND measure IN ({measure_placeholders}) AND brand_key IN ({placeholders})
         """,
         (market_id, SOURCE, *RX_MEASURES, *brand_keys),
     )
 
 
 def _market_totals(view: ViewConfig, market_id: str, quarters: list[str], activity_totals: JsonMap) -> JsonMap:
+    measure_placeholders = ", ".join(["%s"] * len(RX_MEASURES))
     rows = db.fetch_all(
         f"""
         SELECT measure, market_size_series
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.market_table)}
-        WHERE {view.market_key} = %s AND source = %s AND measure IN (%s, %s, %s)
+        WHERE {view.market_key} = %s AND source = %s AND measure IN ({measure_placeholders})
         """,
         (market_id, SOURCE, *RX_MEASURES),
     )
