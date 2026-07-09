@@ -250,7 +250,7 @@ def _load_brand_strength_by_source(brand_keys: list[str]) -> dict[str, dict[str,
         return {}
 
     settings = get_settings()
-    schema = _quote_identifier(settings.agent3_db_name)
+    schema = _quote_identifier(settings.db_name)
     result: dict[str, dict[str, dict]] = {key: {} for key in keys}
     try:
         for row in _source_strength_exact_rows(schema, keys):
