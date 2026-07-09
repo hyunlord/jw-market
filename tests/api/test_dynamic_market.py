@@ -1953,11 +1953,39 @@ def test_dynamic_market_request_rejects_removed_top_level_molecule_filter() -> N
     assert "molecule" in str(exc_info.value)
 
 
-def test_dynamic_market_request_rejects_removed_metrics_option() -> None:
+def test_dynamic_market_request_rejects_removed_options_wrapper() -> None:
     with pytest.raises(Exception) as exc_info:
-        DynamicMarketRequest.model_validate({"options": {"metrics": ["sales"]}})
+        DynamicMarketRequest.model_validate({"options": {"top_n": 20}})
 
-    assert "metrics" in str(exc_info.value)
+    assert "options" in str(exc_info.value)
+
+
+def test_dynamic_market_request_accepts_flat_top_n_and_period_range() -> None:
+    request = DynamicMarketRequest.model_validate(
+        {
+            "top_n": None,
+            "period_range": {},
+            "filters": {"atc4": ["C10A1"]},
+        }
+    )
+
+    assert request.top_n is None
+    assert request.period_range is not None
+    assert request.period_range.start is None
+    assert request.period_range.end is None
+
+
+def test_dynamic_market_request_rejects_general_ubist_nested_atc_filters() -> None:
+    for key in ("atc3", "atc4"):
+        with pytest.raises(Exception) as exc_info:
+            DynamicMarketRequest.model_validate(
+                {
+                    "source": "ubist",
+                    "filters": {"atc4": ["C10A1"], "analysis_level": {"ubist": {key: ["C10A1"]}}},
+                }
+            )
+
+        assert key in str(exc_info.value)
 
 
 def test_general_dimension_payload_drops_iqvia_value_slice_and_nested_atc4() -> None:
@@ -2278,27 +2306,21 @@ def test_route_allows_top_level_atc4_for_strategic_view(monkeypatch) -> None:
 
 
 def test_route_rejects_strategic_analysis_level_atc_filters() -> None:
-    try:
-        dynamic_market_route.dynamic_market(
-            DynamicMarketRequest.model_validate(
-                {
-                    "source": "ubist",
-                    "measure": "sales",
-                    "filters": {
-                        "view_kind": "market_landscape",
-                        "focus_brand_key": "리바로",
-                        "analysis_level": {"ubist": {"atc3": ["C10A"], "atc4": ["C10A1"]}},
-                    },
-                }
-            )
+    with pytest.raises(Exception) as exc_info:
+        DynamicMarketRequest.model_validate(
+            {
+                "source": "ubist",
+                "measure": "sales",
+                "filters": {
+                    "view_kind": "market_landscape",
+                    "focus_brand_key": "리바로",
+                    "analysis_level": {"ubist": {"atc3": ["C10A"], "atc4": ["C10A1"]}},
+                },
+            }
         )
-    except dynamic_market_route.HTTPException as exc:
-        assert exc.status_code == 400
-        assert "strategic view uses top-level filters.atc4" in str(exc.detail)
-        assert "analysis_level.ubist.atc3" in str(exc.detail)
-        assert "analysis_level.ubist.atc4" in str(exc.detail)
-    else:
-        raise AssertionError("strategic analysis_level ATC filters must be rejected")
+
+    assert "atc3" in str(exc_info.value)
+    assert "atc4" in str(exc_info.value)
 
 
 def test_iqvia_channel_axis_response_adds_selected_audit_summary_only_when_active() -> None:

@@ -112,7 +112,8 @@ root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니�
 | `source` | string | 아니오 | `ubist` | `ubist`로 계산 | 422 validation error |
 | `measure` | string | 아니오 | `sales` | `sales`로 계산 | 422 validation error |
 | `filters` | object | 아니오 | 빈 필터 객체 | 빈 필터 객체 | 422 validation error |
-| `options` | object | 아니오 | `{top_n:20, period_range:null}` | 기본 옵션 객체 | 422 validation error |
+| `top_n` | integer/null | 아니오 | `20` | `20`으로 계산 | `20`으로 보정 |
+| `period_range` | object/null | 아니오 | null | 전체 기간 | 전체 기간 |
 
 `source`는 `ubist`, `iqvia`, `iqvia_nsa`, `nsa`를 받을 수 있고 내부에서는 `iqvia`/`nsa`가
 `iqvia_nsa`로 정규화됩니다. `measure`는 UBIST에서 `sales`, `volume`, IQVIA에서
@@ -140,9 +141,10 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 
 ### 일반뷰 UBIST `analysis_level.ubist`
 
-허용 키: `atc3(ATC3 좁히기)`, `atc4(ATC4 좁히기)`, `seller(판매사)`,
-`molecule_strength(성분용량)`, `form(제형)`, `route(투여경로)`, `reimbursement(급여구분)`,
-`facility(종별)`, `specialty(진료과)`, `pairs(종별×진료과 pair)`.
+허용 키: `seller(판매사)`, `molecule_strength(성분용량)`, `form(제형)`, `route(투여경로)`,
+`reimbursement(급여구분)`, `facility(종별)`, `specialty(진료과)`, `pairs(종별×진료과 pair)`.
+일반뷰 UBIST에서도 ATC 입력은 top-level `filters.atc4` 하나만 사용합니다.
+`analysis_level.ubist.atc3` 또는 `analysis_level.ubist.atc4`를 보내면 schema extra-forbid로 422입니다.
 
 ### 일반뷰 IQVIA `analysis_level.iqvia`
 
@@ -155,7 +157,8 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 ### 전략뷰 필터
 
 전략뷰도 top-level `filters.atc4` 하나로 ATC narrowing을 합니다. `analysis_level.<source>.atc3` 또는
-`analysis_level.<source>.atc4`는 전략뷰 narrowing 입력이 아니며 active 값이 있으면 400입니다.
+`analysis_level.<source>.atc4`는 전략뷰 narrowing 입력이 아니며 public schema에 남아 있지 않습니다.
+해당 필드를 보내면 schema extra-forbid로 422입니다.
 `class(클래스)`, `mfr/mfr_name_kor(제조사)`, `nhi/nhi_type(NHI 구분)`, molecule/pack/strength/form/route/reimbursement 계열도
 전략뷰 요청 필터가 아닙니다. `facility`, `specialty`, `pairs`, `audit_code` 같은 값 슬라이스 필드도 일반뷰 전용이므로
 전략뷰에서 active 값이 있으면 400입니다.
@@ -170,10 +173,10 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 다른 source의 객체에 값이 있으면 400입니다. 예를 들어 `source:"iqvia"` 요청에서
 `analysis_level.ubist.seller`에 값이 있으면 `analysis_level must match selected source`가 반환됩니다.
 
-### `options`
+### `top_n` / `period_range`
 
-`top_n`은 기본 20이고 1~100 범위입니다. `top_n:null`은 런타임에서 20으로 보정됩니다.
-`period_range.start/end`는 선택 기간 경계입니다.
+`top_n`은 요청 body 최상위 필드이며 기본 20이고 1~100 범위입니다. `top_n:null`은 런타임에서 20으로 보정됩니다.
+`period_range`도 요청 body 최상위 필드이며 `period_range.start/end`는 선택 기간 경계입니다.
 `period_range`를 생략하거나 null이면 전체 기간을 사용합니다. `period_range:{}`는 시작/끝 모두 없는 전체 기간과 같습니다.
 
 ### 응답 구조
@@ -203,8 +206,6 @@ PUBLIC_GENERAL_UBIST_ANALYSIS_SCHEMA: Final = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
-        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
         "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
         "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
         "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
@@ -267,7 +268,8 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                         },
                     },
                 },
-                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+                "top_n": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "default": 20, "description": "ranking 섹션 상위 N개. null이면 20으로 보정."},
+                "period_range": {"$ref": "#/components/schemas/DynamicMarketPeriodRange"},
             },
         },
         {
@@ -290,7 +292,8 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                         },
                     },
                 },
-                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+                "top_n": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "default": 20, "description": "ranking 섹션 상위 N개. null이면 20으로 보정."},
+                "period_range": {"$ref": "#/components/schemas/DynamicMarketPeriodRange"},
             },
         },
         {
@@ -309,7 +312,8 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                         "atc4": {"type": "array", "items": {"type": "string"}, "description": "ATC4 전략뷰 narrowing. 생략/빈 배열이면 전략 시장 전체 선택."},
                     },
                 },
-                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+                "top_n": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "default": 20, "description": "ranking 섹션 상위 N개. null이면 20으로 보정."},
+                "period_range": {"$ref": "#/components/schemas/DynamicMarketPeriodRange"},
             },
         },
     ]
@@ -335,7 +339,7 @@ DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
         "view_kind": "market_landscape",
         "atc4": ["C10A1"],
     },
-    "options": {"top_n": 20},
+    "top_n": 20,
 }
 
 
@@ -346,7 +350,7 @@ GENERAL_BASELINE_REQUEST_EXAMPLE: Final = {
         "focus_brand_key": "리바로",
         "atc4": ["C10A1"],
     },
-    "options": {"top_n": 20},
+    "top_n": 20,
 }
 
 
@@ -368,7 +372,8 @@ GENERAL_UBIST_FILTER_REQUEST_EXAMPLE: Final = {
             }
         },
     },
-    "options": {"top_n": 10, "period_range": {"start": "2024-01", "end": "2026-04"}},
+    "top_n": 10,
+    "period_range": {"start": "2024-01", "end": "2026-04"},
 }
 
 
@@ -390,7 +395,8 @@ GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE: Final = {
             }
         },
     },
-    "options": {"top_n": 10, "period_range": {"start": "2024-Q1", "end": "2026-Q1"}},
+    "top_n": 10,
+    "period_range": {"start": "2024-Q1", "end": "2026-Q1"},
 }
 
 
@@ -401,7 +407,7 @@ COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
         "focus_brand_key": "리바로",
         "view_kind": "competitive_dynamics",
     },
-    "options": {"top_n": 20},
+    "top_n": 20,
 }
 
 
@@ -549,8 +555,6 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 - **unknown field 처리:** Brand-Activity request top-level은 알 수 없는 필드를 무시하고, 중첩 필터 객체는 호환성을 위해 추가 필드를 보존할 수 있습니다.
 
 - **PACK DESC:** `pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행과 매칭해 상위 경쟁 브랜드 후보를 좁힙니다.
-
-`channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
 """
 
 
@@ -748,7 +752,7 @@ BRAND_ACTIVITY_SCOPE_SCHEMA: Final = {
         "topic_set_version": {"type": ["string", "null"], "description": "선택된 topic scope의 버전. scope가 없으면 null."},
         "filter_effect": {
             "type": "object",
-            "description": "`brand_set`(base 또는 channel_axis_applied)과 `payload`(filtered/unfiltered assignment 경로)를 담은 필터 효과 echo.",
+            "description": "`brand_set`(기본 경쟁군 또는 audit_code 적용 경쟁군)과 `payload`(filtered/unfiltered assignment 경로)를 담은 필터 효과 echo.",
         },
     },
 }

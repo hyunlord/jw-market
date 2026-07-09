@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import strategic_runtime
+from pipeline.scripts.api.routes import dynamic_market as dynamic_market_route
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
 
 
@@ -17,9 +18,9 @@ def test_strategic_runtime_uses_only_atc_narrowing_filters() -> None:
             "source": "ubist",
             "measure": "sales",
             "filters": {
+                "atc4": ["C10A1"],
                 "analysis_level": {
                     "ubist": {
-                        "atc4": ["C10A1"],
                         "molecule_strength": ["10/10mg"],
                         "form": ["정"],
                         "route": ["경구"],
@@ -64,7 +65,7 @@ def test_strategic_runtime_uses_only_atc_narrowing_filters() -> None:
     filtered = strategic_runtime._filter_rows_by_analysis_level(
         rows=rows,
         source="ubist",
-        analysis_level=request.filters.analysis_level,
+        analysis_level=dynamic_market_route._strategic_analysis_level_from_top_level_atc4(request),
     )
 
     assert [row["brand_key"] for row in filtered] == ["match"]
@@ -75,12 +76,7 @@ def test_strategic_runtime_matches_ubist_atc4_source_native_aliases() -> None:
         {
             "source": "ubist",
             "measure": "sales",
-            "filters": {
-                "analysis_level": {
-                    "ubist": {"atc4": ["C10C0"]},
-                    "iqvia": {},
-                }
-            },
+            "filters": {"atc4": ["C10C0"]},
         }
     )
     rows = [
@@ -99,7 +95,7 @@ def test_strategic_runtime_matches_ubist_atc4_source_native_aliases() -> None:
     filtered = strategic_runtime._filter_rows_by_analysis_level(
         rows=rows,
         source="ubist",
-        analysis_level=request.filters.analysis_level,
+        analysis_level=dynamic_market_route._strategic_analysis_level_from_top_level_atc4(request),
     )
 
     assert [row["brand_key"] for row in filtered] == ["source-native"]
@@ -110,12 +106,7 @@ def test_strategic_runtime_matches_iqvia_atc4_source_native_aliases() -> None:
         {
             "source": "iqvia",
             "measure": "sales",
-            "filters": {
-                "analysis_level": {
-                    "ubist": {},
-                    "iqvia": {"atc4": ["A10C1"]},
-                }
-            },
+            "filters": {"atc4": ["A10C1"]},
         }
     )
     rows = [
@@ -134,7 +125,7 @@ def test_strategic_runtime_matches_iqvia_atc4_source_native_aliases() -> None:
     filtered = strategic_runtime._filter_rows_by_analysis_level(
         rows=rows,
         source="iqvia_nsa",
-        analysis_level=request.filters.analysis_level,
+        analysis_level=dynamic_market_route._strategic_analysis_level_from_top_level_atc4(request),
     )
 
     assert [row["brand_key"] for row in filtered] == ["source-native"]

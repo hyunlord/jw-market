@@ -104,12 +104,14 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
 
     assert "molecule" not in schema["oneOf"][0]["properties"]["filters"]["properties"]
     assert {"facility", "specialty", "pairs"}.issubset(general_ubist)
-    assert {"class", "molecule", "strength_pack", "ox_gx"}.isdisjoint(general_ubist)
+    assert {"class", "molecule", "strength_pack", "ox_gx", "atc3", "atc4"}.isdisjoint(general_ubist)
     assert {"mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"}.issubset(general_iqvia)
     assert {"mfr", "nhi"}.isdisjoint(general_iqvia)
     assert "atc4" in strategic_filters
     assert "analysis_level" not in strategic_filters
     assert "전략뷰도 top-level `filters.atc4`" in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
+    assert "options" not in schema["oneOf"][0]["properties"]
+    assert {"top_n", "period_range"}.issubset(schema["oneOf"][0]["properties"])
     assert "Swagger에서는" not in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
 
 

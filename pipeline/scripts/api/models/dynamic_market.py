@@ -30,8 +30,6 @@ class UbistAnalysisLevel(BaseModel):
     form: list[str] = Field(default_factory=list, description="제형 필터.", examples=[["정제"]])
     route: list[str] = Field(default_factory=list, description="투여경로 필터.", examples=[["경구"]])
     reimbursement: list[str] = Field(default_factory=list, description="급여구분 필터.", examples=[["급여"]])
-    atc3: list[str] = Field(default_factory=list, description="ATC3 narrowing 필터.", examples=[["C10A"]])
-    atc4: list[str] = Field(default_factory=list, description="ATC4 narrowing 필터.", examples=[["C10A1"]])
     facility: list[str] = Field(default_factory=list, description="UBIST 종별 값 슬라이스.", examples=[["종합병원"]])
     specialty: list[str] = Field(default_factory=list, description="UBIST 진료과 값 슬라이스.", examples=[["순환기(Cardiology IM)"]])
     pairs: list[UbistChannelAxisPair] = Field(default_factory=list, description="UBIST 종별×진료과 pair 값 슬라이스.")
@@ -115,7 +113,38 @@ class DynamicMarketAnalysisLevel(BaseModel):
         return selected if selected.is_active else None
 
 
-DynamicMarketAnalysisLevelFilters = DynamicMarketAnalysisLevel
+class StrategicUbistAnalysisLevel(BaseModel):
+    """Runtime-only strategic ATC narrowing folded from top-level filters.atc4."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    atc3: list[str] = Field(default_factory=list)
+    atc4: list[str] = Field(default_factory=list)
+
+
+class StrategicIqviaAnalysisLevel(BaseModel):
+    """Runtime-only strategic ATC narrowing folded from top-level filters.atc4."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    atc4: list[str] = Field(default_factory=list)
+
+
+class DynamicMarketStrategicAnalysisLevel(BaseModel):
+    """Internal strategic filter payload.
+
+    Public callers must send ATC through top-level ``filters.atc4``. The route
+    folds that field into this runtime-only shape for the cached strategic
+    builder, keeping the public UBIST analysis_level schema ATC-free.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ubist: StrategicUbistAnalysisLevel = Field(default_factory=StrategicUbistAnalysisLevel)
+    iqvia: StrategicIqviaAnalysisLevel = Field(default_factory=StrategicIqviaAnalysisLevel)
+
+
+DynamicMarketAnalysisLevelFilters = DynamicMarketAnalysisLevel | DynamicMarketStrategicAnalysisLevel
 
 
 class UbistChannelAxis(BaseModel):
@@ -205,15 +234,6 @@ class DynamicMarketPeriodRange(BaseModel):
     end: str | None = Field(default=None, description="종료 period YYYY-MM.", examples=["2026-04"])
 
 
-class DynamicMarketOptions(BaseModel):
-    """Runtime knobs that do not change market identity."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    top_n: int | None = Field(default=20, ge=1, le=100, description="ranking 섹션 상위 N개.")
-    period_range: DynamicMarketPeriodRange | None = Field(default=None, description="선택 기간 범위.")
-
-
 class DynamicMarketRequest(BaseModel):
     """Request body for ``POST /api/dynamic-market``."""
 
@@ -222,7 +242,8 @@ class DynamicMarketRequest(BaseModel):
     filters: DynamicMarketFilters = Field(default_factory=DynamicMarketFilters, description="시장 범위와 차원 narrowing 조건.")
     source: str = Field(default="ubist", description="소스. ubist 또는 iqvia.", examples=["ubist"])
     measure: str = Field(default="sales", description="지표. sales 또는 qty.", examples=["sales"])
-    options: DynamicMarketOptions = Field(default_factory=DynamicMarketOptions)
+    top_n: int | None = Field(default=20, ge=1, le=100, description="ranking 섹션 상위 N개.")
+    period_range: DynamicMarketPeriodRange | None = Field(default=None, description="선택 기간 범위.")
 
 
 def _normalize_source(source: str) -> str:

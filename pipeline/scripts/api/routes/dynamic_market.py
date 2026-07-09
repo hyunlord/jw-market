@@ -28,7 +28,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     clamp_top_n,
 )
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevel, DynamicMarketRequest
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest, DynamicMarketStrategicAnalysisLevel
 from pipeline.scripts.api.openapi_docs import (
     DYNAMIC_MARKET_DESCRIPTION,
     DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
@@ -83,8 +83,8 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
     aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
     period_range = PeriodRange(
-        start=payload.options.period_range.start if payload.options.period_range else None,
-        end=payload.options.period_range.end if payload.options.period_range else None,
+        start=payload.period_range.start if payload.period_range else None,
+        end=payload.period_range.end if payload.period_range else None,
     )
     try:
         definition = _resolve_definition(payload)
@@ -94,7 +94,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
             source=definition.source,
             measure=definition.measure,
             period_range=period_range,
-            top_n=clamp_top_n(payload.options.top_n),
+            top_n=clamp_top_n(payload.top_n),
             dimension_filters=definition.dimension_filters,
             channel_axis=definition.channel_axis,
             view=definition.view,
@@ -155,14 +155,14 @@ def _active_unsupported_strategic_analysis_filters(payload: DynamicMarketRequest
     return unsupported
 
 
-def _strategic_analysis_level_from_top_level_atc4(payload: DynamicMarketRequest) -> DynamicMarketAnalysisLevel:
+def _strategic_analysis_level_from_top_level_atc4(payload: DynamicMarketRequest) -> DynamicMarketStrategicAnalysisLevel:
     """Fold public strategic ATC4 input into the runtime-only source model."""
 
     source = payload.source.strip().lower()
     source_key = "ubist" if source == "ubist" else "iqvia"
     if not payload.filters.atc4:
-        return DynamicMarketAnalysisLevel()
-    return DynamicMarketAnalysisLevel.model_validate({source_key: {"atc4": payload.filters.atc4}})
+        return DynamicMarketStrategicAnalysisLevel()
+    return DynamicMarketStrategicAnalysisLevel.model_validate({source_key: {"atc4": payload.filters.atc4}})
 
 
 def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:
@@ -180,7 +180,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
         raise DynamicMarketInputError(str(exc)) from exc
     if filters.view_kind:
         market_selection = _resolve_strategic_market_selection(payload)
-        analysis_level = _strategic_analysis_level_from_top_level_atc4(payload).to_dimension_payload(source=payload.source)
+        analysis_level = _strategic_analysis_level_from_top_level_atc4(payload).model_dump()
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
             view_kind=filters.view_kind,
             ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
