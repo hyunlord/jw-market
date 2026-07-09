@@ -97,21 +97,16 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
 
     general_ubist = schema["oneOf"][0]["properties"]["filters"]["properties"]["analysis_level"]["properties"]["ubist"]["properties"]
     general_iqvia = schema["oneOf"][1]["properties"]["filters"]["properties"]["analysis_level"]["properties"]["iqvia"]["properties"]
-    strategic = schema["oneOf"][2]["properties"]["filters"]["properties"]["analysis_level"]["properties"]
+    strategic_filters = schema["oneOf"][2]["properties"]["filters"]["properties"]
 
     assert "molecule" not in schema["oneOf"][0]["properties"]["filters"]["properties"]
     assert {"facility", "specialty", "pairs"}.issubset(general_ubist)
     assert {"class", "molecule", "strength_pack", "ox_gx"}.isdisjoint(general_ubist)
     assert {"mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"}.issubset(general_iqvia)
     assert {"mfr", "nhi"}.isdisjoint(general_iqvia)
-    assert set(strategic["ubist"]["properties"]) == {"atc3", "atc4"}
-    assert set(strategic["iqvia"]["properties"]) == {"atc4"}
-    assert {"class", "seller", "molecule", "strength_pack", "ox_gx", "reimbursement"}.isdisjoint(strategic["ubist"]["properties"])
-    assert {"mfr", "mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi", "nhi_type"}.isdisjoint(
-        strategic["iqvia"]["properties"]
-    )
-    assert "audit_code" not in strategic["iqvia"]["properties"]
-    assert "전략뷰 narrowing은 ATC만 지원" in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
+    assert "atc4" in strategic_filters
+    assert "analysis_level" not in strategic_filters
+    assert "전략뷰도 top-level `filters.atc4`" in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
     assert "Swagger에서는" not in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
 
 

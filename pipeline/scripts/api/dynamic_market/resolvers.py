@@ -382,8 +382,8 @@ class StrategicViewResolver:
         source: str,
         measure: str,
     ) -> MarketDefinition:
-        if atc4 or molecule:
-            raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not ATC4/molecule expansion")
+        if molecule:
+            raise DynamicMarketInputError("strategic view accepts only top-level ATC4 narrowing, not molecule expansion")
         if channel_axis and channel_axis.is_active:
             raise DynamicMarketInputError("channel_axis is supported only for general views")
         normalized_source = normalize_source(source)
@@ -405,7 +405,10 @@ class StrategicViewResolver:
             BrandRef(str(row["brand_key"]), str(row["brand_name"]), str(row["atc4_code"]))
             for row in rows
         )
-        filters = build_dimension_filters(analysis_level=analysis_level or {}, source=normalized_source)
+        filters = build_dimension_filters(
+            analysis_level=_with_strategic_atc4(analysis_level=analysis_level or {}, source=normalized_source, atc4=atc4),
+            source=normalized_source,
+        )
         view = "strategic_ml" if market_kind == "ml" else "strategic_cd"
         echo: dict[str, object] = {
             "view": view,
@@ -484,6 +487,25 @@ def build_dimension_filters(
     return tuple(filters)
 
 
+def _with_strategic_atc4(
+    *,
+    analysis_level: dict[str, dict[str, list[str]]],
+    source: str,
+    atc4: list[str],
+) -> dict[str, dict[str, list[str]]]:
+    """Attach public top-level strategic ATC4 narrowing to the internal dimension payload."""
+
+    if not atc4:
+        return analysis_level
+    source_key = _api_source_key(source)
+    merged = {
+        key: {inner_key: list(values) for inner_key, values in payload.items()}
+        for key, payload in analysis_level.items()
+    }
+    merged.setdefault(source_key, {})["atc4"] = list(atc4)
+    return merged
+
+
 def normalize_strategic_view_kind(*, view_kind: str | None, ml_id: str | None, cd_market_id: str | None) -> str:
     if view_kind:
         normalized = view_kind.strip().lower()
@@ -534,6 +556,7 @@ def _api_dimension_names(source: str) -> dict[str, str]:
             "reimbursement": "reimbursement",
         }
     return {
+        "atc4": "atc4",
         "mfr_name_kor": "mfr",
         "molecule_type": "molecule_type",
         "molecule_desc": "molecule_desc",

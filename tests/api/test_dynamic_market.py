@@ -2221,7 +2221,7 @@ def test_route_rejects_analysis_level_channel_slice_for_strategic_view() -> None
         raise AssertionError("strategic analysis_level channel slice must be rejected")
 
 
-def test_route_rejects_non_atc_analysis_level_filters_for_strategic_view() -> None:
+def test_route_rejects_analysis_level_filters_for_strategic_view() -> None:
     try:
         dynamic_market_route.dynamic_market(
             DynamicMarketRequest.model_validate(
@@ -2238,14 +2238,14 @@ def test_route_rejects_non_atc_analysis_level_filters_for_strategic_view() -> No
         )
     except dynamic_market_route.HTTPException as exc:
         assert exc.status_code == 400
-        assert "supports only analysis_level.<source>.atc3/atc4" in str(exc.detail)
+        assert "strategic view uses top-level filters.atc4" in str(exc.detail)
         assert "analysis_level.ubist.class" in str(exc.detail)
         assert "analysis_level.ubist.reimbursement" in str(exc.detail)
     else:
-        raise AssertionError("strategic non-ATC analysis_level filters must be rejected")
+        raise AssertionError("strategic analysis_level filters must be rejected")
 
 
-def test_route_allows_atc_analysis_level_filters_for_strategic_view(monkeypatch) -> None:
+def test_route_allows_top_level_atc4_for_strategic_view(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
@@ -2266,7 +2266,7 @@ def test_route_allows_atc_analysis_level_filters_for_strategic_view(monkeypatch)
                 "filters": {
                     "view_kind": "market_landscape",
                     "focus_brand_key": "리바로",
-                    "analysis_level": {"ubist": {"atc3": ["C10A"], "atc4": ["C10A1"]}},
+                    "atc4": ["C10A1"],
                 },
             }
         )
@@ -2274,11 +2274,10 @@ def test_route_allows_atc_analysis_level_filters_for_strategic_view(monkeypatch)
 
     assert response["status"] == "SUCCESS"
     analysis_level = captured["analysis_level"]
-    assert analysis_level.ubist.atc3 == ["C10A"]
     assert analysis_level.ubist.atc4 == ["C10A1"]
 
 
-def test_route_rejects_top_level_atc4_for_strategic_view() -> None:
+def test_route_rejects_strategic_analysis_level_atc_filters() -> None:
     try:
         dynamic_market_route.dynamic_market(
             DynamicMarketRequest.model_validate(
@@ -2288,16 +2287,18 @@ def test_route_rejects_top_level_atc4_for_strategic_view() -> None:
                     "filters": {
                         "view_kind": "market_landscape",
                         "focus_brand_key": "리바로",
-                        "atc4": ["C10A1"],
+                        "analysis_level": {"ubist": {"atc3": ["C10A"], "atc4": ["C10A1"]}},
                     },
                 }
             )
         )
     except dynamic_market_route.HTTPException as exc:
         assert exc.status_code == 400
-        assert "top-level ATC4 expansion" in str(exc.detail)
+        assert "strategic view uses top-level filters.atc4" in str(exc.detail)
+        assert "analysis_level.ubist.atc3" in str(exc.detail)
+        assert "analysis_level.ubist.atc4" in str(exc.detail)
     else:
-        raise AssertionError("strategic top-level atc4 must be rejected")
+        raise AssertionError("strategic analysis_level ATC filters must be rejected")
 
 
 def test_iqvia_channel_axis_response_adds_selected_audit_summary_only_when_active() -> None:

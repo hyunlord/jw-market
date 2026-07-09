@@ -118,15 +118,17 @@ root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니�
 `iqvia_nsa`로 정규화됩니다. `measure`는 UBIST에서 `sales`, `volume`, IQVIA에서
 `sales`, `unit`, `counting_unit`, `dosage_unit`만 유효합니다.
 
-빈 `analysis_level` 차원은 그 차원을 적용하지 않는 전체 선택(select-all)입니다. 일반뷰 시장 범위인
-top-level `filters.atc4`를 생략하고 `focus_brand_key`를 보내면, 해당 브랜드가 속한 모든 ATC4를
-합집합으로 사용합니다. `focus_brand_key`와 `filters.atc4`가 모두 없으면 시장 범위를 정할 수 없어 400입니다.
+빈 `analysis_level` 차원은 그 차원을 적용하지 않는 전체 선택(select-all)입니다. 공통 시장 범위인
+top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. 일반뷰에서 `filters.atc4`를 생략하고
+`focus_brand_key`를 보내면, 해당 브랜드가 속한 모든 ATC4를 합집합으로 사용합니다.
+전략뷰에서 `filters.atc4`를 생략하거나 빈 배열로 보내면 선택된 전략 시장 전체를 사용합니다.
+일반뷰에서 `focus_brand_key`와 `filters.atc4`가 모두 없으면 시장 범위를 정할 수 없어 400입니다.
 
 ### 공통 `filters` 필드
 
 | 필드 | 타입 | 기본값 | 동작 |
 |---|---|---|---|
-| `atc4(ATC4 시장 범위)` | string[] | `[]` | 일반뷰 전용 범위. 생략하면 `focus_brand_key`의 모든 ATC4를 사용합니다. 전략뷰에서 보내면 400입니다. |
+| `atc4(ATC4 시장 범위/narrowing)` | string[] | `[]` | 일반뷰에서는 시장 scope, 전략뷰에서는 ML/CD 시장 안의 ATC narrowing입니다. 생략/빈 배열은 select-all입니다. |
 | `view_kind` | string/null | null | `market_landscape`/`strategic_ml`/`ml`은 ML 전략뷰, `competitive_dynamics`/`strategic_cd`/`cd`는 CD 전략뷰입니다. 값이 있으면 전략뷰 분기로 들어갑니다. |
 | `focus_brand_key` | string/null | null | `filters.atc4` 생략 시 브랜드 기준 ATC4 합집합을 만드는 데 사용합니다. 빈 문자열은 대부분 미입력처럼 처리됩니다. |
 | `analysis_level` | object | 빈 source 객체 | 소스별 필터 딕셔너리입니다. row filter와 값 슬라이스를 같은 source 하위에 넣습니다. |
@@ -149,16 +151,15 @@ top-level `filters.atc4`를 생략하고 `focus_brand_key`를 보내면, 해당 
 `pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행을 조회해 PACK DESC 텍스트 단위로 제품 범위를 좁힙니다.
 `audit_code`는 row filter가 아니라 raw `audit_code_matrix` 값 슬라이스입니다. missing/빈 배열이면 전체 audit code를 포함합니다.
 
-### 전략뷰 `analysis_level`
+### 전략뷰 필터
 
-**전략뷰 narrowing은 ATC만 지원합니다.** 전략뷰는 top-level `filters.atc4`를 받지 않습니다. 전략 범위를 더 좁힐 때는
-`analysis_level.ubist.atc4(ATC4 좁히기)`처럼 source 하위의 ATC narrowing 필드를 사용합니다.
-UBIST는 `analysis_level.ubist.atc3(ATC3 좁히기)`도 받을 수 있습니다. `class(클래스)`,
-`mfr/mfr_name_kor(제조사)`, `nhi/nhi_type(NHI 구분)`, molecule/pack/strength/form/route/reimbursement 계열은
-전략뷰 요청 필터가 아니며 active 값이 있으면 400입니다. `facility`, `specialty`, `pairs`, `audit_code` 같은
-값 슬라이스 필드도 일반뷰 전용이므로 전략뷰에서 active 값이 있으면 400입니다.
+전략뷰도 top-level `filters.atc4` 하나로 ATC narrowing을 합니다. `analysis_level.<source>.atc3` 또는
+`analysis_level.<source>.atc4`는 전략뷰 narrowing 입력이 아니며 active 값이 있으면 400입니다.
+`class(클래스)`, `mfr/mfr_name_kor(제조사)`, `nhi/nhi_type(NHI 구분)`, molecule/pack/strength/form/route/reimbursement 계열도
+전략뷰 요청 필터가 아닙니다. `facility`, `specialty`, `pairs`, `audit_code` 같은 값 슬라이스 필드도 일반뷰 전용이므로
+전략뷰에서 active 값이 있으면 400입니다.
 
-전략뷰에서 ATC를 전체 선택하려면 `analysis_level.<source>.atc4`를 생략하거나 빈 배열로 보내면 됩니다.
+전략뷰에서 ATC를 전체 선택하려면 `filters.atc4`를 생략하거나 빈 배열로 보내면 됩니다.
 전략 시장 id(`ml_id`, `cd_market_id`)는 공개 요청 필드가 아닙니다. `focus_brand_key`와 `view_kind`만 보내면
 백엔드가 선택한 `source`/`measure`에서 브랜드가 속한 ML 또는 CD 시장을 조회합니다. 같은 브랜드가 여러 시장에
 속하면 시장 id 오름차순 첫 번째를 결정론적으로 사용합니다. 예를 들어 `ml_005, ml_008`이면 `ml_005`,
@@ -243,25 +244,6 @@ PUBLIC_GENERAL_IQVIA_ANALYSIS_SCHEMA: Final = {
 }
 
 
-PUBLIC_STRATEGIC_UBIST_ANALYSIS_SCHEMA: Final = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 전략뷰 narrowing). 비어 있으면 전체 선택"},
-        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 전략뷰 narrowing). 비어 있으면 전체 선택"},
-    },
-}
-
-
-PUBLIC_STRATEGIC_IQVIA_ANALYSIS_SCHEMA: Final = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 전략뷰 narrowing). 비어 있으면 전체 선택"},
-    },
-}
-
-
 PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
     "oneOf": [
         {
@@ -323,14 +305,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                     "properties": {
                         "focus_brand_key": {"type": "string", "description": "focus_brand_key(선택 브랜드)"},
                         "view_kind": {"type": "string", "enum": ["market_landscape", "competitive_dynamics", "strategic_ml", "strategic_cd", "ml", "cd"]},
-                        "analysis_level": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "ubist": PUBLIC_STRATEGIC_UBIST_ANALYSIS_SCHEMA,
-                                "iqvia": PUBLIC_STRATEGIC_IQVIA_ANALYSIS_SCHEMA,
-                            },
-                        },
+                        "atc4": {"type": "array", "items": {"type": "string"}, "description": "ATC4 전략뷰 narrowing. 생략/빈 배열이면 전략 시장 전체 선택."},
                     },
                 },
                 "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
@@ -357,7 +332,7 @@ DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
     "filters": {
         "focus_brand_key": "리바로",
         "view_kind": "market_landscape",
-        "analysis_level": {"ubist": {"atc4": ["C10A1"]}},
+        "atc4": ["C10A1"],
     },
     "options": {"top_n": 20},
 }
@@ -458,7 +433,7 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
     },
     "market_landscape": {
         "summary": "전략뷰 Market Landscape: 브랜드명 기반 자동 시장 결정 + ATC narrowing",
-        "description": "focus_brand_key와 view_kind로 ML 시장을 내부 조회하고, 필요하면 analysis_level.<source>.atc4로만 추가 narrowing합니다.",
+        "description": "focus_brand_key와 view_kind로 ML 시장을 내부 조회하고, 필요하면 top-level filters.atc4로 추가 narrowing합니다.",
         "value": DYNAMIC_MARKET_REQUEST_EXAMPLE,
     },
     "competitive_dynamics": {

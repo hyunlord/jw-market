@@ -28,7 +28,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     PeriodRange,
     clamp_top_n,
 )
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevel, DynamicMarketRequest
 from pipeline.scripts.api.openapi_docs import (
     DYNAMIC_MARKET_DESCRIPTION,
     DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
@@ -64,6 +64,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
             _reject_strategic_expansion_filters(payload)
             _reject_strategic_channel_axis(payload)
             market_selection = _resolve_strategic_market_selection(payload)
+            analysis_level = _strategic_analysis_level_from_top_level_atc4(payload)
             return success_envelope(
                 build_cached_payload(
                     builder=build_strategic_payload,
@@ -73,7 +74,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                     focus_brand_key=payload.filters.focus_brand_key,
                     source=payload.source,
                     measure=payload.measure,
-                    analysis_level=payload.filters.analysis_level,
+                    analysis_level=analysis_level,
                 )
             )
         except DynamicMarketInputError as exc:
@@ -130,30 +131,38 @@ def _reject_strategic_channel_axis(payload: DynamicMarketRequest) -> None:
 
 
 def _reject_strategic_expansion_filters(payload: DynamicMarketRequest) -> None:
-    if payload.filters.atc4:
-        raise DynamicMarketInputError("strategic view accepts only narrowing analysis_level filters, not top-level ATC4 expansion")
     unsupported = _active_unsupported_strategic_analysis_filters(payload)
     if unsupported:
         joined = ", ".join(unsupported)
         raise DynamicMarketInputError(
-            "strategic view supports only analysis_level.<source>.atc3/atc4 narrowing filters; "
+            "strategic view uses top-level filters.atc4 for ATC narrowing; "
             f"unsupported filters: {joined}"
         )
 
 
 def _active_unsupported_strategic_analysis_filters(payload: DynamicMarketRequest) -> list[str]:
+    unsupported: list[str] = []
+    sources = (
+        ("ubist", payload.filters.analysis_level.ubist, {"facility", "specialty", "pairs"}),
+        ("iqvia", payload.filters.analysis_level.iqvia, {"audit_code"}),
+    )
+    for source_key, source_filters, channel_slice_keys in sources:
+        for key, values in source_filters.model_dump(by_alias=True).items():
+            if key in channel_slice_keys:
+                continue
+            if any(str(value).strip() for value in values):
+                unsupported.append(f"analysis_level.{source_key}.{key}")
+    return unsupported
+
+
+def _strategic_analysis_level_from_top_level_atc4(payload: DynamicMarketRequest) -> DynamicMarketAnalysisLevel:
+    """Fold public strategic ATC4 input into the runtime-only source model."""
+
     source = payload.source.strip().lower()
     source_key = "ubist" if source == "ubist" else "iqvia"
-    source_filters = payload.filters.analysis_level.ubist if source_key == "ubist" else payload.filters.analysis_level.iqvia
-    allowed = {"atc3", "atc4"} if source_key == "ubist" else {"atc4"}
-    channel_slice_keys = {"facility", "specialty", "pairs"} if source_key == "ubist" else {"audit_code"}
-    unsupported: list[str] = []
-    for key, values in source_filters.model_dump(by_alias=True).items():
-        if key in allowed or key in channel_slice_keys:
-            continue
-        if any(str(value).strip() for value in values):
-            unsupported.append(f"analysis_level.{source_key}.{key}")
-    return unsupported
+    if not payload.filters.atc4:
+        return DynamicMarketAnalysisLevel()
+    return DynamicMarketAnalysisLevel.model_validate({source_key: {"atc4": payload.filters.atc4}})
 
 
 def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:
@@ -171,6 +180,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
         raise DynamicMarketInputError(str(exc)) from exc
     if filters.view_kind:
         market_selection = _resolve_strategic_market_selection(payload)
+        analysis_level = _strategic_analysis_level_from_top_level_atc4(payload).to_dimension_payload(source=payload.source)
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
             view_kind=filters.view_kind,
             ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
