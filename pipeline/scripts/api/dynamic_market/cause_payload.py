@@ -9,9 +9,8 @@ from typing import Any
 
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.analysis_levels import build_analysis_level_sections
+from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking, company_ranking
 from pipeline.scripts.api.dynamic_market.cause_sections import (
-    brand_ranking,
-    company_ranking,
     display_matrix_rows,
     growth_contribution,
     kpi,

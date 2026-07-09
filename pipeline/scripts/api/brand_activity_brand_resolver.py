@@ -27,6 +27,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     text,
 )
 from pipeline.scripts.api.catalog import get_display_brand
+from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
@@ -102,7 +103,14 @@ def resolve_brand_set(
     applied_filter = applied_brand_filter(view_name, resolved_market_id, filter_payload or {})
     channel_axis = parse_audit_code_axis(filter_payload or {}) if view_name == "general" else None
     validate_audit_code_axis(brand_rows, channel_axis)
-    candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking, audit_code_axis=channel_axis)
+    candidates = _brand_candidates(
+        view_name,
+        brand_rows,
+        brand_meta,
+        ranking,
+        ranking_quarters=ranking_quarters,
+        audit_code_axis=channel_axis,
+    )
     choices = _select_choices(candidates, selected_brand=selected_brand, applied_filter=applied_filter)
     return BrandSetResolution(
         view_name=view_name,
@@ -198,6 +206,7 @@ def _brand_candidates(
     metas: dict[str, BrandMeta],
     ranking: JsonMap,
     *,
+    ranking_quarters: Sequence[str] | None = None,
     audit_code_axis: ChannelAxisFilter | None = None,
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
@@ -214,11 +223,7 @@ def _brand_candidates(
                 meta=meta,
                 dimensions=_dimensions(view_name, row, meta, general_molecules, general_sidecar.get(brand_key, {})),
                 sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
-                sales_value=(
-                    audit_code_sales_value(row, audit_code_axis, str(ranking["quarter"]))
-                    if audit_code_axis
-                    else float_value(rank_item.get("raw_value")) or float_value(metric.get("raw_value"))
-                ),
+                sales_value=_candidate_sales_value(row, ranking=ranking, ranking_quarters=ranking_quarters, audit_code_axis=audit_code_axis),
             )
         )
     return tuple(candidates)
@@ -233,13 +238,19 @@ def _select_choices(
     selected = next((candidate for candidate in candidates if candidate.meta.brand_key == selected_brand), None)
     if selected is None:
         return ()
-    competitors = [
-        candidate
-        for candidate in candidates
-        if candidate.meta.brand_key != selected_brand and _passes_filter(candidate, applied_filter)
+    eligible = [
+        selected,
+        *[
+            candidate
+            for candidate in candidates
+            if candidate.meta.brand_key != selected_brand and _passes_filter(candidate, applied_filter)
+        ],
     ]
-    competitors.sort(key=lambda candidate: (-candidate.sales_value, candidate.sales_rank or 999_999, candidate.meta.brand_key))
-    ordered = [selected, *competitors[: MAX_BRAND_SET_SIZE - 1]]
+    ordered = select_top_competitors(
+        tuple(CompetitorRankItem(candidate.meta.brand_key, candidate.sales_value, candidate) for candidate in eligible),
+        selected_brand_key=selected_brand,
+        top_n=MAX_BRAND_SET_SIZE - 1,
+    )
     return tuple(
         BrandChoice(
             brand_key=candidate.meta.brand_key,
@@ -249,6 +260,20 @@ def _select_choices(
         )
         for candidate in ordered
     )
+
+
+def _candidate_sales_value(
+    row: JsonMap,
+    *,
+    ranking: JsonMap,
+    ranking_quarters: Sequence[str] | None,
+    audit_code_axis: ChannelAxisFilter | None,
+) -> float:
+    metric_history = json_map(row.get("metric_history"))
+    periods = tuple(ranking_quarters or sorted(metric_history) or (str(ranking["quarter"]),))
+    if audit_code_axis:
+        return sum(audit_code_sales_value(row, audit_code_axis, period) for period in periods)
+    return sum(float_value(json_map(metric_history.get(period)).get("raw_value")) or 0.0 for period in periods)
 
 
 def _passes_filter(candidate: BrandCandidate, applied_filter: JsonMap) -> bool:

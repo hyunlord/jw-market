@@ -14,6 +14,7 @@ from typing import Any
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.scripts.api import db
+from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT, CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.dynamic_market.channel_axis import (
     ChannelAxisFilter,
     history_from_audit_code_matrix,
@@ -97,6 +98,7 @@ class MetricAggregator:
         channel_axis: ChannelAxisFilter | None = None,
         view: str = "general",
         strategic_market_id: str | None = None,
+        selected_brand_key: str | None = None,
     ) -> AggregatedMetrics:
         if not brands:
             return AggregatedMetrics(source, measure, "", 0.0, None, None, (), (), ())
@@ -172,7 +174,11 @@ class MetricAggregator:
             hhi=compute_hhi(ranked),
             cagr=compute_cagr(monthly_series),
             monthly_series=monthly_series,
-            brands=ranked[:top_n],
+            brands=select_top_competitors(
+                tuple(CompetitorRankItem(item.brand_key, item.total_value, item) for item in ranked),
+                selected_brand_key=selected_brand_key,
+                top_n=MAX_COMPETITOR_COUNT,
+            ),
             all_brands=ranked,
             ubist_specialty_channels=ubist_summary.specialty_channels,
             ubist_specialty_target_channels=ubist_summary.specialty_target_channels,

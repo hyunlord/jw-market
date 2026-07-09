@@ -94,6 +94,54 @@ def test_aggregate_rows_when_period_range_limits_history() -> None:
     assert [item.total_value for item in brand_metrics] == [60.0, 30.0]
 
 
+def test_aggregate_selects_focus_plus_top_competitors_by_total_value(monkeypatch) -> None:
+    def fake_iter_rows(sql: str, _params: tuple[object, ...]):
+        if "raw_value_history" not in sql:
+            return
+        for brand_key, values in {
+            "focus": {"2026-01": 1.0, "2026-02": 1.0},
+            "a": {"2026-01": 100.0, "2026-02": 0.0},
+            "b": {"2026-01": 1.0, "2026-02": 200.0},
+            "c": {"2026-01": 90.0, "2026-02": 90.0},
+            "d": {"2026-01": 80.0, "2026-02": 80.0},
+            "e": {"2026-01": 70.0, "2026-02": 70.0},
+            "f": {"2026-01": 60.0, "2026-02": 60.0},
+            "g": {"2026-01": 50.0, "2026-02": 50.0},
+        }.items():
+            yield {
+                "brand_key": brand_key,
+                "brand_name": brand_key.upper(),
+                "atc4_code": "C10A1",
+                "source": "ubist",
+                "measure": "sales",
+                "unit_label": "KRW",
+                "raw_value_history": json.dumps(values),
+            }
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
+
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(
+            BrandRef("focus", "FOCUS", "C10A1"),
+            BrandRef("a", "A", "C10A1"),
+            BrandRef("b", "B", "C10A1"),
+            BrandRef("c", "C", "C10A1"),
+            BrandRef("d", "D", "C10A1"),
+            BrandRef("e", "E", "C10A1"),
+            BrandRef("f", "F", "C10A1"),
+            BrandRef("g", "G", "C10A1"),
+        ),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+        selected_brand_key="focus",
+    )
+
+    assert [item.brand_key for item in metrics.brands] == ["focus", "b", "c", "d", "e", "f"]
+
+
 def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -293,6 +341,20 @@ def test_display_matrix_rows_pins_focus_then_top_competitors_without_mutating_va
     assert selected[0] is focus_row
     assert selected[0]["share_pct"] == 99.0
     assert all(not row.get("is_others") for row in selected)
+
+
+def test_display_matrix_rows_uses_total_sales_before_recent_value() -> None:
+    focus = BrandMetric("focus", "Focus", "C10A1", 1.0, 1.0, 8, "2026-05", 1.0)
+    rows = [
+        {"brand": "Focus", "brand_key": "focus", "total_value": 1.0, "value_recent": 1.0},
+        {"brand": "A", "brand_key": "a", "total_value": 10.0, "value_recent": 100.0},
+        {"brand": "B", "brand_key": "b", "total_value": 50.0, "value_recent": 1.0},
+        {"brand": "C", "brand_key": "c", "total_value": 50.0, "value_recent": 2.0},
+    ]
+
+    selected = display_matrix_rows(rows, focus=focus)
+
+    assert [row["brand_key"] for row in selected] == ["focus", "b", "c", "a"]
 
 
 def test_matrix_rows_populates_growth_contribution_percent_for_chart_points() -> None:
