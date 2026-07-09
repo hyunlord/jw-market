@@ -1183,6 +1183,38 @@ AI_ANALYSIS_FIELD_SCHEMA: Final = {
 }
 
 
+BRAND_FACTORS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "atc": {"type": "array", "items": {"type": "string"}},
+        "ubist": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "seller": {"type": "array", "items": {"type": "string"}},
+                "molecule_strength": {"type": "array", "items": {"type": "string"}},
+                "form": {"type": "array", "items": {"type": "string"}},
+                "route": {"type": "array", "items": {"type": "string"}},
+                "reimbursement": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "iqvia": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mfr_name_kor": {"type": "array", "items": {"type": "string"}},
+                "molecule_type": {"type": "array", "items": {"type": "string"}},
+                "molecule_desc": {"type": "array", "items": {"type": "string"}},
+                "pack_desc": {"type": "array", "items": {"type": "string"}},
+                "strength": {"type": "array", "items": {"type": "string"}},
+                "nhi_type": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+}
+
+
 DEEP_ANALYSIS_RESPONSES: Final = {
     200: {
         "description": "포탈 심층분석 payload",
@@ -1202,6 +1234,7 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                                 "ai_analysis": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "ai_analysis_short": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "ai_analysis_long": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
+                                "brand_factors": deepcopy(BRAND_FACTORS_SCHEMA),
                             },
                         },
                     },

@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 FORECAST_HORIZON_QUARTERS = 20
 FORECAST_HORIZON_MONTHS = 60
+EMPTY_BRAND_FACTORS = {
+    "atc": [],
+    "ubist": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
+    "iqvia": {
+        "mfr_name_kor": [],
+        "molecule_type": [],
+        "molecule_desc": [],
+        "pack_desc": [],
+        "strength": [],
+        "nhi_type": [],
+    },
+}
 
 
 def _not_generated_brand_strength() -> dict:
@@ -153,6 +165,48 @@ def _load_ai_analysis_variants(brand: str) -> tuple[dict, dict]:
     )
 
 
+def _empty_brand_factors() -> dict:
+    return json.loads(json.dumps(EMPTY_BRAND_FACTORS))
+
+
+def _load_brand_factors(value: object) -> dict:
+    if value is None:
+        return _empty_brand_factors()
+    if isinstance(value, dict):
+        payload = value
+    else:
+        try:
+            payload = json.loads(str(value))
+        except (TypeError, json.JSONDecodeError):
+            return _empty_brand_factors()
+    return payload if isinstance(payload, dict) else _empty_brand_factors()
+
+
+def _fetch_deep_analysis_row(brand: str) -> dict | None:
+    try:
+        return db.fetch_one(
+            """
+            SELECT response_json, brand_factors, updated_at
+            FROM cache_deep_analysis
+            WHERE brand = %s
+            LIMIT 1
+            """,
+            [brand],
+        )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] == 1054:
+            return db.fetch_one(
+                """
+                SELECT response_json, updated_at
+                FROM cache_deep_analysis
+                WHERE brand = %s
+                LIMIT 1
+                """,
+                [brand],
+            )
+        raise
+
+
 def _format_generated_at(value: object) -> str:
     if isinstance(value, datetime):
         generated_at = value
@@ -246,15 +300,7 @@ def _slice_forecast_horizon(payload: dict) -> None:
 )
 def deep_analysis(brand_name: str) -> dict:
     brand = unquote(brand_name)
-    row = db.fetch_one(
-        """
-        SELECT response_json, updated_at
-        FROM cache_deep_analysis
-        WHERE brand = %s
-        LIMIT 1
-        """,
-        [brand],
-    )
+    row = _fetch_deep_analysis_row(brand)
     if not row:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
     payload = compose_cached_json(row["response_json"])
@@ -264,6 +310,8 @@ def deep_analysis(brand_name: str) -> dict:
     _slice_forecast_horizon(payload)
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
+        if "brand_factors" in row:
+            data["brand_factors"] = _load_brand_factors(row.get("brand_factors"))
         data["ai_analysis"] = _load_ai_analysis(brand)
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(brand)
         data["ai_analysis_short"] = ai_analysis_short
