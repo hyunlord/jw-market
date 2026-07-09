@@ -131,7 +131,7 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     description=(
         "mock `/jw-brand-activity-mock/api/brand-activity/csd-timeseries`와 대응되는 포탈 공유 API입니다. "
         "CSD 활동량은 `csd_channel_dynamics_stage`의 `jw_channel='TOTAL'`만 사용하므로 화면 관점의 region=TOTAL입니다. "
-        "IQVIA 매출/처방 지표(sales/unit/counting_unit/dosage_unit)는 같은 분기축으로 정렬됩니다.\n\n"
+        "CSD 활동량은 월간축(activity_months)으로, IQVIA 매출/처방 지표(sales/unit/counting_unit/dosage_unit)는 기존 분기축(quarters)으로 정렬됩니다.\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
@@ -142,8 +142,8 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
                 "window": {
                     "type": "object",
                     "properties": {
-                        "start": {"type": "string", "description": "조회 시작 분기 또는 월. 예: 2024-Q1, 2024-01."},
-                        "end": {"type": "string", "description": "조회 종료 분기 또는 월. 예: 2025-Q4, 2025-12."},
+                        "start": {"type": "string", "description": "조회 시작 분기. 예: 2024-Q1."},
+                        "end": {"type": "string", "description": "조회 종료 분기. 예: 2025-Q4."},
                     },
                 },
             },
@@ -172,7 +172,7 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     summary="CSD 활동량·비율·순위 추세",
     description=(
         "문서 Section 1 CSD Channeldynamics 시계열 API입니다. "
-        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 활동량 rank series를 제공합니다."
+        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 월간 활동량 rank series를 제공합니다."
     ),
     response_model=None,
     openapi_extra={"requestBody": brand_activity_request_body({}, CSD_ACTIVITY_SERIES_EXAMPLE)},

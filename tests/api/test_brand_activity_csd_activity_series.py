@@ -47,13 +47,28 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
     assert payload["entity_level"] == "company"
     assert payload["channel"] == "GH+SHPPI"
     assert payload["period"]["quarters"] == ["2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4"]
+    assert payload["period"]["months"] == [
+        "2025-01",
+        "2025-02",
+        "2025-03",
+        "2025-04",
+        "2025-05",
+        "2025-06",
+        "2025-07",
+        "2025-08",
+        "2025-09",
+        "2025-10",
+        "2025-11",
+        "2025-12",
+    ]
     assert any(params == ("LIVALO Market", "GH+SHPPI") for params in captured_params)
     selected = payload["entities"][0]
     assert selected["key"] == "JW"
     assert selected["is_selected"] is True
-    assert selected["activity"]["absolute"][-1] == {"period": "2025-Q4", "value": 130.0}
-    assert selected["activity"]["share_pct"][-1] == {"period": "2025-Q4", "value": 38.23529411764706}
-    assert selected["activity"]["rank"][-1] == {"period": "2025-Q4", "value": 2}
+    assert {"period": "2025-10", "value": 130.0} in selected["activity"]["absolute"]
+    assert {"period": "2025-10", "value": 38.23529411764706} in selected["activity"]["share_pct"]
+    assert {"period": "2025-10", "value": 2} in selected["activity"]["rank"]
+    assert {"period": "2025-11", "value": 0.0} in selected["activity"]["absolute"]
 
 
 def test_activity_series_rejects_unknown_channel() -> None:
@@ -134,6 +149,21 @@ def test_requested_quarters_defaults_to_one_year_and_clamps_to_three_years() -> 
     assert len(clamped) == 12
     assert clamped[0] == "2023-Q1"
     assert clamped[-1] == "2025-Q4"
+
+
+def test_activity_rows_preserve_months_inside_requested_quarter() -> None:
+    rows = [
+        {"period_ym": "2025-01", "master_product": "LIVALO", "representing_company": "JW", "value": 10.0},
+        {"period_ym": "2025-02", "master_product": "LIVALO", "representing_company": "JW", "value": 20.0},
+        {"period_ym": "2025-04", "master_product": "LIVALO", "representing_company": "JW", "value": 40.0},
+    ]
+
+    activity = service._activity_rows(rows, ("2025-01", "2025-02", "2025-03"), ("2025-01", "2025-02", "2025-03", "2025-04"))
+
+    assert activity.months == ("2025-01", "2025-02", "2025-03")
+    assert activity.totals == {"2025-01": 10.0, "2025-02": 20.0, "2025-03": 0.0}
+    assert activity.by_product["LIVALO"] == {"2025-01": 10.0, "2025-02": 20.0}
+    assert activity.by_company["JW"] == {"2025-01": 10.0, "2025-02": 20.0}
 
 
 def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:

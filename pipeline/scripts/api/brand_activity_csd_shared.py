@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 import json
@@ -83,6 +84,13 @@ def full_quarters_from_months(months: list[str]) -> list[str]:
         quarter = period_ym_to_quarter(period)
         seen.setdefault(quarter, set()).add(int(period.split("-", 1)[1]))
     return sorted(quarter for quarter, present in seen.items() if len(present) == 3)
+
+
+def months_in_quarter_window(all_months: Sequence[str], quarters: Sequence[str]) -> tuple[str, ...]:
+    """Return period_ym values whose quarter belongs to the requested quarter window."""
+
+    quarter_set = set(quarters)
+    return tuple(sorted(month for month in all_months if period_ym_to_quarter(month) in quarter_set))
 
 
 def select_ranked_brands(ranking: list[JsonMap], *, selected_brand: str) -> list[BrandChoice]:
