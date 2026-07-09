@@ -445,6 +445,84 @@ def test_prediction_news_evidence_must_come_from_bundle():
     assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
 
 
+def test_prediction_news_evidence_allows_safe_title_normalization():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "허가사항 변경 영향",
+            "body": "고혈압약 네비보롤 관련 허가사항 변경으로 처방이 보수화될 수 있습니다.",
+            "bullets": [],
+            "evidence": [
+                {
+                    "title": "뉴스 '고혈압약 네비보롤, SU 병용 시 중증 저혈당 위험 추가'",
+                    "source": "뉴스",
+                }
+            ],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+    bundle = {
+        "event_bundle": {
+            "events_market_trend": [
+                {
+                    "news_id": "f3b29e746302fb0c",
+                    "title": "고혈압약 네비보롤, SU 병용 시 '중증 저혈당 위험' 추가",
+                }
+            ]
+        }
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
+def test_prediction_evidence_source_only_without_value_still_blocks():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "전망",
+            "body": "단기 전망은 보수적으로 봅니다.",
+            "bullets": [],
+            "evidence": [{"title": "수치 근거", "basis": "Market Landscape · UBIST 기준 처방량 데이터"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+
+    result = validate_output(parsed_output, {"market_views": []}, RunnerConfig.default_for_tests().validator)
+
+    assert not result.valid
+    assert any(item["pattern"] == "prediction_evidence_not_in_bundle" for item in result.unmatched_numbers)
+
+
+def test_prediction_numeric_evidence_accepts_zero_when_metric_path_exists():
+    parsed_output = {
+        "phenomenon": {"title": "", "body": "", "bullets": []},
+        "cause": {"title": "", "body": "", "bullets": []},
+        "prediction": {
+            "title": "처방량 전망",
+            "body": "현 수준을 보수적으로 유지합니다.",
+            "bullets": [],
+            "evidence": [{"title": "수치 근거", "basis": "0.00(Market Landscape · UBIST · 처방량)"}],
+        },
+        "recommendation": {"title": "", "body": "", "bullets": []},
+    }
+    bundle = {
+        "market_views": [
+            {
+                "view_id": "ML.UBIST.volume",
+                "target_brand_metric": {"history": {"2026-05": {"raw_value": 0.0}}},
+            }
+        ]
+    }
+
+    result = validate_output(parsed_output, bundle, RunnerConfig.default_for_tests().validator)
+
+    assert result.valid
+
+
 def test_non_bundle_numeric_claim_still_blocks():
     parsed_output = {
         "phenomenon": {

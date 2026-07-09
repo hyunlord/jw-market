@@ -75,6 +75,7 @@ NUMERIC_EVIDENCE_TAG_RE = re.compile(
 )
 NUMERIC_EVIDENCE_VALUE_RE = re.compile(r"(?<![\d,.])(\d+(?:,\d{3})*(?:\.\d+)?)(?![\d,.])")
 MIN_EVENT_TITLE_MATCH_CHARS = 8
+MIN_NORMALIZED_EVENT_TITLE_MATCH_CHARS = 12
 VIEW_DISPLAY = {
     "ML": "Market Landscape",
     "CD": "Competitive Dynamics",
@@ -682,15 +683,37 @@ def _evidence_texts(item: dict[str, Any]) -> list[str]:
     ]
 
 
+def _normalize_event_title_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^\s*뉴스\s*", "", cleaned)
+    cleaned = cleaned.strip(" '\"‘’“”")
+    return re.sub(r"[\s'\"‘’“”]+", "", cleaned)
+
+
+def _title_text_matches_retained_event(text: str, source_title: str) -> bool:
+    if text == source_title:
+        return True
+    if len(source_title) >= MIN_EVENT_TITLE_MATCH_CHARS and source_title in text:
+        return True
+
+    normalized_text = _normalize_event_title_text(text)
+    normalized_title = _normalize_event_title_text(source_title)
+    if not normalized_text or not normalized_title:
+        return False
+    if normalized_text == normalized_title:
+        return True
+    if min(len(normalized_text), len(normalized_title)) < MIN_NORMALIZED_EVENT_TITLE_MATCH_CHARS:
+        return False
+    return normalized_text in normalized_title or normalized_title in normalized_text
+
+
 def _matches_event_evidence(item: dict[str, Any], source_ids: set[str], source_titles: set[str]) -> bool:
     news_id = str(item.get("news_id") or "")
     if news_id and news_id in source_ids:
         return True
     for text in _evidence_texts(item):
-        if text in source_titles:
-            return True
         for title in source_titles:
-            if len(title) >= MIN_EVENT_TITLE_MATCH_CHARS and title in text:
+            if _title_text_matches_retained_event(text, title):
                 return True
     return False
 

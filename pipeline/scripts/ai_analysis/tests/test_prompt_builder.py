@@ -131,6 +131,8 @@ def test_prompt_declares_view_label_and_evidence_contracts():
     assert "ML·UBIST·매출" in question
     assert "prediction evidence" in question
     assert "retained event 목록" in question
+    assert "evidence 배열을 비워두거나 항목 수를 줄이세요" in question
+    assert "source label만 있는 근거" in question
 
 
 def test_prompt_declares_simulation_horizon_contract_when_all_horizons_exist():

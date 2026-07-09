@@ -94,6 +94,8 @@ def _validation_contract_block(forecast: dict[str, Any], analysis_variant: str =
         "`ML·UBIST·매출`, `CD·IQVIA·매출` 같은 축약형만 쓰는 것은 금지입니다.\n"
         "- prediction evidence의 event/news 근거는 반드시 위 retained event 목록의 `news_id` 또는 `title`을 정확히 복사해서 쓰세요. "
         "retained event 목록에 없는 사건은 인용하지 마세요.\n"
+        "- retained event나 실제 수치/시뮬레이션 근거가 마땅치 않으면 prediction evidence 배열을 비워두거나 항목 수를 줄이세요. "
+        "source label만 있는 근거, 예측 데이터 부재 placeholder, 실제 뉴스 제목/수치가 없는 근거를 억지로 만들지 마세요.\n"
         "- 수치/시뮬레이션 근거는 `basis`에 실제 수치와 source/view 표기를 함께 넣어 event/news 근거와 구분하세요."
         f"{horizon_rule}"
     )
