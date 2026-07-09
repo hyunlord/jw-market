@@ -96,12 +96,50 @@ def test_deep_analysis_generates_general_cache_for_explicit_atc4_miss(monkeypatc
     assert calls == [("멀티브랜드", "A10N3")]
 
 
-def test_deep_analysis_regenerates_expired_general_cache(monkeypatch) -> None:
-    # Given: a general-view cache row exists but its TTL has expired.
+def test_deep_analysis_keeps_calendar_expired_general_cache_when_not_etl_stale(monkeypatch) -> None:
+    # Given: a general-view cache row has an old calendar expiry timestamp, but
+    # no ETL event has marked the row stale.
+    calls: list[tuple[str, str | None]] = []
+    cached_row = {
+        **_row("general", "A10N3"),
+        "expires_at": datetime.now(deep_analysis.KST) - timedelta(days=1),
+        "is_stale": 0,
+        "source_computed_at": datetime(2026, 7, 1, tzinfo=deep_analysis.KST),
+    }
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
+            return None
+        if "cache_deep_analysis_general" in sql:
+            return cached_row
+        if "mart_general_brand_metric" in sql:
+            return {"source_computed_at": datetime(2026, 7, 1, tzinfo=deep_analysis.KST)}
+        raise AssertionError("explicit ATC4 requests should not query the strategic cache")
+
+    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
+        calls.append((brand, atc4))
+        return _row("general", "A10N3")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
+
+    # When: the cache row is requested after its calendar timestamp.
+    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
+
+    # Then: the API serves the cache row because ETL freshness, not calendar
+    # TTL, controls general deep-analysis staleness.
+    assert payload["market_id"] == "general:A10N3"
+    assert calls == []
+
+
+def test_deep_analysis_regenerates_etl_stale_general_cache(monkeypatch) -> None:
+    # Given: an ETL completion event has explicitly marked the general cache row stale.
     calls: list[tuple[str, str | None]] = []
     stale_row = {
         **_row("general", "A10N3"),
-        "expires_at": datetime.now(deep_analysis.KST) - timedelta(days=1),
+        "is_stale": 1,
+        "stale_reason": "etl:ubist:202607",
+        "source_computed_at": datetime(2026, 7, 1, tzinfo=deep_analysis.KST),
     }
 
     def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
@@ -121,7 +159,7 @@ def test_deep_analysis_regenerates_expired_general_cache(monkeypatch) -> None:
     # When: the stale cache row is requested.
     payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
 
-    # Then: the API rebuilds the row before responding.
+    # Then: the API refreshes by the ETL stale marker.
     assert payload["market_id"] == "general:A10N3"
     assert calls == [("멀티브랜드", "A10N3")]
 

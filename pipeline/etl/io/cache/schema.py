@@ -81,13 +81,17 @@ def create_cache_tables(target_db: str) -> None:
                 brand_factors LONGTEXT NULL CHECK (brand_factors IS NULL OR JSON_VALID(brand_factors)),
                 source_computed_at TIMESTAMP NULL,
                 expires_at TIMESTAMP NULL,
+                is_stale TINYINT(1) NOT NULL DEFAULT 0,
+                stale_reason VARCHAR(255) NULL,
+                stale_marked_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (brand_key, atc4_code),
                 INDEX idx_cache_deep_general_brand (brand),
                 INDEX idx_cache_deep_general_atc4 (atc4_code),
                 INDEX idx_cache_deep_general_market (market_id),
-                INDEX idx_cache_deep_general_expires (expires_at)
+                INDEX idx_cache_deep_general_expires (expires_at),
+                INDEX idx_cache_deep_general_stale (is_stale, stale_marked_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
@@ -102,10 +106,14 @@ def create_cache_tables(target_db: str) -> None:
                 source_row_count INT NOT NULL,
                 source_computed_at TIMESTAMP NULL,
                 expires_at TIMESTAMP NULL,
+                is_stale TINYINT(1) NOT NULL DEFAULT 0,
+                stale_reason VARCHAR(255) NULL,
+                stale_marked_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (atc4_code, source, measure),
-                INDEX idx_market_forecast_expires (expires_at)
+                INDEX idx_market_forecast_expires (expires_at),
+                INDEX idx_market_forecast_stale (is_stale, stale_marked_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )

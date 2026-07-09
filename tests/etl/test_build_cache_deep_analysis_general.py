@@ -209,6 +209,31 @@ def test_market_forecasts_use_persistent_cache_for_fresh_combos(monkeypatch) -> 
     assert sorted(upserted) == [missing_key]
 
 
+def test_market_forecast_cache_freshness_uses_etl_stale_marker_not_calendar_expiry() -> None:
+    # Given: a persisted market forecast has an old calendar expiry timestamp,
+    # but no ETL completion event marked it stale and its source version matches.
+    row = {
+        "expires_at": "2026-01-01T00:00:00",
+        "is_stale": 0,
+        "source_computed_at": "2026-07-01T00:00:00",
+    }
+
+    # When/Then: freshness follows ETL source freshness, not the calendar timestamp.
+    assert general_builder.market_forecast_cache_fresh(
+        row,
+        expected_source_computed_at="2026-07-01T00:00:00",
+    )
+
+    # Given: an ETL completion event explicitly marked the row stale.
+    row["is_stale"] = 1
+
+    # When/Then: the stale marker forces recomputation.
+    assert not general_builder.market_forecast_cache_fresh(
+        row,
+        expected_source_computed_at="2026-07-01T00:00:00",
+    )
+
+
 def test_priority_group_keys_rank_by_recent_sales_descending() -> None:
     rows = [
         _row("low", "낮음", "A01", "ubist", "sales", 10),

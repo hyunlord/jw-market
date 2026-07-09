@@ -113,6 +113,15 @@ def _row_cache_fresh(row: dict, *, ttl_days: int) -> bool:
     return updated_at + timedelta(days=ttl_days) > now
 
 
+def _row_marked_stale(row: dict) -> bool:
+    value = row.get("is_stale")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
 def _compact_sql(column: str) -> str:
     return f"REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')"
 
@@ -496,7 +505,8 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
         row = db.fetch_one(
             f"""
             SELECT brand_key, brand, response_json, brand_factors, updated_at,
-                   source_computed_at, expires_at, atc4_code
+                   source_computed_at, expires_at, is_stale, stale_reason,
+                   stale_marked_at, atc4_code
             FROM cache_deep_analysis_general
             WHERE (brand = %s OR brand_key = %s)
               {atc4_clause}
@@ -516,7 +526,8 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
         rows = db.fetch_all(
             f"""
             SELECT brand_key, brand, response_json, brand_factors, updated_at,
-                   source_computed_at, expires_at, atc4_code
+                   source_computed_at, expires_at, is_stale, stale_reason,
+                   stale_marked_at, atc4_code
             FROM cache_deep_analysis_general
             WHERE ({_compact_sql("brand")} = %s OR brand_key = %s)
               {atc4_clause}
@@ -540,11 +551,20 @@ def _general_cache_row_from_built(row: Any) -> dict:
         "updated_at": datetime.now(KST),
         "source_computed_at": getattr(row, "source_computed_at", None),
         "expires_at": getattr(row, "expires_at", None),
+        "is_stale": getattr(row, "is_stale", 0),
+        "stale_reason": getattr(row, "stale_reason", None),
+        "stale_marked_at": getattr(row, "stale_marked_at", None),
         "atc4_code": row.atc4_code,
     }
 
 
-def _fetch_general_deep_analysis_row_with_conn(conn: Any, brand: str, atc4: str | None = None) -> dict | None:
+def _fetch_general_deep_analysis_row_with_conn(
+    conn: Any,
+    brand: str,
+    atc4: str | None = None,
+    *,
+    allow_stale: bool = False,
+) -> dict | None:
     params: list[str] = [brand, brand]
     atc4_clause = ""
     if atc4:
@@ -553,7 +573,9 @@ def _fetch_general_deep_analysis_row_with_conn(conn: Any, brand: str, atc4: str 
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT response_json, brand_factors, updated_at, source_computed_at, expires_at, atc4_code
+            SELECT brand_key, brand, response_json, brand_factors, updated_at,
+                   source_computed_at, expires_at, is_stale, stale_reason,
+                   stale_marked_at, atc4_code
             FROM cache_deep_analysis_general
             WHERE (brand = %s OR brand_key = %s)
               {atc4_clause}
@@ -563,7 +585,11 @@ def _fetch_general_deep_analysis_row_with_conn(conn: Any, brand: str, atc4: str 
             params,
         )
         row = cur.fetchone()
-    return row if row and _general_cache_row_fresh_with_conn(conn, row, brand, atc4) else None
+    if not row:
+        return None
+    if allow_stale:
+        return row
+    return row if _general_cache_row_fresh_with_conn(conn, row, brand, atc4) else None
 
 
 def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime | None:
@@ -610,7 +636,7 @@ def _latest_general_source_computed_at_with_conn(conn: Any, brand: str, atc4: st
 
 
 def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
-    if not _row_cache_fresh(row, ttl_days=_ttl_days("GENERAL_DEEP_CACHE_TTL_DAYS", GENERAL_CACHE_TTL_DAYS)):
+    if _row_marked_stale(row):
         return False
     cached_source = _coerce_datetime(row.get("source_computed_at"))
     if cached_source is None:
@@ -620,7 +646,7 @@ def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
 
 
 def _general_cache_row_fresh_with_conn(conn: Any, row: dict, brand: str, atc4: str | None) -> bool:
-    if not _row_cache_fresh(row, ttl_days=_ttl_days("GENERAL_DEEP_CACHE_TTL_DAYS", GENERAL_CACHE_TTL_DAYS)):
+    if _row_marked_stale(row):
         return False
     cached_source = _coerce_datetime(row.get("source_computed_at"))
     if cached_source is None:
@@ -664,11 +690,14 @@ def _build_general_deep_analysis_on_demand(brand: str, atc4: str | None) -> dict
         conn = general_builder.mariadb_connect()
         general_builder.assert_d2_database(conn)
         general_builder.ensure_general_cache_table(conn)
+        stale_row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4, allow_stale=True)
         lock_acquired = _acquire_general_forecast_lock(conn, lock_name)
         if not lock_acquired:
             row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4)
             if row:
                 return row
+            if stale_row:
+                return stale_row
             raise GeneralForecastUnavailable(
                 brand=brand,
                 atc4=atc4,
@@ -694,6 +723,10 @@ def _build_general_deep_analysis_on_demand(brand: str, atc4: str | None) -> dict
         raise
     except (pymysql.MySQLError, RuntimeError, ValueError) as exc:
         logger.warning("general deep-analysis on-demand forecast failed", exc_info=True)
+        if conn is not None:
+            stale_row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4, allow_stale=True)
+            if stale_row:
+                return stale_row
         raise GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="forecast_generation_failed") from exc
     finally:
         if conn is not None and lock_acquired:

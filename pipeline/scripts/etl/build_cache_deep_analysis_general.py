@@ -61,6 +61,9 @@ class GeneralCacheRow:
     brand_factors: str
     source_computed_at: Any | None
     expires_at: Any | None
+    is_stale: int
+    stale_reason: str | None
+    stale_marked_at: Any | None
 
 
 GroupKey = tuple[str, str]
@@ -96,6 +99,12 @@ def _table_columns(conn: Any, table_name: str) -> set[str]:
         return {str(row.get("Field") or row.get("field") or "") for row in cur.fetchall()}
 
 
+def _table_indexes(conn: Any, table_name: str) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(f"SHOW INDEX FROM {quote_ident(table_name)}")
+        return {str(row.get("Key_name") or row.get("key_name") or "") for row in cur.fetchall()}
+
+
 def _table_exists(conn: Any, table_name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -125,6 +134,39 @@ def _ensure_columns(conn: Any, table_name: str, columns: dict[str, str]) -> None
             cur.execute(f"CREATE INDEX idx_cache_expires_at ON {table} (expires_at)")
 
 
+def _ensure_indexes(conn: Any, table_name: str, indexes: dict[str, str]) -> None:
+    existing = _table_indexes(conn, table_name)
+    table = quote_ident(table_name)
+    with conn.cursor() as cur:
+        for index_name, ddl in indexes.items():
+            if index_name not in existing:
+                try:
+                    cur.execute(f"CREATE INDEX {quote_ident(index_name)} ON {table} {ddl}")
+                except Exception as exc:
+                    if getattr(exc, "args", [None])[0] in {1142, 1061}:
+                        continue
+                    raise
+
+
+def _is_stale(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def apply_api_db_env_fallback() -> None:
     fallback_pairs = {
         "MARIADB_HOST": "DB_HOST",
@@ -140,6 +182,24 @@ def apply_api_db_env_fallback() -> None:
 
 def ensure_general_cache_table(conn: Any, table_name: str = GENERAL_CACHE_TABLE) -> None:
     if _table_exists(conn, table_name):
+        _ensure_columns(
+            conn,
+            table_name,
+            {
+                "source_computed_at": "source_computed_at TIMESTAMP NULL",
+                "expires_at": "expires_at TIMESTAMP NULL",
+                "is_stale": "is_stale TINYINT(1) NOT NULL DEFAULT 0",
+                "stale_reason": "stale_reason VARCHAR(255) NULL",
+                "stale_marked_at": "stale_marked_at TIMESTAMP NULL",
+            },
+        )
+        _ensure_indexes(
+            conn,
+            table_name,
+            {
+                "idx_cache_deep_general_stale": "(is_stale, stale_marked_at)",
+            },
+        )
         return
     table = quote_ident(table_name)
     with conn.cursor() as cur:
@@ -155,13 +215,17 @@ def ensure_general_cache_table(conn: Any, table_name: str = GENERAL_CACHE_TABLE)
                 brand_factors LONGTEXT NULL CHECK (brand_factors IS NULL OR JSON_VALID(brand_factors)),
                 source_computed_at TIMESTAMP NULL,
                 expires_at TIMESTAMP NULL,
+                is_stale TINYINT(1) NOT NULL DEFAULT 0,
+                stale_reason VARCHAR(255) NULL,
+                stale_marked_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (brand_key, atc4_code),
                 INDEX idx_cache_deep_general_brand (brand),
                 INDEX idx_cache_deep_general_atc4 (atc4_code),
                 INDEX idx_cache_deep_general_market (market_id),
-                INDEX idx_cache_deep_general_expires (expires_at)
+                INDEX idx_cache_deep_general_expires (expires_at),
+                INDEX idx_cache_deep_general_stale (is_stale, stale_marked_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
@@ -171,12 +235,33 @@ def ensure_general_cache_table(conn: Any, table_name: str = GENERAL_CACHE_TABLE)
         {
             "source_computed_at": "source_computed_at TIMESTAMP NULL",
             "expires_at": "expires_at TIMESTAMP NULL",
+            "is_stale": "is_stale TINYINT(1) NOT NULL DEFAULT 0",
+            "stale_reason": "stale_reason VARCHAR(255) NULL",
+            "stale_marked_at": "stale_marked_at TIMESTAMP NULL",
         },
     )
 
 
 def ensure_market_forecast_table(conn: Any, table_name: str = GENERAL_MARKET_FORECAST_TABLE) -> None:
     if _table_exists(conn, table_name):
+        _ensure_columns(
+            conn,
+            table_name,
+            {
+                "source_computed_at": "source_computed_at TIMESTAMP NULL",
+                "expires_at": "expires_at TIMESTAMP NULL",
+                "is_stale": "is_stale TINYINT(1) NOT NULL DEFAULT 0",
+                "stale_reason": "stale_reason VARCHAR(255) NULL",
+                "stale_marked_at": "stale_marked_at TIMESTAMP NULL",
+            },
+        )
+        _ensure_indexes(
+            conn,
+            table_name,
+            {
+                "idx_market_forecast_stale": "(is_stale, stale_marked_at)",
+            },
+        )
         return
     table = quote_ident(table_name)
     with conn.cursor() as cur:
@@ -191,10 +276,14 @@ def ensure_market_forecast_table(conn: Any, table_name: str = GENERAL_MARKET_FOR
                 source_row_count INT NOT NULL,
                 source_computed_at TIMESTAMP NULL,
                 expires_at TIMESTAMP NULL,
+                is_stale TINYINT(1) NOT NULL DEFAULT 0,
+                stale_reason VARCHAR(255) NULL,
+                stale_marked_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (atc4_code, source, measure),
-                INDEX idx_market_forecast_expires (expires_at)
+                INDEX idx_market_forecast_expires (expires_at),
+                INDEX idx_market_forecast_stale (is_stale, stale_marked_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
@@ -207,6 +296,61 @@ def assert_d2_database(conn: Any) -> None:
     current = str(row.get("db") if isinstance(row, dict) else "")
     if current != TARGET_DATABASE:
         raise SystemExit(f"refusing to write non-d2 database: {current}")
+
+
+def stale_sources(source: str | None) -> tuple[str, ...]:
+    normalized = str(source or "all").strip().lower()
+    if normalized in {"all", "*"}:
+        return ("ubist", "iqvia_nsa")
+    if normalized == "iqvia":
+        return ("iqvia_nsa",)
+    if normalized in {"ubist", "iqvia_nsa"}:
+        return (normalized,)
+    raise SystemExit(f"unsupported stale source: {source!r}")
+
+
+def mark_general_forecast_stale(
+    conn: Any,
+    *,
+    source: str | None,
+    reason: str,
+    general_table_name: str = GENERAL_CACHE_TABLE,
+    market_table_name: str = GENERAL_MARKET_FORECAST_TABLE,
+) -> dict[str, int]:
+    sources = stale_sources(source)
+    placeholders = ", ".join(["%s"] * len(sources))
+    reason_value = reason[:255]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {quote_ident(general_table_name)} AS cache
+            SET is_stale = 1,
+                stale_reason = %s,
+                stale_marked_at = CURRENT_TIMESTAMP
+            WHERE EXISTS (
+                SELECT 1
+                FROM {quote_ident(GENERAL_BRAND_TABLE)} AS mart
+                WHERE mart.brand_key = cache.brand_key
+                  AND mart.atc4_code = cache.atc4_code
+                  AND mart.source IN ({placeholders})
+            )
+            """,
+            (reason_value, *sources),
+        )
+        general_count = int(cur.rowcount or 0)
+        cur.execute(
+            f"""
+            UPDATE {quote_ident(market_table_name)}
+            SET is_stale = 1,
+                stale_reason = %s,
+                stale_marked_at = CURRENT_TIMESTAMP
+            WHERE source IN ({placeholders})
+            """,
+            (reason_value, *sources),
+        )
+        market_count = int(cur.rowcount or 0)
+    conn.commit()
+    return {"general_rows": general_count, "market_rows": market_count}
 
 
 def fetch_general_rows(conn: Any) -> list[dict[str, Any]]:
@@ -451,6 +595,9 @@ def build_general_cache_row(
         brand_factors=dump_brand_factors(brand_factors_by_brand.get(brand)),
         source_computed_at=source_computed_at(brand_rows),
         expires_at=cache_expires_at(),
+        is_stale=0,
+        stale_reason=None,
+        stale_marked_at=None,
     )
 
 
@@ -514,15 +661,10 @@ def select_priority_group_keys(conn: Any, *, limit_groups: int) -> list[GroupKey
 
 
 def market_forecast_cache_fresh(row: dict[str, Any], *, expected_source_computed_at: Any | None) -> bool:
-    expires_at = row.get("expires_at")
-    if not isinstance(expires_at, datetime) and expires_at is not None:
-        try:
-            expires_at = datetime.fromisoformat(str(expires_at))
-        except ValueError:
-            expires_at = None
-    if isinstance(expires_at, datetime) and expires_at <= datetime.now():
+    if _is_stale(row.get("is_stale")):
         return False
-    cached_source_computed_at = row.get("source_computed_at")
+    cached_source_computed_at = _coerce_datetime(row.get("source_computed_at"))
+    expected_source_computed_at = _coerce_datetime(expected_source_computed_at)
     if expected_source_computed_at is not None and cached_source_computed_at is not None:
         return cached_source_computed_at >= expected_source_computed_at
     return True
@@ -542,7 +684,8 @@ def load_market_forecast_cache(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT atc4_code, source, measure, market_forecast_json, source_computed_at, expires_at
+            SELECT atc4_code, source, measure, market_forecast_json, source_computed_at,
+                   expires_at, is_stale, stale_reason, stale_marked_at
             FROM {quote_ident(table_name)}
             WHERE (atc4_code, source, measure) IN ({tuple_placeholders})
             """,
@@ -589,19 +732,25 @@ def upsert_market_forecast_cache(
                 len(market_rows),
                 source_computed_at(market_rows),
                 expires_at,
+                0,
+                None,
+                None,
             )
         )
     sql = f"""
         INSERT INTO {quote_ident(table_name)}
             (atc4_code, source, measure, market_forecast_json, payload_size,
-             source_row_count, source_computed_at, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             source_row_count, source_computed_at, expires_at, is_stale, stale_reason, stale_marked_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             market_forecast_json = VALUES(market_forecast_json),
             payload_size = VALUES(payload_size),
             source_row_count = VALUES(source_row_count),
             source_computed_at = VALUES(source_computed_at),
-            expires_at = VALUES(expires_at)
+            expires_at = VALUES(expires_at),
+            is_stale = VALUES(is_stale),
+            stale_reason = VALUES(stale_reason),
+            stale_marked_at = VALUES(stale_marked_at)
     """
     with conn.cursor() as cur:
         cur.executemany(sql, rows)
@@ -767,6 +916,9 @@ def write_rows(conn: Any, rows: list[GeneralCacheRow], *, table_name: str, batch
         "brand_factors",
         "source_computed_at",
         "expires_at",
+        "is_stale",
+        "stale_reason",
+        "stale_marked_at",
     ]
     placeholders = ", ".join(["%s"] * len(columns))
     names = ", ".join(f"`{column}`" for column in columns)
@@ -786,6 +938,42 @@ def write_rows(conn: Any, rows: list[GeneralCacheRow], *, table_name: str, batch
             conn.commit()
 
 
+def _general_lock_name(brand_key: str, atc4_code: str) -> str:
+    from pipeline.scripts.api.routes import deep_analysis
+
+    return deep_analysis._general_forecast_lock_name(brand_key, atc4_code)
+
+
+def _acquire_general_generation_lock(conn: Any, lock_name: str) -> bool:
+    from pipeline.scripts.api.routes import deep_analysis
+
+    return deep_analysis._acquire_general_forecast_lock(conn, lock_name)
+
+
+def _release_general_generation_lock(conn: Any, lock_name: str) -> None:
+    from pipeline.scripts.api.routes import deep_analysis
+
+    deep_analysis._release_general_forecast_lock(conn, lock_name)
+
+
+def acquire_group_locks(conn: Any, group_keys: list[GroupKey]) -> list[str] | None:
+    acquired: list[str] = []
+    for brand_key, atc4_code in sorted(group_keys):
+        lock_name = _general_lock_name(brand_key, atc4_code)
+        if _acquire_general_generation_lock(conn, lock_name):
+            acquired.append(lock_name)
+            continue
+        for acquired_lock in reversed(acquired):
+            _release_general_generation_lock(conn, acquired_lock)
+        return None
+    return acquired
+
+
+def release_group_locks(conn: Any, locks: list[str]) -> None:
+    for lock_name in reversed(locks):
+        _release_general_generation_lock(conn, lock_name)
+
+
 def parse_args() -> argparse.Namespace:
     args_parser = parser(__doc__)
     args_parser.add_argument("--target-table", default=GENERAL_CACHE_TABLE)
@@ -796,6 +984,9 @@ def parse_args() -> argparse.Namespace:
     args_parser.add_argument("--priority-top-groups", type=int)
     args_parser.add_argument("--brand", action="append", dest="brands")
     args_parser.add_argument("--atc4")
+    args_parser.add_argument("--mark-stale-source", choices=["all", "ubist", "iqvia", "iqvia_nsa"])
+    args_parser.add_argument("--stale-reason", default="etl_source_refresh")
+    args_parser.add_argument("--use-generation-locks", action="store_true")
     args_parser.add_argument("--dry-run", action="store_true")
     return args_parser.parse_args()
 
@@ -807,6 +998,33 @@ def main() -> None:
     try:
         assert_d2_database(conn)
         ensure_general_cache_table(conn, args.target_table)
+        ensure_market_forecast_table(conn, GENERAL_MARKET_FORECAST_TABLE)
+        if args.mark_stale_source:
+            if args.dry_run:
+                if args.verbose:
+                    print(
+                        f"dry_run mark_stale source={args.mark_stale_source} reason={args.stale_reason}",
+                        flush=True,
+                    )
+            else:
+                marked = mark_general_forecast_stale(
+                    conn,
+                    source=args.mark_stale_source,
+                    reason=args.stale_reason,
+                    general_table_name=args.target_table,
+                )
+                if args.verbose:
+                    print(
+                        f"marked stale source={args.mark_stale_source} general_rows={marked['general_rows']} market_rows={marked['market_rows']}",
+                        flush=True,
+                    )
+            if (
+                args.priority_top_groups is None
+                and not args.brands
+                and not args.atc4
+                and args.limit_groups is None
+            ):
+                return
         if args.priority_top_groups is not None:
             if args.brands or args.atc4 or args.limit_groups is not None:
                 raise SystemExit("--priority-top-groups cannot be combined with --brand, --atc4, or --limit-groups")
@@ -814,10 +1032,29 @@ def main() -> None:
         else:
             selected = select_group_keys(conn, brands=set(args.brands) if args.brands else None, atc4=args.atc4, limit_groups=args.limit_groups)
         built_count = 0
+        use_generation_locks = bool(
+            args.use_generation_locks
+            or args.mark_stale_source
+            or args.priority_top_groups is not None
+        )
         for batch_index, group_batch in enumerate(chunked(selected, int(args.group_batch_size)), start=1):
-            built = build_batch_rows(conn, group_batch, workers=args.workers, verbose=args.verbose)
-            if not args.dry_run:
-                write_rows(conn, built, table_name=args.target_table, batch_size=args.batch_size)
+            locks: list[str] | None = []
+            if use_generation_locks and not args.dry_run:
+                locks = acquire_group_locks(conn, group_batch)
+                if locks is None:
+                    if args.verbose:
+                        print(
+                            f"cache_deep_analysis_general batch={batch_index} skipped=lock_busy groups={len(group_batch)}",
+                            flush=True,
+                        )
+                    continue
+            try:
+                built = build_batch_rows(conn, group_batch, workers=args.workers, verbose=args.verbose)
+                if not args.dry_run:
+                    write_rows(conn, built, table_name=args.target_table, batch_size=args.batch_size)
+            finally:
+                if locks:
+                    release_group_locks(conn, locks)
             built_count += len(built)
             if args.verbose:
                 print(

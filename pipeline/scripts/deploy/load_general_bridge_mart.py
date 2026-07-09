@@ -25,6 +25,7 @@ from pipeline.scripts.deploy.mart_load_ops import (  # noqa: E402
     run_s4_general,
     run_strategic_ml_market_from_source,
 )
+from pipeline.scripts.etl import build_cache_deep_analysis_general as general_cache_builder  # noqa: E402
 from pipeline.scripts.deploy.mart_direct_import import (  # noqa: E402
     DirectBuildImportConfig,
     DumpImportConfig,
@@ -68,6 +69,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Required for operations-gated Phase 1 publish into jw_mart. Do not use for Phase 0.",
     )
+    parser.add_argument(
+        "--general-cache-stale-source",
+        choices=["all", "ubist", "iqvia", "iqvia_nsa"],
+        help="After a successful d2 mart publish/import, mark general deep-analysis cache rows stale for this source.",
+    )
+    parser.add_argument(
+        "--general-cache-stale-reason",
+        help="Reason stored in cache stale_reason. Defaults to etl:<source>:<run-id>.",
+    )
+    parser.add_argument(
+        "--general-cache-priority-top-groups",
+        type=int,
+        help="After stale marking, recompute the top N brand+ATC4 groups with the existing GET_LOCK path.",
+    )
+    parser.add_argument("--general-cache-workers", type=int, default=4)
+    parser.add_argument("--general-cache-group-batch-size", type=int, default=100)
     return parser.parse_args(argv)
 
 
@@ -102,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                     drop_target_after_verify=bool(args.drop_target_after_verify),
                 )
             )
+            summary["general_cache_refresh"] = _refresh_general_cache_after_mart_update(args, run_id)
             print(json.dumps({"event": "complete", **summary}, ensure_ascii=False, default=str))
             return 0
         if args.import_from_dump:
@@ -119,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                     drop_target_after_verify=bool(args.drop_target_after_verify),
                 )
             )
+            summary["general_cache_refresh"] = _refresh_general_cache_after_mart_update(args, run_id)
             print(json.dumps({"event": "complete", **summary}, ensure_ascii=False, default=str))
             return 0
         guard_run(
@@ -191,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
             "publish_actions": [asdict(action) for action in actions],
             "verification": [_verify_result_to_json(result) for result in verify_results],
             "dump": asdict(dump_result) if dump_result else None,
+            "general_cache_refresh": _refresh_general_cache_after_mart_update(args, run_id),
         }
         if args.audit_json:
             args.audit_json.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +227,72 @@ def _verify_result_to_json(result: object) -> dict[str, object]:
     data = asdict(result)
     data["groups"] = {"|".join(key): value for key, value in result.groups.items()}
     return data
+
+
+def _refresh_general_cache_after_mart_update(args: argparse.Namespace, run_id: str) -> dict[str, object] | None:
+    should_mark_stale = bool(args.general_cache_stale_source)
+    priority_top_groups = args.general_cache_priority_top_groups
+    if not should_mark_stale and priority_top_groups is None:
+        return None
+    if args.target_db != general_cache_builder.TARGET_DATABASE:
+        return {
+            "skipped": True,
+            "reason": "target_db_not_d2",
+            "target_db": args.target_db,
+        }
+
+    started = time.perf_counter()
+    conn = connect_admin()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"USE `{args.target_db}`")
+        general_cache_builder.assert_d2_database(conn)
+        general_cache_builder.ensure_general_cache_table(conn)
+        general_cache_builder.ensure_market_forecast_table(conn)
+        marked = None
+        if should_mark_stale:
+            reason = args.general_cache_stale_reason or f"etl:{args.general_cache_stale_source}:{run_id}"
+            marked = general_cache_builder.mark_general_forecast_stale(
+                conn,
+                source=args.general_cache_stale_source,
+                reason=reason,
+            )
+
+        built_count = 0
+        skipped_lock_batches = 0
+        if priority_top_groups is not None and priority_top_groups > 0:
+            selected = general_cache_builder.select_priority_group_keys(conn, limit_groups=priority_top_groups)
+            for group_batch in general_cache_builder.chunked(selected, int(args.general_cache_group_batch_size)):
+                locks = general_cache_builder.acquire_group_locks(conn, group_batch)
+                if locks is None:
+                    skipped_lock_batches += 1
+                    continue
+                try:
+                    built = general_cache_builder.build_batch_rows(
+                        conn,
+                        group_batch,
+                        workers=args.general_cache_workers,
+                        verbose=True,
+                    )
+                    general_cache_builder.write_rows(
+                        conn,
+                        built,
+                        table_name=general_cache_builder.GENERAL_CACHE_TABLE,
+                        batch_size=100,
+                    )
+                    built_count += len(built)
+                finally:
+                    general_cache_builder.release_group_locks(conn, locks)
+        return {
+            "skipped": False,
+            "marked": marked,
+            "priority_top_groups": priority_top_groups,
+            "built": built_count,
+            "skipped_lock_batches": skipped_lock_batches,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+        }
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
