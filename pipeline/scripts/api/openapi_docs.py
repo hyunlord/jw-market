@@ -175,6 +175,8 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 `top_n`은 기본 20이고 1~100 범위입니다. `top_n:null`은 런타임에서 20으로 보정됩니다.
 `period_range.start/end`는 선택 기간 경계입니다.
 `period_range`를 생략하거나 null이면 전체 기간을 사용합니다. `period_range:{}`는 시작/끝 모두 없는 전체 기간과 같습니다.
+경쟁 브랜드 표시는 선택된 시장 필터 scope 안에서 `period_range` 적용 후 매출 합계(`total_value`) 기준으로 정렬합니다.
+`focus_brand_key`가 있으면 선택 브랜드를 항상 첫 번째로 포함하고, 나머지는 매출 합계 내림차순/`brand_key` 오름차순으로 채웁니다.
 
 ### 응답 구조
 
@@ -540,7 +542,9 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 
 - **Brand-Activity는 IQVIA 전용입니다.** 상위 경쟁 브랜드 5개를 뽑을 때 Dynamic-Market 일반뷰 IQVIA와 같은 6개 row 필터(`mfr_name_kor`, `molecule_type`, `molecule_desc`, `pack_desc`, `strength`, `nhi_type`)를 적용합니다. 각 차원 안에서는 OR, 차원끼리는 AND입니다.
 
-- **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 ranking sales를 해당 audit code 매출로 다시 정렬합니다.
+- **경쟁 브랜드 기준은 Dynamic-Market과 같습니다.** 선택된 시장 필터 scope 안에서 매출 합계 기준 상위 5개에 선택 브랜드를 항상 포함해 최대 6개를 반환합니다. CSD 계열처럼 quarter window가 있는 요청은 해당 window 합계, window가 없는 요청은 mart metric history 전체 합계를 사용하며 tie는 `brand_key` 오름차순입니다.
+
+- **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 선택된 window의 audit code 매출 합계에 반영됩니다.
 
 - **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 토픽/interest 행을 자르는 필터입니다. `filters.channel.visit_location`과 `filters.channel.specialty`도 호환 입력으로 flat 필드에 정규화됩니다.
 
@@ -617,7 +621,7 @@ BRAND_ACTIVITY_FILTER_SCHEMA: Final = {
             "type": "object",
             "additionalProperties": False,
             "properties": {"iqvia": BRAND_ACTIVITY_IQVIA_ANALYSIS_SCHEMA},
-            "description": "Brand-Activity 공개 필터는 IQVIA 전용입니다. 6개 row dimension은 상위 경쟁 브랜드 후보를 좁히고, audit_code는 ranking 값을 채널축으로 슬라이스합니다.",
+            "description": "Brand-Activity 공개 필터는 IQVIA 전용입니다. 6개 row dimension은 상위 경쟁 브랜드 후보를 좁히고, audit_code는 경쟁 브랜드 매출 합계 산정 값을 채널축으로 슬라이스합니다.",
         },
         "channel": {
             "type": "object",

@@ -99,6 +99,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
             channel_axis=definition.channel_axis,
             view=definition.view,
             strategic_market_id=definition.strategic_market_id,
+            selected_brand_key=getattr(definition, "focus_brand_key", None),
         )
     except DynamicMarketScopeTooBroadError as exc:
         raise HTTPException(
