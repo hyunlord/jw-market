@@ -110,6 +110,31 @@ def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
             assert getattr(route, "response_model", None) is None
 
 
+def test_brand_activity_docs_group_inputs_into_three_categories() -> None:
+    schema = app.openapi()
+    paths = schema["paths"]
+
+    expectations = {
+        "/api/brand-activity/topics": ("A+B", "키워드 스테이지 행 필터"),
+        "/api/brand-activity/csd-timeseries": ("A+C", "mode/window"),
+        "/api/brand-activity/interest-rx-matrix": ("A+B+C", "weights"),
+        "/api/brand-activity/csd-activity-series": ("A+C", "entity_level/csd_channel/period"),
+    }
+
+    for path, (support, endpoint_term) in expectations.items():
+        operation = paths[path]["post"]
+        payload = str(operation["description"]) + str(operation["requestBody"])
+        assert "범주 A" in payload
+        assert "범주 B" in payload
+        assert "범주 C" in payload
+        assert f"| {support} |" in payload
+        assert endpoint_term in payload
+
+    activity_schema = paths["/api/brand-activity/csd-activity-series"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    for field in ("entity_level", "csd_channel", "selected_entities", "period"):
+        assert field in activity_schema["properties"]
+
+
 def test_dynamic_market_documents_competitive_dynamics_contract() -> None:
     schema = app.openapi()
 

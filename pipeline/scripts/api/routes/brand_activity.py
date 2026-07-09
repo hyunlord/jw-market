@@ -35,12 +35,17 @@ from pipeline.scripts.api.models.brand_activity import (
     CsdTimeseriesRequest,
 )
 from pipeline.scripts.api.openapi_docs import (
+    BRAND_ACTIVITY_CSD_ACTIVITY_CATEGORY_SUMMARY,
+    BRAND_ACTIVITY_CSD_ACTIVITY_EXTRA_PROPERTIES,
+    BRAND_ACTIVITY_CSD_TIMESERIES_CATEGORY_SUMMARY,
     BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE,
     BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES,
     BRAND_ACTIVITY_FILTER_DESCRIPTION,
+    BRAND_ACTIVITY_INTEREST_RX_CATEGORY_SUMMARY,
     BRAND_ACTIVITY_INTEREST_RX_REQUEST_EXAMPLE,
     BRAND_ACTIVITY_INTEREST_RX_RESPONSES,
     BRAND_ACTIVITY_TAG,
+    BRAND_ACTIVITY_TOPICS_CATEGORY_SUMMARY,
     BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE,
     BRAND_ACTIVITY_TOPICS_RESPONSES,
     brand_activity_request_body,
@@ -87,6 +92,8 @@ def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
         "mock `/jw-brand-activity-mock/api/brand-activity/topics`와 대응되는 포탈 공유 API입니다. "
         "브랜드 카드별 event_count, topic_shares, etc_pct, brand_specific_topics를 반환합니다. "
         "topic_shares 합 + etc_pct = 100이며, event_count=0이면 topic_shares는 빈 배열입니다.\n\n"
+        + BRAND_ACTIVITY_TOPICS_CATEGORY_SUMMARY
+        + "\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
@@ -132,6 +139,8 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
         "mock `/jw-brand-activity-mock/api/brand-activity/csd-timeseries`와 대응되는 포탈 공유 API입니다. "
         "CSD 활동량은 `csd_channel_dynamics_stage`의 `jw_channel='TOTAL'`만 사용하므로 화면 관점의 region=TOTAL입니다. "
         "IQVIA 처방 지표(unit/counting_unit/dosage_unit)는 같은 분기축으로 정렬됩니다.\n\n"
+        + BRAND_ACTIVITY_CSD_TIMESERIES_CATEGORY_SUMMARY
+        + "\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
@@ -172,10 +181,13 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     summary="CSD 활동량·비율·순위 추세",
     description=(
         "문서 Section 1 CSD Channeldynamics 시계열 API입니다. "
-        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 활동량 rank series를 제공합니다."
+        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 활동량 rank series를 제공합니다.\n\n"
+        + BRAND_ACTIVITY_CSD_ACTIVITY_CATEGORY_SUMMARY
+        + "\n\n"
+        + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
-    openapi_extra={"requestBody": brand_activity_request_body({}, CSD_ACTIVITY_SERIES_EXAMPLE)},
+    openapi_extra={"requestBody": brand_activity_request_body(BRAND_ACTIVITY_CSD_ACTIVITY_EXTRA_PROPERTIES, CSD_ACTIVITY_SERIES_EXAMPLE)},
 )
 def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dict[str, JsonValue]:
     """Return Section 1 CSD activity volume, share, and rank time series."""
@@ -203,6 +215,8 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
         "mock `/jw-brand-activity-mock/api/brand-activity/interest-rx-matrix`와 대응되는 포탈 공유 API입니다. "
         "X축은 rx_frequency_score, Y축은 interest_score, 버블 면적은 event_count입니다. "
         "market_average는 화면의 점선 십자 기준선입니다.\n\n"
+        + BRAND_ACTIVITY_INTEREST_RX_CATEGORY_SUMMARY
+        + "\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,

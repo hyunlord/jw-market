@@ -532,25 +532,68 @@ BRAND_ACTIVITY_FILTER_EXAMPLE: Final = {
 
 
 BRAND_ACTIVITY_FILTER_DESCRIPTION: Final = """
-Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지만 request model은 별도입니다.
+Brand-Activity는 Dynamic-Market과 같은 시장 필터 개념을 쓰지만 request model은 별도입니다.
+입력은 아래 3범주로 나뉩니다. 같은 요청 body에 함께 들어가더라도 목적과 적용 데이터셋이 다릅니다.
+
+| 범주 | 목적 | 필드 | 적용 위치 |
+|---|---|---|---|
+| 범주 A - IQVIA NSA 시장 필터 | 선택 브랜드와 같은 시장에서 상위 경쟁 브랜드 5개를 뽑습니다. 선택 브랜드까지 합쳐 최대 6개 브랜드가 응답됩니다. | `view`, `selected_brand`, `filters.atc4` 또는 `filters.atc.atc4`, `filters.analysis_level.iqvia.mfr_name_kor`, `molecule_type`, `molecule_desc`, `pack_desc`, `strength`, `nhi_type`, `audit_code` | `mart_general_brand_metric`, `mart_general_market_metric`, `mart_general_filter_dimension_metric`의 `iqvia_nsa` 기준 |
+| 범주 B - 키워드 스테이지 행 필터 | 이미 정해진 브랜드 세트의 토픽/관심도 행만 추가로 자릅니다. IQVIA NSA 시장 범위를 바꾸지 않습니다. | `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`; 호환 입력 `filters.channel.visit_location`, `filters.channel.specialty` | `km_keyword_event_stage` 및 row-topic assignment |
+| 범주 C - 표시/기간 제어 옵션 | 시장이나 후보 브랜드를 바꾸지 않고 결과 축, 기간, 집계 단위를 조정합니다. | endpoint별 `mode`, `window`, `weights`, `entity_level`, `csd_channel`, `selected_entities`, `period` | CSD/keyword 결과 projection |
 
 - **source 입력은 없습니다.** Rx/브랜드 랭킹 쪽은 서버 코드의 `iqvia_nsa` source를 사용하고, 활동·키워드 쪽은 CSD/keyword 테이블을 결합합니다.
-
-- **시장 범위는 ATC4입니다.** `filters.atc4`를 보내거나, BFF 호환 입력인 `filters.atc.atc4`를 보내면 서버가 flat `filters.atc4`로 정규화합니다.
-
-- **Brand-Activity는 IQVIA 전용입니다.** 상위 경쟁 브랜드 5개를 뽑을 때 Dynamic-Market 일반뷰 IQVIA와 같은 6개 row 필터(`mfr_name_kor`, `molecule_type`, `molecule_desc`, `pack_desc`, `strength`, `nhi_type`)를 적용합니다. 각 차원 안에서는 OR, 차원끼리는 AND입니다.
-
-- **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 ranking sales를 해당 audit code 매출로 다시 정렬합니다.
-
-- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 토픽/interest 행을 자르는 필터입니다. `filters.channel.visit_location`과 `filters.channel.specialty`도 호환 입력으로 flat 필드에 정규화됩니다.
-
+- **일반뷰 시장 범위는 ATC4입니다.** `filters.atc4`를 보내거나 BFF 호환 입력인 `filters.atc.atc4`를 보내면 서버가 flat `filters.atc4`로 정규화합니다. 일반뷰에서는 `selected_brand`와 ATC4가 없으면 400입니다.
+- **IQVIA 6개 row 필터는 선택 narrowing입니다.** `mfr_name_kor`, `molecule_type`, `molecule_desc`, `pack_desc`, `strength`, `nhi_type`은 경쟁 브랜드 후보를 좁힙니다. 각 차원 안에서는 OR, 차원끼리는 AND입니다.
+- **IQVIA audit code는 CSD 채널이 아닙니다.** `filters.analysis_level.iqvia.audit_code`는 IQVIA `audit_code_matrix` 값 슬라이스이며, 경쟁 브랜드 선정 시 ranking sales를 해당 audit code 매출로 다시 정렬합니다. 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다.
+- **키워드 행 필터는 별도 데이터셋입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 `km_keyword_event_stage`/토픽 assignment 행을 자르는 필터입니다. IQVIA NSA 시장 필터가 아닙니다.
 - **missing/null 처리:** `filters`와 `filter`를 생략하면 빈 필터 객체입니다. `filters:null` 또는 `filter:null`은 validation error입니다. `filters`와 legacy `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다.
-
 - **unknown field 처리:** Brand-Activity request top-level은 알 수 없는 필드를 무시하고, 중첩 필터 객체는 호환성을 위해 추가 필드를 보존할 수 있습니다.
-
 - **PACK DESC:** `pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행과 매칭해 상위 경쟁 브랜드 후보를 좁힙니다.
 
 `channel_axis` 입력은 공개 요청 스키마에서 제거됐고 validation error로 거절됩니다.
+"""
+
+
+BRAND_ACTIVITY_TOPICS_CATEGORY_SUMMARY: Final = """
+| endpoint | 지원 범주 | 비고 |
+|---|---|---|
+| topics | A+B | 경쟁 브랜드 선정 + 토픽 행 slicing |
+
+- 범주 A로 경쟁 브랜드 세트를 먼저 정합니다.
+- 범주 B의 키워드 스테이지 행 필터(`visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`)로 토픽 share 산출 행을 추가로 좁힙니다.
+"""
+
+
+BRAND_ACTIVITY_CSD_TIMESERIES_CATEGORY_SUMMARY: Final = """
+| endpoint | 지원 범주 | 비고 |
+|---|---|---|
+| csd-timeseries | A+C | 경쟁 브랜드 선정 + 활동/Rx 추세 표시 제어 |
+
+- 범주 A로 경쟁 브랜드 세트를 먼저 정합니다.
+- 범주 C의 `mode/window`는 CSD 활동량과 IQVIA Rx 지표의 표시 방식과 분기 기간을 제어합니다.
+"""
+
+
+BRAND_ACTIVITY_INTEREST_RX_CATEGORY_SUMMARY: Final = """
+| endpoint | 지원 범주 | 비고 |
+|---|---|---|
+| interest-rx-matrix | A+B+C | 경쟁 브랜드 선정 + 키워드 행 필터 + score 가중치 |
+
+- 범주 A로 경쟁 브랜드 세트를 먼저 정합니다.
+- 범주 B의 `visit_location`, `specialty`, `period_start`, `period_end`는 `km_keyword_event_stage` 행 필터입니다.
+- 범주 C의 `weights`는 interest/rx score 계산 가중치입니다.
+"""
+
+
+BRAND_ACTIVITY_CSD_ACTIVITY_CATEGORY_SUMMARY: Final = """
+| endpoint | 지원 범주 | 비고 |
+|---|---|---|
+| csd-activity-series | A+C | 경쟁 브랜드 선정 + CSD 활동량 집계/기간 제어 |
+
+- 범주 A로 경쟁 브랜드 세트를 먼저 정합니다. `filters.analysis_level.iqvia`의 6개 row 필터와 `audit_code`도 resolver로 전달됩니다.
+- 범주 C의 `entity_level/csd_channel/period`는 CSD 활동량 결과의 집계 단위, CSD 원본 채널, 분기 기간을 제어합니다.
+- `entity_level` 허용값은 `brand`, `company`입니다. `company`는 CSD `representing_company` 단위로 활동량을 합산합니다.
+- `csd_channel` 허용값은 `TOTAL`, `GH`, `SHPPI`, `CPPI`, `GH+SHPPI`입니다. IQVIA `audit_code`와 다른 CSD 원본 `jw_channel` 값입니다.
 """
 
 
@@ -1154,6 +1197,36 @@ HEALTH_RESPONSES: Final = {
             }
         },
     }
+}
+
+
+BRAND_ACTIVITY_CSD_ACTIVITY_EXTRA_PROPERTIES: Final = {
+    "entity_level": {
+        "type": "string",
+        "enum": ["brand", "company"],
+        "default": "brand",
+        "description": "범주 C 표시/집계 단위. brand=브랜드/product code 기준, company=CSD representing_company 기준.",
+    },
+    "csd_channel": {
+        "type": "string",
+        "enum": ["TOTAL", "GH", "SHPPI", "CPPI", "GH+SHPPI"],
+        "default": "TOTAL",
+        "description": "범주 C CSD 원본 jw_channel. IQVIA audit_code가 아니며 CSD 활동량 테이블의 채널입니다.",
+    },
+    "selected_entities": {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": 6,
+        "description": "범주 C 표시 대상 브랜드/회사 override. 미지정 시 선택 브랜드 + IQVIA sales 기준 top5입니다.",
+    },
+    "period": {
+        "type": "object",
+        "description": "범주 C 분기 window. 미지정 시 최신 4분기, 지정 시 최대 12분기로 제한합니다.",
+        "properties": {
+            "start": {"type": "string", "description": "포함 시작 분기. 예: 2024-Q1 또는 2024Q1."},
+            "end": {"type": "string", "description": "포함 종료 분기. 예: 2025-Q4 또는 2025Q4."},
+        },
+    },
 }
 
 
