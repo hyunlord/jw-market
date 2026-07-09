@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -22,6 +23,8 @@ for candidate in (Path(__file__).resolve(), *Path(__file__).resolve().parents, P
 from cache_build_common import mariadb_connect
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
+
+logger = logging.getLogger(__name__)
 
 TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
 CACHE_TABLE: Final[str] = "cache_deep_analysis"
@@ -105,6 +108,8 @@ def build_brand_factor_map(
     atc_rows: Iterable[Mapping[str, object]],
     dimension_rows: Iterable[Mapping[str, object]],
 ) -> dict[str, dict[str, Any]]:
+    atc_row_list = tuple(atc_rows)
+    dimension_row_list = tuple(dimension_rows)
     factors = {brand: empty_brand_factors() for brand in brands}
     compact_to_brand: dict[str, str] = {}
     ambiguous_compact_keys: set[str] = set()
@@ -118,6 +123,23 @@ def build_brand_factor_map(
         elif previous != brand:
             ambiguous_compact_keys.add(compact)
 
+    source_brand_names = {
+        str(row.get("brand_name") or "")
+        for row in (*atc_row_list, *dimension_row_list)
+        if row.get("brand_name")
+    }
+    source_compact_to_brand: dict[str, str] = {}
+    ambiguous_source_compact_keys: set[str] = set()
+    for source_brand in source_brand_names:
+        compact = compact_brand_name(source_brand)
+        if not compact:
+            continue
+        previous = source_compact_to_brand.get(compact)
+        if previous is None:
+            source_compact_to_brand[compact] = source_brand
+        elif previous != source_brand:
+            ambiguous_source_compact_keys.add(compact)
+
     def target_brand_for(row_brand: object) -> str | None:
         brand = str(row_brand or "")
         if brand in factors:
@@ -125,14 +147,20 @@ def build_brand_factor_map(
         compact = compact_brand_name(brand)
         if compact in ambiguous_compact_keys:
             return None
+        if compact in ambiguous_source_compact_keys:
+            logger.warning(
+                "ambiguous compact brand factor lookup skipped",
+                extra={"source_brand": brand, "compact_brand": compact},
+            )
+            return None
         return compact_to_brand.get(compact)
 
-    for row in atc_rows:
+    for row in atc_row_list:
         brand = target_brand_for(row.get("brand_name"))
         if brand:
             add_unique(factors[brand]["atc"], row.get("atc4_code"))
 
-    for row in dimension_rows:
+    for row in dimension_row_list:
         brand = target_brand_for(row.get("brand_name"))
         source = str(row.get("source") or "")
         dimension_type = str(row.get("dimension_type") or "")
@@ -211,7 +239,6 @@ def load_brand_factor_map(conn: Any, brands: Sequence[str]) -> dict[str, dict[st
 
 
 def _load_brand_factor_map_full_scan(conn: Any, brands: Sequence[str]) -> dict[str, dict[str, Any]]:
-    brand_set = set(brands)
     atc_rows: list[Mapping[str, object]] = []
     dimension_rows: list[Mapping[str, object]] = []
     with conn.cursor() as cur:
@@ -222,7 +249,7 @@ def _load_brand_factor_map_full_scan(conn: Any, brands: Sequence[str]) -> dict[s
             WHERE NULLIF(atc4_code, '') IS NOT NULL
             """
         )
-        atc_rows.extend(row for row in cur.fetchall() if str(row.get("brand_name") or "") in brand_set)
+        atc_rows.extend(cur.fetchall())
         cur.execute(
             f"""
             SELECT brand_name, source, dimension_type, dimension_value
@@ -231,7 +258,7 @@ def _load_brand_factor_map_full_scan(conn: Any, brands: Sequence[str]) -> dict[s
                OR (source = 'iqvia_nsa' AND dimension_type IN ('mfr','molecule_type','molecule_desc','pack','strength','nhi'))
             """
         )
-        dimension_rows.extend(row for row in cur.fetchall() if str(row.get("brand_name") or "") in brand_set)
+        dimension_rows.extend(cur.fetchall())
     return build_brand_factor_map(brands=brands, atc_rows=atc_rows, dimension_rows=dimension_rows)
 
 
