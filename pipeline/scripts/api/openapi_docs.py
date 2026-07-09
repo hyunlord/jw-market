@@ -885,7 +885,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                             "view": "general",
                             "market_id": "C10A1",
                             "csd_market": "LIVALO",
-                            "quarters": ["2025Q1", "2025Q2"],
+                            "quarters": ["2025-Q1", "2025-Q2"],
                             "mode": "absolute",
                         },
                         "brands": [
@@ -896,13 +896,13 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                 "is_jw": True,
                                 "csd_matched": True,
                                 "series": {
-                                    "activity": {"source": "csd", "absolute": {"2025Q1": 120.0}, "ratio": {"2025Q1": 44.1}},
-                                    "sales": {"source": "iqvia_nsa", "absolute": {"2025Q1": 500.0}, "ratio": {"2025Q1": 18.7}},
-                                    "unit": {"source": "iqvia_nsa", "absolute": {"2025Q1": 1000.0}, "ratio": {"2025Q1": 20.5}},
+                                    "activity": {"source": "csd", "absolute": {"2025-Q1": 120.0}, "ratio": {"2025-Q1": 44.1}},
+                                    "sales": {"source": "iqvia_nsa", "absolute": {"2025-Q1": 500.0}, "ratio": {"2025-Q1": 18.7}},
+                                    "unit": {"source": "iqvia_nsa", "absolute": {"2025-Q1": 1000.0}, "ratio": {"2025-Q1": 20.5}},
                                 },
                             }
                         ],
-                        "market_totals": {"activity": {"2025Q1": 272.0}, "sales": {"2025Q1": 2675.0}},
+                        "market_totals": {"activity": {"2025-Q1": 272.0}, "sales": {"2025-Q1": 2675.0}},
                     }
                 },
             }
