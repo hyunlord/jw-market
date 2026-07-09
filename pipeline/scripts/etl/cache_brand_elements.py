@@ -7,7 +7,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -35,6 +35,7 @@ TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
 CACHE_TABLE: Final[str] = "cache_brand_elements"
 AGENT3_TABLE: Final[str] = "agent3_brand_strength"
 DEFAULT_SOURCE_TABLES: Final[tuple[str, ...]] = ("cache_deep_analysis", "cache_deep_analysis_general")
+DEFAULT_BRAND_ELEMENTS_TTL_DAYS: Final[int] = 35
 
 
 class CacheBrandElementsError(RuntimeError):
@@ -49,6 +50,8 @@ class BrandElementPayload:
     strength: dict[str, Any]
     strength_generated_at: Any
     strength_workflow_rev: Any
+    source_computed_at: Any | None
+    expires_at: Any | None
 
 
 def dump_json(value: Mapping[str, Any] | None) -> str:
@@ -88,6 +91,35 @@ def _format_generated_at(value: Any) -> str | None:
     return str(value)
 
 
+def brand_elements_ttl_days() -> int:
+    raw_value = os.environ.get("BRAND_ELEMENTS_CACHE_TTL_DAYS", str(DEFAULT_BRAND_ELEMENTS_TTL_DAYS))
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return DEFAULT_BRAND_ELEMENTS_TTL_DAYS
+
+
+def cache_expires_at(ttl_days: int | None = None) -> datetime:
+    return datetime.now() + timedelta(days=ttl_days or brand_elements_ttl_days())
+
+
+def _table_columns(conn: Any, table_name: str) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(f"SHOW COLUMNS FROM {quote_ident(table_name)}")
+        return {str(row.get("Field") or row.get("field") or "") for row in cur.fetchall()}
+
+
+def _ensure_columns(conn: Any, table_name: str, columns: dict[str, str]) -> None:
+    existing = _table_columns(conn, table_name)
+    table = quote_ident(table_name)
+    with conn.cursor() as cur:
+        for column, ddl in columns.items():
+            if column not in existing:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        if "expires_at" not in existing:
+            cur.execute(f"CREATE INDEX idx_cache_brand_elements_expires ON {table} (expires_at)")
+
+
 def ensure_cache_brand_elements_table(conn: Any, table_name: str = CACHE_TABLE) -> None:
     table = quote_ident(table_name)
     with conn.cursor() as cur:
@@ -101,13 +133,24 @@ def ensure_cache_brand_elements_table(conn: Any, table_name: str = CACHE_TABLE) 
                 strength_json LONGTEXT NOT NULL CHECK (JSON_VALID(strength_json)),
                 strength_generated_at DATETIME NULL,
                 strength_workflow_rev VARCHAR(64) NULL,
+                source_computed_at TIMESTAMP NULL,
+                expires_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (brand_key),
                 KEY idx_cache_brand_elements_compact (brand_name_compact),
-                KEY idx_cache_brand_elements_updated_at (updated_at)
+                KEY idx_cache_brand_elements_updated_at (updated_at),
+                KEY idx_cache_brand_elements_expires (expires_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+    _ensure_columns(
+        conn,
+        table_name,
+        {
+            "source_computed_at": "source_computed_at TIMESTAMP NULL",
+            "expires_at": "expires_at TIMESTAMP NULL",
+        },
+    )
 
 
 def source_brands(conn: Any, source_tables: Sequence[str] = DEFAULT_SOURCE_TABLES, limit: int | None = None) -> list[str]:
@@ -174,9 +217,40 @@ def load_strength_map(conn: Any, brands: Sequence[str], agent3_schema: str) -> d
     return exact_rows
 
 
+def load_source_computed_at_map(conn: Any, brands: Sequence[str]) -> dict[str, Any]:
+    if not brands:
+        return {}
+    source_by_brand: dict[str, Any] = {}
+    for start in range(0, len(brands), LOAD_BATCH_SIZE):
+        batch = list(brands[start : start + LOAD_BATCH_SIZE])
+        placeholders = ", ".join(["%s"] * len(batch))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT brand_key, brand_name, MAX(computed_at) AS source_computed_at
+                FROM `mart_general_brand_metric`
+                WHERE brand_key IN ({placeholders}) OR brand_name IN ({placeholders})
+                GROUP BY brand_key, brand_name
+                """,
+                tuple(batch) + tuple(batch),
+            )
+            for row in cur.fetchall():
+                value = row.get("source_computed_at")
+                for key in (row.get("brand_key"), row.get("brand_name")):
+                    if not key:
+                        continue
+                    brand_key = str(key)
+                    existing = source_by_brand.get(brand_key)
+                    if brand_key not in source_by_brand or existing is None or (value is not None and value > existing):
+                        source_by_brand[brand_key] = value
+    return source_by_brand
+
+
 def build_brand_element_payloads(conn: Any, brands: Sequence[str], *, agent3_schema: str) -> list[BrandElementPayload]:
     factors_by_brand = load_brand_factor_map(conn, brands)
     strength_by_brand = load_strength_map(conn, brands, agent3_schema)
+    source_computed_at_by_brand = load_source_computed_at_map(conn, brands)
+    expires_at = cache_expires_at()
     payloads: list[BrandElementPayload] = []
     for brand in brands:
         strength_row = strength_by_brand.get(brand)
@@ -188,6 +262,8 @@ def build_brand_element_payloads(conn: Any, brands: Sequence[str], *, agent3_sch
                 strength=parse_strength_row(strength_row),
                 strength_generated_at=strength_row.get("generated_at") if strength_row else None,
                 strength_workflow_rev=strength_row.get("workflow_rev") if strength_row else None,
+                source_computed_at=source_computed_at_by_brand.get(brand),
+                expires_at=expires_at,
             )
         )
     return payloads
@@ -199,15 +275,17 @@ def upsert_brand_elements(conn: Any, payloads: Sequence[BrandElementPayload], ta
     sql = f"""
         INSERT INTO {quote_ident(table_name)}
             (brand_key, brand_name, brand_name_compact, factors_json, strength_json,
-             strength_generated_at, strength_workflow_rev)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+             strength_generated_at, strength_workflow_rev, source_computed_at, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             brand_name = VALUES(brand_name),
             brand_name_compact = VALUES(brand_name_compact),
             factors_json = VALUES(factors_json),
             strength_json = VALUES(strength_json),
             strength_generated_at = VALUES(strength_generated_at),
-            strength_workflow_rev = VALUES(strength_workflow_rev)
+            strength_workflow_rev = VALUES(strength_workflow_rev),
+            source_computed_at = VALUES(source_computed_at),
+            expires_at = VALUES(expires_at)
     """
     rows = [
         (
@@ -218,6 +296,8 @@ def upsert_brand_elements(conn: Any, payloads: Sequence[BrandElementPayload], ta
             dump_json(item.strength),
             item.strength_generated_at,
             item.strength_workflow_rev,
+            item.source_computed_at,
+            item.expires_at,
         )
         for item in payloads
     ]
@@ -236,7 +316,8 @@ def verify_cache_brand_elements(conn: Any, table_name: str = CACHE_TABLE) -> dic
                    SUM(JSON_VALID(factors_json)) AS factors_json_valid,
                    SUM(JSON_VALID(strength_json)) AS strength_json_valid,
                    SUM(JSON_EXTRACT(strength_json, '$.available') = true) AS rows_with_strength,
-                   SUM(JSON_LENGTH(factors_json, '$.atc') > 0) AS rows_with_atc
+                   SUM(JSON_LENGTH(factors_json, '$.atc') > 0) AS rows_with_atc,
+                   SUM(expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP) AS expired_rows
             FROM {quote_ident(table_name)}
             """
         )

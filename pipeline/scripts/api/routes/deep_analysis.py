@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
+import os
 from typing import Annotated, Any, Final
 from urllib.parse import unquote
 
@@ -35,6 +36,8 @@ FORECAST_HORIZON_QUARTERS = 20
 FORECAST_HORIZON_MONTHS = 60
 ON_DEMAND_FORECAST_WORKERS: Final[int] = 4
 ON_DEMAND_LOCK_TIMEOUT_SECONDS: Final[int] = 30
+GENERAL_CACHE_TTL_DAYS: Final[int] = 35
+BRAND_ELEMENTS_CACHE_TTL_DAYS: Final[int] = 35
 EMPTY_BRAND_FACTORS = {
     "atc": [],
     "ubist": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
@@ -78,6 +81,36 @@ def _not_generated_ai_variant() -> dict:
 
 def _quote_identifier(identifier: str) -> str:
     return "`" + identifier.replace("`", "``") + "`"
+
+
+def _ttl_days(env_name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(env_name, str(default))))
+    except ValueError:
+        return default
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=KST)
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=KST)
+
+
+def _row_cache_fresh(row: dict, *, ttl_days: int) -> bool:
+    now = datetime.now(KST)
+    expires_at = _coerce_datetime(row.get("expires_at"))
+    if expires_at is not None:
+        return expires_at > now
+    updated_at = _coerce_datetime(row.get("updated_at"))
+    if updated_at is None:
+        return True
+    return updated_at + timedelta(days=ttl_days) > now
 
 
 def _compact_sql(column: str) -> str:
@@ -169,9 +202,32 @@ def _parse_cached_brand_element(row: dict) -> dict:
         "factors": parse_json_field("factors_json"),
         "strength": parse_json_field("strength_json"),
         "updated_at": row.get("updated_at"),
+        "expires_at": row.get("expires_at"),
         "strength_generated_at": row.get("strength_generated_at"),
         "strength_workflow_rev": row.get("strength_workflow_rev"),
     }
+
+
+def _refresh_cached_brand_elements(brand_keys: list[str]) -> None:
+    if not brand_keys:
+        return
+    try:
+        from pipeline.scripts.etl import cache_brand_elements
+
+        os.environ.setdefault("MARIADB_DATABASE", cache_brand_elements.TARGET_DATABASE)
+        conn = cache_brand_elements.connect_db()
+        try:
+            cache_brand_elements.ensure_cache_brand_elements_table(conn)
+            payloads = cache_brand_elements.build_brand_element_payloads(
+                conn,
+                brand_keys,
+                agent3_schema=get_settings().agent3_db_name,
+            )
+            cache_brand_elements.upsert_brand_elements(conn, payloads)
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("cache_brand_elements refresh failed", exc_info=True)
 
 
 def _load_cached_brand_elements(brand_keys: list[str]) -> dict[str, dict]:
@@ -183,16 +239,40 @@ def _load_cached_brand_elements(brand_keys: list[str]) -> dict[str, dict]:
         rows = db.fetch_all(
             f"""
             SELECT brand_key, brand_name, factors_json, strength_json,
-                   strength_generated_at, strength_workflow_rev, updated_at
+                   strength_generated_at, strength_workflow_rev, updated_at,
+                   source_computed_at, expires_at
             FROM cache_brand_elements
             WHERE brand_key IN ({placeholders})
             """,
             keys,
         )
+        rows_by_key = {str(row.get("brand_key")): row for row in rows}
+        stale_keys = [
+            key
+            for key in keys
+            if key in rows_by_key
+            and not _row_cache_fresh(
+                rows_by_key[key],
+                ttl_days=_ttl_days("BRAND_ELEMENTS_CACHE_TTL_DAYS", BRAND_ELEMENTS_CACHE_TTL_DAYS),
+            )
+        ]
+        if stale_keys:
+            _refresh_cached_brand_elements(stale_keys)
+            rows = db.fetch_all(
+                f"""
+                SELECT brand_key, brand_name, factors_json, strength_json,
+                       strength_generated_at, strength_workflow_rev, updated_at,
+                       source_computed_at, expires_at
+                FROM cache_brand_elements
+                WHERE brand_key IN ({placeholders})
+                """,
+                keys,
+            )
     except pymysql.err.ProgrammingError as exc:
-        if exc.args and exc.args[0] == 1146:
+        if exc.args and exc.args[0] in {1054, 1146}:
             return {}
-        raise
+        else:
+            raise
     except pymysql.MySQLError:
         logger.warning("cache_brand_elements lookup failed", exc_info=True)
         return {}
@@ -415,7 +495,8 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
     try:
         row = db.fetch_one(
             f"""
-            SELECT brand_key, brand, response_json, brand_factors, updated_at, atc4_code
+            SELECT brand_key, brand, response_json, brand_factors, updated_at,
+                   source_computed_at, expires_at, atc4_code
             FROM cache_deep_analysis_general
             WHERE (brand = %s OR brand_key = %s)
               {atc4_clause}
@@ -425,7 +506,7 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             params,
         )
         if row:
-            return row
+            return row if _general_cache_row_fresh(row, brand, atc4) else None
         compact = compact_brand_name(brand)
         if not compact or compact == brand:
             return None
@@ -434,7 +515,8 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             compact_params.append(atc4)
         rows = db.fetch_all(
             f"""
-            SELECT brand_key, brand, response_json, brand_factors, updated_at, atc4_code
+            SELECT brand_key, brand, response_json, brand_factors, updated_at,
+                   source_computed_at, expires_at, atc4_code
             FROM cache_deep_analysis_general
             WHERE ({_compact_sql("brand")} = %s OR brand_key = %s)
               {atc4_clause}
@@ -443,7 +525,8 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             """,
             compact_params,
         )
-        return _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
+        row = _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
+        return row if row and _general_cache_row_fresh(row, brand, atc4) else None
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
             return None
@@ -455,6 +538,8 @@ def _general_cache_row_from_built(row: Any) -> dict:
         "response_json": row.response_json,
         "brand_factors": row.brand_factors,
         "updated_at": datetime.now(KST),
+        "source_computed_at": getattr(row, "source_computed_at", None),
+        "expires_at": getattr(row, "expires_at", None),
         "atc4_code": row.atc4_code,
     }
 
@@ -468,7 +553,7 @@ def _fetch_general_deep_analysis_row_with_conn(conn: Any, brand: str, atc4: str 
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT response_json, brand_factors, updated_at, atc4_code
+            SELECT response_json, brand_factors, updated_at, source_computed_at, expires_at, atc4_code
             FROM cache_deep_analysis_general
             WHERE (brand = %s OR brand_key = %s)
               {atc4_clause}
@@ -477,7 +562,71 @@ def _fetch_general_deep_analysis_row_with_conn(conn: Any, brand: str, atc4: str 
             """,
             params,
         )
-        return cur.fetchone()
+        row = cur.fetchone()
+    return row if row and _general_cache_row_fresh_with_conn(conn, row, brand, atc4) else None
+
+
+def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime | None:
+    params: list[str] = [brand, brand]
+    atc4_clause = ""
+    if atc4:
+        atc4_clause = "AND atc4_code = %s"
+        params.append(atc4)
+    try:
+        row = db.fetch_one(
+            f"""
+            SELECT MAX(computed_at) AS source_computed_at
+            FROM mart_general_brand_metric
+            WHERE (brand_name = %s OR brand_key = %s)
+              {atc4_clause}
+            """,
+            params,
+        )
+    except pymysql.MySQLError:
+        return None
+    value = row.get("source_computed_at") if row else None
+    return _coerce_datetime(value)
+
+
+def _latest_general_source_computed_at_with_conn(conn: Any, brand: str, atc4: str | None) -> datetime | None:
+    params: list[str] = [brand, brand]
+    atc4_clause = ""
+    if atc4:
+        atc4_clause = "AND atc4_code = %s"
+        params.append(atc4)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT MAX(computed_at) AS source_computed_at
+            FROM mart_general_brand_metric
+            WHERE (brand_name = %s OR brand_key = %s)
+              {atc4_clause}
+            """,
+            params,
+        )
+        row = cur.fetchone()
+    value = row.get("source_computed_at") if row else None
+    return _coerce_datetime(value)
+
+
+def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
+    if not _row_cache_fresh(row, ttl_days=_ttl_days("GENERAL_DEEP_CACHE_TTL_DAYS", GENERAL_CACHE_TTL_DAYS)):
+        return False
+    cached_source = _coerce_datetime(row.get("source_computed_at"))
+    if cached_source is None:
+        return True
+    latest_source = _latest_general_source_computed_at(brand, atc4 or str(row.get("atc4_code") or "").strip() or None)
+    return not (cached_source is not None and latest_source is not None and latest_source > cached_source)
+
+
+def _general_cache_row_fresh_with_conn(conn: Any, row: dict, brand: str, atc4: str | None) -> bool:
+    if not _row_cache_fresh(row, ttl_days=_ttl_days("GENERAL_DEEP_CACHE_TTL_DAYS", GENERAL_CACHE_TTL_DAYS)):
+        return False
+    cached_source = _coerce_datetime(row.get("source_computed_at"))
+    if cached_source is None:
+        return True
+    latest_source = _latest_general_source_computed_at_with_conn(conn, brand, atc4 or str(row.get("atc4_code") or "").strip() or None)
+    return not (cached_source is not None and latest_source is not None and latest_source > cached_source)
 
 
 def _general_forecast_lock_name(brand: str, atc4: str | None) -> str:
