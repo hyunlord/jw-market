@@ -30,6 +30,8 @@ from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.market_scope.catalog import MarketScopeCatalog
+from pipeline.scripts.api.market_scope.types import MarketScopeOption, OptionType, ViewFamily
 
 
 MAX_BRAND_SET_SIZE: Final = 6
@@ -83,7 +85,13 @@ def resolve_brand_set(
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
     view = view_config(view_name)
-    resolved_market_id = market_id
+    raw_filter_payload = filter_payload or {}
+    market_scope_market_id = _market_scope_market_id(
+        view_name=view_name,
+        selected_brand=selected_brand,
+        filter_payload=raw_filter_payload,
+    )
+    resolved_market_id = market_scope_market_id or market_id
     if not resolved_market_id and view_name == "strategic_ml":
         resolved_market_id = _ml_id_for_brand(selected_brand)
     if not resolved_market_id:
@@ -99,8 +107,9 @@ def resolve_brand_set(
     brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
     if selected_brand not in brand_meta:
         return None
-    applied_filter = applied_brand_filter(view_name, resolved_market_id, filter_payload or {})
-    channel_axis = parse_audit_code_axis(filter_payload or {}) if view_name == "general" else None
+    effective_filter_payload = _filter_payload_for_effective_market(raw_filter_payload, resolved_market_id, market_scope_market_id is not None)
+    applied_filter = applied_brand_filter(view_name, resolved_market_id, effective_filter_payload)
+    channel_axis = parse_audit_code_axis(effective_filter_payload) if view_name == "general" else None
     validate_audit_code_axis(brand_rows, channel_axis)
     candidates = _brand_candidates(view_name, brand_rows, brand_meta, ranking, audit_code_axis=channel_axis)
     choices = _select_choices(candidates, selected_brand=selected_brand, applied_filter=applied_filter)
@@ -118,6 +127,59 @@ def resolve_brand_set(
         applied_filter=applied_filter,
         channel_axis=channel_axis,
     )
+
+
+def _market_scope_market_id(
+    *,
+    view_name: str,
+    selected_brand: str,
+    filter_payload: Mapping[str, Any],
+) -> str | None:
+    market_scope = _market_scope_payload(filter_payload)
+    if market_scope is None:
+        return None
+    if view_name != "general":
+        raise BrandSetInputError("unsupported_view_for_market_scope")
+    option_id = text(market_scope.get("option_id"))
+    if not option_id:
+        raise BrandSetInputError("invalid_market_scope")
+    catalog = MarketScopeCatalog.load_default()
+    option = _market_scope_option(catalog, option_id, selected_brand)
+    if option is None:
+        raise BrandSetInputError("invalid_market_scope")
+    if option.option_type is not OptionType.GROUP_UNION:
+        raise BrandSetInputError("invalid_market_scope")
+    member_name = text(market_scope.get("member"))
+    if not member_name or member_name == "전체":
+        raise BrandSetInputError("unsupported_market_scope_member")
+    member = next((candidate for candidate in option.members if candidate.brand_name == member_name), None)
+    if member is None:
+        raise BrandSetInputError("invalid_market_scope_member")
+    if member.member_status != "present":
+        raise BrandSetInputError("unsupported_market_scope_member")
+    if len(member.atc4_set) != 1:
+        raise BrandSetInputError("unsupported_member_scope")
+    return member.atc4_set[0].upper()
+
+
+def _market_scope_payload(filter_payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    value = filter_payload.get("market_scope")
+    return value if isinstance(value, Mapping) else None
+
+
+def _market_scope_option(catalog: MarketScopeCatalog, option_id: str, selected_brand: str) -> MarketScopeOption | None:
+    options = {option.option_id: option for option in catalog.group_options}
+    for option in catalog.options_for_brand(selected_brand, view_family=ViewFamily.STRATEGY):
+        options.setdefault(option.option_id, option)
+    return options.get(option_id)
+
+
+def _filter_payload_for_effective_market(filter_payload: Mapping[str, Any], market_id: str, market_scope_used: bool) -> Mapping[str, Any]:
+    if not market_scope_used:
+        return filter_payload
+    payload = dict(filter_payload)
+    payload["atc4"] = [market_id]
+    return payload
 
 
 def view_config(view_name: str) -> ViewConfig:

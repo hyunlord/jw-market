@@ -208,6 +208,21 @@ def test_interest_rx_service_uses_select_only_sql() -> None:
     assert has_write_token is False
 
 
+def test_interest_rx_parse_accepts_general_market_scope_without_atc4() -> None:
+    from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
+
+    request = service._parse_request(
+        {
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"market_scope": {"option_id": "group:livalo_family", "member": "리바로"}},
+        }
+    )
+
+    assert request.market_id is None
+    assert request.filter_payload["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
+
+
 def _brand_set() -> BrandSetResolution:
     view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     brand_meta = {

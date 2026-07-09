@@ -80,9 +80,9 @@ def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityReque
     if view not in {"general", "strategic_ml"}:
         raise CsdActivitySeriesInputError(f"unsupported view: {view}")
     filter_payload = _filter_payload(payload)
-    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else None
+    market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else None
     selected_brand = text(payload.get("selected_brand"))
-    if not selected_brand or (view == "general" and not market_id):
+    if not selected_brand or (view == "general" and not market_id and not _has_market_scope(filter_payload)):
         raise CsdActivitySeriesInputError("filters.atc4 and selected_brand are required")
     period = payload.get("period")
     return ParsedCsdActivityRequest(
@@ -130,3 +130,7 @@ def _first_filter_value(filter_payload: Mapping[str, Any], key: str) -> str:
     if isinstance(value, list):
         return text(value[0]) if value else ""
     return text(value)
+
+
+def _has_market_scope(filter_payload: Mapping[str, Any]) -> bool:
+    return isinstance(filter_payload.get("market_scope"), Mapping)

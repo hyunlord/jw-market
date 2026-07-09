@@ -7,6 +7,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     _brand_candidates,
     _ml_id_for_brand,
     _select_choices,
+    resolve_brand_set,
     validate_audit_code_axis,
 )
 from pipeline.scripts.api.brand_activity_channel_axis import (
@@ -129,6 +130,155 @@ def test_ambiguous_ml_brand_raises_without_market_id_escape_hatch(monkeypatch) -
         raise AssertionError("ambiguous ML brand must fail loudly")
 
 
+def test_general_market_scope_member_resolves_livalo_to_member_atc4(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    _patch_resolver_db(monkeypatch, calls)
+
+    result = resolve_brand_set(
+        view_name="general",
+        market_id=None,
+        selected_brand="리바로",
+        filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "리바로"}},
+        ranking_quarters=("2026-Q2",),
+    )
+
+    assert result is not None
+    assert result.market_id == "C10A1"
+    assert result.applied_filter["atc4"] == ["C10A1"]
+    assert ("brand", ("C10A1", "iqvia_nsa", "sales")) in calls
+    assert ("market", ("C10A1", "iqvia_nsa", "sales")) in calls
+
+
+def test_general_market_scope_member_resolves_livalozet_to_member_atc4(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    _patch_resolver_db(monkeypatch, calls)
+
+    result = resolve_brand_set(
+        view_name="general",
+        market_id=None,
+        selected_brand="리바로젯",
+        filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "리바로젯"}},
+        ranking_quarters=("2026-Q2",),
+    )
+
+    assert result is not None
+    assert result.market_id == "C10C0"
+    assert result.applied_filter["atc4"] == ["C10C0"]
+    assert ("brand", ("C10C0", "iqvia_nsa", "sales")) in calls
+
+
+def test_general_market_scope_rejects_whole_group_member(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="general",
+            market_id=None,
+            selected_brand="리바로",
+            filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "전체"}},
+        )
+    except BrandSetInputError as exc:
+        assert "unsupported_market_scope_member" in str(exc)
+    else:
+        raise AssertionError("whole group member must be rejected in Phase 1")
+
+
+def test_general_market_scope_rejects_missing_member(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="general",
+            market_id=None,
+            selected_brand="리바로",
+            filter_payload={"market_scope": {"option_id": "group:livalo_family"}},
+        )
+    except BrandSetInputError as exc:
+        assert "unsupported_market_scope_member" in str(exc)
+    else:
+        raise AssertionError("omitted member must be rejected in Phase 1")
+
+
+def test_general_market_scope_rejects_unknown_member(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="general",
+            market_id=None,
+            selected_brand="리바로",
+            filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "존재안함"}},
+        )
+    except BrandSetInputError as exc:
+        assert "invalid_market_scope_member" in str(exc)
+    else:
+        raise AssertionError("unknown member must be rejected")
+
+
+def test_general_market_scope_rejects_unknown_option(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="general",
+            market_id=None,
+            selected_brand="리바로",
+            filter_payload={"market_scope": {"option_id": "group:not_found", "member": "리바로"}},
+        )
+    except BrandSetInputError as exc:
+        assert "invalid_market_scope" in str(exc)
+    else:
+        raise AssertionError("unknown option_id must be rejected")
+
+
+def test_general_market_scope_rejects_non_group_option(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="general",
+            market_id=None,
+            selected_brand="리바로",
+            filter_payload={"market_scope": {"option_id": "source:strategy_006", "member": "리바로"}},
+        )
+    except BrandSetInputError as exc:
+        assert "invalid_market_scope" in str(exc)
+    else:
+        raise AssertionError("non-group option must be rejected")
+
+
+def test_general_market_scope_rejects_multi_atc4_member(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="general",
+            market_id=None,
+            selected_brand="위너프A+",
+            filter_payload={"market_scope": {"option_id": "group:winuf_family", "member": "위너프A+"}},
+        )
+    except BrandSetInputError as exc:
+        assert "unsupported_member_scope" in str(exc)
+    else:
+        raise AssertionError("multi-ATC4 member must be rejected in Phase 1")
+
+
+def test_strategic_ml_market_scope_is_rejected(monkeypatch) -> None:
+    _patch_resolver_db(monkeypatch, [])
+
+    try:
+        resolve_brand_set(
+            view_name="strategic_ml",
+            market_id=None,
+            selected_brand="리바로",
+            filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "리바로"}},
+        )
+    except BrandSetInputError as exc:
+        assert "unsupported_view_for_market_scope" in str(exc)
+    else:
+        raise AssertionError("strategic_ml market_scope must be rejected")
+
+
 def test_audit_code_axis_replaces_candidate_sales_ranking_value(monkeypatch) -> None:
     monkeypatch.setattr(
         "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",
@@ -240,3 +390,56 @@ def _candidate(brand_key: str, *, rank: int, sales: float, dimensions: dict[str,
         sales_rank=rank,
         sales_value=sales,
     )
+
+
+def _patch_resolver_db(monkeypatch, calls: list[tuple[str, tuple[object, ...]]]) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",
+        lambda _metas: {},
+    )
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        if "mart_general_brand_metric" in sql:
+            calls.append(("brand", tuple(params)))
+            return [
+                _brand_row("리바로", "리바로", "LIVALO", str(params[0]), 1, 100.0),
+                _brand_row("리바로젯", "리바로젯", "LIVALOZET", str(params[0]), 2, 80.0),
+                _brand_row("경쟁", "경쟁", "COMP", str(params[0]), 3, 50.0),
+            ]
+        if "mart_general_filter_dimension_metric" in sql:
+            return []
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    def fake_fetch_one(sql: str, params: tuple[object, ...]) -> dict[str, object]:
+        calls.append(("market", tuple(params)))
+        return {
+            "atc4_code": str(params[0]),
+            "atc4_desc": f"Market {params[0]}",
+            "brand_ranking": {
+                "2026-Q2": [
+                    {"brand_key": "리바로", "rank": 1, "raw_value": 100.0},
+                    {"brand_key": "리바로젯", "rank": 2, "raw_value": 80.0},
+                    {"brand_key": "경쟁", "rank": 3, "raw_value": 50.0},
+                ]
+            },
+        }
+
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_one", fake_fetch_one)
+
+
+def _brand_row(
+    brand_key: str,
+    brand_name: str,
+    product_code: str,
+    atc4_code: str,
+    rank: int,
+    sales: float,
+) -> dict[str, object]:
+    return {
+        "brand_key": brand_key,
+        "brand_name": brand_name,
+        "by_dimension": {"products": [{"product_code": product_code}], "atc4_code": [atc4_code]},
+        "metric_history": {"2026-Q2": {"rank": rank, "raw_value": sales}},
+        "audit_code_matrix": {},
+    }
