@@ -148,7 +148,8 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 
 허용 키: `mfr_name_kor(제조사명)`, `molecule_type(성분구분)`, `molecule_desc(성분명)`,
 `pack_desc(PACK DESC)`, `strength(함량)`, `nhi_type(NHI 구분)`, `audit_code(IQVIA audit code)`.
-`pack_desc`는 canonical sidecar의 `dimension_type='pack'` 행을 조회해 PACK DESC 텍스트 단위로 제품 범위를 좁힙니다.
+모든 일반뷰 IQVIA 분석레벨 필터는 같은 `analysis_level.iqvia` 객체에서 함께 보냅니다.
+`pack_desc`도 같은 입력 필드이며, 내부 canonical dimension_type은 `pack`입니다.
 `audit_code`는 row filter가 아니라 raw `audit_code_matrix` 값 슬라이스입니다. missing/빈 배열이면 전체 audit code를 포함합니다.
 
 ### 전략뷰 필터
@@ -382,6 +383,7 @@ GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE: Final = {
                 "mfr_name_kor": ["제이더블유중외제약"],
                 "molecule_desc": ["TOCILIZUMAB"],
                 "molecule_type": ["SINGLE"],
+                "pack_desc": ["PRE-F SRN SC 162MG 0.9ML"],
                 "strength": ["162MG"],
                 "nhi_type": ["NHI"],
                 "audit_code": ["KHPA", "KPA"],
@@ -403,18 +405,6 @@ COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
 }
 
 
-GENERAL_IQVIA_PACK_DESC_FILTER_REQUEST_EXAMPLE: Final = {
-    "source": "iqvia",
-    "measure": "sales",
-    "filters": {
-        "focus_brand_key": "악템라",
-        "atc4": ["M01C0"],
-        "analysis_level": {"iqvia": {"pack_desc": ["PFS 162MG/0.9ML"]}},
-    },
-    "options": {"top_n": 20},
-}
-
-
 DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
     "general_baseline": {
         "summary": "일반뷰 기본 조회: ATC4만 지정",
@@ -427,8 +417,8 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
         "value": GENERAL_UBIST_FILTER_REQUEST_EXAMPLE,
     },
     "general_iqvia_filters": {
-        "summary": "일반뷰 IQVIA 분석레벨+audit_code",
-        "description": "IQVIA는 mfr_name_kor/molecule_desc/strength/nhi_type과 audit_code 채널축을 사용합니다.",
+        "summary": "일반뷰 IQVIA 분석레벨+PACK DESC+audit_code",
+        "description": "IQVIA는 mfr_name_kor/molecule_desc/molecule_type/pack_desc/strength/nhi_type과 audit_code 값 슬라이스를 같은 analysis_level.iqvia 객체에 함께 보냅니다.",
         "value": GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE,
     },
     "market_landscape": {
@@ -440,11 +430,6 @@ DYNAMIC_MARKET_REQUEST_EXAMPLES: Final = {
         "summary": "전략뷰 Competitive Dynamics: 브랜드명 기반 자동 시장 결정",
         "description": "focus_brand_key와 view_kind만 보내면 CD 시장을 내부 조회합니다. 모호하면 cd_market_id 오름차순 첫 번째를 사용합니다.",
         "value": COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE,
-    },
-    "general_iqvia_pack_desc_filter": {
-        "summary": "일반뷰 IQVIA PACK DESC 필터",
-        "description": "`analysis_level.iqvia.pack_desc`는 PACK DESC 텍스트를 `dimension_type=pack`으로 매핑해 필터링합니다.",
-        "value": GENERAL_IQVIA_PACK_DESC_FILTER_REQUEST_EXAMPLE,
     },
 }
 
