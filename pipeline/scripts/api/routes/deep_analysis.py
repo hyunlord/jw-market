@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from typing import Annotated
 from datetime import datetime, timedelta, timezone
 import json
 import logging
 from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 import pymysql
 
 from pipeline.scripts.api import db
@@ -207,6 +208,30 @@ def _fetch_deep_analysis_row(brand: str) -> dict | None:
         raise
 
 
+def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dict | None:
+    params: list[str] = [brand]
+    atc4_clause = ""
+    if atc4:
+        atc4_clause = "AND atc4_code = %s"
+        params.append(atc4)
+    try:
+        return db.fetch_one(
+            f"""
+            SELECT response_json, brand_factors, updated_at, atc4_code
+            FROM cache_deep_analysis_general
+            WHERE brand = %s
+              {atc4_clause}
+            ORDER BY atc4_code ASC
+            LIMIT 1
+            """,
+            params,
+        )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] in {1054, 1146}:
+            return None
+        raise
+
+
 def _format_generated_at(value: object) -> str:
     if isinstance(value, datetime):
         generated_at = value
@@ -298,9 +323,17 @@ def _slice_forecast_horizon(payload: dict) -> None:
     response_model=None,
     responses=DEEP_ANALYSIS_RESPONSES,
 )
-def deep_analysis(brand_name: str) -> dict:
+def deep_analysis(
+    brand_name: str,
+    atc4: Annotated[
+        str | None,
+        Query(description="일반뷰 deep-analysis 캐시에서 특정 ATC4 시장을 지정합니다."),
+    ] = None,
+) -> dict:
     brand = unquote(brand_name)
-    row = _fetch_deep_analysis_row(brand)
+    row = _fetch_general_deep_analysis_row(brand, atc4) if atc4 else _fetch_deep_analysis_row(brand)
+    if not row and not atc4:
+        row = _fetch_general_deep_analysis_row(brand)
     if not row:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
     payload = compose_cached_json(row["response_json"])
