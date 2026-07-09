@@ -34,6 +34,15 @@ class UploadedTempDocument(BaseModel):
     file_path: str = Field(description="서비스가 저장한 임시 파일 경로입니다. 응답 확인과 장애 분석용으로 제공합니다.")
 
 
+class BlockedUpload(BaseModel):
+    file_name: str = Field(description="차단된 업로드 파일명입니다.")
+    route: Literal["blocked_oversized"] = Field(
+        description="업로드 라우팅 판정입니다. 현재는 oversized 차단만 사용합니다."
+    )
+    route_reason: str = Field(description="preprocessor-64 위임 전에 차단한 근거입니다.")
+    file_size_bytes: int = Field(default=0, description="차단된 파일의 크기 byte입니다.")
+
+
 class BridgeRequest(BaseModel):
     """wf301 Python Step thin payload."""
 
@@ -256,6 +265,10 @@ class UploadResponse(BaseModel):
         ),
     )
     quota: QuotaSnapshot | None = Field(default=None, description="업로드 시점의 쿼터 계산 결과입니다.")
+    blocked_uploads: list[BlockedUpload] = Field(
+        default_factory=list,
+        description="preprocessor-64 위임 전에 차단된 파일 목록입니다.",
+    )
     errors: list[str] = Field(default_factory=list)
 
 

@@ -19,6 +19,7 @@ from fastapi import FastAPI, File, Form, Query, UploadFile
 from . import delete_ops, ledger, session_wiki, settings, upload_adapter, weaviate_ops
 from .logging_utils import safe_log
 from .models import (
+    BlockedUpload,
     BridgeRequest,
     CommitDocumentResult,
     CommitResponse,
@@ -72,6 +73,34 @@ def _chunk_route(chunk_count: int) -> tuple[str, str]:
         "vdb",
         f"chunk_count={chunk_count} is within VDB soft limit {settings.ROUTE_SOFT_CHUNK_LIMIT}.",
     )
+
+
+def _blocked_upload_models(
+    blocks: list[upload_adapter.PreprocessorGateBlock],
+) -> list[BlockedUpload]:
+    return [
+        BlockedUpload(
+            file_name=block.file_name,
+            route=block.route,
+            route_reason=block.route_reason,
+            file_size_bytes=block.file_size_bytes,
+        )
+        for block in blocks
+    ]
+
+
+def _preprocessor_gate_block_for_temp_doc(
+    temp_doc: TempDocument,
+) -> upload_adapter.PreprocessorGateBlock | None:
+    if not temp_doc.file_path:
+        return None
+    document = upload_adapter.SavedTempDocument(
+        temp_document_id=temp_doc.temp_document_id,
+        file_name=temp_doc.file_name,
+        file_path=temp_doc.file_path,
+    )
+    blocks = upload_adapter.blocked_saved_external_preprocessor_documents([document])
+    return blocks[0] if blocks else None
 
 API_DESCRIPTION = """
 wf301 파일 업로드와 세션별 문서 검색을 연결하는 code-serving-235 브리지 API입니다.
@@ -584,6 +613,28 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
         for temp_doc in req.temp_documents:
             source_doc_key = f"temp:{temp_doc.temp_document_id}:{temp_doc.file_name}"
             idempotency_key = f"wf301:{session_id}:{temp_doc.temp_document_id}:{temp_doc.file_name}"
+            gate_block = _preprocessor_gate_block_for_temp_doc(temp_doc)
+            if gate_block is not None:
+                plans.append(
+                    DocumentPlan(
+                        temp_document_id=temp_doc.temp_document_id,
+                        file_name=temp_doc.file_name,
+                        source_doc_key=source_doc_key,
+                        source_collection=None,
+                        chunk_count=0,
+                        route=gate_block.route,
+                        route_reason=gate_block.route_reason,
+                        vector_dim=None,
+                        idempotency_key=idempotency_key,
+                        idempotency_status="blocked_oversized",
+                        planned_document=None,
+                        planned_upsert=None,
+                        planned_vector_ids=0,
+                        planned_139_objects=0,
+                        notes=[gate_block.route_reason],
+                    )
+                )
+                continue
             local_xlsx = _load_local_xlsx_texts(temp_doc)
             if local_xlsx is not None:
                 collection, texts, notes, file_size_bytes = local_xlsx
@@ -697,6 +748,26 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
         for temp_doc in req.temp_documents:
             source_doc_key = f"temp:{temp_doc.temp_document_id}:{temp_doc.file_name}"
             idempotency_key = f"wf301:{session_id}:{temp_doc.temp_document_id}:{temp_doc.file_name}"
+            gate_block = _preprocessor_gate_block_for_temp_doc(temp_doc)
+            if gate_block is not None:
+                prepared.append(
+                    {
+                        "temp_doc": temp_doc,
+                        "source_doc_key": source_doc_key,
+                        "idempotency_key": idempotency_key,
+                        "collection": None,
+                        "chunks": [],
+                        "local_xlsx_texts": None,
+                        "chunk_count": 0,
+                        "route": gate_block.route,
+                        "route_reason": gate_block.route_reason,
+                        "notes": [gate_block.route_reason],
+                        "vector_dim": None,
+                        "file_size_bytes": gate_block.file_size_bytes,
+                        "existing_doc_id": None,
+                    }
+                )
+                continue
             local_xlsx = _load_local_xlsx_texts(temp_doc)
             local_xlsx_texts: list[str] | None = None
             if local_xlsx is not None:
@@ -764,23 +835,6 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
             notes = item["notes"]
             vector_dim = item["vector_dim"]
             file_size_bytes = int(item["file_size_bytes"] or 0)
-            if not chunk_count:
-                results.append(
-                    CommitDocumentResult(
-                        temp_document_id=temp_doc.temp_document_id,
-                        file_name=temp_doc.file_name,
-                        source_doc_key=source_doc_key,
-                        source_collection=collection,
-                        chunk_count=0,
-                        route=route,
-                        route_reason=route_reason,
-                        vector_dim=None,
-                        status="no_chunks",
-                        notes=notes,
-                    )
-                )
-                continue
-
             if route == "blocked_oversized":
                 results.append(
                     CommitDocumentResult(
@@ -794,6 +848,23 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                         vector_dim=vector_dim,
                         status="blocked_oversized",
                         notes=[*notes, route_reason],
+                    )
+                )
+                continue
+
+            if not chunk_count:
+                results.append(
+                    CommitDocumentResult(
+                        temp_document_id=temp_doc.temp_document_id,
+                        file_name=temp_doc.file_name,
+                        source_doc_key=source_doc_key,
+                        source_collection=collection,
+                        chunk_count=0,
+                        route=route,
+                        route_reason=route_reason,
+                        vector_dim=None,
+                        status="no_chunks",
+                        notes=notes,
                     )
                 )
                 continue
@@ -1039,6 +1110,17 @@ def upload(
                 quota=quota,
                 errors=quota.violations,
             )
+        upload_blocks = upload_adapter.blocked_external_preprocessor_uploads(files)
+        if upload_blocks:
+            return UploadResponse(
+                target_vdb_id=vdb_id,
+                workflow_id=workflow_id,
+                app_session_id=app_session_value,
+                session_id=session_value,
+                quota=quota,
+                blocked_uploads=_blocked_upload_models(upload_blocks),
+                errors=[block.route_reason for block in upload_blocks],
+            )
 
         saved_documents: list[upload_adapter.SavedTempDocument] = []
         temp_document_ids: list[int] = []
@@ -1059,6 +1141,24 @@ def upload(
                     files,
                     temp_document_ids=temp_document_ids,
                 )
+                saved_blocks = upload_adapter.blocked_saved_external_preprocessor_documents(
+                    saved_documents
+                )
+                if saved_blocks:
+                    upload_adapter.cleanup_saved_documents(saved_documents)
+                    upload_adapter.deactivate_temp_documents(conn, temp_document_ids=temp_document_ids)
+                    conn.commit()
+                    return UploadResponse(
+                        target_vdb_id=vdb_id,
+                        workflow_id=workflow_id,
+                        app_session_id=app_session_value,
+                        session_id=session_value,
+                        temp_vdb_index_id=temp_vdb.temp_vdb_index_id,
+                        temp_vdb_index=temp_vdb.temp_vdb_index,
+                        quota=quota,
+                        blocked_uploads=_blocked_upload_models(saved_blocks),
+                        errors=[block.route_reason for block in saved_blocks],
+                    )
                 external_preprocessor_documents = [
                     item
                     for item in saved_documents
