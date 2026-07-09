@@ -12,6 +12,16 @@ from fastapi import APIRouter, HTTPException, Query
 import pymysql
 
 from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_activity_brand_resolver import (
+    BrandSetInputError,
+    BrandSetResolutionError,
+    resolve_brand_set,
+)
+from pipeline.scripts.api.deep_analysis_brand_elements import (
+    build_brand_factor_items,
+    build_brand_strength_items,
+    fallback_brand_choices,
+)
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
@@ -259,11 +269,50 @@ def _load_brand_factors(value: object) -> dict:
     return payload if isinstance(payload, dict) else _empty_brand_factors()
 
 
+def _first_factor_atc4(factors: dict) -> str:
+    atc_values = factors.get("atc")
+    if not isinstance(atc_values, list):
+        return ""
+    return next((str(value).strip() for value in atc_values if str(value).strip()), "")
+
+
+def _resolve_brand_element_choices(row: dict, requested_brand: str, atc4: str | None, selected_factors: dict) -> tuple:
+    matched_brand = str(row.get("brand") or row.get("brand_key") or requested_brand)
+    selected_brand_key = str(row.get("brand_key") or matched_brand)
+    market_atc4 = str(row.get("atc4_code") or atc4 or _first_factor_atc4(selected_factors)).strip()
+    strategic_market_id = str(row.get("market_id") or "").strip()
+    if not selected_brand_key:
+        return fallback_brand_choices(matched_brand, matched_brand)
+    if not market_atc4 and not strategic_market_id and "brand_key" not in row:
+        return fallback_brand_choices(selected_brand_key, matched_brand)
+    try:
+        if market_atc4:
+            resolution = resolve_brand_set(
+                view_name="general",
+                market_id=market_atc4,
+                selected_brand=selected_brand_key,
+                filter_payload={"atc4": [market_atc4]},
+            )
+        else:
+            resolution = resolve_brand_set(
+                view_name="strategic_ml",
+                market_id=strategic_market_id or None,
+                selected_brand=selected_brand_key,
+                filter_payload={},
+            )
+    except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
+        logger.info("deep-analysis brand element resolver fell back to selected brand only", exc_info=True)
+        resolution = None
+    if not resolution or not resolution.choices:
+        return fallback_brand_choices(selected_brand_key, matched_brand)
+    return resolution.choices
+
+
 def _fetch_deep_analysis_row(brand: str) -> dict | None:
     try:
         row = db.fetch_one(
             """
-            SELECT brand, response_json, brand_factors, updated_at
+            SELECT brand, market_id, response_json, brand_factors, updated_at
             FROM cache_deep_analysis
             WHERE brand = %s
             LIMIT 1
@@ -277,7 +326,7 @@ def _fetch_deep_analysis_row(brand: str) -> dict | None:
             return None
         rows = db.fetch_all(
             f"""
-            SELECT brand, response_json, brand_factors, updated_at
+            SELECT brand, market_id, response_json, brand_factors, updated_at
             FROM cache_deep_analysis
             WHERE {_compact_sql("brand")} = %s
             LIMIT 2
@@ -590,12 +639,22 @@ def deep_analysis(
     _slice_forecast_horizon(payload)
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
-        if "brand_factors" in row:
-            data["brand_factors"] = _load_brand_factors(row.get("brand_factors"))
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
+        selected_brand_key = str(row.get("brand_key") or matched_brand)
+        selected_factors = _load_brand_factors(row.get("brand_factors"))
+        brand_choices = _resolve_brand_element_choices(row, brand, atc4, selected_factors)
+        data["brand_factors"] = build_brand_factor_items(
+            brand_choices,
+            selected_brand_key=selected_brand_key,
+            selected_factors=selected_factors,
+        )
         data["ai_analysis"] = _load_ai_analysis(matched_brand)
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        data["brand_strength"] = _load_brand_strength(matched_brand)
+        data["brand_strength"] = build_brand_strength_items(
+            brand_choices,
+            selected_brand_key=selected_brand_key,
+            selected_strength=_load_brand_strength(matched_brand),
+        )
     return payload
