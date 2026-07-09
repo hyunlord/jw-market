@@ -10,7 +10,7 @@ from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_i
 
 JsonMap: TypeAlias = dict[str, Any]
 
-RX_MEASURES: Final[tuple[str, ...]] = ("unit", "counting_unit", "dosage_unit")
+RX_MEASURES: Final[tuple[str, ...]] = ("sales", "unit", "counting_unit", "dosage_unit")
 PUBLIC_MEASURES: Final[tuple[str, ...]] = ("activity", *RX_MEASURES)
 SOURCE: Final = "iqvia_nsa"
 RANKING_MEASURE: Final = "sales"
