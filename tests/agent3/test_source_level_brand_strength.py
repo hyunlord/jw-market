@@ -5,7 +5,11 @@ from typing import Any
 
 from pipeline.scripts.agent3 import brand_factors
 from pipeline.scripts.agent3.source_loader import compute_source_input_hash
-from pipeline.scripts.agent3.source_processing import extract_source_candidates, filter_rows_for_source
+from pipeline.scripts.agent3.source_processing import (
+    available_sources_from_general_rows,
+    extract_source_candidates,
+    filter_rows_for_source,
+)
 
 
 def test_source_schema_uses_brand_key_source_primary_key() -> None:
@@ -36,6 +40,32 @@ def test_source_filter_keeps_only_requested_source() -> None:
 
     assert filter_rows_for_source(rows, "iqvia") == [{"brand_name": "리바로", "source": "iqvia_nsa"}]
     assert filter_rows_for_source(rows, "ubist") == [{"brand_name": "리바로", "source": "ubist"}]
+
+
+def test_source_units_follow_general_sales_rows_for_both_sources() -> None:
+    general_rows = [
+        {"source": "iqvia_nsa", "measure": "sales"},
+        {"source": "ubist", "measure": "sales"},
+    ]
+
+    assert available_sources_from_general_rows(general_rows) == ("iqvia", "ubist")
+
+
+def test_source_units_follow_general_sales_rows_for_one_source() -> None:
+    general_rows = [
+        {"source": "iqvia_nsa", "measure": "sales"},
+        {"source": "ubist", "measure": "volume"},
+    ]
+
+    assert available_sources_from_general_rows(general_rows) == ("iqvia",)
+
+
+def test_source_units_do_not_depend_on_strategic_rows() -> None:
+    general_rows = [{"source": "ubist", "measure": "sales"}]
+    strategic_rows = [{"source": "iqvia_nsa", "measure": "sales"}]
+
+    assert strategic_rows
+    assert available_sources_from_general_rows(general_rows) == ("ubist",)
 
 
 def test_source_candidate_extraction_does_not_mix_sources() -> None:

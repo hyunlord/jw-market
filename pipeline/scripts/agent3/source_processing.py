@@ -13,9 +13,20 @@ SOURCE_DB_VALUES: dict[Agent3Source, str] = {
     "ubist": "ubist",
 }
 
+SOURCE_ORDER: tuple[Agent3Source, ...] = ("iqvia", "ubist")
+
 
 def source_db_value(source: Agent3Source) -> str:
     return SOURCE_DB_VALUES[source]
+
+
+def available_sources_from_general_rows(rows: list[dict[str, Any]]) -> tuple[Agent3Source, ...]:
+    available_db_sources = {
+        str(row.get("source") or "").lower()
+        for row in rows
+        if str(row.get("measure") or "").lower() == "sales"
+    }
+    return tuple(source for source in SOURCE_ORDER if source_db_value(source) in available_db_sources)
 
 
 def filter_rows_for_source(rows: list[dict[str, Any]], source: Agent3Source) -> list[dict[str, Any]]:

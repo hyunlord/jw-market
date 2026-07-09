@@ -17,6 +17,7 @@ from pipeline.scripts.agent3.run_full import (
 )
 from pipeline.scripts.agent3.source_loader import Agent3Source, Agent3SourceLoader, compute_source_input_hash, make_source_record
 from pipeline.scripts.agent3.source_processing import (
+    available_sources_from_general_rows,
     build_source_profile,
     extract_source_candidates,
     profile_only_source_summary,
@@ -59,19 +60,21 @@ def run_source(
     counts = {"workflow_calls": 0, "profile_only": 0, "skipped_same_hash": 0, "source_units": 0, "workflow_errors": 0}
     consecutive_workflow_errors = 0
     for identity in identities:
-        for source in _selected_sources(source_selection):
+        general_rows = general_by_brand.get(identity.brand_key, [])
+        available_sources = set(available_sources_from_general_rows(general_rows))
+        for source in (item for item in _selected_sources(source_selection) if item in available_sources):
             counts["source_units"] += 1
             print(f"[agent3-source] {identity.brand_key} {identity.brand_name} source={source}", file=sys.stderr, flush=True)
             profile = build_source_profile(
                 brand_name=identity.brand_name,
                 source=source,
-                general_rows=general_by_brand.get(identity.brand_key, []),
+                general_rows=general_rows,
                 strategic_rows=strategic_by_brand.get(identity.brand_key, []),
                 molecule_rows=molecule_by_brand.get(identity.brand_name, []),
             )
             candidates = extract_source_candidates(
                 source=source,
-                general_rows=general_by_brand.get(identity.brand_key, []),
+                general_rows=general_rows,
                 top_n=top_n,
             )
             input_hash = compute_source_input_hash(profile, candidates, workflow_rev, source)
