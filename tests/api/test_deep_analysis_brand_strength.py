@@ -62,7 +62,7 @@ def _strength_row() -> dict[str, Any]:
 
 
 def _selected_overall(payload: dict[str, Any]) -> dict[str, Any]:
-    return payload["data"]["brand_strength"][0]["overall"]
+    return payload["data"]["brand_elements"][0]["strength"]
 
 
 def test_slice_forecast_horizon_keeps_five_year_monthly_prefix_and_slices_all_intervals() -> None:
@@ -171,25 +171,43 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: the portal deep-analysis route composes the cached payload.
     payload = deep_analysis.deep_analysis("리바로")
 
-    # Then: the existing payload remains and brand_strength is a pass-through summary.
+    # Then: the existing payload remains and brand_elements carries the selected strength summary.
     assert payload["data"]["existing"] == {"value": 1}
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
     assert payload["data"]["ai_analysis_short"] == {"evidence_pool": [{"source": "뉴스"}]}
     assert payload["data"]["ai_analysis_long"] == {"evidence_pool": [{"source": "뉴스"}]}
-    assert payload["data"]["brand_strength"][0] == {
+    assert payload["data"]["brand_elements"][0] == {
         "brand": "리바로",
         "brand_key": "리바로",
         "role": "selected",
         "rank": 1,
         "sales_rank": None,
-        "available": True,
-        "ubist": {"available": False, "reason": "source_strength_not_generated"},
-        "iqvia": {"available": False, "reason": "source_strength_not_generated"},
-        "overall": {
+        "factors": {
+            "atc": [],
+            "ubist": {
+                "available": False,
+                "reason": "not_generated",
+                "values": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
+            },
+            "iqvia": {
+                "available": False,
+                "reason": "not_generated",
+                "values": {
+                    "mfr_name_kor": [],
+                    "molecule_type": [],
+                    "molecule_desc": [],
+                    "pack_desc": [],
+                    "strength": [],
+                    "nhi_type": [],
+                },
+            },
+        },
+        "strength": {
             "available": True,
             "profile_display": {"headline": "strong"},
             "strength_items": [{"axis": "growth", "score": 1}],
@@ -197,7 +215,7 @@ def test_deep_analysis_injects_brand_strength_when_agent3_row_exists(monkeypatch
             "meta": {"generated_at": "2026-07-05 13:32:16", "workflow_rev": 5365},
         },
     }
-    assert "response_json" not in json.dumps(payload["data"]["brand_strength"][0], ensure_ascii=False)
+    assert "response_json" not in json.dumps(payload["data"]["brand_elements"][0], ensure_ascii=False)
 
 
 def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched_brand(monkeypatch) -> None:
@@ -219,6 +237,8 @@ def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched
 
     def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
         seen.append((sql, params))
+        if "cache_brand_elements" in sql:
+            return []
         assert "REPLACE" in sql
         assert params == ["리바로브이"]
         return [{**_cache_row(), "brand": "리바로브이"}]
@@ -230,7 +250,7 @@ def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched
     payload = deep_analysis.deep_analysis("리바로 브이")
 
     # Then: the compact fallback serves the cache and downstream lookups use the matched canonical brand.
-    assert payload["data"]["brand_strength"][0]["overall"]["available"] is True
+    assert payload["data"]["brand_elements"][0]["strength"]["available"] is True
     assert any("cache_deep_analysis" in sql and "REPLACE" in sql for sql, _params in seen)
 
 
@@ -242,6 +262,8 @@ def test_deep_analysis_compact_cache_lookup_rejects_ambiguous_matches(monkeypatc
         return _ai_row()
 
     def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        if "cache_brand_elements" in sql:
+            return []
         assert "REPLACE" in sql
         return [
             {**_cache_row(), "brand": "AB C"},
@@ -332,6 +354,7 @@ def test_deep_analysis_brand_strength_is_not_generated_when_row_absent(monkeypat
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
@@ -352,6 +375,7 @@ def test_deep_analysis_brand_strength_handles_invalid_json(monkeypatch) -> None:
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
@@ -372,6 +396,7 @@ def test_deep_analysis_brand_strength_handles_db_failure(monkeypatch) -> None:
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
@@ -392,11 +417,11 @@ def test_deep_analysis_strip_brand_strength_matches_previous_payload(monkeypatch
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: callers strip the newly added field.
     payload = deep_analysis.deep_analysis("리바로")
-    payload["data"].pop("brand_strength")
-    payload["data"].pop("brand_factors")
+    payload["data"].pop("brand_elements")
     payload["data"].pop("ai_analysis_short")
     payload["data"].pop("ai_analysis_long")
 

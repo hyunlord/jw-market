@@ -18,8 +18,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     resolve_brand_set,
 )
 from pipeline.scripts.api.deep_analysis_brand_elements import (
-    build_brand_factor_items,
-    build_brand_strength_items,
+    build_brand_elements,
     fallback_brand_choices,
 )
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
@@ -154,6 +153,50 @@ def _load_brand_strength(brand: str) -> dict:
     if not row:
         return _not_generated_brand_strength()
     return _parse_brand_strength(row)
+
+
+def _parse_cached_brand_element(row: dict) -> dict:
+    def parse_json_field(name: str) -> dict:
+        try:
+            payload = json.loads(row.get(name) or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    return {
+        "brand": str(row.get("brand_name") or row.get("brand_key") or ""),
+        "brand_key": str(row.get("brand_key") or row.get("brand_name") or ""),
+        "factors": parse_json_field("factors_json"),
+        "strength": parse_json_field("strength_json"),
+        "updated_at": row.get("updated_at"),
+        "strength_generated_at": row.get("strength_generated_at"),
+        "strength_workflow_rev": row.get("strength_workflow_rev"),
+    }
+
+
+def _load_cached_brand_elements(brand_keys: list[str]) -> dict[str, dict]:
+    keys = [key for key in dict.fromkeys(str(value) for value in brand_keys if str(value).strip())]
+    if not keys:
+        return {}
+    placeholders = ", ".join(["%s"] * len(keys))
+    try:
+        rows = db.fetch_all(
+            f"""
+            SELECT brand_key, brand_name, factors_json, strength_json,
+                   strength_generated_at, strength_workflow_rev, updated_at
+            FROM cache_brand_elements
+            WHERE brand_key IN ({placeholders})
+            """,
+            keys,
+        )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] == 1146:
+            return {}
+        raise
+    except pymysql.MySQLError:
+        logger.warning("cache_brand_elements lookup failed", exc_info=True)
+        return {}
+    return {str(row.get("brand_key")): _parse_cached_brand_element(row) for row in rows}
 
 
 def _load_ai_analysis(brand: str) -> dict:
@@ -643,18 +686,17 @@ def deep_analysis(
         selected_brand_key = str(row.get("brand_key") or matched_brand)
         selected_factors = _load_brand_factors(row.get("brand_factors"))
         brand_choices = _resolve_brand_element_choices(row, brand, atc4, selected_factors)
-        data["brand_factors"] = build_brand_factor_items(
-            brand_choices,
-            selected_brand_key=selected_brand_key,
-            selected_factors=selected_factors,
-        )
         data["ai_analysis"] = _load_ai_analysis(matched_brand)
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        data["brand_strength"] = build_brand_strength_items(
+        selected_strength = _load_brand_strength(matched_brand)
+        cached_elements = _load_cached_brand_elements([choice.brand_key for choice in brand_choices])
+        data["brand_elements"] = build_brand_elements(
             brand_choices,
             selected_brand_key=selected_brand_key,
-            selected_strength=_load_brand_strength(matched_brand),
+            cached_elements_by_key=cached_elements,
+            selected_factors=selected_factors,
+            selected_strength=selected_strength,
         )
     return payload

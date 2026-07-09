@@ -56,7 +56,7 @@ def _strength_row() -> dict[str, Any]:
 
 
 def _selected_strength_available(payload: dict[str, Any]) -> bool:
-    return bool(payload["data"]["brand_strength"][0]["overall"]["available"])
+    return bool(payload["data"]["brand_elements"][0]["strength"]["available"])
 
 
 def test_deep_analysis_ai_variants_are_not_generated_when_row_absent(monkeypatch) -> None:
@@ -69,6 +69,7 @@ def test_deep_analysis_ai_variants_are_not_generated_when_row_absent(monkeypatch
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
@@ -97,6 +98,7 @@ def test_deep_analysis_ai_variants_remove_generation_only_fields(monkeypatch) ->
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is served.
     payload = deep_analysis.deep_analysis("리바로")
@@ -124,6 +126,7 @@ def test_deep_analysis_ai_variants_handle_invalid_json(monkeypatch) -> None:
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
@@ -147,6 +150,7 @@ def test_deep_analysis_ai_variants_handle_db_failure(monkeypatch) -> None:
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
@@ -168,6 +172,7 @@ def test_deep_analysis_legacy_ai_analysis_unchanged_when_variant_columns_absent(
         return _cache_row()
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
 
     # When: deep-analysis is requested.
     payload = deep_analysis.deep_analysis("리바로")
