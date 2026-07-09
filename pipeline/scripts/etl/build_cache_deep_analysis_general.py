@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ class GeneralCacheRow:
 
 
 GroupKey = tuple[str, str]
+ComboKey = tuple[str, str, str]
 
 
 def quote_ident(name: str) -> str:
@@ -208,21 +210,27 @@ def choose_base(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return sorted(rows, key=lambda row: (str(row.get("brand_name") or ""), str(row.get("source") or ""), str(row.get("measure") or "")))[0]
 
 
-def combo_payload(row: dict[str, Any], *, market_rows: list[dict[str, Any]], target_brand: str, source: str) -> dict[str, Any]:
+def row_identity(row: dict[str, Any]) -> str:
+    return str(row.get("id") or f"{row.get('brand_key')}|{row.get('atc4_code')}|{row.get('source')}|{row.get('measure')}")
+
+
+def entry_for_target(entry: dict[str, Any], target_brand: str) -> dict[str, Any]:
+    payload = copy.deepcopy(entry)
+    payload["is_target"] = payload.get("brand") == target_brand
+    return payload
+
+
+def combo_payload(
+    row: dict[str, Any],
+    *,
+    market_forecast: dict[str, Any],
+    selected_entries: list[dict[str, Any]],
+    target_brand: str,
+    source: str,
+) -> dict[str, Any]:
     periods, _values = history_from_row(row)
     steps = forecast_steps(source)
-    market_forecast = build_market_forecast(market_rows, source, steps)
-    selected = top6_rows(market_rows, target_brand)
-    brand_entries = [
-        build_forecast_brand_entry(
-            brand_row,
-            target_brand=target_brand,
-            source=source,
-            measure=str(row.get("measure")),
-            forecast_steps_count=steps,
-        )
-        for brand_row in selected
-    ]
+    brand_entries = [entry_for_target(entry, target_brand) for entry in selected_entries]
     if not brand_entries:
         brand_entries = [
             build_forecast_brand_entry(row, target_brand=target_brand, source=source, measure=str(row.get("measure")), forecast_steps_count=steps)
@@ -266,7 +274,8 @@ def build_general_cache_row(
     group_key: tuple[str, str],
     brand_rows: list[dict[str, Any]],
     *,
-    market_rows_by_combo: dict[tuple[str, str, str], list[dict[str, Any]]],
+    market_forecasts_by_combo: dict[ComboKey, dict[str, Any]],
+    selected_entries_by_group_combo: dict[tuple[GroupKey, str], list[dict[str, Any]]],
     brand_factors_by_brand: dict[str, dict[str, Any]],
 ) -> GeneralCacheRow:
     brand_key, atc4_code = group_key
@@ -282,9 +291,11 @@ def build_general_cache_row(
         if row is None:
             continue
         internal_source = SOURCE_TO_INTERNAL[source]
-        market_rows = market_rows_by_combo.get((atc4_code, internal_source, measure), [])
-        combo_data = combo_payload(row, market_rows=market_rows, target_brand=brand, source=source)
-        market_forecast = combo_data.pop("_market_forecast")
+        combo_key = (atc4_code, internal_source, measure)
+        market_forecast = market_forecasts_by_combo.get(combo_key, {"history_periods": [], "history_values": [], "forecast_values": []})
+        selected_entries = selected_entries_by_group_combo.get((group_key, combo), [])
+        combo_data = combo_payload(row, market_forecast=market_forecast, selected_entries=selected_entries, target_brand=brand, source=source)
+        combo_data.pop("_market_forecast", None)
         by_combo[combo] = combo_data
         simulation_by_combo[combo] = build_simulation_combo(
             combo=combo,
@@ -360,6 +371,86 @@ def select_groups(
     return items[:limit_groups] if limit_groups is not None else items
 
 
+def build_market_forecasts_by_combo(
+    market_rows_by_combo: dict[ComboKey, list[dict[str, Any]]],
+    *,
+    workers: int,
+) -> dict[ComboKey, dict[str, Any]]:
+    forecasts: dict[ComboKey, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as executor:
+        futures = {
+            executor.submit(build_market_forecast, rows, api_source(source), forecast_steps(api_source(source))): combo_key
+            for combo_key, rows in sorted(market_rows_by_combo.items())
+            for _atc4_code, source, _measure in [combo_key]
+        }
+        for future in as_completed(futures):
+            forecasts[futures[future]] = future.result()
+    return forecasts
+
+
+def select_entries_for_groups(
+    grouped: dict[GroupKey, list[dict[str, Any]]],
+    market_rows_by_combo: dict[ComboKey, list[dict[str, Any]]],
+) -> tuple[dict[tuple[GroupKey, str], list[str]], dict[tuple[ComboKey, str], dict[str, Any]]]:
+    selected_ids_by_group_combo: dict[tuple[GroupKey, str], list[str]] = {}
+    entry_rows: dict[tuple[ComboKey, str], dict[str, Any]] = {}
+    for group_key, brand_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        brand_key, atc4_code = group_key
+        brand = str(choose_base(brand_rows).get("brand_name") or brand_key)
+        rows_by_combo = {f"{api_source(row['source'])}.{row['measure']}": row for row in brand_rows}
+        for source, measure in ALL_COMBOS:
+            combo = f"{source}.{measure}"
+            row = rows_by_combo.get(combo)
+            if row is None:
+                continue
+            combo_key = (atc4_code, SOURCE_TO_INTERNAL[source], measure)
+            selected = top6_rows(market_rows_by_combo.get(combo_key, []), brand)
+            if not selected:
+                selected = [row]
+            selected_ids: list[str] = []
+            for selected_row in selected:
+                identity = row_identity(selected_row)
+                selected_ids.append(identity)
+                entry_rows[(combo_key, identity)] = selected_row
+            selected_ids_by_group_combo[(group_key, combo)] = selected_ids
+    return selected_ids_by_group_combo, entry_rows
+
+
+def build_forecast_entries_by_combo(
+    entry_rows: dict[tuple[ComboKey, str], dict[str, Any]],
+    *,
+    workers: int,
+) -> dict[tuple[ComboKey, str], dict[str, Any]]:
+    entries: dict[tuple[ComboKey, str], dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as executor:
+        futures = {
+            executor.submit(
+                build_forecast_brand_entry,
+                row,
+                target_brand="",
+                source=api_source(combo_key[1]),
+                measure=combo_key[2],
+                forecast_steps_count=forecast_steps(api_source(combo_key[1])),
+            ): entry_key
+            for entry_key, row in sorted(entry_rows.items())
+            for combo_key, _identity in [entry_key]
+        }
+        for future in as_completed(futures):
+            entries[futures[future]] = future.result()
+    return entries
+
+
+def selected_entries_for_payload(
+    selected_ids_by_group_combo: dict[tuple[GroupKey, str], list[str]],
+    entries_by_combo: dict[tuple[ComboKey, str], dict[str, Any]],
+    group_key: GroupKey,
+    combo: str,
+    combo_key: ComboKey,
+) -> list[dict[str, Any]]:
+    selected_ids = selected_ids_by_group_combo.get((group_key, combo), [])
+    return [entries_by_combo[(combo_key, identity)] for identity in selected_ids if (combo_key, identity) in entries_by_combo]
+
+
 def build_batch_rows(
     conn: Any,
     group_keys: list[GroupKey],
@@ -376,6 +467,26 @@ def build_batch_rows(
     for row in fetch_market_rows_for_atc4s(conn, {atc4_code for _brand_key, atc4_code in group_keys}):
         market_rows_by_combo[(str(row["atc4_code"]), str(row["source"]), str(row["measure"]))].append(row)
 
+    market_forecasts = build_market_forecasts_by_combo(market_rows_by_combo, workers=workers)
+    selected_ids_by_group_combo, entry_rows = select_entries_for_groups(grouped, market_rows_by_combo)
+    entries_by_combo = build_forecast_entries_by_combo(entry_rows, workers=workers)
+    selected_entries_by_group_combo: dict[tuple[GroupKey, str], list[dict[str, Any]]] = {}
+    for group_key, group_rows in grouped.items():
+        atc4_code = group_key[1]
+        rows_by_combo = {f"{api_source(row['source'])}.{row['measure']}": row for row in group_rows}
+        for source, measure in ALL_COMBOS:
+            combo = f"{source}.{measure}"
+            if combo not in rows_by_combo:
+                continue
+            combo_key = (atc4_code, SOURCE_TO_INTERNAL[source], measure)
+            selected_entries_by_group_combo[(group_key, combo)] = selected_entries_for_payload(
+                selected_ids_by_group_combo,
+                entries_by_combo,
+                group_key,
+                combo,
+                combo_key,
+            )
+
     selected_brands = sorted({str(choose_base(rows).get("brand_name") or key[0]) for key, rows in grouped.items()})
     brand_factors = load_brand_factor_map(conn, selected_brands)
     built: list[GeneralCacheRow] = []
@@ -385,7 +496,8 @@ def build_batch_rows(
                 build_general_cache_row,
                 group_key,
                 group_rows,
-                market_rows_by_combo=market_rows_by_combo,
+                market_forecasts_by_combo=market_forecasts,
+                selected_entries_by_group_combo=selected_entries_by_group_combo,
                 brand_factors_by_brand=brand_factors,
             )
             for group_key, group_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1]))

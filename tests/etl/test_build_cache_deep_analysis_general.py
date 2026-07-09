@@ -78,7 +78,15 @@ def test_build_general_cache_row_uses_forecast_runner_payload_shape(monkeypatch)
     row = general_builder.build_general_cache_row(
         ("target-key", "A10N3"),
         [target],
-        market_rows_by_combo=market_rows,
+        market_forecasts_by_combo={
+            ("A10N3", "ubist", "sales"): {"history_periods": ["2025-01", "2025-02"], "history_values": [3.0, 6.0], "forecast_values": [9.0, 12.0]}
+        },
+        selected_entries_by_group_combo={
+            (("target-key", "A10N3"), "UBIST.sales"): [
+                fake_build_entry(target, target_brand="", source="UBIST", measure="sales", forecast_steps_count=120),
+                fake_build_entry(competitor, target_brand="", source="UBIST", measure="sales", forecast_steps_count=120),
+            ]
+        },
         brand_factors_by_brand={"타깃": {"atc": ["A10N3"], "ubist": {}, "iqvia": {}}},
     )
 
@@ -90,6 +98,73 @@ def test_build_general_cache_row_uses_forecast_runner_payload_shape(monkeypatch)
     assert row.market_id == "general:A10N3"
     assert combo["brands"][0]["forecast_model"]["selection_policy"] == "data_size_dispatch_v1"
     assert payload["market_meta"]["cache_scope"] == "general"
+
+
+def test_build_batch_rows_reuses_market_and_brand_forecasts_within_same_atc4(monkeypatch) -> None:
+    # Given: two target brands in the same ATC4 market share one source/measure
+    # market, and both select the same three Top-N rows in different target order.
+    target_one = _row("target-1", "타깃1", "A10N3", "ubist", "sales", 100)
+    target_two = _row("target-2", "타깃2", "A10N3", "ubist", "sales", 90)
+    competitor = _row("competitor", "경쟁", "A10N3", "ubist", "sales", 80)
+    brand_rows = [target_one, target_two]
+    market_rows = [target_one, target_two, competitor]
+    market_calls: list[tuple[int, str, int]] = []
+    entry_calls: list[str] = []
+
+    monkeypatch.setattr(general_builder, "fetch_rows_for_groups", lambda _conn, _keys: brand_rows)
+    monkeypatch.setattr(general_builder, "fetch_market_rows_for_atc4s", lambda _conn, _atc4s: market_rows)
+    monkeypatch.setattr(general_builder, "load_brand_factor_map", lambda _conn, _brands: {})
+
+    def fake_market(rows: list[dict[str, Any]], source: str, steps: int) -> dict[str, Any]:
+        market_calls.append((len(rows), source, steps))
+        return {"history_periods": ["2025-01", "2025-02"], "history_values": [1.0, 2.0], "forecast_values": [3.0, 4.0]}
+
+    def fake_entry(
+        brand_row: dict[str, Any],
+        *,
+        target_brand: str,
+        source: str,
+        measure: str,
+        forecast_steps_count: int,
+    ) -> dict[str, Any]:
+        entry_calls.append(str(brand_row["brand_key"]))
+        return {
+            "brand": brand_row["brand_name"],
+            "is_target": brand_row["brand_name"] == target_brand,
+            "is_jw": bool(brand_row["is_jw"]),
+            "rank": 1,
+            "history_values": [1.0, 2.0],
+            "forecast_values": [3.0, 4.0],
+            "forecast_model": {"name": "Mean", "selection_policy": "data_size_dispatch_v1"},
+        }
+
+    monkeypatch.setattr(general_builder, "build_market_forecast", fake_market)
+    monkeypatch.setattr(general_builder, "build_forecast_brand_entry", fake_entry)
+    monkeypatch.setattr(general_builder, "build_simulation_combo", lambda **_kwargs: {"ok": True})
+
+    # When: both brand+ATC4 cache rows are built in one batch.
+    rows = general_builder.build_batch_rows(
+        None,
+        [("target-1", "A10N3"), ("target-2", "A10N3")],
+        workers=1,
+        verbose=False,
+    )
+
+    # Then: market and brand forecast work is computed once per reusable input,
+    # while each target row still receives its own target marker in the payload.
+    assert len(rows) == 2
+    assert market_calls == [(3, "UBIST", 120)]
+    assert sorted(entry_calls) == ["competitor", "target-1", "target-2"]
+    payloads = [json.loads(row.response_json) for row in rows]
+    target_flags = {
+        payload["brand_key"]: [
+            (entry["brand"], entry["is_target"])
+            for entry in payload["data"]["forecast"]["by_combo"]["UBIST.sales"]["brands"]
+        ]
+        for payload in payloads
+    }
+    assert target_flags["target-1"][0] == ("타깃1", True)
+    assert target_flags["target-2"][0] == ("타깃2", True)
 
 
 def test_json_safe_replaces_non_finite_numbers() -> None:
