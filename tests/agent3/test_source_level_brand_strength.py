@@ -94,25 +94,13 @@ class FakeCursor:
         return {"ml_id": "ml_006", "brand_key": "리바로", "brand_name": "리바로", "source": "iqvia_nsa"}
 
     def fetchall(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "brand_key": "로수젯",
-                "brand_name": "로수젯",
-                "is_jw": 0,
-                "metric_history": {"2026-05": {"rank": 1, "raw_value": 200.0}},
-            },
-            {
-                "brand_key": "리피토",
-                "brand_name": "리피토",
-                "is_jw": 0,
-                "metric_history": {"2026-05": {"rank": 2, "raw_value": 100.0}},
-            },
-        ]
+        return []
 
 
 class FakeConnection:
     def __init__(self, cursor: FakeCursor) -> None:
         self.cursor_instance = cursor
+        cursor.connection = self
 
     def __enter__(self) -> "FakeConnection":
         return self
@@ -124,16 +112,39 @@ class FakeConnection:
         return self.cursor_instance
 
 
-def test_source_competitor_top5_passes_source_to_queries(monkeypatch: Any) -> None:
+def test_source_competitor_top5_delegates_to_existing_resolver(monkeypatch: Any) -> None:
     cursor = FakeCursor()
+    calls = []
 
     def fake_connect(config: object) -> FakeConnection:
         return FakeConnection(cursor)
 
+    def fake_resolver(
+        brand_name: str,
+        ml_id: str,
+        cd_id: str | None,
+        source: str,
+        db_conn: FakeConnection,
+    ) -> dict[str, Any]:
+        calls.append((brand_name, ml_id, cd_id, source, db_conn))
+        return {
+            "top_competitors": [
+                {
+                    "brand_name": "로수젯",
+                    "is_jw": False,
+                    "latest_period": "2026-05",
+                    "rank_in_market": 1,
+                    "raw_value": 200.0,
+                    "ms_pct": 12.3,
+                }
+            ]
+        }
+
     monkeypatch.setattr(brand_factors, "connect", fake_connect)
+    monkeypatch.setattr(brand_factors, "resolve_market_top5_competitors", fake_resolver)
 
     result = brand_factors.source_competitor_top5(brand_name="리바로", source="iqvia")
 
-    assert [item["brand_name"] for item in result] == ["로수젯", "리피토"]
+    assert [item["brand_name"] for item in result] == ["로수젯"]
     assert cursor.params_history[0] == ("리바로", "리바로", "iqvia_nsa")
-    assert cursor.params_history[1] == ("ml_006", "iqvia_nsa", "리바로")
+    assert calls == [("리바로", "ml_006", None, "IQVIA", cursor.connection)]
