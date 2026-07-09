@@ -111,17 +111,12 @@ def build_brand_factor_map(
     atc_row_list = tuple(atc_rows)
     dimension_row_list = tuple(dimension_rows)
     factors = {brand: empty_brand_factors() for brand in brands}
-    compact_to_brand: dict[str, str] = {}
-    ambiguous_compact_keys: set[str] = set()
+    compact_to_brands: dict[str, list[str]] = {}
     for brand in brands:
         compact = compact_brand_name(brand)
         if not compact:
             continue
-        previous = compact_to_brand.get(compact)
-        if previous is None:
-            compact_to_brand[compact] = brand
-        elif previous != brand:
-            ambiguous_compact_keys.add(compact)
+        compact_to_brands.setdefault(compact, []).append(brand)
 
     source_brand_names = {
         str(row.get("brand_name") or "")
@@ -143,13 +138,12 @@ def build_brand_factor_map(
 
     logged_ambiguous_source_compact_keys: set[str] = set()
 
-    def target_brand_for(row_brand: object) -> str | None:
+    def target_brands_for(row_brand: object) -> tuple[str, ...]:
         brand = str(row_brand or "")
+        targets: list[str] = []
         if brand in factors:
-            return brand
+            targets.append(brand)
         compact = compact_brand_name(brand)
-        if compact in ambiguous_compact_keys:
-            return None
         if compact in ambiguous_source_compact_keys:
             if compact not in logged_ambiguous_source_compact_keys:
                 logger.warning(
@@ -157,16 +151,20 @@ def build_brand_factor_map(
                     extra={"source_brand": brand, "compact_brand": compact},
                 )
                 logged_ambiguous_source_compact_keys.add(compact)
-            return None
-        return compact_to_brand.get(compact)
+            return tuple(targets)
+        compact_targets = compact_to_brands.get(compact, [])
+        if not targets and len(compact_targets) > 1:
+            return ()
+        for target in compact_targets:
+            if target not in targets:
+                targets.append(target)
+        return tuple(targets)
 
     for row in atc_row_list:
-        brand = target_brand_for(row.get("brand_name"))
-        if brand:
+        for brand in target_brands_for(row.get("brand_name")):
             add_unique(factors[brand]["atc"], row.get("atc4_code"))
 
     for row in dimension_row_list:
-        brand = target_brand_for(row.get("brand_name"))
         source = str(row.get("source") or "")
         dimension_type = str(row.get("dimension_type") or "")
         target_key = None
@@ -177,8 +175,9 @@ def build_brand_factor_map(
         elif source == "iqvia_nsa":
             target_key = IQVIA_DIMENSIONS.get(dimension_type)
             target_group = "iqvia"
-        if target_key and target_group and brand:
-            add_unique(factors[brand][target_group][target_key], row.get("dimension_value"))
+        if target_key and target_group:
+            for brand in target_brands_for(row.get("brand_name")):
+                add_unique(factors[brand][target_group][target_key], row.get("dimension_value"))
 
     for payload in factors.values():
         payload["atc"].sort()

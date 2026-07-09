@@ -226,6 +226,26 @@ def test_build_brand_factor_map_allows_compact_source_when_exact_target_exists(c
     assert "ambiguous compact brand factor lookup" not in caplog.text
 
 
+def test_build_brand_factor_map_populates_exact_and_compact_alias_targets() -> None:
+    # Given: a full refresh may contain both canonical spellings as requested
+    # targets, while UBIST only has the display-space source label.
+    rows = [
+        {
+            "brand_name": "리바로 브이",
+            "source": "ubist",
+            "dimension_type": "seller",
+            "dimension_value": "JW중외제약",
+        }
+    ]
+
+    # When: both the exact source label and its compact alias are requested.
+    factors = build_brand_factor_map(brands=["리바로브이", "리바로 브이"], atc_rows=[], dimension_rows=rows)
+
+    # Then: the exact target and compact alias target both receive the catalog factor.
+    assert factors["리바로 브이"]["ubist"]["seller"] == ["JW중외제약"]
+    assert factors["리바로브이"]["ubist"]["seller"] == ["JW중외제약"]
+
+
 def test_dump_brand_factors_is_valid_json_with_empty_default() -> None:
     assert json.loads(dump_brand_factors(None)) == empty_brand_factors()
 
