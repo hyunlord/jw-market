@@ -9,6 +9,8 @@ import threading
 import time
 from typing import Any, Final, Protocol
 
+from jw_chat_agent_poc.agentic.sales_filter_aliases import normalise_channel_data
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ class MartRecord:
             source=str(row["source"]),
             measure=str(row["measure"]),
             metric_history=_loads(row.get("metric_history")),
-            channel_data=_loads(row.get("channel_data")),
+            channel_data=normalise_channel_data(_loads(row.get("channel_data"))),
             specialty_data=_loads(row.get("specialty_data")),
             dimension_data=_loads(row.get("dimension_data")),
             by_dimension=_loads(row.get("by_dimension")),

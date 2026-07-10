@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import re
 from typing import Callable, Final, TypeAlias
 
+from jw_chat_agent_poc.agentic.sales_filter_aliases import match_channel_in_text
+
 
 QuerySpec: TypeAlias = dict[str, object]
 
@@ -31,7 +33,6 @@ class StrictQueryRule:
     build: StrictPlanBuilder
 
 
-CHANNEL_ALIASES: Final[tuple[str, ...]] = ("의원", "종병", "병원", "상급종병", "약국")
 CHANNEL_DISTRIBUTION_TERMS: Final[tuple[str, ...]] = (
     "채널별",
     "채널 별",
@@ -234,10 +235,7 @@ def _spec(
 
 
 def _requested_channel(question: str) -> str:
-    for channel in CHANNEL_ALIASES:
-        if channel in question:
-            return channel
-    return ""
+    return match_channel_in_text(question) or ""
 
 
 def _asks_channel_distribution(question: str, brand: str) -> bool:
