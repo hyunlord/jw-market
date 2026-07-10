@@ -9,6 +9,9 @@ from fastapi.testclient import TestClient
 from jw_chat_agent_poc.service.history_projection import (
     ActiveChatService,
     CompletedTurn,
+    MONGO_CONNECT_TIMEOUT_MS,
+    MONGO_SERVER_SELECTION_TIMEOUT_MS,
+    MONGO_SOCKET_TIMEOUT_MS,
     MySQLProjectionOutbox,
     MySQLSessionProjectionWriter,
     ProjectionDbConfig,
@@ -200,6 +203,12 @@ def test_retry_keeps_trace_and_span_ids_stable() -> None:
     retry = replace(first, attempts=first.attempts + 1)
 
     assert (retry.trace_id, retry.span_id) == (first.trace_id, first.span_id)
+
+
+def test_mongo_projection_timeouts_remain_bounded_but_allow_slow_upserts() -> None:
+    assert MONGO_CONNECT_TIMEOUT_MS == 3000
+    assert MONGO_SERVER_SELECTION_TIMEOUT_MS == 3000
+    assert MONGO_SOCKET_TIMEOUT_MS == 10000
 
 
 class _HistoryStore:

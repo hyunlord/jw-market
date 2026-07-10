@@ -17,6 +17,9 @@ import pymysql
 
 PROJECTION_ORIGIN = "jw-chat-agent-direct"
 PROJECTION_VERSION = 1
+MONGO_SERVER_SELECTION_TIMEOUT_MS = 3000
+MONGO_CONNECT_TIMEOUT_MS = 3000
+MONGO_SOCKET_TIMEOUT_MS = 10000
 LOGGER = logging.getLogger(__name__)
 SAFE_HTTP_HEADERS = frozenset(
     {
@@ -497,9 +500,9 @@ class PyMongoProjectionWriter:
             username=username,
             password=password,
             authSource=database,
-            serverSelectionTimeoutMS=2000,
-            connectTimeoutMS=2000,
-            socketTimeoutMS=3000,
+            serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
+            connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
+            socketTimeoutMS=MONGO_SOCKET_TIMEOUT_MS,
             retryWrites=True,
         )
         self._database = self._client[database]
