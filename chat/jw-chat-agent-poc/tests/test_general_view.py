@@ -46,13 +46,29 @@ def _payload(*, atc4: str = "C10A1", source: str = "ubist", measure: str = "sale
                 "sources_data": {
                     "market_size_series": [{"period": "2026-04", "value": 100_000_000_000}],
                 },
+                "ei_ms_matrix": {
+                    "data": [
+                        {
+                            "brand": "리피토",
+                            "rank": 1,
+                            "value_recent": 15_000_000_000,
+                            "share_pct": 15.0,
+                        },
+                        {
+                            "brand": "리바로",
+                            "rank": 2,
+                            "value_recent": 8_000_000_000,
+                            "share_pct": 8.0,
+                        },
+                    ]
+                },
                 "brand_ranking": {
                     "yearly": [
                         {
                             "year": 2026,
                             "rankings": [
-                                {"brand": "리피토", "rank": 1, "value": 15_000_000_000, "ms_pct": 15.0},
-                                {"brand": "리바로", "rank": 2, "value": 8_000_000_000, "ms_pct": 8.0},
+                                {"brand": "리피토", "rank": 1, "value": 75_000_000_000, "ms_pct": 15.0},
+                                {"brand": "리바로", "rank": 2, "value": 41_000_000_000, "ms_pct": 8.0},
                             ],
                         }
                     ]
@@ -78,7 +94,7 @@ def test_parse_general_market_response_accepts_mislabeled_top_level_view() -> No
     assert market.brand_share_pct == 8.0
 
 
-def test_parse_general_market_response_uses_requested_brand_ranking_row() -> None:
+def test_parse_general_market_response_uses_current_period_matrix_row() -> None:
     payload = _payload()
     payload["result"]["data"]["kpi"].update(
         {
@@ -101,10 +117,33 @@ def test_parse_general_market_response_uses_requested_brand_ranking_row() -> Non
     assert market.brand_value == 8_000_000_000
     assert market.brand_share_pct == 8.0
     assert market.brand_rank == 2
+    assert market.top_brands[0].value == 15_000_000_000
+
+
+def test_parse_general_market_response_preserves_zero_current_metrics() -> None:
+    payload = _payload()
+    payload["result"]["data"]["ei_ms_matrix"]["data"][1].update(
+        {"rank": 0, "value_recent": 0, "share_pct": 0}
+    )
+
+    market = parse_general_market_response(
+        payload,
+        requested_atc4="C10A1",
+        requested_source="ubist",
+        requested_measure="sales",
+        requested_brand="리바로",
+    )
+
+    assert market.brand_value == 0.0
+    assert market.brand_share_pct == 0.0
+    assert market.brand_rank == 0
 
 
 def test_parse_general_market_response_fails_closed_when_requested_brand_is_missing() -> None:
     payload = _payload()
+    payload["result"]["data"]["brand_ranking"]["yearly"][-1]["rankings"].append(
+        {"brand": "없는 브랜드", "rank": 99, "value": 1, "ms_pct": 0.01}
+    )
 
     with pytest.raises(GeneralViewBackendError, match="brand mismatch"):
         parse_general_market_response(

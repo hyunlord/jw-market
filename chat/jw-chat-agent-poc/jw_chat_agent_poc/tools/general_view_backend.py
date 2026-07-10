@@ -14,7 +14,7 @@ class GeneralViewBackendError(RuntimeError):
 
 
 class GeneralViewBrandMismatchError(GeneralViewBackendError):
-    """Raised when an ATC4 candidate has no current ranking row for the requested brand."""
+    """Raised when an ATC4 candidate has no current-period row for the requested brand."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,36 +213,33 @@ def parse_general_market_response(
     elif isinstance(series, dict) and series:
         period = sorted(str(value) for value in series)[-1]
 
-    ranking_rows: list[dict[str, Any]] = []
-    ranking = data.get("brand_ranking") if isinstance(data.get("brand_ranking"), dict) else {}
-    yearly = ranking.get("yearly")
-    if isinstance(yearly, list) and yearly:
-        latest = yearly[-1]
-        if isinstance(latest, dict) and isinstance(latest.get("rankings"), list):
-            ranking_rows = [row for row in latest["rankings"] if isinstance(row, dict)]
-
-    ranked_brands = tuple(sorted((
+    matrix = data.get("ei_ms_matrix") if isinstance(data.get("ei_ms_matrix"), dict) else {}
+    current_rows = matrix.get("data")
+    if not isinstance(current_rows, list):
+        current_rows = []
+    current_brands = tuple(sorted((
         TopBrand(
             brand=str(row.get("brand") or row.get("brand_name") or ""),
-            rank=_as_int(row.get("rank")),
-            value=_as_float(row.get("value") or row.get("sales")),
-            share_pct=_as_float(row.get("ms_pct") or row.get("share_pct")),
+            rank=_first_int(row, "rank", "rank_overall"),
+            value=_first_float(row, "value_recent", "raw_value"),
+            share_pct=_first_float(row, "share_pct", "ms_recent_pct", "ms_pct"),
         )
-        for row in ranking_rows
+        for row in current_rows
+        if isinstance(row, dict)
         if row.get("brand") or row.get("brand_name")
     ), key=lambda row: row.rank if row.rank is not None else 10_000))
     requested_row = None
     if requested_brand:
         requested_key = _normalize_brand_name(requested_brand)
         requested_row = next(
-            (row for row in ranked_brands if _normalize_brand_name(row.brand) == requested_key),
+            (row for row in current_brands if _normalize_brand_name(row.brand) == requested_key),
             None,
         )
         if requested_row is None:
             raise GeneralViewBrandMismatchError(
-                "general-view brand mismatch: requested brand is absent from ranking"
+                "general-view brand mismatch: requested brand is absent from current-period matrix"
             )
-    top_brands = ranked_brands[:5]
+    top_brands = current_brands[:5]
     description = str(
         market_meta.get("market_definition_label")
         or market_meta.get("market_name")
@@ -285,3 +282,19 @@ def _as_float(value: object) -> float | None:
 
 def _as_int(value: object) -> int | None:
     return int(value) if isinstance(value, int | float) else None
+
+
+def _first_float(row: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = _as_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _first_int(row: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _as_int(row.get(key))
+        if value is not None:
+            return value
+    return None
