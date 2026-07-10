@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -15,6 +16,7 @@ from pipeline.scripts.api.dynamic_market.response_cache import (
     CacheClaim,
     DynamicMarketOverloadedError,
     DynamicResponseCache,
+    DynamicResponseCacheUnavailable,
     canonical_request_json,
 )
 
@@ -75,7 +77,8 @@ def test_response_cache_hits_without_rebuilding() -> None:
     assert first == second
     assert builds == 1
     assert store.claim_count == 1
-    assert next(iter(store.rows.values()))["payload"].startswith("zlib-base64:")
+    stored = json.loads(next(iter(store.rows.values()))["payload"])
+    assert stored["__cache_encoding"] == "zlib-base64"
 
 
 def test_response_cache_reads_legacy_uncompressed_rows() -> None:
@@ -87,6 +90,20 @@ def test_response_cache_reads_legacy_uncompressed_rows() -> None:
     next(iter(store.rows.values()))["payload"] = '{"version":2}'
 
     assert cache.get_or_build(request, lambda: {"version": 3}) == {"version": 2}
+
+
+def test_response_cache_releases_lease_when_persistence_fails() -> None:
+    class FailingStore(MemoryStore):
+        def complete(self, *, cache_key: str, lease_owner: str, source_epoch: str, response_json: str) -> None:
+            raise DynamicResponseCacheUnavailable("write failed")
+
+    store = FailingStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+
+    result = cache.get_or_build({"source": "ubist"}, lambda: {"status": "SUCCESS"})
+
+    assert result == {"status": "SUCCESS"}
+    assert next(iter(store.rows.values()))["state"] == "failed"
 
 
 def test_response_cache_single_flight_builds_same_key_once() -> None:

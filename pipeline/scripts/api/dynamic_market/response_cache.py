@@ -24,7 +24,7 @@ from pipeline.scripts.api import db
 logger = logging.getLogger(__name__)
 
 CACHE_SCHEMA_VERSION = "dynamic-market-response-v1"
-CACHE_ENCODING_PREFIX = "zlib-base64:"
+CACHE_ENCODING = "zlib-base64"
 DEFAULT_TTL_SECONDS = 86_400
 DEFAULT_LEASE_SECONDS = 120
 _BUILD_SEMAPHORE = threading.BoundedSemaphore(3)
@@ -146,6 +146,7 @@ class DynamicResponseCache:
                     response_json=stored_response,
                 )
             except DynamicResponseCacheUnavailable:
+                self._store.fail(cache_key=cache_key, lease_owner=lease_owner)
                 logger.warning("dynamic_response_cache_store_failed", exc_info=True)
             return payload
         except Exception:
@@ -157,13 +158,25 @@ class DynamicResponseCache:
 
 def _encode_cached_response(response_json: str) -> str:
     compressed = zlib.compress(response_json.encode("utf-8"), level=1)
-    return CACHE_ENCODING_PREFIX + base64.b64encode(compressed).decode("ascii")
+    return json.dumps(
+        {
+            "__cache_encoding": CACHE_ENCODING,
+            "data": base64.b64encode(compressed).decode("ascii"),
+        },
+        separators=(",", ":"),
+    )
 
 
 def _decode_cached_response(stored_response: str) -> str:
-    if not stored_response.startswith(CACHE_ENCODING_PREFIX):
+    try:
+        wrapper = json.loads(stored_response)
+    except json.JSONDecodeError as exc:
+        raise DynamicResponseCacheUnavailable("cached dynamic response is not valid JSON") from exc
+    if not isinstance(wrapper, dict) or wrapper.get("__cache_encoding") != CACHE_ENCODING:
         return stored_response
-    encoded = stored_response.removeprefix(CACHE_ENCODING_PREFIX)
+    encoded = wrapper.get("data")
+    if not isinstance(encoded, str):
+        raise DynamicResponseCacheUnavailable("cached dynamic response encoding has no data")
     try:
         return zlib.decompress(base64.b64decode(encoded, validate=True)).decode("utf-8")
     except (binascii.Error, UnicodeDecodeError, zlib.error) as exc:
