@@ -929,6 +929,7 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                         file_name=temp_doc.file_name,
                         idempotency_key=idempotency_key,
                     )
+                session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -1452,7 +1453,9 @@ def search(req: SearchRequest) -> SearchResponse:
             session_id=session_id,
         )
         if settings.WIKI_ENABLED:
-            pages = session_wiki.read_ready_pages(conn, req.workflow_id, session_id)
+            pages = session_wiki.read_ready_pages(
+                conn, req.workflow_id, session_id, rows
+            )
             if pages:
                 wiki_context, wiki_sources = session_wiki.context_from_pages(
                     pages,

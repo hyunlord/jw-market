@@ -18,6 +18,7 @@ from .models import FileSource
 
 LOGGER = logging.getLogger(__name__)
 _READY_STATUS: Final = "ready"
+_STALE_STATUS: Final = "expired"
 _ACTIVE_COMPILES: set[str] = set()
 _ACTIVE_LOCK = threading.Lock()
 
@@ -66,20 +67,45 @@ def ensure_schema(conn: Any) -> None:
     conn.commit()
 
 
-def read_ready_pages(conn: Any, workflow_id: int, session_id: str) -> list[WikiPage]:
+def read_ready_pages(
+    conn: Any,
+    workflow_id: int,
+    session_id: str,
+    documents: list[dict[str, Any]],
+) -> list[WikiPage]:
     ensure_schema(conn)
+    fingerprint = source_fingerprint(documents)
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT page_type, title, md, citations, cost_krw
             FROM session_wiki_page
             WHERE workflow_id=%s AND session_id=%s AND status=%s AND expires_at > NOW()
+              AND source_fingerprint=%s
             ORDER BY updated_at DESC
             """,
-            (workflow_id, session_id, _READY_STATUS),
+            (workflow_id, session_id, _READY_STATUS, fingerprint),
         )
         rows = cur.fetchall()
     return [page for row in rows if (page := _row_to_page(row)).md.strip()]
+
+
+def mark_pages_stale(conn: Any, workflow_id: int, session_id: str) -> int:
+    """Hide ready pages after the active document set changes.
+
+    The existing expired status is the persisted stale marker. Transaction
+    ownership remains with the document commit/delete caller.
+    """
+    with conn.cursor() as cur:
+        updated = cur.execute(
+            """
+            UPDATE session_wiki_page
+            SET status=%s
+            WHERE workflow_id=%s AND session_id=%s AND status=%s
+            """,
+            (_STALE_STATUS, workflow_id, session_id, _READY_STATUS),
+        )
+    return int(updated)
 
 
 def context_from_pages(pages: list[WikiPage], char_limit: int) -> tuple[str, list[FileSource]]:
@@ -129,11 +155,24 @@ def compile_scope(workflow_id: int, session_id: str) -> None:
             return
         try:
             documents = ledger.list_session_documents(conn, workflow_id=workflow_id, session_id=session_id)
-            if not should_trigger(documents) or read_ready_pages(conn, workflow_id, session_id):
+            if not should_trigger(documents) or read_ready_pages(
+                conn,
+                workflow_id,
+                session_id,
+                documents,
+            ):
                 return
             doc_ids = [int(doc["document_id"]) for doc in documents if doc.get("document_id")]
             chunks = _load_chunks(doc_ids)
-            pages = _compile_pages(documents, chunks) if chunks else []
+            if not chunks:
+                return
+            LOGGER.info(
+                "session wiki compile request workflow_id=%s session_id=%s fingerprint=%s",
+                workflow_id,
+                session_id,
+                source_fingerprint(documents),
+            )
+            pages = _compile_pages(documents, chunks)
             if pages:
                 _upsert_pages(conn, workflow_id, session_id, documents, pages)
         finally:
