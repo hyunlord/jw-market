@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 import threading
+from collections import OrderedDict
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -37,6 +38,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     finalized_fallback_fact_answer,
 )
 from jw_chat_agent_poc.service.charts import build_charts
+from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
@@ -116,18 +118,33 @@ class FinalAnswer:
     conversation_id: str | None
 
 
+SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
+DEFAULT_SESSION_STORE_MAX = 500
+
+
 class SessionStore:
-    def __init__(self, conversations: ConversationStore | None = None) -> None:
-        self._items: dict[str, dict] = {}
+    def __init__(self, conversations: ConversationStore | None = None, max_sessions: int | None = None) -> None:
+        if max_sessions is None:
+            max_sessions = int(os.environ.get(SESSION_STORE_MAX_ENV, str(DEFAULT_SESSION_STORE_MAX)))
+        self._max_sessions = max(1, max_sessions)
+        self._items: OrderedDict[str, dict] = OrderedDict()
+        self._lock = threading.Lock()
         self.conversations = conversations or ConversationStore()
 
     def put(self, item: dict) -> str:
         session_id = uuid4().hex
-        self._items[session_id] = item
+        with self._lock:
+            self._items[session_id] = item
+            while len(self._items) > self._max_sessions:
+                self._items.popitem(last=False)
         return session_id
 
     def get(self, session_id: str) -> dict | None:
-        return self._items.get(session_id)
+        with self._lock:
+            item = self._items.get(session_id)
+            if item is not None:
+                self._items.move_to_end(session_id)
+            return item
 
 
 def _configured_direct_route_hosts() -> set[str]:
@@ -188,6 +205,7 @@ def create_app(
     store: SessionStore | None = None,
     history_store: ConversationHistoryStore | None = None,
     projection_runtime: HistoryProjectionRuntime | None = None,
+    concurrency_limiter: ChatConcurrencyLimiter | None = None,
 ) -> FastAPI:
     app = FastAPI(title="JW Chat Agent POC", version="0.2.0", root_path="/jw-chat-agent")
     app.add_middleware(
@@ -198,6 +216,7 @@ def create_app(
         allow_headers=["*"],
     )
     store = store or SessionStore()
+    limiter = concurrency_limiter or ChatConcurrencyLimiter()
     resolver = market_scope_resolver or MarketScopeResolver()
     make_agent = agent_factory or _default_agent_factory
     use_direct_agent_loop = agent_factory is None
@@ -230,17 +249,21 @@ def create_app(
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
-        result = _answer_question(
-            store,
-            resolver,
-            make_agent,
-            request.question,
-            request.external_mode,
-            request.conversation_id,
-            list(documents),
-            request.file_context,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
+        try:
+            with limiter.slot():
+                result = _answer_question(
+                    store,
+                    resolver,
+                    make_agent,
+                    request.question,
+                    request.external_mode,
+                    request.conversation_id,
+                    list(documents),
+                    request.file_context,
+                    use_direct_agent_loop=use_direct_agent_loop,
+                )
+        except ChatBusyError as exc:
+            raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         session_id = store.put({"question": request.question, "result": result["result"]})
         return ChatAccepted(
             session_id=session_id,
@@ -261,18 +284,22 @@ def create_app(
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
-        item = _answer_question(
-            store,
-            resolver,
-            make_agent,
-            request.question,
-            request.external_mode,
-            request.conversation_id,
-            list(documents),
-            request.file_context,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
-        final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+        try:
+            with limiter.slot():
+                item = _answer_question(
+                    store,
+                    resolver,
+                    make_agent,
+                    request.question,
+                    request.external_mode,
+                    request.conversation_id,
+                    list(documents),
+                    request.file_context,
+                    use_direct_agent_loop=use_direct_agent_loop,
+                )
+                final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+        except ChatBusyError as exc:
+            raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         _record_conversation_history(
             history,
             session_id=None,
@@ -319,6 +346,7 @@ def create_app(
                     history_store=history,
                     session_id=session_id,
                     projection_context=projection_context,
+                    limiter=limiter,
                 ),
                 media_type="text/event-stream",
             )
@@ -335,6 +363,7 @@ def create_app(
                 use_direct_agent_loop=use_direct_agent_loop,
                 history_store=history,
                 projection_context=projection_context,
+                limiter=limiter,
             ),
             media_type="text/event-stream",
         )
@@ -715,7 +744,11 @@ def _stream_resolving_session_events(
     use_direct_agent_loop: bool = False,
     history_store: ConversationHistoryStore | None = None,
     projection_context: ProjectionRequestContext | None = None,
+    limiter: ChatConcurrencyLimiter | None = None,
 ):
+    if limiter is not None and not limiter.try_acquire():
+        yield from _sse_busy_events()
+        return
     events: queue.Queue[dict[str, Any]] = queue.Queue()
     step_index = 0
 
@@ -750,9 +783,17 @@ def _stream_resolving_session_events(
             events.put({"type": "result", "item": item, "final_answer": final_answer})
         except Exception as exc:
             events.put({"type": "error", "error_type": type(exc).__name__, "message": str(exc)})
+        finally:
+            if limiter is not None:
+                limiter.release()
 
     thread = threading.Thread(target=run_worker, name="chat-stream-answer-worker", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        if limiter is not None:
+            limiter.release()
+        raise
     while True:
         event = events.get()
         event_type = event.get("type")
@@ -819,16 +860,30 @@ def _sse_events(
     history_store: ConversationHistoryStore | None = None,
     session_id: str | None = None,
     projection_context: ProjectionRequestContext | None = None,
+    limiter: ChatConcurrencyLimiter | None = None,
 ):
-    final_answer = compute_final_answer(question, result, conversation_id)
-    _record_conversation_history(
-        history_store,
-        session_id=session_id,
-        question=question,
-        final_answer=final_answer,
-        projection_context=projection_context,
-    )
+    if limiter is not None and not limiter.try_acquire():
+        yield from _sse_busy_events()
+        return
+    try:
+        final_answer = compute_final_answer(question, result, conversation_id)
+        _record_conversation_history(
+            history_store,
+            session_id=session_id,
+            question=question,
+            final_answer=final_answer,
+            projection_context=projection_context,
+        )
+    finally:
+        if limiter is not None:
+            limiter.release()
     yield from _sse_events_from_final_answer(final_answer)
+
+
+def _sse_busy_events():
+    yield _sse_delta(BUSY_MESSAGE)
+    yield _sse_json_event("error", {"type": "ServiceBusy", "message": BUSY_MESSAGE})
+    yield "event: done\ndata: error\n\n"
 
 
 def _sse_events_from_final_answer(final_answer: FinalAnswer):

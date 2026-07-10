@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import json
 import os
 import re
+import threading
 import time
 from typing import Any, Final, Protocol
 
@@ -366,34 +368,83 @@ class MariaDbCsdActivityReader:
         return CsdActivityPayload(target=target, rows=parsed, loaded_at=time.monotonic())
 
 
+PAYLOAD_CACHE_MAX_KEYS_ENV = "PAYLOAD_CACHE_MAX_KEYS"
+# limits 10Gi 기준 역산: baseline ~1.1Gi + 동시 처리(N=3) 일시 피크 ~4.65Gi를 제외한
+# 캐시 예산 ~3.1Gi를 키당 ~520Mi로 나눈 값.
+DEFAULT_PAYLOAD_CACHE_MAX_KEYS = 6
+
+
+def _payload_cache_max_keys() -> int:
+    return max(1, int(os.environ.get(PAYLOAD_CACHE_MAX_KEYS_ENV, str(DEFAULT_PAYLOAD_CACHE_MAX_KEYS))))
+
+
 class TtlMetricsCache:
     def __init__(self, reader: MetricsCacheReader, ttl_seconds: int) -> None:
         self._reader = reader
         self._ttl_seconds = ttl_seconds
         self._snapshot: CacheSnapshot | None = None
+        self._load_lock = threading.Lock()
 
     def snapshot(self) -> CacheSnapshot:
         current = self._snapshot
         now = time.monotonic()
-        if current is None or now - current.loaded_at > self._ttl_seconds:
+        if current is not None and now - current.loaded_at <= self._ttl_seconds:
+            return current
+        with self._load_lock:
+            current = self._snapshot
+            now = time.monotonic()
+            if current is not None and now - current.loaded_at <= self._ttl_seconds:
+                return current
             current = self._reader.load()
             self._snapshot = current
-        return current
+            return current
 
 
 class TtlCausePayloadCache:
-    def __init__(self, reader: CausePayloadReader, ttl_seconds: int) -> None:
+    def __init__(self, reader: CausePayloadReader, ttl_seconds: int, max_keys: int | None = None) -> None:
         self._reader = reader
         self._ttl_seconds = ttl_seconds
-        self._payloads: dict[CausePayloadKey, CausePayload] = {}
+        self._max_keys = _payload_cache_max_keys() if max_keys is None else max(1, max_keys)
+        self._payloads: OrderedDict[CausePayloadKey, CausePayload] = OrderedDict()
+        self._state_lock = threading.Lock()
+        self._key_locks: dict[CausePayloadKey, threading.Lock] = {}
 
     def payload(self, key: CausePayloadKey) -> CausePayload:
-        current = self._payloads.get(key)
-        now = time.monotonic()
-        if current is None or now - current.loaded_at > self._ttl_seconds:
-            current = self._reader.load(key)
-            self._payloads[key] = current
-        return current
+        current = self._fresh_payload(key)
+        if current is not None:
+            return current
+        key_lock = self._lock_for(key)
+        with key_lock:
+            current = self._fresh_payload(key)
+            if current is not None:
+                return current
+            loaded = self._reader.load(key)
+            self._store(key, loaded)
+            return loaded
+
+    def _fresh_payload(self, key: CausePayloadKey) -> CausePayload | None:
+        with self._state_lock:
+            current = self._payloads.get(key)
+            if current is None or time.monotonic() - current.loaded_at > self._ttl_seconds:
+                return None
+            self._payloads.move_to_end(key)
+            return current
+
+    def _lock_for(self, key: CausePayloadKey) -> threading.Lock:
+        with self._state_lock:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[key] = lock
+            return lock
+
+    def _store(self, key: CausePayloadKey, payload: CausePayload) -> None:
+        with self._state_lock:
+            self._payloads[key] = payload
+            self._payloads.move_to_end(key)
+            while len(self._payloads) > self._max_keys:
+                evicted_key, _ = self._payloads.popitem(last=False)
+                self._key_locks.pop(evicted_key, None)
 
 
 class TtlCsdActivityCache:
@@ -439,6 +490,31 @@ class TtlCsdActivityTargetCache:
                     self._targets = self._fallback_targets
             self._loaded_at = now
         return self._targets
+
+
+_SHARED_CACHE_LOCK = threading.Lock()
+_SHARED_METRICS_CACHES: dict[int, TtlMetricsCache] = {}
+_SHARED_CAUSE_PAYLOAD_CACHES: dict[int, TtlCausePayloadCache] = {}
+
+
+def shared_metrics_cache(ttl_seconds: int) -> TtlMetricsCache:
+    """Process-wide snapshot cache so per-request tool instances share one load."""
+    with _SHARED_CACHE_LOCK:
+        cache = _SHARED_METRICS_CACHES.get(ttl_seconds)
+        if cache is None:
+            cache = TtlMetricsCache(MariaDbMetricsCacheReader(), ttl_seconds=ttl_seconds)
+            _SHARED_METRICS_CACHES[ttl_seconds] = cache
+        return cache
+
+
+def shared_cause_payload_cache(ttl_seconds: int) -> TtlCausePayloadCache:
+    """Process-wide cause payload cache: single-flight loads plus bounded LRU retention."""
+    with _SHARED_CACHE_LOCK:
+        cache = _SHARED_CAUSE_PAYLOAD_CACHES.get(ttl_seconds)
+        if cache is None:
+            cache = TtlCausePayloadCache(MariaDbCausePayloadReader(), ttl_seconds=ttl_seconds)
+            _SHARED_CAUSE_PAYLOAD_CACHES[ttl_seconds] = cache
+        return cache
 
 
 def _quote_identifier(value: str) -> str:

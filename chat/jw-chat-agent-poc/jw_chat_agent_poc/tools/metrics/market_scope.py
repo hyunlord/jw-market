@@ -10,11 +10,12 @@ from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, General
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadKey,
     CausePayloadReader,
-    MariaDbCausePayloadReader,
     MariaDbMetricsCacheReader,
     MetricsCacheReader,
     TtlCausePayloadCache,
     TtlMetricsCache,
+    shared_cause_payload_cache,
+    shared_metrics_cache,
 )
 from jw_chat_agent_poc.tools.metrics.cd_mart import (
     CdMartReader,
@@ -49,10 +50,14 @@ class MarketScopeResolver:
     ) -> None:
         ttl = ttl_seconds or int(os.environ.get("CHAT_MARKET_SCOPE_TTL_SECONDS", "300"))
         self._reader = cache_reader or MariaDbMetricsCacheReader()
-        self._cache = TtlMetricsCache(self._reader, ttl_seconds=ttl)
-        self._cause_cache = TtlCausePayloadCache(cause_reader or MariaDbCausePayloadReader(), ttl_seconds=ttl)
+        self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
+        self._cause_cache = (
+            TtlCausePayloadCache(cause_reader, ttl_seconds=ttl)
+            if cause_reader is not None
+            else shared_cause_payload_cache(ttl)
+        )
         self._cd_mart_cache = TtlCdMartCache(cd_mart_reader or MariaDbCdMartReader(), ttl_seconds=ttl)
-        self._resolver = BrandResolver(mode="cache", brand_reader=self._reader, ttl_seconds=ttl)
+        self._resolver = BrandResolver(mode="cache", brand_reader=cache_reader, ttl_seconds=ttl)
         self._general_view = general_view_service or GeneralViewService.from_env(self._resolver)
 
     def general_route(self, question: str) -> GeneralRoute:
