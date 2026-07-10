@@ -64,6 +64,32 @@ def strict_allowed_numbers(fact_md: str, fallback_allowed: tuple[str, ...]) -> t
     return tuple(sorted(token for token in strict if token))
 
 
+_FILE_TOKEN_TRAILING_PUNCT = ".,;:)]}"
+
+
+def uploaded_file_fact_tokens(file_context: str) -> tuple[str, ...]:
+    """업로드 파일 컨텍스트에서 최종 답변에 그대로 인용 가능한 숫자/코드 토큰 허용 집합을 만든다.
+
+    fact 추출기는 파일 프로즈에서 문장부호가 붙은 코드(`NAR7712.`)나 영어 단위("37.8 percent")를
+    답변측 표기(`NAR-7712`, `37.8%`)와 일치시키지 못하므로, 답변측과 같은 추출기로 재추출하고
+    문장부호 꼬리 제거·비율 단위 별칭을 보강한다. file_context가 있을 때만 호출된다.
+    """
+    text = (file_context or "").strip()
+    if not text:
+        return ()
+    tokens: set[str] = set()
+    for raw in allowed_numbers(text):
+        candidates = {raw, raw.rstrip(_FILE_TOKEN_TRAILING_PUNCT)}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            tokens.update(_numeric_token_aliases(candidate))
+            if re.fullmatch(r"[+-]?\d[\d,]*(?:\.\d+)?", candidate):
+                tokens.update(_numeric_token_aliases(f"{candidate}%"))
+                tokens.update(_numeric_token_aliases(f"{candidate}%p"))
+    return tuple(sorted(token for token in tokens if token))
+
+
 def fallback_fact_answer(markdown_response: Any) -> str:
     """Build a non-empty deterministic answer from verified fact markdown."""
     if not isinstance(markdown_response, dict):

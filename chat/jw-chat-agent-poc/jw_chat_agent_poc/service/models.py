@@ -46,6 +46,7 @@ class ChatAnswer(BaseModel):
     trace: dict[str, Any]
     sources: tuple[str, ...]
     conversation_id: str | None = None
+    file_sources: list[dict[str, Any]] = []
 
 
 class HealthResponse(BaseModel):

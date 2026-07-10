@@ -97,6 +97,7 @@ CHAT_STREAM_DESCRIPTION = """
 | conversation | plain string conversation_id | first, if conversation_id exists | 0-1 |
 | step | JSON `{index, name, detail, status, raw_name, raw_detail, elapsed_ms?}` | while live question processing stages start/finish | 0-N |
 | sources | comma-separated source labels | before content | 1 |
+| file_sources | JSON array `[{file_name, document_id?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
 | delta | markdown text chunk | prose segments | 0-N |
 | markdown_block | JSON `{kind, markdown}` | table segments | 0-N |
 | charts | JSON array | if charts are present | 0-1 |
@@ -116,6 +117,7 @@ class FinalAnswer:
     trace: dict[str, Any]
     sources: tuple[str, ...]
     conversation_id: str | None
+    file_sources: tuple[dict[str, Any], ...] = ()
 
 
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
@@ -313,6 +315,7 @@ def create_app(
             trace=final_answer.trace,
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
+            file_sources=[dict(item) for item in final_answer.file_sources],
         )
 
     @app.get(
@@ -426,7 +429,7 @@ def _answer_question(
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         state = store.conversations.get_or_create(conversation_id)
-        delegated_file_context = _delegated_file_context(question, state.conversation_id, file_context)
+        delegated_file_context, file_source_items = _delegated_file_context(question, state.conversation_id, file_context)
         if not question.strip() and _has_file_signal(documents, delegated_file_context):
             result = _file_only_ready_result(documents, delegated_file_context)
         else:
@@ -440,22 +443,26 @@ def _answer_question(
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
-            result = _attach_file_context(result, delegated_file_context)
+            result = _attach_file_context(result, delegated_file_context, file_source_items)
         store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
 
 
-def _delegated_file_context(question: str, conversation_id: str | None, file_context: str | None) -> str | None:
+def _delegated_file_context(
+    question: str, conversation_id: str | None, file_context: str | None
+) -> tuple[str | None, tuple[dict[str, Any], ...]]:
     contexts: list[str] = []
+    file_source_items: tuple[dict[str, Any], ...] = ()
     uploaded = search_uploaded_files(question, conversation_id)
     if uploaded is not None and uploaded.file_context.strip():
         contexts.append(uploaded.file_context.strip())
+        file_source_items = uploaded.file_source_items
     provided = (file_context or "").strip()
     if provided:
         contexts.append(provided)
     if not contexts:
-        return None
-    return "\n\n".join(dict.fromkeys(contexts))
+        return None, ()
+    return "\n\n".join(dict.fromkeys(contexts)), file_source_items
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
@@ -481,12 +488,16 @@ def _file_only_ready_result(documents: list[Path] | None, file_context: str | No
     }
 
 
-def _attach_file_context(result: dict, file_context: str | None) -> dict:
+def _attach_file_context(
+    result: dict, file_context: str | None, file_source_items: tuple[dict[str, Any], ...] = ()
+) -> dict:
     context = (file_context or "").strip()
     if not context:
         return result
     copied = dict(result)
     copied["file_context"] = context
+    if file_source_items:
+        copied["file_source_items"] = [dict(item) for item in file_source_items]
     sources = [str(source) for source in copied.get("sources", []) if source]
     if "document" not in sources:
         sources.append("document")
@@ -890,6 +901,8 @@ def _sse_events_from_final_answer(final_answer: FinalAnswer):
     if final_answer.conversation_id:
         yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
     yield f"event: sources\ndata: {','.join(source_labels(final_answer.sources))}\n\n"
+    if final_answer.file_sources:
+        yield _sse_json_event("file_sources", list(final_answer.file_sources))
     yield from iter_markdown_sse_events(final_answer.text)
     if final_answer.charts:
         yield _sse_json_event("charts", final_answer.charts)
@@ -922,6 +935,13 @@ def _record_conversation_history(
         )
     except Exception:
         LOGGER.exception("failed to persist chat conversation history")
+
+
+def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
+    items = result.get("file_source_items")
+    if not isinstance(items, list):
+        return ()
+    return tuple(item for item in items if isinstance(item, dict))
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
@@ -1018,6 +1038,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         trace=trace,
         sources=tuple(result.get("sources", ())),
         conversation_id=conversation_id,
+        file_sources=_file_source_items(result),
     )
 
 
