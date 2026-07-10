@@ -170,8 +170,7 @@ def compile_scope(workflow_id: int, session_id: str) -> None:
                 documents,
             ):
                 return
-            doc_ids = [int(doc["document_id"]) for doc in documents if doc.get("document_id")]
-            chunks = _load_chunks(doc_ids)
+            chunks = _load_chunks(documents)
             if not chunks:
                 return
             LOGGER.info(
@@ -248,9 +247,105 @@ def _release_lock(conn: Any, key: str) -> None:
         cur.execute("SELECT RELEASE_LOCK(%s)", (f"session_wiki:{key}",))
 
 
-def _load_chunks(document_ids: list[int]) -> list[dict[str, Any]]:
+def _allocate_chunk_quotas(
+    documents: list[dict[str, Any]],
+    limit: int,
+) -> list[tuple[int, int]]:
+    if limit <= 0:
+        return []
+
+    chunk_counts: dict[int, int] = {}
+    for document in documents:
+        try:
+            document_id = int(document.get("document_id") or 0)
+            chunk_count = max(0, int(document.get("chunk_count") or 0))
+        except (TypeError, ValueError):
+            continue
+        if document_id > 0 and chunk_count > 0:
+            chunk_counts[document_id] = chunk_count
+
+    ordered = sorted(chunk_counts.items())
+    if not ordered:
+        return []
+    if len(ordered) > limit:
+        excluded = [document_id for document_id, _count in ordered[limit:]]
+        LOGGER.warning(
+            "session wiki chunk quota excluded documents limit=%s excluded_document_ids=%s",
+            limit,
+            excluded,
+        )
+        return [(document_id, 1) for document_id, _count in ordered[:limit]]
+
+    minimum_quota = max(1, limit // len(ordered))
+    allocations = {
+        document_id: min(chunk_count, minimum_quota)
+        for document_id, chunk_count in ordered
+    }
+    remaining = limit - sum(allocations.values())
+    capacities = {
+        document_id: chunk_counts[document_id] - allocations[document_id]
+        for document_id, _count in ordered
+    }
+    total_capacity = sum(capacities.values())
+    if remaining > 0 and total_capacity > 0:
+        remainders: list[tuple[int, int]] = []
+        for document_id, _count in ordered:
+            numerator = remaining * capacities[document_id]
+            extra = numerator // total_capacity
+            allocations[document_id] += extra
+            capacities[document_id] -= extra
+            remainders.append((numerator % total_capacity, document_id))
+        remaining = limit - sum(allocations.values())
+        for _remainder, document_id in sorted(
+            remainders,
+            key=lambda item: (-item[0], item[1]),
+        ):
+            if remaining <= 0:
+                break
+            if capacities[document_id] <= 0:
+                continue
+            allocations[document_id] += 1
+            remaining -= 1
+
+    return [
+        (document_id, allocations[document_id])
+        for document_id, _count in ordered
+        if allocations[document_id] > 0
+    ]
+
+
+def _chunk_order_key(chunk: dict[str, Any]) -> tuple[int, int, str]:
+    def integer(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 2**63 - 1
+
+    return (
+        integer(chunk.get("i_chunk_on_doc")),
+        integer(chunk.get("i_page")),
+        str(chunk.get("chunk_id") or ""),
+    )
+
+
+def _load_chunks(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allocations = _allocate_chunk_quotas(documents, settings.WIKI_MAX_CHUNKS)
+    chunks: list[dict[str, Any]] = []
+    loaded: dict[int, int] = {}
     with httpx.Client() as client:
-        return weaviate_ops.read_target_chunks(client, document_ids, settings.WIKI_MAX_CHUNKS)
+        for document_id, quota in allocations:
+            rows = weaviate_ops.read_target_chunks(client, [document_id], quota)
+            rows.sort(key=_chunk_order_key)
+            chunks.extend(rows)
+            loaded[document_id] = len(rows)
+    LOGGER.info(
+        "session wiki chunk quota limit=%s allocations=%s loaded=%s total=%s",
+        settings.WIKI_MAX_CHUNKS,
+        dict(allocations),
+        loaded,
+        len(chunks),
+    )
+    return chunks
 
 
 def _compile_pages(documents: list[dict[str, Any]], chunks: list[dict[str, Any]]) -> list[WikiPage]:

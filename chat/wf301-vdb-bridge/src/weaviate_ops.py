@@ -539,7 +539,8 @@ def read_target_chunks(client: httpx.Client, doc_ids: list[int], limit: int) -> 
     where = _doc_id_where(doc_ids)
     query = {
         "query": (
-            "{ Get { %s(where:%s, limit:%d)"
+            "{ Get { %s(where:%s, limit:%d, "
+            "sort:[{path:[\"i_chunk_on_doc\"],order:asc}])"
             "{ text doc_id file_name i_page i_chunk_on_doc _additional { id } } } }"
             % (settings.TARGET_VDB_COLLECTION, where, limit)
         )
