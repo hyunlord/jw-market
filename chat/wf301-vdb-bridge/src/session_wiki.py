@@ -96,6 +96,8 @@ def mark_pages_stale(conn: Any, workflow_id: int, session_id: str) -> int:
     The existing expired status is the persisted stale marker. Transaction
     ownership remains with the document commit/delete caller.
     """
+    if not settings.WIKI_ENABLED:
+        return 0
     with conn.cursor() as cur:
         updated = cur.execute(
             """

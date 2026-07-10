@@ -6,7 +6,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from src import ledger, session_wiki
+from src import ledger, session_wiki, settings
 
 
 def _documents(*names: str) -> list[dict[str, Any]]:
@@ -107,6 +107,17 @@ def test_mark_pages_stale_uses_existing_expired_status_without_commit(monkeypatc
     assert "SET status=%s" in sql
     assert params == ("expired", 301, "session-1", "ready")
     assert updated == 1
+    assert conn.commits == 0
+
+
+def test_mark_pages_stale_is_noop_when_wiki_is_disabled(monkeypatch) -> None:
+    conn = _Connection(update_count=1)
+    monkeypatch.setattr(settings, "WIKI_ENABLED", False)
+
+    updated = session_wiki.mark_pages_stale(conn, 301, "session-1")
+
+    assert updated == 0
+    assert conn.executions == []
     assert conn.commits == 0
 
 
