@@ -11,6 +11,7 @@ from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, General
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
+    GeneralViewBrandMismatchError,
     GeneralViewBackendError,
     parse_general_market_response,
 )
@@ -77,6 +78,44 @@ def test_parse_general_market_response_accepts_mislabeled_top_level_view() -> No
     assert market.brand_share_pct == 8.0
 
 
+def test_parse_general_market_response_uses_requested_brand_ranking_row() -> None:
+    payload = _payload()
+    payload["result"]["data"]["kpi"].update(
+        {
+            "target_brand": "리피토",
+            "brand_value_recent": 15_000_000_000,
+            "target_share_pct": 15.0,
+            "target_rank": 1,
+        }
+    )
+
+    market = parse_general_market_response(
+        payload,
+        requested_atc4="C10A1",
+        requested_source="ubist",
+        requested_measure="sales",
+        requested_brand="리바로",
+    )
+
+    assert market.brand == "리바로"
+    assert market.brand_value == 8_000_000_000
+    assert market.brand_share_pct == 8.0
+    assert market.brand_rank == 2
+
+
+def test_parse_general_market_response_fails_closed_when_requested_brand_is_missing() -> None:
+    payload = _payload()
+
+    with pytest.raises(GeneralViewBackendError, match="brand mismatch"):
+        parse_general_market_response(
+            payload,
+            requested_atc4="C10A1",
+            requested_source="ubist",
+            requested_measure="sales",
+            requested_brand="없는 브랜드",
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (("atc4", ["C10C0"]), ("source", "iqvia_nsa"), ("measure", "volume"), ("view", "strategic")),
@@ -95,11 +134,14 @@ class FakeBackend:
     def __init__(self) -> None:
         self.candidate_map: dict[tuple[str, str], tuple[AtcCandidate, ...]] = {}
         self.market_map: dict[str, GeneralMarket] = {}
+        self.market_errors: dict[str, GeneralViewBackendError] = {}
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         return self.candidate_map.get((brand, source), ())
 
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket:
+        if atc4 in self.market_errors:
+            raise self.market_errors[atc4]
         return self.market_map[atc4]
 
 
@@ -179,6 +221,24 @@ def test_multi_atc_selects_largest_brand_sales_without_union() -> None:
     assert "union" not in contract
 
 
+def test_multi_atc_discards_only_candidates_without_requested_brand() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("포도당 대한", "iqvia")] = (
+        AtcCandidate("K01B3", "ATC4 K01B3"),
+        AtcCandidate("K04B1", "ATC4 K04B1"),
+    )
+    backend.market_map["K01B3"] = _market("K01B3", 50.0)
+    backend.market_errors["K04B1"] = GeneralViewBrandMismatchError(
+        "general-view brand mismatch: requested brand is absent from ranking"
+    )
+    service = GeneralViewService(backend, StrategicMembership(set()), enabled=True)
+
+    result = service.answer("IQVIA 포도당 대한 시장 점유율", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "K01B3"
+    assert result["tool_calls"][0]["tool"] == "general_view_dynamic_market"
+
+
 def test_contract_appends_scope_label_and_dual_warning_idempotently() -> None:
     contract = {
         "mode": "dual",
@@ -199,6 +259,7 @@ def test_contract_appends_scope_label_and_dual_warning_idempotently() -> None:
     twice = enforce_general_view_contract(once, contract)
 
     assert once == twice
+    assert once.startswith("## 전략뷰 (market_landscape)\n\n전략 답변")
     assert "기준: 일반뷰 (ATC4 C10A1) | 소스: UBIST | 지표: sales | 기준: 2026-04" in once
     assert "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다" in once
 

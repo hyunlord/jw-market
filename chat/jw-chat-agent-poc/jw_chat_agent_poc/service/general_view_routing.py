@@ -10,6 +10,7 @@ from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
     GeneralViewBackend,
+    GeneralViewBrandMismatchError,
     GeneralViewBackendError,
 )
 
@@ -101,7 +102,14 @@ class GeneralViewService:
                 for candidate in candidates
             }
             for future in as_completed(futures):
-                markets.append(future.result())
+                try:
+                    markets.append(future.result())
+                except GeneralViewBrandMismatchError:
+                    continue
+        if not markets:
+            raise GeneralViewBrandMismatchError(
+                "general-view brand mismatch: requested brand is absent from every ATC4 candidate"
+            )
         return tuple(markets)
 
 

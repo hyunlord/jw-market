@@ -14,7 +14,10 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     measure = str(contract.get("measure") or "")
     period = str(contract.get("period") or "")
     label = f"기준: 일반뷰 (ATC4 {code}) | 소스: {source} | 지표: {measure} | 기준: {period}"
-    parts = [answer.rstrip()]
+    strategic_answer = answer.rstrip()
+    if contract.get("mode") == "dual" and not strategic_answer.startswith("## 전략뷰 (market_landscape)"):
+        strategic_answer = f"## 전략뷰 (market_landscape)\n\n{strategic_answer}"
+    parts = [strategic_answer]
     section = str(contract.get("section_markdown") or "").strip()
     if section and section not in answer:
         parts.append(section)

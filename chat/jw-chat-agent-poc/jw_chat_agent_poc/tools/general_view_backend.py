@@ -13,6 +13,10 @@ class GeneralViewBackendError(RuntimeError):
     """Raised when the general-view backend is unavailable or returns an unsafe scope."""
 
 
+class GeneralViewBrandMismatchError(GeneralViewBackendError):
+    """Raised when an ATC4 candidate has no current ranking row for the requested brand."""
+
+
 @dataclass(frozen=True, slots=True)
 class AtcCandidate:
     code: str
@@ -87,7 +91,7 @@ class GeneralViewBackend:
         return value
 
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket:
-        options = {"top_n": 5}
+        options = {"top_n": 100 if brand else 5}
         key = ("market", source.lower(), measure.lower(), atc4.upper(), brand or "", tuple(sorted(options.items())))
         cached = self._get_cached(key)
         if isinstance(cached, GeneralMarket):
@@ -104,6 +108,7 @@ class GeneralViewBackend:
             requested_atc4=atc4,
             requested_source=source,
             requested_measure=measure,
+            requested_brand=brand,
         )
         self._put_cached(key, value)
         return value
@@ -175,6 +180,7 @@ def parse_general_market_response(
     requested_atc4: str,
     requested_source: str,
     requested_measure: str,
+    requested_brand: str | None = None,
 ) -> GeneralMarket:
     result = payload.get("result")
     if not isinstance(result, dict):
@@ -215,16 +221,28 @@ def parse_general_market_response(
         if isinstance(latest, dict) and isinstance(latest.get("rankings"), list):
             ranking_rows = [row for row in latest["rankings"] if isinstance(row, dict)]
 
-    top_brands = tuple(sorted((
+    ranked_brands = tuple(sorted((
         TopBrand(
             brand=str(row.get("brand") or row.get("brand_name") or ""),
             rank=_as_int(row.get("rank")),
             value=_as_float(row.get("value") or row.get("sales")),
             share_pct=_as_float(row.get("ms_pct") or row.get("share_pct")),
         )
-        for row in ranking_rows[:5]
+        for row in ranking_rows
         if row.get("brand") or row.get("brand_name")
     ), key=lambda row: row.rank if row.rank is not None else 10_000))
+    requested_row = None
+    if requested_brand:
+        requested_key = _normalize_brand_name(requested_brand)
+        requested_row = next(
+            (row for row in ranked_brands if _normalize_brand_name(row.brand) == requested_key),
+            None,
+        )
+        if requested_row is None:
+            raise GeneralViewBrandMismatchError(
+                "general-view brand mismatch: requested brand is absent from ranking"
+            )
+    top_brands = ranked_brands[:5]
     description = str(
         market_meta.get("market_definition_label")
         or market_meta.get("market_name")
@@ -240,10 +258,14 @@ def parse_general_market_response(
         unit=str(result.get("unit_label") or ""),
         period=period,
         market_size=_as_float(kpi.get("market_size_recent")),
-        brand=str(kpi.get("target_brand") or "") or None,
-        brand_value=_as_float(kpi.get("brand_value_recent")),
-        brand_share_pct=_as_float(kpi.get("target_share_pct") or kpi.get("brand_share_pct")),
-        brand_rank=_as_int(kpi.get("target_rank")),
+        brand=requested_row.brand if requested_row else str(kpi.get("target_brand") or "") or None,
+        brand_value=requested_row.value if requested_row else _as_float(kpi.get("brand_value_recent")),
+        brand_share_pct=(
+            requested_row.share_pct
+            if requested_row
+            else _as_float(kpi.get("target_share_pct") or kpi.get("brand_share_pct"))
+        ),
+        brand_rank=requested_row.rank if requested_row else _as_int(kpi.get("target_rank")),
         top_brands=top_brands,
     )
 
@@ -251,6 +273,10 @@ def parse_general_market_response(
 def _normalize_source(value: object) -> str:
     normalized = str(value or "").lower().replace("-", "_")
     return "iqvia" if normalized in {"iqvia", "iqvia_nsa"} else normalized
+
+
+def _normalize_brand_name(value: str) -> str:
+    return "".join(value.lower().split())
 
 
 def _as_float(value: object) -> float | None:
