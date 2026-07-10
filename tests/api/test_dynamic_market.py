@@ -126,7 +126,7 @@ def _aggregate_rank_fixture(
     )
 
 
-def test_general_ubist_rank_uses_common_latest_period_value_with_brand_key_tiebreak(monkeypatch) -> None:
+def test_general_ubist_rank_uses_latest_value_with_total_value_tiebreak(monkeypatch) -> None:
     # Given cumulative leaders that tie or have no value in the market's common latest period.
     histories = {
         "positive-rich-old": {"2025-04": 100.0, "2026-05": 10.0},
@@ -138,12 +138,12 @@ def test_general_ubist_rank_uses_common_latest_period_value_with_brand_key_tiebr
     # When general UBIST metrics are ranked.
     metrics = _aggregate_rank_fixture(monkeypatch, source="ubist", histories=histories)
 
-    # Then latest-period values lead and equal values use the brand key deterministically.
+    # Then latest-positive brands lead with cumulative-sales tiebreaks, followed by zero-value brands in cumulative order.
     assert [(brand.brand_key, brand.rank) for brand in metrics.all_brands] == [
-        ("positive-new", 1),
-        ("positive-rich-old", 2),
-        ("zero-less", 3),
-        ("zero-rich", 4),
+        ("positive-rich-old", 1),
+        ("positive-new", 2),
+        ("zero-rich", 3),
+        ("zero-less", 4),
     ]
     assert all(isinstance(brand.rank, int) and brand.rank > 0 for brand in metrics.all_brands)
 

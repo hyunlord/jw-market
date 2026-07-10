@@ -538,8 +538,14 @@ def _rank_general_brand_metrics(
         for brand_key, history_by_period in ranking_histories.items()
     }
 
-    def rank_key(metric: BrandMetric) -> tuple[float, str]:
-        return (-latest_value_by_brand.get(metric.brand_key, 0.0), metric.brand_key)
+    def rank_key(metric: BrandMetric) -> tuple[int, float, float, str]:
+        latest_value = latest_value_by_brand.get(metric.brand_key, 0.0)
+        return (
+            0 if latest_value > 0 else 1,
+            -latest_value if latest_value > 0 else 0.0,
+            -metric.total_value,
+            metric.brand_key,
+        )
 
     return sorted(metrics, key=rank_key)
 
