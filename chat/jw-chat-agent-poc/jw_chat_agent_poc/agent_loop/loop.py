@@ -82,9 +82,14 @@ class ToolUseAgent:
                 external=self.external,
                 query_layer=self.query_layer,
             )
-            with stage(timing, "llm_plan", f"step={step}"):
-                decision = planner.decide(question, tuple(observations), facade.schemas(), allowed_brands, period_grounding.schema_periods)
+            with stage(timing, "market_snapshot", "tool catalog and market snapshot"):
+                tool_schemas = facade.schemas()
+            period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
+            brand_detail = ", ".join(allowed_brands) or "unresolved"
+            with stage(timing, "llm_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                decision = planner.decide(question, tuple(observations), tool_schemas, allowed_brands, period_grounding.schema_periods)
                 _record_planner_token_usage(timing, planner)
+                progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
             if not decision.tool_calls:
                 trace.append(_trace_step(step, decision, ()))
                 break

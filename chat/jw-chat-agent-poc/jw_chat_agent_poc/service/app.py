@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from collections import OrderedDict
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
@@ -66,6 +67,8 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
 
 AgentFactory = Callable[..., ChatAgent]
 LOGGER = logging.getLogger(__name__)
+QUEUE_PROGRESS_THRESHOLD_S = 2.0
+QUEUE_PROGRESS_INTERVAL_S = 2.5
 
 DIRECT_ROUTE_API_KEY_ENV = "DIRECT_ROUTE_API_KEY"
 DIRECT_ROUTE_AUTH_HOSTS_ENV = "DIRECT_ROUTE_AUTH_HOSTS"
@@ -599,7 +602,8 @@ def _answer_without_pending(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     route_method = getattr(market_scope_resolver, "general_route", None)
-    route = route_method(question) if callable(route_method) else GeneralRoute.EXISTING
+    with stage(None, "question_classification", "view selection"):
+        route = route_method(question) if callable(route_method) else GeneralRoute.EXISTING
     if route is GeneralRoute.GENERAL_ONLY:
         return market_scope_resolver.answer_general(question, compact=False, dual=False)
     if route is GeneralRoute.DUAL:
@@ -678,11 +682,15 @@ def _answer_existing_without_pending(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     if requested_unavailable_source(question) is not None and not documents:
-        return agent_factory(external_mode=external_mode).answer(question, documents)
+        with stage(None, "question_classification", "agent setup"):
+            agent = agent_factory(external_mode=external_mode)
+        return agent.answer(question, documents)
     if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
         return _answer_direct_agent_loop(question, external_mode)
     if should_use_agent_loop(question):
-        return agent_factory(external_mode=external_mode).answer(question, documents)
+        with stage(None, "question_classification", "agent setup"):
+            agent = agent_factory(external_mode=external_mode)
+        return agent.answer(question, documents)
     intent = detect_market_scope_intent(question)
     if intent is not None:
         if intent.requires_clarification:
@@ -700,12 +708,16 @@ def _answer_existing_without_pending(
             return market_scope_resolver.clarification(question, brand=brand)
         if intent.view_type is not None:
             return market_scope_resolver.answer(question, view_type=intent.view_type)
-    return agent_factory(external_mode=external_mode).answer(question, documents)
+    with stage(None, "question_classification", "agent setup"):
+        agent = agent_factory(external_mode=external_mode)
+    return agent.answer(question, documents)
 
 
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
-    dependencies = build_chat_agent_dependencies(external_mode=external_mode)
-    routes = dependencies.router.route(question, has_documents=False)
+    with stage(None, "question_classification", "agent setup"):
+        dependencies = build_chat_agent_dependencies(external_mode=external_mode)
+    with stage(None, "question_decomposition", "BQ and tool routing"):
+        routes = dependencies.router.route(question, has_documents=False)
     if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
         try:
             dependencies.resolver.resolve(question, allow_default=False)
@@ -758,33 +770,48 @@ def _stream_resolving_session_events(
     projection_context: ProjectionRequestContext | None = None,
     limiter: ChatConcurrencyLimiter | None = None,
 ):
-    if limiter is not None and not limiter.try_acquire():
-        yield from _sse_busy_events()
-        return
     events: queue.Queue[dict[str, Any]] = queue.Queue()
     step_index = 0
+    step_index_lock = threading.Lock()
+    acquire_finished = threading.Event()
+    acquired = False
+
+    def indexed_step(event: dict[str, Any]) -> dict[str, Any]:
+        nonlocal step_index
+        with step_index_lock:
+            step_index += 1
+            index = step_index
+        item = dict(event)
+        item["index"] = index
+        return item
 
     def emit_step(event: dict[str, Any]) -> None:
-        nonlocal step_index
-        step_index += 1
-        item = dict(event)
-        item["index"] = step_index
+        item = indexed_step(event)
         events.put({"type": "step", "item": item})
 
     def run_worker() -> None:
+        nonlocal acquired
         try:
-            item = _answer_question(
-                store,
-                market_scope_resolver,
-                agent_factory,
-                question,
-                external_mode,
-                conversation_id,
-                use_direct_agent_loop=use_direct_agent_loop,
-                timing_sink=emit_step,
-            )
+            acquired = limiter is None or limiter.try_acquire()
+            acquire_finished.set()
+            if not acquired:
+                events.put({"type": "busy"})
+                return
+            emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "started", "raw_name": "question_received", "raw_detail": "request accepted"})
+            emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "done", "raw_name": "question_received", "raw_detail": "request accepted", "elapsed_ms": 0.0})
             with stage_event_sink(emit_step):
-                final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+                with stage(None, "answer_generation_total", "request processing"):
+                    item = _answer_question(
+                        store,
+                        market_scope_resolver,
+                        agent_factory,
+                        question,
+                        external_mode,
+                        conversation_id,
+                        use_direct_agent_loop=use_direct_agent_loop,
+                        timing_sink=emit_step,
+                    )
+                    final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
             _record_conversation_history(
                 history_store,
                 session_id=None,
@@ -794,21 +821,34 @@ def _stream_resolving_session_events(
             )
             events.put({"type": "result", "item": item, "final_answer": final_answer})
         except Exception as exc:
+            acquire_finished.set()
             events.put({"type": "error", "error_type": type(exc).__name__, "message": str(exc)})
         finally:
-            if limiter is not None:
+            if limiter is not None and acquired:
                 limiter.release()
 
     thread = threading.Thread(target=run_worker, name="chat-stream-answer-worker", daemon=True)
     try:
         thread.start()
     except Exception:
-        if limiter is not None:
-            limiter.release()
         raise
+    wait_started = time.perf_counter()
+    next_wait_progress = QUEUE_PROGRESS_THRESHOLD_S
     while True:
-        event = events.get()
+        try:
+            waited = time.perf_counter() - wait_started
+            poll_timeout = min(0.25, max(0.01, next_wait_progress - waited))
+            event = events.get(timeout=poll_timeout)
+        except queue.Empty:
+            waited = time.perf_counter() - wait_started
+            if not acquire_finished.is_set() and waited >= next_wait_progress:
+                yield _sse_json_event("step", indexed_step({"name": "대기 중", "detail": "처리 슬롯 대기", "status": "in_progress", "raw_name": "queue_wait", "raw_detail": "concurrency slot", "elapsed_ms": round(waited * 1000, 2)}))
+                next_wait_progress += QUEUE_PROGRESS_INTERVAL_S
+            continue
         event_type = event.get("type")
+        if event_type == "busy":
+            yield from _sse_busy_events()
+            return
         if event_type == "step":
             yield _sse_json_event("step", event.get("item", {}))
             continue
