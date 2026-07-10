@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 class _AggregatedRows:
     brand_metrics: list[BrandMetric]
     monthly_totals: dict[str, float]
+    ranking_histories: dict[str, dict[str, float]]
     unit_label: str
 
 
@@ -133,6 +134,15 @@ class MetricAggregator:
             rows = self._iter_metric_rows(brands=brands, source=source, measure=measure, channel_axis=channel_axis)
         aggregated = self._aggregate_rows_detail(rows, period_range=period_range, channel_axis=channel_axis)
         market_size = float(sum(aggregated.monthly_totals.values()))
+        rank_candidates = (
+            _rank_general_brand_metrics(
+                aggregated.brand_metrics,
+                ranking_histories=aggregated.ranking_histories,
+                source=source,
+            )
+            if view == "general"
+            else sorted(aggregated.brand_metrics, key=lambda row: (-row.total_value, row.brand_key))
+        )
         ranked = tuple(
             BrandMetric(
                 brand_key=item.brand_key,
@@ -151,10 +161,7 @@ class MetricAggregator:
                 history_by_period=item.history_by_period,
                 analysis_row=item.analysis_row,
             )
-            for index, item in enumerate(
-                sorted(aggregated.brand_metrics, key=lambda row: (-row.total_value, row.brand_key)),
-                start=1,
-            )
+            for index, item in enumerate(rank_candidates, start=1)
         )
         monthly_series = tuple({"period": period, "market_size": value} for period, value in sorted(aggregated.monthly_totals.items()))
         ubist_summary = self._load_ubist_channel_summary(
@@ -444,6 +451,7 @@ class MetricAggregator:
     ) -> _AggregatedRows:
         brand_metrics: list[BrandMetric] = []
         monthly_totals: dict[str, float] = {}
+        ranking_histories: dict[str, dict[str, float]] = {}
         unit_label = ""
         for row in rows:
             if not unit_label:
@@ -458,6 +466,10 @@ class MetricAggregator:
                 channel_specialty_matrix=matrix,
                 audit_code_matrix=audit_matrix,
             )
+            brand_key = str(row["brand_key"])
+            ranking_history = ranking_histories.setdefault(brand_key, {})
+            for period, value in history.items():
+                ranking_history[period] = ranking_history.get(period, 0.0) + value
             filtered = filter_periods(history, period_range)
             history_by_period = {period: value for period, value in sorted(filtered.items())}
             for period, value in filtered.items():
@@ -465,7 +477,7 @@ class MetricAggregator:
             latest_period = max(filtered) if filtered else None
             brand_metrics.append(
                 BrandMetric(
-                    brand_key=str(row["brand_key"]),
+                    brand_key=brand_key,
                     brand_name=str(row["brand_name"]),
                     atc4_code=str(row["atc4_code"]),
                     total_value=float(sum(filtered.values())),
@@ -482,7 +494,12 @@ class MetricAggregator:
                     analysis_row=analysis_row_for_builder(row, history_by_period=history_by_period),
                 )
             )
-        return _AggregatedRows(brand_metrics=brand_metrics, monthly_totals=monthly_totals, unit_label=unit_label)
+        return _AggregatedRows(
+            brand_metrics=brand_metrics,
+            monthly_totals=monthly_totals,
+            ranking_histories=ranking_histories,
+            unit_label=unit_label,
+        )
 
 
 def _history_for_row(
@@ -499,6 +516,41 @@ def _history_for_row(
     if channel_axis.source == "iqvia_nsa":
         return history_from_audit_code_matrix(audit_code_matrix)
     return parse_history(raw_history)
+
+
+def _rank_general_brand_metrics(
+    brand_metrics: Iterable[BrandMetric],
+    *,
+    ranking_histories: Mapping[str, Mapping[str, float]],
+    source: str,
+) -> list[BrandMetric]:
+    metrics = list(brand_metrics)
+    window_months = {"ubist": 11, "iqvia_nsa": 9}.get(source.strip().lower())
+    period_indexes = [
+        index
+        for history_by_period in ranking_histories.values()
+        for period in history_by_period
+        if (index := period_to_month_index(period)) is not None
+    ]
+    if window_months is None or not period_indexes:
+        return sorted(metrics, key=lambda row: (-row.total_value, row.brand_key))
+
+    latest_index = max(period_indexes)
+    mat_by_brand = {
+        brand_key: sum(
+            value
+            for period, value in history_by_period.items()
+            if (index := period_to_month_index(period)) is not None
+            and latest_index - window_months <= index <= latest_index
+        )
+        for brand_key, history_by_period in ranking_histories.items()
+    }
+
+    def rank_key(metric: BrandMetric) -> tuple[int, float, float, str]:
+        mat_value = mat_by_brand.get(metric.brand_key, 0.0)
+        return (0 if mat_value > 0 else 1, -mat_value if mat_value > 0 else 0.0, -metric.total_value, metric.brand_key)
+
+    return sorted(metrics, key=rank_key)
 
 
 def analysis_row_for_builder(row: Mapping[str, Any], *, history_by_period: Mapping[str, float]) -> dict[str, Any]:

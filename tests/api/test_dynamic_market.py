@@ -94,6 +94,79 @@ def test_aggregate_rows_when_period_range_limits_history() -> None:
     assert [item.total_value for item in brand_metrics] == [60.0, 30.0]
 
 
+def _aggregate_rank_fixture(
+    monkeypatch,
+    *,
+    source: str,
+    histories: dict[str, dict[str, float]],
+    period_range: PeriodRange = PeriodRange(),
+) -> AggregatedMetrics:
+    def fake_iter_rows(sql: str, _params: tuple[object, ...]):
+        if "raw_value_history" not in sql:
+            return
+        for brand_key, history in histories.items():
+            yield {
+                "brand_key": brand_key,
+                "brand_name": brand_key.upper(),
+                "atc4_code": "C10A1",
+                "source": source,
+                "measure": "sales",
+                "unit_label": "KRW",
+                "raw_value_history": json.dumps(history),
+            }
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.iter_rows", fake_iter_rows)
+    return MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=tuple(BrandRef(key, key.upper(), "C10A1") for key in histories),
+        source=source,
+        measure="sales",
+        period_range=period_range,
+        top_n=100,
+    )
+
+
+def test_general_ubist_rank_uses_latest_twelve_month_mat_with_total_value_tiebreak(monkeypatch) -> None:
+    # Given MAT-positive ties plus two brands with no positive sales in the latest 12-month window.
+    histories = {
+        "positive-rich-old": {"2025-04": 100.0, "2026-05": 10.0},
+        "positive-new": {"2026-05": 10.0},
+        "zero-rich": {"2025-04": 90.0},
+        "zero-less": {"2025-03": 50.0},
+    }
+
+    # When general UBIST metrics are ranked.
+    metrics = _aggregate_rank_fixture(monkeypatch, source="ubist", histories=histories)
+
+    # Then MAT-positive brands lead with cumulative-sales tiebreaks, followed by continuous numeric zero-MAT ranks.
+    assert [(brand.brand_key, brand.rank) for brand in metrics.all_brands] == [
+        ("positive-rich-old", 1),
+        ("positive-new", 2),
+        ("zero-rich", 3),
+        ("zero-less", 4),
+    ]
+    assert all(isinstance(brand.rank, int) and brand.rank > 0 for brand in metrics.all_brands)
+
+
+def test_general_iqvia_rank_uses_latest_four_quarter_mat_and_missing_quarters_as_zero(monkeypatch) -> None:
+    # Given an old cumulative leader outside the latest four-quarter window and a current low-value brand.
+    histories = {
+        "old-leader": {"2025-Q2": 100.0},
+        "current": {"2026-Q2": 1.0},
+    }
+
+    # When IQVIA metrics are ranked while the response period range selects only the old year.
+    metrics = _aggregate_rank_fixture(
+        monkeypatch,
+        source="iqvia_nsa",
+        histories=histories,
+        period_range=PeriodRange("2025-Q1", "2025-Q4"),
+    )
+
+    # Then source-latest MAT, not the response period range or cumulative total, determines rank.
+    assert [(brand.brand_key, brand.rank) for brand in metrics.all_brands] == [("current", 1), ("old-leader", 2)]
+
+
 def test_aggregate_selects_focus_plus_top_competitors_by_total_value(monkeypatch) -> None:
     def fake_iter_rows(sql: str, _params: tuple[object, ...]):
         if "raw_value_history" not in sql:
