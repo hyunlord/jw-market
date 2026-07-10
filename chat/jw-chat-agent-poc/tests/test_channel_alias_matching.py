@@ -63,6 +63,53 @@ def test_population_plan_uses_shared_channel_matcher() -> None:
     assert plan.specs[0]["filters"] == {"channel": "상급종병"}
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_channel"),
+    (
+        ("종합병원 채널에서 리바로 매출은?", "종병"),
+        ("상급종합병원 채널에서 리바로 매출은?", "상급종병"),
+        ("병원 채널에서 리바로 매출은?", "병원"),
+    ),
+)
+def test_specific_channel_sales_plan_filters_instead_of_listing_all_channels(
+    question: str,
+    expected_channel: str,
+) -> None:
+    plan = strict_query_plan(question, "리바로")
+
+    assert plan is not None
+    assert plan.unsupported_message == ""
+    assert plan.specs == (
+        {
+            "source": "ubist",
+            "view": "market_landscape",
+            "dimensions": ["product"],
+            "group_by": ["product"],
+            "metrics": ["sales"],
+            "derive": [],
+            "filters": {"brand": "리바로", "channel": expected_channel},
+            "limit": 1,
+        },
+    )
+
+
+def test_unknown_specific_channel_is_rejected() -> None:
+    plan = strict_query_plan("온라인몰 채널에서 리바로 매출은?", "리바로")
+
+    assert plan is not None
+    assert plan.specs == ()
+    assert "온라인몰" in plan.unsupported_message
+    assert "지원" in plan.unsupported_message
+
+
+def test_generic_channel_distribution_remains_unchanged() -> None:
+    plan = strict_query_plan("리바로 채널별 매출을 보여줘", "리바로")
+
+    assert plan is not None
+    assert plan.specs[0]["dimensions"] == ["channel"]
+    assert plan.specs[0]["filters"] == {"brand": "리바로"}
+
+
 def test_mart_record_normalises_storage_channel_keys() -> None:
     history = {"2026-05": {"raw_value": 100.0}}
     row = {
