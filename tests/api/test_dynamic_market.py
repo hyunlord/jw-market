@@ -1931,14 +1931,14 @@ def test_cause_payload_hhi_recent_uses_complete_calendar_year_not_partial_latest
     assert payload["data"]["kpi"]["hhi_recent"] == 6250.0
 
 
-def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:
+def test_reject_disabled_top_level_molecule_filter() -> None:
     resolver = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart")
 
     try:
         resolver.resolve(
             atc4=["A10A1"],
-            molecule=[],
-            analysis_level={"ubist": {"molecule": ["PITAVASTATIN"]}},
+            molecule=["PITAVASTATIN"],
+            analysis_level={"ubist": {}},
             focus_brand_key=None,
             source="ubist",
             measure="sales",
@@ -1946,7 +1946,7 @@ def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:
     except DynamicMarketInputError as exc:
         assert "disabled" in str(exc)
     else:
-        raise AssertionError("disabled molecule dimension was accepted")
+        raise AssertionError("disabled top-level molecule filter was accepted")
 
 
 def test_build_dimension_filters_accepts_ubist_atc_narrowing_dimensions() -> None:

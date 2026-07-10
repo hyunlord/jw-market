@@ -37,6 +37,7 @@ from pipeline.scripts.api.market_scope.types import MarketScopeOption, OptionTyp
 
 MAX_BRAND_SET_SIZE: Final = 6
 GENERAL_IQVIA_SIDE_CAR_DIMENSIONS: Final = ("mfr", "molecule_type", "molecule_desc", "pack", "strength", "nhi")
+GENERAL_UBIST_SIDE_CAR_DIMENSIONS: Final = ("seller", "molecule", "molecule_strength", "form", "route", "reimbursement")
 
 
 class BrandSetInputError(RuntimeError):
@@ -394,7 +395,7 @@ def _dimensions(
 
 
 def _general_sidecar_dimensions(rows: tuple[JsonMap, ...]) -> dict[str, dict[str, tuple[str, ...]]]:
-    """Return IQVIA product-level sidecar dimensions grouped by brand key."""
+    """Return source-namespaced product-level sidecar dimensions by brand key."""
 
     brand_keys = tuple(sorted({str(row.get("brand_key")) for row in rows if row.get("brand_key")}))
     atc4_codes = tuple(
@@ -409,6 +410,34 @@ def _general_sidecar_dimensions(rows: tuple[JsonMap, ...]) -> dict[str, dict[str
     )
     if not brand_keys or not atc4_codes:
         return {}
+    collected: dict[str, dict[str, list[str]]] = {}
+    for sidecar_source, dimensions, prefix in (
+        (SOURCE, GENERAL_IQVIA_SIDE_CAR_DIMENSIONS, ""),
+        ("ubist", GENERAL_UBIST_SIDE_CAR_DIMENSIONS, "ubist_"),
+    ):
+        _collect_general_sidecar_dimensions(
+            collected,
+            brand_keys=brand_keys,
+            atc4_codes=atc4_codes,
+            source=sidecar_source,
+            dimensions=dimensions,
+            prefix=prefix,
+        )
+    return {
+        brand_key: {dimension: tuple(values) for dimension, values in dimensions.items()}
+        for brand_key, dimensions in collected.items()
+    }
+
+
+def _collect_general_sidecar_dimensions(
+    collected: dict[str, dict[str, list[str]]],
+    *,
+    brand_keys: tuple[str, ...],
+    atc4_codes: tuple[str, ...],
+    source: str,
+    dimensions: tuple[str, ...],
+    prefix: str,
+) -> None:
     rows = db.fetch_all(
         f"""
         SELECT DISTINCT brand_key, dimension_type, dimension_value_norm
@@ -417,25 +446,20 @@ def _general_sidecar_dimensions(rows: tuple[JsonMap, ...]) -> dict[str, dict[str
           AND measure = %s
           AND brand_key IN ({_placeholders(brand_keys)})
           AND atc4_code IN ({_placeholders(atc4_codes)})
-          AND dimension_type IN ({_placeholders(GENERAL_IQVIA_SIDE_CAR_DIMENSIONS)})
+          AND dimension_type IN ({_placeholders(dimensions)})
         ORDER BY brand_key, dimension_type, dimension_value_norm
         """,
-        (SOURCE, RANKING_MEASURE, *brand_keys, *atc4_codes, *GENERAL_IQVIA_SIDE_CAR_DIMENSIONS),
+        (source, RANKING_MEASURE, *brand_keys, *atc4_codes, *dimensions),
     )
-    collected: dict[str, dict[str, list[str]]] = {}
     for row in rows:
         brand_key = text(row.get("brand_key"))
         dimension = text(row.get("dimension_type"))
         value = text(row.get("dimension_value_norm"))
-        if not brand_key or dimension not in GENERAL_IQVIA_SIDE_CAR_DIMENSIONS or not value:
+        if not brand_key or dimension not in dimensions or not value:
             continue
-        values = collected.setdefault(brand_key, {}).setdefault(dimension, [])
+        values = collected.setdefault(brand_key, {}).setdefault(f"{prefix}{dimension}", [])
         if value not in values:
             values.append(value)
-    return {
-        brand_key: {dimension: tuple(values) for dimension, values in dimensions.items()}
-        for brand_key, dimensions in collected.items()
-    }
 
 
 def _placeholders(values: Sequence[str]) -> str:

@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -171,6 +172,55 @@ def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatc
     assert response.json() == {"data": expected}
     assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
     assert captured["payload"]["filter"]["analysis_level"]["ubist"]["seller"] == ["JW중외제약"]
+
+
+@pytest.mark.parametrize(
+    ("path", "service_name"),
+    (
+        ("/api/brand-activity/topics", "get_topic_brand_payload"),
+        ("/api/brand-activity/csd-timeseries", "get_csd_timeseries"),
+        ("/api/brand-activity/interest-rx-matrix", "get_interest_rx_matrix"),
+        ("/api/brand-activity/csd-activity-series", "get_csd_activity_series"),
+    ),
+)
+def test_brand_activity_routes_preserve_ubist_analysis_levels(monkeypatch, path: str, service_name: str) -> None:
+    captured: dict[str, dict] = {}
+
+    def fake_service(payload: dict) -> dict:
+        captured["payload"] = payload
+        return {"brands": []}
+
+    monkeypatch.setattr(brand_activity, service_name, fake_service)
+    response = TestClient(app).post(
+        path,
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {
+                "atc4": ["C10A1"],
+                "analysis_level": {
+                    "ubist": {
+                        "seller": ["JW중외제약"],
+                        "molecule": ["Pitavastatin"],
+                        "moleculeStrength": ["pitavastatin calcium 2mg"],
+                        "form": ["정제"],
+                        "route": ["경구"],
+                        "reimbursement": ["급여"],
+                    }
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["filters"]["analysis_level"]["ubist"] == {
+        "seller": ["JW중외제약"],
+        "molecule": ["Pitavastatin"],
+        "molecule_strength": ["pitavastatin calcium 2mg"],
+        "form": ["정제"],
+        "route": ["경구"],
+        "reimbursement": ["급여"],
+    }
 
 
 def test_brand_activity_folds_analysis_level_audit_code_into_internal_slice(monkeypatch) -> None:

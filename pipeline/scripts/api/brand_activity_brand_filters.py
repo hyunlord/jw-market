@@ -20,6 +20,14 @@ IQVIA_ANALYSIS_LEVEL_DIMENSIONS: Final[dict[str, str]] = {
     "strength": "strength",
     "nhi_type": "nhi",
 }
+UBIST_ANALYSIS_LEVEL_DIMENSIONS: Final[dict[str, str]] = {
+    "seller": "ubist_seller",
+    "molecule": "ubist_molecule",
+    "molecule_strength": "ubist_molecule_strength",
+    "form": "ubist_form",
+    "route": "ubist_route",
+    "reimbursement": "ubist_reimbursement",
+}
 
 
 def applied_brand_filter(view_name: str, market_id: str, filter_payload: Mapping[str, Any]) -> JsonMap:
@@ -33,6 +41,10 @@ def applied_brand_filter(view_name: str, market_id: str, filter_payload: Mapping
     if view_name == "general":
         for api_name, dimension in IQVIA_ANALYSIS_LEVEL_DIMENSIONS.items():
             values = _normalized_filter_values(dimension, _iqvia_analysis_level_value(filter_payload, api_name))
+            if values:
+                applied[dimension] = list(values)
+        for api_name, dimension in UBIST_ANALYSIS_LEVEL_DIMENSIONS.items():
+            values = _normalized_filter_values(dimension, _analysis_level_value(filter_payload, "ubist", api_name))
             if values:
                 applied[dimension] = list(values)
     channel_axis = parse_audit_code_axis(filter_payload) if view_name == "general" else None
@@ -64,21 +76,37 @@ def _normalize_dimension_value(dimension: str, value: Any) -> tuple[str, ...]:
         return ()
     if dimension == "atc4":
         return (raw.upper(),)
-    if dimension == "molecule":
+    if dimension in {"molecule", "ubist_molecule"}:
         return tuple(component.norm for component in split_molecule_components(raw))
     if dimension == "class":
         return (raw,)
-    if dimension in {"mfr", "molecule_type", "molecule_desc", "pack", "strength", "nhi"}:
+    if dimension in {
+        "mfr",
+        "molecule_type",
+        "molecule_desc",
+        "pack",
+        "strength",
+        "nhi",
+        "ubist_seller",
+        "ubist_molecule_strength",
+        "ubist_form",
+        "ubist_route",
+        "ubist_reimbursement",
+    }:
         normalized = normalize_dimension_value(raw)
         return (normalized,) if normalized else ()
     return ()
 
 
 def _iqvia_analysis_level_value(filter_payload: Mapping[str, Any], api_name: str) -> Any:
+    return _analysis_level_value(filter_payload, "iqvia", api_name)
+
+
+def _analysis_level_value(filter_payload: Mapping[str, Any], source: str, api_name: str) -> Any:
     analysis_level = filter_payload.get("analysis_level")
     if not isinstance(analysis_level, Mapping):
         return None
-    iqvia = analysis_level.get("iqvia")
-    if not isinstance(iqvia, Mapping):
+    source_payload = analysis_level.get(source)
+    if not isinstance(source_payload, Mapping):
         return None
-    return iqvia.get(api_name)
+    return source_payload.get(api_name)

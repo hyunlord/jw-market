@@ -15,6 +15,7 @@ from pipeline.scripts.api.brand_activity_channel_axis import (
     parse_audit_code_axis,
 )
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
+from pipeline.scripts.api.models.brand_activity import BrandActivityTopicsRequest
 
 
 def test_brand_filter_uses_or_within_dimension_and_and_across_dimensions() -> None:
@@ -81,6 +82,40 @@ def test_applied_filter_accepts_iqvia_dimension_filters() -> None:
         "strength": ["162MG"],
         "nhi": ["NHI"],
         "channel_axis": {"source": "iqvia_nsa", "audit_code": ["KHPA"]},
+    }
+
+
+def test_applied_filter_accepts_ubist_dimension_filters_and_camel_case_alias() -> None:
+    request = BrandActivityTopicsRequest.model_validate(
+        {
+            "selected_brand": "리바로",
+            "filters": {
+                "atc4": ["C10A1"],
+                "analysis_level": {
+                    "ubist": {
+                        "seller": ["JW중외제약"],
+                        "molecule": ["Pitavastatin"],
+                        "moleculeStrength": ["pitavastatin calcium 2mg"],
+                        "form": ["정제"],
+                        "route": ["경구"],
+                        "reimbursement": ["급여"],
+                    }
+                },
+            },
+        }
+    )
+    payload = request.model_dump()["filters"]
+
+    applied = applied_brand_filter("general", "C10A1", payload)
+
+    assert applied == {
+        "atc4": ["C10A1"],
+        "ubist_seller": ["JW중외제약"],
+        "ubist_molecule": ["pitavastatin"],
+        "ubist_molecule_strength": ["pitavastatin calcium 2mg"],
+        "ubist_form": ["정제"],
+        "ubist_route": ["경구"],
+        "ubist_reimbursement": ["급여"],
     }
 
 
@@ -412,6 +447,75 @@ def test_general_brand_candidates_load_iqvia_sidecar_dimensions(monkeypatch) -> 
     )
 
     assert [candidate.dimensions.get("mfr", ()) for candidate in candidates] == [(), ("제이더블유중외제약",), ("경쟁사",)]
+    assert [choice.brand_key for choice in choices] == ["선택", "A"]
+
+
+def test_general_brand_candidates_apply_ubist_sidecar_dimensions(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",
+        lambda _metas: {},
+    )
+
+    def fake_fetch_all(sql: str, params: tuple) -> list[dict[str, str]]:
+        assert "mart_general_filter_dimension_metric" in sql
+        source = str(params[0])
+        if source == "iqvia_nsa":
+            return []
+        assert source == "ubist"
+        return [
+            {"brand_key": "A", "dimension_type": "seller", "dimension_value_norm": "JW중외제약"},
+            {"brand_key": "A", "dimension_type": "molecule", "dimension_value_norm": "pitavastatin"},
+            {"brand_key": "B", "dimension_type": "seller", "dimension_value_norm": "경쟁사"},
+            {"brand_key": "B", "dimension_type": "molecule", "dimension_value_norm": "atorvastatin"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", fake_fetch_all)
+    rows = (
+        {
+            "brand_key": "선택",
+            "by_dimension": {"products": [{"product_code": "SEL"}], "atc4_code": ["C10A1"]},
+            "metric_history": {"2026-Q2": {"raw_value": 1, "rank": 99}},
+        },
+        {
+            "brand_key": "A",
+            "by_dimension": {"products": [{"product_code": "A"}], "atc4_code": ["C10A1"]},
+            "metric_history": {"2026-Q2": {"raw_value": 100, "rank": 1}},
+        },
+        {
+            "brand_key": "B",
+            "by_dimension": {"products": [{"product_code": "B"}], "atc4_code": ["C10A1"]},
+            "metric_history": {"2026-Q2": {"raw_value": 90, "rank": 2}},
+        },
+    )
+    metas = {
+        str(row["brand_key"]): BrandMeta(str(row["brand_key"]), str(row["brand_key"]), (str(row["brand_key"]),), False)
+        for row in rows
+    }
+
+    candidates = _brand_candidates(
+        "general",
+        rows,
+        metas,
+        {
+            "quarter": "2026-Q2",
+            "items": [
+                {"brand_key": "A", "rank": 1, "raw_value": 100},
+                {"brand_key": "B", "rank": 2, "raw_value": 90},
+            ],
+        },
+    )
+    choices = _select_choices(
+        candidates,
+        selected_brand="선택",
+        applied_filter={
+            "atc4": ["C10A1"],
+            "ubist_seller": ["JW중외제약"],
+            "ubist_molecule": ["pitavastatin"],
+        },
+    )
+
+    assert [candidate.dimensions.get("ubist_seller", ()) for candidate in candidates] == [(), ("JW중외제약",), ("경쟁사",)]
+    assert [candidate.dimensions.get("ubist_molecule", ()) for candidate in candidates] == [(), ("pitavastatin",), ("atorvastatin",)]
     assert [choice.brand_key for choice in choices] == ["선택", "A"]
 
 
