@@ -5,6 +5,10 @@ import json
 import pytest
 
 from pipeline.scripts.crawler.tier2_full_scoring_runner import (
+    DEFAULT_DEPLOYMENT_ID,
+    DEFAULT_WORKFLOW_ID,
+    DEFAULT_WORKFLOW_REV,
+    DEFAULT_WORKFLOW_URL,
     MatchedBrand,
     ParsedTier2Score,
     build_workflow_payload,
@@ -12,6 +16,13 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     parse_wf324_response,
     score_tier,
 )
+
+
+def test_default_workflow_targets_ga_rebuild() -> None:
+    assert DEFAULT_DEPLOYMENT_ID == 1453
+    assert DEFAULT_WORKFLOW_ID == 337
+    assert DEFAULT_WORKFLOW_REV == 5671
+    assert DEFAULT_WORKFLOW_URL == "http://workflow-337.llmops.svc.cluster.local:8080/run/v2"
 
 
 def _brands() -> list[MatchedBrand]:

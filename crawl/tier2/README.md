@@ -14,17 +14,17 @@ the article-level brand relevance has been confirmed.
 
 ## GenOS workflow
 
-- Workflow: `jw-tier2-brand-tagging`
-- Workflow id: `317`
-- Revision: `5366`
-- Deployment: `1325`
+- Workflow: `jw-tier2-brand-tagging-ga`
+- Workflow id: `334`
+- Revision: `5668`
+- Deployment: `1450`
 - Serving: `163`
-- Backing Flowise chat_flow id: `b7dbe513-3879-4ec8-8baa-05a2d161500c`
-- Endpoint inside the cluster: `http://workflow-317.llmops.svc.cluster.local:8080/run/v2`
+- Backing Flowise chat_flow id: `57de4034-b136-4afd-a460-b67bd79ed5df`
+- Endpoint inside the cluster: `http://workflow-334.llmops.svc.cluster.local:8080/run/v2`
 
-The workflow was registered through the DB-backed GenOS path used for wf316,
-not through the Flowise HTTP API. The repository prompt, workflow revision step
-prompt, and Flowise backing row prompt all have SHA256
+The workflow was rebuilt through the GenOS workflow-copy and revision APIs so
+its resource metadata is managed by the platform. The repository prompt,
+workflow revision step prompt, and Flowise backing row prompt all have SHA256
 `aab7790a4d03d05cb6147c029a7783aea744b386e2694aa50b2e5fbeb3f0c43f`.
 The Flowise backing row must remain an `AGENTFLOW` row, matching the wf316
 runtime template; a null `chat_flow.type` makes Flowise reject `/run/v2` calls
@@ -37,13 +37,13 @@ responses without candidate omissions, out-of-candidate brands, or missing
 
 ## Tier2 scoring workflow
 
-- Workflow: `jw-tier2-brand-scoring`
-- Workflow id: `324`
-- Revision: `5496`
-- Deployment: `1392`
+- Workflow: `jw-tier2-brand-scoring-ga`
+- Workflow id: `337`
+- Revision: `5671`
+- Deployment: `1453`
 - Serving: `163`
-- Backing Flowise chat_flow id: `034e7ed0-92d3-47a1-8ff4-87207028a45d`
-- Endpoint inside the cluster: `http://workflow-324.llmops.svc.cluster.local:8080/run/v2`
+- Backing Flowise chat_flow id: `6f040141-56aa-4f29-948f-d64e223fb9c0`
+- Endpoint inside the cluster: `http://workflow-337.llmops.svc.cluster.local:8080/run/v2`
 
 This workflow is the Tier2 scoring counterpart to wf196 v3. It copies the
 wf196 v3 relatedness-gate and importance rubric, but scores the
@@ -59,7 +59,7 @@ prompt all have SHA256
 `15074bf21e1e919d296fcc1da65f7f1f6a98b18a2062bb55981ea2fcf50050a3`.
 The Flowise backing row is an `AGENTFLOW` row.
 
-Runtime smoke for revision `5496` passed on 15/15 Tier2 match samples, including
+The pre-migration runtime smoke for revision `5496` passed on 15/15 Tier2 match samples, including
 12 multi-brand news samples. Each response returned valid JSON with a valid
 news-level `tag`, matching `category_label`, expected `category_code`, and a
 `brand_scores[]` brand-key set exactly equal to the input `target_brands[]`

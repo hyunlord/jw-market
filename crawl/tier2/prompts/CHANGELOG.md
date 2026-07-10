@@ -1,5 +1,13 @@
 # Tier2 LLM Prompt Changelog
 
+## 2026-07-10 — GA workflow rebuild
+
+- Rebuilt tagging as workflow `334`, revision `5668`, deployment `1450`.
+- Rebuilt scoring as workflow `337`, revision `5671`, deployment `1453`.
+- Preserved the prior prompts and nodes; only `servingRevision` changed from
+  preview revision `475` to GA revisions `586` and `589`, respectively.
+- Kept historical workflows `317` and `324` untouched.
+
 ## 2026-07-05 — tier2_llm_v1 initial contract
 
 - Added the `jw-tier2-brand-tagging` prompt contract for article-level candidate confirmation.

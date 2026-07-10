@@ -1,7 +1,7 @@
-"""Score Tier2 body matches with wf324 and replace exact-rule rows safely.
+"""Score Tier2 body matches with the GA scoring workflow and replace exact-rule rows safely.
 
 This runner is the canonical batch path for Tier2 LLM scoring. It consumes
-``tier2_match_staging`` and writes wf324 results to a separate staging table.
+``tier2_match_staging`` and writes workflow results to a separate staging table.
 Live ``event_brand_scores`` is changed only by the explicit ``replace-live``
 command, after staging validation has passed and an exact-rule backup exists.
 """
@@ -25,10 +25,10 @@ import pymysql
 from pipeline.scripts.crawler.tier2_body_match_runner import connect_from_env
 
 DEFAULT_MATCH_TABLE = "tier2_match_staging"
-DEFAULT_WORKFLOW_URL = "http://workflow-324.llmops.svc.cluster.local:8080/run/v2"
-DEFAULT_WORKFLOW_ID = 324
-DEFAULT_WORKFLOW_REV = 5496
-DEFAULT_DEPLOYMENT_ID = 1392
+DEFAULT_WORKFLOW_URL = "http://workflow-337.llmops.svc.cluster.local:8080/run/v2"
+DEFAULT_WORKFLOW_ID = 337
+DEFAULT_WORKFLOW_REV = 5671
+DEFAULT_DEPLOYMENT_ID = 1453
 DEFAULT_SOURCE_PROCESSOR = "tier2_llm_v1"
 TIER2_EXACT_PROCESSOR = "tier2_exact_rule_v1"
 TIER1_PROCESSORS = ("workflow_196_optionB", "cross_match_adapter_v1")
@@ -215,7 +215,7 @@ def _score_from_value(value: object) -> int:
 def parse_wf324_response(raw_text: str, brands: Sequence[MatchedBrand]) -> ParsedWf324Response:
     payload = json.loads(strip_json_fence(raw_text))
     if not isinstance(payload, dict):
-        raise ValueError("wf324 response must be a JSON object")
+        raise ValueError("scoring workflow response must be a JSON object")
 
     tag = str(payload.get("tag") or payload.get("category_label") or "").strip()
     category_label = str(payload.get("category_label") or tag).strip()
@@ -232,19 +232,19 @@ def parse_wf324_response(raw_text: str, brands: Sequence[MatchedBrand]) -> Parse
 
     rows = payload.get("brand_scores")
     if not isinstance(rows, list):
-        raise ValueError("wf324 response must contain brand_scores list")
+        raise ValueError("scoring workflow response must contain brand_scores list")
 
     allowed = {brand.brand_key: brand for brand in brands}
     seen: set[str] = set()
     parsed_rows: list[ParsedTier2Score] = []
     for row in rows:
         if not isinstance(row, dict):
-            raise ValueError("wf324 brand_scores item must be an object")
+            raise ValueError("scoring workflow brand_scores item must be an object")
         brand_key = str(row.get("brand_key") or "").strip()
         if brand_key not in allowed:
-            raise ValueError(f"wf324 returned out-of-candidate brand_key={brand_key!r}")
+            raise ValueError(f"scoring workflow returned out-of-candidate brand_key={brand_key!r}")
         if brand_key in seen:
-            raise ValueError(f"wf324 returned duplicate brand_key={brand_key!r}")
+            raise ValueError(f"scoring workflow returned duplicate brand_key={brand_key!r}")
         seen.add(brand_key)
         parsed_rows.append(
             ParsedTier2Score(
@@ -257,7 +257,7 @@ def parse_wf324_response(raw_text: str, brands: Sequence[MatchedBrand]) -> Parse
 
     missing = set(allowed) - seen
     if missing:
-        raise ValueError(f"wf324 omitted candidate brand_key(s): {sorted(missing)}")
+        raise ValueError(f"scoring workflow omitted candidate brand_key(s): {sorted(missing)}")
 
     return ParsedWf324Response(
         tag=tag,
@@ -286,7 +286,7 @@ def call_workflow_once(
     workflow_url: str,
     timeout_seconds: int,
 ) -> tuple[dict[str, Any], float, bool]:
-    chat_id = f"tier2-wf324-{payload['article']['news_id']}-{uuid.uuid4().hex[:8]}"
+    chat_id = f"tier2-wf337-{payload['article']['news_id']}-{uuid.uuid4().hex[:8]}"
     question = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     started = time.time()
     raw = post_json(
@@ -364,7 +364,7 @@ def call_workflow(
             if attempt < max_attempts:
                 time.sleep(5 * attempt)
             elapsed_total += 0.0
-    raise RuntimeError(f"wf324 failed for news_id={item.news_id}: {last_error}") from last_error
+    raise RuntimeError(f"scoring workflow failed for news_id={item.news_id}: {last_error}") from last_error
 
 
 def _json_keywords(value: object) -> tuple[str, ...]:
@@ -873,7 +873,9 @@ def run_score_staging(
             )
             consecutive_failures += 1
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                raise RuntimeError(f"aborting after {consecutive_failures} consecutive wf324 failures") from exc
+                raise RuntimeError(
+                    f"aborting after {consecutive_failures} consecutive scoring workflow failures"
+                ) from exc
         if processed_news == 1 or processed_news % 25 == 0:
             print(
                 json.dumps(
@@ -918,7 +920,10 @@ def main() -> int:
     score_parser.add_argument("--replace-staging", action="store_true")
     score_parser.add_argument("--limit", type=int)
     score_parser.add_argument("--offset", type=int, default=0)
-    score_parser.add_argument("--workflow-url", default=os.getenv("WF324_URL", DEFAULT_WORKFLOW_URL))
+    score_parser.add_argument(
+        "--workflow-url",
+        default=os.getenv("WF337_URL", os.getenv("WF324_URL", DEFAULT_WORKFLOW_URL)),
+    )
     score_parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     score_parser.add_argument("--max-attempts", type=int, default=2)
     score_parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
