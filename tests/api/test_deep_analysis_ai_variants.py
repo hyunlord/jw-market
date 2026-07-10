@@ -56,7 +56,8 @@ def _strength_row() -> dict[str, Any]:
 
 
 def _selected_strength_available(payload: dict[str, Any]) -> bool:
-    return bool(payload["data"]["brand_factors"][0]["iqvia"].get("strength"))
+    items = payload["data"]["brand_factors"]["iqvia"]
+    return bool(items and items[0].get("strength"))
 
 
 def test_deep_analysis_ai_variants_are_not_generated_when_row_absent(monkeypatch) -> None:

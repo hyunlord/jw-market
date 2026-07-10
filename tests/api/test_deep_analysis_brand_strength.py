@@ -81,7 +81,8 @@ def _source_strength_row(source: str, *, brand_key: str = "리바로", serving_b
 
 
 def _selected_overall(payload: dict[str, Any]) -> dict[str, Any]:
-    return payload["data"]["brand_factors"][0]["iqvia"].get("strength", {})
+    items = payload["data"]["brand_factors"]["iqvia"]
+    return items[0].get("strength", {}) if items else {}
 
 
 def test_slice_forecast_horizon_keeps_five_year_monthly_prefix_and_slices_all_intervals() -> None:
@@ -206,33 +207,31 @@ def test_deep_analysis_uses_only_source_level_brand_strength(monkeypatch) -> Non
     assert payload["data"]["ai_analysis"] == {"summary": "ok"}
     assert payload["data"]["ai_analysis_short"] == {"evidence_pool": [{"source": "뉴스"}]}
     assert payload["data"]["ai_analysis_long"] == {"evidence_pool": [{"source": "뉴스"}]}
-    assert payload["data"]["brand_factors"][0] == {
+    assert payload["data"]["brand_factors"]["iqvia"][0] == {
         "brand": "리바로",
         "brand_key": "리바로",
         "role": "selected",
-        "rank": 1,
-        "iqvia": {
-            "factors": {
-                "available": False,
-                "reason": "not_generated",
-                "values": {
-                    "mfr_name_kor": [],
-                    "molecule_type": [],
-                    "molecule_desc": [],
-                    "pack_desc": [],
-                    "strength": [],
-                    "nhi_type": [],
-                },
-            },
-            "strength": {
-                "profile_display": {"headline": "iqvia strong"},
-                "strength_items": [{"axis": "iqvia"}],
-                "limitations": [],
+        "rank": None,
+        "factors": {
+            "available": False,
+            "reason": "not_generated",
+            "values": {
+                "mfr_name_kor": [],
+                "molecule_type": [],
+                "molecule_desc": [],
+                "pack_desc": [],
+                "strength": [],
+                "nhi_type": [],
             },
         },
-        "ubist": {},
+        "strength": {
+            "profile_display": {"headline": "iqvia strong"},
+            "strength_items": [{"axis": "iqvia"}],
+            "limitations": [],
+        },
     }
-    serialized = json.dumps(payload["data"]["brand_factors"][0], ensure_ascii=False)
+    assert payload["data"]["brand_factors"]["ubist"] == []
+    serialized = json.dumps(payload["data"]["brand_factors"]["iqvia"][0], ensure_ascii=False)
     assert "response_json" not in serialized
     assert "workflow_id" not in serialized
     assert not any("FROM `jw_mart_d2_stage_20260630_r2`.agent3_brand_strength\n" in sql for sql in queries)
@@ -270,7 +269,8 @@ def test_deep_analysis_cache_lookup_falls_back_to_compact_brand_and_uses_matched
     payload = deep_analysis.deep_analysis("리바로 브이")
 
     # Then: the compact fallback serves the cache and downstream lookups use the matched canonical brand.
-    assert payload["data"]["brand_factors"][0]["brand_key"] == "리바로브이"
+    assert payload["data"]["brand_factors"] == {"iqvia": [], "ubist": []}
+    assert any("cache_brand_elements" in sql and params == ["리바로브이"] for sql, params in seen)
     assert any("cache_deep_analysis" in sql and "REPLACE" in sql for sql, _params in seen)
 
 

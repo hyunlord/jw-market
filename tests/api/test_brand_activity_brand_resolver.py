@@ -337,6 +337,25 @@ def test_brand_choices_rank_competitors_by_total_sales_before_snapshot_rank() ->
     assert [choice.brand_key for choice in choices] == ["선택", "B", "C", "A"]
 
 
+def test_brand_choices_can_rank_competitors_by_latest_market_rank() -> None:
+    candidates = (
+        _candidate("선택", rank=3, sales=1.0, dimensions={"atc4": ("C10A1",)}),
+        _candidate("A", rank=1, sales=10.0, dimensions={"atc4": ("C10A1",)}),
+        _candidate("B", rank=5, sales=500.0, dimensions={"atc4": ("C10A1",)}),
+        _candidate("C", rank=2, sales=50.0, dimensions={"atc4": ("C10A1",)}),
+    )
+
+    choices = _select_choices(
+        candidates,
+        selected_brand="선택",
+        applied_filter={"atc4": ["C10A1"]},
+        rank_by_latest_period=True,
+    )
+
+    assert [choice.brand_key for choice in choices] == ["선택", "A", "C", "B"]
+    assert [choice.sales_rank for choice in choices] == [3, 1, 2, 5]
+
+
 def test_general_brand_candidates_load_iqvia_sidecar_dimensions(monkeypatch) -> None:
     monkeypatch.setattr(
         "pipeline.scripts.api.brand_activity_brand_resolver.general_molecules_by_product",

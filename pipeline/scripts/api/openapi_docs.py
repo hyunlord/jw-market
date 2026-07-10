@@ -1332,48 +1332,61 @@ SOURCE_BRAND_STRENGTH_SCHEMA: Final = {
 }
 
 
-def _brand_source_schema(factor_schema: dict) -> dict:
+def _brand_factor_item_schema(factor_schema: dict) -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "description": "소스 데이터가 전혀 없으면 빈 객체입니다.",
+        "description": "선택 브랜드 또는 해당 소스 시장의 경쟁 브랜드입니다.",
         "properties": {
+            "brand": {"type": "string", "description": "화면 표시 브랜드명입니다."},
+            "brand_key": {"type": "string", "description": "mart 기준 브랜드 식별자입니다."},
+            "role": {
+                "type": "string",
+                "enum": ["selected", "competitor"],
+                "description": "선택 브랜드인지 경쟁 브랜드인지 구분합니다.",
+            },
+            "rank": {
+                "anyOf": [{"type": "integer"}, {"type": "null"}],
+                "description": (
+                    "해당 소스 전략시장 최신기간 매출 실순위입니다. 전략시장에 해당 소스가 없지만 "
+                    "선택 브랜드의 일반 factors 또는 strength가 있으면 선택 브랜드만 반환하고 null입니다."
+                ),
+            },
             "factors": deepcopy(factor_schema),
-            "strength": deepcopy(SOURCE_BRAND_STRENGTH_SCHEMA),
+            "strength": {
+                "anyOf": [
+                    deepcopy(SOURCE_BRAND_STRENGTH_SCHEMA),
+                    {"type": "object", "maxProperties": 0},
+                ],
+                "description": "소스별 strength가 없으면 빈 객체입니다.",
+            },
         },
+        "required": ["brand", "brand_key", "role", "rank", "factors", "strength"],
     }
 
 
-BRAND_FACTOR_ITEM_SCHEMA: Final = {
+DEEP_ANALYSIS_BRAND_FACTORS_SCHEMA: Final = {
     "type": "object",
     "additionalProperties": False,
-    "description": "선택 브랜드 또는 경쟁 브랜드의 소스별 factors+strength 슬롯입니다.",
+    "description": (
+        "소스별 독립 목록입니다. 각 목록은 선택 브랜드를 첫 번째에 두고, 해당 소스 전략시장 최신기간 "
+        "매출 실순위 기준 경쟁 상위 5개를 뒤에 둡니다. 소스 데이터가 없으면 빈 배열입니다."
+    ),
     "properties": {
-        "brand": {"type": "string", "description": "화면 표시 브랜드명입니다."},
-        "brand_key": {"type": "string", "description": "mart 기준 브랜드 식별자입니다."},
-        "role": {"type": "string", "enum": ["selected", "competitor"], "description": "선택 브랜드인지 경쟁 브랜드인지 구분합니다."},
-        "rank": {"type": "integer", "description": "응답 내 순서입니다. selected가 항상 1번입니다."},
-        "iqvia": _brand_source_schema(IQVIA_BRAND_FACTOR_SCHEMA),
-        "ubist": _brand_source_schema(UBIST_BRAND_FACTOR_SCHEMA),
+        "iqvia": {"type": "array", "items": _brand_factor_item_schema(IQVIA_BRAND_FACTOR_SCHEMA)},
+        "ubist": {"type": "array", "items": _brand_factor_item_schema(UBIST_BRAND_FACTOR_SCHEMA)},
     },
-    "required": ["brand", "brand_key", "role", "rank", "iqvia", "ubist"],
+    "required": ["iqvia", "ubist"],
 }
 
 
-DEEP_ANALYSIS_BRAND_FACTORS_SCHEMA: Final = {
-    "type": "array",
-    "description": "선택 브랜드 1개와 같은 시장 scope의 경쟁 상위 5개 브랜드를 소스별로 묶은 목록입니다.",
-    "items": deepcopy(BRAND_FACTOR_ITEM_SCHEMA),
-}
-
-
-DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = [
-    {
-        "brand": "리바로",
-        "brand_key": "리바로",
-        "role": "selected",
-        "rank": 1,
-        "iqvia": {
+DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = {
+    "iqvia": [
+        {
+            "brand": "리바로",
+            "brand_key": "리바로",
+            "role": "selected",
+            "rank": 3,
             "factors": {
                 "available": True,
                 "reason": None,
@@ -1388,7 +1401,13 @@ DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = [
             },
             "strength": {"profile_display": {"headline": "IQVIA 기준 강점"}, "strength_items": ["시장 내 성장"], "limitations": []},
         },
-        "ubist": {
+    ],
+    "ubist": [
+        {
+            "brand": "리바로",
+            "brand_key": "리바로",
+            "role": "selected",
+            "rank": 2,
             "factors": {
                 "available": True,
                 "reason": None,
@@ -1402,19 +1421,16 @@ DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = [
             },
             "strength": {"profile_display": {}, "strength_items": [], "limitations": ["strength candidate 0건"]},
         },
-    },
-    *[
         {
-            "brand": brand,
-            "brand_key": brand,
+            "brand": "리피토",
+            "brand_key": "리피토",
             "role": "competitor",
-            "rank": rank,
-            "iqvia": {},
-            "ubist": {},
-        }
-        for rank, brand in enumerate(["크레스토", "리피토", "로수바미브", "아토젯", "바이토린"], start=2)
+            "rank": 1,
+            "factors": {"available": False, "reason": "not_generated", "values": {}},
+            "strength": {},
+        },
     ],
-]
+}
 
 
 DEEP_ANALYSIS_RESPONSES: Final = {

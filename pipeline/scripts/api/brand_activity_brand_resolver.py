@@ -82,6 +82,8 @@ def resolve_brand_set(
     selected_brand: str,
     filter_payload: Mapping[str, Any] | None = None,
     ranking_quarters: Sequence[str] | None = None,
+    source: str = SOURCE,
+    rank_by_latest_period: bool = False,
 ) -> BrandSetResolution | None:
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
@@ -94,14 +96,14 @@ def resolve_brand_set(
     )
     resolved_market_id = market_scope_market_id or market_id
     if not resolved_market_id and view_name == "strategic_ml":
-        resolved_market_id = _ml_id_for_brand(selected_brand)
+        resolved_market_id = _ml_id_for_brand(selected_brand, source=source)
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
-    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id))
+    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=source))
     if not brand_rows:
         return None
-    market_row = _fetch_market_row(view, resolved_market_id)
+    market_row = _fetch_market_row(view, resolved_market_id, source=source)
     if market_row is None:
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
@@ -119,8 +121,14 @@ def resolve_brand_set(
         ranking,
         ranking_quarters=ranking_quarters,
         audit_code_axis=channel_axis,
+        source=source,
     )
-    choices = _select_choices(candidates, selected_brand=selected_brand, applied_filter=applied_filter)
+    choices = _select_choices(
+        candidates,
+        selected_brand=selected_brand,
+        applied_filter=applied_filter,
+        rank_by_latest_period=rank_by_latest_period,
+    )
     return BrandSetResolution(
         view_name=view_name,
         market_id=resolved_market_id,
@@ -200,7 +208,7 @@ def view_config(view_name: str) -> ViewConfig:
     raise BrandSetInputError(f"unsupported view: {view_name}")
 
 
-def _ml_id_for_brand(brand: str) -> str:
+def _ml_id_for_brand(brand: str, *, source: str = SOURCE) -> str:
     """Resolve one strategic ML market for a selected brand in the ranking scope."""
 
     rows = db.fetch_all(
@@ -210,7 +218,7 @@ def _ml_id_for_brand(brand: str) -> str:
         WHERE source = %s AND measure = %s AND (brand_key = %s OR brand_name = %s)
         ORDER BY ml_id
         """,
-        (SOURCE, RANKING_MEASURE, brand, brand),
+        (source, RANKING_MEASURE, brand, brand),
     )
     market_ids = tuple(str(row["ml_id"]) for row in rows if row.get("ml_id"))
     if not market_ids:
@@ -224,7 +232,7 @@ def _ml_id_for_brand(brand: str) -> str:
     return market_ids[0]
 
 
-def _fetch_brand_rows(view: ViewConfig, market_id: str) -> list[JsonMap]:
+def _fetch_brand_rows(view: ViewConfig, market_id: str, *, source: str = SOURCE) -> list[JsonMap]:
     is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
     overlay = "overlay_data" if view.has_is_jw else "NULL AS overlay_data"
     audit_code_matrix = "audit_code_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS audit_code_matrix"
@@ -235,11 +243,11 @@ def _fetch_brand_rows(view: ViewConfig, market_id: str) -> list[JsonMap]:
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
         ORDER BY brand_key
         """,
-        (market_id, SOURCE, RANKING_MEASURE),
+        (market_id, source, RANKING_MEASURE),
     )
 
 
-def _fetch_market_row(view: ViewConfig, market_id: str) -> JsonMap | None:
+def _fetch_market_row(view: ViewConfig, market_id: str, *, source: str = SOURCE) -> JsonMap | None:
     return db.fetch_one(
         f"""
         SELECT {view.market_key}, {view.market_name_column}, market_size_series, {view.ranking_column}
@@ -247,7 +255,7 @@ def _fetch_market_row(view: ViewConfig, market_id: str) -> JsonMap | None:
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
         LIMIT 1
         """,
-        (market_id, SOURCE, RANKING_MEASURE),
+        (market_id, source, RANKING_MEASURE),
     )
 
 
@@ -270,10 +278,11 @@ def _brand_candidates(
     *,
     ranking_quarters: Sequence[str] | None = None,
     audit_code_axis: ChannelAxisFilter | None = None,
+    source: str = SOURCE,
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
     general_molecules = general_molecules_by_product(metas) if view_name == "general" else {}
-    general_sidecar = _general_sidecar_dimensions(rows) if view_name == "general" else {}
+    general_sidecar = _general_sidecar_dimensions(rows) if view_name == "general" and source == SOURCE else {}
     candidates: list[BrandCandidate] = []
     for row in rows:
         brand_key = str(row["brand_key"])
@@ -296,6 +305,7 @@ def _select_choices(
     *,
     selected_brand: str,
     applied_filter: JsonMap,
+    rank_by_latest_period: bool = False,
 ) -> tuple[BrandChoice, ...]:
     selected = next((candidate for candidate in candidates if candidate.meta.brand_key == selected_brand), None)
     if selected is None:
@@ -308,11 +318,22 @@ def _select_choices(
             if candidate.meta.brand_key != selected_brand and _passes_filter(candidate, applied_filter)
         ],
     ]
-    ordered = select_top_competitors(
-        tuple(CompetitorRankItem(candidate.meta.brand_key, candidate.sales_value, candidate) for candidate in eligible),
-        selected_brand_key=selected_brand,
-        top_n=MAX_BRAND_SET_SIZE - 1,
-    )
+    if rank_by_latest_period:
+        competitors = sorted(
+            (
+                candidate
+                for candidate in eligible
+                if candidate.meta.brand_key != selected_brand and candidate.sales_rank is not None
+            ),
+            key=lambda candidate: (candidate.sales_rank, candidate.meta.brand_key),
+        )[: MAX_BRAND_SET_SIZE - 1]
+        ordered = (selected, *competitors)
+    else:
+        ordered = select_top_competitors(
+            tuple(CompetitorRankItem(candidate.meta.brand_key, candidate.sales_value, candidate) for candidate in eligible),
+            selected_brand_key=selected_brand,
+            top_n=MAX_BRAND_SET_SIZE - 1,
+        )
     return tuple(
         BrandChoice(
             brand_key=candidate.meta.brand_key,

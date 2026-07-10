@@ -4,19 +4,27 @@ from pipeline.scripts.api import deep_analysis_brand_elements
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice
 
 
-def test_build_brand_factors_groups_factors_and_strength_by_source() -> None:
-    choices = tuple(
-        BrandChoice(
-            brand_key=brand,
-            brand_name=brand,
-            sales_rank=index,
-            is_selected=index == 1,
-        )
-        for index, brand in enumerate(
-            ("selected", "empty", "factor-only", "strength-only", "competitor-4", "competitor-5"),
-            start=1,
-        )
+def _choice(brand: str, rank: int | None, *, selected: bool = False) -> BrandChoice:
+    return BrandChoice(
+        brand_key=brand,
+        brand_name=brand,
+        sales_rank=rank,
+        is_selected=selected,
     )
+
+
+def test_build_brand_factors_keeps_independent_source_competitor_lists() -> None:
+    choices_by_source = {
+        "iqvia": (
+            _choice("selected", 3, selected=True),
+            _choice("iqvia-1", 1),
+            _choice("iqvia-2", 2),
+        ),
+        "ubist": (
+            _choice("selected", 2, selected=True),
+            _choice("ubist-1", 1),
+        ),
+    }
     cached = {
         "selected": {
             "factors": {
@@ -24,8 +32,9 @@ def test_build_brand_factors_groups_factors_and_strength_by_source() -> None:
                 "ubist": {"seller": ["JW"]},
             }
         },
-        "factor-only": {"factors": {"iqvia": {"molecule_desc": ["PITAVASTATIN"]}}},
-        "strength-only": {"factors": {"ubist": {}}},
+        "iqvia-1": {"factors": {"iqvia": {"molecule_desc": ["A"]}}},
+        "iqvia-2": {"factors": {"iqvia": {"molecule_desc": ["B"]}}},
+        "ubist-1": {"factors": {"ubist": {"seller": ["UBIST seller"]}}},
     }
     source_strength = {
         "selected": {
@@ -40,52 +49,63 @@ def test_build_brand_factors_groups_factors_and_strength_by_source() -> None:
                 "strength_items": [],
                 "limitations": ["candidate 0건"],
             },
-        },
-        "strength-only": {
-            "ubist": {
-                "profile_display": {"headline": "UBIST"},
-                "strength_items": [],
-                "limitations": [],
-            }
-        },
+        }
     }
 
-    items = deep_analysis_brand_elements.build_brand_factors(
-        choices,
+    factors = deep_analysis_brand_elements.build_brand_factors(
+        choices_by_source,
         selected_brand_key="selected",
         cached_elements_by_key=cached,
         selected_factors={},
         strength_by_source_by_key=source_strength,
     )
 
-    assert len(items) == 6
-    assert [item["role"] for item in items] == ["selected", *["competitor"] * 5]
-    assert [item["rank"] for item in items] == [1, 2, 3, 4, 5, 6]
-    selected = items[0]
-    assert selected["iqvia"]["factors"]["values"]["mfr_name_kor"] == ["JW"]
-    assert selected["iqvia"]["strength"] == {
-        "profile_display": {"headline": "IQVIA"},
-        "strength_items": ["growth"],
-        "limitations": [],
-    }
-    assert "workflow_id" not in selected["iqvia"]["strength"]
-    assert selected["ubist"]["strength"]["limitations"] == ["candidate 0건"]
-    assert items[1]["iqvia"] == {}
-    assert items[1]["ubist"] == {}
-    assert items[2]["iqvia"]["strength"] == {}
-    assert items[2]["ubist"] == {}
-    assert items[3]["ubist"]["factors"] == {
-        "available": False,
-        "reason": "not_generated",
-        "values": {
-            "seller": [],
-            "molecule_strength": [],
-            "form": [],
-            "route": [],
-            "reimbursement": [],
+    assert set(factors) == {"iqvia", "ubist"}
+    assert [item["brand_key"] for item in factors["iqvia"]] == ["selected", "iqvia-1", "iqvia-2"]
+    assert [item["rank"] for item in factors["iqvia"]] == [3, 1, 2]
+    assert [item["brand_key"] for item in factors["ubist"]] == ["selected", "ubist-1"]
+    assert [item["rank"] for item in factors["ubist"]] == [2, 1]
+    assert factors["iqvia"][0]["role"] == "selected"
+    assert factors["iqvia"][1]["role"] == "competitor"
+    assert factors["iqvia"][0]["factors"]["values"]["mfr_name_kor"] == ["JW"]
+    assert factors["iqvia"][0]["strength"]["strength_items"] == ["growth"]
+    assert "workflow_id" not in factors["iqvia"][0]["strength"]
+    assert factors["ubist"][0]["strength"]["limitations"] == ["candidate 0건"]
+    assert factors["ubist"][1]["factors"]["values"]["seller"] == ["UBIST seller"]
+
+
+def test_build_brand_factors_uses_selected_rank_null_when_source_market_is_unavailable() -> None:
+    fallback = (_choice("selected", None, selected=True),)
+
+    factors = deep_analysis_brand_elements.build_brand_factors(
+        {"iqvia": fallback, "ubist": fallback},
+        selected_brand_key="selected",
+        cached_elements_by_key={
+            "selected": {"factors": {"iqvia": {"mfr_name_kor": ["JW"]}, "ubist": {}}}
         },
-    }
-    assert items[3]["iqvia"] == {}
-    assert all("factors" not in item for item in items)
-    assert all("strength" not in item for item in items)
-    assert all("strength_by_source" not in item for item in items)
+        selected_factors={},
+        strength_by_source_by_key={},
+    )
+
+    assert factors["iqvia"] == [
+        {
+            "brand": "selected",
+            "brand_key": "selected",
+            "role": "selected",
+            "rank": None,
+            "factors": {
+                "available": True,
+                "reason": None,
+                "values": {
+                    "mfr_name_kor": ["JW"],
+                    "molecule_type": [],
+                    "molecule_desc": [],
+                    "pack_desc": [],
+                    "strength": [],
+                    "nhi_type": [],
+                },
+            },
+            "strength": {},
+        }
+    ]
+    assert factors["ubist"] == []
