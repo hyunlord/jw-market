@@ -199,7 +199,11 @@ class DynamicMarketFilters(BaseModel):
         description="공통 ATC4 OR 범위. 일반뷰는 scope, 전략뷰는 ML/CD 내부 narrowing으로 사용합니다.",
         examples=[["C10A1", "C10C0"]],
     )
-    view_kind: str | None = Field(default=None, description="전략뷰 종류. market_landscape 또는 competitive_dynamics.", examples=["market_landscape"])
+    view_kind: str | None = Field(
+        default=None,
+        description="Deprecated legacy 전략뷰 힌트. 신규 호출은 top-level view(strategic_ml/strategic_cd)를 사용합니다.",
+        examples=["market_landscape"],
+    )
     focus_brand_key: str | None = Field(default=None, description="선택 브랜드명. narrowing 후에도 브랜드 자신을 유지할 때 사용합니다.", examples=["리바로"])
     analysis_level: DynamicMarketAnalysisLevel = Field(default_factory=DynamicMarketAnalysisLevel)
 
@@ -226,6 +230,14 @@ class DynamicMarketRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    view: str | None = Field(
+        default=None,
+        description=(
+            "명시적 뷰 키. general, strategic_ml, strategic_cd 중 하나입니다. "
+            "생략 시 기존 filters.view_kind 기반 추론을 유지하지만 deprecated 예정입니다."
+        ),
+        examples=["general"],
+    )
     filters: DynamicMarketFilters = Field(default_factory=DynamicMarketFilters, description="시장 범위와 차원 narrowing 조건.")
     source: str = Field(default="ubist", description="소스. ubist 또는 iqvia.", examples=["ubist"])
     measure: str = Field(default="sales", description="지표. sales 또는 qty.", examples=["sales"])

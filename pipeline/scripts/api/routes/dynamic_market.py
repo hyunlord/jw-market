@@ -62,6 +62,10 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
         payload = DynamicMarketRequest.model_validate(raw_payload)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
+    try:
+        effective_view = _effective_view(payload)
+    except DynamicMarketInputError as exc:
+        raise HTTPException(status_code=422, detail={"error": "invalid_dynamic_market_view", "message": str(exc)}) from exc
 
     if _is_strategic_request(payload):
         try:
@@ -69,7 +73,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
             _reject_strategic_channel_axis(payload)
             market_selection = _resolve_strategic_market_selection(payload)
             analysis_level = _strategic_analysis_level_from_top_level_atc4(payload)
-            return success_envelope(
+            envelope = success_envelope(
                 build_cached_payload(
                     builder=build_strategic_payload,
                     mart_db=config.db_name,
@@ -81,6 +85,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                     analysis_level=analysis_level,
                 )
             )
+            return _with_view_echo(envelope, effective_view)
         except DynamicMarketInputError as exc:
             raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
 
@@ -122,8 +127,61 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
 
 
 def _is_strategic_request(payload: DynamicMarketRequest) -> bool:
-    filters = payload.filters
-    return bool(filters.view_kind)
+    return _effective_view(payload).startswith("strategic_")
+
+
+def _normalize_explicit_view(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"general", "strategic_ml", "strategic_cd"}:
+        return normalized
+    raise DynamicMarketInputError(f"view must be one of general, strategic_ml, strategic_cd: {value}")
+
+
+def _view_from_view_kind(view_kind: str | None) -> str | None:
+    normalized = (view_kind or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "market_landscape":
+        return "strategic_ml"
+    if normalized == "competitive_dynamics":
+        return "strategic_cd"
+    raise DynamicMarketInputError(f"filters.view_kind must be market_landscape or competitive_dynamics: {view_kind}")
+
+
+def _view_kind_for_view(view: str) -> str | None:
+    if view == "strategic_ml":
+        return "market_landscape"
+    if view == "strategic_cd":
+        return "competitive_dynamics"
+    return None
+
+
+def _effective_view(payload: DynamicMarketRequest) -> str:
+    explicit = _normalize_explicit_view(payload.view)
+    legacy = _view_from_view_kind(payload.filters.view_kind)
+    if explicit is None:
+        return legacy or "general"
+    if explicit == "general" and legacy is not None:
+        raise DynamicMarketInputError("view=general cannot be combined with filters.view_kind")
+    if explicit.startswith("strategic_") and legacy is not None and legacy != explicit:
+        raise DynamicMarketInputError(f"view={explicit} conflicts with filters.view_kind={payload.filters.view_kind}")
+    return explicit
+
+
+def _effective_view_kind(payload: DynamicMarketRequest) -> str | None:
+    return payload.filters.view_kind or _view_kind_for_view(_effective_view(payload))
+
+
+def _with_view_echo(envelope: dict[str, Any], view: str) -> dict[str, Any]:
+    result = envelope.get("result")
+    if isinstance(result, dict):
+        result["view"] = view
+        market_meta = result.setdefault("market_meta", {})
+        if isinstance(market_meta, dict):
+            market_meta["view"] = view
+    return envelope
 
 
 def _reject_strategic_channel_axis(payload: DynamicMarketRequest) -> None:
@@ -183,11 +241,12 @@ def _resolve_definition(payload: DynamicMarketRequest):
         channel_axis = filters.analysis_level.to_channel_axis(source=payload.source)
     except ValueError as exc:
         raise DynamicMarketInputError(str(exc)) from exc
-    if filters.view_kind:
+    view_kind = _effective_view_kind(payload)
+    if view_kind:
         market_selection = _resolve_strategic_market_selection(payload)
         analysis_level = _strategic_analysis_level_from_top_level_atc4(payload).model_dump()
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
-            view_kind=filters.view_kind,
+            view_kind=view_kind,
             ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
             cd_market_id=market_selection.market_id if market_selection.market_kind == "cd" else None,
             atc4=filters.atc4,
@@ -211,9 +270,12 @@ def _resolve_definition(payload: DynamicMarketRequest):
 
 def _resolve_strategic_market_selection(payload: DynamicMarketRequest) -> StrategicMarketSelection:
     filters = payload.filters
+    view_kind = _effective_view_kind(payload)
+    if view_kind is None:
+        raise DynamicMarketInputError("strategic view requires view=strategic_ml or view=strategic_cd")
     return resolve_strategic_market_for_focus(
         mart_db=config.db_name,
-        view_kind=filters.view_kind,
+        view_kind=view_kind,
         focus_brand_key=filters.focus_brand_key,
         source=payload.source,
         measure=payload.measure,
