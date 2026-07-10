@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market import warm_cache
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
 class FakeResponse:
     status = 200
 
@@ -47,3 +50,9 @@ def test_warm_requests_posts_sequential_canonical_requests() -> None:
     assert json.loads(seen[0][0].data) == requests[0]
     assert seen[0][0].full_url.endswith("/api/dynamic-market")
     assert seen[0][1] == 90
+
+
+def test_test2_cronjob_targets_the_deployed_service() -> None:
+    manifest = (ROOT / "deploy/k8s/jw-market/dynamic-market-cache-warm-cronjob.yaml").read_text()
+
+    assert "http://jw-market-backend-api-test-service" in manifest
