@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import pytest
+
 from pipeline.scripts.agent3.strength_candidate_extractor import (
     CandidateFloors,
+    MarketMetricRow,
     MetricRow,
     _display_pct,
     extract_strength_candidates,
 )
+
+
+def _monthly_history(values: list[float], *, start_month: int = 1) -> dict[str, float]:
+    return {f"2026-{month:02d}": value for month, value in enumerate(values, start=start_month)}
+
+
+def _quarterly_history(values: list[float]) -> dict[str, float]:
+    return {f"2026-Q{quarter}": value for quarter, value in enumerate(values, start=1)}
 
 
 def test_extracts_ranked_channel_and_specialty_candidates() -> None:
@@ -332,3 +343,177 @@ def test_deduplicates_identical_slice_values_to_more_specific_slice() -> None:
     )
 
     assert [item["slice"] for item in candidates] == ["IQVIA 급여: NHI"]
+
+
+def test_scale_leadership_uses_common_latest_market_period_and_niche_gate() -> None:
+    row = MetricRow(
+        brand_name="리더",
+        brand_key="leader",
+        source="ubist",
+        measure="sales",
+        atc4_code="A02B2",
+        raw_value_history={"2026-04": 600_000_000.0},
+    )
+    market_rows = [
+        MarketMetricRow("leader", "리더", "ubist", "A02B2", {"2026-04": 600_000_000.0}),
+        MarketMetricRow("peer-a", "경쟁A", "ubist", "A2B2", {"2026-04": 5_400_000_000.0}),
+        MarketMetricRow("peer-b", "경쟁B", "ubist", "A02B2", {"2026-04": 4_000_000_000.0}),
+    ]
+
+    candidate = next(
+        item
+        for item in extract_strength_candidates([row], market_rows=market_rows)
+        if item["metric"] == "scale_leadership"
+    )
+
+    assert candidate["period"] == "2026-04"
+    assert candidate["rank"] == 3
+    assert candidate["share_pct"] == 6.0
+    assert candidate["market_brand_count"] == 3
+    assert candidate["latest_value"] == 600_000_000.0
+
+
+def test_scale_leadership_floor_boundaries() -> None:
+    target = MetricRow(
+        brand_name="경계",
+        brand_key="target",
+        source="iqvia_nsa",
+        measure="sales",
+        atc4_code="C10A1",
+        raw_value_history={"2026-Q4": 500_000_000.0},
+    )
+    passing_market = [
+        MarketMetricRow("target", "경계", "iqvia_nsa", "C10A1", {"2026-Q4": 500_000_000.0}),
+        MarketMetricRow("a", "A", "iqvia_nsa", "C10A1", {"2026-Q4": 8_500_000_000.0}),
+        MarketMetricRow("b", "B", "iqvia_nsa", "C10A1", {"2026-Q4": 1_000_000_000.0}),
+    ]
+    passing = extract_strength_candidates([target], market_rows=passing_market)
+    assert any(item["metric"] == "scale_leadership" and item["rank"] == 3 for item in passing)
+
+    two_brand_market = passing_market[:2]
+    assert not any(
+        item["metric"] == "scale_leadership"
+        for item in extract_strength_candidates([target], market_rows=two_brand_market)
+    )
+
+    rank_six_market = [
+        MarketMetricRow("target", "경계", "iqvia_nsa", "C10A1", {"2026-Q4": 500_000_000.0}),
+        *[
+            MarketMetricRow(str(index), str(index), "iqvia_nsa", "C10A1", {"2026-Q4": 500_000_000.0 + index})
+            for index in range(1, 6)
+        ],
+    ]
+    assert not any(
+        item["metric"] == "scale_leadership"
+        for item in extract_strength_candidates([target], market_rows=rank_six_market)
+    )
+
+    rank_five_market = [
+        MarketMetricRow("target", "경계", "iqvia_nsa", "C10A1", {"2026-Q4": 500_000_000.0}),
+        *[
+            MarketMetricRow(str(index), str(index), "iqvia_nsa", "C10A1", {"2026-Q4": 500_000_000.0 + index})
+            for index in range(1, 5)
+        ],
+    ]
+    rank_five = extract_strength_candidates([target], market_rows=rank_five_market)
+    assert any(item["metric"] == "scale_leadership" and item["rank"] == 5 for item in rank_five)
+
+
+def test_stable_core_accepts_ubist_12_month_and_iqvia_4_quarter_boundaries() -> None:
+    ubist = MetricRow(
+        brand_name="안정월",
+        brand_key="stable-month",
+        source="ubist",
+        measure="sales",
+        raw_value_history=_monthly_history([550_000_000.0] * 11 + [500_000_000.0]),
+    )
+    iqvia = MetricRow(
+        brand_name="안정분기",
+        brand_key="stable-quarter",
+        source="iqvia_nsa",
+        measure="sales",
+        raw_value_history=_quarterly_history([550_000_000.0, 540_000_000.0, 520_000_000.0, 500_000_000.0]),
+    )
+
+    ubist_candidate = next(item for item in extract_strength_candidates([ubist]) if item["metric"] == "stable_core")
+    iqvia_candidate = next(item for item in extract_strength_candidates([iqvia]) if item["metric"] == "stable_core")
+
+    assert ubist_candidate["observation_count"] == 12
+    assert ubist_candidate["window_change_pct"] == pytest.approx(-9.0909090909)
+    assert iqvia_candidate["observation_count"] == 4
+    assert iqvia_candidate["latest_value"] == 500_000_000.0
+
+
+def test_stable_core_rejects_nonconsecutive_or_out_of_floor_history() -> None:
+    missing_month = _monthly_history([600_000_000.0] * 12)
+    missing_month.pop("2026-06")
+    cases = [
+        missing_month,
+        _monthly_history([1_000_000_000.0, 500_000_000.0] * 6),
+        _monthly_history([600_000_000.0] * 11 + [499_999_999.0]),
+        _monthly_history([600_000_000.0] * 11 + [539_999_999.0]),
+    ]
+
+    for history in cases:
+        row = MetricRow("실패", "failed", "ubist", "sales", raw_value_history=history)
+        assert not any(item["metric"] == "stable_core" for item in extract_strength_candidates([row]))
+
+
+def test_stable_core_accepts_cv_and_window_change_exact_boundaries() -> None:
+    cv_boundary = MetricRow(
+        "CV경계",
+        "cv-boundary",
+        "iqvia_nsa",
+        "sales",
+        raw_value_history=_quarterly_history(
+            [400_000_000.0, 600_000_000.0, 400_000_000.0, 600_000_000.0]
+        ),
+    )
+    change_boundary = MetricRow(
+        "증감경계",
+        "change-boundary",
+        "ubist",
+        "sales",
+        raw_value_history=_monthly_history([1_000_000_000.0] * 11 + [900_000_000.0]),
+    )
+
+    cv_candidate = next(
+        item for item in extract_strength_candidates([cv_boundary]) if item["metric"] == "stable_core"
+    )
+    change_candidate = next(
+        item for item in extract_strength_candidates([change_boundary]) if item["metric"] == "stable_core"
+    )
+
+    assert cv_candidate["cv_pct"] == pytest.approx(20.0)
+    assert change_candidate["window_change_pct"] == pytest.approx(-10.0)
+
+
+def test_metric_is_part_of_dedup_and_family_quotas_are_independent() -> None:
+    row = MetricRow(
+        brand_name="복합",
+        brand_key="mixed",
+        source="ubist",
+        measure="sales",
+        atc4_code="A02B2",
+        raw_value_history=_monthly_history([500_000_000.0] * 11 + [600_000_000.0]),
+        channel_data={
+            name: _monthly_history([500_000_000.0] * 11 + [latest])
+            for name, latest in zip(("A", "B", "C", "D"), (610_000_000.0, 620_000_000.0, 630_000_000.0, 640_000_000.0))
+        },
+    )
+    market_rows = [
+        MarketMetricRow("mixed", "복합", "ubist", "A02B2", {"2026-12": 600_000_000.0}),
+        MarketMetricRow("a", "A", "ubist", "A2B2", {"2026-12": 5_400_000_000.0}),
+        MarketMetricRow("b", "B", "ubist", "A02B2", {"2026-12": 4_000_000_000.0}),
+    ]
+
+    candidates = extract_strength_candidates(
+        [row],
+        market_rows=market_rows,
+        floors=CandidateFloors(min_delta_abs=1.0, min_delta_pct=1.0, min_recent_value=1.0, min_contribution_pct=1.0),
+    )
+
+    metrics = [item["metric"] for item in candidates]
+    assert metrics.count("recent_growth") == 3
+    assert metrics.count("scale_leadership") == 1
+    assert metrics.count("stable_core") == 1

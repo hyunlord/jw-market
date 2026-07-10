@@ -5,7 +5,7 @@ from typing import Any
 from .profile_provider import MoleculeRow, build_profile
 from .repository import metric_rows_from_general
 from .source_loader import Agent3Source
-from .strength_candidate_extractor import CandidateFloors, extract_strength_candidates
+from .strength_candidate_extractor import CandidateFloors, MarketMetricRow, extract_strength_candidates
 
 
 SOURCE_DB_VALUES: dict[Agent3Source, str] = {
@@ -59,10 +59,16 @@ def extract_source_candidates(
     *,
     source: Agent3Source,
     general_rows: list[dict[str, Any]],
+    market_rows: list[MarketMetricRow] | None = None,
     top_n: int,
 ) -> list[dict[str, Any]]:
     return extract_strength_candidates(
         metric_rows_from_general(filter_rows_for_source(general_rows, source)),
+        market_rows=[
+            row
+            for row in (market_rows or [])
+            if row.source.lower() == source_db_value(source)
+        ],
         floors=CandidateFloors(),
         top_n=top_n,
     )

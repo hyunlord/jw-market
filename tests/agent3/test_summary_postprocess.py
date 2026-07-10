@@ -261,6 +261,62 @@ def test_validate_display_number_narratives_still_rejects_raw_metric_number() ->
     ]
 
 
+def test_inject_candidate_numbers_includes_new_taxonomy_fields() -> None:
+    candidate = {
+        "slice": "전체 UBIST",
+        "metric": "stable_core",
+        "cv_pct": 8.2,
+        "window_change_pct": -3.0,
+        "rank": 2,
+        "share_pct": 12.5,
+        "market_brand_count": 8,
+        "observation_count": 12,
+        "latest_value": 900_000_000.0,
+    }
+    summary = {
+        "strength_items": [
+            {"candidate_index": 0, "slice": "전체 UBIST", "metric": "stable_core", "narrative": "안정적입니다."}
+        ]
+    }
+
+    enriched = inject_candidate_numbers(summary, [candidate])
+
+    assert enriched["strength_items"][0]["numbers"] == {
+        "cv_pct": 8.2,
+        "window_change_pct": -3.0,
+        "rank": 2,
+        "share_pct": 12.5,
+        "market_brand_count": 8,
+        "observation_count": 12,
+        "latest_value": 900_000_000.0,
+    }
+
+
+def test_duration_and_rank_units_are_not_truncated_to_count_tokens() -> None:
+    candidate = {
+        "slice": "전체 UBIST",
+        "metric": "stable_core",
+        "display_numbers": {
+            "observation_count": "12개월",
+            "rank": "2위",
+            "window_change_pct": "-3.0%",
+            "latest_value": "9억원",
+        },
+    }
+    summary = {
+        "strength_items": [
+            {
+                "candidate_index": 0,
+                "slice": "전체 UBIST",
+                "metric": "stable_core",
+                "narrative": "12개월 동안 2위를 유지했고 기간 증감은 -3.0%, 최신 매출은 9억원입니다.",
+            }
+        ]
+    }
+
+    assert validate_display_number_narratives(summary, [candidate]) == []
+
+
 def test_validate_display_number_narratives_does_not_whitelist_evidence_numbers() -> None:
     candidate = {
         "slice": "IQVIA 성분용량: 0.05%",

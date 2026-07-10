@@ -61,6 +61,7 @@ def run_source(
     consecutive_workflow_errors = 0
     for identity in identities:
         general_rows = general_by_brand.get(identity.brand_key, [])
+        market_rows = repo.load_market_metric_rows(general_rows)
         available_sources = set(available_sources_from_general_rows(general_rows))
         for source in (item for item in _selected_sources(source_selection) if item in available_sources):
             counts["source_units"] += 1
@@ -75,6 +76,7 @@ def run_source(
             candidates = extract_source_candidates(
                 source=source,
                 general_rows=general_rows,
+                market_rows=market_rows,
                 top_n=top_n,
             )
             input_hash = compute_source_input_hash(profile, candidates, workflow_rev, source)

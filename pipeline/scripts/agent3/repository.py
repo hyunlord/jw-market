@@ -6,7 +6,7 @@ from .brand_identity import BrandIdentity, canonical_brand_names_from_rows, late
 from .db import DbConfig, connect
 from .json_util import parse_history, parse_json_object
 from .profile_provider import MoleculeRow
-from .strength_candidate_extractor import MetricRow
+from .strength_candidate_extractor import MarketMetricRow, MetricRow, _canonical_atc4
 
 
 BrandSource = str
@@ -51,6 +51,40 @@ class Agent3Repository:
                 )
                 rows = list(cursor.fetchall())
         return _group_by_requested_brand(rows, brand_names)
+
+    def load_market_metric_rows(self, general_rows: list[dict[str, Any]]) -> list[MarketMetricRow]:
+        scopes = _market_scope_variants(general_rows)
+        if not scopes:
+            return []
+        clauses: list[str] = []
+        params: list[str] = []
+        for source, atc4_codes in sorted(scopes.items()):
+            placeholders = ", ".join(["%s"] * len(atc4_codes))
+            clauses.append(f"(source=%s AND UPPER(atc4_code) IN ({placeholders}))")
+            params.extend((source, *atc4_codes))
+        with connect(self.config) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT brand_key, brand_name, source, atc4_code, raw_value_history
+                    FROM mart_general_brand_metric
+                    WHERE measure='sales' AND brand_key IS NOT NULL AND brand_key<>''
+                      AND ({' OR '.join(clauses)})
+                    ORDER BY source, atc4_code, brand_key
+                    """,
+                    tuple(params),
+                )
+                rows = list(cursor.fetchall())
+        return [
+            MarketMetricRow(
+                brand_key=str(row["brand_key"]),
+                brand_name=str(row["brand_name"]),
+                source=str(row["source"]),
+                atc4_code=str(row["atc4_code"]),
+                raw_value_history=parse_history(row.get("raw_value_history")),
+            )
+            for row in rows
+        ]
 
     def load_brand_universe(self, source: BrandSource) -> list[str]:
         match source:
@@ -218,6 +252,7 @@ def metric_rows_from_general(rows: list[dict[str, Any]]) -> list[MetricRow]:
             brand_key=str(row["brand_key"]),
             source=str(row["source"]),
             measure=str(row["measure"]),
+            atc4_code=str(row.get("atc4_code") or ""),
             raw_value_history=parse_history(row.get("raw_value_history")),
             channel_data=parse_json_object(row.get("channel_data")),
             specialty_data=parse_json_object(row.get("specialty_data")),
@@ -226,6 +261,22 @@ def metric_rows_from_general(rows: list[dict[str, Any]]) -> list[MetricRow]:
         )
         for row in rows
     ]
+
+
+def _market_scope_variants(rows: list[dict[str, Any]]) -> dict[str, tuple[str, ...]]:
+    variants: dict[str, set[str]] = {}
+    for row in rows:
+        source = str(row.get("source") or "").lower()
+        raw_atc4 = str(row.get("atc4_code") or "").strip().upper()
+        if not source or not raw_atc4:
+            continue
+        canonical = _canonical_atc4(raw_atc4, source)
+        bucket = variants.setdefault(source, set())
+        bucket.add(raw_atc4)
+        bucket.add(canonical)
+        if source == "ubist" and len(canonical) == 5 and canonical[1] == "0":
+            bucket.add(canonical[0] + canonical[2:])
+    return {source: tuple(sorted(values)) for source, values in variants.items()}
 
 
 def _query_refs_with_aliases(brand_refs: list[str], aliases_by_ref: dict[str, tuple[str, ...]]) -> list[str]:

@@ -23,14 +23,26 @@ class SummaryValidationError(RuntimeError):
         return f"wf316 summary validation failed for {self.brand}: {self.errors}"
 
 
-NUMBER_KEYS = ("value_current", "value_baseline", "delta_abs", "delta_pct")
+NUMBER_KEYS = (
+    "value_current",
+    "value_baseline",
+    "delta_abs",
+    "delta_pct",
+    "cv_pct",
+    "window_change_pct",
+    "rank",
+    "share_pct",
+    "market_brand_count",
+    "observation_count",
+    "latest_value",
+)
 RAW_DECIMAL_RE = re.compile(r"\d+\.\d{5,}")
 DISPLAY_NUMBER_RE = re.compile(
-    r"(?<![A-Za-z0-9])[-+]?(?:\d[\d,]*(?:\.\d+)?)\s*(?:억원|만원|원|%|건|개|명|MG|MCG|G|ML|IU)",
+    r"(?<![A-Za-z0-9])[-+]?(?:\d[\d,]*(?:\.\d+)?)\s*(?:억원|만원|개월|분기|원|%p|%|건|개|명|위|MG|MCG|G|ML|IU)",
     re.IGNORECASE,
 )
 MONEY_RE = re.compile(r"^(?P<number>[-+]?\d[\d,]*(?:\.\d+)?)\s*(?P<unit>억원|만원|원)$")
-PERCENT_RE = re.compile(r"^(?P<number>[-+]?\d+(?:\.\d+)?)\s*%$")
+PERCENT_RE = re.compile(r"^(?P<number>[-+]?\d+(?:\.\d+)?)\s*%(?:p)?$", re.IGNORECASE)
 
 
 def inject_candidate_numbers(summary: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -42,7 +54,7 @@ def inject_candidate_numbers(summary: dict[str, Any], candidates: list[dict[str,
         if not isinstance(item, dict):
             raise CandidateMatchError(f"strength_items[{index}] must be an object")
         candidate = _match_candidate(item, candidates)
-        item["numbers"] = {key: candidate.get(key) for key in NUMBER_KEYS}
+        item["numbers"] = {key: candidate[key] for key in NUMBER_KEYS if key in candidate}
     return enriched
 
 

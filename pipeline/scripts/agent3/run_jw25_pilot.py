@@ -65,6 +65,7 @@ def run_pilot(*, apply: bool, output: Path, top_n: int, skip_workflow: bool = Fa
         )
         candidates = extract_strength_candidates(
             metric_rows_from_general(general_rows),
+            market_rows=repo.load_market_metric_rows(general_rows),
             floors=CandidateFloors(),
             top_n=top_n,
         )

@@ -100,8 +100,10 @@ def run_full(
             strategic_rows=strategic_by_brand.get(identity.brand_key, []),
             molecule_rows=molecule_by_brand.get(brand, []),
         )
+        market_rows = repo.load_market_metric_rows(general_by_brand.get(identity.brand_key, []))
         candidates = extract_strength_candidates(
             metric_rows_from_general(general_by_brand.get(identity.brand_key, [])),
+            market_rows=market_rows,
             floors=CandidateFloors(),
             top_n=top_n,
         )
