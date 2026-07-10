@@ -22,16 +22,14 @@ from pipeline.scripts.agent3.brand_identity import (
     canonical_brand_names_from_rows,
     latest_sales_by_brand_key_from_rows,
 )
+from pipeline.etl.io.mart.brand_alias_resolver import (
+    MANUAL_BRAND_ALIASES,
+    BrandAliasResolver,
+)
 
 KNOWN_UNMATCHED_EVENT_BRANDS: Final = frozenset(
     {"리조덱", "염화칼륨", "오메가", "트레시바", "하트만"}
 )
-EVENT_BRAND_NAME_ALIASES: Final = {
-    # PL-confirmed JW25 grain: event rows use "위너프A+" while mart uses the canonical brand_key/name.
-    "위너프A+": "위너프에이플러스",
-}
-
-
 @dataclass(frozen=True, slots=True)
 class Agent2BrandIdentity:
     brand_key: str
@@ -111,6 +109,10 @@ def build_evidence_counts_from_rows(
     """Convert event score rows into brand_key evidence counts for density routing."""
 
     name_to_key = build_name_to_key_map(brand_rows)
+    alias_resolver = BrandAliasResolver.from_static(
+        MANUAL_BRAND_ALIASES.items(),
+        canonical_keys=name_to_key,
+    )
     grouped: dict[tuple[str, str, str, str | None, int], int] = defaultdict(int)
     unmatched_known: set[str] = set()
     unmatched_unknown: set[str] = set()
@@ -120,7 +122,7 @@ def build_evidence_counts_from_rows(
         if not is_score_allowed_for_density(score, tag):
             continue
         event_brand_name = _text(row.get("brand_canonical"))
-        brand_name = EVENT_BRAND_NAME_ALIASES.get(event_brand_name, event_brand_name)
+        brand_name = alias_resolver.resolve_alias(event_brand_name)
         brand_key = name_to_key.get(brand_name)
         if brand_key is None:
             if brand_name in KNOWN_UNMATCHED_EVENT_BRANDS:

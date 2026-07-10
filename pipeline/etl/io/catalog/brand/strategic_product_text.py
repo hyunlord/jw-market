@@ -4,6 +4,15 @@ import re
 import unicodedata
 from typing import Any
 
+from pipeline.etl.io.mart.brand_alias_resolver import (
+    MANUAL_BRAND_ALIASES,
+    BrandAliasResolver,
+)
+
+
+_BRAND_ALIAS_RESOLVER = BrandAliasResolver.from_static(MANUAL_BRAND_ALIASES.items())
+
+
 def clean_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -12,7 +21,7 @@ def clean_text(value: Any) -> str | None:
         return None
     if text in {"#N/A", "N/A", "NA"}:
         return None
-    return text.replace("위너프A+", "위너프에이플러스")
+    return _BRAND_ALIAS_RESOLVER.resolve_alias(text)
 
 
 def normalize_key(value: Any) -> str:
