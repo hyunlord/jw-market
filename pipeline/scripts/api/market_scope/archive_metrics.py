@@ -7,6 +7,7 @@ import math
 import re
 from typing import Any
 
+from pipeline.etl.io.mart.momentum import compute_market_share_momentum
 from pipeline.scripts.api.market_scope.periods import sort_periods
 
 
@@ -135,7 +136,7 @@ def ei_ms_matrix_payload(
                 "ei_period_years": ei_meta.get("period_years"),
                 "ei_note": ei_meta.get("note"),
                 "cagr_basis": ei_meta.get("basis"),
-                "momentum_score": None,
+                "momentum_score": compute_market_share_momentum(history, market_series),
                 "growth_contribution": 0.0,
                 "growth_contribution_pct": 0.0,
                 "contribution": 0.0,

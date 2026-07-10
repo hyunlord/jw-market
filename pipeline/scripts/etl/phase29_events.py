@@ -13,9 +13,21 @@ import json
 import re
 from datetime import date, datetime
 from difflib import SequenceMatcher
+from pathlib import Path
+import sys
 from typing import Any
 
 import pymysql
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.etl.io.mart.event_score_policy import (
+    event_score_policy,
+    is_cut_b_exposed,
+    is_news_exposed,
+)
 
 try:
     from pipeline.scripts.etl.cache_build_common import mariadb_connect
@@ -247,6 +259,7 @@ def _query_events(
             s.brand_canonical,
             s.score,
             s.tag,
+            s.source_processor,
             s.derivation,
             s.reason,
             s.mirrored_from_jw_brands,
@@ -289,8 +302,12 @@ def get_brand_events_cut_a(
     for lookback_months in lookback_candidates:
         threshold = 50
         while threshold >= 0:
-            rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=target_max)
-            formatted = [format_event(row, cut_threshold=threshold) for row in rows[:target_max]]
+            rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=None)
+            exposed_rows = _filter_news_exposure_rows(rows)[:target_max]
+            formatted = [
+                format_event(row, cut_threshold=max(threshold, _news_cutoff(row)))
+                for row in exposed_rows
+            ]
             if (len(formatted) >= target_min and _cut_a_unique_cluster_count(formatted) >= target_min) or threshold == 0:
                 break
             threshold -= 1
@@ -310,16 +327,53 @@ def get_brand_events_cut_b(
     lookback_months: int | None = 6,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Cut B: strict score>=80 direct-only events for chart markers/model inputs."""
+    """Cut B: processor-versioned direct-only chart/model events."""
     rows = _query_events(
         conn,
         brand,
         min_score=80,
         lookback_months=lookback_months,
-        limit=limit,
+        limit=None,
         derivation="llm_direct",
     )
-    return [format_event(row, cut_threshold=80) for row in rows]
+    exposed_rows = _filter_cut_b_rows(rows)
+    if limit is not None:
+        exposed_rows = exposed_rows[:limit]
+    return [
+        format_event(
+            row,
+            cut_threshold=event_score_policy(row.get("source_processor")).cut_b_threshold,
+        )
+        for row in exposed_rows
+    ]
+
+
+def _filter_news_exposure_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if is_news_exposed(
+            tag=row.get("tag"),
+            score=int(row.get("score") or 0),
+            source_processor=row.get("source_processor"),
+        )
+    ]
+
+
+def _filter_cut_b_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in _filter_news_exposure_rows(rows)
+        if is_cut_b_exposed(
+            score=int(row.get("score") or 0),
+            source_processor=row.get("source_processor"),
+        )
+    ]
+
+
+def _news_cutoff(row: dict[str, Any]) -> int:
+    policy = event_score_policy(row.get("source_processor"))
+    return policy.category_cutoffs[str(row.get("tag"))]
 
 
 def build_events_for_cache(conn: pymysql.connections.Connection, brand: str) -> dict[str, Any]:
@@ -335,6 +389,7 @@ def build_events_for_cache(conn: pymysql.connections.Connection, brand: str) -> 
             "cut_a_threshold": cut_a_final_threshold,
             "cut_a_final_lookback_months": cut_a_final_lookback,
             "cut_b_threshold": 80,
+            "cut_b_threshold_rev5674": 88,
             "cut_b_derivation": "llm_direct",
         },
     }

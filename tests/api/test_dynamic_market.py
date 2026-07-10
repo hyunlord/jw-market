@@ -479,6 +479,78 @@ def test_matrix_rows_populates_growth_contribution_percent_for_chart_points() ->
     assert rows[1]["contribution_pct"] == pytest.approx(50.0)
 
 
+def test_matrix_rows_uses_recent_four_market_share_points_for_momentum() -> None:
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=10.0,
+        monthly_series=tuple(
+            {"period": f"2026-0{index}", "market_size": 100.0}
+            for index in range(1, 5)
+        ),
+        brands=(),
+        all_brands=(
+            BrandMetric(
+                "focus",
+                "Focus",
+                "C10A1",
+                100.0,
+                40.0,
+                1,
+                "2026-04",
+                40.0,
+                history_by_period={
+                    "2026-01": 10.0,
+                    "2026-02": 20.0,
+                    "2026-03": 30.0,
+                    "2026-04": 40.0,
+                },
+            ),
+        ),
+    )
+
+    rows = matrix_rows(metrics=metrics, focus=metrics.all_brands[0])
+
+    assert rows[0]["momentum_score"] == pytest.approx(10.0)
+
+
+def test_matrix_rows_returns_none_for_momentum_with_fewer_than_four_share_points() -> None:
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=10.0,
+        monthly_series=(
+            {"period": "2026-01", "market_size": 100.0},
+            {"period": "2026-02", "market_size": 100.0},
+            {"period": "2026-03", "market_size": 100.0},
+        ),
+        brands=(),
+        all_brands=(
+            BrandMetric(
+                "focus",
+                "Focus",
+                "C10A1",
+                60.0,
+                30.0,
+                1,
+                "2026-03",
+                30.0,
+                history_by_period={"2026-01": 10.0, "2026-02": 20.0, "2026-03": 30.0},
+            ),
+        ),
+    )
+
+    rows = matrix_rows(metrics=metrics, focus=metrics.all_brands[0])
+
+    assert rows[0]["momentum_score"] is None
+
+
 def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> None:
     # Given a focus brand below the portal's top-100 matrix cutoff.
     brands = tuple(

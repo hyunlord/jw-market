@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pipeline.etl.io.mart.momentum import compute_market_share_momentum
 from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.dynamic_market.cause_time import (
     brand_cagr,
@@ -21,6 +22,7 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
     """Build EI/MS and growth/MS entries used by two cause matrix cards."""
 
     market_series = market_size_series(metrics)
+    market_history = {str(item["period"]): float(item["value"]) for item in market_series}
     latest_market = latest_market_value(market_series)
     market_growth = period_delta({str(item["period"]): float(item["value"]) for item in market_series})
     rows: list[dict[str, Any]] = []
@@ -56,7 +58,7 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
             "ei_period_years": period_years(hist),
             "ei_note": "동적 시장은 runtime filter로 정의된다.",
             "cagr_basis": "first positive month to latest month",
-            "momentum_score": _momentum(hist),
+            "momentum_score": _momentum(hist, market_history),
             "growth_contribution": contribution,
             "growth_contribution_pct": contribution_pct,
             "contribution": contribution,
@@ -193,9 +195,5 @@ def _empty_growth() -> dict[str, Any]:
     return {"by_brand": base, "by_company": base, "market_start": 0.0, "market_end": 0.0, "market_growth": 0.0}
 
 
-def _momentum(hist: dict[str, float]) -> float | None:
-    values = [value for _, value in sorted(hist.items())]
-    if len(values) < 4:
-        return None
-    baseline = sum(values[-4:-1]) / 3
-    return safe_pct(values[-1] - baseline, baseline)
+def _momentum(brand_history: dict[str, float], market_history: dict[str, float]) -> float | None:
+    return compute_market_share_momentum(brand_history, market_history)

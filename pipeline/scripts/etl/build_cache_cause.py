@@ -1702,7 +1702,7 @@ def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
     output = []
     for row in rows:
         share = safe_float(row.get("ms") or row.get("share_pct"))
-        contribution = safe_float(row.get("momentum_score") or row.get("growth_contribution") or row.get("contribution_pct"))
+        contribution = safe_float(row.get("growth_contribution") or row.get("contribution_pct") or row.get("momentum_score"))
         output.append(
             {
                 "brand": row.get("brand") or row.get("brand_key"),

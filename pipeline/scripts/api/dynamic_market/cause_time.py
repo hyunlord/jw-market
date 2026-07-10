@@ -140,14 +140,6 @@ def period_years(values_by_period: dict[str, float]) -> float | None:
     return month_distance(periods[0], periods[-1]) / 12
 
 
-def momentum(values_by_period: dict[str, float]) -> float | None:
-    values = [value for _, value in sorted(values_by_period.items())]
-    if len(values) < 4:
-        return None
-    baseline = sum(values[-4:-1]) / 3
-    return safe_pct(values[-1] - baseline, baseline)
-
-
 def pct_change(previous: float | None, current: float) -> float | None:
     return safe_pct(current - previous, previous) if previous not in (None, 0) else None
 

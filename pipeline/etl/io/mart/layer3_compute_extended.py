@@ -6,6 +6,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from .layer3_normalize import parse_period, period_sort_key, safe_div
+from .momentum import compute_momentum
 
 GROWTH_CONTRIBUTION_THRESHOLD = 10_000.0
 EI_DENOMINATOR_THRESHOLD = 0.0
@@ -80,12 +81,3 @@ def compute_hhi(brand_ms_list: Iterable[Any]) -> float | None:
     if not values:
         return None
     return sum((ms * 100) ** 2 for ms in values)
-
-def compute_momentum(quarterly_ms_percent: list[float]) -> float | None:
-    if len(quarterly_ms_percent) < 4 or any(value is None or pd.isna(value) for value in quarterly_ms_percent):
-        return None
-    xs = [1, 2, 3, 4]
-    ys = [float(value) for value in quarterly_ms_percent[-4:]]
-    sum_xy = sum(x * y for x, y in zip(xs, ys, strict=False))
-    sum_y = sum(ys)
-    return (4 * sum_xy - 10 * sum_y) / 20

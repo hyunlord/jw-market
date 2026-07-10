@@ -75,6 +75,29 @@ def test_recompute_uses_archive_endpoint_cagr_fallback_for_ei_matrix() -> None:
     assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(expected_market_cagr)
 
 
+def test_recompute_populates_momentum_from_recent_four_market_share_points() -> None:
+    facts = (
+        _fact(
+            "Focus",
+            "JW",
+            "ubist",
+            {"2026-01": 10.0, "2026-02": 20.0, "2026-03": 30.0, "2026-04": 40.0},
+        ),
+        _fact(
+            "Other",
+            "Other Co",
+            "ubist",
+            {"2026-01": 90.0, "2026-02": 80.0, "2026-03": 70.0, "2026-04": 60.0},
+        ),
+    )
+
+    payload = recompute_strategy_payload(facts, focus_brand_key="Focus", source="UBIST", measure="sales")
+
+    target = payload["data"]["ei_ms_matrix"]["data"][0]
+    assert target["momentum_score"] == pytest.approx(10.0)
+    assert payload["data"]["kpi"]["target_momentum"] == pytest.approx(10.0)
+
+
 def test_recompute_uses_archive_growth_windows_without_changing_raw_series() -> None:
     # Given: 60 monthly periods, which is the archive UBIST growth window.
     periods = _monthly_periods(start_year=2021, start_month=2, count=60)

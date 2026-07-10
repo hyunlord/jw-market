@@ -87,8 +87,6 @@ EVENT_DEDUP_SIMILARITY_THRESHOLD = 0.80
 EVENT_LIST_THRESHOLD = 30
 EVENT_LIST_MIN = 10
 EVENT_LIST_MAX = 50
-EVENT_CHART_THRESHOLD = 60
-EVENT_CHART_MIN = 5
 EVENT_CHART_MAX = 15
 BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
 
@@ -217,8 +215,8 @@ def _bounded_event_count(events: list[dict[str, Any]], *, threshold: int, minimu
     return hits
 
 
-def _apply_event_cut_flags(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach list/chart visibility flags while keeping the public event schema additive."""
+def _apply_event_cut_flags(events: list[dict[str, Any]], *, chart_event_ids: set[str]) -> list[dict[str, Any]]:
+    """Attach list visibility and versioned Cut B chart membership."""
     sorted_events = sorted(events, key=_event_sort_key, reverse=True)[:EVENT_LIST_MAX]
     list_count = _bounded_event_count(
         sorted_events,
@@ -226,18 +224,12 @@ def _apply_event_cut_flags(events: list[dict[str, Any]]) -> list[dict[str, Any]]
         minimum=EVENT_LIST_MIN,
         maximum=EVENT_LIST_MAX,
     )
-    chart_count = _bounded_event_count(
-        sorted_events,
-        threshold=EVENT_CHART_THRESHOLD,
-        minimum=EVENT_CHART_MIN,
-        maximum=EVENT_CHART_MAX,
-    )
 
     flagged: list[dict[str, Any]] = []
     for index, event in enumerate(sorted_events):
         row = dict(event)
         row["on_list"] = index < list_count
-        row["on_chart"] = index < chart_count
+        row["on_chart"] = str(row.get("id")) in chart_event_ids
         flagged.append(row)
     return flagged
 
@@ -245,6 +237,11 @@ def _apply_event_cut_flags(events: list[dict[str, Any]]) -> list[dict[str, Any]]
 def _events_spec_list(events_payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Project Phase 33 cut_a events to the v0.9.1 spec list shape."""
     events = events_payload.get("cut_a") or []
+    cut_b = sorted(events_payload.get("cut_b") or [], key=_event_sort_key, reverse=True)[:EVENT_CHART_MAX]
+    chart_event_ids = {
+        str(event.get("id") or event.get("event_id") or event.get("news_id"))
+        for event in cut_b
+    }
     projected: list[dict[str, Any]] = []
     for event in events:
         category = event.get("category")
@@ -277,7 +274,7 @@ def _events_spec_list(events_payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "related_urls": event.get("related_urls"),
             }
         )
-    return _apply_event_cut_flags(projected)
+    return _apply_event_cut_flags(projected, chart_event_ids=chart_event_ids)
 
 
 def _load_phase29_poc_report() -> dict[str, Any]:
