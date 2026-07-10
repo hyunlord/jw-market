@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import pytest
+import pymysql
 
 from src import ledger, session_wiki, settings
 
@@ -46,6 +47,10 @@ class _Cursor:
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
         self.conn.executions.append((sql, params))
         if sql.lstrip().startswith("UPDATE session_wiki_page"):
+            if self.conn.wiki_table_missing:
+                raise pymysql.err.ProgrammingError(
+                    1146, "Table 'session_wiki_page' doesn't exist"
+                )
             self.rowcount = self.conn.update_count
             return self.rowcount
         return 0
@@ -66,6 +71,7 @@ class _Cursor:
 class _Connection:
     ready_rows: list[dict[str, Any]] = field(default_factory=list)
     update_count: int = 0
+    wiki_table_missing: bool = False
     executions: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     commits: int = 0
 
@@ -118,6 +124,15 @@ def test_mark_pages_stale_is_noop_when_wiki_is_disabled(monkeypatch) -> None:
 
     assert updated == 0
     assert conn.executions == []
+    assert conn.commits == 0
+
+
+def test_mark_pages_stale_is_noop_when_wiki_table_is_absent() -> None:
+    conn = _Connection(wiki_table_missing=True)
+
+    updated = session_wiki.mark_pages_stale(conn, 301, "session-1")
+
+    assert updated == 0
     assert conn.commits == 0
 
 

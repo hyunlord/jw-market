@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Final
 
 import httpx
+import pymysql
 
 from . import ledger, settings, weaviate_ops
 from .models import FileSource
@@ -98,15 +99,20 @@ def mark_pages_stale(conn: Any, workflow_id: int, session_id: str) -> int:
     """
     if not settings.WIKI_ENABLED:
         return 0
-    with conn.cursor() as cur:
-        updated = cur.execute(
-            """
-            UPDATE session_wiki_page
-            SET status=%s
-            WHERE workflow_id=%s AND session_id=%s AND status=%s
-            """,
-            (_STALE_STATUS, workflow_id, session_id, _READY_STATUS),
-        )
+    try:
+        with conn.cursor() as cur:
+            updated = cur.execute(
+                """
+                UPDATE session_wiki_page
+                SET status=%s
+                WHERE workflow_id=%s AND session_id=%s AND status=%s
+                """,
+                (_STALE_STATUS, workflow_id, session_id, _READY_STATUS),
+            )
+    except pymysql.err.ProgrammingError as exc:
+        if exc.args and exc.args[0] == 1146:
+            return 0
+        raise
     return int(updated)
 
 
