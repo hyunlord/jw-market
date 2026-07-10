@@ -729,7 +729,7 @@ def _recent_history_value(row: dict) -> float:
 def _fetch_general_metric_rows(brand: str) -> list[dict]:
     base_sql = """
         SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
-               metric_history, unit_label, is_jw, is_target, computed_at
+               metric_history, unit_label, computed_at
         FROM mart_general_brand_metric
         WHERE brand_name = %s OR brand_key = %s
         ORDER BY atc4_code, source, measure
@@ -743,7 +743,7 @@ def _fetch_general_metric_rows(brand: str) -> list[dict]:
     return db.fetch_all(
         f"""
         SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
-               metric_history, unit_label, is_jw, is_target, computed_at
+               metric_history, unit_label, computed_at
         FROM mart_general_brand_metric
         WHERE {_compact_sql("brand_name")} = %s OR {_compact_sql("brand_key")} = %s
         ORDER BY atc4_code, source, measure
@@ -799,7 +799,7 @@ def _general_metric_row_to_combo(row: dict, *, target_brand: str) -> dict:
     }
 
 
-def _general_row_from_mart(brand: str) -> dict | None:
+def _general_row_from_mart(brand: str, *, is_jw: bool = False) -> dict | None:
     rows = _fetch_general_metric_rows(brand)
     if not rows:
         return None
@@ -848,8 +848,8 @@ def _general_row_from_mart(brand: str) -> dict | None:
             "source_count": len({row.get("source") for row in selected_rows}),
             "measure_count": len({row.get("measure") for row in selected_rows}),
             "market_count": 1,
-            "is_jw": bool(base.get("is_jw")),
-            "is_target": bool(base.get("is_target")),
+            "is_jw": is_jw,
+            "is_target": True,
             "cache_scope": "general_mart",
             "tie_break": "latest_raw_value_desc_then_atc4_ascending",
         },
@@ -868,7 +868,14 @@ def _general_row_from_mart(brand: str) -> dict | None:
 
 def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:
     shared_row = _fetch_deep_analysis_row(brand)
-    general_row = _fetch_general_deep_analysis_row(brand) or _general_row_from_mart(brand)
+    general_row = _fetch_general_deep_analysis_row(brand)
+    if not general_row:
+        shared_payload = compose_cached_json(shared_row["response_json"]) if shared_row else {}
+        shared_market_meta = shared_payload.get("market_meta", {}) if isinstance(shared_payload, dict) else {}
+        general_row = _general_row_from_mart(
+            brand,
+            is_jw=bool(shared_market_meta.get("is_jw")) if isinstance(shared_market_meta, dict) else False,
+        )
     if not general_row:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
 

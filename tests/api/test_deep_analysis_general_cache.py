@@ -127,6 +127,47 @@ def test_deep_analysis_general_view_builds_lightweight_mart_payload_without_on_d
     assert combo["forecast_periods"] == []
 
 
+def test_deep_analysis_general_view_for_strategic_brand_uses_only_general_mart_columns(monkeypatch) -> None:
+    strategic_row = _row("strategic", events=[{"id": 1}])
+    strategic_payload = json.loads(strategic_row["response_json"])
+    strategic_payload["market_meta"]["is_jw"] = True
+    strategic_row["response_json"] = json.dumps(strategic_payload, ensure_ascii=False)
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_general" in sql:
+            return None
+        if "cache_deep_analysis" in sql:
+            return strategic_row
+        return None
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        assert "mart_general_brand_metric" in sql
+        assert "is_jw" not in sql
+        assert "is_target" not in sql
+        return [
+            {
+                "brand_key": "JW브랜드",
+                "brand_name": "JW브랜드",
+                "atc4_code": "B01C0",
+                "atc4_desc": "B 시장",
+                "source": "ubist",
+                "measure": "sales",
+                "metric_history": json.dumps({"2026-02": {"raw_value": 12, "ms": 1.7}}, ensure_ascii=False),
+                "unit_label": "원",
+                "computed_at": datetime(2026, 7, 1),
+            }
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+    _stub_auxiliary(monkeypatch)
+
+    payload = deep_analysis.deep_analysis("JW브랜드", view="general")
+
+    assert payload["market_meta"]["is_jw"] is True
+    assert payload["market_meta"]["is_target"] is True
+
+
 def test_deep_analysis_general_view_rejects_removed_atc4_parameter(monkeypatch) -> None:
     response = TestClient(app).get("/api/deep-analysis/%EB%A9%80%ED%8B%B0%EB%B8%8C%EB%9E%9C%EB%93%9C?view=general&atc4=A10N3")
 
