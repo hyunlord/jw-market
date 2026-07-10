@@ -6,12 +6,12 @@ from pipeline.etl.io.mart import filter_dimension_metric as sidecar
 from pipeline.etl.io.mart.filter_dimension_load import filter_dimension_table_ddl
 
 
-def test_ubist_registry_exposes_enabled_dimensions_and_keeps_molecule_disabled() -> None:
+def test_ubist_registry_exposes_all_analysis_level_dimensions() -> None:
     enabled = sidecar.enabled_dimension_specs("ubist")
     names = {spec.dimension_type for spec in enabled}
 
-    assert names == {"atc3", "atc4", "seller", "molecule_strength", "form", "route", "reimbursement"}
-    assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is False
+    assert names == {"atc3", "atc4", "seller", "molecule", "molecule_strength", "form", "route", "reimbursement"}
+    assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is True
 
 
 def test_iqvia_registry_exposes_enabled_dimensions_and_excludes_pack() -> None:
@@ -42,6 +42,7 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
                 "period_yyyymm": "2025-01",
                 "raw_value": 100.0,
                 "company": "Seller A",
+                "ubist_molecule_raw": "pitavastatin calcium, valsartan",
                 "ubist_molecule_strength": "10mg",
                 "ubist_form": "정제",
                 "ubist_route": "경구",
@@ -57,6 +58,7 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
                 "period_yyyymm": "2025-01",
                 "raw_value": 900.0,
                 "company": "Seller A",
+                "ubist_molecule_raw": "ezetimibe",
                 "ubist_molecule_strength": "20mg",
                 "ubist_form": "캡슐",
                 "ubist_route": "경구",
@@ -73,11 +75,19 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
     )
     atc3 = next(row for row in rows if row["dimension_type"] == "atc3" and row["product_code"] == "P1")
     atc4 = next(row for row in rows if row["dimension_type"] == "atc4" and row["product_code"] == "P1")
+    molecule_rows = [
+        row
+        for row in rows
+        if row["dimension_type"] == "molecule" and row["product_code"] == "P1"
+    ]
 
     assert tablet["product_code"] == "P1"
     assert tablet["raw_value_history"] == {"2025-01": 100.0}
     assert atc3["dimension_value_norm"] == "A10X"
     assert atc4["dimension_value_norm"] == "A10X0"
+    assert {row["dimension_value_norm"] for row in molecule_rows} == {"pitavastatin", "valsartan"}
+    assert {row["dimension_value"] for row in molecule_rows} == {"Pitavastatin", "Valsartan"}
+    assert all(row["raw_value_history"] == {"2025-01": 100.0} for row in molecule_rows)
 
 
 def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import re
 
 from .general_config import MEASURES_BY_SOURCE
+from .molecule_normalize import split_molecule_components
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -75,9 +76,9 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             dimension_type="molecule",
             display_name="성분",
             source_columns=("ubist_molecule_raw",),
-            enabled=False,
+            enabled=True,
             source="ubist",
-            notes="PL 결정으로 MVP 동적 필터에서 제외한다. raw provenance만 보존한다.",
+            notes="제품 단위 성분을 검색 가능한 active-moiety component로 분리한다.",
         ),
         "molecule_strength": DimensionSpec(
             dimension_type="molecule_strength",
@@ -186,7 +187,13 @@ def normalize_dimension_value(value: object) -> str | None:
     return normalized
 
 
-def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) -> list[dict[str, Any]]:
+def build_filter_dimension_rows(
+    source: str,
+    measure: str,
+    frame: pd.DataFrame,
+    *,
+    dimension_types: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
     if measure not in MEASURES_BY_SOURCE.get(source, ()):
         raise ValueError(f"unsupported measure for {source}: {measure}")
     if frame.empty:
@@ -200,12 +207,22 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
     working = frame.loc[frame["raw_value"].notna() & (frame["raw_value"] > 0)].copy()
     working["source"] = source
     working["measure"] = measure
-    for spec in enabled_dimension_specs(source):
+    specs = enabled_dimension_specs(source)
+    if dimension_types is not None:
+        requested = set(dimension_types)
+        unknown = requested.difference(spec.dimension_type for spec in specs)
+        if unknown:
+            raise ValueError(f"unsupported enabled dimensions for {source}: {sorted(unknown)}")
+        specs = tuple(spec for spec in specs if spec.dimension_type in requested)
+    for spec in specs:
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
         working[label_col] = _dimension_display_series(working, spec)
-        working[norm_col] = working[label_col].map(normalize_dimension_value)
-        dim_frame = working.loc[working[norm_col].notna()].copy()
+        if spec.dimension_type == "molecule":
+            dim_frame = _explode_molecule_components(working, label_col, norm_col)
+        else:
+            working[norm_col] = working[label_col].map(normalize_dimension_value)
+            dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
             continue
         group_cols = [
@@ -238,6 +255,17 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
                 }
             )
     return rows
+
+
+def _explode_molecule_components(frame: pd.DataFrame, label_col: str, norm_col: str) -> pd.DataFrame:
+    component_col = "__molecule_component"
+    expanded = frame.copy()
+    expanded[component_col] = expanded[label_col].map(split_molecule_components)
+    expanded = expanded.explode(component_col)
+    expanded = expanded.loc[expanded[component_col].notna()].copy()
+    expanded[label_col] = expanded[component_col].map(lambda component: component.display)
+    expanded[norm_col] = expanded[component_col].map(lambda component: component.norm)
+    return expanded
 
 
 def guard_dimension_stage_target(target_db: str, *, allow_local_serving_target: bool = False) -> None:
