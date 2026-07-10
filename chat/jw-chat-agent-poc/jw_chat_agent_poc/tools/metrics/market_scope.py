@@ -16,6 +16,11 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     TtlCausePayloadCache,
     TtlMetricsCache,
 )
+from jw_chat_agent_poc.tools.metrics.cd_mart import (
+    CdMartReader,
+    MariaDbCdMartReader,
+    TtlCdMartCache,
+)
 from jw_chat_agent_poc.tools.metrics.market_scope_intent import (
     MarketView,
     detect_market_scope_intent,
@@ -38,6 +43,7 @@ class MarketScopeResolver:
         *,
         cache_reader: MetricsCacheReader | None = None,
         cause_reader: CausePayloadReader | None = None,
+        cd_mart_reader: CdMartReader | None = None,
         ttl_seconds: int | None = None,
         general_view_service: GeneralViewService | None = None,
     ) -> None:
@@ -45,6 +51,7 @@ class MarketScopeResolver:
         self._reader = cache_reader or MariaDbMetricsCacheReader()
         self._cache = TtlMetricsCache(self._reader, ttl_seconds=ttl)
         self._cause_cache = TtlCausePayloadCache(cause_reader or MariaDbCausePayloadReader(), ttl_seconds=ttl)
+        self._cd_mart_cache = TtlCdMartCache(cd_mart_reader or MariaDbCdMartReader(), ttl_seconds=ttl)
         self._resolver = BrandResolver(mode="cache", brand_reader=self._reader, ttl_seconds=ttl)
         self._general_view = general_view_service or GeneralViewService.from_env(self._resolver)
 
@@ -78,7 +85,7 @@ class MarketScopeResolver:
                 market_size = extended(card).get("market_size_recent")
             else:
                 return self._unsupported(
-                    "competitive_dynamics 시장규모 cache_cause 행을 찾지 못했습니다.",
+                    "competitive_dynamics 시장규모를 전략 CD mart에서 찾지 못했습니다.",
                     question,
                     "view_type",
                     view_type,
@@ -146,12 +153,10 @@ class MarketScopeResolver:
         source: str,
         market_id: str,
     ) -> tuple[str | None, float | int | None, float | None]:
-        key = CausePayloadKey(brand=brand, view_type=view_type, source=source, measure="sales", market_id=market_id)
-        try:
-            payload = self._cause_cache.payload(key).payload
-        except (LookupError, TypeError):
-            return None, None, None
-        series = payload.get("data", {}).get("sources_data", {}).get("market_size_series")
+        if view_type == "competitive_dynamics":
+            series = self._cd_market_size_series(brand=brand, source=source, market_id=market_id)
+        else:
+            series = self._cause_market_size_series(brand=brand, view_type=view_type, source=source, market_id=market_id)
         if not isinstance(series, dict) or not series:
             return None, None, None
         period = sorted(str(key) for key in series)[-1]
@@ -161,6 +166,34 @@ class MarketScopeResolver:
         value = latest.get("value")
         yoy = latest.get("yoy_growth_pct")
         return period, value if isinstance(value, int | float) else None, yoy if isinstance(yoy, int | float) else None
+
+    def _cd_market_size_series(
+        self,
+        *,
+        brand: str,
+        source: str,
+        market_id: str,
+    ) -> dict[str, Any] | None:
+        try:
+            return self._cd_mart_cache.snapshot().market_size_series(brand=brand, source=source, market_id=market_id)
+        except (LookupError, TypeError):
+            return None
+
+    def _cause_market_size_series(
+        self,
+        *,
+        brand: str,
+        view_type: str,
+        source: str,
+        market_id: str,
+    ) -> dict[str, Any] | None:
+        key = CausePayloadKey(brand=brand, view_type=view_type, source=source, measure="sales", market_id=market_id)
+        try:
+            payload = self._cause_cache.payload(key).payload
+        except (LookupError, TypeError):
+            return None
+        series = payload.get("data", {}).get("sources_data", {}).get("market_size_series")
+        return series if isinstance(series, dict) else None
 
     @staticmethod
     def _render_data(
