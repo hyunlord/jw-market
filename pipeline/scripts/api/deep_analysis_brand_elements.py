@@ -8,6 +8,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice
 
 UBIST_FACTOR_KEYS = ("seller", "molecule_strength", "form", "route", "reimbursement")
 IQVIA_FACTOR_KEYS = ("mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type")
+FACTOR_KEYS_BY_SOURCE = {"iqvia": IQVIA_FACTOR_KEYS, "ubist": UBIST_FACTOR_KEYS}
 
 
 def empty_factor_values(keys: Sequence[str]) -> dict[str, list[str]]:
@@ -19,41 +20,61 @@ def fallback_brand_choices(brand_key: str, brand_name: str) -> tuple[BrandChoice
 
 
 def build_brand_factors(
-    choices: Sequence[BrandChoice],
+    choices_by_source: Mapping[str, Sequence[BrandChoice]],
     *,
     selected_brand_key: str,
     cached_elements_by_key: Mapping[str, Mapping[str, Any]],
     selected_factors: Mapping[str, Any],
     strength_by_source_by_key: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Build independent source-market brand lists with source-local evidence."""
+
+    return {
+        source: _build_source_brand_factors(
+            source,
+            choices_by_source.get(source, ()),
+            selected_brand_key=selected_brand_key,
+            cached_elements_by_key=cached_elements_by_key,
+            selected_factors=selected_factors,
+            strength_by_source_by_key=strength_by_source_by_key or {},
+        )
+        for source in FACTOR_KEYS_BY_SOURCE
+    }
+
+
+def _build_source_brand_factors(
+    source: str,
+    choices: Sequence[BrandChoice],
+    *,
+    selected_brand_key: str,
+    cached_elements_by_key: Mapping[str, Mapping[str, Any]],
+    selected_factors: Mapping[str, Any],
+    strength_by_source_by_key: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Group factors and source-level strength into source-scoped brand slots."""
+    factor_keys = FACTOR_KEYS_BY_SOURCE[source]
 
     items: list[dict[str, Any]] = []
-    for index, choice in enumerate(choices, start=1):
+    for choice in choices:
         is_selected = choice.is_selected or choice.brand_key == selected_brand_key
         cached = cached_elements_by_key.get(choice.brand_key, {})
         cached_factors = _dict_or_empty(cached.get("factors"))
         factors = cached_factors or (dict(selected_factors) if is_selected else {})
-        strength_by_source = _dict_or_empty((strength_by_source_by_key or {}).get(choice.brand_key))
+        source_factors = _source_factor_section(factors.get(source), factor_keys)
+        strength_by_source = _dict_or_empty(strength_by_source_by_key.get(choice.brand_key))
+        source_strength = _source_strength_section(strength_by_source.get(source))
+        if len(choices) == 1 and choice.sales_rank is None and not source_factors["available"] and not source_strength:
+            continue
         items.append(
             {
                 "brand": choice.brand_name,
                 "brand_key": choice.brand_key,
                 "role": "selected" if is_selected else "competitor",
-                "rank": index,
-                "iqvia": _source_section(factors.get("iqvia"), strength_by_source.get("iqvia"), IQVIA_FACTOR_KEYS),
-                "ubist": _source_section(factors.get("ubist"), strength_by_source.get("ubist"), UBIST_FACTOR_KEYS),
+                "rank": choice.sales_rank,
+                "factors": source_factors,
+                "strength": source_strength,
             }
         )
     return items
-
-
-def _source_section(factors: Any, strength: Any, factor_keys: Sequence[str]) -> dict[str, Any]:
-    factor_section = _source_factor_section(factors, factor_keys)
-    strength_section = _source_strength_section(strength)
-    if not factor_section["available"] and not strength_section:
-        return {}
-    return {"factors": factor_section, "strength": strength_section}
 
 
 def _source_factor_section(value: Any, keys: Sequence[str]) -> dict[str, Any]:

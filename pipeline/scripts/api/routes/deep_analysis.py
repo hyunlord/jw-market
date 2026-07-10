@@ -40,6 +40,7 @@ GENERAL_CACHE_TTL_DAYS: Final[int] = 35
 BRAND_ELEMENTS_CACHE_TTL_DAYS: Final[int] = 35
 SOURCE_BRAND_STRENGTH_TABLE: Final[str] = "agent3_brand_strength_source"
 SOURCE_BRAND_STRENGTH_SOURCES: Final[tuple[str, str]] = ("iqvia", "ubist")
+BRAND_FACTOR_DB_SOURCES: Final[dict[str, str]] = {"iqvia": "iqvia_nsa", "ubist": "ubist"}
 EMPTY_BRAND_FACTORS = {
     "atc": [],
     "ubist": {"seller": [], "molecule_strength": [], "form": [], "route": [], "reimbursement": []},
@@ -511,36 +512,58 @@ def _first_factor_atc4(factors: dict) -> str:
     return next((str(value).strip() for value in atc_values if str(value).strip()), "")
 
 
-def _resolve_brand_element_choices(row: dict, requested_brand: str, atc4: str | None, selected_factors: dict) -> tuple:
+def _strategic_ml_id(market_id: str) -> str:
+    if market_id.startswith("strategy_"):
+        return f"ml_{market_id.removeprefix('strategy_')}"
+    return market_id
+
+
+def _resolve_brand_factor_choices(
+    row: dict,
+    requested_brand: str,
+    atc4: str | None,
+    selected_factors: dict,
+) -> dict[str, tuple]:
     matched_brand = str(row.get("brand") or row.get("brand_key") or requested_brand)
     selected_brand_key = str(row.get("brand_key") or matched_brand)
     market_atc4 = str(row.get("atc4_code") or atc4 or _first_factor_atc4(selected_factors)).strip()
-    strategic_market_id = str(row.get("market_id") or "").strip()
+    strategic_market_id = _strategic_ml_id(str(row.get("market_id") or "").strip())
+    fallback = fallback_brand_choices(selected_brand_key or matched_brand, matched_brand)
     if not selected_brand_key:
-        return fallback_brand_choices(matched_brand, matched_brand)
+        return {source: fallback for source in BRAND_FACTOR_DB_SOURCES}
     if not market_atc4 and not strategic_market_id and "brand_key" not in row:
-        return fallback_brand_choices(selected_brand_key, matched_brand)
-    try:
-        if market_atc4:
-            resolution = resolve_brand_set(
-                view_name="general",
-                market_id=market_atc4,
-                selected_brand=selected_brand_key,
-                filter_payload={"atc4": [market_atc4]},
+        return {source: fallback for source in BRAND_FACTOR_DB_SOURCES}
+
+    choices_by_source: dict[str, tuple] = {}
+    for response_source, db_source in BRAND_FACTOR_DB_SOURCES.items():
+        try:
+            if "brand_key" in row and market_atc4:
+                resolution = resolve_brand_set(
+                    view_name="general",
+                    market_id=market_atc4,
+                    selected_brand=selected_brand_key,
+                    filter_payload={"atc4": [market_atc4]},
+                    source=db_source,
+                    rank_by_latest_period=True,
+                )
+            else:
+                resolution = resolve_brand_set(
+                    view_name="strategic_ml",
+                    market_id=strategic_market_id or None,
+                    selected_brand=selected_brand_key,
+                    filter_payload={},
+                    source=db_source,
+                    rank_by_latest_period=True,
+                )
+        except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
+            logger.info(
+                "deep-analysis source market resolver fell back to selected brand only: source=%s",
+                response_source,
+                exc_info=True,
             )
-        else:
-            resolution = resolve_brand_set(
-                view_name="strategic_ml",
-                market_id=strategic_market_id or None,
-                selected_brand=selected_brand_key,
-                filter_payload={},
-            )
-    except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
-        logger.info("deep-analysis brand element resolver fell back to selected brand only", exc_info=True)
-        resolution = None
-    if not resolution or not resolution.choices:
-        return fallback_brand_choices(selected_brand_key, matched_brand)
-    return resolution.choices
+            resolution = None
+        choices_by_source[response_source] = resolution.choices if resolution and resolution.choices else fallback
+    return choices_by_source
 
 
 def _fetch_deep_analysis_row(brand: str) -> dict | None:
@@ -970,17 +993,24 @@ def deep_analysis(
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
         selected_brand_key = str(row.get("brand_key") or matched_brand)
         selected_factors = _load_brand_factors(row.get("brand_factors"))
-        brand_choices = _resolve_brand_element_choices(row, brand, atc4, selected_factors)
+        brand_choices_by_source = _resolve_brand_factor_choices(row, brand, atc4, selected_factors)
         data["ai_analysis"] = _load_ai_analysis(matched_brand)
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short
         data["ai_analysis_long"] = ai_analysis_long
-        cached_elements = _load_cached_brand_elements([choice.brand_key for choice in brand_choices])
-        strength_by_source = _load_brand_strength_by_source([choice.brand_key for choice in brand_choices])
+        brand_keys = sorted(
+            {
+                choice.brand_key
+                for choices in brand_choices_by_source.values()
+                for choice in choices
+            }
+        )
+        cached_elements = _load_cached_brand_elements(brand_keys)
+        strength_by_source = _load_brand_strength_by_source(brand_keys)
         data.pop("brand_elements", None)
         data.pop("strength_by_source", None)
         data["brand_factors"] = build_brand_factors(
-            brand_choices,
+            brand_choices_by_source,
             selected_brand_key=selected_brand_key,
             cached_elements_by_key=cached_elements,
             selected_factors=selected_factors,
