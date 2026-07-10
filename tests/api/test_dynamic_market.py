@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
+from pipeline.scripts.api.dynamic_market import general_analysis_levels
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -1200,6 +1201,165 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     assert {"targets"}.issubset(data["target_customer_competition"])
 
 
+def test_general_response_slimming_removes_only_approved_unused_fields() -> None:
+    data = {
+        "market_yoy_series": {"2026-01": 1.0},
+        "market_yoy_recent_pct": 1.0,
+        "ubist_specialty_channels": ["전체"],
+        "ubist_specialty_target_channels": [],
+        "target_customer_competition_by_channel": {"views": []},
+        "hhi_recent": 1234.0,
+        "level_top5_trend": {
+            "by_level": {
+                "판매사": {
+                    "level_label": "판매사",
+                    "level_value": "seller",
+                    "total_market_value": 100.0,
+                    "values": [
+                        {
+                            "value": "JW중외제약",
+                            "value_recent_100m": 12.3,
+                            "total_volume": 9.0,
+                            "brands_in_value": [
+                                {
+                                    "brand": "리바로",
+                                    "volume_recent": 3.0,
+                                    "volume_series_10pt": [1.0, 2.0],
+                                    "ms_recent_pct": 50.0,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        },
+        "sources_data": {
+            "market_yoy_series": {"2026-01": 1.0},
+            "market_yoy_recent_pct": 1.0,
+        },
+    }
+
+    slimmed = cause_payload.slim_general_response_data(data)
+
+    for key in (
+        "market_yoy_series",
+        "market_yoy_recent_pct",
+        "ubist_specialty_channels",
+        "ubist_specialty_target_channels",
+        "target_customer_competition_by_channel",
+    ):
+        assert key not in slimmed
+    assert slimmed["hhi_recent"] == 1234.0
+    assert slimmed["sources_data"] == data["sources_data"]
+    level = slimmed["level_top5_trend"]["by_level"]["판매사"]
+    assert "level_label" not in level
+    assert "level_value" not in level
+    assert "total_market_value" not in level
+    value = level["values"][0]
+    assert "total_volume" not in value
+    assert value["value_recent_100m"] == 12.3
+    brand = value["brands_in_value"][0]
+    assert "volume_recent" not in brand
+    assert "volume_series_10pt" not in brand
+    assert brand["ms_recent_pct"] == 50.0
+
+
+def test_market_status_channel_projection_preserves_values_and_filters_channels() -> None:
+    analysis_levels = {
+        "levels": ["판매사"],
+        "periods": ["2026-01"],
+        "period_unit": "월",
+        "channels": ["전체", "종병", "의원"],
+        "data": {
+            "판매사": {
+                "segments": [{"name": "JW중외제약"}],
+                "ms_segments": [{"name": "JW중외제약"}],
+                "by_channel": {
+                    "전체": [{"name": "JW중외제약", "value": 10.0}],
+                    "종병": [{"name": "JW중외제약", "value": 7.0}],
+                    "의원": [{"name": "JW중외제약", "value": 3.0}],
+                },
+                "ms_by_channel": {
+                    "전체": [{"name": "JW중외제약", "share": 100.0}],
+                    "종병": [{"name": "JW중외제약", "share": 70.0}],
+                    "의원": [{"name": "JW중외제약", "share": 30.0}],
+                },
+            }
+        },
+    }
+
+    projected = general_analysis_levels.project_analysis_level_channels(
+        analysis_levels,
+        ["전체", "의원"],
+    )
+
+    assert projected["channels"] == ["전체", "의원"]
+    assert projected["data"]["판매사"]["by_channel"] == {
+        "전체": analysis_levels["data"]["판매사"]["by_channel"]["전체"],
+        "의원": analysis_levels["data"]["판매사"]["by_channel"]["의원"],
+    }
+    assert projected["data"]["판매사"]["ms_by_channel"] == {
+        "전체": analysis_levels["data"]["판매사"]["ms_by_channel"]["전체"],
+        "의원": analysis_levels["data"]["판매사"]["ms_by_channel"]["의원"],
+    }
+    assert projected["data"]["판매사"]["segments"] == analysis_levels["data"]["판매사"]["segments"]
+
+
+def test_general_ubist_analysis_reuses_aggregated_channel_summary(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+    monkeypatch.setattr(
+        general_analysis_levels,
+        "resolve_market_channels",
+        lambda **_kwargs: pytest.fail("aggregated channel summary must bypass raw channel resolution"),
+    )
+    analysis_row = {
+        "by_dimension": json.dumps({"seller": "JW중외제약"}, ensure_ascii=False),
+        "dimension_data": json.dumps(
+            {"seller": {"JW중외제약": {"2026-01": {"raw_value": 100.0}}}},
+            ensure_ascii=False,
+        ),
+        "dimension_channel_data": "{}",
+        "channel_data": "{}",
+    }
+    brand = BrandMetric(
+        "focus",
+        "Focus",
+        "A10N1",
+        100.0,
+        100.0,
+        1,
+        "2026-01",
+        100.0,
+        history_by_period={"2026-01": 100.0},
+        analysis_row=analysis_row,
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 100.0},),
+        brands=(brand,),
+        all_brands=(brand,),
+        ubist_specialty_channels=("전체", "주요고객 종합병원 순환기"),
+        ubist_specialty_target_channels=(
+            {"code": "TGH_CARD", "display_name": "주요고객 종합병원 순환기"},
+        ),
+    )
+
+    sections = general_analysis_levels.build_general_analysis_level_sections(
+        definition=MarketDefinition(view="general", filter_echo={}, source="ubist", measure="sales"),
+        metrics=metrics,
+        focus=brand,
+        mart_db="jw_mart",
+    )
+
+    assert sections is not None
+    assert sections["ubist_channel_context"]["specialty_channels"] == ["전체", "주요고객 종합병원 순환기"]
+
+
 def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch) -> None:
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
 
@@ -1349,11 +1509,11 @@ def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch
     assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
     assert "상급종병" not in payload["data"]["analysis_level_market_status"]["data"]["판매사"]["by_channel"]
     assert payload["data"]["analysis_level_market_status"]["data"]["판매사"]["by_channel"]["주요고객 종합병원 순환기"]
-    target_competition = payload["data"]["target_customer_competition_by_channel"]
+    target_competition = payload["data"]["target_customer_competition"]
     assert "주요고객 종합병원 순환기" in target_competition["targets"]
     assert any(view["target_name"] == "주요고객 종합병원 순환기" for view in target_competition["views"])
-    assert payload["data"]["target_customer_competition"] == target_competition
-    assert payload["data"]["ubist_specialty_channels"] == ["전체", "주요고객 종합병원 순환기", "의원 IGF"]
+    assert "target_customer_competition_by_channel" not in payload["data"]
+    assert "ubist_specialty_channels" not in payload["data"]
     assert payload["data"]["level_top5_trend"]["default_level"] == "판매사"
     assert payload["data"]["level_top5_trend"]["by_level"]["판매사"]["values"]
 
@@ -1893,10 +2053,10 @@ def test_cause_payload_builds_iqvia_target_customer_from_audit_channels(monkeypa
 
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
-    target_competition = payload["data"]["target_customer_competition_by_channel"]
+    target_competition = payload["data"]["target_customer_competition"]
     assert target_competition["targets"] == ["전체", "KHPA", "KCPA", "KPA"]
     assert [view["target_name"] for view in target_competition["views"]] == ["전체", "KHPA", "KCPA", "KPA"]
-    assert payload["data"]["target_customer_competition"] == target_competition
+    assert "target_customer_competition_by_channel" not in payload["data"]
 
 
 def test_cause_payload_keeps_requested_focus_brand_visible_when_it_is_outside_top5() -> None:
@@ -2317,6 +2477,47 @@ def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
     assert response["result"]["view"] == "general"
     assert response["result"]["market_meta"]["view"] == "general"
     assert response["result"]["market_meta"]["market_size_recent"] == 1.0
+
+
+def test_route_uses_response_cache_for_general_dynamic_market(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCache:
+        def get_or_build(self, request, builder):
+            captured["request"] = request
+            captured["built"] = builder()
+            return {"status": "SUCCESS", "result": {"cached": True}}
+
+    monkeypatch.setattr(dynamic_market_route, "_dynamic_response_cache", FakeCache())
+    monkeypatch.setattr(
+        dynamic_market_route,
+        "_build_general_dynamic_response",
+        lambda _payload: {"status": "SUCCESS", "result": {"cached": False}},
+    )
+
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate({"source": "ubist", "filters": {"atc4": ["C10A1"]}})
+    )
+
+    assert response == {"status": "SUCCESS", "result": {"cached": True}}
+    assert captured["built"] == {"status": "SUCCESS", "result": {"cached": False}}
+    assert captured["request"]["filters"]["atc4"] == ["C10A1"]
+
+
+def test_route_returns_429_when_dynamic_miss_capacity_is_full(monkeypatch) -> None:
+    class FullCache:
+        def get_or_build(self, request, builder):
+            raise dynamic_market_route.DynamicMarketOverloadedError("full")
+
+    monkeypatch.setattr(dynamic_market_route, "_dynamic_response_cache", FullCache())
+
+    with pytest.raises(dynamic_market_route.HTTPException) as exc_info:
+        dynamic_market_route.dynamic_market(
+            DynamicMarketRequest.model_validate({"source": "ubist", "filters": {"atc4": ["C10A1"]}})
+        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail["error"] == "dynamic_market_overloaded"
 
 
 def test_route_passes_general_channel_axis_to_aggregator(monkeypatch) -> None:

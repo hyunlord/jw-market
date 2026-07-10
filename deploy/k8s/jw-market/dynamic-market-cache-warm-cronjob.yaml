@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dynamic-market-cache-warm-test2
+  namespace: llmops
+spec:
+  schedule: "7,37 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: warmer
+              image: JW_MARKET_API_IMAGE
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - pipeline.scripts.deploy.warm_dynamic_market_cache
+              args:
+                - --base-url
+                - http://jw-market-backend-api-test:8000
+                - --timeout-seconds
+                - "120"
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 96Mi

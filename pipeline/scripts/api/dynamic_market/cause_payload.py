@@ -39,6 +39,15 @@ from pipeline.scripts.etl import build_cache_cause as cause_builder  # noqa: E40
 
 
 PORTAL_UNUSED_DATA_KEYS = frozenset({"data_period_coverage"})
+GENERAL_UNUSED_DATA_KEYS = frozenset(
+    {
+        "market_yoy_recent_pct",
+        "market_yoy_series",
+        "target_customer_competition_by_channel",
+        "ubist_specialty_channels",
+        "ubist_specialty_target_channels",
+    }
+)
 
 
 def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetrics) -> dict[str, Any]:
@@ -166,7 +175,58 @@ def build_cause_data(
         data["iqvia_audit_code_channels"] = _general_iqvia_audit_codes(metrics)
     if definition.focus_brand_key and not data["kpi"]:
         data["kpi_reason"] = "focus_not_found"
-    return normalize_portal_read_data(data)
+    normalized = normalize_portal_read_data(data)
+    return slim_general_response_data(normalized) if definition.view == "general" else normalized
+
+
+def slim_general_response_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove fields proven unused by portal and repository runtime consumers."""
+
+    slimmed = {key: value for key, value in data.items() if key not in GENERAL_UNUSED_DATA_KEYS}
+    trend = slimmed.get("level_top5_trend")
+    if not isinstance(trend, dict):
+        return slimmed
+    by_level = trend.get("by_level")
+    if not isinstance(by_level, dict):
+        return slimmed
+
+    slimmed_by_level: dict[str, Any] = {}
+    for level_name, raw_level in by_level.items():
+        if not isinstance(raw_level, dict):
+            slimmed_by_level[level_name] = raw_level
+            continue
+        level = {
+            key: value
+            for key, value in raw_level.items()
+            if key not in {"level_label", "level_value", "total_market_value"}
+        }
+        values = level.get("values")
+        if isinstance(values, list):
+            level["values"] = [_slim_level_top5_value(value) for value in values]
+        slimmed_by_level[level_name] = level
+    slimmed["level_top5_trend"] = {**trend, "by_level": slimmed_by_level}
+    return slimmed
+
+
+def _slim_level_top5_value(raw_value: Any) -> Any:
+    if not isinstance(raw_value, dict):
+        return raw_value
+    value = {key: item for key, item in raw_value.items() if key != "total_volume"}
+    brands = value.get("brands_in_value")
+    if isinstance(brands, list):
+        value["brands_in_value"] = [
+            (
+                {
+                    key: item
+                    for key, item in brand.items()
+                    if key not in {"volume_recent", "volume_series_10pt"}
+                }
+                if isinstance(brand, dict)
+                else brand
+            )
+            for brand in brands
+        ]
+    return value
 
 
 def _ubist_channels_from_context(context: dict[str, Any], *, fallback: dict[str, list[Any]]) -> dict[str, list[Any]]:

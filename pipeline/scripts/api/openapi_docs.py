@@ -112,7 +112,7 @@ CAUSE_RESPONSES: Final = {
 
 
 DYNAMIC_MARKET_DESCRIPTION: Final = """
-`/api/dynamic-market`는 포탈 원인분석 payload를 캐시 없이 재계산하는 POST API입니다.
+`/api/dynamic-market`는 포탈 원인분석 payload를 요청 조합별로 계산하고 재사용하는 POST API입니다.
 응답은 항상 `status`/`result` envelope이며, `result`는 `/api/cause/{brand}`가 돌려주는
 root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니다.
 
@@ -197,8 +197,7 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 
 성공 시 `result.data`에는 포탈 원인분석 섹션이 들어갑니다. 대표 키는 `kpi`, `market_size_series`,
 `brand_ranking`, `company_ranking`, `analysis_levels`, `analysis_level_market_status`,
-`level_top5_trend`, `target_customer_competition`, `target_customer_competition_by_channel`,
-`ubist_specialty_channels`, `ubist_specialty_target_channels`입니다. 해당 source/범위에 데이터가 없거나
+`level_top5_trend`, `target_customer_competition`입니다. 해당 source/범위에 데이터가 없거나
 채널축이 없으면 빈 배열(`[]`), 빈 객체(`{}`), 또는 `note`가 있는 fallback 객체로 반환됩니다.
 `market_size_series` 각 포인트의 `mom_growth_pct`는 정확히 1년 전 같은 기간 대비 복리 기간성장률입니다.
 UBIST는 `((V_t / V_{t-12})^(1/12) - 1) * 100`, IQVIA는

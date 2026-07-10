@@ -20,6 +20,12 @@ from pipeline.scripts.api.dynamic_market.resolvers import (
     StrategicViewResolver,
     resolve_strategic_market_for_focus,
 )
+from pipeline.scripts.api.dynamic_market.response_cache import (
+    DynamicMarketOverloadedError,
+    DynamicResponseCache,
+    DynamicResponseCacheUnavailable,
+    MySQLDynamicResponseCacheStore,
+)
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
 from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload, success_envelope
 from pipeline.scripts.api.dynamic_market.types import (
@@ -44,6 +50,13 @@ from pipeline.scripts.api.openapi_docs import (
 
 
 router = APIRouter()
+_dynamic_response_cache = DynamicResponseCache(
+    store=MySQLDynamicResponseCacheStore(
+        mart_db=config.db_name,
+        dimension_db=config.general_dimension_db_name,
+        ttl_seconds=config.cache_ttl_seconds,
+    )
+)
 
 
 @router.post(
@@ -89,6 +102,23 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
         except DynamicMarketInputError as exc:
             raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
 
+    request_for_cache = payload.model_dump(mode="json", exclude_none=True)
+    try:
+        return _dynamic_response_cache.get_or_build(
+            request_for_cache,
+            lambda: _build_general_dynamic_response(payload),
+        )
+    except DynamicResponseCacheUnavailable:
+        return _build_general_dynamic_response(payload)
+    except DynamicMarketOverloadedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "dynamic_market_overloaded", "message": str(exc)},
+            headers={"Retry-After": "2"},
+        ) from exc
+
+
+def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, Any]:
     aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
     period_range = PeriodRange(
