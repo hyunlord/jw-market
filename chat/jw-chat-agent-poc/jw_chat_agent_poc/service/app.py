@@ -42,6 +42,12 @@ from jw_chat_agent_poc.service.conversation_history import ConversationHistorySt
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
+from jw_chat_agent_poc.service.history_projection import (
+    HistoryProjectionRuntime,
+    ProjectionRequestContext,
+    sanitize_http_headers,
+    trusted_portal_user_id,
+)
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
@@ -151,14 +157,28 @@ def _is_direct_public_request(request: Request) -> bool:
 def _require_direct_route_api_key(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-) -> None:
-    if not _is_direct_public_request(request):
-        return
+    x_portal_user_id: str | None = Header(default=None, alias="X-Portal-User-Id"),
+) -> ProjectionRequestContext:
+    public_request = _is_direct_public_request(request)
+    if not public_request:
+        return ProjectionRequestContext(portal_user_id=None, http_headers=sanitize_http_headers(request.headers))
     expected_key = os.environ.get(DIRECT_ROUTE_API_KEY_ENV)
     if not expected_key:
         raise HTTPException(status_code=503, detail="direct route API key is not configured")
     if x_api_key is None or not compare_digest(x_api_key, expected_key):
         raise HTTPException(status_code=401, detail="invalid API key")
+    try:
+        portal_user_id = trusted_portal_user_id(
+            x_portal_user_id,
+            public_request=True,
+            api_key_authenticated=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectionRequestContext(
+        portal_user_id=portal_user_id,
+        http_headers=sanitize_http_headers(request.headers),
+    )
 
 
 def create_app(
@@ -167,6 +187,7 @@ def create_app(
     market_scope_resolver: MarketScopeResolver | None = None,
     store: SessionStore | None = None,
     history_store: ConversationHistoryStore | None = None,
+    projection_runtime: HistoryProjectionRuntime | None = None,
 ) -> FastAPI:
     app = FastAPI(title="JW Chat Agent POC", version="0.2.0", root_path="/jw-chat-agent")
     app.add_middleware(
@@ -180,7 +201,16 @@ def create_app(
     resolver = market_scope_resolver or MarketScopeResolver()
     make_agent = agent_factory or _default_agent_factory
     use_direct_agent_loop = agent_factory is None
-    history = history_store or MySQLConversationHistoryStore.from_env()
+    projection = projection_runtime or HistoryProjectionRuntime.from_env()
+    history = history_store or MySQLConversationHistoryStore(projection_outbox=projection.outbox)
+
+    @app.on_event("startup")
+    def start_history_projection_worker() -> None:
+        projection.start()
+
+    @app.on_event("shutdown")
+    def stop_history_projection_worker() -> None:
+        projection.stop()
 
     @app.get("/healthz", response_model=HealthResponse)
     def healthz() -> HealthResponse:
@@ -224,7 +254,10 @@ def create_app(
         summary="Return a completed chat answer",
         description=CHAT_ANSWER_DESCRIPTION,
     )
-    def chat_answer(request: ChatRequest, _api_key: None = Depends(_require_direct_route_api_key)) -> ChatAnswer:
+    def chat_answer(
+        request: ChatRequest,
+        projection_context: ProjectionRequestContext = Depends(_require_direct_route_api_key),
+    ) -> ChatAnswer:
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
@@ -240,7 +273,13 @@ def create_app(
             use_direct_agent_loop=use_direct_agent_loop,
         )
         final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
-        _record_conversation_history(history, session_id=None, question=item["question"], final_answer=final_answer)
+        _record_conversation_history(
+            history,
+            session_id=None,
+            question=item["question"],
+            final_answer=final_answer,
+            projection_context=projection_context,
+        )
         return ChatAnswer(
             text=final_answer.text,
             charts=final_answer.charts,
@@ -259,7 +298,7 @@ def create_app(
         question: str | None = Query(default=None),
         external_mode: str = Query(default="live"),
         conversation_id: str | None = Query(default=None),
-        _api_key: None = Depends(_require_direct_route_api_key),
+        projection_context: ProjectionRequestContext = Depends(_require_direct_route_api_key),
     ) -> StreamingResponse:
         if session_id:
             item = _resolve_session(
@@ -279,6 +318,7 @@ def create_app(
                     item.get("conversation_id"),
                     history_store=history,
                     session_id=session_id,
+                    projection_context=projection_context,
                 ),
                 media_type="text/event-stream",
             )
@@ -294,6 +334,7 @@ def create_app(
                 conversation_id,
                 use_direct_agent_loop=use_direct_agent_loop,
                 history_store=history,
+                projection_context=projection_context,
             ),
             media_type="text/event-stream",
         )
@@ -673,6 +714,7 @@ def _stream_resolving_session_events(
     *,
     use_direct_agent_loop: bool = False,
     history_store: ConversationHistoryStore | None = None,
+    projection_context: ProjectionRequestContext | None = None,
 ):
     events: queue.Queue[dict[str, Any]] = queue.Queue()
     step_index = 0
@@ -703,6 +745,7 @@ def _stream_resolving_session_events(
                 session_id=None,
                 question=item["question"],
                 final_answer=final_answer,
+                projection_context=projection_context,
             )
             events.put({"type": "result", "item": item, "final_answer": final_answer})
         except Exception as exc:
@@ -775,9 +818,16 @@ def _sse_events(
     *,
     history_store: ConversationHistoryStore | None = None,
     session_id: str | None = None,
+    projection_context: ProjectionRequestContext | None = None,
 ):
     final_answer = compute_final_answer(question, result, conversation_id)
-    _record_conversation_history(history_store, session_id=session_id, question=question, final_answer=final_answer)
+    _record_conversation_history(
+        history_store,
+        session_id=session_id,
+        question=question,
+        final_answer=final_answer,
+        projection_context=projection_context,
+    )
     yield from _sse_events_from_final_answer(final_answer)
 
 
@@ -799,6 +849,7 @@ def _record_conversation_history(
     session_id: str | None,
     question: str,
     final_answer: FinalAnswer,
+    projection_context: ProjectionRequestContext | None = None,
 ) -> None:
     if history_store is None:
         return
@@ -811,6 +862,8 @@ def _record_conversation_history(
             trace=final_answer.trace,
             timing=final_answer.timing,
             sources=final_answer.sources,
+            charts=final_answer.charts,
+            projection_context=projection_context,
         )
     except Exception:
         LOGGER.exception("failed to persist chat conversation history")

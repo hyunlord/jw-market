@@ -9,6 +9,8 @@ from typing import Any, Protocol
 
 import pymysql
 
+from jw_chat_agent_poc.service.history_projection import ProjectionRequestContext
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +28,8 @@ class ConversationHistoryStore(Protocol):
         trace: Mapping[str, Any],
         timing: Mapping[str, Any],
         sources: Sequence[str],
+        charts: Sequence[Mapping[str, Any]],
+        projection_context: ProjectionRequestContext | None,
     ) -> None:
         """Persist a completed chat turn."""
 
@@ -39,10 +43,21 @@ class _DbConfig:
     password: str
 
 
+class ProjectionOutboxEnqueuer(Protocol):
+    def enqueue(self, **kwargs: Any) -> None: ...
+
+
 class MySQLConversationHistoryStore:
-    def __init__(self, config: _DbConfig | None = None, *, table_name: str = HISTORY_TABLE_NAME) -> None:
+    def __init__(
+        self,
+        config: _DbConfig | None = None,
+        *,
+        table_name: str = HISTORY_TABLE_NAME,
+        projection_outbox: ProjectionOutboxEnqueuer | None = None,
+    ) -> None:
         self._config = config or _db_config_from_env()
         self._table_name = table_name
+        self._projection_outbox = projection_outbox
 
     @classmethod
     def from_env(cls) -> "MySQLConversationHistoryStore":
@@ -58,6 +73,8 @@ class MySQLConversationHistoryStore:
         trace: Mapping[str, Any],
         timing: Mapping[str, Any],
         sources: Sequence[str],
+        charts: Sequence[Mapping[str, Any]] = (),
+        projection_context: ProjectionRequestContext | None = None,
     ) -> None:
         if self._config is None:
             LOGGER.warning("chat history persistence skipped: DB config is incomplete")
@@ -105,7 +122,28 @@ class MySQLConversationHistoryStore:
                         _json_dumps(dict(trace)),
                     ),
                 )
+                source_log_id = int(cursor.lastrowid)
             connection.commit()
+        if self._projection_outbox is not None:
+            try:
+                self._projection_outbox.enqueue(
+                    source_log_id=source_log_id,
+                    session_id=conversation_id or session_id,
+                    turn_index=turn_index,
+                    question_text=question_text,
+                    answer_text=answer_text,
+                    charts=charts,
+                    sources=sources,
+                    trace=trace,
+                    timing=timing,
+                    projection_context=projection_context,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "history projection enqueue failed source_log_id=%s error_type=%s",
+                    source_log_id,
+                    type(exc).__name__,
+                )
 
     def _connect(self):
         assert self._config is not None
