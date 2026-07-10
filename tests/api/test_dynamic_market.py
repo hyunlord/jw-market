@@ -407,22 +407,23 @@ def test_matrix_rows_populates_growth_contribution_percent_for_chart_points() ->
 
 
 def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> None:
+    # Given a focus brand below the portal's top-100 matrix cutoff.
     brands = tuple(
         BrandMetric(
             f"b{index}",
             f"Brand {index}",
             "C10A1",
-            float(100 - index),
+            float(1_000 - index),
             0.0,
             index,
             "2026-05",
-            float(100 - index),
+            float(1_000 - index),
             monthly_series=(
-                {"period": "2026-04", "value": float(80 - index)},
-                {"period": "2026-05", "value": float(100 - index)},
+                {"period": "2026-04", "value": float(900 - index)},
+                {"period": "2026-05", "value": float(1_000 - index)},
             ),
         )
-        for index in range(1, 8)
+        for index in range(1, 106)
     )
     focus = BrandMetric(
         "focus",
@@ -430,11 +431,11 @@ def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> N
         "C10A1",
         10.0,
         0.0,
-        8,
+        106,
         "2026-05",
         10.0,
         monthly_series=(
-            {"period": "2026-04", "value": 8.0},
+            {"period": "2026-04", "value": 9.0},
             {"period": "2026-05", "value": 10.0},
         ),
     )
@@ -446,30 +447,64 @@ def test_build_cause_data_cuts_matrix_cards_but_keeps_full_matrix_for_kpi() -> N
         hhi=None,
         cagr=10.0,
         monthly_series=(
-            {"period": "2026-04", "market_size": 512.0},
-            {"period": "2026-05", "market_size": 689.0},
+            {"period": "2026-04", "market_size": 88_935.0},
+            {"period": "2026-05", "market_size": 99_735.0},
         ),
         brands=brands,
         all_brands=brands + (focus,),
     )
+    # When the cause payload is assembled.
     data = cause_payload.build_cause_data(
         definition=MarketDefinition(view="general", filter_echo={}, source="ubist", measure="sales"),
         metrics=metrics,
         focus=focus,
     )
 
-    assert [row["brand_key"] for row in data["ei_ms_matrix"]["data"]] == ["focus", "b1", "b2", "b3", "b4", "b5"]
+    # Then the visible matrix remains top-100 scoped, while KPI uses the focus row.
+    assert [row["brand_key"] for row in data["ei_ms_matrix"]["data"]] == ["b1", "b2", "b3", "b4", "b5"]
     assert [row["brand_key"] for row in data["growth_contribution_ms_matrix"]["data"]] == [
-        "focus",
         "b1",
         "b2",
         "b3",
         "b4",
         "b5",
     ]
-    assert data["ei_ms_matrix"]["data"][0]["value_recent"] == 10.0
+    assert data["ei_ms_matrix"]["data"][0]["value_recent"] == 999.0
     assert data["kpi"]["target_brand"] == "Focus"
+    assert data["kpi"]["target_rank"] == 106
     assert data["kpi"]["brand_value_recent"] == 10.0
+
+
+def test_build_cause_data_reports_missing_explicit_focus_without_market_leader_fallback() -> None:
+    # Given a non-empty market where the explicitly requested focus is absent.
+    brand = BrandMetric("leader", "Leader", "C10A1", 100.0, 100.0, 1, "2026-05", 100.0)
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=10_000.0,
+        cagr=0.0,
+        monthly_series=({"period": "2026-05", "market_size": 100.0},),
+        brands=(brand,),
+        all_brands=(brand,),
+    )
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={},
+        source="ubist",
+        measure="sales",
+        focus_brand_key="missing",
+    )
+
+    # When focus resolution and payload assembly run.
+    focus = cause_payload._focus_brand(metrics.all_brands, definition.focus_brand_key)
+    data = cause_payload.build_cause_data(definition=definition, metrics=metrics, focus=focus)
+
+    # Then absence is explicit and the leader is never substituted.
+    assert focus is None
+    assert data["kpi"] == {}
+    assert data["kpi_reason"] == "focus_not_found"
 
 
 def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monkeypatch) -> None:

@@ -63,7 +63,7 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
             "contribution_pct": contribution_pct,
         }
         rows.append(row)
-    return rows[:100]
+    return rows
 
 
 def display_matrix_rows(
@@ -126,7 +126,9 @@ def kpi(
     focus: BrandMetric | None,
     hhi_recent: float | None,
 ) -> dict[str, Any]:
-    target = next((item for item in matrix if focus and item["brand_key"] == focus.brand_key), matrix[0] if matrix else {})
+    target = next((item for item in matrix if focus and item["brand_key"] == focus.brand_key), None)
+    if target is None:
+        return {}
     top3_share = sum(item.get("share_pct", 0.0) for item in matrix[:3])
     return {
         "market_size_recent": latest_market_value(market_size_series(metrics)),

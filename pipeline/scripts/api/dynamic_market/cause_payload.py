@@ -76,7 +76,8 @@ def build_cause_data(
     series = market_size_series(metrics)
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
     hhi = hhi_series(metrics.all_brands, source=metrics.source)
-    matrix = matrix_rows(metrics=metrics, focus=focus)
+    full_matrix = matrix_rows(metrics=metrics, focus=focus)
+    matrix = full_matrix[:100]
     display_matrix = display_matrix_rows(matrix, focus=focus)
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
@@ -126,7 +127,7 @@ def build_cause_data(
         },
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,
-        "kpi": kpi(metrics=metrics, matrix=matrix, focus=focus, hhi_recent=hhi_recent),
+        "kpi": kpi(metrics=metrics, matrix=full_matrix, focus=focus, hhi_recent=hhi_recent),
         "level_top5_trend": (
             analysis_sections["level_top5_trend"]
             if analysis_sections
@@ -163,6 +164,8 @@ def build_cause_data(
     }
     if definition.channel_axis and definition.channel_axis.is_active and definition.channel_axis.source == "iqvia_nsa":
         data["iqvia_audit_code_channels"] = _general_iqvia_audit_codes(metrics)
+    if definition.focus_brand_key and not data["kpi"]:
+        data["kpi_reason"] = "focus_not_found"
     return normalize_portal_read_data(data)
 
 
@@ -456,4 +459,5 @@ def _focus_brand(brands: tuple[BrandMetric, ...], focus_brand_key: str | None) -
         for brand in brands:
             if brand.brand_key == requested:
                 return brand
+        return None
     return brands[0] if brands else None
