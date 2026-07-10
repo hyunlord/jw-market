@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+from fastapi.testclient import TestClient
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -189,7 +191,7 @@ def test_deep_analysis_documents_base_short_and_long_ai_analysis_with_same_schem
     assert "AIAnalysisStage" in schema["components"]["schemas"]
 
 
-def test_deep_analysis_openapi_documents_ignored_view_default() -> None:
+def test_deep_analysis_openapi_documents_view_contract() -> None:
     app.openapi_schema = None
     schema = app.openapi()
 
@@ -198,7 +200,14 @@ def test_deep_analysis_openapi_documents_ignored_view_default() -> None:
 
     assert view["in"] == "query"
     assert view["required"] is False
-    assert view["schema"]["default"] == "market_landscape"
+    assert view["schema"]["default"] == "strategy"
+    assert view["schema"]["enum"] == ["general", "strategy"]
+
+
+def test_deep_analysis_rejects_unknown_view_before_handler() -> None:
+    response = TestClient(app).get("/api/deep-analysis/멀티브랜드", params={"view": "competitive_dynamics"})
+
+    assert response.status_code == 422
 
 
 def test_deep_analysis_openapi_keeps_existing_portal_docs() -> None:

@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import os
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Query
@@ -971,9 +971,9 @@ def deep_analysis(
         Query(description="일반뷰 deep-analysis 캐시에서 특정 ATC4 시장을 지정합니다."),
     ] = None,
     view: Annotated[
-        str,
-        Query(description="호환성을 위한 view 선택자입니다. 현재는 기본 심층분석 응답을 반환합니다."),
-    ] = "market_landscape",
+        Literal["general", "strategy"],
+        Query(description="심층분석 view 선택자입니다. general 또는 strategy를 지정합니다."),
+    ] = "strategy",
 ) -> dict:
     brand = unquote(brand_name)
     try:

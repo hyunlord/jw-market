@@ -79,7 +79,7 @@ def test_deep_analysis_accepts_view_without_changing_cache_selection(monkeypatch
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
 
     # When: an arbitrary view is supplied.
-    payload = deep_analysis.deep_analysis("멀티브랜드", view="competitive_dynamics")
+    payload = deep_analysis.deep_analysis("멀티브랜드", view="general")
 
     # Then: the request remains backward compatible and serves the default payload.
     assert payload["market_id"] == "ml_001"
