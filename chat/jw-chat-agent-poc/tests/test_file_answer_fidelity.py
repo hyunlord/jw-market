@@ -16,6 +16,7 @@ from jw_chat_agent_poc.service.genos_client import (
 )
 from jw_chat_agent_poc.service.answer_safety import (
     answer_has_only_fact_numbers,
+    ensure_file_absence_statement,
     fact_token_allowed,
     strict_allowed_numbers,
     uploaded_file_fact_tokens,
@@ -88,6 +89,27 @@ def test_warn_dropped_file_tokens_logs_warning(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="jw_chat_agent_poc.service.genos_client"):
         _warn_dropped_file_tokens("질문", FAITHFUL_ANSWER, FAITHFUL_ANSWER, DOCX_FILE_CONTEXT)
     assert not caplog.records
+
+
+def test_absence_statement_assembled_when_target_missing_everywhere() -> None:
+    question = "업로드 자료에 가상 브랜드 NOVA-ZETA-404의 매출이 있나? 없으면 자료에 없다고 명확히 답해."
+    listing_only = "| 브랜드명 | 매출 |\n| --- | --- |\n| TESTROVA | 123.45 |"
+    out = ensure_file_absence_statement(question, listing_only, DOCX_FILE_CONTEXT)
+    assert out.startswith("업로드 문서에서 NOVA-ZETA-404을(를) 찾을 수 없습니다.")
+    assert "TESTROVA" in out
+
+
+def test_absence_statement_not_added_when_target_addressed_or_present() -> None:
+    question = "업로드 보고서에 Project Eclipse Harbor의 처리시간 감소율이 있나?"
+    addressed = "Project Eclipse Harbor 정보는 해당 문서에 포함되어 있지 않습니다."
+    assert ensure_file_absence_statement(question, addressed, DOCX_FILE_CONTEXT) == addressed
+
+    in_context = "업로드한 보고서에서 Project Dawn Beacon의 승인코드는 무엇이야?"
+    answer = "승인코드는 NAR-7712입니다."
+    assert ensure_file_absence_statement(in_context, answer, DOCX_FILE_CONTEXT) == answer
+
+    # 파일 컨텍스트가 없으면(일반 질문) 어떤 조립도 하지 않는다
+    assert ensure_file_absence_statement(question, "일반 답변", "") == "일반 답변"
 
 
 def test_file_search_client_parses_file_source_items(monkeypatch) -> None:

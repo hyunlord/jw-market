@@ -34,6 +34,7 @@ from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_una
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
     cleanup_markdown_answer,
+    ensure_file_absence_statement,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
 )
@@ -1023,6 +1024,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
     safe_answer = apply_common_unavailable_response(question, safe_answer, markdown_response)
     safe_answer = apply_requested_source_trap_gate(question, safe_answer)
+    safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
     trace = trace_envelope(
         question=question,
         result=result,

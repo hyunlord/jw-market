@@ -32,6 +32,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     dedupe_repeated_hira_patient_counts,
     ensure_competitive_movement_analysis,
     ensure_causal_structure,
+    ensure_file_absence_statement,
     ensure_hira_patient_summary,
     ensure_hira_sales_link_analysis,
     ensure_issue_question_quant_analysis,
@@ -805,6 +806,7 @@ class GenosClient:
         answer = _append_uploaded_file_source(answer, file_context)
         answer = apply_common_unavailable_response(question, answer, markdown_response)
         answer = apply_requested_source_trap_gate(question, answer)
+        answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
         return _append_web_search_section(answer, tool_calls)
 

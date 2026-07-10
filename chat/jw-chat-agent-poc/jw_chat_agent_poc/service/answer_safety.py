@@ -90,6 +90,40 @@ def uploaded_file_fact_tokens(file_context: str) -> tuple[str, ...]:
     return tuple(sorted(token for token in tokens if token))
 
 
+_FILE_QUESTION_TARGET_RE = re.compile(
+    r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+"  # NOVA-ZETA-404, QA_E2E_... 같은 코드형 토큰
+    r"|(?:[A-Z][A-Za-z0-9]+\s+){1,3}[A-Z][A-Za-z0-9]+"  # Project Eclipse Harbor 같은 대문자 시작 연쇄
+    r"|[A-Z][a-z]{4,}"  # Polaris 같은 단독 고유명
+)
+
+
+def _file_question_targets(question: str) -> tuple[str, ...]:
+    targets = []
+    for match in _FILE_QUESTION_TARGET_RE.finditer(question):
+        target = match.group(0).strip()
+        if target and target not in targets:
+            targets.append(target)
+    return tuple(targets)
+
+
+def ensure_file_absence_statement(question: str, answer: str, file_context: str) -> str:
+    """질문이 지목한 대상이 업로드 파일 컨텍스트에 없고 답변도 그 대상을 다루지 않으면 부재 문장을 조립한다."""
+    context = (file_context or "").strip()
+    if not context:
+        return answer
+    context_fold = context.casefold()
+    answer_fold = answer.casefold()
+    missing = [
+        target
+        for target in _file_question_targets(question)
+        if target.casefold() not in context_fold and target.casefold() not in answer_fold
+    ]
+    if not missing:
+        return answer
+    lines = "\n".join(f"업로드 문서에서 {target}을(를) 찾을 수 없습니다." for target in missing)
+    return cleanup_markdown_answer(f"{lines}\n\n{answer}")
+
+
 def fallback_fact_answer(markdown_response: Any) -> str:
     """Build a non-empty deterministic answer from verified fact markdown."""
     if not isinstance(markdown_response, dict):
