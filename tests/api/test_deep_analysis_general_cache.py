@@ -69,6 +69,23 @@ def test_deep_analysis_uses_general_cache_for_explicit_atc4(monkeypatch) -> None
     assert seen_params[0] == ["멀티브랜드", "멀티브랜드", "A10N3"]
 
 
+def test_deep_analysis_accepts_view_without_changing_cache_selection(monkeypatch) -> None:
+    # Given: the caller sends a view selector that is not wired to cache selection yet.
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
+            return None
+        return _row("strategic")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+
+    # When: an arbitrary view is supplied.
+    payload = deep_analysis.deep_analysis("멀티브랜드", view="competitive_dynamics")
+
+    # Then: the request remains backward compatible and serves the default payload.
+    assert payload["market_id"] == "ml_001"
+    assert payload["data"]["scope"] == "strategic"
+
+
 def test_deep_analysis_generates_general_cache_for_explicit_atc4_miss(monkeypatch) -> None:
     # Given: the requested general-view cache row is absent but can be generated on demand.
     calls: list[tuple[str, str | None]] = []

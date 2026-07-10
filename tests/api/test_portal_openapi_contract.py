@@ -189,6 +189,18 @@ def test_deep_analysis_documents_base_short_and_long_ai_analysis_with_same_schem
     assert "AIAnalysisStage" in schema["components"]["schemas"]
 
 
+def test_deep_analysis_openapi_documents_ignored_view_default() -> None:
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    parameters = schema["paths"]["/api/deep-analysis/{brand_name}"]["get"]["parameters"]
+    view = next(parameter for parameter in parameters if parameter["name"] == "view")
+
+    assert view["in"] == "query"
+    assert view["required"] is False
+    assert view["schema"]["default"] == "market_landscape"
+
+
 def test_deep_analysis_openapi_keeps_existing_portal_docs() -> None:
     schema = app.openapi()
 
