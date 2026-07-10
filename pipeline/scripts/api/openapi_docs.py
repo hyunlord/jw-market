@@ -112,7 +112,7 @@ root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니�
 | `source` | string | 아니오 | `ubist` | `ubist`로 계산 | 422 validation error |
 | `measure` | string | 아니오 | `sales` | `sales`로 계산 | 422 validation error |
 | `filters` | object | 아니오 | 빈 필터 객체 | 빈 필터 객체 | 422 validation error |
-| `options` | object | 아니오 | `{top_n:20, period_range:null}` | 기본 옵션 객체 | 422 validation error |
+| `options` | object | 아니오 | `{period_range:null}` | 기본 옵션 객체 | 422 validation error |
 
 `source`는 `ubist`, `iqvia`, `iqvia_nsa`, `nsa`를 받을 수 있고 내부에서는 `iqvia`/`nsa`가
 `iqvia_nsa`로 정규화됩니다. `measure`는 UBIST에서 `sales`, `volume`, IQVIA에서
@@ -141,7 +141,7 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 ### 일반뷰 UBIST `analysis_level.ubist`
 
 허용 키: `atc3(ATC3 좁히기)`, `atc4(ATC4 좁히기)`, `seller(판매사)`,
-`molecule_strength(성분용량)`, `form(제형)`, `route(투여경로)`, `reimbursement(급여구분)`,
+`molecule(성분)`, `molecule_strength(성분용량)`, `form(제형)`, `route(투여경로)`, `reimbursement(급여구분)`,
 `facility(종별)`, `specialty(진료과)`, `pairs(종별×진료과 pair)`.
 
 ### 일반뷰 IQVIA `analysis_level.iqvia`
@@ -172,7 +172,6 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 
 ### `options`
 
-`top_n`은 기본 20이고 1~100 범위입니다. `top_n:null`은 런타임에서 20으로 보정됩니다.
 `period_range.start/end`는 선택 기간 경계입니다.
 `period_range`를 생략하거나 null이면 전체 기간을 사용합니다. `period_range:{}`는 시작/끝 모두 없는 전체 기간과 같습니다.
 경쟁 브랜드 표시는 선택된 시장 필터 scope 안에서 `period_range` 적용 후 매출 합계(`total_value`) 기준으로 정렬합니다.
@@ -208,6 +207,7 @@ PUBLIC_GENERAL_UBIST_ANALYSIS_SCHEMA: Final = {
         "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
         "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
         "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
+        "molecule": {"type": "array", "items": {"type": "string"}, "description": "molecule(성분)"},
         "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
         "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
         "route": {"type": "array", "items": {"type": "string"}, "description": "route(투여경로)"},
@@ -247,6 +247,22 @@ PUBLIC_GENERAL_IQVIA_ANALYSIS_SCHEMA: Final = {
 }
 
 
+PUBLIC_DYNAMIC_MARKET_OPTIONS_SCHEMA: Final = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "period_range": {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "properties": {
+                "start": {"type": ["string", "null"], "description": "시작 period YYYY-MM."},
+                "end": {"type": ["string", "null"], "description": "종료 period YYYY-MM."},
+            },
+        }
+    },
+}
+
+
 PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
     "oneOf": [
         {
@@ -269,7 +285,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                         },
                     },
                 },
-                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+                "options": PUBLIC_DYNAMIC_MARKET_OPTIONS_SCHEMA,
             },
         },
         {
@@ -292,7 +308,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                         },
                     },
                 },
-                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+                "options": PUBLIC_DYNAMIC_MARKET_OPTIONS_SCHEMA,
             },
         },
         {
@@ -311,7 +327,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                         "atc4": {"type": "array", "items": {"type": "string"}, "description": "ATC4 전략뷰 narrowing. 생략/빈 배열이면 전략 시장 전체 선택."},
                     },
                 },
-                "options": {"$ref": "#/components/schemas/DynamicMarketOptions"},
+                "options": PUBLIC_DYNAMIC_MARKET_OPTIONS_SCHEMA,
             },
         },
     ]
@@ -337,7 +353,6 @@ DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
         "view_kind": "market_landscape",
         "atc4": ["C10A1"],
     },
-    "options": {"top_n": 20},
 }
 
 
@@ -348,7 +363,6 @@ GENERAL_BASELINE_REQUEST_EXAMPLE: Final = {
         "focus_brand_key": "리바로",
         "atc4": ["C10A1"],
     },
-    "options": {"top_n": 20},
 }
 
 
@@ -361,6 +375,7 @@ GENERAL_UBIST_FILTER_REQUEST_EXAMPLE: Final = {
         "analysis_level": {
             "ubist": {
                 "seller": ["JW중외제약"],
+                "molecule": ["ANAGLIPTIN"],
                 "molecule_strength": ["anagliptin 100mg"],
                 "form": ["정제"],
                 "route": ["경구"],
@@ -370,7 +385,7 @@ GENERAL_UBIST_FILTER_REQUEST_EXAMPLE: Final = {
             }
         },
     },
-    "options": {"top_n": 10, "period_range": {"start": "2024-01", "end": "2026-04"}},
+    "options": {"period_range": {"start": "2024-01", "end": "2026-04"}},
 }
 
 
@@ -392,7 +407,7 @@ GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE: Final = {
             }
         },
     },
-    "options": {"top_n": 10, "period_range": {"start": "2024-Q1", "end": "2026-Q1"}},
+    "options": {"period_range": {"start": "2024-01", "end": "2026-04"}},
 }
 
 
@@ -403,7 +418,6 @@ COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
         "focus_brand_key": "리바로",
         "view_kind": "competitive_dynamics",
     },
-    "options": {"top_n": 20},
 }
 
 
@@ -623,6 +637,15 @@ BRAND_ACTIVITY_FILTER_SCHEMA: Final = {
             "properties": {"iqvia": BRAND_ACTIVITY_IQVIA_ANALYSIS_SCHEMA},
             "description": "Brand-Activity 공개 필터는 IQVIA 전용입니다. 6개 row dimension은 상위 경쟁 브랜드 후보를 좁히고, audit_code는 경쟁 브랜드 매출 합계 산정 값을 채널축으로 슬라이스합니다.",
         },
+        "market_scope": {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "properties": {
+                "option_id": {"type": "string", "description": "시장군 catalog option id."},
+                "member": {"type": ["string", "null"], "description": "선택할 group member 브랜드명."},
+            },
+            "required": ["option_id"],
+        },
         "channel": {
             "type": "object",
             "additionalProperties": True,
@@ -632,8 +655,6 @@ BRAND_ACTIVITY_FILTER_SCHEMA: Final = {
                     "items": {"type": "string"},
                     "description": "Legacy IQVIA audit_code shortcut. analysis_level.iqvia.audit_code로 정규화합니다.",
                 },
-                "visit_location": {"type": "array", "items": {"type": "string"}, "description": "Legacy 키워드 종별 행 필터."},
-                "specialty": {"type": "array", "items": {"type": "string"}, "description": "Legacy 키워드 진료과 행 필터."},
             },
         },
         "visit_location": {"type": "array", "items": {"type": "string"}, "description": "키워드 종별 행 필터."},

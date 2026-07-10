@@ -21,12 +21,9 @@ class UbistAnalysisLevel(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    class_: list[str] = Field(default_factory=list, alias="class", description="UBIST Class 필터. 값 목록 안에서는 OR로 결합합니다.", examples=[["Statin"]])
     seller: list[str] = Field(default_factory=list, description="판매사 필터. 값 목록 안에서는 OR로 결합합니다.", examples=[["JW중외제약"]])
     molecule: list[str] = Field(default_factory=list, description="성분 필터. 값 목록 안에서는 OR로 결합합니다.", examples=[["PITAVASTATIN"]])
     molecule_strength: list[str] = Field(default_factory=list, description="성분용량 필터.", examples=[["PITAVASTATIN 2MG"]])
-    strength_pack: list[str] = Field(default_factory=list, description="용량/포장 단위 필터.", examples=[["2mg"]])
-    ox_gx: list[str] = Field(default_factory=list, description="오리지널/제네릭 구분 필터.", examples=[["Original"]])
     form: list[str] = Field(default_factory=list, description="제형 필터.", examples=[["정제"]])
     route: list[str] = Field(default_factory=list, description="투여경로 필터.", examples=[["경구"]])
     reimbursement: list[str] = Field(default_factory=list, description="급여구분 필터.", examples=[["급여"]])
@@ -42,15 +39,12 @@ class IqviaAnalysisLevel(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    mfr: list[str] = Field(default_factory=list, description="IQVIA 제조사 필터.", examples=[["JW중외제약"]])
     mfr_name_kor: list[str] = Field(default_factory=list, description="IQVIA 제조사 한글명 필터.", examples=[["JW중외제약"]])
     molecule_type: list[str] = Field(default_factory=list, description="IQVIA molecule type 필터.")
     molecule_desc: list[str] = Field(default_factory=list, description="IQVIA molecule desc 성분 필터.")
     pack_desc: list[str] = Field(default_factory=list, description="IQVIA pack desc 필터.")
     strength: list[str] = Field(default_factory=list, description="IQVIA strength 필터.")
-    nhi: list[str] = Field(default_factory=list, description="IQVIA NHI 필터.")
     nhi_type: list[str] = Field(default_factory=list, description="IQVIA NHI type 필터.")
-    atc4: list[str] = Field(default_factory=list, description="IQVIA strategic ATC4 narrowing 필터.")
     audit_code: list[str] = Field(default_factory=list, description="IQVIA audit code 값 슬라이스. 비어 있으면 전체 audit matrix를 포함합니다.")
 
 
@@ -77,7 +71,6 @@ class DynamicMarketAnalysisLevel(BaseModel):
             payload["ubist"].pop("pairs", None)
         else:
             payload["iqvia"].pop("audit_code", None)
-            payload["iqvia"].pop("atc4", None)
         return payload
 
     def to_channel_axis(self, *, source: str) -> ChannelAxisFilter | None:
@@ -115,7 +108,22 @@ class DynamicMarketAnalysisLevel(BaseModel):
         return selected if selected.is_active else None
 
 
-DynamicMarketAnalysisLevelFilters = DynamicMarketAnalysisLevel
+class StrategicAtcAnalysisLevel(BaseModel):
+    """Internal strategic ATC narrowing, populated from top-level filters.atc4."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    atc3: list[str] = Field(default_factory=list)
+    atc4: list[str] = Field(default_factory=list)
+
+
+class DynamicMarketAnalysisLevelFilters(BaseModel):
+    """Internal source-specific strategic narrowing contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ubist: StrategicAtcAnalysisLevel = Field(default_factory=StrategicAtcAnalysisLevel)
+    iqvia: StrategicAtcAnalysisLevel = Field(default_factory=StrategicAtcAnalysisLevel)
 
 
 class UbistChannelAxis(BaseModel):
@@ -210,7 +218,6 @@ class DynamicMarketOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    top_n: int | None = Field(default=20, ge=1, le=100, description="ranking 섹션 상위 N개.")
     period_range: DynamicMarketPeriodRange | None = Field(default=None, description="선택 기간 범위.")
 
 

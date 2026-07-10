@@ -429,10 +429,11 @@ def test_strategic_filter_options_exposes_only_atc_hierarchy(monkeypatch) -> Non
     assert payload["applied_selections"] == {}
 
 
-def test_filter_options_openapi_hides_market_id_override() -> None:
+def test_filter_options_openapi_documents_deprecated_market_id_override() -> None:
     schema = app.openapi()
     params = schema["paths"]["/api/dynamic-market/filter-options"]["get"]["parameters"]
-    names = {param["name"] for param in params}
+    by_name = {param["name"]: param for param in params}
 
-    assert {"view", "source", "brand"}.issubset(names)
-    assert "market_id" not in names
+    assert {"view", "source", "brand", "market_id"}.issubset(by_name)
+    assert by_name["market_id"]["deprecated"] is True
+    assert "호환" in by_name["market_id"]["description"]

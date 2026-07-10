@@ -2146,13 +2146,29 @@ def test_dynamic_market_request_rejects_removed_metrics_option() -> None:
     assert "metrics" in str(exc_info.value)
 
 
-def test_general_dimension_payload_drops_iqvia_value_slice_and_nested_atc4() -> None:
+def test_dynamic_market_request_rejects_removed_top_n_option() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        DynamicMarketRequest.model_validate({"options": {"top_n": 10}})
+
+    assert "top_n" in str(exc_info.value)
+
+
+def test_dynamic_market_request_rejects_removed_analysis_fields() -> None:
+    removed = {"ubist": ("class", "strength_pack", "ox_gx"), "iqvia": ("mfr", "nhi", "atc4")}
+    for source, fields in removed.items():
+        for field in fields:
+            with pytest.raises(ValidationError) as exc_info:
+                DynamicMarketRequest.model_validate({"filters": {"analysis_level": {source: {field: ["unused"]}}}})
+            assert field in str(exc_info.value)
+
+
+def test_general_dimension_payload_drops_iqvia_value_slice() -> None:
     request = DynamicMarketRequest.model_validate(
         {
             "source": "iqvia",
             "filters": {
                 "atc4": ["A10C1"],
-                "analysis_level": {"iqvia": {"atc4": ["A10C1"], "audit_code": ["KPA"], "pack_desc": ["PACK"]}},
+                "analysis_level": {"iqvia": {"audit_code": ["KPA"], "pack_desc": ["PACK"]}},
             },
         }
     )
@@ -2160,7 +2176,6 @@ def test_general_dimension_payload_drops_iqvia_value_slice_and_nested_atc4() -> 
     payload = request.filters.analysis_level.to_dimension_payload(source=request.source)["iqvia"]
     assert payload["pack_desc"] == ["PACK"]
     assert "audit_code" not in payload
-    assert "atc4" not in payload
 
 
 def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
@@ -2417,7 +2432,7 @@ def test_route_rejects_analysis_level_filters_for_strategic_view() -> None:
                     "filters": {
                         "view_kind": "market_landscape",
                         "focus_brand_key": "리바로",
-                        "analysis_level": {"ubist": {"class": ["Statin"], "reimbursement": ["급여"]}},
+                        "analysis_level": {"ubist": {"seller": ["JW중외제약"], "reimbursement": ["급여"]}},
                     },
                 }
             )
@@ -2425,7 +2440,7 @@ def test_route_rejects_analysis_level_filters_for_strategic_view() -> None:
     except dynamic_market_route.HTTPException as exc:
         assert exc.status_code == 400
         assert "strategic view uses top-level filters.atc4" in str(exc.detail)
-        assert "analysis_level.ubist.class" in str(exc.detail)
+        assert "analysis_level.ubist.seller" in str(exc.detail)
         assert "analysis_level.ubist.reimbursement" in str(exc.detail)
     else:
         raise AssertionError("strategic analysis_level filters must be rejected")

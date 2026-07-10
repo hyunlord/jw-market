@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesAmbiguousMarketError,
@@ -64,7 +64,7 @@ def brand_activity_topics() -> dict[str, JsonValue]:
 
 
 @router.get("/api/brand-activity/topics/{scope_id}", include_in_schema=TOPIC_DEBUG_INCLUDE_IN_SCHEMA)
-def brand_activity_topic(scope_id: str) -> dict[str, JsonValue]:
+def brand_activity_topic(scope_id: str = Path(description="내부 토픽 scope 식별자.")) -> dict[str, JsonValue]:
     """Return one Brand Activity topic market payload."""
     try:
         payload = get_topic_payload(scope_id)
@@ -241,10 +241,6 @@ def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | 
     normalized = _normalize_market_filter(filters or legacy_filter)
     data["filters"] = normalized
     data["filter"] = normalized
-    # The service layer resolves market scope from selected_brand + filters.
-    # Keep market_id documented as compatibility input, but do not change the
-    # historical service payload contract for existing Brand Activity handlers.
-    data.pop("market_id", None)
     return data
 
 
@@ -252,15 +248,9 @@ def _normalize_market_filter(value: dict[str, JsonValue]) -> dict[str, JsonValue
     normalized = {key: item for key, item in value.items() if key not in {"atc", "channel"}}
     atc = value.get("atc")
     if isinstance(atc, dict):
-        for key in ("atc3", "atc4"):
+        for key in ("atc4",):
             if key not in normalized and atc.get(key) not in ({}, [], None):
                 normalized[key] = atc[key]
-
-    channel = value.get("channel")
-    if isinstance(channel, dict):
-        for key in ("visit_location", "specialty"):
-            if key not in normalized and channel.get(key) not in ({}, [], None):
-                normalized[key] = channel[key]
 
     audit_codes = _analysis_level_audit_codes(value)
     if not audit_codes:

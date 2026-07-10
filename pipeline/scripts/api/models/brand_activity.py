@@ -10,6 +10,7 @@ def _dict(value: Any) -> dict[str, Any] | None:
 
 
 def _rename(data: dict[str, Any], source: str, target: str) -> None:
+    # camelCase names are private BFF compatibility aliases and stay out of public OpenAPI.
     if source in data and target not in data:
         data[target] = data.pop(source)
 
@@ -23,7 +24,6 @@ def _none_to_empty_lists(data: dict[str, Any], keys: tuple[str, ...]) -> None:
 class AtcFilter(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    atc3: list[str] = Field(default_factory=list, description="ATC3 코드 멀티 선택(OR). 예: ['C10A']")
     atc4: list[str] = Field(default_factory=list, description="ATC4 코드 멀티 선택(OR). 예: ['C10A1']")
 
     @model_validator(mode="before")
@@ -32,7 +32,7 @@ class AtcFilter(BaseModel):
         data = _dict(value)
         if data is None:
             return value
-        _none_to_empty_lists(data, ("atc3", "atc4"))
+        _none_to_empty_lists(data, ("atc4",))
         return data
 
 
@@ -121,12 +121,10 @@ class AnalysisLevel(BaseModel):
 
 
 class ChannelFilter(BaseModel):
-    """PPTX p4 채널 필터. UBIST는 종별/진료과, IQVIA는 AUDIT CODE를 사용한다."""
+    """Legacy IQVIA audit-code shortcut."""
 
     model_config = ConfigDict(extra="allow")
 
-    visit_location: list[str] = Field(default_factory=list, description="종별(상급종병/종병/병원/의원 등) 멀티선택.")
-    specialty: list[str] = Field(default_factory=list, description='진료과 멀티선택. [입력] 예 ["내과","순환기내과"].')
     audit_code: list[str] = Field(default_factory=list, description="IQVIA AUDIT CODE 멀티선택.")
 
     @model_validator(mode="before")
@@ -135,9 +133,8 @@ class ChannelFilter(BaseModel):
         data = _dict(value)
         if data is None:
             return value
-        _rename(data, "visitLocation", "visit_location")
         _rename(data, "auditCode", "audit_code")
-        _none_to_empty_lists(data, ("visit_location", "specialty", "audit_code"))
+        _none_to_empty_lists(data, ("audit_code",))
         return data
 
 
@@ -167,7 +164,7 @@ class MarketFilter(BaseModel):
 
     atc: AtcFilter = Field(
         default_factory=AtcFilter,
-        description="ATC 코드 필터. [프론트] ATC 계층 트리/멀티선택 UI. atc3·atc4 멀티 입력.",
+        description="ATC 코드 필터. [프론트] ATC4 멀티선택 UI.",
     )
     analysis_level: AnalysisLevel = Field(
         default_factory=AnalysisLevel,
@@ -175,7 +172,7 @@ class MarketFilter(BaseModel):
     )
     channel: ChannelFilter = Field(
         default_factory=ChannelFilter,
-        description="채널 필터. [프론트] UBIST 종별/진료과 shortcut. IQVIA Audit Code는 analysis_level.iqvia.audit_code를 사용합니다.",
+        description="Legacy IQVIA Audit Code shortcut. 신규 호출은 analysis_level.iqvia.audit_code를 사용합니다.",
     )
     market_scope: MarketScopeFilter | None = Field(
         default=None,
@@ -264,8 +261,8 @@ class CsdTimeseriesRequest(BrandActivityBaseRequest):
 class BrandActivityTopicsRequest(BrandActivityBaseRequest):
     """Request body for the filtered Brand Activity topic route."""
 
-    visit_location: str | list[str] = Field("전체", description="종별 shortcut. 문자열 또는 OR 리스트이며 filters.channel.visit_location과 병행 호환.")
-    specialty: str | list[str] = Field("전체", description="진료과 shortcut. 문자열 또는 OR 리스트이며 filters.channel.specialty와 병행 호환.")
+    visit_location: str | list[str] = Field("전체", description="종별 shortcut. 문자열 또는 OR 리스트.")
+    specialty: str | list[str] = Field("전체", description="진료과 shortcut. 문자열 또는 OR 리스트.")
     interest: str | list[str] = Field("전체", description="키워드 유용성 shortcut. 문자열 또는 OR 리스트.")
     prescription_evolution: str | list[str] = Field("전체", description="처방 변화 shortcut. 문자열 또는 OR 리스트.")
     period_start: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
@@ -298,8 +295,8 @@ class InterestRxWeights(BaseModel):
 class BrandActivityInterestRxRequest(BrandActivityBaseRequest):
     """Request body for the Brand Activity interest/Rx matrix route."""
 
-    visit_location: str = Field("전체", description="종별 단일 선택 shortcut. filters.channel.visit_location과 병행 호환.")
-    specialty: str = Field("전체", description="진료과 단일 선택 shortcut. filters.channel.specialty와 병행 호환.")
+    visit_location: str = Field("전체", description="종별 단일 선택 shortcut.")
+    specialty: str = Field("전체", description="진료과 단일 선택 shortcut.")
     period_start: str | None = Field(default=None, description="조회 시작 월. 예: 2024-01.")
     period_end: str | None = Field(default=None, description="조회 종료 월. 예: 2025-12.")
     weights: InterestRxWeights | None = Field(

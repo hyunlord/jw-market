@@ -6,7 +6,7 @@ from typing import Any, Final, Literal, Mapping, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline.scripts.api.brand_activity_csd_shared import JsonMap, text
-from pipeline.scripts.api.brand_activity_topics import JsonValue
+from pipeline.scripts.api.models.brand_activity import MarketFilter
 
 
 CsdEntityLevel = Literal["brand", "company"]
@@ -60,15 +60,11 @@ class CsdActivitySeriesRequest(BaseModel):
 
     view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
     selected_brand: str = Field(description="강조/시장 결정 브랜드.")
-    filters: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description=(
-            "시장·차원 필터. 일반뷰 IQVIA top 브랜드 선정은 "
-            "analysis_level.iqvia의 mfr_name_kor/molecule_type/molecule_desc/"
-            "pack_desc/strength/nhi_type row 필터와 audit_code ranking slice를 사용합니다."
-        ),
+    filters: MarketFilter = Field(
+        default_factory=MarketFilter,
+        description="시장·차원 필터. nested ATC4와 IQVIA 분석레벨·audit_code 구조를 명시합니다.",
     )
-    filter: dict[str, JsonValue] = Field(default_factory=dict, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
+    filter: MarketFilter = Field(default_factory=MarketFilter, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
     entity_level: str = Field(default="brand", description="brand 또는 company. company면 representing_company 단위로 활동량을 합산합니다.")
     csd_channel: str = Field(default="TOTAL", description="CSD 원본 jw_channel 값. TOTAL/GH/SHPPI/CPPI/GH+SHPPI.")
     selected_entities: list[str] = Field(default_factory=list, max_length=MAX_ENTITIES, description="사용자 지정 브랜드/회사 최대 6개. 미지정 시 선택 + top5.")

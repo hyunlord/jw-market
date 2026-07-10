@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
+from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
@@ -26,9 +27,12 @@ from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketScopeTooBroadError,
     MarketDefinition,
     PeriodRange,
-    clamp_top_n,
 )
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevel, DynamicMarketRequest
+from pipeline.scripts.api.models.dynamic_market import (
+    DynamicMarketAnalysisLevel,
+    DynamicMarketAnalysisLevelFilters,
+    DynamicMarketRequest,
+)
 from pipeline.scripts.api.openapi_docs import (
     DYNAMIC_MARKET_DESCRIPTION,
     DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION,
@@ -94,7 +98,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
             source=definition.source,
             measure=definition.measure,
             period_range=period_range,
-            top_n=clamp_top_n(payload.options.top_n),
+            top_n=MAX_COMPETITOR_COUNT,
             dimension_filters=definition.dimension_filters,
             channel_axis=definition.channel_axis,
             view=definition.view,
@@ -156,14 +160,14 @@ def _active_unsupported_strategic_analysis_filters(payload: DynamicMarketRequest
     return unsupported
 
 
-def _strategic_analysis_level_from_top_level_atc4(payload: DynamicMarketRequest) -> DynamicMarketAnalysisLevel:
+def _strategic_analysis_level_from_top_level_atc4(payload: DynamicMarketRequest) -> DynamicMarketAnalysisLevelFilters:
     """Fold public strategic ATC4 input into the runtime-only source model."""
 
     source = payload.source.strip().lower()
     source_key = "ubist" if source == "ubist" else "iqvia"
     if not payload.filters.atc4:
-        return DynamicMarketAnalysisLevel()
-    return DynamicMarketAnalysisLevel.model_validate({source_key: {"atc4": payload.filters.atc4}})
+        return DynamicMarketAnalysisLevelFilters()
+    return DynamicMarketAnalysisLevelFilters.model_validate({source_key: {"atc4": payload.filters.atc4}})
 
 
 def _enforce_scope_size_limit(definition: MarketDefinition, *, limit: int) -> None:
@@ -181,7 +185,7 @@ def _resolve_definition(payload: DynamicMarketRequest):
         raise DynamicMarketInputError(str(exc)) from exc
     if filters.view_kind:
         market_selection = _resolve_strategic_market_selection(payload)
-        analysis_level = _strategic_analysis_level_from_top_level_atc4(payload).to_dimension_payload(source=payload.source)
+        analysis_level = _strategic_analysis_level_from_top_level_atc4(payload).model_dump()
         return StrategicViewResolver(mart_db=config.db_name, dimension_db=config.strategic_dimension_db_name).resolve(
             view_kind=filters.view_kind,
             ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
@@ -244,13 +248,17 @@ def dynamic_market_filter_options(
         default=None,
         description="[입력] 이미 선택된 차원 필터 JSON. 차원 내 OR, 차원 간 AND로 남은 옵션을 좁힙니다.",
     ),
-    market_id: str | None = Query(default=None, include_in_schema=False, deprecated=True),
+    market_id: str | None = Query(
+        default=None,
+        deprecated=True,
+        description="[호환] 기존 호출자가 명시하는 시장 id. 신규 호출은 brand를 사용합니다.",
+        examples=["C10A1"],
+    ),
 ) -> dict:
     """Return dynamic filter options using brand-based market resolution.
 
-    New portal callers should send only ``brand``, ``view``, and ``source``.
-    ``market_id`` remains accepted as a hidden compatibility override for old
-    scripts, but it is not part of the public Swagger contract.
+    New portal callers should send ``brand``, ``view``, and ``source``.
+    ``market_id`` remains a deprecated compatibility override for old scripts.
     """
 
     try:
@@ -333,7 +341,7 @@ def strategic_stub_for_smoke() -> dict:
         source=definition.source,
         measure=definition.measure,
         period_range=PeriodRange(),
-        top_n=20,
+        top_n=MAX_COMPETITOR_COUNT,
         view=definition.view,
         strategic_market_id=definition.strategic_market_id,
     )

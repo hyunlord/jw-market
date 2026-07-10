@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import strategic_runtime
-from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
+from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters, DynamicMarketRequest
 
 
 def test_strategic_runtime_uses_only_atc_narrowing_filters() -> None:
@@ -106,18 +106,7 @@ def test_strategic_runtime_matches_ubist_atc4_source_native_aliases() -> None:
 
 
 def test_strategic_runtime_matches_iqvia_atc4_source_native_aliases() -> None:
-    request = DynamicMarketRequest.model_validate(
-        {
-            "source": "iqvia",
-            "measure": "sales",
-            "filters": {
-                "analysis_level": {
-                    "ubist": {},
-                    "iqvia": {"atc4": ["A10C1"]},
-                }
-            },
-        }
-    )
+    analysis_level = DynamicMarketAnalysisLevelFilters.model_validate({"iqvia": {"atc4": ["A10C1"]}})
     rows = [
         {
             "brand_key": "source-native",
@@ -134,7 +123,7 @@ def test_strategic_runtime_matches_iqvia_atc4_source_native_aliases() -> None:
     filtered = strategic_runtime._filter_rows_by_analysis_level(
         rows=rows,
         source="iqvia_nsa",
-        analysis_level=request.filters.analysis_level,
+        analysis_level=analysis_level,
     )
 
     assert [row["brand_key"] for row in filtered] == ["source-native"]

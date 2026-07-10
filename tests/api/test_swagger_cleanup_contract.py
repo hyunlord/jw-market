@@ -34,12 +34,14 @@ def test_openapi_hides_internal_and_alias_routes() -> None:
 def test_brand_activity_filter_schema_exposes_nested_descriptions() -> None:
     schemas = app.openapi()["components"]["schemas"]
 
-    assert schemas["AtcFilter"]["properties"]["atc3"]["description"].startswith("ATC3 코드")
+    assert set(schemas["AtcFilter"]["properties"]) == {"atc4"}
     assert "UBIST" in schemas["AnalysisLevel"]["properties"]["ubist"]["description"]
     assert "판매사" in schemas["UbistAnalysisLevel"]["properties"]["seller"]["description"]
     assert "성분명" in schemas["IqviaAnalysisLevel"]["properties"]["molecule_desc"]["description"]
     assert "audit_code" in schemas["IqviaAnalysisLevel"]["properties"]
-    assert "채널 필터" in schemas["MarketFilter"]["properties"]["channel"]["description"]
+    assert "audit_code" in schemas["MarketFilter"]["properties"]["channel"]["description"]
+    assert "visit_location" not in schemas["ChannelFilter"]["properties"]
+    assert "specialty" not in schemas["ChannelFilter"]["properties"]
     assert "channel_axis" not in schemas["BrandActivityTopicsRequest"]["properties"]
     assert "channel_axis" not in schemas["BrandActivityInterestRxRequest"]["properties"]
     assert "channel_axis" not in schemas["CsdTimeseriesRequest"]["properties"]
@@ -64,8 +66,15 @@ def test_brand_activity_public_request_schema_is_iqvia_only() -> None:
     assert "mfr_name_kor" in schema_text
     assert "nhi_type" in schema_text
     assert "audit_code" in schema_text
-    assert "visit_location" in schema_text
-    assert "specialty" in schema_text
+
+
+def test_csd_activity_request_documents_nested_filter_fields() -> None:
+    schema = app.openapi()["components"]["schemas"]["CsdActivitySeriesRequest"]
+
+    assert schema["properties"]["filters"]["$ref"] == "#/components/schemas/MarketFilter"
+    operation_text = str(app.openapi()["paths"]["/api/brand-activity/csd-activity-series"]["post"]["requestBody"])
+    for field in ("atc4", "mfr_name_kor", "molecule_desc", "audit_code", "market_scope"):
+        assert field in operation_text
 
 
 def test_brand_activity_topics_response_documents_live_scope_and_brand_fields() -> None:
@@ -103,12 +112,18 @@ def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> N
     strategic_filters = schema["oneOf"][2]["properties"]["filters"]["properties"]
 
     assert "molecule" not in schema["oneOf"][0]["properties"]["filters"]["properties"]
+    assert "molecule" in general_ubist
     assert {"facility", "specialty", "pairs"}.issubset(general_ubist)
-    assert {"class", "molecule", "strength_pack", "ox_gx"}.isdisjoint(general_ubist)
+    assert {"class", "strength_pack", "ox_gx"}.isdisjoint(general_ubist)
     assert {"mfr_name_kor", "molecule_type", "molecule_desc", "pack_desc", "strength", "nhi_type", "audit_code"}.issubset(general_iqvia)
-    assert {"mfr", "nhi"}.isdisjoint(general_iqvia)
+    assert {"mfr", "nhi", "atc4"}.isdisjoint(general_iqvia)
     assert "atc4" in strategic_filters
     assert "analysis_level" not in strategic_filters
+    for variant in schema["oneOf"]:
+        options = variant["properties"]["options"]
+        assert "" not in options
+        assert set(options["properties"]) == {"period_range"}
+        assert set(options["properties"]["period_range"]["properties"]) == {"start", "end"}
     assert "전략뷰도 top-level `filters.atc4`" in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
     assert "Swagger에서는" not in app.openapi()["paths"]["/api/dynamic-market"]["post"]["description"]
 
@@ -185,7 +200,39 @@ def test_brand_activity_folds_analysis_level_audit_code_into_internal_slice(monk
     assert captured["payload"]["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
+def test_brand_activity_ignores_removed_nested_atc3_and_channel_shortcuts(monkeypatch) -> None:
+    captured: dict[str, dict] = {}
+
+    def fake_get_topic_brand_payload(payload: dict) -> dict:
+        captured["payload"] = payload
+        return {"brands": []}
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "visit_location": "의원",
+            "specialty": "순환기내과",
+            "filters": {
+                "atc": {"atc3": ["C10A"], "atc4": ["C10A1"]},
+                "channel": {"visit_location": ["병원"], "specialty": ["내과"]},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["visit_location"] == "의원"
+    assert captured["payload"]["specialty"] == "순환기내과"
+    assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
+    assert "atc3" not in captured["payload"]["filters"]
+    assert "visit_location" not in captured["payload"]["filters"]
+    assert "specialty" not in captured["payload"]["filters"]
+
+
 def test_brand_activity_accepts_bff_camel_case_payload(monkeypatch) -> None:
+    # BFF compatibility aliases remain accepted but intentionally stay out of public OpenAPI.
     captured: dict[str, dict] = {}
 
     def fake_get_topic_brand_payload(payload: dict) -> dict:
@@ -278,6 +325,15 @@ def test_brand_activity_post_routes_still_return_200(monkeypatch) -> None:
     assert client.post("/jw-brand-activity-mock/api/brand-activity/csd-timeseries", json=base_payload).status_code == 200
     assert client.post("/jw-brand-activity-mock/api/brand-activity/topics", json=base_payload).status_code == 200
     assert client.post("/jw-brand-activity-mock/api/brand-activity/interest-rx-matrix", json=base_payload).status_code == 200
+
+
+def test_reference_dynamic_sender_omits_removed_options() -> None:
+    html = (Path(__file__).resolve().parents[2] / "docs/reference/jw_market_hardcoded_mockup_v3_4.html").read_text()
+
+    assert "dynamic-top-n" not in html
+    assert "top_n: Number" not in html
+    assert "metrics: [" not in html
+
 
 
 def test_filter_options_accepts_brand_and_alias_remains_callable(monkeypatch) -> None:
