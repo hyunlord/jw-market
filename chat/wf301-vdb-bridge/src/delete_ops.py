@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pymysql
 
-from . import ledger, settings, weaviate_ops
+from . import ledger, session_wiki, settings, weaviate_ops
 from .logging_utils import safe_log
 from .models import DeleteDocumentRequest, DeleteDocumentResponse
 
@@ -216,16 +216,16 @@ def delete_session_document(
             )
         try:
             with httpx.Client() as client:
-                object_ids = weaviate_ops.list_target_object_ids(
+                deleted_ids = weaviate_ops.delete_target_objects_for_document(
                     client,
                     document_id=target.document_id,
                 )
-                deleted_ids = weaviate_ops.delete_target_objects(client, object_ids=object_ids)
             ledger_updates = soft_delete_document(
                 conn,
                 document_id=target.document_id,
                 user_id=user_id,
             )
+            session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
             conn.commit()
         except (httpx.HTTPError, pymysql.MySQLError):
             conn.rollback()

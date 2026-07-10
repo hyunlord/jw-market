@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from typing import Any
 
 import httpx
@@ -152,19 +154,250 @@ def copy_chunks_to_target(
     return object_ids
 
 
-def embed_text(client: httpx.Client, text: str) -> list[float]:
-    payload = {"model": "model", "input": text}
+def _post_target_objects(client: httpx.Client, objects: list[dict[str, Any]]) -> None:
+    if not objects:
+        return
     response = client.post(
-        f"{settings.EMBEDDING_BASE.rstrip('/')}/v1/embeddings",
-        json=payload,
+        f"{settings.WEAVIATE_BASE}/v1/batch/objects",
+        json={"objects": objects},
         timeout=settings.HTTP_TIMEOUT_S,
     )
     response.raise_for_status()
     body = response.json()
-    embedding = body.get("data", [{}])[0].get("embedding")
-    if not isinstance(embedding, list) or not embedding:
-        raise RuntimeError("embedding serving returned no embedding")
-    return [float(value) for value in embedding]
+    if isinstance(body, list):
+        errors = [row for row in body if row.get("result", {}).get("errors")]
+        if errors:
+            raise RuntimeError(f"weaviate batch errors: {errors[:1]}")
+
+
+def _embedding_batch_size() -> int:
+    value = os.environ.get("EMBEDDING_BATCH_SIZE") or str(settings.BATCH_SIZE)
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return max(1, settings.BATCH_SIZE)
+
+
+def _embedding_fallback_batch_size() -> int:
+    value = os.environ.get("EMBEDDING_FALLBACK_BATCH_SIZE", "16")
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 16
+
+
+def _embedding_batch_concurrency() -> int:
+    value = os.environ.get("EMBEDDING_BATCH_CONCURRENCY", "4")
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 4
+
+
+def _parse_embeddings(body: dict[str, Any], expected: int) -> list[list[float]]:
+    rows = body.get("data")
+    if not isinstance(rows, list) or len(rows) != expected:
+        raise RuntimeError(
+            f"embedding serving returned {len(rows) if isinstance(rows, list) else 'no'} "
+            f"embeddings for {expected} inputs"
+        )
+    if all(isinstance(row, dict) and isinstance(row.get("index"), int) for row in rows):
+        rows = sorted(rows, key=lambda row: row["index"])
+    vectors: list[list[float]] = []
+    for row in rows:
+        embedding = row.get("embedding") if isinstance(row, dict) else None
+        if not isinstance(embedding, list) or not embedding:
+            raise RuntimeError("embedding serving returned no embedding")
+        vectors.append([float(value) for value in embedding])
+    return vectors
+
+
+def _embed_text_batch(client: httpx.Client, texts: list[str]) -> list[list[float]]:
+    payload: dict[str, Any] = {"model": "model", "input": texts if len(texts) > 1 else texts[0]}
+    try:
+        response = client.post(
+            f"{settings.EMBEDDING_BASE.rstrip('/')}/v1/embeddings",
+            json=payload,
+            timeout=settings.EMBEDDING_TIMEOUT_S,
+        )
+    except httpx.ReadTimeout:
+        fallback_size = _embedding_fallback_batch_size()
+        if len(texts) <= fallback_size:
+            raise
+        safe_log(
+            "embedding_batch_timeout_split",
+            count=len(texts),
+            fallback_batch_size=fallback_size,
+        )
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), fallback_size):
+            vectors.extend(_embed_text_batch(client, texts[start : start + fallback_size]))
+        return vectors
+    response.raise_for_status()
+    return _parse_embeddings(response.json(), len(texts))
+
+
+def embed_texts(client: httpx.Client, texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+    batch_size = _embedding_batch_size()
+    batches = [
+        (start, texts[start : start + batch_size])
+        for start in range(0, len(texts), batch_size)
+    ]
+    concurrency = min(_embedding_batch_concurrency(), len(batches))
+    vectors_by_batch: list[list[list[float]] | None] = [None] * len(batches)
+    if concurrency == 1:
+        for batch_index, (_, batch) in enumerate(batches):
+            vectors_by_batch[batch_index] = _embed_text_batch(client, batch)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            future_to_index = {
+                executor.submit(_embed_text_batch, client, batch): batch_index
+                for batch_index, (_, batch) in enumerate(batches)
+            }
+            for future in as_completed(future_to_index):
+                vectors_by_batch[future_to_index[future]] = future.result()
+    vectors: list[list[float]] = []
+    for batch_vectors in vectors_by_batch:
+        if batch_vectors is None:
+            raise RuntimeError("embedding batch did not complete")
+        vectors.extend(batch_vectors)
+    if len(vectors) != len(texts):
+        raise RuntimeError(f"embedding count mismatch: {len(vectors)} != {len(texts)}")
+    safe_log(
+        "embedding_batches_done",
+        chunks=len(texts),
+        batches=len(batches),
+        batch_size=batch_size,
+        concurrency=concurrency,
+    )
+    return vectors
+
+
+def embed_text(client: httpx.Client, text: str) -> list[float]:
+    return embed_texts(client, [text])[0]
+
+
+def _target_object(
+    *,
+    object_id: str,
+    document_id: int,
+    file_name: str,
+    file_path: str,
+    file_size: int,
+    text: str,
+    index: int,
+    n_chunks: int,
+    vector: list[float],
+) -> dict[str, Any]:
+    props = {
+        "doc_id": document_id,
+        "text": text,
+        "summary": "",
+        "file_name": file_name,
+        "file_path": file_path,
+        "file_size": file_size,
+        "file_ext": file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "",
+        "i_page": 1,
+        "i_chunk_on_doc": index,
+        "i_chunk_on_page": index,
+        "n_chunk_of_doc": n_chunks,
+        "n_chunk_of_pages": n_chunks,
+        "n_chars": len(text),
+        "n_words": len(text.split()),
+        "n_pages": 1,
+        "is_encrypted": False,
+    }
+    return {
+        "class": settings.TARGET_VDB_COLLECTION,
+        "id": object_id,
+        "properties": props,
+        "vector": vector,
+    }
+
+
+def copy_texts_to_target(
+    client: httpx.Client,
+    texts: list[str],
+    *,
+    document_id: int,
+    file_name: str,
+    file_path: str,
+    file_size: int,
+    idempotency_key: str,
+) -> tuple[list[str], int | None]:
+    if not texts:
+        return [], None
+    batch_size = _embedding_batch_size()
+    batches = [
+        (start, texts[start : start + batch_size])
+        for start in range(0, len(texts), batch_size)
+    ]
+    concurrency = min(_embedding_batch_concurrency(), len(batches))
+    object_ids: list[str | None] = [None] * len(texts)
+    vector_dim: int | None = None
+
+    def store_batch(start: int, batch: list[str], vectors: list[list[float]]) -> None:
+        nonlocal vector_dim
+        objects: list[dict[str, Any]] = []
+        for offset, (text, vector) in enumerate(zip(batch, vectors)):
+            index = start + offset
+            if vector_dim is None:
+                vector_dim = len(vector)
+            object_id = build_object_id(idempotency_key, index)
+            object_ids[index] = object_id
+            objects.append(
+                _target_object(
+                    object_id=object_id,
+                    document_id=document_id,
+                    file_name=file_name,
+                    file_path=file_path,
+                    file_size=file_size,
+                    text=text,
+                    index=index,
+                    n_chunks=len(texts),
+                    vector=vector,
+                )
+            )
+        _post_target_objects(client, objects)
+        safe_log(
+            "embedding_copy_batch_done",
+            start=start,
+            count=len(batch),
+            total=len(texts),
+            batch_size=batch_size,
+            concurrency=concurrency,
+        )
+
+    if concurrency == 1:
+        for start, batch in batches:
+            store_batch(start, batch, _embed_text_batch(client, batch))
+    else:
+        batch_iter = iter(batches)
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            pending: dict[Any, tuple[int, list[str]]] = {}
+
+            def submit_next() -> None:
+                try:
+                    start, batch = next(batch_iter)
+                except StopIteration:
+                    return
+                pending[executor.submit(_embed_text_batch, client, batch)] = (start, batch)
+
+            for _ in range(concurrency):
+                submit_next()
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    start, batch = pending.pop(future)
+                    store_batch(start, batch, future.result())
+                    submit_next()
+
+    completed_ids = [object_id for object_id in object_ids if object_id is not None]
+    if len(completed_ids) != len(texts):
+        raise RuntimeError(f"weaviate object id count mismatch: {len(completed_ids)} != {len(texts)}")
+    return completed_ids, vector_dim
 
 
 def _doc_id_where(doc_ids: list[int]) -> str:
@@ -206,14 +439,23 @@ def search_target_chunks(
     return (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
 
 
-def list_target_object_ids(client: httpx.Client, *, document_id: int) -> list[str]:
-    query = {
+def _target_object_ids_query(document_id: int, *, limit: int) -> dict[str, str]:
+    return {
         "query": (
-            "{ Get { %s(where:{path:[\"doc_id\"],operator:Equal,valueNumber:%d})"
+            '{ Get { %s(where:{path:["doc_id"],operator:Equal,valueNumber:%d}, limit:%d)'
             "{ _additional { id } } } }"
-            % (settings.TARGET_VDB_COLLECTION, document_id)
+            % (settings.TARGET_VDB_COLLECTION, document_id, limit)
         )
     }
+
+
+def list_target_object_ids(
+    client: httpx.Client,
+    *,
+    document_id: int,
+    page_limit: int = 100,
+) -> list[str]:
+    query = _target_object_ids_query(document_id, limit=page_limit)
     response = client.post(
         f"{settings.WEAVIATE_BASE}/v1/graphql",
         json=query,
@@ -230,6 +472,14 @@ def list_target_object_ids(client: httpx.Client, *, document_id: int) -> list[st
         object_id = additional.get("id")
         if isinstance(object_id, str) and object_id:
             object_ids.append(object_id)
+    if rows and not object_ids:
+        raise RuntimeError("weaviate object lookup returned rows without object ids")
+    safe_log(
+        "delete_object_lookup_page_done",
+        document_id=document_id,
+        object_count=len(object_ids),
+        page_limit=page_limit,
+    )
     return object_ids
 
 
@@ -246,3 +496,72 @@ def delete_target_objects(client: httpx.Client, *, object_ids: list[str]) -> lis
         response.raise_for_status()
         deleted.append(object_id)
     return deleted
+
+
+def delete_target_objects_for_document(
+    client: httpx.Client,
+    *,
+    document_id: int,
+    page_limit: int = 100,
+    max_rounds: int = 1000,
+) -> list[str]:
+    deleted: list[str] = []
+    for round_index in range(max_rounds):
+        object_ids = list_target_object_ids(
+            client,
+            document_id=document_id,
+            page_limit=page_limit,
+        )
+        if not object_ids:
+            break
+        deleted.extend(delete_target_objects(client, object_ids=object_ids))
+        safe_log(
+            "delete_object_page_done",
+            document_id=document_id,
+            round=round_index + 1,
+            page_deleted=len(object_ids),
+            deleted_total=len(deleted),
+        )
+        if len(object_ids) < page_limit:
+            break
+    else:
+        raise RuntimeError(
+            f"weaviate delete exceeded max_rounds={max_rounds} for document_id={document_id}"
+        )
+    return deleted
+
+
+
+def read_target_chunks(client: httpx.Client, doc_ids: list[int], limit: int) -> list[dict[str, Any]]:
+    """Read representative registered chunks for session wiki compilation."""
+    if not doc_ids:
+        return []
+    where = _doc_id_where(doc_ids)
+    query = {
+        "query": (
+            "{ Get { %s(where:%s, limit:%d)"
+            "{ text doc_id file_name i_page i_chunk_on_doc _additional { id } } } }"
+            % (settings.TARGET_VDB_COLLECTION, where, limit)
+        )
+    }
+    response = client.post(
+        f"{settings.WEAVIATE_BASE}/v1/graphql",
+        json=query,
+        timeout=settings.HTTP_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("errors"):
+        raise RuntimeError(f"weaviate chunk read errors: {body['errors'][:1]}")
+    rows = (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
+    return [
+        {
+            "chunk_id": (row.get("_additional") or {}).get("id"),
+            "doc_id": row.get("doc_id"),
+            "file_name": row.get("file_name"),
+            "text": row.get("text"),
+            "i_page": row.get("i_page"),
+            "i_chunk_on_doc": row.get("i_chunk_on_doc"),
+        }
+        for row in rows
+    ]
