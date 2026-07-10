@@ -89,7 +89,13 @@ def build_general_analysis_level_sections(
             market=dict(definition.market_catalog_row or {}),
             measure=metrics.measure,
         )
-    analysis_levels = _rename_analysis_levels(
+    status_channels = _market_status_channels(
+        source=source_api,
+        default_channels=channels,
+        ubist_channel_context=ubist_channel_context,
+    )
+    build_channels = list(dict.fromkeys([*channels, *status_channels]))
+    all_channel_levels = _rename_analysis_levels(
         cause_builder._build_analysis_levels_from_mart(
             rows=canonical_rows,
             source=source_api,
@@ -97,11 +103,12 @@ def build_general_analysis_level_sections(
             view_source_id=None,
             target_name=None,
             fallback_level_top5={},
-            channels_override=channels,
+            channels_override=build_channels,
             use_latest_valid_share=True,
         ),
         specs,
     )
+    analysis_levels = _project_analysis_level_channels(all_channel_levels, channels)
     canonical_levels = [spec.canonical_level for spec in specs]
     rows_by_level = cause_builder._level_rows_by_segment(canonical_rows, canonical_levels)
     level_top5_trend = _rename_level_top5_trend(
@@ -117,26 +124,7 @@ def build_general_analysis_level_sections(
         ),
         specs,
     )
-    status_channels = _market_status_channels(
-        source=source_api,
-        default_channels=channels,
-        ubist_channel_context=ubist_channel_context,
-    )
-    market_status_levels = analysis_levels
-    if status_channels != channels:
-        market_status_levels = _rename_analysis_levels(
-            cause_builder._build_analysis_levels_from_mart(
-                rows=canonical_rows,
-                source=source_api,
-                market=_synthetic_market(specs),
-                view_source_id=None,
-                target_name=None,
-                fallback_level_top5={},
-                channels_override=status_channels,
-                use_latest_valid_share=True,
-            ),
-            specs,
-        )
+    market_status_levels = _project_analysis_level_channels(all_channel_levels, status_channels)
     market_status = cause_builder._ensure_analysis_level_market_status_contract(
         cause_builder._analysis_level_market_status_by_channel(
             level_top5_trend=level_top5_trend,
@@ -187,6 +175,28 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
     clone["__dimension_channel_data"] = dimension_channel_data
     clone["__dimension_specialty_data"] = dimension_specialty_data
     return clone
+
+
+def _project_analysis_level_channels(payload: dict[str, Any], channels: list[str]) -> dict[str, Any]:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return {**payload, "channels": list(channels)}
+    projected_data: dict[str, Any] = {}
+    for level_name, raw_level in data.items():
+        if not isinstance(raw_level, dict):
+            projected_data[level_name] = raw_level
+            continue
+        level = dict(raw_level)
+        for channel_key in ("by_channel", "ms_by_channel"):
+            channel_data = level.get(channel_key)
+            if isinstance(channel_data, dict):
+                level[channel_key] = {
+                    channel: channel_data[channel]
+                    for channel in channels
+                    if channel in channel_data
+                }
+        projected_data[level_name] = level
+    return {**payload, "channels": list(channels), "data": projected_data}
 
 
 def _uses_source_specific_dimensions(specs: tuple[GeneralLevelSpec, ...]) -> bool:

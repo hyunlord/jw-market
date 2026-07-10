@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
+from pipeline.scripts.api.dynamic_market import general_analysis_levels
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -1836,7 +1837,17 @@ def test_general_source_level_current_share_uses_latest_valid_sidecar_period(
 
 def test_general_ubist_specialty_uses_market_catalog_for_channel_resolution(monkeypatch) -> None:
     captured_markets: list[dict[str, object]] = []
+    build_calls = 0
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
+
+    original_build = general_analysis_levels.cause_builder._build_analysis_levels_from_mart
+
+    def count_builds(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal build_calls
+        build_calls += 1
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(general_analysis_levels.cause_builder, "_build_analysis_levels_from_mart", count_builds)
 
     def fake_resolve_market_channels(*, rows: object, market: dict[str, object], measure: str) -> dict[str, object]:
         captured_markets.append(dict(market))
@@ -1905,6 +1916,7 @@ def test_general_ubist_specialty_uses_market_catalog_for_channel_resolution(monk
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     assert captured_markets == [market_catalog_row]
+    assert build_calls == 1
     assert payload["data"]["analysis_level_market_status"]["channels"] == ["전체", "주요고객 종합병원 내분비", "의원 IGF"]
 
 
