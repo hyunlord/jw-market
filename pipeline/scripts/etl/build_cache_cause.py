@@ -46,6 +46,7 @@ from cache_build_common import (
     series_latest_number,
     source_list,
 )
+from pipeline.scripts.api.market_growth import compound_period_growth_pct
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
 from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
@@ -2624,6 +2625,7 @@ def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> li
 
 def market_size_series_with_yoy(series: dict[str, Any]) -> dict[str, dict[str, float | None]]:
     yoy_series = market_yoy_series(series)
+    mom_series = market_cmgr_series(series)
     output: dict[str, dict[str, float | None]] = {}
     if not isinstance(series, dict):
         return output
@@ -2632,6 +2634,7 @@ def market_size_series_with_yoy(series: dict[str, Any]) -> dict[str, dict[str, f
         output[str(period)] = {
             "value": value,
             "yoy_growth_pct": yoy_series.get(str(period)),
+            "mom_growth_pct": mom_series.get(str(period)),
         }
     return output
 
@@ -2661,6 +2664,26 @@ def market_yoy_series(series: dict[str, Any]) -> dict[str, float | None]:
         else:
             result[str(period)] = round((current - previous) / previous * 100, 4)
     return result
+
+
+def market_cmgr_series(series: dict[str, Any]) -> dict[str, float | None]:
+    if not isinstance(series, dict):
+        return {}
+    periods = sorted(series.keys(), key=period_key)
+    periods_per_year = 12 if any("-Q" not in str(period) for period in periods) else 4
+    result: dict[str, float | None] = {}
+    for period in periods:
+        current = safe_float(series.get(period))
+        prior_period = _prior_year_period(str(period))
+        previous = safe_float(series.get(prior_period)) if prior_period in series else None
+        growth = compound_period_growth_pct(previous, current, periods_per_year)
+        result[str(period)] = round(growth, 4) if growth is not None else None
+    return result
+
+
+def _prior_year_period(period: str) -> str:
+    year, suffix = period.split("-", 1)
+    return f"{int(year) - 1}-{suffix}"
 
 
 def top3_share(rows: list[dict[str, Any]]) -> float | None:

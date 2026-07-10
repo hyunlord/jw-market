@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from pipeline.scripts.api.market_growth import compound_period_growth_pct
+
 
 @dataclass(frozen=True, slots=True)
 class LegacyMarketMetaInput:
@@ -19,12 +21,17 @@ class LegacyMarketMetaInput:
     market_cagr_5y_pct: float | None
 
 
-def market_size_series_payload(market_size: Mapping[str, float]) -> dict[str, dict[str, float | None]]:
-    """Return composer-ready market-size points with legacy YoY fields."""
+def market_size_series_payload(
+    market_size: Mapping[str, float],
+    *,
+    source: str,
+) -> dict[str, dict[str, float | None]]:
+    """Return composer-ready market-size points with annual growth fields."""
 
     yoy_series = market_yoy_series(market_size)
+    mom_series = market_cmgr_series(market_size, source=source)
     return {
-        period: {"value": value, "yoy_growth_pct": yoy_series[period]}
+        period: {"value": value, "yoy_growth_pct": yoy_series[period], "mom_growth_pct": mom_series[period]}
         for period, value in market_size.items()
     }
 
@@ -34,6 +41,22 @@ def market_yoy_series(market_size: Mapping[str, float]) -> dict[str, float | Non
 
     return {
         period: _pct_change(market_size.get(_previous_year_period(period)), value)
+        if _previous_year_period(period) in market_size
+        else None
+        for period, value in market_size.items()
+    }
+
+
+def market_cmgr_series(market_size: Mapping[str, float], *, source: str) -> dict[str, float | None]:
+    """Return compound period growth against each exact prior-year period."""
+
+    periods_per_year = _expected_periods_per_year(source)
+    return {
+        period: compound_period_growth_pct(
+            market_size.get(_previous_year_period(period)),
+            value,
+            periods_per_year,
+        )
         if _previous_year_period(period) in market_size
         else None
         for period, value in market_size.items()

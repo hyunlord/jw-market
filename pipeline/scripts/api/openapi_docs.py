@@ -38,7 +38,14 @@ CAUSE_RESPONSE_EXAMPLE: Final = {
     },
     "data": {
         "kpi": {"market_size_recent": 225677368890.9798, "market_yoy_recent_pct": 7.2576},
-        "market_size_series": [{"period": "2026-04", "value": 225677368890.9798}],
+        "market_size_series": [
+            {
+                "period": "2026-04",
+                "value": 225677368890.9798,
+                "yoy_growth_pct": 7.2576,
+                "mom_growth_pct": 0.5856,
+            }
+        ],
         "analysis_levels": [],
         "level_top5_trend": {},
         "target_customer_competition": {},
@@ -81,7 +88,11 @@ CAUSE_RESPONSE_SCHEMA: Final = {
             "type": ["object", "null"],
             "description": (
                 "원인분석 23섹션 payload. 주요 섹션: kpi, market_size_series, brand_ranking, "
-                "company_ranking, analysis_levels, analysis_level_market_status, level_top5_trend, "
+                "company_ranking, analysis_levels, analysis_level_market_status, level_top5_trend. "
+                "market_size_series.mom_growth_pct는 정확히 1년 전 같은 기간 대비 복리 기간성장률입니다. "
+                "UBIST 월축은 12제곱근, IQVIA 분기축은 4제곱근을 사용하며, 비교 기간이 없거나 "
+                "1년 전 값이 0 이하이면 null입니다. 기존 yoy_growth_pct는 단순 전년 대비 증감률입니다. "
+                "그 밖의 주요 섹션: "
                 "target_customer_competition, ubist_specialty_channels, market_meta."
             ),
         },
@@ -189,6 +200,10 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 `level_top5_trend`, `target_customer_competition`, `target_customer_competition_by_channel`,
 `ubist_specialty_channels`, `ubist_specialty_target_channels`입니다. 해당 source/범위에 데이터가 없거나
 채널축이 없으면 빈 배열(`[]`), 빈 객체(`{}`), 또는 `note`가 있는 fallback 객체로 반환됩니다.
+`market_size_series` 각 포인트의 `mom_growth_pct`는 정확히 1년 전 같은 기간 대비 복리 기간성장률입니다.
+UBIST는 `((V_t / V_{t-12})^(1/12) - 1) * 100`, IQVIA는
+`((V_t / V_{t-4})^(1/4) - 1) * 100`을 사용합니다. 비교 기간이 없거나 분모가 0 이하이면 null입니다.
+기존 `yoy_growth_pct`는 같은 두 값을 이용한 단순 전년 대비 증감률이며 변경되지 않습니다.
 
 명시 view와 legacy view_kind 충돌은 422 `detail.error=invalid_dynamic_market_view`입니다.
 요청 검증 실패는 대부분 400 `detail.error=invalid_dynamic_market_request`입니다.

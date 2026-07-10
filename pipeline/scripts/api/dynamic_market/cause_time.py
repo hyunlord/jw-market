@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from pipeline.scripts.api.dynamic_market.aggregator import month_distance
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
+from pipeline.scripts.api.market_growth import compound_period_growth_pct
 
 
 SOURCE_LABELS = {"ubist": "UBIST", "iqvia_nsa": "IQVIA"}
@@ -36,15 +37,19 @@ def history(brand: BrandMetric) -> dict[str, float]:
 
 
 def market_size_series(metrics: AggregatedMetrics) -> list[dict[str, Any]]:
-    """Return cause-style monthly market size points with YoY deltas."""
+    """Return cause-style market size points with annual growth metrics."""
 
     value_key = MEASURE_SERIES_KEY.get(metrics.measure, "value")
     totals = {str(item["period"]): float(item["market_size"]) for item in metrics.monthly_series}
+    periods_per_year = 12 if metrics.source.lower() == "ubist" else 4
     series: list[dict[str, Any]] = []
     for period in sorted(totals):
         prev = previous_year_period(period)
         yoy = pct_change(totals.get(prev), totals[period]) if prev in totals else None
-        point = {"period": period, "value": totals[period], "yoy_growth_pct": yoy}
+        mom = (
+            compound_period_growth_pct(totals.get(prev), totals[period], periods_per_year) if prev in totals else None
+        )
+        point = {"period": period, "value": totals[period], "yoy_growth_pct": yoy, "mom_growth_pct": mom}
         point[value_key] = totals[period]
         if "sales_krw" not in point:
             point["sales_krw"] = totals[period]

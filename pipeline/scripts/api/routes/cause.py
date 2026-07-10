@@ -89,7 +89,7 @@ def cause(
     display_brand = get_display_brand(brand)
     preferred_market_id = requested_market_id or (display_brand.market_id if display_brand else None)
     primary, markets = choose_primary_market(rows, preferred_market_id=preferred_market_id)
-    payload = compose_cached_json(primary["response_json"], measure=measure)
+    payload = compose_cached_json(primary["response_json"], measure=measure, source=source)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_cause"})
     payload["markets"] = markets

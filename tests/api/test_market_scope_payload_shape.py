@@ -53,7 +53,7 @@ def _assert_point_series(payload: dict[str, Any], path: str) -> None:
     assert value
     first = value[0]
     assert isinstance(first, dict)
-    assert {"period", "value", "sales_krw"}.issubset(first)
+    assert {"period", "value", "sales_krw", "yoy_growth_pct", "mom_growth_pct"}.issubset(first)
 
 
 def _schema_signature(payload: Any) -> SchemaSignature:
@@ -125,6 +125,7 @@ def _legacy_cache_payload_template(
         str(point["period"]): {
             "value": point["value"],
             "yoy_growth_pct": point.get("yoy_growth_pct"),
+            "mom_growth_pct": point.get("mom_growth_pct"),
         }
         for point in series_points
         if isinstance(point, dict)

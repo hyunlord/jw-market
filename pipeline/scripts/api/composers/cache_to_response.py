@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pipeline.scripts.api.composers.number_format import deep_format_numbers
+from pipeline.scripts.api.market_growth import compound_period_growth_pct
 from pipeline.scripts.api.utils import loads_json_maybe
 
 
@@ -16,7 +17,12 @@ MEASURE_TO_SERIES_KEY = {
 ALL_SERIES_KEYS = set(MEASURE_TO_SERIES_KEY.values())
 
 
-def _series_dict_to_points(value: dict, *, value_key: str) -> list[dict[str, Any]]:
+def _series_dict_to_points(
+    value: dict,
+    *,
+    value_key: str,
+    periods_per_year: int | None = None,
+) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for period in sorted(value.keys()):
         item = value[period]
@@ -31,13 +37,23 @@ def _series_dict_to_points(value: dict, *, value_key: str) -> list[dict[str, Any
             point = {"period": period, value_key: item}
         if value_key == "value" and "sales_krw" not in point:
             point["sales_krw"] = point.get("value")
+        if periods_per_year is not None and "mom_growth_pct" not in point:
+            year, suffix = str(period).split("-", 1)
+            prior = value.get(f"{int(year) - 1}-{suffix}")
+            previous = prior.get("value") if isinstance(prior, dict) else prior
+            point["mom_growth_pct"] = compound_period_growth_pct(
+                float(previous) if isinstance(previous, int | float) else None,
+                float(point["value"]) if isinstance(point.get("value"), int | float) else None,
+                periods_per_year,
+            )
         points.append(point)
     return points
 
 
-def _frontend_shape_aliases(key: str, value: Any) -> Any:
+def _frontend_shape_aliases(key: str, value: Any, source: str | None) -> Any:
     if key == "market_size_series" and isinstance(value, dict):
-        return _series_dict_to_points(value, value_key="value")
+        periods_per_year = 12 if source and source.lower() == "ubist" else 4 if source else None
+        return _series_dict_to_points(value, value_key="value", periods_per_year=periods_per_year)
     if key == "hhi_series_5y" and isinstance(value, dict):
         return _series_dict_to_points(value, value_key="hhi")
     if key in {"ei_ms_matrix", "growth_contribution_ms_matrix"} and isinstance(value, list):
@@ -84,9 +100,9 @@ def _frontend_entry_aliases(obj: dict[str, Any]) -> dict[str, Any]:
     return obj
 
 
-def _clean_dict_recursive(obj: Any, measure: str | None = None) -> Any:
+def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | None = None) -> Any:
     if isinstance(obj, list):
-        return [_clean_dict_recursive(item, measure) for item in obj]
+        return [_clean_dict_recursive(item, measure, source) for item in obj]
     if not isinstance(obj, dict):
         return obj
 
@@ -94,16 +110,19 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None) -> Any:
     if source_key and any(key in obj for key in ALL_SERIES_KEYS):
         picked = obj.get(source_key, obj.get("value_series", []))
         cleaned = {
-            key: _clean_dict_recursive(_frontend_shape_aliases(key, value), measure)
+            key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
             for key, value in obj.items()
             if key not in ALL_SERIES_KEYS
         }
-        cleaned["value_series"] = _clean_dict_recursive(picked, measure)
+        cleaned["value_series"] = _clean_dict_recursive(picked, measure, source)
         return _frontend_entry_aliases(_anomaly_aliases(cleaned))
 
-    cleaned = {key: _clean_dict_recursive(_frontend_shape_aliases(key, value), measure) for key, value in obj.items()}
+    cleaned = {
+        key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
+        for key, value in obj.items()
+    }
     return _frontend_entry_aliases(_anomaly_aliases(cleaned))
 
 
-def compose_cached_json(raw: Any, measure: str | None = None) -> Any:
-    return deep_format_numbers(_clean_dict_recursive(loads_json_maybe(raw), measure))
+def compose_cached_json(raw: Any, measure: str | None = None, source: str | None = None) -> Any:
+    return deep_format_numbers(_clean_dict_recursive(loads_json_maybe(raw), measure, source))

@@ -73,7 +73,7 @@ def recompute_strategy_payload(
     )
     source_label = "UBIST" if source.lower() == "ubist" else source.upper()
     focus_brand_name = _brand_name(facts, focus_brand_key)
-    market_size_points = market_size_series_payload(sorted_period_items(market_size))
+    market_size_points = market_size_series_payload(sorted_period_items(market_size), source=source)
     yoy_series = market_yoy_series(sorted_period_items(market_size))
     kpi = _kpi(
         brand_histories=brand_histories,
