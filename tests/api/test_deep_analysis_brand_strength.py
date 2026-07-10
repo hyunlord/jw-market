@@ -294,13 +294,6 @@ def test_deep_analysis_compact_cache_lookup_rejects_ambiguous_matches(monkeypatc
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
     monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
-    monkeypatch.setattr(
-        deep_analysis,
-        "_build_general_deep_analysis_on_demand",
-        lambda brand, atc4: (_ for _ in ()).throw(
-            deep_analysis.GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="brand_not_in_general_mart")
-        ),
-    )
 
     # When / Then: ambiguous compact-only cache hits are not guessed.
     try:

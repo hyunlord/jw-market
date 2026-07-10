@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 import logging
 import os
 from typing import Annotated, Any, Final
 from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 import pymysql
 
 from pipeline.scripts.api import db
@@ -34,8 +33,6 @@ logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 FORECAST_HORIZON_QUARTERS = 20
 FORECAST_HORIZON_MONTHS = 60
-ON_DEMAND_FORECAST_WORKERS: Final[int] = 4
-ON_DEMAND_LOCK_TIMEOUT_SECONDS: Final[int] = 30
 GENERAL_CACHE_TTL_DAYS: Final[int] = 35
 BRAND_ELEMENTS_CACHE_TTL_DAYS: Final[int] = 35
 SOURCE_BRAND_STRENGTH_TABLE: Final[str] = "agent3_brand_strength_source"
@@ -53,17 +50,6 @@ EMPTY_BRAND_FACTORS = {
         "nhi_type": [],
     },
 }
-
-
-@dataclass(frozen=True, slots=True)
-class GeneralForecastUnavailable(Exception):
-    brand: str
-    atc4: str | None
-    reason: str
-    status_code: int = 404
-
-    def __str__(self) -> str:
-        return f"{self.reason}: brand={self.brand!r}, atc4={self.atc4!r}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -670,54 +656,6 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
         raise
 
 
-def _general_cache_row_from_built(row: Any) -> dict:
-    return {
-        "response_json": row.response_json,
-        "brand_factors": row.brand_factors,
-        "updated_at": datetime.now(KST),
-        "source_computed_at": getattr(row, "source_computed_at", None),
-        "expires_at": getattr(row, "expires_at", None),
-        "is_stale": getattr(row, "is_stale", 0),
-        "stale_reason": getattr(row, "stale_reason", None),
-        "stale_marked_at": getattr(row, "stale_marked_at", None),
-        "atc4_code": row.atc4_code,
-    }
-
-
-def _fetch_general_deep_analysis_row_with_conn(
-    conn: Any,
-    brand: str,
-    atc4: str | None = None,
-    *,
-    allow_stale: bool = False,
-) -> dict | None:
-    params: list[str] = [brand, brand]
-    atc4_clause = ""
-    if atc4:
-        atc4_clause = "AND atc4_code = %s"
-        params.append(atc4)
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT brand_key, brand, response_json, brand_factors, updated_at,
-                   source_computed_at, expires_at, is_stale, stale_reason,
-                   stale_marked_at, atc4_code
-            FROM cache_deep_analysis_general
-            WHERE (brand = %s OR brand_key = %s)
-              {atc4_clause}
-            ORDER BY atc4_code ASC
-            LIMIT 1
-            """,
-            params,
-        )
-        row = cur.fetchone()
-    if not row:
-        return None
-    if allow_stale:
-        return row
-    return row if _general_cache_row_fresh_with_conn(conn, row, brand, atc4) else None
-
-
 def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime | None:
     params: list[str] = [brand, brand]
     atc4_clause = ""
@@ -740,27 +678,6 @@ def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime
     return _coerce_datetime(value)
 
 
-def _latest_general_source_computed_at_with_conn(conn: Any, brand: str, atc4: str | None) -> datetime | None:
-    params: list[str] = [brand, brand]
-    atc4_clause = ""
-    if atc4:
-        atc4_clause = "AND atc4_code = %s"
-        params.append(atc4)
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT MAX(computed_at) AS source_computed_at
-            FROM mart_general_brand_metric
-            WHERE (brand_name = %s OR brand_key = %s)
-              {atc4_clause}
-            """,
-            params,
-        )
-        row = cur.fetchone()
-    value = row.get("source_computed_at") if row else None
-    return _coerce_datetime(value)
-
-
 def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
     if _row_marked_stale(row):
         return False
@@ -771,105 +688,234 @@ def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
     return not (cached_source is not None and latest_source is not None and latest_source > cached_source)
 
 
-def _general_cache_row_fresh_with_conn(conn: Any, row: dict, brand: str, atc4: str | None) -> bool:
-    if _row_marked_stale(row):
-        return False
-    cached_source = _coerce_datetime(row.get("source_computed_at"))
-    if cached_source is None:
-        return True
-    latest_source = _latest_general_source_computed_at_with_conn(conn, brand, atc4 or str(row.get("atc4_code") or "").strip() or None)
-    return not (cached_source is not None and latest_source is not None and latest_source > cached_source)
-
-
-def _general_forecast_lock_name(brand: str, atc4: str | None) -> str:
-    digest = hashlib.sha256(f"{brand}\0{atc4 or ''}".encode("utf-8")).hexdigest()[:32]
-    return f"deep_general:{digest}"
-
-
-def _acquire_general_forecast_lock(conn: Any, lock_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("SELECT GET_LOCK(%s, %s) AS acquired", [lock_name, ON_DEMAND_LOCK_TIMEOUT_SECONDS])
-        row = cur.fetchone()
-    if not isinstance(row, dict):
-        return False
-    return row.get("acquired") == 1
-
-
-def _release_general_forecast_lock(conn: Any, lock_name: str) -> None:
+def _json_object(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT RELEASE_LOCK(%s)", [lock_name])
-    except pymysql.MySQLError:
-        logger.warning("general deep-analysis forecast lock release failed", exc_info=True)
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-def _build_general_deep_analysis_on_demand(brand: str, atc4: str | None) -> dict:
-    """Build and persist one general-view forecast cache row on a cache miss."""
-
-    from pipeline.scripts.etl import build_cache_deep_analysis_general as general_builder
-
-    general_builder.apply_api_db_env_fallback()
-    conn = None
-    lock_name = _general_forecast_lock_name(brand, atc4)
-    lock_acquired = False
-    try:
-        conn = general_builder.mariadb_connect()
-        general_builder.assert_d2_database(conn)
-        general_builder.ensure_general_cache_table(conn)
-        stale_row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4, allow_stale=True)
-        lock_acquired = _acquire_general_forecast_lock(conn, lock_name)
-        if not lock_acquired:
-            row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4)
-            if row:
-                return row
-            if stale_row:
-                return stale_row
-            raise GeneralForecastUnavailable(
-                brand=brand,
-                atc4=atc4,
-                reason="forecast_generation_in_progress",
-                status_code=409,
-            )
-
-        row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4)
-        if row:
-            return row
-
-        group_keys = general_builder.select_group_keys(conn, brands={brand}, atc4=atc4, limit_groups=1)
-        if not group_keys:
-            raise GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="general_market_not_found")
-
-        built = general_builder.build_batch_rows(conn, group_keys, workers=ON_DEMAND_FORECAST_WORKERS, verbose=False)
-        if not built:
-            raise GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="forecast_empty")
-
-        general_builder.write_rows(conn, built, table_name=general_builder.GENERAL_CACHE_TABLE, batch_size=1)
-        return _general_cache_row_from_built(built[0])
-    except GeneralForecastUnavailable:
-        raise
-    except (pymysql.MySQLError, RuntimeError, ValueError) as exc:
-        logger.warning("general deep-analysis on-demand forecast failed", exc_info=True)
-        if conn is not None:
-            stale_row = _fetch_general_deep_analysis_row_with_conn(conn, brand, atc4, allow_stale=True)
-            if stale_row:
-                return stale_row
-        raise GeneralForecastUnavailable(brand=brand, atc4=atc4, reason="forecast_generation_failed") from exc
-    finally:
-        if conn is not None and lock_acquired:
-            _release_general_forecast_lock(conn, lock_name)
-        if conn is not None:
-            conn.close()
+def _history_points(value: object) -> list[tuple[str, float | None, float | None]]:
+    history = _json_object(value)
+    points: list[tuple[str, float | None, float | None]] = []
+    for period, item in sorted(history.items()):
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("raw_value")
+        ms = item.get("ms")
+        try:
+            raw_value = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            raw_value = None
+        try:
+            ms_value = float(ms) if ms is not None else None
+        except (TypeError, ValueError):
+            ms_value = None
+        points.append((str(period), raw_value, ms_value))
+    return points
 
 
-def _forecast_unavailable_http_exception(exc: GeneralForecastUnavailable) -> HTTPException:
-    return HTTPException(
-        status_code=exc.status_code,
-        detail={
-            "error": "forecast_unavailable",
-            "brand": exc.brand,
-            "atc4": exc.atc4,
-            "reason": exc.reason,
+def _recent_history_value(row: dict) -> float:
+    points = _history_points(row.get("metric_history"))
+    for _period, raw_value, _ms_value in reversed(points):
+        if raw_value is not None:
+            return raw_value
+    return 0.0
+
+
+def _fetch_general_metric_rows(brand: str) -> list[dict]:
+    base_sql = """
+        SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
+               metric_history, unit_label, is_jw, is_target, computed_at
+        FROM mart_general_brand_metric
+        WHERE brand_name = %s OR brand_key = %s
+        ORDER BY atc4_code, source, measure
+    """
+    rows = db.fetch_all(base_sql, [brand, brand])
+    if rows:
+        return rows
+    compact = compact_brand_name(brand)
+    if not compact or compact == brand:
+        return []
+    return db.fetch_all(
+        f"""
+        SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
+               metric_history, unit_label, is_jw, is_target, computed_at
+        FROM mart_general_brand_metric
+        WHERE {_compact_sql("brand_name")} = %s OR {_compact_sql("brand_key")} = %s
+        ORDER BY atc4_code, source, measure
+        """,
+        [compact, compact],
+    )
+
+
+def _choose_general_atc4(rows: list[dict]) -> str:
+    totals: dict[str, float] = {}
+    for row in rows:
+        atc4 = str(row.get("atc4_code") or "").strip()
+        if not atc4:
+            continue
+        totals[atc4] = totals.get(atc4, 0.0) + _recent_history_value(row)
+    if not totals:
+        return ""
+    return sorted(totals, key=lambda value: (-totals[value], value))[0]
+
+
+def _general_metric_row_to_combo(row: dict, *, target_brand: str) -> dict:
+    points = _history_points(row.get("metric_history"))
+    periods = [period for period, _raw, _ms in points]
+    values = [raw for _period, raw, _ms in points]
+    ms_values = [ms for _period, _raw, ms in points]
+    source = str(row.get("source") or "")
+    period_unit = "분기" if source == "iqvia_nsa" else "월"
+    return {
+        "period_unit": period_unit,
+        "unit_label": row.get("unit_label"),
+        "history_periods": periods,
+        "forecast_periods": [],
+        "forecast_values": [],
+        "forecast_ms_pct": [],
+        "target_brand": row.get("brand_name") or target_brand,
+        "brands": [
+            {
+                "brand": row.get("brand_name") or target_brand,
+                "is_target": True,
+                "history_periods": periods,
+                "history_values": values,
+                "history_ms_pct": ms_values,
+                "forecast_values": [],
+                "forecast_ms_pct": [],
+                "forecast_intervals": {},
+            }
+        ],
+        "baseline": {
+            "value_recent": values[-1] if values else None,
+            "ms_recent_pct": ms_values[-1] if ms_values else None,
         },
+        "forecast_intervals": {},
+    }
+
+
+def _general_row_from_mart(brand: str) -> dict | None:
+    rows = _fetch_general_metric_rows(brand)
+    if not rows:
+        return None
+    selected_atc4 = _choose_general_atc4(rows)
+    selected_rows = [row for row in rows if str(row.get("atc4_code") or "").strip() == selected_atc4]
+    if not selected_rows:
+        return None
+    base = selected_rows[0]
+    brand_key = str(base.get("brand_key") or brand)
+    brand_name = str(base.get("brand_name") or brand)
+    combos: dict[str, dict] = {}
+    for row in selected_rows:
+        source = str(row.get("source") or "")
+        measure = str(row.get("measure") or "")
+        if not source or not measure:
+            continue
+        api_source = "IQVIA" if source == "iqvia_nsa" else source.upper()
+        combos[f"{api_source}.{measure}"] = _general_metric_row_to_combo(row, target_brand=brand_name)
+    payload = {
+        "brand": brand_name,
+        "brand_name": brand_name,
+        "brand_key": brand_key,
+        "market_id": f"general:{selected_atc4}",
+        "market_name": base.get("atc4_desc"),
+        "available_combos": sorted(combos),
+        "data": {
+            "forecast": {
+                "method": "observed_general_mart",
+                "disclaimer": "General view is assembled from mart_general_brand_metric without request-time forecast generation.",
+                "is_statistical_model": False,
+                "backtest_available": False,
+                "event_regressor_enabled": False,
+                "phase29_poc": None,
+                "by_combo": combos,
+            },
+            "simulation": {"by_combo": {}},
+            "events": [],
+        },
+        "market_meta": {
+            "market_name": base.get("atc4_desc"),
+            "atc4_code": selected_atc4,
+            "atc4_name": base.get("atc4_desc"),
+            "sources": sorted({("IQVIA" if str(row.get("source")) == "iqvia_nsa" else str(row.get("source") or "").upper()) for row in selected_rows}),
+            "default_source": "IQVIA" if str(base.get("source")) == "iqvia_nsa" else str(base.get("source") or "").upper(),
+            "available_combos": sorted(combos),
+            "source_count": len({row.get("source") for row in selected_rows}),
+            "measure_count": len({row.get("measure") for row in selected_rows}),
+            "market_count": 1,
+            "is_jw": bool(base.get("is_jw")),
+            "is_target": bool(base.get("is_target")),
+            "cache_scope": "general_mart",
+            "tie_break": "latest_raw_value_desc_then_atc4_ascending",
+        },
+    }
+    computed_values = [_coerce_datetime(row.get("computed_at")) for row in selected_rows]
+    computed_values = [value for value in computed_values if value is not None]
+    return {
+        "brand_key": brand_key,
+        "brand": brand_name,
+        "response_json": json.dumps(payload, ensure_ascii=False),
+        "brand_factors": json.dumps({"atc": [selected_atc4], "ubist": {}, "iqvia": {}}, ensure_ascii=False),
+        "updated_at": max(computed_values, default=None),
+        "atc4_code": selected_atc4,
+    }
+
+
+def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:
+    shared_row = _fetch_deep_analysis_row(brand)
+    general_row = _fetch_general_deep_analysis_row(brand) or _general_row_from_mart(brand)
+    if not general_row:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
+
+    source_row = shared_row or general_row
+    payload = compose_cached_json(source_row["response_json"])
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "deep_analysis"})
+    general_payload = compose_cached_json(general_row["response_json"])
+    if not isinstance(general_payload, dict):
+        raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "general_deep_analysis"})
+
+    payload["brand"] = general_payload.get("brand", payload.get("brand"))
+    payload["brand_name"] = general_payload.get("brand_name", payload.get("brand_name"))
+    payload["brand_key"] = general_payload.get("brand_key", payload.get("brand_key"))
+    payload["market_id"] = general_payload.get("market_id", payload.get("market_id"))
+    payload["market_name"] = general_payload.get("market_name", payload.get("market_name"))
+    payload["available_combos"] = general_payload.get("available_combos", payload.get("available_combos"))
+
+    data = payload.setdefault("data", {})
+    general_data = general_payload.get("data", {})
+    if isinstance(data, dict) and isinstance(general_data, dict):
+        data["forecast"] = general_data.get("forecast", {"by_combo": {}})
+        data["simulation"] = general_data.get("simulation", {"by_combo": {}})
+        data.setdefault("events", [])
+    payload["market_meta"] = general_payload.get("market_meta", payload.get("market_meta", {}))
+    return payload, general_row
+
+
+def _compose_strategic_view_payload(brand: str) -> tuple[dict, dict]:
+    row = _fetch_deep_analysis_row(brand)
+    if not row:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
+    payload = compose_cached_json(row["response_json"])
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_deep_analysis"})
+    return payload, row
+
+
+def _normalize_deep_view(view: str | None) -> str:
+    normalized = (view or "strategic").strip().lower()
+    if normalized in {"", "strategic"}:
+        return "strategic"
+    if normalized == "general":
+        return "general"
+    raise HTTPException(
+        status_code=422,
+        detail={"error": "invalid_view", "allowed": ["general", "strategic"], "value": view},
     )
 
 
@@ -966,26 +1012,26 @@ def _slice_forecast_horizon(payload: dict) -> None:
 )
 def deep_analysis(
     brand_name: str,
-    atc4: Annotated[
-        str | None,
-        Query(description="일반뷰 deep-analysis 캐시에서 특정 ATC4 시장을 지정합니다."),
-    ] = None,
+    request: Request = None,
+    view: Annotated[
+        str,
+        Query(description="[입력] general 또는 strategic. 생략 시 기존 소비자 호환을 위해 strategic으로 처리합니다."),
+    ] = "strategic",
 ) -> dict:
+    if request is not None and "atc4" in request.query_params:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "unsupported_query_parameter", "parameter": "atc4", "message": "atc4 is derived by the backend"},
+        )
     brand = unquote(brand_name)
+    view_name = _normalize_deep_view(view)
     try:
-        row = _fetch_general_deep_analysis_row(brand, atc4) if atc4 else _fetch_deep_analysis_row(brand)
-        if not row and not atc4:
-            row = _fetch_general_deep_analysis_row(brand)
+        if view_name == "general":
+            payload, row = _compose_general_view_payload(brand)
+        else:
+            payload, row = _compose_strategic_view_payload(brand)
     except CompactBrandLookupAmbiguous as exc:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand}) from exc
-    if not row:
-        try:
-            row = _build_general_deep_analysis_on_demand(brand, atc4)
-        except GeneralForecastUnavailable as exc:
-            raise _forecast_unavailable_http_exception(exc) from exc
-    payload = compose_cached_json(row["response_json"])
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_deep_analysis"})
     payload["generated_at"] = _format_generated_at(row.get("updated_at"))
     _slice_forecast_horizon(payload)
     data = payload.setdefault("data", {})
@@ -993,7 +1039,7 @@ def deep_analysis(
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
         selected_brand_key = str(row.get("brand_key") or matched_brand)
         selected_factors = _load_brand_factors(row.get("brand_factors"))
-        brand_choices_by_source = _resolve_brand_factor_choices(row, brand, atc4, selected_factors)
+        brand_choices_by_source = _resolve_brand_factor_choices(row, brand, None, selected_factors)
         data["ai_analysis"] = _load_ai_analysis(matched_brand)
         ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         data["ai_analysis_short"] = ai_analysis_short

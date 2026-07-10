@@ -1,245 +1,145 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
-from datetime import datetime, timedelta
 from typing import Any
 
+from fastapi.testclient import TestClient
+
+from pipeline.scripts.api.main import app
 from pipeline.scripts.api.routes import deep_analysis
 
 
-def _row(scope: str, atc4: str | None = None) -> dict[str, Any]:
+def _row(scope: str, *, atc4: str | None = None, events: list[dict] | None = None) -> dict[str, Any]:
     return {
         "response_json": json.dumps(
             {
                 "brand": "멀티브랜드",
+                "brand_key": "멀티브랜드",
                 "market_id": "ml_001" if scope == "strategic" else f"general:{atc4}",
-                "data": {"forecast": {"by_combo": {}}, "scope": scope},
+                "data": {
+                    "forecast": {"by_combo": {f"{scope}.sales": {"period_unit": "월", "forecast_periods": []}}},
+                    "simulation": {"by_combo": {f"{scope}.sales": {"kind": scope}}},
+                    "events": events or [],
+                    "shared": {"kept": True},
+                },
+                "market_meta": {"scope": scope, "atc4_code": atc4},
             },
             ensure_ascii=False,
         ),
+        "brand": "멀티브랜드",
+        "brand_key": "멀티브랜드",
         "brand_factors": json.dumps({"atc": [atc4] if atc4 else [], "ubist": {}, "iqvia": {}}, ensure_ascii=False),
         "updated_at": "2026-07-09T09:00:00+09:00",
         "atc4_code": atc4,
     }
 
 
-def test_deep_analysis_prefers_existing_strategic_cache_when_atc4_is_absent(monkeypatch) -> None:
-    # Given: both strategic and general cache rows exist for the brand.
+def _stub_auxiliary(monkeypatch) -> None:
+    monkeypatch.setattr(deep_analysis, "_load_ai_analysis", lambda _brand: {"summary": "ai"})
+    monkeypatch.setattr(deep_analysis, "_load_ai_analysis_variants", lambda _brand: ({"available": False}, {"available": False}))
+    monkeypatch.setattr(deep_analysis, "_load_cached_brand_elements", lambda _brand_keys: {})
+    monkeypatch.setattr(deep_analysis, "_load_brand_strength_by_source", lambda _brand_keys: {})
+    monkeypatch.setattr(
+        deep_analysis,
+        "_resolve_brand_factor_choices",
+        lambda row, requested_brand, atc4, selected_factors: {"iqvia": (), "ubist": ()},
+    )
+
+
+def test_deep_analysis_defaults_to_strategic_view(monkeypatch) -> None:
     queries: list[str] = []
 
     def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
         queries.append(sql)
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        if "cache_deep_analysis_general" in sql:
-            return _row("general", "A10A0")
-        return _row("strategic")
+        if "cache_deep_analysis" in sql:
+            return _row("strategic", events=[{"id": 1}])
+        return None
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    _stub_auxiliary(monkeypatch)
 
-    # When: legacy deep-analysis URL is requested without an ATC4 selector.
     payload = deep_analysis.deep_analysis("멀티브랜드")
 
-    # Then: the strategic cache contract remains the default.
     assert payload["market_id"] == "ml_001"
-    assert payload["data"]["scope"] == "strategic"
+    assert payload["data"]["forecast"]["by_combo"] == {"strategic.sales": {"period_unit": "월", "forecast_periods": []}}
     assert not any("cache_deep_analysis_general" in query for query in queries)
 
 
-def test_deep_analysis_uses_general_cache_for_explicit_atc4(monkeypatch) -> None:
-    # Given: the caller selects a general-view ATC4 cache row.
-    seen_params: list[list[str]] = []
-
-    def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
-        seen_params.append(params)
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        assert "cache_deep_analysis_general" in sql
-        assert "AND atc4_code = %s" in sql
-        return _row("general", "A10N3")
-
-    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
-
-    # When: an ATC4 selector is supplied.
-    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
-
-    # Then: the general row is served without touching the strategic cache.
-    assert payload["market_id"] == "general:A10N3"
-    assert payload["data"]["scope"] == "general"
-    assert seen_params[0] == ["멀티브랜드", "멀티브랜드", "A10N3"]
-
-
-def test_deep_analysis_generates_general_cache_for_explicit_atc4_miss(monkeypatch) -> None:
-    # Given: the requested general-view cache row is absent but can be generated on demand.
-    calls: list[tuple[str, str | None]] = []
-
+def test_deep_analysis_general_view_reuses_shared_sections_and_replaces_view_dependent_parts(monkeypatch) -> None:
     def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
         if "cache_deep_analysis_general" in sql:
-            return None
-        raise AssertionError("explicit ATC4 requests should not query the strategic cache")
-
-    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
-        calls.append((brand, atc4))
-        return _row("general", "A10N3")
-
-    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
-
-    # When: the caller requests a cache-miss general market.
-    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
-
-    # Then: the API generates, serves, and later persists that general forecast row.
-    assert payload["market_id"] == "general:A10N3"
-    assert payload["data"]["scope"] == "general"
-    assert calls == [("멀티브랜드", "A10N3")]
-
-
-def test_deep_analysis_keeps_calendar_expired_general_cache_when_not_etl_stale(monkeypatch) -> None:
-    # Given: a general-view cache row has an old calendar expiry timestamp, but
-    # no ETL event has marked the row stale.
-    calls: list[tuple[str, str | None]] = []
-    cached_row = {
-        **_row("general", "A10N3"),
-        "expires_at": datetime.now(deep_analysis.KST) - timedelta(days=1),
-        "is_stale": 0,
-        "source_computed_at": datetime(2026, 7, 1, tzinfo=deep_analysis.KST),
-    }
-
-    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        if "cache_deep_analysis_general" in sql:
-            return cached_row
-        if "mart_general_brand_metric" in sql:
-            return {"source_computed_at": datetime(2026, 7, 1, tzinfo=deep_analysis.KST)}
-        raise AssertionError("explicit ATC4 requests should not query the strategic cache")
-
-    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
-        calls.append((brand, atc4))
-        return _row("general", "A10N3")
-
-    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
-
-    # When: the cache row is requested after its calendar timestamp.
-    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
-
-    # Then: the API serves the cache row because ETL freshness, not calendar
-    # TTL, controls general deep-analysis staleness.
-    assert payload["market_id"] == "general:A10N3"
-    assert calls == []
-
-
-def test_deep_analysis_regenerates_etl_stale_general_cache(monkeypatch) -> None:
-    # Given: an ETL completion event has explicitly marked the general cache row stale.
-    calls: list[tuple[str, str | None]] = []
-    stale_row = {
-        **_row("general", "A10N3"),
-        "is_stale": 1,
-        "stale_reason": "etl:ubist:202607",
-        "source_computed_at": datetime(2026, 7, 1, tzinfo=deep_analysis.KST),
-    }
-
-    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        if "cache_deep_analysis_general" in sql:
-            return stale_row
-        raise AssertionError("explicit ATC4 requests should not query the strategic cache")
-
-    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
-        calls.append((brand, atc4))
-        return _row("general", "A10N3")
-
-    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
-
-    # When: the stale cache row is requested.
-    payload = deep_analysis.deep_analysis("멀티브랜드", atc4="A10N3")
-
-    # Then: the API refreshes by the ETL stale marker.
-    assert payload["market_id"] == "general:A10N3"
-    assert calls == [("멀티브랜드", "A10N3")]
-
-
-def test_deep_analysis_falls_back_to_first_general_atc4_when_strategic_absent(monkeypatch) -> None:
-    # Given: no strategic cache exists, but a general cache row exists.
-    queries: list[str] = []
-
-    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
-        queries.append(sql)
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        if "cache_deep_analysis_general" in sql:
-            assert "ORDER BY atc4_code ASC" in sql
-            return _row("general", "B01C0")
+            return _row("general", atc4="A10N3")
+        if "cache_deep_analysis" in sql:
+            return _row("strategic", events=[{"id": 1}])
         return None
 
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    _stub_auxiliary(monkeypatch)
 
-    # When: a brand outside the strategic cache is requested.
-    payload = deep_analysis.deep_analysis("멀티브랜드")
+    payload = deep_analysis.deep_analysis("멀티브랜드", view="general")
 
-    # Then: the deterministic general-view tie-break row is served.
+    assert payload["market_id"] == "general:A10N3"
+    assert payload["data"]["events"] == [{"id": 1}]
+    assert payload["data"]["shared"] == {"kept": True}
+    assert payload["data"]["forecast"]["by_combo"] == {"general.sales": {"period_unit": "월", "forecast_periods": []}}
+    assert payload["data"]["simulation"]["by_combo"] == {"general.sales": {"kind": "general"}}
+
+
+def test_deep_analysis_general_view_builds_lightweight_mart_payload_without_on_demand_generation(monkeypatch) -> None:
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis" in sql:
+            return None
+        return None
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        assert "mart_general_brand_metric" in sql
+        return [
+            {
+                "brand_key": "멀티브랜드",
+                "brand_name": "멀티브랜드",
+                "atc4_code": "B01C0",
+                "atc4_desc": "B 시장",
+                "source": "ubist",
+                "measure": "sales",
+                "metric_history": json.dumps(
+                    {"2026-01": {"raw_value": 10, "ms": 1.5}, "2026-02": {"raw_value": 12, "ms": 1.7}},
+                    ensure_ascii=False,
+                ),
+                "unit_label": "원",
+                "is_jw": 0,
+                "is_target": 0,
+                "computed_at": datetime(2026, 7, 1),
+            }
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+    _stub_auxiliary(monkeypatch)
+
+    payload = deep_analysis.deep_analysis("멀티브랜드", view="general")
+
+    combo = payload["data"]["forecast"]["by_combo"]["UBIST.sales"]
     assert payload["market_id"] == "general:B01C0"
-    assert payload["data"]["scope"] == "general"
-    assert any("cache_deep_analysis_general" in query for query in queries)
+    assert payload["data"]["events"] == []
+    assert combo["history_periods"] == ["2026-01", "2026-02"]
+    assert combo["brands"][0]["history_values"] == [10.0, 12.0]
+    assert combo["forecast_periods"] == []
 
 
-def test_deep_analysis_generates_first_general_atc4_when_no_cache_exists(monkeypatch) -> None:
-    # Given: neither strategic nor general cache currently has the brand.
-    calls: list[tuple[str, str | None]] = []
+def test_deep_analysis_general_view_rejects_removed_atc4_parameter(monkeypatch) -> None:
+    response = TestClient(app).get("/api/deep-analysis/%EB%A9%80%ED%8B%B0%EB%B8%8C%EB%9E%9C%EB%93%9C?view=general&atc4=A10N3")
 
-    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        return None
-
-    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
-        calls.append((brand, atc4))
-        return _row("general", "B01C0")
-
-    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
-
-    # When: a general-only brand is requested without an ATC4 selector.
-    payload = deep_analysis.deep_analysis("멀티브랜드")
-
-    # Then: the deterministic first ATC4 market is generated and served.
-    assert payload["market_id"] == "general:B01C0"
-    assert payload["data"]["scope"] == "general"
-    assert calls == [("멀티브랜드", None)]
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "unsupported_query_parameter"
 
 
-def test_deep_analysis_reports_forecast_unavailable_for_uncalculable_general_brand(monkeypatch) -> None:
-    # Given: no cache row exists and the general forecast builder cannot produce one.
-    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
-        if "cache_deep_analysis_ai_analysis" in sql or "agent3_brand_strength" in sql:
-            return None
-        return None
+def test_deep_analysis_general_view_returns_404_only_when_brand_is_outside_general_mart(monkeypatch) -> None:
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: [])
+    _stub_auxiliary(monkeypatch)
 
-    def fake_generate(brand: str, atc4: str | None) -> dict[str, Any]:
-        raise deep_analysis.GeneralForecastUnavailable(
-            brand=brand,
-            atc4=atc4,
-            reason="general_market_not_found",
-        )
+    response = TestClient(app).get("/api/deep-analysis/%EB%AF%B8%EC%83%9D%EC%84%B1?view=general")
 
-    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(deep_analysis, "_build_general_deep_analysis_on_demand", fake_generate)
-
-    # When/Then: the API distinguishes calculation failure from a legacy cache miss.
-    try:
-        deep_analysis.deep_analysis("미생성브랜드", atc4="Z99Z9")
-    except deep_analysis.HTTPException as exc:
-        assert exc.status_code == 404
-        assert exc.detail == {
-            "error": "forecast_unavailable",
-            "brand": "미생성브랜드",
-            "atc4": "Z99Z9",
-            "reason": "general_market_not_found",
-        }
-    else:  # pragma: no cover - assertion guard
-        raise AssertionError("expected forecast_unavailable HTTPException")
+    assert response.status_code == 404
+    assert response.json()["detail"] == {"error": "brand_not_found", "brand": "미생성"}

@@ -2063,6 +2063,24 @@ def test_general_resolver_keeps_pack_desc_filter_exact_for_focus_brand(monkeypat
     assert definition.dimension_filters == (DimensionFilter("pack", ("INFU.VIAL 200MG 10ML",)),)
 
 
+def test_general_resolver_rejects_unknown_atc4_instead_of_returning_empty_market(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all", lambda *_args, **_kwargs: [])
+
+    try:
+        GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart").resolve(
+            atc4=["ZZZ999"],
+            molecule=[],
+            analysis_level=None,
+            focus_brand_key=None,
+            source="ubist",
+            measure="sales",
+        )
+    except DynamicMarketInputError as exc:
+        assert "general market rows were not found" in str(exc)
+    else:
+        raise AssertionError("unknown ATC4 should not produce a silent empty market")
+
+
 def test_strategic_resolver_accepts_ubist_atc4_narrowing_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
         assert params[:3] == ("ml_003", "ubist", "sales")
@@ -2296,6 +2314,8 @@ def test_route_returns_envelope_for_general_dynamic_market(monkeypatch) -> None:
     )
 
     assert response["status"] == "SUCCESS"
+    assert response["result"]["view"] == "general"
+    assert response["result"]["market_meta"]["view"] == "general"
     assert response["result"]["market_meta"]["market_size_recent"] == 1.0
 
 
@@ -2469,7 +2489,77 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
     assert response["status"] == "SUCCESS"
     assert captured["ml_id"] == "ml_006"
     assert captured["focus_brand_key"] == "리바로"
+    assert response["result"]["view"] == "strategic_ml"
+    assert response["result"]["market_meta"]["view"] == "strategic_ml"
     assert response["result"]["data"]["ubist_specialty_channels"][1] == "주요고객 종합병원 순환기"
+
+
+def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"view": "market_landscape", "market_meta": {"view": "market_landscape"}, "data": {"kpi": {}}}
+
+    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
+        lambda *_args, **_kwargs: [{"market_id": "ml_006"}],
+    )
+
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "view": "strategic_ml",
+                "filters": {"focus_brand_key": "리바로"},
+                "source": "ubist",
+                "measure": "sales",
+            }
+        )
+    )
+
+    assert response["status"] == "SUCCESS"
+    assert captured["ml_id"] == "ml_006"
+    assert response["result"]["view"] == "strategic_ml"
+    assert response["result"]["market_meta"]["view"] == "strategic_ml"
+
+
+def test_route_rejects_general_view_with_legacy_view_kind() -> None:
+    try:
+        dynamic_market_route.dynamic_market(
+            DynamicMarketRequest.model_validate(
+                {
+                    "view": "general",
+                    "filters": {"view_kind": "market_landscape", "atc4": ["C10A1"]},
+                    "source": "ubist",
+                    "measure": "sales",
+                }
+            )
+        )
+    except dynamic_market_route.HTTPException as exc:
+        assert exc.status_code == 422
+        assert "view=general cannot be combined" in str(exc.detail)
+    else:
+        raise AssertionError("view=general + view_kind must be rejected")
+
+
+def test_route_rejects_conflicting_explicit_strategic_view_kind() -> None:
+    try:
+        dynamic_market_route.dynamic_market(
+            DynamicMarketRequest.model_validate(
+                {
+                    "view": "strategic_ml",
+                    "filters": {"view_kind": "competitive_dynamics", "focus_brand_key": "리바로"},
+                    "source": "ubist",
+                    "measure": "sales",
+                }
+            )
+        )
+    except dynamic_market_route.HTTPException as exc:
+        assert exc.status_code == 422
+        assert "conflicts" in str(exc.detail)
+    else:
+        raise AssertionError("conflicting strategic view must be rejected")
 
 
 def test_route_rejects_analysis_level_channel_slice_for_strategic_view() -> None:

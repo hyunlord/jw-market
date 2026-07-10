@@ -96,6 +96,8 @@ class GeneralViewResolver:
             source=normalized_source,
             measure=normalized_measure,
         )
+        if not brands:
+            raise DynamicMarketInputError("general market rows were not found for the requested ATC4/molecule filters")
         if dimension_filters and normalized_focus_brand:
             dimension_filters = self._with_focus_dimension_values(
                 filters=dimension_filters,

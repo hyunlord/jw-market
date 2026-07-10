@@ -60,7 +60,7 @@ def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetr
         "measure": metrics.measure,
         "source": source,
         "unit_label": metrics.unit_label,
-        "view": str(definition.filter_echo.get("view_kind") or "market_landscape"),
+        "view": definition.view,
     }
     return normalize_portal_read_payload(payload)
 
@@ -402,6 +402,7 @@ def build_market_meta(
         "market_definition_label": label,
         "market_definition_full": _market_definition_full(definition=definition, atc_codes=atc_codes, molecules=molecules),
         "filters": definition.filter_echo,
+        "view": definition.view,
         "mkt_team": "Runtime",
         "brand_list": [item.brand_name for item in metrics.all_brands[:100]],
         "atc_codes": atc_codes,

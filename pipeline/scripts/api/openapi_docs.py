@@ -26,7 +26,7 @@ META_TAG: Final = "Meta"
 CAUSE_RESPONSE_EXAMPLE: Final = {
     "brand": "리바로",
     "market_id": "strategy_006",
-    "view": "market_landscape",
+    "view": "strategic_ml",
     "source": "UBIST",
     "measure": "sales",
     "unit_label": "억원",
@@ -57,7 +57,7 @@ CAUSE_RESPONSE_SCHEMA: Final = {
     "properties": {
         "brand": {"type": "string", "description": "요청 브랜드명 또는 표시 브랜드명", "example": "리바로"},
         "market_id": {"type": ["string", "null"], "description": "대표 전략 시장 id", "example": "strategy_006"},
-        "view": {"type": "string", "description": "market_landscape 또는 competitive_dynamics", "example": "market_landscape"},
+        "view": {"type": "string", "description": "general, strategic_ml, strategic_cd", "example": "strategic_ml"},
         "source": {"type": "string", "description": "UBIST 또는 IQVIA", "example": "UBIST"},
         "measure": {"type": "string", "description": "sales 또는 qty", "example": "sales"},
         "unit_label": {"type": "string", "description": "화면 표시 단위", "example": "억원"},
@@ -111,6 +111,7 @@ root 구조(`brand`, `market_id`, `market_meta`, `data`)와 같은 모양입니�
 |---|---|---:|---|---|---|
 | `source` | string | 아니오 | `ubist` | `ubist`로 계산 | 422 validation error |
 | `measure` | string | 아니오 | `sales` | `sales`로 계산 | 422 validation error |
+| `view` | string/null | 아니오 | null | legacy `filters.view_kind` 추론 유지 | null은 생략과 동일 |
 | `filters` | object | 아니오 | 빈 필터 객체 | 빈 필터 객체 | 422 validation error |
 | `options` | object | 아니오 | `{period_range:null}` | 기본 옵션 객체 | 422 validation error |
 
@@ -129,7 +130,7 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 | 필드 | 타입 | 기본값 | 동작 |
 |---|---|---|---|
 | `atc4(ATC4 시장 범위/narrowing)` | string[] | `[]` | 일반뷰에서는 시장 scope, 전략뷰에서는 ML/CD 시장 안의 ATC narrowing입니다. 생략/빈 배열은 select-all입니다. |
-| `view_kind` | string/null | null | `market_landscape`/`strategic_ml`/`ml`은 ML 전략뷰, `competitive_dynamics`/`strategic_cd`/`cd`는 CD 전략뷰입니다. 값이 있으면 전략뷰 분기로 들어갑니다. |
+| `view_kind` | string/null | null | legacy 전략뷰 종류입니다. 신규 호출은 top-level `view`를 사용합니다. `market_landscape`는 `strategic_ml`, `competitive_dynamics`는 `strategic_cd`로 추론됩니다. |
 | `focus_brand_key` | string/null | null | `filters.atc4` 생략 시 브랜드 기준 ATC4 합집합을 만드는 데 사용합니다. 빈 문자열은 대부분 미입력처럼 처리됩니다. |
 | `analysis_level` | object | 빈 source 객체 | 소스별 필터 딕셔너리입니다. row filter와 값 슬라이스를 같은 source 하위에 넣습니다. |
 
@@ -154,6 +155,10 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 
 ### 전략뷰 필터
 
+신규 호출은 top-level `view`에 `general`, `strategic_ml`, `strategic_cd` 중 하나를 명시합니다.
+생략하면 기존 소비자 호환을 위해 `filters.view_kind`로 전략뷰를 추론하고, 둘 다 없으면 general입니다.
+`view=general`과 `filters.view_kind`를 함께 보내거나, `view=strategic_*`와 다른 종류의 `filters.view_kind`를 함께 보내면 422입니다.
+
 전략뷰도 top-level `filters.atc4` 하나로 ATC narrowing을 합니다. `analysis_level.<source>.atc3` 또는
 `analysis_level.<source>.atc4`는 전략뷰 narrowing 입력이 아니며 active 값이 있으면 400입니다.
 `class(클래스)`, `mfr/mfr_name_kor(제조사)`, `nhi/nhi_type(NHI 구분)`, molecule/pack/strength/form/route/reimbursement 계열도
@@ -161,7 +166,7 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 전략뷰에서 active 값이 있으면 400입니다.
 
 전략뷰에서 ATC를 전체 선택하려면 `filters.atc4`를 생략하거나 빈 배열로 보내면 됩니다.
-전략 시장 id(`ml_id`, `cd_market_id`)는 공개 요청 필드가 아닙니다. `focus_brand_key`와 `view_kind`만 보내면
+전략 시장 id(`ml_id`, `cd_market_id`)는 공개 요청 필드가 아닙니다. `focus_brand_key`와 `view`만 보내면
 백엔드가 선택한 `source`/`measure`에서 브랜드가 속한 ML 또는 CD 시장을 조회합니다. 같은 브랜드가 여러 시장에
 속하면 시장 id 오름차순 첫 번째를 결정론적으로 사용합니다. 예를 들어 `ml_005, ml_008`이면 `ml_005`,
 `cd_006, cd_007`이면 `cd_006`입니다. `ml_id`나 `cd_market_id`를 요청에 포함하면 schema extra-forbid로
@@ -185,6 +190,7 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 `ubist_specialty_channels`, `ubist_specialty_target_channels`입니다. 해당 source/범위에 데이터가 없거나
 채널축이 없으면 빈 배열(`[]`), 빈 객체(`{}`), 또는 `note`가 있는 fallback 객체로 반환됩니다.
 
+명시 view와 legacy view_kind 충돌은 422 `detail.error=invalid_dynamic_market_view`입니다.
 요청 검증 실패는 대부분 400 `detail.error=invalid_dynamic_market_request`입니다.
 scope가 너무 넓으면 400 `detail.error=dynamic_scope_too_broad`와 `resolved_brand_rows`, `limit`가 함께 반환됩니다.
 Pydantic 타입 검증 실패(null을 허용하지 않는 필드에 null 등)는 422입니다.
@@ -270,6 +276,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "view": {"type": "string", "enum": ["general"], "description": "명시 view. 생략 시 legacy 추론을 사용하지만 신규 호출은 general을 권장합니다."},
                 "source": {"type": "string", "enum": ["ubist"], "default": "ubist"},
                 "measure": {"type": "string", "description": "measure(지표): sales 또는 volume"},
                 "filters": {
@@ -293,6 +300,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "view": {"type": "string", "enum": ["general"], "description": "명시 view. 생략 시 legacy 추론을 사용하지만 신규 호출은 general을 권장합니다."},
                 "source": {"type": "string", "enum": ["iqvia", "iqvia_nsa", "nsa"], "default": "iqvia"},
                 "measure": {"type": "string", "description": "measure(지표): sales, unit, counting_unit, dosage_unit"},
                 "filters": {
@@ -316,6 +324,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "view": {"type": "string", "enum": ["strategic_ml", "strategic_cd"], "description": "명시 전략 view. strategic_ml 또는 strategic_cd."},
                 "source": {"type": "string", "enum": ["ubist", "iqvia", "iqvia_nsa", "nsa"]},
                 "measure": {"type": "string", "description": "measure(지표)"},
                 "filters": {
@@ -323,7 +332,7 @@ PUBLIC_DYNAMIC_MARKET_REQUEST_SCHEMA: Final = {
                     "additionalProperties": False,
                     "properties": {
                         "focus_brand_key": {"type": "string", "description": "focus_brand_key(선택 브랜드)"},
-                        "view_kind": {"type": "string", "enum": ["market_landscape", "competitive_dynamics", "strategic_ml", "strategic_cd", "ml", "cd"]},
+                        "view_kind": {"type": "string", "deprecated": True, "enum": ["market_landscape", "competitive_dynamics"], "description": "Deprecated legacy 전략뷰 힌트. 신규 호출은 top-level view를 사용하십시오."},
                         "atc4": {"type": "array", "items": {"type": "string"}, "description": "ATC4 전략뷰 narrowing. 생략/빈 배열이면 전략 시장 전체 선택."},
                     },
                 },
@@ -346,17 +355,18 @@ DYNAMIC_MARKET_REQUEST_BODY_DESCRIPTION: Final = {
 
 
 DYNAMIC_MARKET_REQUEST_EXAMPLE: Final = {
+    "view": "strategic_ml",
     "source": "ubist",
     "measure": "sales",
     "filters": {
         "focus_brand_key": "리바로",
-        "view_kind": "market_landscape",
         "atc4": ["C10A1"],
     },
 }
 
 
 GENERAL_BASELINE_REQUEST_EXAMPLE: Final = {
+    "view": "general",
     "source": "ubist",
     "measure": "sales",
     "filters": {
@@ -367,6 +377,7 @@ GENERAL_BASELINE_REQUEST_EXAMPLE: Final = {
 
 
 GENERAL_UBIST_FILTER_REQUEST_EXAMPLE: Final = {
+    "view": "general",
     "source": "ubist",
     "measure": "sales",
     "filters": {
@@ -390,6 +401,7 @@ GENERAL_UBIST_FILTER_REQUEST_EXAMPLE: Final = {
 
 
 GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE: Final = {
+    "view": "general",
     "source": "iqvia",
     "measure": "sales",
     "filters": {
@@ -412,11 +424,11 @@ GENERAL_IQVIA_FILTER_REQUEST_EXAMPLE: Final = {
 
 
 COMPETITIVE_DYNAMICS_REQUEST_EXAMPLE: Final = {
+    "view": "strategic_cd",
     "source": "ubist",
     "measure": "sales",
     "filters": {
         "focus_brand_key": "리바로",
-        "view_kind": "competitive_dynamics",
     },
 }
 
@@ -502,14 +514,14 @@ DYNAMIC_MARKET_RESPONSES: Final = {
                     },
                 },
                 "examples": {
-                    "market_landscape": {"summary": "전략 시장조망", "value": {"status": "SUCCESS", "result": CAUSE_RESPONSE_EXAMPLE}},
-                    "competitive_dynamics": {
+                    "strategic_ml": {"summary": "전략 시장조망", "value": {"status": "SUCCESS", "result": CAUSE_RESPONSE_EXAMPLE}},
+                    "strategic_cd": {
                         "summary": "전략 경쟁구도",
                         "value": {
                             "status": "SUCCESS",
                             "result": {
                                 **CAUSE_RESPONSE_EXAMPLE,
-                                "view": "competitive_dynamics",
+                                "view": "strategic_cd",
                                 "market_id": "cd_001",
                                 "markets": [{"market_id": "cd_001", "is_primary": True}],
                             },
@@ -1456,7 +1468,11 @@ DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = {
 
 DEEP_ANALYSIS_RESPONSES: Final = {
     200: {
-        "description": "포탈 심층분석 payload",
+        "description": (
+            "포탈 심층분석 payload. query `view`는 general 또는 strategic이며 생략 시 strategic입니다. "
+            "general은 브랜드 카탈로그/mart에서 ATC4를 유도합니다. `atc4` query parameter는 지원하지 않습니다. "
+            "데이터가 없는 섹션은 404/500 대신 빈 배열, 빈 객체, unavailable 객체 등 기존 구조 안의 빈 상태로 반환됩니다."
+        ),
         "content": {
             "application/json": {
                 "schema": {
@@ -1467,7 +1483,7 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                         "generated_at": {"type": "string", "description": "KST ISO 생성 시각"},
                         "data": {
                             "type": "object",
-	                            "description": "forecast, ai_analysis 등 심층분석 화면 섹션.",
+	                            "description": "forecast, ai_analysis 등 심층분석 화면 섹션. view별 차이는 forecast/simulation과 brand_factors에 한정됩니다.",
 	                            "additionalProperties": True,
 	                            "properties": {
                                 "ai_analysis": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
@@ -1488,8 +1504,9 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                 },
             }
 	        },
-	    },
+    },
     404: {"description": "브랜드 심층분석 cache 없음"},
+    422: {"description": "지원하지 않는 view 또는 제거된 atc4 query parameter"},
 }
 
 
