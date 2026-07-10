@@ -27,6 +27,7 @@ from pipeline.etl.io.mart.event_score_policy import (
     event_score_policy,
     is_cut_b_exposed,
     is_news_exposed,
+    news_exposure_sql_predicate,
 )
 
 try:
@@ -49,8 +50,27 @@ def connect() -> pymysql.connections.Connection:
     return mariadb_connect()
 
 
-def ensure_events_raw_table(conn: pymysql.connections.Connection) -> None:
-    """Create/sync `events_raw` from Agent 1 `news_raw` without touching scores."""
+def events_raw_gap(conn: pymysql.connections.Connection) -> int:
+    """Return source news rows that are not yet cloned into `events_raw`."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM news_raw n
+            LEFT JOIN events_raw e ON e.news_id = n.news_id
+            WHERE e.news_id IS NULL
+            """
+        )
+        return int(cur.fetchone()["cnt"] or 0)
+
+
+def ensure_events_raw_table(conn: pymysql.connections.Connection) -> dict[str, int]:
+    """Create/sync missing `events_raw` rows from Agent 1 `news_raw`.
+
+    This intentionally inserts only absent keys. Existing `events_raw` rows are
+    left untouched so the consumer-side repair is safe to run alongside crawler
+    ingestion without rewriting previously cloned articles.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -76,29 +96,38 @@ def ensure_events_raw_table(conn: pymysql.connections.Connection) -> None:
                 news_id, source_name, published_date, title, summary, body, url, created_at, ingested_at
             )
             SELECT
-                news_id,
-                source_name,
-                published_date,
-                title,
-                LEFT(COALESCE(article_text, ''), 1000) AS summary,
-                article_text AS body,
-                article_url AS url,
-                ingested_at AS created_at,
-                ingested_at
-            FROM news_raw
-            ON DUPLICATE KEY UPDATE
-                source_name = VALUES(source_name),
-                published_date = VALUES(published_date),
-                title = VALUES(title),
-                summary = VALUES(summary),
-                body = VALUES(body),
-                url = VALUES(url),
-                created_at = VALUES(created_at),
-                ingested_at = VALUES(ingested_at)
+                n.news_id,
+                n.source_name,
+                n.published_date,
+                n.title,
+                LEFT(COALESCE(n.article_text, ''), 1000) AS summary,
+                n.article_text AS body,
+                n.article_url AS url,
+                n.ingested_at AS created_at,
+                n.ingested_at
+            FROM news_raw n
+            LEFT JOIN events_raw e ON e.news_id = n.news_id
+            WHERE e.news_id IS NULL
             """
         )
+        inserted = int(cur.rowcount or 0)
         _ensure_index(cur, "event_brand_scores", "idx_phase29_brand_score", ["brand_canonical", "score"])
         _ensure_index(cur, "event_brand_scores", "idx_phase29_news", ["news_id"])
+    return {"inserted": inserted, "gap": events_raw_gap(conn)}
+
+
+def ensure_events_raw_synced(conn: pymysql.connections.Connection, *, retries: int = 1) -> dict[str, int]:
+    """Sync missing `events_raw` rows and hard-gate on a zero source gap."""
+
+    total_inserted = 0
+    last_gap = 0
+    for attempt in range(retries + 1):
+        result = ensure_events_raw_table(conn)
+        total_inserted += int(result["inserted"])
+        last_gap = int(result["gap"])
+        if last_gap == 0:
+            return {"inserted": total_inserted, "gap": 0, "attempts": attempt + 1}
+    raise RuntimeError(f"events_raw sync gap remains after {retries + 1} attempt(s): {last_gap}")
 
 
 def _ensure_index(cur: Any, table: str, index_name: str, columns: list[str]) -> None:
@@ -241,6 +270,9 @@ def _query_events(
         "s.score >= %s",
     ]
     params: list[Any] = [brand, min_score]
+    exposure_sql, exposure_params = news_exposure_sql_predicate("s")
+    where.append(exposure_sql)
+    params.extend(exposure_params)
     if derivation:
         where.append("s.derivation = %s")
         params.append(derivation)
@@ -410,11 +442,11 @@ def main() -> int:
     args = parser.parse_args()
     conn = connect()
     try:
-        ensure_events_raw_table(conn)
+        sync = ensure_events_raw_synced(conn)
         counts = table_counts(conn)
     finally:
         conn.close()
-    report = {"phase": "29", "loader": "events_raw_sync", "counts": counts}
+    report = {"phase": "29", "loader": "events_raw_sync", "sync": sync, "counts": counts}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as handle:

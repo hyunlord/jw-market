@@ -9,6 +9,7 @@ from pipeline.etl.io.mart.event_score_policy import (
     event_score_policy,
     is_cut_b_exposed,
     is_news_exposed,
+    news_exposure_sql_predicate,
 )
 
 
@@ -73,3 +74,20 @@ def test_known_legacy_processor_does_not_emit_unknown_warning(caplog: pytest.Log
 
     assert policy.cut_b_threshold == 80
     assert caplog.records == []
+
+
+def test_news_exposure_sql_predicate_reuses_versioned_policy_values() -> None:
+    sql, params = news_exposure_sql_predicate("s")
+
+    assert "s.tag <> %s" in sql
+    assert "s.source_processor = %s" in sql
+    assert "s.source_processor IS NULL OR s.source_processor <> %s" in sql
+    assert params[0] == "기타"
+    assert REV5674_PROCESSOR in params
+    for expected in (43, 49, 51, 54, 55, 53, 73, 69):
+        assert expected in params
+
+
+def test_news_exposure_sql_predicate_rejects_unsafe_alias() -> None:
+    with pytest.raises(ValueError):
+        news_exposure_sql_predicate("s;DROP")

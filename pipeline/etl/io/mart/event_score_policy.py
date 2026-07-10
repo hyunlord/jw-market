@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import logging
+import re
 from types import MappingProxyType
 from typing import Final, Mapping
 
@@ -78,6 +79,40 @@ def is_news_exposed(*, tag: str | None, score: int | float, source_processor: st
     policy = event_score_policy(source_processor)
     cutoff = policy.category_cutoffs.get(str(tag or ""))
     return cutoff is not None and float(score) >= cutoff
+
+
+def news_exposure_sql_predicate(table_alias: str = "s") -> tuple[str, tuple[object, ...]]:
+    """Return a SQL predicate matching :func:`is_news_exposed`.
+
+    The cache/event SQL paths use this instead of re-declaring cutoff literals so
+    the processor-versioned policy remains single-sourced with the Python
+    fallback checks.
+    """
+
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_alias):
+        raise ValueError(f"unsafe SQL alias: {table_alias!r}")
+    tag_col = f"{table_alias}.tag"
+    score_col = f"{table_alias}.score"
+    processor_col = f"{table_alias}.source_processor"
+
+    def category_clause(cutoffs: Mapping[str, int]) -> tuple[str, list[object]]:
+        clauses: list[str] = []
+        params: list[object] = []
+        for tag, cutoff in cutoffs.items():
+            clauses.append(f"({tag_col} = %s AND {score_col} >= %s)")
+            params.extend([tag, cutoff])
+        return " OR ".join(clauses), params
+
+    legacy_clause, legacy_params = category_clause(LEGACY_CATEGORY_CUTOFFS)
+    rev_clause, rev_params = category_clause(REV5674_CATEGORY_CUTOFFS)
+    sql = (
+        f"{tag_col} <> %s AND ("
+        f"({processor_col} = %s AND ({rev_clause})) OR "
+        f"(({processor_col} IS NULL OR {processor_col} <> %s) AND ({legacy_clause}))"
+        ")"
+    )
+    params: list[object] = ["기타", REV5674_PROCESSOR, *rev_params, REV5674_PROCESSOR, *legacy_params]
+    return sql, tuple(params)
 
 
 def is_cut_b_exposed(*, score: int | float, source_processor: str | None) -> bool:

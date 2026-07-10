@@ -34,9 +34,9 @@ from cache_build_common import (
 from pipeline.scripts.etl.cache_deep_analysis_brand_factors import dump_brand_factors, load_brand_factor_map
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 try:
-    from phase29_events import build_events_for_cache, ensure_events_raw_table
+    from phase29_events import build_events_for_cache, ensure_events_raw_synced
 except ModuleNotFoundError:  # pragma: no cover - package import path under pytest
-    from pipeline.scripts.etl.phase29_events import build_events_for_cache, ensure_events_raw_table
+    from pipeline.scripts.etl.phase29_events import build_events_for_cache, ensure_events_raw_synced
 
 try:
     from pipeline.scripts.forecast.backtest import run_phase29_poc
@@ -686,7 +686,7 @@ def update_events_only(target_table: str, brands: set[str] | None = None, *, ver
     target_table = _safe_table_name(target_table)
     conn = mariadb_connect()
     cur = conn.cursor()
-    ensure_events_raw_table(conn)
+    ensure_events_raw_synced(conn)
     cur.execute(f"CREATE TABLE IF NOT EXISTS `{target_table}` LIKE `cache_deep_analysis`")
     cur.execute(f"DELETE FROM `{target_table}`")
     cur.execute("SELECT brand, market_id, response_json, brand_factors FROM `cache_deep_analysis` ORDER BY brand, market_id")
@@ -753,7 +753,7 @@ def main() -> None:
     sql = f"REPLACE INTO `cache_deep_analysis` ({names}) VALUES ({placeholders})"
     conn = mariadb_connect()
     cur = conn.cursor()
-    ensure_events_raw_table(conn)
+    ensure_events_raw_synced(conn)
     brand_factors_by_brand = load_brand_factor_map(conn, sorted(by_brand))
     poc_report = {"brands": {}}
     cur.execute("DELETE FROM `cache_deep_analysis`")
