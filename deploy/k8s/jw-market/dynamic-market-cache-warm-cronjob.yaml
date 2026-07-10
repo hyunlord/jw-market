@@ -22,7 +22,7 @@ spec:
               command:
                 - python
                 - -m
-                - pipeline.scripts.deploy.warm_dynamic_market_cache
+                - pipeline.scripts.api.dynamic_market.warm_cache
               args:
                 - --base-url
                 - http://jw-market-backend-api-test:8000

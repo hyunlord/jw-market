@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pipeline.scripts.deploy import warm_dynamic_market_cache
+from pipeline.scripts.api.dynamic_market import warm_cache
 
 
 class FakeResponse:
@@ -35,7 +35,7 @@ def test_warm_requests_posts_sequential_canonical_requests() -> None:
         {"source": "iqvia", "measure": "sales", "filters": {"atc4": ["N02B2"]}},
     ]
 
-    results = warm_dynamic_market_cache.warm_requests(
+    results = warm_cache.warm_requests(
         base_url="http://jw-market-backend-api-test:8000",
         requests=requests,
         timeout_seconds=90,
