@@ -97,6 +97,10 @@ def test_stage3a7_variant_only_insert_does_not_overwrite_legacy_payload():
 
 
 def test_event_bundle_processors_are_configured_without_rule_only_tier2():
-    assert event_bundle_builder.DIRECT_EVENT_SOURCE_PROCESSORS == ("workflow_196_optionB", "tier2_llm_v1")
+    assert event_bundle_builder.DIRECT_EVENT_SOURCE_PROCESSORS == (
+        "workflow_196_optionB",
+        "workflow_196_rev5674",
+        "tier2_llm_v1",
+    )
     assert event_bundle_builder.CROSS_MATCH_SOURCE_PROCESSORS == ("cross_match_adapter_v1",)
     assert "tier2_exact_rule_v1" not in event_bundle_builder.DIRECT_EVENT_SOURCE_PROCESSORS

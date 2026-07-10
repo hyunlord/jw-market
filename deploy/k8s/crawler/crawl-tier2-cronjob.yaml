@@ -183,6 +183,8 @@ spec:
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: DB_PORT
               value: '3306'
+            - name: WF337_URL
+              value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
             - name: D2_WRITER_USER
               valueFrom:
                 secretKeyRef:

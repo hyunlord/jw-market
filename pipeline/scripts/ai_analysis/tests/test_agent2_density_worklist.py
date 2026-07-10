@@ -115,3 +115,39 @@ def test_route_density_worklist_returns_brand_key_routes_with_display_names() ->
         ("zero-key", "제로브랜드", "zero"),
     ]
     assert worklist.evidence.unmatched_known == ()
+
+
+def test_evidence_counts_branch_cutoff_by_wf196_processor() -> None:
+    brand_rows = [
+        {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},
+    ]
+    score_rows = [
+        {
+            "brand_canonical": "자본브랜드",
+            "source_processor": "workflow_196_optionB",
+            "derivation": "llm_direct",
+            "tag": "자본/경영",
+            "score": 50,
+        },
+        {
+            "brand_canonical": "자본브랜드",
+            "source_processor": "workflow_196_rev5674",
+            "derivation": "llm_direct",
+            "tag": "자본/경영",
+            "score": 50,
+        },
+        {
+            "brand_canonical": "자본브랜드",
+            "source_processor": "workflow_196_rev5674",
+            "derivation": "llm_direct",
+            "tag": "자본/경영",
+            "score": 53,
+        },
+    ]
+
+    result = build_evidence_counts_from_rows(brand_rows, score_rows)
+
+    assert [(row.source_processor, row.count, row.score_cutoff) for row in result.counts] == [
+        ("workflow_196_optionB", 1, 43),
+        ("workflow_196_rev5674", 1, 53),
+    ]

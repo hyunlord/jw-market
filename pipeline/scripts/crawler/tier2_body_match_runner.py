@@ -21,7 +21,7 @@ import pymysql
 DEFAULT_DB_NAME = "jw_mart_d2_stage_20260630_r2"
 DEFAULT_TARGET_TABLE = "tier2_match_staging"
 TIER2_EXACT_PROCESSOR = "tier2_exact_rule_v1"
-TIER1_PROCESSORS = ("workflow_196_optionB", "cross_match_adapter_v1")
+TIER1_PROCESSORS = ("workflow_196_optionB", "workflow_196_rev5674", "cross_match_adapter_v1")
 STOPLIST_BRAND_NAMES: frozenset[str] = frozenset(
     {
         "제로",

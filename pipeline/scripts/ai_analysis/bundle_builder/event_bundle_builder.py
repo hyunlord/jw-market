@@ -7,7 +7,11 @@ from typing import Dict, Optional, Tuple
 from .config import EventConfig
 
 TAGS = ["신약/R&D", "정책/규제", "공급/생산", "자본/경영", "외부/트렌드", "기타"]
-DIRECT_EVENT_SOURCE_PROCESSORS = ("workflow_196_optionB", "tier2_llm_v1")
+DIRECT_EVENT_SOURCE_PROCESSORS = (
+    "workflow_196_optionB",
+    "workflow_196_rev5674",
+    "tier2_llm_v1",
+)
 CROSS_MATCH_SOURCE_PROCESSORS = ("cross_match_adapter_v1",)
 # Tier2 processor policy:
 # - tier2_llm_v1 is LLM-confirmed brand/article evidence and is visible to Agent2.
@@ -61,6 +65,7 @@ def _build_event_bundle_v1(
             WHERE (s.brand_canonical = %s OR s.brand_name = %s)
               AND s.derivation = 'llm_direct'
               AND s.source_processor IN ({_sql_placeholders(DIRECT_EVENT_SOURCE_PROCESSORS)})
+              AND s.tag <> '기타'
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s
@@ -89,6 +94,7 @@ def _build_event_bundle_v1(
             WHERE (s.brand_name = %s OR s.brand_canonical = %s OR s.mirrored_from_jw_brands LIKE %s)
               AND s.derivation = 'cross_match'
               AND s.source_processor IN ({_sql_placeholders(CROSS_MATCH_SOURCE_PROCESSORS)})
+              AND s.tag <> '기타'
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s
@@ -163,6 +169,7 @@ def _build_event_bundle_v1_1(
             WHERE (s.brand_canonical = %s OR s.brand_name = %s)
               AND s.derivation = 'llm_direct'
               AND s.source_processor IN ({_sql_placeholders(DIRECT_EVENT_SOURCE_PROCESSORS)})
+              AND s.tag <> '기타'
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s

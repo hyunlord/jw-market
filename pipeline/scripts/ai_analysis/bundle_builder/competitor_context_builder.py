@@ -44,7 +44,8 @@ def build_competitor_context(
                 JOIN news_raw n ON s.news_id = n.news_id
                 WHERE (s.brand_canonical = %s OR s.brand_name = %s)
                   AND s.derivation = 'llm_direct'
-                  AND s.source_processor = 'workflow_196_optionB'
+                  AND s.source_processor IN ('workflow_196_optionB', 'workflow_196_rev5674')
+                  AND s.tag <> '기타'
                   AND s.score >= %s
                   AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
                   AND n.published_date <= %s

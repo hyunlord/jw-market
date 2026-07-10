@@ -193,7 +193,7 @@ spec:
                 --output "$WORK/load_summary.json" \
                 --db-name "$DB_NAME" \
                 --tier 1 \
-                --processed-by workflow_196_optionB
+                --processed-by workflow_196_rev5674
             command:
             - /bin/sh
             - -lc
@@ -226,7 +226,7 @@ spec:
                   key: password
             - name: DB_NAME
               value: jw_mart_d2_stage_20260630_r2
-            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:6b05a5cafae62388f2e2f6806df97c527ce91011e92b23ef408c6e805cc7acb9
+            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
             imagePullPolicy: IfNotPresent
             name: crawler
             resources:

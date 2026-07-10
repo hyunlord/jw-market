@@ -14,6 +14,18 @@ CATEGORY_SCORE_CUTOFFS: Final = {
     "신약/R&D": 54,
     "정책/규제": 55,
 }
+LEGACY_WF196_PROCESSOR: Final = "workflow_196_optionB"
+NEW_WF196_PROCESSOR: Final = "workflow_196_rev5674"
+CATEGORY_SCORE_CUTOFFS_BY_VERSION: Final = {
+    LEGACY_WF196_PROCESSOR: CATEGORY_SCORE_CUTOFFS,
+    NEW_WF196_PROCESSOR: {
+        "자본/경영": 53,
+        "외부/트렌드": 53,
+        "공급/생산": 53,
+        "신약/R&D": 73,
+        "정책/규제": 69,
+    },
+}
 EXCLUDED_EVIDENCE_TAGS: Final = frozenset({"기타"})
 FULL_MIN_EVIDENCE: Final = 10
 MID_MIN_EVIDENCE: Final = 3
@@ -71,7 +83,7 @@ def density_bucket(evidence_count: int) -> DensityBucket:
 def is_allowed_evidence(row: EvidenceCount) -> bool:
     """Return whether a score row can feed Agent2 density routing."""
 
-    expected_cutoff = cutoff_for_tag(row.tag)
+    expected_cutoff = cutoff_for_tag(row.tag, row.source_processor)
     if expected_cutoff is None:
         return False
     return (
@@ -81,19 +93,27 @@ def is_allowed_evidence(row: EvidenceCount) -> bool:
     )
 
 
-def cutoff_for_tag(tag: str | None) -> int | None:
+def cutoff_for_tag(tag: str | None, source_processor: str | None = None) -> int | None:
     """Return the category-specific evidence cutoff, or None when excluded."""
 
     normalized = (tag or "").strip()
     if normalized in EXCLUDED_EVIDENCE_TAGS:
         return None
-    return CATEGORY_SCORE_CUTOFFS.get(normalized, QUALITY_SCORE_CUTOFF)
+    cutoffs = CATEGORY_SCORE_CUTOFFS_BY_VERSION.get(
+        (source_processor or "").strip(),
+        CATEGORY_SCORE_CUTOFFS,
+    )
+    return cutoffs.get(normalized, QUALITY_SCORE_CUTOFF)
 
 
-def is_score_allowed_for_density(score: int | float, tag: str | None) -> bool:
+def is_score_allowed_for_density(
+    score: int | float,
+    tag: str | None,
+    source_processor: str | None = None,
+) -> bool:
     """Evaluate a raw score against the category-specific density cutoff."""
 
-    cutoff = cutoff_for_tag(tag)
+    cutoff = cutoff_for_tag(tag, source_processor)
     return cutoff is not None and score >= cutoff
 
 

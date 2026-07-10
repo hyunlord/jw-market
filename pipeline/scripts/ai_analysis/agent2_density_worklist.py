@@ -119,7 +119,8 @@ def build_evidence_counts_from_rows(
     for row in score_rows:
         tag = _text(row.get("tag"))
         score = _number(row.get("score"))
-        if not is_score_allowed_for_density(score, tag):
+        source_processor = _text(row.get("source_processor"))
+        if not is_score_allowed_for_density(score, tag, source_processor):
             continue
         event_brand_name = _text(row.get("brand_canonical"))
         brand_name = alias_resolver.resolve_alias(event_brand_name)
@@ -130,9 +131,8 @@ def build_evidence_counts_from_rows(
             elif brand_name:
                 unmatched_unknown.add(brand_name)
             continue
-        source_processor = _text(row.get("source_processor"))
         derivation = _text(row.get("derivation"))
-        cutoff = cutoff_for_tag(tag)
+        cutoff = cutoff_for_tag(tag, source_processor)
         if cutoff is None:
             continue
         grouped[(brand_key, source_processor, derivation, tag, cutoff)] += 1

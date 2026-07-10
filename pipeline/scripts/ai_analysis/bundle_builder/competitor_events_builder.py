@@ -26,7 +26,8 @@ def _fetch_events(brand_name: str, snapshot_at, config, db_conn) -> list[dict]:
             FROM event_brand_scores s
             JOIN news_raw n ON s.news_id = n.news_id
             WHERE (s.brand_canonical = %s OR s.brand_name = %s)
-              AND s.source_processor IN ('workflow_196_optionB', 'cross_match_adapter_v1')
+              AND s.source_processor IN ('workflow_196_optionB', 'workflow_196_rev5674', 'cross_match_adapter_v1')
+              AND s.tag <> '기타'
               AND s.score >= %s
               AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
               AND n.published_date <= %s

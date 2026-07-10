@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from bundle_builder.agent2_density_router import (
     CATEGORY_SCORE_CUTOFFS,
+    CATEGORY_SCORE_CUTOFFS_BY_VERSION,
     EvidenceCount,
+    NEW_WF196_PROCESSOR,
     ProcessingMode,
     cutoff_for_tag,
     density_bucket,
@@ -59,3 +61,30 @@ def test_route_brand_uses_category_cutoffs_and_excludes_etc() -> None:
     assert route.evidence_count == 2
     assert route.bucket == "sparse"
     assert route.included_processors == ("tier2_llm_v1",)
+
+
+def test_rev5674_processor_uses_pl_confirmed_cutoffs() -> None:
+    assert CATEGORY_SCORE_CUTOFFS_BY_VERSION[NEW_WF196_PROCESSOR] == {
+        "자본/경영": 53,
+        "외부/트렌드": 53,
+        "공급/생산": 53,
+        "신약/R&D": 73,
+        "정책/규제": 69,
+    }
+    assert cutoff_for_tag("자본/경영", NEW_WF196_PROCESSOR) == 53
+    assert cutoff_for_tag("신약/R&D", NEW_WF196_PROCESSOR) == 73
+    assert cutoff_for_tag("정책/규제", NEW_WF196_PROCESSOR) == 69
+    assert cutoff_for_tag("기타", NEW_WF196_PROCESSOR) is None
+
+
+def test_route_brand_applies_cutoff_for_each_processor_version() -> None:
+    counts = (
+        EvidenceCount("capital-key", "workflow_196_optionB", "llm_direct", 2, tag="자본/경영", score_cutoff=43),
+        EvidenceCount("capital-key", NEW_WF196_PROCESSOR, "llm_direct", 3, tag="자본/경영", score_cutoff=53),
+        EvidenceCount("capital-key", NEW_WF196_PROCESSOR, "llm_direct", 99, tag="자본/경영", score_cutoff=43),
+    )
+
+    route = route_brand("capital-key", counts)
+
+    assert route.evidence_count == 5
+    assert route.included_processors == ("workflow_196_optionB", NEW_WF196_PROCESSOR)
