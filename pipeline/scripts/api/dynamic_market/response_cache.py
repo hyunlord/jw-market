@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -12,6 +14,7 @@ import threading
 import time
 from typing import Any, Literal, Protocol
 from uuid import uuid4
+import zlib
 
 from pymysql import MySQLError
 
@@ -21,6 +24,7 @@ from pipeline.scripts.api import db
 logger = logging.getLogger(__name__)
 
 CACHE_SCHEMA_VERSION = "dynamic-market-response-v1"
+CACHE_ENCODING_PREFIX = "zlib-base64:"
 DEFAULT_TTL_SECONDS = 86_400
 DEFAULT_LEASE_SECONDS = 120
 _BUILD_SEMAPHORE = threading.BoundedSemaphore(3)
@@ -104,7 +108,7 @@ class DynamicResponseCache:
                 source_epoch=source_epoch,
             )
             if claim.action == "hit" and claim.response_json is not None:
-                payload = json.loads(claim.response_json)
+                payload = json.loads(_decode_cached_response(claim.response_json))
                 if not isinstance(payload, dict):
                     raise DynamicResponseCacheUnavailable("cached dynamic response is not an object")
                 return payload
@@ -133,12 +137,13 @@ class DynamicResponseCache:
         try:
             payload = builder()
             response_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            stored_response = _encode_cached_response(response_json)
             try:
                 self._store.complete(
                     cache_key=cache_key,
                     lease_owner=lease_owner,
                     source_epoch=source_epoch,
-                    response_json=response_json,
+                    response_json=stored_response,
                 )
             except DynamicResponseCacheUnavailable:
                 logger.warning("dynamic_response_cache_store_failed", exc_info=True)
@@ -148,6 +153,21 @@ class DynamicResponseCache:
             raise
         finally:
             self._build_semaphore.release()
+
+
+def _encode_cached_response(response_json: str) -> str:
+    compressed = zlib.compress(response_json.encode("utf-8"), level=1)
+    return CACHE_ENCODING_PREFIX + base64.b64encode(compressed).decode("ascii")
+
+
+def _decode_cached_response(stored_response: str) -> str:
+    if not stored_response.startswith(CACHE_ENCODING_PREFIX):
+        return stored_response
+    encoded = stored_response.removeprefix(CACHE_ENCODING_PREFIX)
+    try:
+        return zlib.decompress(base64.b64decode(encoded, validate=True)).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, zlib.error) as exc:
+        raise DynamicResponseCacheUnavailable("cached dynamic response encoding is invalid") from exc
 
 
 class MySQLDynamicResponseCacheStore:

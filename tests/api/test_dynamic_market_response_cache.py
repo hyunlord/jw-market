@@ -75,6 +75,18 @@ def test_response_cache_hits_without_rebuilding() -> None:
     assert first == second
     assert builds == 1
     assert store.claim_count == 1
+    assert next(iter(store.rows.values()))["payload"].startswith("zlib-base64:")
+
+
+def test_response_cache_reads_legacy_uncompressed_rows() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    request = {"source": "ubist", "filters": {"atc4": ["C10A1"]}}
+
+    cache.get_or_build(request, lambda: {"version": 1})
+    next(iter(store.rows.values()))["payload"] = '{"version":2}'
+
+    assert cache.get_or_build(request, lambda: {"version": 3}) == {"version": 2}
 
 
 def test_response_cache_single_flight_builds_same_key_once() -> None:
