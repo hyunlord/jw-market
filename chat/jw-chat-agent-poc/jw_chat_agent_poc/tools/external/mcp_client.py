@@ -9,6 +9,7 @@ import requests
 
 
 MCP_ACCEPT_HEADER: Final[str] = "application/json, text/event-stream"
+MCP_FIRST_ATTEMPT_TIMEOUT_S: Final[int] = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,13 +47,14 @@ class McpJsonClient:
     def _post(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         last_error: Exception | None = None
-        for _ in range(2):
+        for attempt in range(2):
+            timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S if attempt == 0 else self.timeout_s
             try:
                 response = requests.post(
                     self.url,
                     json=payload,
                     headers={"Accept": MCP_ACCEPT_HEADER},
-                    timeout=self.timeout_s,
+                    timeout=timeout_s,
                 )
                 response.raise_for_status()
                 event = _first_sse_event(response.text)
@@ -64,7 +66,8 @@ class McpJsonClient:
                 return result
             except (requests.RequestException, McpClientError, json.JSONDecodeError) as exc:
                 last_error = exc
-                time.sleep(0.2)
+                if attempt == 0:
+                    time.sleep(0.2)
         raise McpClientError(str(last_error) if last_error else "MCP request failed")
 
 

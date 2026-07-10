@@ -62,6 +62,8 @@ class RequiredAxis(StrEnum):
     PATIENT_VOLUME = "patient_volume"
     ISSUE_CONTEXT = "issue_context"
     BRAND_POSITION = "brand_position"
+    PATENT_EXCLUSIVITY = "patent_exclusivity"
+    CSD_ACTIVITY = "csd_activity"
 
 
 class MetricFactDetail(StrEnum):
@@ -82,6 +84,18 @@ class AxisFact:
 
 
 @dataclass(frozen=True, slots=True)
+class ValueProvenanceFact:
+    """One surfaced numeric value and the query metadata that produced it."""
+
+    value_label: str
+    source: str
+    period: str
+    market: str
+    axis: str
+    tool_call_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TopTrendShareDelta:
     from_period: str
     from_ms_pct: Any
@@ -96,6 +110,8 @@ _REQUIRED_AXIS_ORDER: Final[tuple[RequiredAxis, ...]] = (
     RequiredAxis.PATIENT_VOLUME,
     RequiredAxis.ISSUE_CONTEXT,
     RequiredAxis.BRAND_POSITION,
+    RequiredAxis.PATENT_EXCLUSIVITY,
+    RequiredAxis.CSD_ACTIVITY,
 )
 
 _REQUIRED_METRIC_AXES: Final[dict[str, tuple[RequiredAxis, ...]]] = {
@@ -165,6 +181,8 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
         return _segment_compare_axis_facts(data)
     if contract_intent == "source_crosscheck":
         return _source_crosscheck_axis_facts(data)
+    if contract_intent == "quarter_metric":
+        return _quarter_metric_axis_facts(data)
     if data.get("status") in {"error", "query_failed"}:
         facts = [
             AxisFact(
@@ -192,11 +210,57 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
         return _portfolio_decline_axis_facts(data)
     if tool == "get_brand_metric":
         return _brand_metric_axis_facts(data)
+    if tool == "csd_activity_trend":
+        return _csd_activity_axis_facts(data)
+    if "patent" in tool or "orangebook" in tool:
+        return _patent_axis_facts(data)
     if _is_hira_disease_call(call):
         return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_rows(data))
     if _is_hira_procedure_call(call):
         return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_procedure_rows(data))
     return ()
+
+
+def _csd_activity_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    status = str(data.get("status") or "")
+    unsupported = ", ".join(str(item) for item in data.get("unsupported_fields", ()) if item)
+    if status in {"unsupported", "no_data", "error", "query_failed"}:
+        message = str(data.get("message") or "CSD ChannelDynamics aggregate 콜수/활동량 조회 결과를 확인하지 못했습니다.")
+        return (
+            AxisFact(RequiredAxis.CSD_ACTIVITY, "CSD aggregate 콜수", message),
+            AxisFact(RequiredAxis.CSD_ACTIVITY, "CSD 세부 미지원", unsupported or "impact level, HCP/의사별, 기관별"),
+        )
+    series = data.get("series")
+    if not isinstance(series, list) or not series:
+        return (
+            AxisFact(RequiredAxis.CSD_ACTIVITY, "CSD aggregate 콜수", "CSD ChannelDynamics aggregate 콜수/활동량 시계열 행이 없습니다."),
+            AxisFact(RequiredAxis.CSD_ACTIVITY, "CSD 세부 미지원", unsupported or "impact level, HCP/의사별, 기관별"),
+        )
+    first = next((item for item in series if isinstance(item, dict)), {})
+    latest = next((item for item in reversed(series) if isinstance(item, dict)), {})
+    brand = str(data.get("brand") or "")
+    source = str(data.get("source_label") or "CSD ChannelDynamics")
+    first_text = _csd_activity_point(first)
+    latest_text = _csd_activity_point(latest)
+    return (
+        AxisFact(
+            RequiredAxis.CSD_ACTIVITY,
+            "CSD aggregate 콜수",
+            f"{brand} {source} aggregate 콜수/활동량 {first_text} → {latest_text}",
+        ),
+        AxisFact(
+            RequiredAxis.CSD_ACTIVITY,
+            "CSD 세부 미지원",
+            unsupported or "impact level, HCP/의사별, 기관별",
+        ),
+    )
+
+
+def _csd_activity_point(item: dict[str, Any]) -> str:
+    period = str(item.get("period") or "")
+    value = item.get("product_details")
+    value_text = f"{int(value):,}건" if isinstance(value, (int, float)) else str(value or "")
+    return " ".join(part for part in (period, value_text) if part)
 
 
 def _segment_compare_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
@@ -224,7 +288,7 @@ def _segment_compare_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
         return ()
     source = str(data.get("source_label") or data.get("source") or "보유 소스")
     period = str(data.get("period") or "최신 기간")
-    name = str(top.get("name") or top.get("brand") or "상위 세그먼트")
+    name = _segment_display_name(top.get("name") or top.get("brand") or "상위 세그먼트")
     sales = eok_value(top.get("value_억원") or top.get("value_recent_억원"), top.get("value") or top.get("value_recent"))
     share = pct_value(top.get("ms_recent_pct") or top.get("to_ms_pct"))
     parts = [
@@ -247,6 +311,10 @@ def _segment_compare_rows(data: RenderData) -> list[dict[str, Any]]:
     if isinstance(trends, list) and trends:
         return [item for item in trends if isinstance(item, dict)]
     return []
+
+
+def _segment_display_name(value: Any) -> str:
+    return re.sub(r"\s*\\?\|\s*", " / ", str(value or "")).strip()
 
 
 def _source_crosscheck_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
@@ -290,6 +358,41 @@ def _source_crosscheck_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
             f"{requested_source} 출처는 조회 결과 행이 없어 값을 표시하지 않습니다.",
         ),
     )
+
+
+def _quarter_metric_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    brand = str(data.get("requested_brand") or data.get("brand") or "브랜드")
+    row = _brand_level_segment(data, brand)
+    if not row:
+        return ()
+    source = str(data.get("source_label") or data.get("source") or "보유 소스")
+    period = str(data.get("period") or "요청 기간")
+    sales = eok_value(row.get("value_억원") or row.get("value_recent_억원"), row.get("value") or row.get("value_recent"))
+    share = pct_value(row.get("ms_recent_pct") or row.get("to_ms_pct"))
+    rank = rank_value(row.get("rank"), None)
+    parts = [
+        f"{source} {period} 기준 {brand}",
+        f"매출 {sales}" if sales else "",
+        f"MS {share}" if share else "",
+        f"순위 {rank}위" if rank else "",
+    ]
+    content = " ".join(part for part in parts if part)
+    if not content.strip():
+        return ()
+    return (AxisFact(RequiredAxis.BRAND_POSITION, "브랜드 핵심 지표", content),)
+
+
+def _brand_level_segment(data: RenderData, brand: str) -> dict[str, Any]:
+    segments = data.get("level_segments")
+    if not isinstance(segments, list):
+        return {}
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("brand") or item.get("name") or item.get("product") or "")
+        if candidate == brand:
+            return item
+    return next((item for item in segments if isinstance(item, dict)), {})
 
 
 def _source_crosscheck_trend_row(rows: list[Any], requested_brand: str) -> dict[str, Any]:
@@ -1199,12 +1302,12 @@ def _level_segments(data: dict[str, Any], subject: str) -> str:
         return ""
     level = str(data.get("level") or "분석 기준")
     rows = tuple(
-        (
-            rank_value(item.get("rank"), None),
-            item.get("name"),
-            pct_value(item.get("ms_recent_pct")),
-            eok_value(None, item.get("value")),
-        )
+            (
+                rank_value(item.get("rank"), None),
+                _segment_display_name(item.get("name")),
+                pct_value(item.get("ms_recent_pct")),
+                eok_value(None, item.get("value")),
+            )
         for item in segments[:TABLE_LIMIT]
         if isinstance(item, dict)
     )
@@ -1577,6 +1680,20 @@ def _patent_facts(data: dict[str, Any]) -> str:
     return "\n\n".join(blocks)
 
 
+def _patent_axis_facts(data: dict[str, Any]) -> tuple[AxisFact, ...]:
+    rows = _patent_rows(data)
+    if not rows:
+        return ()
+    content = "; ".join(
+        (
+            f"{product}: 특허번호 {patent_no}, 상태 {status}, 만료일 {end_date}, "
+            f"권리자/출원인 {owner}, 출처 {source}"
+        )
+        for source, product, patent_no, status, end_date, owner in rows[:TABLE_LIMIT]
+    )
+    return (AxisFact(RequiredAxis.PATENT_EXCLUSIVITY, "특허 fact", content),)
+
+
 def _clinical_trial_facts(data: dict[str, Any]) -> str:
     rows = _clinical_trial_rows(data)
     if not rows:
@@ -1855,15 +1972,159 @@ def _generic_facts(tool: str, data: dict[str, Any]) -> str:
 
 
 def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
-    rows = _data_source_rows(calls, sources)
+    blocks: list[str] = []
+    value_rows = _value_provenance_rows(calls)
+    if value_rows:
+        blocks.append(
+            table(
+                "### 수치별 출처 fact",
+                ("수치", "소스", "기간", "시장정의", "축", "tool_call_id"),
+                tuple(
+                    (
+                        row.value_label,
+                        row.source,
+                        row.period,
+                        row.market,
+                        row.axis,
+                        row.tool_call_id,
+                    )
+                    for row in value_rows
+                ),
+            )
+        )
+    rows = _data_source_rows(calls, [] if value_rows else sources)
     rows.extend(_news_source_rows(calls))
     rows.extend(_hira_source_rows(calls))
     rows.extend(_hira_procedure_source_rows(calls))
     rows.extend(_external_source_rows(calls))
     rows.extend(_fallback_source_rows(sources, rows))
-    if not rows:
+    if rows:
+        blocks.append(table("### 출처 유형 fact", ("출처", "상세"), tuple(rows)))
+    return "\n\n".join(blocks)
+
+
+def _value_provenance_rows(calls: list[dict[str, Any]]) -> list[ValueProvenanceFact]:
+    rows: list[ValueProvenanceFact] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for index, call in enumerate(calls, start=1):
+        data = call.get("render_data")
+        if not isinstance(data, dict) or _is_failed_metric_status(data):
+            continue
+        source = _value_source_label(data, call)
+        if not source:
+            continue
+        period = _value_period(data)
+        market = _value_market(data)
+        axis = _value_axis(data)
+        tool_call_id = _value_tool_call_id(data, index)
+        for value_label in _numeric_value_labels(data):
+            key = (value_label, source, period, market, axis)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                ValueProvenanceFact(
+                    value_label=value_label,
+                    source=source,
+                    period=period,
+                    market=market,
+                    axis=axis,
+                    tool_call_id=tool_call_id,
+                )
+            )
+    return rows[:TABLE_LIMIT * 3]
+
+
+def _is_failed_metric_status(data: dict[str, Any]) -> bool:
+    return str(data.get("status") or "") in {
+        "error",
+        "query_failed",
+        "unsupported",
+        "mapping_failed",
+        "missing",
+        "incomplete_split",
+    }
+
+
+def _is_failed_external_source_status(call: dict[str, Any], data: dict[str, Any]) -> bool:
+    status = str(call.get("status") or data.get("status") or "")
+    return status in {
+        "error",
+        "query_failed",
+        "unsupported",
+        "mapping_failed",
+        "missing",
+        "incomplete_split",
+        "no_data",
+    }
+
+
+def _value_source_label(data: dict[str, Any], call: dict[str, Any]) -> str:
+    raw = str(data.get("source_label") or call.get("source") or data.get("source") or "")
+    if not raw or raw == "cache":
         return ""
-    return table("### 출처 유형 fact", ("출처", "상세"), tuple(rows))
+    label = source_label(raw)
+    if label in {"IQVIA", "IQVIA NSA"}:
+        return "IQVIA NSA"
+    if label == "UBIST":
+        return "UBIST"
+    return label
+
+
+def _value_period(data: dict[str, Any]) -> str:
+    period = str(data.get("period") or "").strip()
+    if period:
+        return period
+    for key in ("to_period", "fallback_period", "requested_period"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return "-"
+
+
+def _value_market(data: dict[str, Any]) -> str:
+    query_spec = data.get("query_spec")
+    if isinstance(query_spec, dict):
+        market = str(query_spec.get("market") or query_spec.get("market_id") or "").strip()
+        if market:
+            return market
+    return str(data.get("market") or data.get("market_id") or "-")
+
+
+def _value_axis(data: dict[str, Any]) -> str:
+    return str(data.get("requested_axis") or data.get("level") or data.get("metric") or "-")
+
+
+def _value_tool_call_id(data: dict[str, Any], index: int) -> str:
+    return str(data.get("tool_call_id") or data.get("query_result_id") or f"tool_call_{index}")
+
+
+def _numeric_value_labels(data: dict[str, Any]) -> list[str]:
+    rows: list[str] = []
+    subject = str(data.get("brand") or data.get("market_name") or data.get("market_id") or "").strip()
+    sales = eok_value(data.get("sales_억원"), data.get("sales_krw"))
+    if subject and sales:
+        rows.append(f"{subject} 매출 {sales}")
+    share = pct_value(data.get("ms_recent_pct", data.get("market_share")))
+    if subject and share:
+        rows.append(f"{subject} MS {share}")
+    rank = rank_value(data.get("rank"), data.get("total_brands_in_market"))
+    if subject and rank:
+        rows.append(f"{subject} 순위 {rank}")
+    for item in _segment_compare_rows(data)[:TABLE_LIMIT]:
+        name = _segment_display_name(item.get("name") or item.get("brand") or item.get("product"))
+        if not name:
+            continue
+        item_sales = eok_value(item.get("value_억원") or item.get("value_recent_억원"), item.get("value") or item.get("value_recent"))
+        if item_sales:
+            rows.append(f"{name} 매출 {item_sales}")
+        item_share = pct_value(item.get("ms_recent_pct") or item.get("to_ms_pct"))
+        if item_share:
+            rows.append(f"{name} MS {item_share}")
+        item_rank = rank_value(item.get("rank"), None)
+        if item_rank:
+            rows.append(f"{name} 순위 {item_rank}")
+    return rows
 
 
 def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[tuple[str, str]]:
@@ -1872,8 +2133,10 @@ def _data_source_rows(calls: list[dict[str, Any]], sources: list[str]) -> list[t
         data = call.get("render_data")
         if not isinstance(data, dict):
             continue
+        if _is_failed_metric_status(data):
+            continue
         label = source_label(str(data.get("source_label") or call.get("source") or ""))
-        if label in {"UBIST", "IQVIA"}:
+        if label in {"UBIST", "IQVIA", "IQVIA NSA"}:
             labels.add(label)
     data_labels = sorted(label for label in labels if label in {"UBIST", "IQVIA", "IQVIA NSA"})
     if not data_labels:
@@ -2072,7 +2335,7 @@ def _hira_procedure_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, 
         seen: set[tuple[str, str]] = set()
         for nested in source_calls:
             nested_data = nested.get("render_data") if isinstance(nested, dict) else None
-            if not isinstance(nested_data, dict):
+            if not isinstance(nested_data, dict) or _is_failed_external_source_status(nested, nested_data):
                 continue
             tool = str(nested.get("tool") or call.get("tool") or "get_procedure_stats")
             st5_cd = str(_request_value(nested_data, "st5Cd") or "").strip()
@@ -2092,7 +2355,7 @@ def _hira_source_rows_from_calls(calls: list[dict[str, Any]], facade_tool: str) 
     by_disease: dict[tuple[str, str], dict[str, set[str] | str]] = {}
     for call in calls:
         data = call.get("render_data")
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or _is_failed_external_source_status(call, data):
             continue
         tool = str(call.get("tool") or "")
         rows = _dedupe_hira_rows(_hira_rows(data))
@@ -2160,7 +2423,7 @@ def _external_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]]:
                 if not isinstance(nested, dict):
                     continue
                 nested_data = nested.get("render_data")
-                if not isinstance(nested_data, dict):
+                if not isinstance(nested_data, dict) or _is_failed_external_source_status(nested, nested_data):
                     continue
                 request = nested_data.get("request")
                 request_text = _request_text(request) if isinstance(request, dict) else ""

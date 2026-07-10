@@ -104,6 +104,11 @@ def patent_call(resolution: AgentLoopResolution, external: ExternalApiClient) ->
     return _aggregate_call("search_patent", "external_api", _aggregate_status(calls), calls, f"{resolution.canonical_brand} 특허 근거")
 
 
+def patent_ingredient_call(ingredient_en: str, external: ExternalApiClient) -> dict:
+    calls = [external.mfds_patent(ingredient_en), external.mfds_fda_orangebook(ingredient_en)]
+    return _aggregate_call("search_patent", "external_api", _aggregate_status(calls), calls, f"{ingredient_en} 특허 근거")
+
+
 def drug_info_call(resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
     calls = _drug_info_calls(resolution, external)
     return _aggregate_call("search_drug_info", "external_api", _aggregate_status(calls), calls, f"{resolution.canonical_brand} MFDS 허가정보")

@@ -162,9 +162,9 @@ class LLMFirstBQRouter:
             return [
                 BQSubQuestion(
                     bq="Q4",
-                    question="영업 Impact",
-                    sources=("none",),
-                    reason="LLM-first guard preserves Q4 데이터 없음 boundary.",
+                    question="영업활동 aggregate 콜수/활동량",
+                    sources=("metrics",),
+                    reason="LLM-first guard routes Q4 to connected CSD aggregate metrics while keeping impact/HCP detail unavailable.",
                 )
             ]
         if not has_documents and _is_forecast_question(question):

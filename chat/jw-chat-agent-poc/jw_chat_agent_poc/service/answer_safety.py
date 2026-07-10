@@ -793,10 +793,15 @@ def deterministic_source_block(fact_md: str) -> str:
     """Return final user-facing sources from verified fact markdown only."""
 
     rows: list[str] = []
-    data_line = _deterministic_data_source_line(fact_md)
-    if data_line:
-        rows.append(data_line)
-    rows.extend(_deterministic_data_source_detail_lines(fact_md))
+    value_source_table = _deterministic_value_source_table(fact_md)
+    if value_source_table:
+        rows.extend(value_source_table)
+        rows.extend(_deterministic_data_source_detail_lines(fact_md))
+    else:
+        data_line = _deterministic_data_source_line(fact_md)
+        if data_line:
+            rows.append(data_line)
+        rows.extend(_deterministic_data_source_detail_lines(fact_md))
     rows.extend(_deterministic_news_source_lines(fact_md))
     rows.extend(_deterministic_news_search_lines(fact_md))
     rows.extend(_deterministic_external_source_lines(fact_md))
@@ -2310,6 +2315,40 @@ def _deterministic_data_source_detail_lines(fact_md: str) -> list[str]:
             continue
         rows.append(f"- 데이터 상세: {detail}")
     return rows
+
+
+def _deterministic_value_source_table(fact_md: str) -> list[str]:
+    records = _value_source_records(fact_md)
+    if not records:
+        return []
+    rows = ["| 수치 | 소스 | 기간 | 시장정의 | 축 |", "| --- | --- | --- | --- | --- |"]
+    for record in records:
+        value, source, period, market, axis = record[:5]
+        if not value or not source:
+            continue
+        rows.append(f"| {value} | {source} | {period or '-'} | {market or '-'} | {axis or '-'} |")
+    if len(rows) == 2:
+        return []
+    return ["", *rows]
+
+
+def _value_source_records(fact_md: str) -> list[tuple[str, str, str, str, str, str]]:
+    records: list[tuple[str, str, str, str, str, str]] = []
+    in_value_sources = False
+    for line in fact_md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            in_value_sources = "수치별 출처 fact" in stripped
+            continue
+        if not in_value_sources or not stripped.startswith("|") or "---" in stripped:
+            continue
+        cells = [_clean_news_cell(cell) for cell in stripped.strip("|").split("|")]
+        cells = [cell for cell in cells if cell]
+        if not cells or cells[0] == "수치":
+            continue
+        padded = (*cells[:6], *("-" for _ in range(max(0, 6 - len(cells)))))
+        records.append(tuple(padded[:6]))
+    return records
 
 
 def _source_period_label(markdown: str) -> str:

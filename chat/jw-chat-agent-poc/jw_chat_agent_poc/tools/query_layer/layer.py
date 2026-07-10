@@ -70,7 +70,7 @@ class StrategicQueryLayer:
     def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand)
-        source = snapshot.source_for_market(market)
+        source = _default_source_for_metric(snapshot, market, period)
         record = snapshot.record(market, brand, source)
         requested_period = _actual_period(snapshot, market, source, period)
         actual_period = _display_period(snapshot, record, requested_period, period)
@@ -191,6 +191,27 @@ class StrategicQueryLayer:
         data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
+    def dimension_breakdown(self, brand: str, dimension: str, *, source: str = "", period: str = "latest", limit: int = 10) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        market = _required_market(snapshot, brand)
+        selected_source = source or snapshot.source_for_market(market)
+        selected_period = _actual_period(snapshot, market, selected_source, period)
+        spec = {
+            "source": selected_source,
+            "view": "market_landscape",
+            "market": market,
+            "dimensions": [dimension],
+            "group_by": [dimension],
+            "metrics": ["sales"],
+            "filters": {"brand": brand, "period": selected_period},
+            "limit": limit,
+        }
+        call = self.query(spec, fallback_brand=brand)
+        data = call.setdefault("render_data", {})
+        if isinstance(data, dict):
+            data["requested_dimension"] = dimension
+        return call
+
     def competitor_molecule_candidates(self, brand: str, limit: int = 5) -> list[dict[str, Any]]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand)
@@ -263,7 +284,7 @@ class StrategicQueryLayer:
         spec = parse_spec(raw_spec)
         snapshot = self._snapshot()
         market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or default_catalog().market)
-        source = str(spec.get("source") or snapshot.source_for_market(market))
+        source = _default_source_for_query(snapshot, market, spec)
         catalog = QueryCatalog.from_snapshot(snapshot, market, source)
         validate_spec(spec, catalog)
         limit = bounded_limit(spec.get("limit"), 10)
@@ -331,6 +352,47 @@ def _actual_period(snapshot: MartSnapshot, market: str, source: str, period: str
     if period in {"", "latest"}:
         return snapshot.latest_period(market, source)
     return period
+
+
+def _default_source_for_metric(snapshot: MartSnapshot, market: str, period: str) -> str:
+    sources = snapshot.sources_for_market(market)
+    if _single_source(sources):
+        return sources[0]
+    if _is_quarter_period(period) and "iqvia_nsa" in sources:
+        return "iqvia_nsa"
+    return snapshot.source_for_market(market)
+
+
+def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any]) -> str:
+    explicit_source = str(spec.get("source") or "").strip()
+    if explicit_source:
+        return explicit_source
+    sources = snapshot.sources_for_market(market)
+    if _single_source(sources):
+        return sources[0]
+    if _query_uses_ubist_axes(spec) and "ubist" in sources:
+        return "ubist"
+    if _query_uses_quarter_period(spec) and "iqvia_nsa" in sources:
+        return "iqvia_nsa"
+    return snapshot.source_for_market(market)
+
+
+def _single_source(sources: tuple[str, ...]) -> bool:
+    return len(sources) == 1
+
+
+def _query_uses_ubist_axes(spec: Mapping[str, Any]) -> bool:
+    axes = {*as_list(spec.get("dimensions")), *as_list(spec.get("group_by"))}
+    return bool(axes.intersection({"channel", "specialty"}))
+
+
+def _query_uses_quarter_period(spec: Mapping[str, Any]) -> bool:
+    filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
+    return _is_quarter_period(str(filters.get("period") or spec.get("period") or ""))
+
+
+def _is_quarter_period(period: str) -> bool:
+    return "-Q" in period
 
 
 def _display_period(snapshot: MartSnapshot, record: MartRecord, requested_period: str, raw_period: str) -> str | None:

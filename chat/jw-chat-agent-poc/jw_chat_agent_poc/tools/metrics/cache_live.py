@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import re
 import time
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,68 @@ class CausePayloadReader(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class CsdActivityTarget:
+    brand: str
+    market: str
+    master_product: str
+
+
+@dataclass(frozen=True, slots=True)
+class CsdActivityRow:
+    period_ym: str
+    product_details: int
+
+
+@dataclass(frozen=True, slots=True)
+class CsdActivityPayload:
+    target: CsdActivityTarget
+    rows: tuple[CsdActivityRow, ...]
+    loaded_at: float
+
+
+class CsdActivityReader(Protocol):
+    def load(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload: ...
+
+
+class CsdActivityTargetReader(Protocol):
+    def load(self) -> tuple[CsdActivityTarget, ...]: ...
+
+
+class CsdActivityTargetLoadError(RuntimeError):
+    pass
+
+
+_LEGACY_CSD_ACTIVITY_TARGETS: Final[tuple[CsdActivityTarget, ...]] = (
+    CsdActivityTarget("리바로", "LIVALO Market", "LIVALO"),
+    CsdActivityTarget("리바로젯", "LIVALOZET Market", "LIVALOZET"),
+)
+
+
+_CSD_ACTIVITY_MASTER_PRODUCT_ALIASES: Final[dict[str, str]] = {
+    "가드렛": "GUARDLET",
+    "가드메트": "GUARDMET",
+    "제이클": "JCLE",
+    "리바로": "LIVALO",
+    "리바로젯": "LIVALOZET",
+    "리바로페노": "LIVALOFENO",
+    "리바로하이": "LIVALO HI",
+    "리바로브이": "LIVALO V",
+    "트루패스": "THRUPAS",
+    "페린젝트": "FERINJECT",
+    "포스레놀": "FOSRENOL",
+    "가나칸": "GANAKHAN",
+    "위너프": "WINUF",
+    "위너프A+": "WINUF",
+    "엔커버": "ENCOVER",
+    "플라주오피": "PLAJU OP",
+}
+
+
+def csd_activity_target_for_brand(brand: str) -> CsdActivityTarget | None:
+    return StaticCsdActivityTargetReader(_LEGACY_CSD_ACTIVITY_TARGETS).target_for_brand(brand)
+
+
+@dataclass(frozen=True, slots=True)
 class StaticMetricsCacheReader:
     cache_brands: list[dict[str, Any]]
     market_status: dict[str, Any]
@@ -60,6 +123,100 @@ class StaticCausePayloadReader:
         if payload is None:
             raise LookupError(f"cache_cause fixture is missing: {key}")
         return CausePayload(key=key, payload=payload, loaded_at=time.monotonic())
+
+
+@dataclass(frozen=True, slots=True)
+class StaticCsdActivityReader:
+    rows_by_target: dict[tuple[str, str], tuple[tuple[str, int], ...]]
+
+    def load(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload:
+        rows = self.rows_by_target.get((target.market, target.master_product), ())
+        selected = rows[-limit:] if limit > 0 else rows
+        return CsdActivityPayload(
+            target=target,
+            rows=tuple(CsdActivityRow(str(period), int(value)) for period, value in selected),
+            loaded_at=time.monotonic(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StaticCsdActivityTargetReader:
+    targets: tuple[CsdActivityTarget, ...]
+
+    def load(self) -> tuple[CsdActivityTarget, ...]:
+        return self.targets
+
+    def target_for_brand(self, brand: str) -> CsdActivityTarget | None:
+        lookup = _targets_by_brand(self.targets)
+        return lookup.get(_normalise_brand_name(brand))
+
+
+@dataclass(frozen=True, slots=True)
+class MariaDbCsdActivityTargetReader:
+    host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
+    port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
+    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
+    schema: str = os.environ.get("CHAT_CSD_ACTIVITY_SCHEMA", "jw_brand_activity_stage")
+    user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
+    password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
+    connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))
+    read_timeout_s: int = int(os.environ.get("CHAT_CSD_ACTIVITY_DB_READ_TIMEOUT_S", "5"))
+
+    def load(self) -> tuple[CsdActivityTarget, ...]:
+        import pymysql
+
+        schema = _quote_identifier(self.schema)
+        try:
+            with pymysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database,
+                connect_timeout=self.connect_timeout_s,
+                read_timeout=self.read_timeout_s,
+                write_timeout=self.read_timeout_s,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT market, master_product,
+                               SUM(COALESCE(product_details, 0)) AS total_activity
+                        FROM {schema}.`csd_channel_dynamics_stage`
+                        WHERE jw_channel = 'TOTAL'
+                        GROUP BY market, master_product
+                        """
+                    )
+                    rows = cursor.fetchall()
+        except pymysql.MySQLError as exc:
+            raise CsdActivityTargetLoadError("failed to load CSD activity targets") from exc
+
+        by_product: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            product = _normalise_master_product(row.get("master_product"))
+            if not product:
+                continue
+            by_product.setdefault(product, []).append(row)
+
+        targets: list[CsdActivityTarget] = []
+        for brand, master_product in _CSD_ACTIVITY_MASTER_PRODUCT_ALIASES.items():
+            candidates = by_product.get(_normalise_master_product(master_product), [])
+            best = _best_csd_activity_candidate(candidates)
+            if best is None:
+                continue
+            targets.append(
+                CsdActivityTarget(
+                    brand=brand,
+                    market=str(best["market"]),
+                    master_product=str(best["master_product"]),
+                )
+            )
+        if not targets:
+            raise CsdActivityTargetLoadError("CSD activity target query returned no mapped brands")
+        return tuple(targets)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +315,57 @@ class MariaDbCausePayloadReader:
         return CausePayload(key=key, payload=payload, loaded_at=time.monotonic())
 
 
+@dataclass(frozen=True, slots=True)
+class MariaDbCsdActivityReader:
+    host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
+    port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
+    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
+    schema: str = os.environ.get("CHAT_CSD_ACTIVITY_SCHEMA", "jw_brand_activity_stage")
+    user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
+    password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
+    connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))
+    read_timeout_s: int = int(os.environ.get("CHAT_CSD_ACTIVITY_DB_READ_TIMEOUT_S", "5"))
+
+    def load(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload:
+        import pymysql
+
+        schema = _quote_identifier(self.schema)
+        with pymysql.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=self.database,
+            connect_timeout=self.connect_timeout_s,
+            read_timeout=self.read_timeout_s,
+            write_timeout=self.read_timeout_s,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT period_ym, SUM(product_details) AS product_details
+                    FROM {schema}.`csd_channel_dynamics_stage`
+                    WHERE market = %s
+                      AND master_product = %s
+                      AND jw_channel = 'TOTAL'
+                    GROUP BY period_ym
+                    ORDER BY period_ym DESC
+                    LIMIT %s
+                    """,
+                    (target.market, target.master_product, int(limit)),
+                )
+                rows = cursor.fetchall()
+
+        parsed = tuple(
+            CsdActivityRow(str(row["period_ym"]), int(row["product_details"] or 0))
+            for row in reversed(rows)
+        )
+        return CsdActivityPayload(target=target, rows=parsed, loaded_at=time.monotonic())
+
+
 class TtlMetricsCache:
     def __init__(self, reader: MetricsCacheReader, ttl_seconds: int) -> None:
         self._reader = reader
@@ -186,3 +394,72 @@ class TtlCausePayloadCache:
             current = self._reader.load(key)
             self._payloads[key] = current
         return current
+
+
+class TtlCsdActivityCache:
+    def __init__(self, reader: CsdActivityReader, ttl_seconds: int) -> None:
+        self._reader = reader
+        self._ttl_seconds = ttl_seconds
+        self._payloads: dict[tuple[CsdActivityTarget, int], CsdActivityPayload] = {}
+
+    def payload(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload:
+        key = (target, limit)
+        current = self._payloads.get(key)
+        now = time.monotonic()
+        if current is None or now - current.loaded_at > self._ttl_seconds:
+            current = self._reader.load(target, limit)
+            self._payloads[key] = current
+        return current
+
+
+class TtlCsdActivityTargetCache:
+    def __init__(
+        self,
+        reader: CsdActivityTargetReader,
+        ttl_seconds: int,
+        fallback_targets: tuple[CsdActivityTarget, ...] = _LEGACY_CSD_ACTIVITY_TARGETS,
+    ) -> None:
+        self._reader = reader
+        self._ttl_seconds = ttl_seconds
+        self._fallback_targets = fallback_targets
+        self._targets: tuple[CsdActivityTarget, ...] | None = None
+        self._loaded_at = 0.0
+
+    def target_for_brand(self, brand: str) -> CsdActivityTarget | None:
+        lookup = _targets_by_brand(self._current_targets())
+        return lookup.get(_normalise_brand_name(brand))
+
+    def _current_targets(self) -> tuple[CsdActivityTarget, ...]:
+        now = time.monotonic()
+        if self._targets is None or now - self._loaded_at > self._ttl_seconds:
+            try:
+                self._targets = self._reader.load()
+            except CsdActivityTargetLoadError:
+                if self._targets is None:
+                    self._targets = self._fallback_targets
+            self._loaded_at = now
+        return self._targets
+
+
+def _quote_identifier(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", value):
+        raise ValueError(f"Unsafe SQL identifier: {value!r}")
+    return f"`{value}`"
+
+
+def _targets_by_brand(targets: tuple[CsdActivityTarget, ...]) -> dict[str, CsdActivityTarget]:
+    return {_normalise_brand_name(target.brand): target for target in targets}
+
+
+def _normalise_brand_name(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
+
+
+def _normalise_master_product(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _best_csd_activity_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: int(row.get("total_activity") or 0))

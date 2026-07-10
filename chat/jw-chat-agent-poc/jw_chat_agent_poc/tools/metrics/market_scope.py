@@ -6,6 +6,7 @@ from typing import Any
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadKey,
     CausePayloadReader,
@@ -38,12 +39,20 @@ class MarketScopeResolver:
         cache_reader: MetricsCacheReader | None = None,
         cause_reader: CausePayloadReader | None = None,
         ttl_seconds: int | None = None,
+        general_view_service: GeneralViewService | None = None,
     ) -> None:
         ttl = ttl_seconds or int(os.environ.get("CHAT_MARKET_SCOPE_TTL_SECONDS", "300"))
         self._reader = cache_reader or MariaDbMetricsCacheReader()
         self._cache = TtlMetricsCache(self._reader, ttl_seconds=ttl)
         self._cause_cache = TtlCausePayloadCache(cause_reader or MariaDbCausePayloadReader(), ttl_seconds=ttl)
         self._resolver = BrandResolver(mode="cache", brand_reader=self._reader, ttl_seconds=ttl)
+        self._general_view = general_view_service or GeneralViewService.from_env(self._resolver)
+
+    def general_route(self, question: str) -> GeneralRoute:
+        return self._general_view.route(question)
+
+    def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
+        return self._general_view.answer(question, compact=compact, dual=dual)
 
     def answer(self, question: str, *, view_type: MarketView) -> dict[str, Any]:
         if view_type == "general_view":
