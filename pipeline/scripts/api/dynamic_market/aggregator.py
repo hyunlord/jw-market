@@ -138,7 +138,6 @@ class MetricAggregator:
             _rank_general_brand_metrics(
                 aggregated.brand_metrics,
                 ranking_histories=aggregated.ranking_histories,
-                source=source,
             )
             if view == "general"
             else sorted(aggregated.brand_metrics, key=lambda row: (-row.total_value, row.brand_key))
@@ -522,33 +521,25 @@ def _rank_general_brand_metrics(
     brand_metrics: Iterable[BrandMetric],
     *,
     ranking_histories: Mapping[str, Mapping[str, float]],
-    source: str,
 ) -> list[BrandMetric]:
     metrics = list(brand_metrics)
-    window_months = {"ubist": 11, "iqvia_nsa": 9}.get(source.strip().lower())
-    period_indexes = [
-        index
+    indexed_periods = [
+        (index, period)
         for history_by_period in ranking_histories.values()
         for period in history_by_period
         if (index := period_to_month_index(period)) is not None
     ]
-    if window_months is None or not period_indexes:
+    if not indexed_periods:
         return sorted(metrics, key=lambda row: (-row.total_value, row.brand_key))
 
-    latest_index = max(period_indexes)
-    mat_by_brand = {
-        brand_key: sum(
-            value
-            for period, value in history_by_period.items()
-            if (index := period_to_month_index(period)) is not None
-            and latest_index - window_months <= index <= latest_index
-        )
+    _, latest_period = max(indexed_periods)
+    latest_value_by_brand = {
+        brand_key: history_by_period.get(latest_period, 0.0)
         for brand_key, history_by_period in ranking_histories.items()
     }
 
-    def rank_key(metric: BrandMetric) -> tuple[int, float, float, str]:
-        mat_value = mat_by_brand.get(metric.brand_key, 0.0)
-        return (0 if mat_value > 0 else 1, -mat_value if mat_value > 0 else 0.0, -metric.total_value, metric.brand_key)
+    def rank_key(metric: BrandMetric) -> tuple[float, str]:
+        return (-latest_value_by_brand.get(metric.brand_key, 0.0), metric.brand_key)
 
     return sorted(metrics, key=rank_key)
 

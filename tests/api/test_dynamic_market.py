@@ -126,8 +126,8 @@ def _aggregate_rank_fixture(
     )
 
 
-def test_general_ubist_rank_uses_latest_twelve_month_mat_with_total_value_tiebreak(monkeypatch) -> None:
-    # Given MAT-positive ties plus two brands with no positive sales in the latest 12-month window.
+def test_general_ubist_rank_uses_common_latest_period_value_with_brand_key_tiebreak(monkeypatch) -> None:
+    # Given cumulative leaders that tie or have no value in the market's common latest period.
     histories = {
         "positive-rich-old": {"2025-04": 100.0, "2026-05": 10.0},
         "positive-new": {"2026-05": 10.0},
@@ -138,18 +138,18 @@ def test_general_ubist_rank_uses_latest_twelve_month_mat_with_total_value_tiebre
     # When general UBIST metrics are ranked.
     metrics = _aggregate_rank_fixture(monkeypatch, source="ubist", histories=histories)
 
-    # Then MAT-positive brands lead with cumulative-sales tiebreaks, followed by continuous numeric zero-MAT ranks.
+    # Then latest-period values lead and equal values use the brand key deterministically.
     assert [(brand.brand_key, brand.rank) for brand in metrics.all_brands] == [
-        ("positive-rich-old", 1),
-        ("positive-new", 2),
-        ("zero-rich", 3),
-        ("zero-less", 4),
+        ("positive-new", 1),
+        ("positive-rich-old", 2),
+        ("zero-less", 3),
+        ("zero-rich", 4),
     ]
     assert all(isinstance(brand.rank, int) and brand.rank > 0 for brand in metrics.all_brands)
 
 
-def test_general_iqvia_rank_uses_latest_four_quarter_mat_and_missing_quarters_as_zero(monkeypatch) -> None:
-    # Given an old cumulative leader outside the latest four-quarter window and a current low-value brand.
+def test_general_iqvia_rank_uses_source_latest_quarter_outside_response_period_range(monkeypatch) -> None:
+    # Given an old cumulative leader and a low-value brand in the source's latest quarter.
     histories = {
         "old-leader": {"2025-Q2": 100.0},
         "current": {"2026-Q2": 1.0},
@@ -163,7 +163,7 @@ def test_general_iqvia_rank_uses_latest_four_quarter_mat_and_missing_quarters_as
         period_range=PeriodRange("2025-Q1", "2025-Q4"),
     )
 
-    # Then source-latest MAT, not the response period range or cumulative total, determines rank.
+    # Then the source's common latest quarter, not the response range or cumulative total, determines rank.
     assert [(brand.brand_key, brand.rank) for brand in metrics.all_brands] == [("current", 1), ("old-leader", 2)]
 
 
