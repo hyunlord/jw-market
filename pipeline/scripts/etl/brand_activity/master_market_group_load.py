@@ -10,7 +10,7 @@ import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 import pymysql
 
@@ -28,6 +28,8 @@ from pipeline.etl.io.catalog.master.market_definition_schema import (
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import connect_mariadb, read_env_file
 
+
+T = TypeVar("T")
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[4]
 SCHEMA: Final = os.environ.get("MARKET_GROUP_SCHEMA", "jw_brand_activity_stage")
@@ -164,7 +166,7 @@ def _db_value(value: Any) -> Any:
     return value
 
 
-def _chunks[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
+def _chunks(items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
     """Yield fixed-size batches."""
     for offset in range(0, len(items), size):
         yield items[offset : offset + size]
