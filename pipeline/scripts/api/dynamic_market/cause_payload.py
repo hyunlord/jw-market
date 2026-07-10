@@ -110,6 +110,11 @@ def build_cause_data(
         channels=target_channels,
     )
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
+    matrix_payload = {
+        "data": display_matrix,
+        "ms_avg_pct": avg_share(display_matrix),
+        "share_avg_pct": avg_share(display_matrix),
+    }
     data = {
         "analysis_level_market_status": (
             analysis_sections["analysis_level_market_status"] if analysis_sections else levels
@@ -123,17 +128,9 @@ def build_cause_data(
         },
         "company_ranking": company,
         "company_ranking_stacked": company,
-        "ei_ms_matrix": {
-            "data": display_matrix,
-            "ms_avg_pct": avg_share(display_matrix),
-            "share_avg_pct": avg_share(display_matrix),
-        },
+        "ei_ms_matrix": matrix_payload,
         "growth_contribution": growth_contribution(metrics.all_brands, focus=focus),
-        "growth_contribution_ms_matrix": {
-            "data": display_matrix,
-            "ms_avg_pct": avg_share(display_matrix),
-            "share_avg_pct": avg_share(display_matrix),
-        },
+        "growth_contribution_ms_matrix": matrix_payload,
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,
         "kpi": kpi(metrics=metrics, matrix=full_matrix, focus=focus, hhi_recent=hhi_recent),

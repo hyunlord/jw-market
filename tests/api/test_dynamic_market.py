@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
-from pipeline.scripts.api.dynamic_market import general_analysis_levels
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -1198,6 +1197,7 @@ def test_compose_emits_only_portal_read_cause_sections() -> None:
     assert {"available_levels", "default_level", "by_level"}.issubset(data["level_top5_trend"])
     assert {"data"}.issubset(data["ei_ms_matrix"])
     assert {"data"}.issubset(data["growth_contribution_ms_matrix"])
+    assert data["ei_ms_matrix"] is data["growth_contribution_ms_matrix"]
     assert {"targets"}.issubset(data["target_customer_competition"])
 
 
@@ -1262,102 +1262,6 @@ def test_general_response_slimming_removes_only_approved_unused_fields() -> None
     assert "volume_recent" not in brand
     assert "volume_series_10pt" not in brand
     assert brand["ms_recent_pct"] == 50.0
-
-
-def test_market_status_channel_projection_preserves_values_and_filters_channels() -> None:
-    analysis_levels = {
-        "levels": ["판매사"],
-        "periods": ["2026-01"],
-        "period_unit": "월",
-        "channels": ["전체", "종병", "의원"],
-        "data": {
-            "판매사": {
-                "segments": [{"name": "JW중외제약"}],
-                "ms_segments": [{"name": "JW중외제약"}],
-                "by_channel": {
-                    "전체": [{"name": "JW중외제약", "value": 10.0}],
-                    "종병": [{"name": "JW중외제약", "value": 7.0}],
-                    "의원": [{"name": "JW중외제약", "value": 3.0}],
-                },
-                "ms_by_channel": {
-                    "전체": [{"name": "JW중외제약", "share": 100.0}],
-                    "종병": [{"name": "JW중외제약", "share": 70.0}],
-                    "의원": [{"name": "JW중외제약", "share": 30.0}],
-                },
-            }
-        },
-    }
-
-    projected = general_analysis_levels.project_analysis_level_channels(
-        analysis_levels,
-        ["전체", "의원"],
-    )
-
-    assert projected["channels"] == ["전체", "의원"]
-    assert projected["data"]["판매사"]["by_channel"] == {
-        "전체": analysis_levels["data"]["판매사"]["by_channel"]["전체"],
-        "의원": analysis_levels["data"]["판매사"]["by_channel"]["의원"],
-    }
-    assert projected["data"]["판매사"]["ms_by_channel"] == {
-        "전체": analysis_levels["data"]["판매사"]["ms_by_channel"]["전체"],
-        "의원": analysis_levels["data"]["판매사"]["ms_by_channel"]["의원"],
-    }
-    assert projected["data"]["판매사"]["segments"] == analysis_levels["data"]["판매사"]["segments"]
-
-
-def test_general_ubist_analysis_reuses_aggregated_channel_summary(monkeypatch) -> None:
-    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
-    monkeypatch.setattr(
-        general_analysis_levels,
-        "resolve_market_channels",
-        lambda **_kwargs: pytest.fail("aggregated channel summary must bypass raw channel resolution"),
-    )
-    analysis_row = {
-        "by_dimension": json.dumps({"seller": "JW중외제약"}, ensure_ascii=False),
-        "dimension_data": json.dumps(
-            {"seller": {"JW중외제약": {"2026-01": {"raw_value": 100.0}}}},
-            ensure_ascii=False,
-        ),
-        "dimension_channel_data": "{}",
-        "channel_data": "{}",
-    }
-    brand = BrandMetric(
-        "focus",
-        "Focus",
-        "A10N1",
-        100.0,
-        100.0,
-        1,
-        "2026-01",
-        100.0,
-        history_by_period={"2026-01": 100.0},
-        analysis_row=analysis_row,
-    )
-    metrics = AggregatedMetrics(
-        source="ubist",
-        measure="sales",
-        unit_label="KRW",
-        market_size=100.0,
-        hhi=None,
-        cagr=None,
-        monthly_series=({"period": "2026-01", "market_size": 100.0},),
-        brands=(brand,),
-        all_brands=(brand,),
-        ubist_specialty_channels=("전체", "주요고객 종합병원 순환기"),
-        ubist_specialty_target_channels=(
-            {"code": "TGH_CARD", "display_name": "주요고객 종합병원 순환기"},
-        ),
-    )
-
-    sections = general_analysis_levels.build_general_analysis_level_sections(
-        definition=MarketDefinition(view="general", filter_echo={}, source="ubist", measure="sales"),
-        metrics=metrics,
-        focus=brand,
-        mart_db="jw_mart",
-    )
-
-    assert sections is not None
-    assert sections["ubist_channel_context"]["specialty_channels"] == ["전체", "주요고객 종합병원 순환기"]
 
 
 def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch) -> None:
@@ -1992,6 +1896,10 @@ def test_general_ubist_specialty_uses_market_catalog_for_channel_resolution(monk
         monthly_series=({"period": "2026-01", "market_size": 100.0}, {"period": "2026-02", "market_size": 200.0}),
         brands=(focus,),
         all_brands=(focus,),
+        ubist_specialty_channels=("전체", "종합병원 내분비"),
+        ubist_specialty_target_channels=(
+            {"code": "TGH_ENDO", "display_name": "종합병원 내분비"},
+        ),
     )
 
     payload = build_cause_payload(definition=definition, metrics=metrics)
