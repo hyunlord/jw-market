@@ -7,7 +7,12 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
-from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
+from jw_chat_agent_poc.service.general_view_routing import (
+    GeneralRoute,
+    GeneralViewService,
+    _atc4_code,
+    _source,
+)
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
@@ -174,11 +179,13 @@ class FakeBackend:
         self.candidate_map: dict[tuple[str, str], tuple[AtcCandidate, ...]] = {}
         self.market_map: dict[str, GeneralMarket] = {}
         self.market_errors: dict[str, GeneralViewBackendError] = {}
+        self.market_calls: list[tuple[str, str | None, str, str]] = []
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         return self.candidate_map.get((brand, source), ())
 
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket:
+        self.market_calls.append((atc4, brand, source, measure))
         if atc4 in self.market_errors:
             raise self.market_errors[atc4]
         return self.market_map[atc4]
@@ -209,6 +216,37 @@ def test_route_matrix_has_no_human_loop() -> None:
     assert service.route("리바로 전략뷰 시장 점유율") is GeneralRoute.EXISTING
     assert service.route("리바로 시장 점유율은?") is GeneralRoute.DUAL
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
+
+
+@pytest.mark.parametrize("suffix", ("에서", "의", "는", "를", "시장", "기준"))
+def test_atc4_code_accepts_korean_suffixes(suffix: str) -> None:
+    assert _atc4_code(f"C10A1{suffix} 리바로 매출") == "C10A1"
+
+
+@pytest.mark.parametrize("question", ("NSA 기준 C10A1 시장", "nsa 기준 C10A1 시장", "IQVIA 기준 C10A1"))
+def test_source_recognizes_iqvia_aliases(question: str) -> None:
+    assert _source(question) == "iqvia"
+
+
+@pytest.mark.parametrize("question", ("XC10A1", "C10A11", "C10A1X", "ABC123", "문서A10B20값"))
+def test_atc4_code_rejects_alphanumeric_false_positives(question: str) -> None:
+    assert _atc4_code(question) is None
+
+
+def test_nsa_and_korean_suffix_reach_backend_with_clean_scope() -> None:
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = _market("C10A1", 8_000_000_000)
+    service = GeneralViewService(backend, StrategicMembership({"리바로"}), enabled=True)
+
+    service.answer("NSA 기준 C10A1에서 리바로 매출 알려줘", compact=True, dual=False)
+
+    assert backend.market_calls == [("C10A1", "리바로", "iqvia", "sales")]
+
+
+def test_general_view_fix_does_not_change_strategic_route_precedence() -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route("리바로 경쟁역학 CD 시장점유율") is GeneralRoute.EXISTING
 
 
 def test_disabled_route_is_existing_for_byte_compatible_behavior() -> None:

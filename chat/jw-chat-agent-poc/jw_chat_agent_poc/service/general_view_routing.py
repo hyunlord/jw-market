@@ -15,6 +15,20 @@ from jw_chat_agent_poc.tools.general_view_backend import (
 )
 
 
+_ATC4_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z]\d{2}[A-Za-z]\d)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_IQVIA_SOURCE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:IQVIA|NSA)(?![A-Za-z0-9])|아이큐비아",
+    re.IGNORECASE,
+)
+_SOURCE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:IQVIA|NSA|UBIST)(?![A-Za-z0-9])|아이큐비아|유비스트",
+    re.IGNORECASE,
+)
+
+
 class GeneralRoute(Enum):
     EXISTING = "existing"
     GENERAL_ONLY = "general_only"
@@ -226,7 +240,7 @@ def _normalize(question: str) -> str:
 
 
 def _has_explicit_general_signal(normalized: str) -> bool:
-    return bool(re.search(r"[a-z]\d{2}[a-z]\d", normalized)) or any(
+    return bool(_ATC4_PATTERN.search(normalized)) or any(
         token in normalized for token in ("일반뷰", "일반view", "atc4", "atc기준")
     )
 
@@ -268,17 +282,17 @@ def _has_existing_analytic_signal(normalized: str) -> bool:
 
 
 def _source(question: str) -> str:
-    return "iqvia" if "iqvia" in question.lower() else "ubist"
+    return "iqvia" if _IQVIA_SOURCE_PATTERN.search(question) else "ubist"
 
 
 def _atc4_code(question: str) -> str | None:
-    match = re.search(r"\b([A-Za-z]\d{2}[A-Za-z]\d)\b", question)
+    match = _ATC4_PATTERN.search(question)
     return match.group(1).upper() if match else None
 
 
 def _brand_hint(question: str) -> str:
-    text = re.sub(r"(?i)\b(?:IQVIA|UBIST)\b", " ", question)
-    text = re.sub(r"\b[A-Za-z]\d{2}[A-Za-z]\d\b", " ", text)
+    text = _SOURCE_PATTERN.sub(" ", question)
+    text = _ATC4_PATTERN.sub(" ", text)
     text = re.split(r"시장|점유율|매출|순위|규모|top\s*\d*", text, maxsplit=1, flags=re.IGNORECASE)[0]
     text = re.sub(r"일반뷰|전략뷰|ATC4?|기준|으로|에서|의", " ", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip(" ?은는이가을를")
