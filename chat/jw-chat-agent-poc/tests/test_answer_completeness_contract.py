@@ -98,6 +98,18 @@ def test_concentration_adds_qualitative_conclusion_and_cr_values() -> None:
     assert "CR5 30.33%" in revised
 
 
+def test_concentration_prefers_hhi_metric_fact_without_top_share_rows() -> None:
+    fact_md = """### 리바로 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| HHI | 842.50 |
+"""
+    revised = enforce_answer_contract("리바로 시장의 브랜드 집중도는 어때", "시장 지표입니다.", {"fact_md": fact_md})
+    assert "분산" in revised
+    assert "HHI 842.50" in revised
+    assert evaluate_answer_contract("리바로 시장의 브랜드 집중도는 어때", revised, {"fact_md": fact_md})["status"] == "pass"
+
+
 def test_target_share_gap_adds_full_deterministic_calculation() -> None:
     revised = enforce_answer_contract("리바로 점유율 4% 달성에 필요한 매출", "현재 점유율은 3.76%입니다.", {"fact_md": TARGET_FACT})
     assert "시장 규모 2,256.77억원" in revised

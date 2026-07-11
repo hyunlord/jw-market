@@ -98,7 +98,7 @@ def _completion_block(intent: str, question: str, fact_md: str) -> str:
     if intent == "top_n_share_sum":
         return _top_sum_block(_share_trends(fact_md), _requested_top_n(question))
     if intent == "concentration":
-        return _concentration_block(_share_trends(fact_md))
+        return _concentration_block(_share_trends(fact_md), _hhi(fact_md))
     if intent == "target_share_gap":
         return _target_gap_block(_target_inputs(fact_md), _target_share(question))
     if intent == "channel_provenance":
@@ -215,13 +215,24 @@ def _top_sum_block(rows: tuple[ShareTrend, ...], count: int) -> str:
     return "\n".join(lines)
 
 
-def _concentration_block(rows: tuple[ShareTrend, ...]) -> str:
+def _concentration_block(rows: tuple[ShareTrend, ...], hhi: float | None) -> str:
+    if hhi is not None:
+        conclusion = "집중" if hhi >= 2500 else "분산"
+        return f"## 시장 집중도\n이 시장은 HHI 기준으로 **{conclusion}**되어 있습니다. 근거는 HHI {hhi:.2f}입니다."
     if len(rows) < 5:
         return ""
     cr3 = sum(_percent(row.latest) for row in rows[:3])
     cr5 = sum(_percent(row.latest) for row in rows[:5])
     conclusion = "집중" if cr5 >= 50 else "분산"
     return f"## 시장 집중도\n이 시장은 상위 브랜드 점유율 기준으로 **{conclusion}**되어 있습니다. 근거는 CR3 {cr3:.2f}%, CR5 {cr5:.2f}%입니다."
+
+
+def _hhi(fact_md: str) -> float | None:
+    for line in fact_md.splitlines():
+        cells = _cells(line)
+        if len(cells) >= 2 and cells[0].strip().upper() == "HHI" and re.search(r"\d", cells[1]):
+            return _number(cells[1])
+    return None
 
 
 def _target_gap_block(inputs: TargetInputs | None, target: float | None) -> str:
