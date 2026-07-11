@@ -4,6 +4,7 @@ from collections.abc import MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import logging
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ from typing import Any, Callable, Iterator
 from jw_chat_agent_poc.common.token_usage import public_token_usage
 
 
+LOGGER = logging.getLogger(__name__)
 Timing = MutableMapping[str, Any]
 StageEventSink = Callable[[dict[str, Any]], None]
 _ACTIVE_STAGE_SINK: ContextVar[StageEventSink | None] = ContextVar("active_stage_sink", default=None)
@@ -117,6 +119,7 @@ def stage(
         heartbeat_stop.set()
         elapsed_ms = (time.perf_counter() - started) * 1000
         add_stage(timing, name, elapsed_ms, detail)
+        LOGGER.info("stage_timing name=%s elapsed_ms=%.2f detail=%s", name, elapsed_ms, detail)
         _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms, summary=progress.summary)
 
 

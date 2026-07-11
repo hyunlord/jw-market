@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+import time
+
+import pytest
+
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
+from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_provenance_labels
 from jw_chat_agent_poc.orchestrator.unavailable_response import sanitize_internal_diagnostics
 from jw_chat_agent_poc.service.answer_safety import _sentence_from_evidence
-from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
+from jw_chat_agent_poc.service.markdown_cleanup import (
+    _remove_non_adjacent_duplicate_prose,
+    _replace_common_korean_typos_preserving_article_titles,
+    cleanup_markdown_answer,
+)
 
 
 def test_cleanup_blocks_internal_output_labels_without_changing_values() -> None:
@@ -91,3 +101,34 @@ def test_cleanup_is_idempotent() -> None:
     once = cleanup_markdown_answer(answer)
 
     assert cleanup_markdown_answer(once) == once
+
+
+@pytest.mark.parametrize(
+    ("transform", "markdown"),
+    (
+        (sanitize_provenance_labels, ("시장 ml_006 / tool_call_1 / series / 확정 시장 " * 20_000)[:700_000]),
+        (
+            _replace_common_korean_typos_preserving_article_titles,
+            ("관련 자료가 없은 상태이며 확인된 값은 있은 상태입니다. " * 20_000)[:700_000],
+        ),
+        (
+            _remove_non_adjacent_duplicate_prose,
+            "\n\n".join(f"브랜드 {index}의 확인된 값입니다." for index in range(28_000))[:700_000],
+        ),
+        (
+            _remove_non_adjacent_duplicate_prose,
+            ("중복 문장입니다.\n\n다른 문장입니다.\n\n" * 20_000)[:700_000],
+        ),
+    ),
+    ids=("provenance", "korean-typos", "unique-prose", "duplicate-prose"),
+)
+def test_output_transform_large_text_completes_under_one_second(
+    transform: Callable[[str], str],
+    markdown: str,
+) -> None:
+    started = time.perf_counter()
+    revised = transform(markdown)
+    elapsed = time.perf_counter() - started
+
+    assert revised
+    assert elapsed < 1.0

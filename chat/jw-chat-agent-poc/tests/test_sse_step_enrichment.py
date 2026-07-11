@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from jw_chat_agent_poc.common import timing
@@ -54,6 +55,20 @@ def test_invalid_heartbeat_threshold_falls_back(monkeypatch) -> None:
     with timing.stage(None, "llm_plan", "safe", sink=events.append):
         pass
     assert [event["status"] for event in events] == ["started", "done"]
+
+
+def test_stage_logs_elapsed_without_changing_wrapped_value(caplog) -> None:
+    timing_payload = timing.new_timing()
+    answer = "상위 5개 합계 시장점유율은 30.33%입니다."
+
+    with caplog.at_level(logging.INFO, logger=timing.__name__):
+        with timing.stage(timing_payload, "answer_cleanup", "markdown cleanup"):
+            observed = answer
+
+    assert observed == answer
+    assert timing_payload["stages"][0]["name"] == "answer_cleanup"
+    assert "stage_timing name=answer_cleanup" in caplog.text
+    assert "elapsed_ms=" in caplog.text
 
 
 class _WaitingLimiter:
