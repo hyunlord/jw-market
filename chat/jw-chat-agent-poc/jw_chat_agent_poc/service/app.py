@@ -49,6 +49,7 @@ from jw_chat_agent_poc.service.conversation_context import (
     unresolved_reference_result,
 )
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
+from jw_chat_agent_poc.service.context_scope import ContextScope, resolve_context_scope
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
@@ -440,8 +441,17 @@ def _answer_question(
     with sink_context:
         state = store.conversations.get_or_create(conversation_id)
         delegated_file_context, file_source_items = _delegated_file_context(question, state.conversation_id, file_context)
+        has_file = _has_file_signal(documents, delegated_file_context)
+        context_scope = resolve_context_scope(
+            question,
+            has_active_file=has_file,
+            is_fresh_upload=bool(documents),
+            has_market_intent=_has_market_intent(question),
+        )
         if not question.strip() and _has_file_signal(documents, delegated_file_context):
             result = _file_only_ready_result(documents, delegated_file_context)
+        elif context_scope is ContextScope.FILE:
+            result = _file_scoped_result(question)
         else:
             result = _answer_with_conversation(
                 store,
@@ -453,7 +463,8 @@ def _answer_question(
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
-            result = _attach_file_context(result, delegated_file_context, file_source_items)
+        result = _attach_file_context(result, delegated_file_context, file_source_items)
+        result = _annotate_context_scope(result, context_scope)
         store.conversations.record_exchange(
             state.conversation_id,
             question,
@@ -483,6 +494,32 @@ def _delegated_file_context(
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
     return bool(documents) or bool((file_context or "").strip())
+
+
+def _has_market_intent(question: str) -> bool:
+    return detect_market_scope_intent(question) is not None or should_use_agent_loop(question)
+
+
+def _file_scoped_result(question: str) -> dict:
+    answer = "업로드 파일에서 확인된 근거만 사용해 답변합니다."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": ["document"],
+        "tool_calls": [],
+        "resolution": {"scope": ContextScope.FILE.value},
+        "router_diagnostics": {"mode": "file_context_scope_lock", "deterministic_execution": True},
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+    }
+
+
+def _annotate_context_scope(result: dict, scope: ContextScope) -> dict:
+    copied = dict(result)
+    copied["context_scope"] = scope.value
+    markdown = copied.get("markdown_response")
+    if isinstance(markdown, dict):
+        copied["markdown_response"] = {**markdown, "context_scope": scope.value}
+    return copied
 
 
 def _file_only_ready_result(documents: list[Path] | None, file_context: str | None) -> dict:

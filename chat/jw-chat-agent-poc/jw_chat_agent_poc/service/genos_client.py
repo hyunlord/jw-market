@@ -821,6 +821,12 @@ class GenosClient:
         mandatory_md = mandatory_fact_block(fact_md)
         uploaded_md = file_context.strip() or "- 없음"
         file_instruction = f" {_FILE_QUOTE_INSTRUCTION}" if file_context.strip() else ""
+        mixed_instruction = ""
+        if markdown_response.get("context_scope") == "MIXED":
+            mixed_instruction = (
+                " 업로드 파일 근거와 시장 데이터 근거를 섞지 말고, "
+                "'## 업로드 파일 기준'과 '## 시장 데이터 기준' 두 구획으로 나눠 각각의 provenance를 명시한다."
+            )
         return [
             {
                 "role": "system",
@@ -860,6 +866,7 @@ class GenosClient:
                     "숫자, 비율, 순위, 기간, 질병코드는 fact set에 있는 값만 사용하고 새 값을 만들지 않는다. "
                     "검은 별표 같은 장식 기호를 쓰지 말고, 간결한 한국어로 답한다."
                 )
+                + mixed_instruction
                 + file_instruction,
             },
             {

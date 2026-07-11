@@ -189,7 +189,7 @@ def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_
     assert FakeAgent.calls == [("리바로 KOL 자문 기준 처방 의견과 시장 시사점을 알려줘", "live")]
 
 
-def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypatch) -> None:
+def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatch) -> None:
     def fail_direct_dependencies(*, external_mode: str = "fixture"):
         raise AssertionError("document questions must keep the ChatAgent/RAG facade")
 
@@ -207,8 +207,10 @@ def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypat
         use_direct_agent_loop=True,
     )
 
-    assert item["result"]["answer"] == "fallback:리바로 경쟁 구도 변화"
-    assert FakeAgent.calls == [("리바로 경쟁 구도 변화", "live")]
+    assert item["result"]["answer"] == "업로드 파일에서 확인된 근거만 사용해 답변합니다."
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["context_scope"] == "FILE"
+    assert FakeAgent.calls == []
 
 
 def test_answer_question_returns_deterministic_file_only_ready_without_agent() -> None:
@@ -305,7 +307,7 @@ def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> No
     assert isinstance(result, dict)
     assert result["file_context"] == "파일: sample.xlsx\nCodexA=123.45"
     assert "document" in result["sources"]
-    assert body["sources"] == ["cache", "document"]
+    assert body["sources"] == ["document"]
 
 
 def test_genos_final_answer_uses_uploaded_file_context_numbers(monkeypatch) -> None:

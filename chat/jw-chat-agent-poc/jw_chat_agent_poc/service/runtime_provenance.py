@@ -94,6 +94,7 @@ def trace_envelope(
         "trace_id": uuid4().hex,
         "conversation_id": conversation_id,
         "question": question,
+        "scope": str(result.get("context_scope") or _UNKNOWN),
         "version": version_payload(),
         "intent": _intent(result),
         "route": _route(result),
