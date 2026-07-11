@@ -4,7 +4,9 @@ from collections.abc import MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import logging
 import os
+import sys
 import threading
 import time
 from typing import Any, Callable, Iterator
@@ -18,6 +20,23 @@ _ACTIVE_STAGE_SINK: ContextVar[StageEventSink | None] = ContextVar("active_stage
 STEP_HEARTBEAT_THRESHOLD_S_ENV = "STEP_HEARTBEAT_THRESHOLD_S"
 DEFAULT_STEP_HEARTBEAT_THRESHOLD_S = 3.0
 STEP_HEARTBEAT_INTERVAL_S = 2.5
+
+
+class _StdoutHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            print(self.format(record), file=sys.stdout, flush=True)
+        except Exception:
+            self.handleError(record)
+
+
+STAGE_TIMING_LOGGER = logging.getLogger("jw_chat_agent_poc.stage_timing")
+STAGE_TIMING_LOGGER.setLevel(logging.INFO)
+STAGE_TIMING_LOGGER.propagate = False
+if not STAGE_TIMING_LOGGER.handlers:
+    _stage_timing_handler = _StdoutHandler()
+    _stage_timing_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    STAGE_TIMING_LOGGER.addHandler(_stage_timing_handler)
 
 _PUBLIC_STAGE_NAMES = {
     "question_received": "질문 접수",
@@ -117,6 +136,12 @@ def stage(
         heartbeat_stop.set()
         elapsed_ms = (time.perf_counter() - started) * 1000
         add_stage(timing, name, elapsed_ms, detail)
+        STAGE_TIMING_LOGGER.info(
+            "stage_timing name=%s detail=%s elapsed_ms=%.3f",
+            name,
+            detail,
+            elapsed_ms,
+        )
         _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms, summary=progress.summary)
 
 

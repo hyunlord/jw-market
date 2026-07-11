@@ -134,15 +134,18 @@ _REQUIRED_METRIC_AXES: Final[dict[str, tuple[RequiredAxis, ...]]] = {
 
 def answer_fact_markdown(calls: list[dict[str, Any]], sources: list[str]) -> str:
     blocks: list[str] = ["## 확정 fact set"]
+    seen_blocks: set[str] = set()
     required = _required_fact_block(calls)
     if required:
         blocks.append(required)
+        seen_blocks.add(required)
     for call in calls:
         if _is_fact_only_completion_call(call):
             continue
         block = _call_fact_block(call, detail=_metric_fact_detail(call, calls))
-        if block:
+        if block and block not in seen_blocks:
             blocks.append(block)
+            seen_blocks.add(block)
     if len(blocks) == 1:
         blocks.append("- 표시할 확정 fact가 없습니다.")
     source_block = _source_block(calls, sources)
