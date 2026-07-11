@@ -30,6 +30,7 @@ def cleanup_markdown_answer(markdown: str) -> str:
     text = re.sub(r"점(?=양해)", "점 ", text)
     lines = [_normalize_table_row(line) for line in text.splitlines()]
     lines = _remove_empty_headings(lines)
+    lines = _remove_duplicate_bullets(lines)
     lines = _remove_orphaned_news_headings(lines)
     lines = _renumber_section_headings(lines)
     text = "\n".join(lines).strip()
@@ -104,19 +105,45 @@ def _normalize_table_row(line: str) -> str:
 
 
 def _remove_empty_headings(lines: list[str]) -> list[str]:
-    kept: list[str] = []
+    dropped: set[int] = set()
     for index, line in enumerate(lines):
         if not _is_heading_line(line):
-            kept.append(line)
             continue
         if "웹 검색 결과" in line:
-            kept.append(line)
             continue
         next_index = index + 1
-        while next_index < len(lines) and not lines[next_index].strip():
+        section_indexes: list[int] = []
+        while next_index < len(lines) and not _is_heading_line(lines[next_index]):
+            if _is_non_content_boundary(lines[next_index]):
+                break
+            section_indexes.append(next_index)
             next_index += 1
-        if next_index >= len(lines) or _is_heading_line(lines[next_index]) or _is_non_content_boundary(lines[next_index]):
+        has_content = any(
+            lines[item].strip() and not _is_thematic_break(lines[item])
+            for item in section_indexes
+        )
+        if not has_content:
+            dropped.add(index)
+            dropped.update(item for item in section_indexes if _is_thematic_break(lines[item]))
+    return [line for index, line in enumerate(lines) if index not in dropped]
+
+
+def _is_thematic_break(line: str) -> bool:
+    return bool(re.fullmatch(r"\s*(?:-{3,}|\*{3,}|_{3,})\s*", line))
+
+
+def _remove_duplicate_bullets(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in lines:
+        match = re.match(r"^\s*[-*]\s+(?P<content>\S.*)$", line)
+        if not match:
+            kept.append(line)
             continue
+        content = match.group("content").strip()
+        if content in seen:
+            continue
+        seen.add(content)
         kept.append(line)
     return kept
 
