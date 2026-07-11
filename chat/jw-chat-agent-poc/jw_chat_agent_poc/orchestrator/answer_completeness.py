@@ -63,7 +63,7 @@ def completeness_intent(question: str) -> str | None:
         token in text for token in ("상위", "비교", "각각")
     ):
         return "share_delta_compare"
-    if "매출" in text and any(token in text for token in ("비교", "대비", "각각", "동안")):
+    if "매출" in text and any(token in text for token in ("비교", "각각")):
         return "brand_compare"
     if "채널" in text and any(token in text for token in _CHANNELS):
         return "channel_provenance"

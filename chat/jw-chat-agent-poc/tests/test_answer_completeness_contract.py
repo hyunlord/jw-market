@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from jw_chat_agent_poc.orchestrator.answer_completeness import completeness_intent
 from jw_chat_agent_poc.orchestrator.answer_contract import (
     answer_contract_backfill_tool_calls,
     enforce_answer_contract,
@@ -74,6 +75,17 @@ CHANNEL_FACT = """### 출처 유형 fact
 def test_completeness_intent_is_detected(question: str, fact_md: str, expected_intent: str) -> None:
     result = evaluate_answer_contract(question, "미완성 답변", {"fact_md": fact_md})
     assert result["intent"] == expected_intent
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 매출의 작년 동기 대비 성장률은?",
+        "리바로의 지난 6개월 동안 매출은?",
+    ),
+)
+def test_single_brand_period_questions_do_not_trigger_brand_compare(question: str) -> None:
+    assert completeness_intent(question) is None
 
 
 def test_brand_compare_repairs_both_brand_series() -> None:
