@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract, evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import (
+    answer_contract_backfill_tool_calls,
+    enforce_answer_contract,
+    evaluate_answer_contract,
+)
 
 
 PAIR_FACT = """### 리바로 매출 시계열 fact
@@ -108,6 +112,14 @@ def test_concentration_prefers_hhi_metric_fact_without_top_share_rows() -> None:
     assert "분산" in revised
     assert "HHI 842.50" in revised
     assert evaluate_answer_contract("리바로 시장의 브랜드 집중도는 어때", revised, {"fact_md": fact_md})["status"] == "pass"
+
+
+def test_concentration_backfills_market_scope_when_planner_only_fetched_metric() -> None:
+    calls = [{"tool": "get_brand_metric", "render_data": {"brand": "리바로", "sales_억원": 84.93}}]
+    plans = answer_contract_backfill_tool_calls("리바로 시장의 브랜드 집중도는 어때", "리바로", calls)
+    assert len(plans) == 1
+    assert plans[0].name == "get_market_scope"
+    assert plans[0].arguments == {"brand": "리바로", "view": "market_landscape"}
 
 
 def test_target_share_gap_adds_full_deterministic_calculation() -> None:

@@ -98,7 +98,16 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                 reason="AnswerContract structural proxy backfill",
             ),
         )
-    if _intent(question) != "ranking":
+    intent = _intent(question)
+    if intent == "concentration" and not _has_market_scope_fact(calls):
+        return (
+            ToolCallPlan(
+                name="get_market_scope",
+                arguments={"brand": brand, "view": "market_landscape"},
+                reason="AnswerContract concentration fact backfill",
+            ),
+        )
+    if intent != "ranking":
         return ()
     if _has_brand_metric_fact(calls, brand):
         return ()
@@ -326,6 +335,10 @@ def _has_csd_activity_fact(calls: list[dict[str, Any]], brand: str) -> bool:
         if data.get("status") == "ok" and data.get("series"):
             return True
     return False
+
+
+def _has_market_scope_fact(calls: list[dict[str, Any]]) -> bool:
+    return any(call.get("tool") == "get_market_landscape" for call in calls)
 
 
 def _ranking_fact(fact_md: str) -> RankingFact | None:
