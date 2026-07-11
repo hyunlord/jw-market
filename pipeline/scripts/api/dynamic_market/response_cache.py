@@ -308,7 +308,7 @@ class MySQLDynamicResponseCacheStore:
         try:
             tables = db.fetch_all(
                 """
-                SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_TIME, UPDATE_TIME
+                SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS
                 FROM information_schema.TABLES
                 WHERE (TABLE_SCHEMA = %s AND TABLE_NAME IN (
                          'mart_general_brand_metric', 'mart_general_market_metric',
@@ -323,41 +323,18 @@ class MySQLDynamicResponseCacheStore:
                 (self._mart_db, self._general_dimension_db, self._strategic_dimension_db),
             )
             periods: list[dict[str, Any]] = []
-            for table_name, history_column in (
-                ("mart_general_brand_metric", None),
-                ("mart_general_market_metric", "market_size_series"),
-                ("mart_strategic_ml_brand_metric", None),
-                ("mart_strategic_ml_market_metric", "market_size_series"),
-                ("mart_strategic_cd_brand_metric", None),
-                ("mart_strategic_cd_market_metric", "market_size_series"),
-            ):
-                period_projection = (
-                    f", MAX(JSON_LENGTH({history_column})) AS period_count" if history_column else ", NULL AS period_count"
-                )
-                periods.extend(
-                    db.fetch_all(
-                        f"""
-                        SELECT %s AS table_name, source, measure,
-                               MAX(computed_at) AS computed_at
-                               {period_projection}
-                        FROM `{self._mart_db}`.`{table_name}`
-                        GROUP BY source, measure
-                        ORDER BY source, measure
-                        """,
-                        (table_name,),
-                    )
-                )
-            for table_name, dimension_db in (
-                ("mart_general_filter_dimension_metric", self._general_dimension_db),
-                ("mart_strategic_filter_dimension_metric", self._strategic_dimension_db),
+            for table_name in (
+                "mart_general_market_metric",
+                "mart_strategic_ml_market_metric",
+                "mart_strategic_cd_market_metric",
             ):
                 periods.extend(
                     db.fetch_all(
                         f"""
                         SELECT %s AS table_name, source, measure,
                                MAX(computed_at) AS computed_at,
-                               NULL AS period_count
-                        FROM `{dimension_db}`.`{table_name}`
+                               MAX(JSON_LENGTH(market_size_series)) AS period_count
+                        FROM `{self._mart_db}`.`{table_name}`
                         GROUP BY source, measure
                         ORDER BY source, measure
                         """,
@@ -390,6 +367,7 @@ class MySQLDynamicResponseCacheStore:
                 str(row.get("TABLE_NAME") or ""),
                 str(row.get("CREATE_TIME") or ""),
                 str(row.get("UPDATE_TIME") or ""),
+                str(row.get("TABLE_ROWS") or ""),
             ]
             for row in tables
         ]

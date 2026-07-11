@@ -276,23 +276,14 @@ def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monke
                     "TABLE_NAME": "catalog_ml_market",
                     "CREATE_TIME": "t1",
                     "UPDATE_TIME": "t2",
+                    "TABLE_ROWS": 15,
                 }
             ]
         if "catalog_manifest_hash" in sql:
             return [{"table_name": "catalog_ml_market", "catalog_manifest_hash": "manifest-1"}]
-        if "filter_dimension_metric" in sql:
-            table_name = (
-                "mart_strategic_filter_dimension_metric"
-                if "mart_strategic_filter_dimension_metric" in sql
-                else "mart_general_filter_dimension_metric"
-            )
-            return [{"table_name": table_name, "source": "ubist", "measure": "sales", "computed_at": "t1"}]
         table_name = next(name for name in (
-            "mart_general_brand_metric",
             "mart_general_market_metric",
-            "mart_strategic_ml_brand_metric",
             "mart_strategic_ml_market_metric",
-            "mart_strategic_cd_brand_metric",
             "mart_strategic_cd_market_metric",
         ) if name in sql)
         return [{"table_name": table_name, "source": "ubist", "measure": "sales", "computed_at": "t1", "period_count": 12}]
@@ -321,7 +312,8 @@ def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monke
     ):
         assert table_name in combined
     assert "UPDATE_TIME" in combined
+    assert "TABLE_ROWS" in combined
     assert "MAX(catalog_manifest_hash)" in combined
-    assert combined.count("MAX(computed_at)") >= 8
-    assert "`general_dimension`.`mart_general_filter_dimension_metric`" in combined
-    assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" in combined
+    assert combined.count("MAX(computed_at)") == 3
+    assert "`general_dimension`.`mart_general_filter_dimension_metric`" not in combined
+    assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" not in combined
