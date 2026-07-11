@@ -186,6 +186,15 @@ def apply_common_unavailable_response(
     return _cleanup(_insert_before_source(sanitized_answer, block))
 
 
+def _completed_answer_contract(question: str, answer: str, fact_md: str) -> bool:
+    """Preserve deterministic contract output before unavailable-state handling."""
+
+    from jw_chat_agent_poc.orchestrator.answer_contract import evaluate_answer_contract
+
+    status = evaluate_answer_contract(question, answer, {"fact_md": fact_md})
+    return isinstance(status.get("intent"), str) and status.get("status") == "pass"
+
+
 def _four_stage_unavailable_gate(
     question: str,
     answer: str,
@@ -206,6 +215,8 @@ def _four_stage_unavailable_gate(
         return None
     calls = tuple(tool_calls)
     if not question_has_unavailable_signal and _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
+        if _completed_answer_contract(question, answer, fact_md):
+            return _cleanup(answer)
         return _cleanup("\n\n".join(("요청한 값은 현재 조회 결과에 존재합니다.", sanitize_internal_diagnostics(fact_md))))
 
     required = _required_tools(question)

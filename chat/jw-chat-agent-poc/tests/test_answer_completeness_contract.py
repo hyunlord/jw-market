@@ -8,6 +8,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import (
     enforce_answer_contract,
     evaluate_answer_contract,
 )
+from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 
 
 PAIR_FACT = """### 리바로 매출 시계열 fact
@@ -105,6 +106,65 @@ def test_top_n_share_sum_puts_exact_sum_first() -> None:
     revised = enforce_answer_contract("상위 5개 브랜드 합산 점유율", "개별 점유율은 표와 같습니다.", {"fact_md": TOP_FACT})
     assert revised.startswith("상위 5개 합계 시장점유율은 30.33%입니다.")
     assert revised.count("% |") >= 5
+
+
+def test_unavailable_gate_preserves_top_sum_repair_when_fact_set_has_absence_notice() -> None:
+    question = "리바로 시장 상위 5개 브랜드 합산 점유율"
+    fact_md = f"{TOP_FACT}\n### 제한 사항\n- 일부 보조 데이터 미보유\n"
+    repaired = enforce_answer_contract(question, "개별 점유율은 표와 같습니다.", {"fact_md": fact_md})
+
+    revised = apply_common_unavailable_response(
+        question,
+        repaired,
+        {"fact_md": fact_md},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "ok", "brand": "리바로", "market_share": 3.76},
+            }
+        ],
+    )
+
+    assert revised.startswith("상위 5개 합계 시장점유율은 30.33%입니다.")
+    assert revised.count("% |") >= 5
+
+
+@pytest.mark.parametrize(
+    ("question", "fact_md", "expected", "preserve_exactly"),
+    (
+        ("리바로와 리바로젯 6개월 매출 비교", PAIR_FACT, "리바로젯 | 2025-11 | 108.09억원", True),
+        ("상위 3개 브랜드 점유율 변화를 비교해줘", TOP_FACT, "리피토 | 2025-07 6.95%", True),
+        ("이 시장의 브랜드 집중도는 어때", TOP_FACT, "CR5 30.33%", True),
+        ("리바로 점유율 4% 달성에 필요한 매출", TARGET_FACT, "목표 매출 90.27억원", True),
+        ("의원 채널에서 리바로 매출", CHANNEL_FACT, "적용 채널: 의원", False),
+    ),
+)
+def test_unavailable_gate_preserves_each_completed_contract(
+    question: str,
+    fact_md: str,
+    expected: str,
+    preserve_exactly: bool,
+) -> None:
+    fact_with_notice = f"{fact_md}\n### 제한 사항\n- 일부 보조 데이터 미보유\n"
+    repaired = enforce_answer_contract(question, "요약 답변", {"fact_md": fact_with_notice})
+
+    revised = apply_common_unavailable_response(
+        question,
+        repaired,
+        {"fact_md": fact_with_notice},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "ok", "brand": "리바로", "market_share": 3.76},
+            }
+        ],
+    )
+
+    if preserve_exactly:
+        assert revised == repaired
+    else:
+        assert repaired in revised
+    assert expected in revised
 
 
 def test_concentration_adds_qualitative_conclusion_and_cr_values() -> None:
