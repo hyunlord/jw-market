@@ -36,6 +36,19 @@ TARGET_FACT = """### 리바로 목표 역산 fact
 | 2026-04 | 84.93억원 | 3.76% | 2,256.77억원 |
 """
 
+TARGET_SPLIT_FACT = """### 리바로 매출 시계열 fact
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-07 | 84.76억원 | 3.92% |
+| 2026-04 | 84.93억원 | 3.76% |
+
+### 리바로 시장규모 시계열 fact
+| 기간 | 시장규모 | YoY |
+| --- | --- | --- |
+| 2025-07 | 2,161.94억원 | 1.00% |
+| 2026-04 | 2,256.77억원 | 2.00% |
+"""
+
 CHANNEL_FACT = """### 출처 유형 fact
 | 출처 | 상세 |
 | --- | --- |
@@ -92,6 +105,14 @@ def test_target_share_gap_adds_full_deterministic_calculation() -> None:
     assert "증분액 +5.34억원" in revised
     assert "증분률 +6.29%" in revised
     assert "시장 규모 불변 가정" in revised
+
+
+def test_target_share_gap_combines_live_split_fact_tables() -> None:
+    revised = enforce_answer_contract("리바로 점유율 4% 달성에 필요한 매출", "현재 점유율은 3.76%입니다.", {"fact_md": TARGET_SPLIT_FACT})
+    assert "목표 매출 90.27억원" in revised
+    assert evaluate_answer_contract(
+        "리바로 점유율 4% 달성에 필요한 매출", revised, {"fact_md": TARGET_SPLIT_FACT}
+    )["status"] == "pass"
 
 
 def test_channel_provenance_echoes_only_verified_filter() -> None:

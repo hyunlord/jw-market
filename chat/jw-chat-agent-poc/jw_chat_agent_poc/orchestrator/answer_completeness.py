@@ -151,7 +151,32 @@ def _target_inputs(fact_md: str) -> TargetInputs | None:
         if "억원" not in cells[1] or "%" not in cells[2] or "억원" not in cells[3]:
             continue
         result = TargetInputs(cells[0], cells[1], _number(cells[1]), cells[2], cells[3], _number(cells[3]))
-    return result
+    if result is not None:
+        return result
+    series = _brand_series(fact_md)
+    if not series:
+        return None
+    latest = series[0].points[-1]
+    market_text = _latest_market_size(fact_md, latest.period)
+    if not market_text:
+        return None
+    return TargetInputs(latest.period, latest.sales_text, latest.sales, latest.share_text, market_text, _number(market_text))
+
+
+def _latest_market_size(fact_md: str, period: str) -> str:
+    active = False
+    latest = ""
+    for line in fact_md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            active = "시장규모 시계열 fact" in stripped
+            continue
+        if not active:
+            continue
+        cells = _cells(stripped)
+        if len(cells) >= 2 and cells[0] == period and "억원" in cells[1]:
+            latest = cells[1]
+    return latest
 
 
 def _brand_compare_block(series: tuple[BrandSeries, ...]) -> str:
