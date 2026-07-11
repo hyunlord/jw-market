@@ -177,7 +177,8 @@ def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell(
     assert "페린젝트 매출은 2023-Q3 41.53억원에서 2025-Q4 35.16억원" in revised
     assert "| 기간 | 매출 | MS |" in revised
     assert revised.count("| 202") >= 4
-    assert "## 출처" in revised
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in revised
+    assert "- 데이터:" not in revised
 
 
 def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> None:
@@ -197,7 +198,8 @@ def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> Non
     assert "매출 84.93억원" in revised
     assert "시장점유율 3.76%" in revised
     assert "순위 6/470" in revised
-    assert "## 출처" in revised
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in revised
+    assert "- 데이터:" not in revised
 
 
 def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
@@ -769,7 +771,7 @@ def test_sanitize_internal_diagnostics_removes_bare_internal_market_ids() -> Non
     revised = sanitize_internal_diagnostics(answer)
 
     assert "strategy_006" not in revised
-    assert "확정 시장" in revised
+    assert "시장 —" in revised
     assert "IQVIA / UBIST" in revised
 
 
@@ -781,8 +783,8 @@ def test_sanitize_internal_diagnostics_preserves_denominator_note_market_ids() -
 
     revised = sanitize_internal_diagnostics(answer)
 
-    assert "시장: ml_006" in revised
-    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in revised
+    assert "시장: —" in revised
+    assert "참고: — 기준 순위는 6/516으로 표시될 수 있음" in revised
     assert "확정 시장" not in revised
 
 
@@ -795,7 +797,7 @@ def test_sanitize_internal_diagnostics_preserves_intended_split_market_context()
 
     revised = sanitize_internal_diagnostics(answer)
 
-    assert "시장: ml_011 (market_landscape, 분모 26)" in revised
+    assert "시장: — (market_landscape, 분모 26)" in revised
     assert "Class 구분 존재" in revised
     assert "Class 2 기준 분모 26" in revised
     assert "확정 시장" not in revised

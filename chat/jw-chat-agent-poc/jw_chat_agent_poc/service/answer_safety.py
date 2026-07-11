@@ -9,6 +9,7 @@ from typing import Any
 
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 
@@ -817,11 +818,11 @@ def _is_inline_source_line(stripped: str) -> bool:
     return bool(re.match(r"^출처\s*\(\d{4}(?:-\d{2})?(?:-\d{2})?\)", normalized))
 
 
-def append_deterministic_source_block(answer: str, fact_md: str) -> str:
+def append_deterministic_source_block(answer: str, fact_md: str, *, file_context: str = "") -> str:
     """Append a code-rendered source block built from verified facts."""
 
     stripped_answer = strip_generated_source_sections(answer)
-    source_block = deterministic_source_block(fact_md)
+    source_block = deterministic_source_block(fact_md, file_context=file_context)
     if not source_block:
         return stripped_answer
     return cleanup_markdown_answer("\n\n".join((stripped_answer, source_block)))
@@ -849,26 +850,10 @@ def append_competitor_patent_coverage_block(answer: str, fact_md: str) -> str:
     return cleanup_markdown_answer("\n\n".join((answer.strip(), "\n".join(lines))))
 
 
-def deterministic_source_block(fact_md: str) -> str:
-    """Return final user-facing sources from verified fact markdown only."""
+def deterministic_source_block(fact_md: str, *, file_context: str = "") -> str:
+    """Return the single public seven-field provenance schema."""
 
-    rows: list[str] = []
-    value_source_table = _deterministic_value_source_table(fact_md)
-    if value_source_table:
-        rows.extend(value_source_table)
-        rows.extend(_deterministic_data_source_detail_lines(fact_md))
-    else:
-        data_line = _deterministic_data_source_line(fact_md)
-        if data_line:
-            rows.append(data_line)
-        rows.extend(_deterministic_data_source_detail_lines(fact_md))
-    rows.extend(_deterministic_news_source_lines(fact_md))
-    rows.extend(_deterministic_news_search_lines(fact_md))
-    rows.extend(_deterministic_external_source_lines(fact_md))
-    clean = tuple(dict.fromkeys(row for row in rows if row and not _contains_internal_source_name(row)))
-    if not clean:
-        return ""
-    return "\n".join(("## 출처", *clean))
+    return provenance_source_block_from_facts(fact_md, file_context=file_context)
 
 
 def _fact_table_rows(fact_md: str, title_fragment: str) -> list[str]:
@@ -2347,160 +2332,6 @@ def _is_source_heading(stripped: str) -> bool:
 
 def _is_heading(stripped: str) -> bool:
     return bool(re.match(r"#{1,6}\s+\S", stripped))
-
-
-def _contains_internal_source_name(text: str) -> bool:
-    return any(token in text for token in ("cache", "deep_analysis_events", "내부 심층분석"))
-
-
-def _deterministic_data_source_line(fact_md: str) -> str:
-    non_news = _non_news_fact_markdown(fact_md)
-    source_line = _source_line(fact_md)
-    sources: list[str] = []
-    if "UBIST" in source_line or "지표 fact" in non_news:
-        sources.append("UBIST")
-    if "IQVIA" in source_line:
-        sources.append("IQVIA NSA")
-    if not sources:
-        return ""
-    period_label = _source_period_label(non_news)
-    suffix = f" ({period_label})" if period_label else ""
-    return "- 데이터: " + " / ".join(dict.fromkeys(sources)) + suffix
-
-
-def _deterministic_data_source_detail_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "데이터 상세" or not detail or detail == "-":
-            continue
-        rows.append(f"- 데이터 상세: {detail}")
-    return rows
-
-
-def _deterministic_value_source_table(fact_md: str) -> list[str]:
-    records = _value_source_records(fact_md)
-    if not records:
-        return []
-    rows = ["| 수치 | 소스 | 기간 | 시장정의 | 축 |", "| --- | --- | --- | --- | --- |"]
-    for record in records:
-        value, source, period, market, axis = record[:5]
-        if not value or not source:
-            continue
-        rows.append(f"| {value} | {source} | {period or '-'} | {market or '-'} | {axis or '-'} |")
-    if len(rows) == 2:
-        return []
-    return ["", *rows]
-
-
-def _value_source_records(fact_md: str) -> list[tuple[str, str, str, str, str, str]]:
-    records: list[tuple[str, str, str, str, str, str]] = []
-    in_value_sources = False
-    for line in fact_md.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("### "):
-            in_value_sources = "수치별 출처 fact" in stripped
-            continue
-        if not in_value_sources or not stripped.startswith("|") or "---" in stripped:
-            continue
-        cells = [_clean_news_cell(cell) for cell in stripped.strip("|").split("|")]
-        cells = [cell for cell in cells if cell]
-        if not cells or cells[0] == "수치":
-            continue
-        padded = (*cells[:6], *("-" for _ in range(max(0, 6 - len(cells)))))
-        records.append(tuple(padded[:6]))
-    return records
-
-
-def _source_period_label(markdown: str) -> str:
-    periods = sorted(set(re.findall(r"20\d{2}-(?:\d{2}|Q[1-4])", markdown)))
-    if not periods:
-        return ""
-    if len(periods) == 1:
-        return periods[0]
-    return f"{periods[0]}~{periods[-1]}"
-
-
-def _deterministic_news_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for record in _news_fact_records(fact_md):
-        title = record.get("title") or ""
-        if not title:
-            continue
-        outlet = record.get("source") or "뉴스"
-        date = record.get("date") or "날짜 미상"
-        url = record.get("url") or ""
-        url_part = f" {url}" if url else ""
-        rows.append(f"- 뉴스: {outlet} ({date}) 「{title}」{url_part}")
-    return rows
-
-
-def _deterministic_news_search_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "뉴스 검색" or not detail or detail == "-":
-            continue
-        source, _, condition = detail.partition(" — ")
-        if condition:
-            rows.append(f"- 뉴스({source}): {condition}")
-        else:
-            rows.append(f"- 뉴스({detail})")
-    return rows
-
-
-def _deterministic_external_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    rows.extend(_deterministic_hira_source_lines(fact_md))
-    rows.extend(_deterministic_external_api_source_lines(fact_md))
-    if not rows and ("HIRA 질병" in fact_md or "HIRA 환자수" in fact_md):
-        rows.append("- 외부: HIRA 질병정보서비스 (KCD 기반 환자 통계)")
-    if not any("임상" in row for row in rows) and "### 임상시험 fact" in fact_md:
-        rows.append("- 외부: ClinicalTrials/MFDS 임상 정보")
-    if not any("특허" in row or "Orange" in row for row in rows) and "### 특허/라벨 fact" in fact_md:
-        rows.append("- 외부: MFDS/OpenFDA/Orange Book 특허·라벨 정보")
-    return rows
-
-
-def _deterministic_hira_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "외부 HIRA" or not detail or detail == "-":
-            continue
-        source, _, condition = detail.partition(" — ")
-        if condition:
-            rows.append(f"- 외부({source}): {condition}")
-        else:
-            rows.append(f"- 외부: {detail}")
-    return rows
-
-
-def _deterministic_external_api_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "외부 API" or not detail or detail == "-":
-            continue
-        rows.append(f"- 외부: {detail}")
-    return rows
-
-
-def _source_detail_records(fact_md: str) -> list[tuple[str, str]]:
-    records: list[tuple[str, str]] = []
-    in_source = False
-    for line in fact_md.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("### "):
-            in_source = "출처 유형 fact" in stripped
-            continue
-        if not in_source or not stripped.startswith("|") or "---" in stripped:
-            continue
-        cells = [_clean_news_cell(cell) for cell in stripped.strip("|").split("|")]
-        cells = [cell for cell in cells if cell]
-        if not cells or cells[0] == "출처":
-            continue
-        if len(cells) >= 2:
-            records.append((cells[0], cells[1]))
-        else:
-            records.append((cells[0], ""))
-    return records
 
 
 def _non_news_fact_markdown(fact_md: str) -> str:

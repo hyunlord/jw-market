@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
 from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
     ConversationTurn,
@@ -110,7 +111,6 @@ def reused_context_result(
 ) -> dict[str, Any]:
     series = [_point_dict(point) for point in ranked.series]
     fact_md = _series_fact_markdown(ranked)
-    answer = _series_answer(ranked)
     inherited = inherited_slots or ConversationSlots()
     render_data: dict[str, Any] = {
         "brand": ranked.brand,
@@ -132,6 +132,7 @@ def reused_context_result(
         "summary_text": f"직전 턴에서 확인한 {ranked.brand} 시계열을 재사용했습니다.",
         "render_data": render_data,
     }
+    answer = _series_answer(ranked, provenance_source_block((call,), ("conversation_context",)))
     return {
         "question": question,
         "resolution": {"canonical_brand": ranked.brand, "scope": "previous_turn_verified_fact"},
@@ -222,7 +223,7 @@ def _series_fact_markdown(ranked: RankedBrandSlot) -> str:
     return f"### {ranked.brand} 매출 시계열 fact\n| 기간 | 매출 | MS |\n| --- | --- | --- |\n{rows}"
 
 
-def _series_answer(ranked: RankedBrandSlot) -> str:
+def _series_answer(ranked: RankedBrandSlot, source_block: str) -> str:
     first, latest = ranked.series[0], ranked.series[-1]
     delta = None if first.ms_pct is None or latest.ms_pct is None else latest.ms_pct - first.ms_pct
     delta_text = "" if delta is None else f" ({delta:+.2f}%p)"
@@ -231,7 +232,7 @@ def _series_answer(ranked: RankedBrandSlot) -> str:
         f"{ranked.brand}의 시장점유율은 {first.period} {_pct(first.ms_pct)}에서 "
         f"{latest.period} {_pct(latest.ms_pct)}로 변했습니다{delta_text}.\n\n"
         f"| 기간 | 매출 | 시장점유율 |\n| --- | ---: | ---: |\n{rows}\n\n"
-        "## 출처\n- 직전 턴에서 이미 조회한 검증 fact"
+        + source_block
     )
 
 

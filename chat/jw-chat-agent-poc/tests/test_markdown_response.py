@@ -363,7 +363,8 @@ def test_web_search_facade_renders_nested_results_as_unverified_external_section
     assert "### 웹 검색 결과 fact(미검증)" not in response.fact_md
     assert "https://example.com/livalo-detailing" not in response.fact_md
     assert "웹 검색 snippet" not in response.fact_md
-    assert "URL/snippet 기반 미검증 웹 검색 결과" in response.markdown
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in response.markdown
+    assert "| 웹 검색 결과(미검증) | — | — | — | — | 전체 | — |" in response.markdown
 
 
 def test_genos_web_only_answer_skips_final_llm_and_appends_unverified_section(monkeypatch) -> None:
@@ -691,7 +692,7 @@ def test_direct_brand_metric_answer_appends_missing_numeric_fact(monkeypatch) ->
     assert "6/516" in answer
     assert "출처: UBIST" not in answer
     assert "## 출처" in answer
-    assert "- 데이터: UBIST (2026-04)" in answer
+    assert "| UBIST | 2026-04 | — | — | 516 | 전체 | 억원 |" in answer
     assert answer.rfind("## 출처") > answer.rfind("84.93억원")
 
 
@@ -717,8 +718,10 @@ def test_deterministic_source_block_lists_news_articles_without_internal_names()
     block = deterministic_source_block(fact_md)
 
     assert block.startswith("## 출처")
-    assert "- 데이터: UBIST (2026-03~2026-04)" in block
-    assert "- 뉴스: 약업신문 (2026-04-01) 「아토젯 시장 이슈」 https://news.example/atozet" in block
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in block
+    assert "| UBIST | — | — | — | — | 전체 | — |" in block
+    assert "뉴스/이슈 · 약업신문 「아토젯 시장 이슈」 https://news.example/atozet" in block
+    assert "| 2026-04-01 | — | — | — | 전체 | — |" in block
     assert "내부 심층분석" not in block
     assert "deep_analysis_events" not in block
     assert "cache" not in block
@@ -765,7 +768,7 @@ def test_source_block_renders_hira_call_metadata_from_nested_calls() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 외부(HIRA 질병정보서비스 · get_disease_stats): I10 본태성(원발성) 고혈압 — 입원/외래 기준, 2024년" in block
+    assert "| HIRA 질병정보서비스 · I10 본태성(원발성) 고혈압 | 2024 | — | — | — | 전체 | 명 |" in block
     assert "KCD 기반 환자 통계" not in block
 
 
@@ -848,7 +851,7 @@ def test_source_block_uses_answered_hira_options_not_all_nested_tools() -> None:
 
     assert block.count("I10 본태성(원발성) 고혈압") == 1
     assert "): 본태성 고혈압" not in block
-    assert "입원/외래 기준, 2024년" in block
+    assert "| 2024 | — | — | — | 전체 | 명 |" in block
     assert "질병명칭/코드" not in block
     assert "성별/연령" not in block
     assert "요양기관종별" not in block
@@ -901,8 +904,9 @@ def test_source_block_preserves_news_search_condition_when_present() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 뉴스(events corpus · search_news): 검색조건 text_contains=아토젯" in block
-    assert "- 뉴스: 약업신문 (2026-04-01) 「아토젯 시장 이슈」 https://news.example/atozet" in block
+    assert "뉴스/이슈 · 약업신문 「아토젯 시장 이슈」 https://news.example/atozet" in block
+    assert "| 2026-04-01 | — | — | — | 전체 | — |" in block
+    assert "events corpus" not in block
 
 
 def test_source_block_renders_data_period_from_call_series() -> None:
@@ -934,9 +938,8 @@ def test_source_block_renders_data_period_from_call_series() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터: UBIST (2025-07~2026-04)" in block
     assert (
-        "- 데이터 상세: UBIST — 기간 2025-07~2026-04, 시장: 이상지질혈증 (market_landscape, 분모 470)"
+        "| UBIST | 2025-07~2026-04 | 전략뷰 (market_landscape) | 이상지질혈증 | 470 | 전체 | 억원 |"
     ) in block
 
 
@@ -970,9 +973,8 @@ def test_source_block_renders_trend_data_detail_from_render_metadata() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터: UBIST (2023-Q3~2025-Q4)" in block
     assert (
-        "- 데이터 상세: UBIST — 기간 2023-Q3~2025-Q4, 시장: 철분제 (market_landscape, 분모 516)"
+        "| UBIST | 2023-Q3~2025-Q4 | 전략뷰 (market_landscape) | 철분제 | 516 | 전체 | 억원 |"
     ) in block
 
 
@@ -999,8 +1001,8 @@ def test_source_block_uses_confirmed_view_mapping_for_strategy_cache_market() ->
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (market_landscape, 분모 516)" in block
-    assert "view strategic" not in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로 리바로젯 | 516 | 전체 | 억원 |" in block
+    assert "strategy_006" not in block
 
 
 def test_source_block_uses_confirmed_view_mapping_for_market_landscape_query_market() -> None:
@@ -1023,7 +1025,7 @@ def test_source_block_uses_confirmed_view_mapping_for_market_landscape_query_mar
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (market_landscape, 분모 470)" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로 리바로젯 | 470 | 전체 | — |" in block
 
 
 def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_difference() -> None:
@@ -1061,8 +1063,9 @@ def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_diffe
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로/리바로젯 (market_landscape, 분모 516)" in block
-    assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 516 | 전체 | — |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470 | 전체 | — |" in block
+    assert "ml_006" not in block
 
 
 def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_path() -> None:
@@ -1089,8 +1092,8 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로/리바로젯 (market_landscape, 분모 516)" in block
-    assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 516 | 전체 | 억원 |" in block
+    assert "ml_006" not in block
 
 
 def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_path() -> None:
@@ -1120,7 +1123,8 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_pat
     block = deterministic_source_block(fact_md)
 
     assert "순위 6/470/470" not in fact_md
-    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470 | 전체 | 억원 |" in block
+    assert "strategy_006" not in block
     assert "6/470/516" not in block
 
 
@@ -1158,11 +1162,8 @@ def test_source_block_notes_split_market_class2_basis() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: IQVIA NSA — 기간 2025-Q4, 시장: 악템라 (market_landscape, 분모 26)" in block
-    assert "Class 구분 존재" in block
-    assert "Class 2 기준 분모 12" in block
-    assert "전체 market_landscape 분모와 Class 기준 분모는 직접 비교하지 않음" in block
-    assert "Class 1 기준" not in block
+    assert "| IQVIA NSA | 2025-Q4 | 전략뷰 (market_landscape) | 악템라 | 12 | 전체 | 억원 |" in block
+    assert "Class 1" not in block
 
 
 def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_market() -> None:
@@ -1185,7 +1186,8 @@ def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_marke
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로 리바로젯 (competitive_dynamics, 분모 104)" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (competitive_dynamics) | 리바로 리바로젯 | 104 | 전체 | — |" in block
+    assert "cd_006" not in block
 
 
 def test_source_block_omits_view_name_for_unconfirmed_market() -> None:
@@ -1208,7 +1210,8 @@ def test_source_block_omits_view_name_for_unconfirmed_market() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 미확정 시장 (분모 17)" in block
+    assert "| UBIST | 2026-04 | — | — | 17 | 전체 | — |" in block
+    assert "확정 시장" not in block
     assert "market_landscape" not in block
 
 
@@ -3647,7 +3650,7 @@ def test_genos_markdown_cleans_empty_headings_tables_and_spacing(monkeypatch) ->
     assert "| 매출 | 31.00억원 |" in answer
     assert "| 2026-04 | 31.00억원 |" in answer
     assert "## 출처" in answer
-    assert "- 데이터: UBIST (2026-04)" in answer
+    assert "| UBIST | 2026-04 | — | — | — | 전체 | 억원 |" in answer
 
 
 def test_genos_markdown_restores_share_delta_when_generated_answer_only_lists_points(monkeypatch) -> None:
@@ -4655,7 +4658,8 @@ def test_competitor_patent_coverage_block_is_appended_when_final_omits_scope_hea
 
     # Then: the user-facing answer preserves candidate, source, and coverage labels.
     assert "### 경쟁 성분 후보군·특허 커버리지" in repaired
-    assert "| 1 | RSV/EZE | 로수젯 | UBIST | ml_006 | 2026-04 | 206.85억원 | 9.17% |" in repaired
+    assert "| 1 | RSV/EZE | 로수젯 | UBIST | — | 2026-04 | 206.85억원 | 9.17% |" in repaired
+    assert "ml_006" not in repaired
     assert "#### 출처·커버리지" in repaired
     assert "MFDS 의약품특허목록, FDA OrangeBook" in repaired
     assert "현재 특허 DB에서 확인되는 항목만 표시" in repaired

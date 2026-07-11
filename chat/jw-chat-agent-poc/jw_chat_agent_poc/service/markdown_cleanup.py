@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
+
 
 def cleanup_markdown_answer(markdown: str) -> str:
     """Normalize generated markdown without inventing content."""
@@ -89,7 +91,8 @@ def _has_jongseong(token: str) -> bool:
 def _replace_internal_source_labels(text: str) -> str:
     result = re.sub(r"(?<![A-Za-z0-9_])deep_analysis_events(?![A-Za-z0-9_])", "뉴스/이슈", text)
     result = re.sub(r"(?<![A-Za-z0-9_])cache(?![A-Za-z0-9_])", "UBIST", result)
-    return result.replace("내부 UBIST", "UBIST").replace("내부 심층분석", "뉴스/이슈")
+    result = result.replace("내부 UBIST", "UBIST").replace("내부 심층분석", "뉴스/이슈")
+    return sanitize_internal_provenance_labels(result)
 
 
 def _normalize_table_row(line: str) -> str:

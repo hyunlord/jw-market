@@ -34,6 +34,7 @@ from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_tr
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
+    append_deterministic_source_block,
     cleanup_markdown_answer,
     ensure_file_absence_statement,
     ensure_top_brand_trend_table,
@@ -571,15 +572,10 @@ def _file_context_fact(result: dict) -> str:
     return "## 업로드 파일 컨텍스트\n" + context
 
 
-def _append_file_context_source(answer: str, file_context_fact: str) -> str:
+def _append_file_context_source(answer: str, fact_md: str, file_context_fact: str) -> str:
     if not file_context_fact:
         return answer
-    source_line = "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과"
-    if source_line in answer:
-        return answer
-    if "## 출처" in answer:
-        return cleanup_markdown_answer("\n".join((answer, source_line)))
-    return cleanup_markdown_answer("\n\n".join((answer, "## 출처\n\n" + source_line)))
+    return append_deterministic_source_block(answer, fact_md, file_context=file_context_fact)
 
 
 def _looks_like_empty_file_context_answer(answer: str) -> bool:
@@ -1119,7 +1115,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
-    safe_answer = _append_file_context_source(safe_answer, file_context_fact)
+    safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
     safe_answer = apply_common_unavailable_response(
         question,

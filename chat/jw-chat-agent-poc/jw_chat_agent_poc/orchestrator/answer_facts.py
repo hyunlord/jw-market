@@ -18,6 +18,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     table,
 )
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_fact_markdown
 from jw_chat_agent_poc.orchestrator.surface_policy import (
     DeltaOperands,
     can_surface_derived_value,
@@ -1975,7 +1976,7 @@ def _generic_facts(tool: str, data: dict[str, Any]) -> str:
 
 
 def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
-    blocks: list[str] = []
+    blocks: list[str] = [provenance_fact_markdown(calls, sources)]
     value_rows = _value_provenance_rows(calls)
     if value_rows:
         blocks.append(

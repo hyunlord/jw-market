@@ -71,7 +71,7 @@ def test_market_scope_default_answer_uses_market_total_not_brand_sales() -> None
     assert data["brand_sales_krw"] == 8_493_234_217.11
     assert "전략뷰 기준" in result["answer"]
     assert "competitive_dynamics" not in result["answer"]
-    assert "market_landscape" not in result["answer"]
+    assert "전략뷰 (market_landscape)" in result["answer"]
     assert "## 주의" not in result["answer"]
     assert "84.93억원" not in result["answer"]
 

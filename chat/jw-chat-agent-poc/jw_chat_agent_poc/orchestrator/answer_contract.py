@@ -13,6 +13,7 @@ from jw_chat_agent_poc.orchestrator.answer_completeness import (
 )
 from jw_chat_agent_poc.orchestrator.dosage_notes import DOSAGE_COMBINATION_NOTE_PREFIX, dosage_combination_note
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,13 +735,7 @@ def _trend_answer(fact: TrendFact) -> str:
 
 
 def _source_block(fact_md: str) -> str:
-    rows = _key_value_section(fact_md, "출처 유형 fact")
-    if not rows:
-        return ""
-    lines = ["## 출처"]
-    for label, value in rows.items():
-        lines.append(f"- {label}: {value}")
-    return "\n".join(lines)
+    return provenance_source_block_from_facts(fact_md)
 
 
 def _join_blocks(*blocks: str) -> str:

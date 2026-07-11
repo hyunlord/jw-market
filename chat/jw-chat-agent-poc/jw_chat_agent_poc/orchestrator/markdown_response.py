@@ -12,12 +12,11 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     pct_value,
     rank_value,
     sanitize_interpretation,
-    source_description,
-    source_label,
     table,
 )
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
 from jw_chat_agent_poc.orchestrator.provenance import (
     evidence_from_calls,
     evidence_markdown,
@@ -86,14 +85,14 @@ class MarkdownResponseBuilder:
     def no_data(self, message: str) -> MarkdownResponse:
         summary_md = ""
         interpretation_md = f"## 해석\n\n- {cell(message)}"
-        sources_md = "## 출처\n\n- 데이터 없음: 현재 POC 범위 밖"
+        sources_md = provenance_source_block([], ["none"])
         markdown = self._join(summary_md, interpretation_md, sources_md)
         return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
 
     def unsupported_brand(self, message: str) -> MarkdownResponse:
         summary_md = ""
         interpretation_md = f"## 해석\n\n- {cell(message)}"
-        sources_md = "## 출처\n\n- 지원 범위: 현재 운영에 연결된 지원 브랜드 목록"
+        sources_md = provenance_source_block([], ["unsupported_brand"])
         markdown = self._join(summary_md, interpretation_md, sources_md)
         return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
 
@@ -347,12 +346,7 @@ class MarkdownResponseBuilder:
 
     @staticmethod
     def _sources_md(calls: list[dict[str, Any]], sources: list[str]) -> str:
-        rows = [(source_label(source), source_description(source)) for source in sorted(set(sources))]
-        for call in calls:
-            safe_url = call.get("safe_url")
-            if isinstance(safe_url, str) and safe_url:
-                rows.append((str(call.get("tool") or "external_api"), f"[호출 URL]({safe_url})"))
-        return table("## 출처", ("출처", "설명"), tuple(rows))
+        return provenance_source_block(calls, sources)
 
     @staticmethod
     def _notice_md(notices: list[str]) -> str:

@@ -530,18 +530,6 @@ def _warn_dropped_file_tokens(question: str, raw_interpretation: str, final_answ
         )
 
 
-def _append_uploaded_file_source(answer: str, file_context: str) -> str:
-    if not file_context.strip():
-        return answer
-    source_line = "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과"
-    if source_line in answer:
-        return answer
-    if re.search(r"(?m)^##\s*출처\b", answer):
-        return cleanup_markdown_answer("\n".join((answer, source_line)))
-    source_block = f"## 출처\n\n{source_line}"
-    return cleanup_markdown_answer("\n\n".join((answer, source_block)))
-
-
 def _append_blocked_metric_notices(answer: str, fact_md: str) -> str:
     rows = _blocked_metric_notice_lines(fact_md)
     missing = tuple(line for line in rows if line not in answer)
@@ -802,8 +790,7 @@ class GenosClient:
         answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
-        answer = append_deterministic_source_block(answer, fact_md)
-        answer = _append_uploaded_file_source(answer, file_context)
+        answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
         answer = apply_common_unavailable_response(question, answer, markdown_response)
         answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)

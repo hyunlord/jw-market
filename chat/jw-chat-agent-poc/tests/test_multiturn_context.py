@@ -103,3 +103,5 @@ def test_reused_context_result_contains_verified_series_without_backend_call() -
     assert data["period"] == "2026-04"
     assert data["brand_value_series_10pt"][-1]["ms_pct"] == 9.1659
     assert "로수젯" in result["markdown_response"]["fact_md"]
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in result["answer"]
+    assert "직전 턴에서 이미 조회한 검증 fact" not in result["answer"]

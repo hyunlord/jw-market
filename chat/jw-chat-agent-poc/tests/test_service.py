@@ -302,10 +302,11 @@ def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> No
     assert response.status_code == 200
     body = response.json()
     assert "CodexA=123.45" in body["text"]
-    assert "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과" in body["text"]
+    assert "| 업로드 파일(sample.xlsx) | \u2014 | 파일 | \u2014 | \u2014 | 전체 | \u2014 |" in body["text"]
     result = captured["result"]
     assert isinstance(result, dict)
     assert result["file_context"] == "파일: sample.xlsx\nCodexA=123.45"
+    assert result["tool_calls"] == []
     assert "document" in result["sources"]
     assert body["sources"] == ["document"]
 
@@ -330,7 +331,7 @@ def test_genos_final_answer_uses_uploaded_file_context_numbers(monkeypatch) -> N
     text = "".join(client.stream_answer("업로드 파일에서 CodexA 값을 알려줘", result))
 
     assert "123.45" in text
-    assert "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과" in text
+    assert "| 업로드 파일(sample.xlsx) | — | 파일 | — | — | 전체 | — |" in text
     messages = captured["messages"]
     assert isinstance(messages, list)
     assert "업로드 파일 컨텍스트" in messages[1]["content"]
@@ -714,7 +715,7 @@ def test_markdown_timeout_fallback_keeps_causal_structure_and_deterministic_sour
     assert "시장 내 침투가 강화되는지 또는 방어 압력이 커지는지" in answer
     assert "출처: UBIST" not in answer
     assert answer.rfind("## 출처") > answer.rfind("시장 내 침투가 강화되는지")
-    assert answer.strip().endswith("- 데이터: UBIST (2026-04)")
+    assert answer.strip().endswith("| UBIST | 2026-04 | — | — | 516 | 전체 | 억원 |")
 
 
 def test_stream_endpoint_does_not_emit_charts_for_single_metric(monkeypatch) -> None:
@@ -1173,7 +1174,7 @@ def test_stream_endpoint_handles_same_market_default_before_agent_fallback() -> 
     assert "event: conversation\ndata: conv-market\n\n" in response.text
     assert "전략뷰 기준" in response.text
     assert "competitive_dynamics" not in response.text
-    assert "market_landscape" not in response.text
+    assert "전략뷰 (market_landscape)" in response.text
     assert "## 주의" not in response.text
     assert "2,256.77억원" in response.text
     assert "84.93억원" not in response.text
@@ -1210,7 +1211,7 @@ def test_stream_endpoint_answers_strong_view_question_instead_of_deferring() -> 
     assert "어느 기준으로 볼까요" not in response.text
     assert "전략뷰 기준" in response.text
     assert "competitive_dynamics" not in response.text
-    assert "market_landscape" not in response.text
+    assert "전략뷰 (market_landscape)" in response.text
     assert "## 주의" not in response.text
     assert "2,256.77억원" in response.text
     assert FakeAgent.calls == []
