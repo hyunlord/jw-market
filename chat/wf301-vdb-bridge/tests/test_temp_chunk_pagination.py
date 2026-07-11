@@ -37,12 +37,10 @@ class _Client:
         limit_match = re.search(r"limit:(\d+)", query)
         assert limit_match is not None
         limit = int(limit_match.group(1))
-        after_match = re.search(r'after:"([^"]+)"', query)
-        start = 0
-        if after_match is not None:
-            ids = [str(row["_additional"]["id"]) for row in self._chunks]
-            start = ids.index(after_match.group(1)) + 1
-        rows = self._chunks[start : start + limit]
+        offset_match = re.search(r"offset:(\d+)", query)
+        offset = int(offset_match.group(1)) if offset_match is not None else 0
+        ordered = sorted(self._chunks, key=lambda row: int(row["i_chunk_on_doc"]))
+        rows = ordered[offset : offset + limit]
         return _Response({"data": {"Get": {"TempChunk": rows}}})
 
 
@@ -68,9 +66,10 @@ def test_read_temp_chunks_recovers_all_batches_over_weaviate_default_limit() -> 
     assert [row["i_chunk_on_doc"] for row in result] == list(range(205))
     get_queries = [query for query in client.queries if " Get " in query]
     assert len(get_queries) == 3
-    assert "limit:100" in get_queries[0]
-    assert 'after:"00000000-0000-0000-0000-000000000099"' in get_queries[1]
-    assert 'after:"00000000-0000-0000-0000-000000000199"' in get_queries[2]
+    assert 'sort:[{path:["i_chunk_on_doc"],order:asc}]' in get_queries[0]
+    assert "limit:100, offset:0" in get_queries[0]
+    assert "limit:100, offset:100" in get_queries[1]
+    assert "limit:100, offset:200" in get_queries[2]
 
 
 def test_read_temp_chunks_returns_stable_document_page_chunk_order() -> None:

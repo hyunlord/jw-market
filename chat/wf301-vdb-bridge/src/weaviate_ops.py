@@ -112,17 +112,17 @@ def read_temp_chunks(client: httpx.Client, collection: str, temp_document_id: in
         return []
 
     chunks: list[Chunk] = []
-    cursor: str | None = None
     batches = 0
     while len(chunks) < expected:
-        after = f', after:"{cursor}"' if cursor is not None else ""
+        offset = len(chunks)
         query = {
             "query": (
                 "{ Get { %s(where:{path:[\"temp_doc_id\"],operator:Equal,"
-                "valueNumber:%d}, limit:%d%s){ text temp_doc_id file_name file_path "
+                "valueNumber:%d}, sort:[{path:[\"i_chunk_on_doc\"],order:asc}], "
+                "limit:%d, offset:%d){ text temp_doc_id file_name file_path "
                 "i_chunk_on_doc i_chunk_on_page i_page file_size "
                 "_additional { id vector } } } }"
-                % (collection, temp_document_id, TEMP_CHUNK_BATCH_SIZE, after)
+                % (collection, temp_document_id, TEMP_CHUNK_BATCH_SIZE, offset)
             )
         }
         response = client.post(
@@ -136,10 +136,6 @@ def read_temp_chunks(client: httpx.Client, collection: str, temp_document_id: in
         if not batch:
             break
         chunks.extend(batch)
-        next_cursor = str((batch[-1].get("_additional") or {}).get("id") or "")
-        if not next_cursor or next_cursor == cursor:
-            break
-        cursor = next_cursor
 
     ids = [str((chunk.get("_additional") or {}).get("id") or "") for chunk in chunks]
     if len(chunks) != expected or not all(ids) or len(set(ids)) != len(ids):
