@@ -531,6 +531,26 @@ def test_unavailable_gate_allows_proven_source_absence_with_missing_grain() -> N
     assert "### 미보유 데이터 처리" in revised
 
 
+def test_source_trap_preserves_explicit_source_absence_state_after_unavailable_gate() -> None:
+    question = "리바로 Datamonitor 기준 글로벌 시장 전망을 알려줘"
+    common = apply_common_unavailable_response(
+        question,
+        "UBIST 매출 proxy만 확인됩니다.",
+        {"fact_md": "Datamonitor 데이터 미보유"},
+        tool_calls=[
+            {
+                "tool": "requested_source_unavailable",
+                "render_data": {"status": "unsupported", "source": "Datamonitor"},
+            }
+        ],
+    )
+    revised = apply_requested_source_trap_gate(question, common)
+
+    assert revised.startswith("원천에 없음:")
+    assert "글로벌 시장 전망" in revised
+    assert revised.count("### 미보유 데이터 처리") == 1
+
+
 def test_unavailable_gate_does_not_retry_required_tool_after_one_attempt() -> None:
     calls = [{"tool": "get_brand_metric", "render_data": {"status": "no_data", "brand": "리바로"}}]
 

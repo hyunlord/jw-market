@@ -180,7 +180,9 @@ def _compact_when_unavailable_layer_exists(answer: str, source: RequestedSource)
     if not five_step:
         return answer
     sources = _extract_block(answer, "## 출처", ("\n## 처리 시간",))
+    absence_state = next((line.strip() for line in answer.splitlines() if line.strip().startswith("원천에 없음:")), "")
     parts = [
+        absence_state,
         f"{source.label} 데이터는 현재 운영 데이터에 미보유입니다.",
         five_step,
         _alternative_reference_note(source),
