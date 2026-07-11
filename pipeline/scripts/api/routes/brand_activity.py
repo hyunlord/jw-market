@@ -86,7 +86,11 @@ def brand_activity_topic(scope_id: str = Path(description="내부 토픽 scope �
     description=(
         "mock `/jw-brand-activity-mock/api/brand-activity/topics`와 대응되는 포탈 공유 API입니다. "
         "브랜드 카드별 event_count, topic_shares, etc_pct, brand_specific_topics를 반환합니다. "
-        "topic_shares 합 + etc_pct = 100이며, event_count=0이면 topic_shares는 빈 배열입니다.\n\n"
+        "각 share_pct는 전체 활동 행 중 해당 토픽과 관련된 행의 비율을 독립적으로 계산하므로, "
+        "한 행이 여러 토픽에 포함될 수 있고 topic_shares 합은 100%를 초과할 수 있습니다. "
+        "etc_pct는 max(0, 100 - 표시된 top_n 토픽 share_pct 합)으로 계산되는 호환 필드이며, "
+        "기타 토픽이나 미분류 행의 비율이 아니고 top_n에 따라 달라집니다. "
+        "event_count=0이면 topic_shares는 빈 배열입니다.\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,
