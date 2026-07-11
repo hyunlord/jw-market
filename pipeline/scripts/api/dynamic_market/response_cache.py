@@ -73,7 +73,14 @@ class DynamicResponseCacheStore(Protocol):
 
     def complete(self, *, cache_key: str, lease_owner: str, source_epoch: str, response_json: str) -> None: ...
 
-    def fail(self, *, cache_key: str, lease_owner: str) -> None: ...
+    def fail(
+        self,
+        *,
+        cache_key: str,
+        lease_owner: str,
+        failure_reason: str,
+        last_error: str | None = None,
+    ) -> None: ...
 
 
 def canonical_request_json(request: Mapping[str, Any]) -> str:
@@ -212,7 +219,12 @@ class DynamicResponseCache:
         builder: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
         if not self._build_semaphore.acquire(blocking=False):
-            self._store.fail(cache_key=cache_key, lease_owner=lease_owner)
+            self._store.fail(
+                cache_key=cache_key,
+                lease_owner=lease_owner,
+                failure_reason="overloaded",
+                last_error="DynamicMarketOverloadedError: dynamic-market miss capacity is full",
+            )
             raise DynamicMarketOverloadedError("dynamic-market miss capacity is full")
         try:
             non_finite_paths: list[str] = []
@@ -226,7 +238,15 @@ class DynamicResponseCache:
             response_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             stored_response = _encode_cached_response(response_json)
             if len(stored_response.encode("utf-8")) > self._max_entry_bytes:
-                self._store.fail(cache_key=cache_key, lease_owner=lease_owner)
+                self._store.fail(
+                    cache_key=cache_key,
+                    lease_owner=lease_owner,
+                    failure_reason="entry_too_large",
+                    last_error=(
+                        "compressed response exceeds limit: "
+                        f"{len(stored_response.encode('utf-8'))}>{self._max_entry_bytes}"
+                    ),
+                )
                 logger.warning(
                     "dynamic_response_cache_entry_skipped request=%s compressed_bytes=%d limit=%d",
                     request_json,
@@ -241,15 +261,29 @@ class DynamicResponseCache:
                     source_epoch=source_epoch,
                     response_json=stored_response,
                 )
-            except DynamicResponseCacheUnavailable:
-                self._store.fail(cache_key=cache_key, lease_owner=lease_owner)
+            except DynamicResponseCacheUnavailable as exc:
+                self._store.fail(
+                    cache_key=cache_key,
+                    lease_owner=lease_owner,
+                    failure_reason="persistence_error",
+                    last_error=_error_summary(exc),
+                )
                 logger.warning("dynamic_response_cache_store_failed", exc_info=True)
             return payload
-        except Exception:
-            self._store.fail(cache_key=cache_key, lease_owner=lease_owner)
+        except Exception as exc:
+            self._store.fail(
+                cache_key=cache_key,
+                lease_owner=lease_owner,
+                failure_reason="builder_error",
+                last_error=_error_summary(exc),
+            )
             raise
         finally:
             self._build_semaphore.release()
+
+
+def _error_summary(exc: Exception, *, limit: int = 4096) -> str:
+    return f"{type(exc).__name__}: {exc}"[:limit]
 
 
 def _encode_cached_response(response_json: str) -> str:
@@ -436,8 +470,11 @@ class MySQLDynamicResponseCacheStore:
                     INSERT INTO cache_dynamic_market_response (
                         cache_key, namespace, request_json, source_epoch, state, lease_owner, lease_expires_at,
                         response_json, response_sha256, payload_size, expires_at, hit_count,
-                        created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, 'building', %s, %s, NULL, NULL, NULL, NULL, 0, %s, %s)
+                        failure_reason, attempt_count, last_error, last_attempt_at, created_at, updated_at
+                    ) VALUES (
+                        %s, %s, %s, %s, 'building', %s, %s, NULL, NULL, NULL, NULL, 0,
+                        NULL, 1, NULL, %s, %s, %s
+                    )
                     ON DUPLICATE KEY UPDATE cache_key = VALUES(cache_key)
                     """,
                     (
@@ -447,6 +484,7 @@ class MySQLDynamicResponseCacheStore:
                         source_epoch,
                         owner,
                         now + timedelta(seconds=self._lease_seconds),
+                        now,
                         now,
                         now,
                     ),
@@ -487,7 +525,9 @@ class MySQLDynamicResponseCacheStore:
                     UPDATE cache_dynamic_market_response
                     SET request_json = %s, source_epoch = %s, state = 'building', lease_owner = %s,
                         lease_expires_at = %s, response_json = NULL, response_sha256 = NULL,
-                        payload_size = NULL, expires_at = NULL, updated_at = %s
+                        payload_size = NULL, expires_at = NULL, failure_reason = NULL,
+                        attempt_count = attempt_count + 1, last_error = NULL,
+                        last_attempt_at = %s, updated_at = %s
                     WHERE cache_key = %s
                     """,
                     (
@@ -495,6 +535,7 @@ class MySQLDynamicResponseCacheStore:
                         source_epoch,
                         owner,
                         now + timedelta(seconds=self._lease_seconds),
+                        now,
                         now,
                         cache_key,
                     ),
@@ -538,7 +579,8 @@ class MySQLDynamicResponseCacheStore:
                     UPDATE cache_dynamic_market_response
                     SET state = 'ready', source_epoch = %s, response_json = %s,
                         response_sha256 = %s, payload_size = %s, expires_at = %s,
-                        lease_owner = NULL, lease_expires_at = NULL, updated_at = %s
+                        lease_owner = NULL, lease_expires_at = NULL, failure_reason = NULL,
+                        last_error = NULL, updated_at = %s
                     WHERE cache_key = %s AND state = 'building' AND lease_owner = %s
                     """,
                     (
@@ -559,15 +601,30 @@ class MySQLDynamicResponseCacheStore:
         except MySQLError as exc:
             raise DynamicResponseCacheUnavailable("cannot store dynamic response cache entry") from exc
 
-    def fail(self, *, cache_key: str, lease_owner: str) -> None:
+    def fail(
+        self,
+        *,
+        cache_key: str,
+        lease_owner: str,
+        failure_reason: str,
+        last_error: str | None = None,
+    ) -> None:
         try:
             db.execute(
                 """
                 UPDATE cache_dynamic_market_response
-                SET state = 'failed', lease_owner = NULL, lease_expires_at = NULL, updated_at = %s
+                SET state = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+                    failure_reason = %s, last_error = %s, last_attempt_at = %s, updated_at = %s
                 WHERE cache_key = %s AND state = 'building' AND lease_owner = %s
                 """,
-                (datetime.now(), cache_key, lease_owner),
+                (
+                    failure_reason[:255],
+                    last_error[:4096] if last_error is not None else None,
+                    datetime.now(),
+                    datetime.now(),
+                    cache_key,
+                    lease_owner,
+                ),
             )
         except MySQLError:
             logger.warning("dynamic_response_cache_fail_mark_failed", exc_info=True)

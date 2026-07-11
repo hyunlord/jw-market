@@ -32,6 +32,10 @@ def create_cache_tables(target_db: str) -> None:
                 expires_at DATETIME NULL,
                 hit_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 last_hit_at DATETIME NULL,
+                failure_reason VARCHAR(255) NULL,
+                attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+                last_error TEXT NULL,
+                last_attempt_at DATETIME NULL,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 PRIMARY KEY (cache_key),
@@ -42,6 +46,13 @@ def create_cache_tables(target_db: str) -> None:
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
+        for column in (
+            "failure_reason VARCHAR(255) NULL",
+            "attempt_count INT UNSIGNED NOT NULL DEFAULT 0",
+            "last_error TEXT NULL",
+            "last_attempt_at DATETIME NULL",
+        ):
+            cur.execute(f"ALTER TABLE cache_dynamic_market_response ADD COLUMN IF NOT EXISTS {column}")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS cache_brands (

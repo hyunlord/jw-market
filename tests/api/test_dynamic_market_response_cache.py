@@ -44,18 +44,43 @@ class MemoryStore:
                 return CacheClaim.wait()
             self.claim_count += 1
             owner = f"owner-{self.claim_count}"
-            self.rows[cache_key] = {"state": "building", "epoch": source_epoch, "owner": owner}
+            attempt_count = int(row.get("attempt_count", 0)) + 1 if row else 1
+            self.rows[cache_key] = {
+                "state": "building",
+                "epoch": source_epoch,
+                "owner": owner,
+                "attempt_count": attempt_count,
+                "failure_reason": None,
+                "last_error": None,
+            }
             return CacheClaim.build(owner)
 
     def complete(self, *, cache_key: str, lease_owner: str, source_epoch: str, response_json: str) -> None:
         with self.lock:
             assert self.rows[cache_key]["owner"] == lease_owner
-            self.rows[cache_key] = {"state": "ready", "epoch": source_epoch, "payload": response_json}
+            attempt_count = self.rows[cache_key]["attempt_count"]
+            self.rows[cache_key] = {
+                "state": "ready",
+                "epoch": source_epoch,
+                "payload": response_json,
+                "attempt_count": attempt_count,
+                "failure_reason": None,
+                "last_error": None,
+            }
 
-    def fail(self, *, cache_key: str, lease_owner: str) -> None:
+    def fail(
+        self,
+        *,
+        cache_key: str,
+        lease_owner: str,
+        failure_reason: str,
+        last_error: str | None = None,
+    ) -> None:
         with self.lock:
             if self.rows.get(cache_key, {}).get("owner") == lease_owner:
                 self.rows[cache_key]["state"] = "failed"
+                self.rows[cache_key]["failure_reason"] = failure_reason
+                self.rows[cache_key]["last_error"] = last_error
 
 
 def test_canonical_request_json_normalizes_set_like_lists() -> None:
@@ -107,7 +132,10 @@ def test_response_cache_releases_lease_when_persistence_fails() -> None:
     result = cache.get_or_build({"source": "ubist"}, lambda: {"status": "SUCCESS"})
 
     assert result == {"status": "SUCCESS"}
-    assert next(iter(store.rows.values()))["state"] == "failed"
+    row = next(iter(store.rows.values()))
+    assert row["state"] == "failed"
+    assert row["failure_reason"] == "persistence_error"
+    assert row["last_error"] == "DynamicResponseCacheUnavailable: write failed"
 
 
 def test_response_cache_single_flight_builds_same_key_once() -> None:
@@ -165,7 +193,9 @@ def test_response_cache_returns_429_when_distinct_build_slots_are_full() -> None
     with pytest.raises(DynamicMarketOverloadedError):
         cache.get_or_build({"source": "ubist", "filters": {"atc4": ["C10A1"]}}, lambda: {"value": 1})
 
-    assert next(iter(store.rows.values()))["state"] == "failed"
+    row = next(iter(store.rows.values()))
+    assert row["state"] == "failed"
+    assert row["failure_reason"] == "overloaded"
 
 
 def test_response_cache_normalizes_non_finite_values_before_strict_serialization() -> None:
@@ -261,7 +291,33 @@ def test_response_cache_serves_but_does_not_store_oversized_entry() -> None:
     result = cache.get_or_build({"scope": "large"}, lambda: {"payload": "large-enough"})
 
     assert result == {"payload": "large-enough"}
-    assert next(iter(store.rows.values()))["state"] == "failed"
+    row = next(iter(store.rows.values()))
+    assert row["state"] == "failed"
+    assert row["failure_reason"] == "entry_too_large"
+
+
+def test_response_cache_records_builder_failure_and_clears_it_after_retry() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    request = {"source": "ubist", "filters": {"atc4": ["C10A1"]}}
+
+    def fail_build() -> dict[str, object]:
+        raise ValueError("synthetic failure")
+
+    with pytest.raises(ValueError, match="synthetic failure"):
+        cache.get_or_build(request, fail_build)
+
+    failed = next(iter(store.rows.values()))
+    assert failed["failure_reason"] == "builder_error"
+    assert failed["last_error"] == "ValueError: synthetic failure"
+    assert failed["attempt_count"] == 1
+
+    assert cache.get_or_build(request, lambda: {"status": "SUCCESS"}) == {"status": "SUCCESS"}
+    ready = next(iter(store.rows.values()))
+    assert ready["state"] == "ready"
+    assert ready["failure_reason"] is None
+    assert ready["last_error"] is None
+    assert ready["attempt_count"] == 2
 
 
 def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monkeypatch) -> None:
