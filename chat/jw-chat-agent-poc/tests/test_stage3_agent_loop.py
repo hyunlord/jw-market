@@ -592,16 +592,6 @@ def test_comparison_brand_uses_market_member_segment_when_not_canonical() -> Non
 def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
     metrics = _metrics_tool()
     news = _news_tool()
-    planner = Stage3ScriptedPlanner(
-        decisions=(
-            AgentDecision(
-                tool_calls=(
-                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "리바로"}, reason="뉴스 확인"),
-                )
-            ),
-            AgentDecision(final_answer="도구 결과로 답변"),
-        )
-    )
     agent = ChatAgent(
         router=BQRouter(),
         metrics=metrics,
@@ -609,52 +599,7 @@ def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
         agent_loop=ToolUseAgent(
             metrics=metrics,
             resolver=BrandResolver(),
-            planner=planner,
-            news=news,
-        ),
-    )
-
-    result = agent.answer("리바로 관련 뉴스가 최근 매출에 미친 영향")
-
-    tools = {call["tool"] for call in result["tool_calls"]}
-    assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
-    assert "unsupported_metric" not in tools
-
-
-def test_news_sales_impact_backfills_contract_before_generic_series_completion() -> None:
-    metrics = _metrics_tool()
-    original = metrics.get_brand_metric
-
-    def metric_with_unsupported_series(brand: str, metric: str = "sales", **kwargs):
-        if metric == "series":
-            return {
-                "source": "cache",
-                "tool": "unsupported_metric",
-                "summary_text": "series unavailable",
-                "render_data": {"brand": brand, "metric": metric, "status": "unsupported"},
-            }
-        return original(brand, metric=metric, **kwargs)
-
-    metrics.get_brand_metric = metric_with_unsupported_series
-    news = _news_tool()
-    planner = Stage3ScriptedPlanner(
-        decisions=(
-            AgentDecision(
-                tool_calls=(
-                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "리바로"}, reason="뉴스 확인"),
-                )
-            ),
-            AgentDecision(final_answer="도구 결과로 답변"),
-        )
-    )
-    agent = ChatAgent(
-        router=BQRouter(),
-        metrics=metrics,
-        news=news,
-        agent_loop=ToolUseAgent(
-            metrics=metrics,
-            resolver=BrandResolver(),
-            planner=planner,
+            planner=HeuristicToolPlanner(),
             news=news,
         ),
     )

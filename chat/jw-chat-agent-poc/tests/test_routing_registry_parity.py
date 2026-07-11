@@ -66,7 +66,9 @@ def test_routing_public_output_matches_legacy_snapshot() -> None:
 
 
 def test_news_sales_impact_is_not_rejected_before_fact_backfill() -> None:
-    assert strict_query_plan("리바로 관련 뉴스가 최근 매출에 미친 영향", "리바로") is None
+    question = "리바로 관련 뉴스가 최근 매출에 미친 영향"
+    assert strict_query_plan(question, "리바로") is None
+    assert should_use_agent_loop(question) is True
 
 
 def _snapshot(

@@ -69,6 +69,8 @@ def should_use_agent_loop(question: str) -> bool:
         return True
     if _issue_question_needs_quant_context(question):
         return True
+    if _news_sales_impact_question(question):
+        return True
     if _patient_sales_question(question):
         return True
     if any(token in question for token in _CSD_ACTIVITY_TOKENS):
@@ -82,6 +84,14 @@ def should_use_agent_loop(question: str) -> bool:
 
 def _issue_question_needs_quant_context(question: str) -> bool:
     return any(token in question for token in ("최근 이슈", "관련 이슈", "이슈 뭐", "이슈 알려"))
+
+
+def _news_sales_impact_question(question: str) -> bool:
+    return (
+        "매출" in question
+        and any(token in question for token in ("뉴스", "이슈"))
+        and any(token in question for token in ("영향", "원인", "왜"))
+    )
 
 
 def _patient_sales_question(question: str) -> bool:
