@@ -1062,7 +1062,7 @@ def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_diffe
     block = deterministic_source_block(fact_md)
 
     assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로/리바로젯 (market_landscape, 분모 516)" in block
-    assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
+    assert "참고: 해당 시장 기준 순위는 6/470으로 표시될 수 있음" in block
 
 
 def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_path() -> None:
@@ -1090,7 +1090,7 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_
     block = deterministic_source_block(fact_md)
 
     assert "- 데이터 상세: UBIST — 기간 2026-04, 시장: 리바로/리바로젯 (market_landscape, 분모 516)" in block
-    assert "참고: ml_006 기준 순위는 6/470으로 표시될 수 있음" in block
+    assert "참고: 해당 시장 기준 순위는 6/470으로 표시될 수 있음" in block
 
 
 def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_path() -> None:
@@ -1120,7 +1120,7 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_pat
     block = deterministic_source_block(fact_md)
 
     assert "순위 6/470/470" not in fact_md
-    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in block
+    assert "참고: 해당 시장 기준 순위는 6/516으로 표시될 수 있음" in block
     assert "6/470/516" not in block
 
 
@@ -4623,8 +4623,8 @@ def test_competitor_patent_fact_surfaces_market_candidates_and_coverage() -> Non
     )
 
     assert "### 경쟁 성분 후보군 fact" in response.fact_md
-    assert "| 1 | 로수바스타틴 | 로수젯 | UBIST | ml_006 | 2026-04 | 220.00억원 | 28.35% |" in response.fact_md
-    assert "| 2 | 아토르바스타틴 | 리피토 | UBIST | ml_006 | 2026-04 | 145.00억원 | 18.68% |" in response.fact_md
+    assert "| 1 | 로수바스타틴 | 로수젯 | UBIST | 해당 시장 | 2026-04 | 220.00억원 | 28.35% |" in response.fact_md
+    assert "| 2 | 아토르바스타틴 | 리피토 | UBIST | 해당 시장 | 2026-04 | 145.00억원 | 18.68% |" in response.fact_md
     assert "### 경쟁 성분 특허 조회 커버리지 fact" in response.fact_md
     assert "MFDS 의약품특허목록" in response.fact_md
     assert "현재 특허 DB에서 확인되는 항목만 표시" in response.fact_md
@@ -4655,7 +4655,7 @@ def test_competitor_patent_coverage_block_is_appended_when_final_omits_scope_hea
 
     # Then: the user-facing answer preserves candidate, source, and coverage labels.
     assert "### 경쟁 성분 후보군·특허 커버리지" in repaired
-    assert "| 1 | RSV/EZE | 로수젯 | UBIST | ml_006 | 2026-04 | 206.85억원 | 9.17% |" in repaired
+    assert "| 1 | RSV/EZE | 로수젯 | UBIST | 해당 시장 | 2026-04 | 206.85억원 | 9.17% |" in repaired
     assert "#### 출처·커버리지" in repaired
     assert "MFDS 의약품특허목록, FDA OrangeBook" in repaired
     assert "현재 특허 DB에서 확인되는 항목만 표시" in repaired

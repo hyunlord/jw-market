@@ -2287,7 +2287,7 @@ def _causal_presentable_evidence(line: str) -> str:
         if rendered:
             return rendered
     if line.startswith("Brand 상위") or line.startswith("상위 브랜드"):
-        return "상위 브랜드 최신 점유율·매출 순위가 확인됨"
+        return "상위 브랜드 최신 점유율·매출 순위가 확인되었습니다"
     replacements = {
         "Brand 상위": "상위 브랜드",
         "인사이트 계산": "인사이트 계산",
@@ -2302,7 +2302,7 @@ def _sentence_from_evidence(evidence: str) -> str:
     evidence = evidence.strip()
     if evidence.endswith((".", "!", "?")):
         return evidence
-    if evidence.endswith("입니다"):
+    if evidence.endswith(("입니다", "됩니다", "습니다")):
         return f"{evidence}."
     return f"{evidence}입니다."
 
