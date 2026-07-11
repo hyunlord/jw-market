@@ -533,9 +533,20 @@ def test_unavailable_gate_allows_proven_source_absence_with_missing_grain() -> N
 
 def test_source_trap_preserves_explicit_source_absence_state_after_unavailable_gate() -> None:
     question = "리바로 Datamonitor 기준 글로벌 시장 전망을 알려줘"
+    answer = """Datamonitor 데이터는 현재 운영 데이터에 미보유입니다.
+
+### 미보유 데이터 처리
+| 단계 | 내용 |
+| --- | --- |
+| 1. 미보유 데이터 | 글로벌 시장 전망 원천입니다. |
+| 2. 현재 가능한 proxy | UBIST/IQVIA 국내 지표입니다. |
+| 3. 해석 가능한 상한선 | 국내 관찰만 가능합니다. |
+| 4. 확인 필요 데이터 | Datamonitor 원천 필드입니다. |
+| 5. 확보 시 수행할 분석 | 국가별 CAGR 비교입니다. |
+"""
     common = apply_common_unavailable_response(
         question,
-        "UBIST 매출 proxy만 확인됩니다.",
+        answer,
         {"fact_md": "Datamonitor 데이터 미보유"},
         tool_calls=[
             {

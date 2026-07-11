@@ -163,8 +163,6 @@ def apply_common_unavailable_response(
 
     fact_md = _fact_markdown(markdown_response)
     sanitized_answer = sanitize_internal_diagnostics(answer)
-    if _has_five_step_block(sanitized_answer):
-        return _cleanup(sanitized_answer)
     combined = "\n\n".join(part for part in (question, sanitized_answer, sanitize_internal_diagnostics(fact_md)) if part)
     question_has_unavailable_signal = bool(_QUESTION_UNAVAILABLE_RE.search(question))
     if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not question_has_unavailable_signal:
@@ -178,6 +176,8 @@ def apply_common_unavailable_response(
     )
     if gated is not None:
         return gated
+    if _has_five_step_block(sanitized_answer):
+        return _cleanup(sanitized_answer)
     if not question_has_unavailable_signal and _is_positioning_question(question):
         return _cleanup(sanitized_answer)
     if not question_has_unavailable_signal and not _UNAVAILABLE_SIGNAL_RE.search(sanitize_internal_diagnostics(fact_md)):
@@ -226,6 +226,8 @@ def _four_stage_unavailable_gate(
     if absent or question_has_unavailable_signal:
         plan = _plan_for(question, answer, fact_md)
         source_absence = f"원천에 없음: {plan.missing}"
+        if _has_five_step_block(answer):
+            return _cleanup("\n\n".join((source_absence, answer)))
         return _cleanup(_insert_before_source("\n\n".join((source_absence, answer)), _five_step_block(plan)))
     return None
 
