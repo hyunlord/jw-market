@@ -227,19 +227,6 @@ def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(mon
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
-        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
-            yield {
-                "brand_key": "a",
-                "atc4_code": "C10A1",
-                "channel_specialty_matrix": json.dumps(
-                    {
-                        "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}},
-                        "의원": {"가정의학과(FM)": {"2026-05": 10.0}},
-                    },
-                    ensure_ascii=False,
-                )
-            }
-            return
         assert "channel_specialty_matrix" in sql
         assert "audit_code_matrix" in sql
         yield {
@@ -279,6 +266,7 @@ def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(mon
     assert "channel_data" not in metric_sql
     assert "channel_specialty_matrix" in metric_sql
     assert "audit_code_matrix" in metric_sql
+    assert len(calls) == 1
     assert metrics.all_brands[0].channel_specialty_matrix
     assert metrics.all_brands[0].analysis_row["by_dimension"] is None
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
@@ -811,27 +799,9 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
 
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append((sql, params))
-        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
-            assert "(brand_key, atc4_code) IN" not in sql
-            assert "brand_key IN" in sql
-            assert "atc4_code IN" in sql
-            yield {
-                "brand_key": "a",
-                "atc4_code": "C10A1",
-                "channel_specialty_matrix": json.dumps(
-                    {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
-                    ensure_ascii=False,
-                ),
-            }
-            yield {
-                "brand_key": "a",
-                "atc4_code": "C10C0",
-                "channel_specialty_matrix": json.dumps(
-                    {"의원": {"가정의학과(FM)": {"2026-05": 999.0}}},
-                    ensure_ascii=False,
-                ),
-            }
-            return
+        assert "(brand_key, atc4_code) IN" not in sql
+        assert "brand_key IN" in sql
+        assert "atc4_code IN" in sql
         yield {
             "brand_key": "a",
             "brand_name": "A",
@@ -840,6 +810,25 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
             "measure": "sales",
             "unit_label": "KRW",
             "raw_value_history": json.dumps({"2026-05": 100.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
+                ensure_ascii=False,
+            ),
+            "audit_code_matrix": json.dumps({}),
+        }
+        yield {
+            "brand_key": "a",
+            "brand_name": "A-other-market",
+            "atc4_code": "C10C0",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-05": 999.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"의원": {"가정의학과(FM)": {"2026-05": 999.0}}},
+                ensure_ascii=False,
+            ),
+            "audit_code_matrix": json.dumps({}),
         }
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
@@ -854,14 +843,12 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
             top_n=20,
         )
 
-    summary_sql, summary_params = next(
-        (sql, params)
-        for sql, params in calls
-        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql
-    )
-    assert summary_params == ("ubist", "sales", "a", "C10A1")
+    assert len(calls) == 1
+    metric_sql, metric_params = calls[0]
+    assert "raw_value_history" in metric_sql
+    assert metric_params == ("ubist", "sales", "a", "C10A1")
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기")
-    assert "filtered_rows=1" in caplog.text
+    assert "general_metric_rows_pair_filter filtered_rows=1" in caplog.text
 
 
 def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:

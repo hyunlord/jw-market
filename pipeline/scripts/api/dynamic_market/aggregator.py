@@ -164,9 +164,8 @@ class MetricAggregator:
         )
         monthly_series = tuple({"period": period, "market_size": value} for period, value in sorted(aggregated.monthly_totals.items()))
         ubist_summary = self._load_ubist_channel_summary(
-            brands=brands,
+            brand_metrics=aggregated.brand_metrics,
             source=source,
-            measure=measure,
             channel_axis=channel_axis,
             view=view,
             dimension_filters=dimension_filters,
@@ -313,9 +312,8 @@ class MetricAggregator:
     def _load_ubist_channel_summary(
         self,
         *,
-        brands: tuple[BrandRef, ...],
+        brand_metrics: list[BrandMetric],
         source: str,
-        measure: str,
         channel_axis: ChannelAxisFilter | None,
         view: str,
         dimension_filters: tuple[DimensionFilter, ...],
@@ -329,33 +327,15 @@ class MetricAggregator:
             or not latest_period
         ):
             return _UbistChannelSummary((), ())
-        mart_db = quote_identifier(self.mart_db)
-        scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
         totals_by_code: dict[str, float] = {}
-        filtered_rows = 0
         channel_code_cache: _ChannelCodeCache = {}
-        rows = db.iter_rows(
-            f"""
-            SELECT brand_key, atc4_code, channel_specialty_matrix
-            FROM {mart_db}.mart_general_brand_metric
-            WHERE source = %s
-              AND measure = %s
-              AND {scope_sql}
-            ORDER BY brand_name, brand_key
-            """,
-            (source, measure, *scope_params),
-        )
-        for row in rows:
-            if pair_scope and (str(row["brand_key"]), str(row["atc4_code"])) not in pair_scope:
-                filtered_rows += 1
-                continue
+        for metric in brand_metrics:
             collect_ubist_channel_latest_totals(
-                row.get("channel_specialty_matrix"),
+                metric.channel_specialty_matrix,
                 latest_period,
                 totals_by_code,
                 channel_code_cache=channel_code_cache,
             )
-        logger.debug("ubist_channel_summary_pair_filter filtered_rows=%s", filtered_rows)
         if not totals_by_code:
             return _UbistChannelSummary((), ())
         ranked_codes = sorted(
