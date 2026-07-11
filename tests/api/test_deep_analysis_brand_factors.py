@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from fastapi.testclient import TestClient
 
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice
 from pipeline.scripts.api.main import app
 from pipeline.scripts.api.routes import deep_analysis
+
+
+@pytest.fixture(autouse=True)
+def _strategic_mart_seam(monkeypatch):
+    monkeypatch.setattr(
+        deep_analysis,
+        "_strategic_row_from_mart",
+        lambda brand: deep_analysis.db.fetch_one("SELECT strategic_test_row WHERE brand = %s", [brand]),
+    )
+    monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])
 
 
 def test_deep_analysis_route_serves_source_scoped_brand_factors(monkeypatch) -> None:

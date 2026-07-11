@@ -290,6 +290,7 @@ class MySQLDynamicResponseCacheStore:
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         max_rows: int = DEFAULT_MAX_ROWS,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        namespace: str = "dynamic",
     ) -> None:
         self._mart_db = mart_db
         self._general_dimension_db = general_dimension_db
@@ -298,6 +299,7 @@ class MySQLDynamicResponseCacheStore:
         self._lease_seconds = lease_seconds
         self._max_rows = max_rows
         self._max_bytes = max_bytes
+        self._namespace = namespace
         self._epoch_lock = threading.Lock()
         self._epoch_cached: tuple[float, str] | None = None
 
@@ -359,6 +361,18 @@ class MySQLDynamicResponseCacheStore:
                 """,
                 (),
             )
+            event_tables = (
+                db.fetch_all(
+                    """
+                    SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS
+                    FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'event_brand_scores'
+                    """,
+                    (self._mart_db,),
+                )
+                if self._namespace == "deep_expensive"
+                else []
+            )
         except MySQLError as exc:
             raise DynamicResponseCacheUnavailable("cannot read dynamic mart fingerprint") from exc
         fingerprint = [
@@ -393,6 +407,17 @@ class MySQLDynamicResponseCacheStore:
             ]
             for row in catalogs
         )
+        fingerprint.extend(
+            [
+                str(row.get("TABLE_SCHEMA") or ""),
+                str(row.get("TABLE_NAME") or ""),
+                str(row.get("CREATE_TIME") or ""),
+                str(row.get("UPDATE_TIME") or ""),
+                str(row.get("TABLE_ROWS") or ""),
+            ]
+            for row in event_tables
+        )
+        fingerprint.append(["namespace", self._namespace])
         fingerprint.append(["policy", CACHE_SOURCE_POLICY_VERSION])
         epoch = hashlib.sha256(
             json.dumps(fingerprint, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -409,14 +434,15 @@ class MySQLDynamicResponseCacheStore:
                 cur.execute(
                     """
                     INSERT INTO cache_dynamic_market_response (
-                        cache_key, request_json, source_epoch, state, lease_owner, lease_expires_at,
+                        cache_key, namespace, request_json, source_epoch, state, lease_owner, lease_expires_at,
                         response_json, response_sha256, payload_size, expires_at, hit_count,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, 'building', %s, %s, NULL, NULL, NULL, NULL, 0, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, 'building', %s, %s, NULL, NULL, NULL, NULL, 0, %s, %s)
                     ON DUPLICATE KEY UPDATE cache_key = VALUES(cache_key)
                     """,
                     (
                         cache_key,
+                        self._namespace,
                         request_json,
                         source_epoch,
                         owner,
@@ -490,10 +516,10 @@ class MySQLDynamicResponseCacheStore:
                            expires_at <= %s AS expired,
                            COALESCE(last_hit_at, updated_at) AS last_used
                     FROM cache_dynamic_market_response
-                    WHERE cache_key <> %s
+                    WHERE cache_key <> %s AND namespace = %s
                     FOR UPDATE
                     """,
-                    (now, cache_key),
+                    (now, cache_key, self._namespace),
                 )
                 eviction_keys = select_eviction_keys(
                     list(cur.fetchall()),

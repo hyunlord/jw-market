@@ -317,3 +317,34 @@ def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monke
     assert combined.count("MAX(computed_at)") == 3
     assert "`general_dimension`.`mart_general_filter_dimension_metric`" not in combined
     assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" not in combined
+
+
+def test_deep_section_epoch_includes_event_scores_and_namespace(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_fetch_all(sql: str, params: object) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        if "information_schema.TABLES" in sql:
+            return [
+                {
+                    "TABLE_SCHEMA": "mart",
+                    "TABLE_NAME": "event_brand_scores" if params == ("mart",) else "catalog_ml_market",
+                    "CREATE_TIME": "t1",
+                    "UPDATE_TIME": "t2",
+                    "TABLE_ROWS": 1,
+                }
+            ]
+        if "catalog_manifest_hash" in sql:
+            return [{"table_name": "catalog_ml_market", "catalog_manifest_hash": "manifest-1"}]
+        return [{"table_name": "mart", "source": "ubist", "measure": "sales", "computed_at": "t1", "period_count": 12}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all", fake_fetch_all)
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+        namespace="deep_expensive",
+    )
+
+    assert len(store.source_epoch()) == 64
+    assert any(params == ("mart",) and "event_brand_scores" in sql for sql, params in calls)

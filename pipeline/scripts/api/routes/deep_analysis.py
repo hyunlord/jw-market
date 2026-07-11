@@ -21,6 +21,8 @@ from pipeline.scripts.api.deep_analysis_brand_elements import (
     build_brand_factors,
     fallback_brand_choices,
 )
+from pipeline.scripts.api.deep_analysis_runtime import build_strategic_row, load_events
+from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, normalize_json_value
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
@@ -552,61 +554,6 @@ def _resolve_brand_factor_choices(
     return choices_by_source
 
 
-def _fetch_deep_analysis_row(brand: str) -> dict | None:
-    try:
-        row = db.fetch_one(
-            """
-            SELECT brand, market_id, response_json, brand_factors, updated_at
-            FROM cache_deep_analysis
-            WHERE brand = %s
-            LIMIT 1
-            """,
-            [brand],
-        )
-        if row:
-            return row
-        compact = compact_brand_name(brand)
-        if not compact or compact == brand:
-            return None
-        rows = db.fetch_all(
-            f"""
-            SELECT brand, market_id, response_json, brand_factors, updated_at
-            FROM cache_deep_analysis
-            WHERE {_compact_sql("brand")} = %s
-            LIMIT 2
-            """,
-            [compact],
-        )
-        return _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
-    except pymysql.err.ProgrammingError as exc:
-        if exc.args and exc.args[0] == 1054:
-            row = db.fetch_one(
-                """
-                SELECT brand, response_json, updated_at
-                FROM cache_deep_analysis
-                WHERE brand = %s
-                LIMIT 1
-                """,
-                [brand],
-            )
-            if row:
-                return row
-            compact = compact_brand_name(brand)
-            if not compact or compact == brand:
-                return None
-            rows = db.fetch_all(
-                f"""
-                SELECT brand, response_json, updated_at
-                FROM cache_deep_analysis
-                WHERE {_compact_sql("brand")} = %s
-                LIMIT 2
-                """,
-                [compact],
-            )
-            return _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
-        raise
-
-
 def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dict | None:
     params: list[str] = [brand, brand]
     atc4_clause = ""
@@ -866,51 +813,51 @@ def _general_row_from_mart(brand: str, *, is_jw: bool = False) -> dict | None:
     }
 
 
+def _strategic_brand_flags(brand: str) -> tuple[bool, bool]:
+    row = db.fetch_one(
+        """
+        SELECT MAX(is_jw) AS is_jw, MAX(is_target) AS is_target
+        FROM mart_strategic_ml_brand_metric
+        WHERE brand_name = %s
+        """,
+        [brand],
+    )
+    return bool(row and row.get("is_jw")), bool(row and row.get("is_target"))
+
+
 def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:
-    shared_row = _fetch_deep_analysis_row(brand)
     general_row = _fetch_general_deep_analysis_row(brand)
     if not general_row:
-        shared_payload = compose_cached_json(shared_row["response_json"]) if shared_row else {}
-        shared_market_meta = shared_payload.get("market_meta", {}) if isinstance(shared_payload, dict) else {}
-        general_row = _general_row_from_mart(
-            brand,
-            is_jw=bool(shared_market_meta.get("is_jw")) if isinstance(shared_market_meta, dict) else False,
-        )
+        is_jw, _is_target = _strategic_brand_flags(brand)
+        general_row = _general_row_from_mart(brand, is_jw=is_jw)
     if not general_row:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
 
-    source_row = shared_row or general_row
-    payload = compose_cached_json(source_row["response_json"])
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "deep_analysis"})
     general_payload = compose_cached_json(general_row["response_json"])
     if not isinstance(general_payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "general_deep_analysis"})
 
-    payload["brand"] = general_payload.get("brand", payload.get("brand"))
-    payload["brand_name"] = general_payload.get("brand_name", payload.get("brand_name"))
-    payload["brand_key"] = general_payload.get("brand_key", payload.get("brand_key"))
-    payload["market_id"] = general_payload.get("market_id", payload.get("market_id"))
-    payload["market_name"] = general_payload.get("market_name", payload.get("market_name"))
-    payload["available_combos"] = general_payload.get("available_combos", payload.get("available_combos"))
+    return general_payload, general_row
 
-    data = payload.setdefault("data", {})
-    general_data = general_payload.get("data", {})
-    if isinstance(data, dict) and isinstance(general_data, dict):
-        data["forecast"] = general_data.get("forecast", {"by_combo": {}})
-        data["simulation"] = general_data.get("simulation", {"by_combo": {}})
-        data.setdefault("events", [])
-    payload["market_meta"] = general_payload.get("market_meta", payload.get("market_meta", {}))
-    return payload, general_row
+
+def _strategic_row_from_mart(brand: str) -> dict | None:
+    return build_strategic_row(brand)
+
+
+def _load_deep_events(brand: str) -> list[dict]:
+    return load_events(brand)
 
 
 def _compose_strategic_view_payload(brand: str) -> tuple[dict, dict]:
-    row = _fetch_deep_analysis_row(brand)
+    try:
+        row = _strategic_row_from_mart(brand)
+    except DynamicMarketOverloadedError as exc:
+        raise HTTPException(status_code=429, detail={"error": "deep_analysis_busy"}) from exc
     if not row:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
     payload = compose_cached_json(row["response_json"])
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_deep_analysis"})
+        raise HTTPException(status_code=500, detail={"error": "invalid_mart_payload", "source": "mart_strategic_ml_brand_metric"})
     return payload, row
 
 
@@ -1044,6 +991,10 @@ def deep_analysis(
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
+        cached_events = row.get("_events")
+        events = cached_events if isinstance(cached_events, list) else _load_deep_events(matched_brand)
+        if events or "events" in data:
+            data["events"] = events
         selected_brand_key = str(row.get("brand_key") or matched_brand)
         selected_factors = _load_brand_factors(row.get("brand_factors"))
         brand_choices_by_source = _resolve_brand_factor_choices(row, brand, None, selected_factors)
@@ -1069,4 +1020,9 @@ def deep_analysis(
             selected_factors=selected_factors,
             strength_by_source_by_key=strength_by_source,
         )
-    return payload
+    non_finite_paths: list[str] = []
+    normalized = normalize_json_value(payload, on_non_finite=non_finite_paths.append)
+    if non_finite_paths:
+        logger.warning("deep_analysis_non_finite_normalized brand=%s view=%s paths=%s", brand, view_name, non_finite_paths)
+    json.dumps(normalized, ensure_ascii=False, allow_nan=False)
+    return normalized

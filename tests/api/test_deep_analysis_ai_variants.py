@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from pathlib import Path
 import sys
 from typing import Any
@@ -11,6 +12,16 @@ import pymysql
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.routes import deep_analysis
+
+
+@pytest.fixture(autouse=True)
+def _strategic_mart_seam(monkeypatch):
+    monkeypatch.setattr(
+        deep_analysis,
+        "_strategic_row_from_mart",
+        lambda brand: deep_analysis.db.fetch_one("SELECT strategic_test_row WHERE brand = %s", [brand]),
+    )
+    monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])
 
 
 def _cache_row() -> dict[str, Any]:
