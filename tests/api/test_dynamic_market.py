@@ -2587,7 +2587,7 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
         def __init__(self, **_: object) -> None:
             raise AssertionError("strategic requests must not use the generic aggregator path")
 
-    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
     monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FailingAggregator)
     monkeypatch.setattr(
         "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
@@ -2610,6 +2610,7 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
     assert response["status"] == "SUCCESS"
     assert captured["ml_id"] == "ml_006"
     assert captured["focus_brand_key"] == "리바로"
+    assert captured["cache"] is dynamic_market_route._dynamic_response_cache
     assert response["result"]["view"] == "strategic_ml"
     assert response["result"]["market_meta"]["view"] == "strategic_ml"
     assert response["result"]["data"]["ubist_specialty_channels"][1] == "주요고객 종합병원 순환기"
@@ -2622,7 +2623,7 @@ def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monke
         captured.update(kwargs)
         return {"view": "market_landscape", "market_meta": {"view": "market_landscape"}, "data": {"kpi": {}}}
 
-    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
     monkeypatch.setattr(
         "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
         lambda *_args, **_kwargs: [{"market_id": "ml_006"}],
@@ -2643,6 +2644,35 @@ def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monke
     assert captured["ml_id"] == "ml_006"
     assert response["result"]["view"] == "strategic_ml"
     assert response["result"]["market_meta"]["view"] == "strategic_ml"
+
+
+def test_route_returns_explicit_empty_strategic_state_for_unmapped_mart_brand(monkeypatch) -> None:
+    # Given: the focus brand exists in the general mart but has no strategic market membership.
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(dynamic_market_route, "_brand_exists", lambda _brand: True)
+
+    # When: the brand is requested through the strategic dynamic route.
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "view": "strategic_ml",
+                "filters": {"focus_brand_key": "비JW브랜드"},
+                "source": "ubist",
+                "measure": "sales",
+            }
+        )
+    )
+
+    # Then: the route preserves the envelope and returns an explicit empty state, not 400/404.
+    assert response["status"] == "SUCCESS"
+    assert response["result"]["brand"] == "비JW브랜드"
+    assert response["result"]["view"] == "strategic_ml"
+    assert response["result"]["data"] is None
+    assert response["result"]["reason"] == "brand_not_in_source"
+    assert response["result"]["markets"] == []
 
 
 def test_route_rejects_general_view_with_legacy_view_kind() -> None:
@@ -2736,7 +2766,7 @@ def test_route_allows_top_level_atc4_for_strategic_view(monkeypatch) -> None:
         captured.update(kwargs)
         return {"data": {"kpi": {"market_size_recent": 1.0}}}
 
-    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
     monkeypatch.setattr(
         "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
         lambda *_args, **_kwargs: [{"market_id": "ml_006"}],
@@ -3181,43 +3211,13 @@ def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) 
     assert any("mart_strategic_cd_brand_metric" in sql for sql in calls)
 
 
-def test_strategic_payload_adds_cd_definition_to_cached_payload(monkeypatch) -> None:
-    # Given: a brand-scoped CD request can reuse the cache-cause payload.
-    monkeypatch.setattr(strategic_runtime, "_response_market_id", lambda *_args, **_kwargs: "strategy_008")
-    monkeypatch.setattr(
-        strategic_runtime,
-        "_cached_cause_payload",
-        lambda **_kwargs: {
-            "market_meta": {
-                "view_source_id": "cd_008",
-                "market_definition_label": "old",
-                "market_definition_full": "old",
-                "atc_codes": [],
-                "atc_count": 0,
-            },
-            "data": {},
-            "markets": [{"market_id": "strategy_008", "is_primary": True}],
-        },
-    )
+def test_strategic_runtime_has_no_legacy_cache_cause_read() -> None:
+    import inspect
 
-    # When: the strategic runtime returns the cached competitive-dynamics payload.
-    result = strategic_runtime.build_strategic_payload(
-        mart_db="jw_mart",
-        ml_id=None,
-        cd_market_id="cd_008",
-        focus_brand_key="리바로하이",
-        source="ubist",
-        measure="sales",
-        analysis_level=DynamicMarketRequest().filters.analysis_level,
-    )
+    source = inspect.getsource(strategic_runtime)
 
-    # Then: the response exposes the narrowed CD market definition expected by the portal.
-    assert result["market_meta"]["view_source_id"] == "cd_008"
-    assert result["market_meta"]["market_definition_label"] == "Statin/ARB/CCB"
-    assert result["market_meta"]["market_definition_full"] == (
-        "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
-    )
-    assert result["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
+    assert "FROM cache_cause" not in source
+    assert "_cached_cause_payload" not in source
 
 
 def test_strategic_sidecar_aggregation_keeps_recode_product_history(monkeypatch) -> None:

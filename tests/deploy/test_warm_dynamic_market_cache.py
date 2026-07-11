@@ -56,3 +56,9 @@ def test_test2_cronjob_targets_the_deployed_service() -> None:
     manifest = (ROOT / "deploy/k8s/jw-market/dynamic-market-cache-warm-cronjob.yaml").read_text()
 
     assert "http://jw-market-backend-api-test-service" in manifest
+
+
+def test_default_warm_set_is_bounded_and_includes_strategic_requests() -> None:
+    assert len(warm_cache.DEFAULT_REQUESTS) <= 50
+    assert any(item.get("view") == "strategic_ml" for item in warm_cache.DEFAULT_REQUESTS)
+    assert any(item.get("view") == "strategic_cd" for item in warm_cache.DEFAULT_REQUESTS)

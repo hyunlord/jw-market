@@ -97,7 +97,7 @@ def apply_cd_market_definition(payload: dict[str, Any], cd_market_id: str | None
     view_source_id = cd_market_id or _valid_text(meta.get("view_source_id"))
     if not view_source_id or not view_source_id.startswith("cd_"):
         return
-    inherited_atc_codes = _clean_atc_codes(meta.get("atc_codes")) or _cached_parent_ml_atc_codes(payload, view_source_id)
+    inherited_atc_codes = _clean_atc_codes(meta.get("atc_codes"))
     display = cd_display_for_id(
         view_source_id,
         inherited_atc_codes=inherited_atc_codes,
@@ -191,57 +191,6 @@ def _raw_definition_atc_codes(row: dict[str, Any]) -> list[str]:
         if code and code not in codes:
             codes.append(code)
     return codes
-
-
-def _cached_parent_ml_atc_codes(payload: dict[str, Any], cd_market_id: str) -> list[str] | None:
-    row = _cd_dim_by_id().get(cd_market_id)
-    if not row or _valid_text(row.get("cd_definition_type")) not in ML_EQUALS_CD_TYPES:
-        return None
-    parent_ml_id = _parent_ml_id(row)
-    parent_market_id = _strategy_id_for_ml(parent_ml_id)
-    brand = _valid_text(payload.get("brand"))
-    source = _valid_text(payload.get("source"))
-    measure = _valid_text(payload.get("measure"))
-    if not brand or not parent_market_id or not source or not measure:
-        return None
-    try:
-        from pipeline.scripts.api import db
-        from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
-
-        rows = db.fetch_all(
-            """
-            SELECT response_json
-            FROM cache_cause
-            WHERE brand = %s
-              AND view_type = 'market_landscape'
-              AND market_id = %s
-              AND source = %s
-              AND measure = %s
-            ORDER BY market_id
-            LIMIT 1
-            """,
-            [brand, parent_market_id, source, measure],
-        )
-    except Exception:
-        return None
-    if not rows:
-        return None
-    parent_payload = compose_cached_json(rows[0].get("response_json"), measure=measure)
-    if not isinstance(parent_payload, dict):
-        return None
-    parent_meta = parent_payload.get("market_meta")
-    if not isinstance(parent_meta, dict):
-        return None
-    return _clean_atc_codes(parent_meta.get("atc_codes"))
-
-
-def _strategy_id_for_ml(ml_id: str | None) -> str | None:
-    if not ml_id or not ml_id.startswith("ml_"):
-        return None
-    suffix = ml_id.removeprefix("ml_")
-    if not suffix.isdigit():
-        return None
-    return f"strategy_{int(suffix):03d}"
 
 
 def _clean_atc_codes(value: Any) -> list[str] | None:

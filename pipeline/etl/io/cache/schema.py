@@ -35,7 +35,8 @@ def create_cache_tables(target_db: str) -> None:
                 updated_at DATETIME NOT NULL,
                 PRIMARY KEY (cache_key),
                 KEY idx_dynamic_response_expiry (state, expires_at),
-                KEY idx_dynamic_response_lease (state, lease_expires_at)
+                KEY idx_dynamic_response_lease (state, lease_expires_at),
+                KEY idx_dynamic_response_eviction (state, hit_count, last_hit_at, updated_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )

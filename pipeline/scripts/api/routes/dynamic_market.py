@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
+from pipeline.scripts.api import db
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
@@ -18,21 +19,20 @@ from pipeline.scripts.api.dynamic_market.resolvers import (
     GeneralViewResolver,
     StrategicMarketSelection,
     StrategicViewResolver,
+    normalize_measure,
+    normalize_source,
     resolve_strategic_market_for_focus,
 )
-from pipeline.scripts.api.dynamic_market.response_cache import (
-    DynamicMarketOverloadedError,
-    DynamicResponseCache,
-    DynamicResponseCacheUnavailable,
-    MySQLDynamicResponseCacheStore,
-)
-from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
-from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload, success_envelope
+from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, DynamicResponseCacheUnavailable
+from pipeline.scripts.api.dynamic_market.runtime_cache import dynamic_response_cache
+from pipeline.scripts.api.dynamic_market.strategic_cause import get_strategic_payload
+from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import success_envelope
 from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketInputError,
     DynamicMarketScopeTooBroadError,
     MarketDefinition,
     PeriodRange,
+    quote_identifier,
 )
 from pipeline.scripts.api.models.dynamic_market import (
     DynamicMarketAnalysisLevel,
@@ -50,13 +50,7 @@ from pipeline.scripts.api.openapi_docs import (
 
 
 router = APIRouter()
-_dynamic_response_cache = DynamicResponseCache(
-    store=MySQLDynamicResponseCacheStore(
-        mart_db=config.db_name,
-        dimension_db=config.general_dimension_db_name,
-        ttl_seconds=config.cache_ttl_seconds,
-    )
-)
+_dynamic_response_cache = dynamic_response_cache
 
 
 @router.post(
@@ -84,11 +78,16 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
         try:
             _reject_strategic_expansion_filters(payload)
             _reject_strategic_channel_axis(payload)
-            market_selection = _resolve_strategic_market_selection(payload)
+            try:
+                market_selection = _resolve_strategic_market_selection(payload)
+            except DynamicMarketInputError:
+                if _brand_exists(payload.filters.focus_brand_key):
+                    return _empty_strategic_response(payload, effective_view)
+                raise
             analysis_level = _strategic_analysis_level_from_top_level_atc4(payload)
             envelope = success_envelope(
-                build_cached_payload(
-                    builder=build_strategic_payload,
+                get_strategic_payload(
+                    cache=_dynamic_response_cache,
                     mart_db=config.db_name,
                     ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
                     cd_market_id=market_selection.market_id if market_selection.market_kind == "cd" else None,
@@ -99,6 +98,12 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                 )
             )
             return _with_view_echo(envelope, effective_view)
+        except DynamicMarketOverloadedError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "dynamic_market_overloaded", "message": str(exc)},
+                headers={"Retry-After": "2"},
+            ) from exc
         except DynamicMarketInputError as exc:
             raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
 
@@ -154,6 +159,43 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
     result = composer.compose(definition=definition, metrics=metrics)
     return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+
+
+def _brand_exists(brand: str | None) -> bool:
+    normalized = (brand or "").strip()
+    if not normalized:
+        return False
+    return bool(
+        db.fetch_one(
+            f"""
+            SELECT 1
+            FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
+            WHERE brand_key = %s OR brand_name = %s
+            LIMIT 1
+            """,
+            (normalized, normalized),
+        )
+    )
+
+
+def _empty_strategic_response(payload: DynamicMarketRequest, view: str) -> dict[str, Any]:
+    source = normalize_source(payload.source)
+    measure = normalize_measure(source, payload.measure)
+    unit_label = "KRW" if measure == "sales" else ("Rx" if source == "ubist" else measure.replace("_", " ").title())
+    return success_envelope(
+        {
+            "brand": payload.filters.focus_brand_key,
+            "market_id": None,
+            "view": view,
+            "source": payload.source,
+            "measure": payload.measure,
+            "unit_label": unit_label,
+            "data": None,
+            "reason": "brand_not_in_source",
+            "market_meta": None,
+            "markets": [],
+        }
+    )
 
 
 def _is_strategic_request(payload: DynamicMarketRequest) -> bool:

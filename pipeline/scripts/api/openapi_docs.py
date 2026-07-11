@@ -107,7 +107,7 @@ CAUSE_RESPONSES: Final = {
         "description": "포탈 원인분석 표준 응답",
         "content": {"application/json": {"schema": CAUSE_RESPONSE_SCHEMA, "example": CAUSE_RESPONSE_EXAMPLE}},
     },
-    404: {"description": "브랜드가 cache_cause에 없음"},
+    404: {"description": "브랜드가 mart 브랜드 universe에 없음"},
 }
 
 

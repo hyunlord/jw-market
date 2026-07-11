@@ -15,6 +15,15 @@ DEFAULT_REQUESTS: tuple[dict[str, Any], ...] = (
     {"source": "ubist", "measure": "sales", "filters": {"atc4": ["A10N1"]}},
     {"source": "ubist", "measure": "sales", "filters": {"atc4": ["N02B2"]}},
     {"source": "iqvia", "measure": "sales", "filters": {"atc4": ["C10A1", "C10C"]}},
+    {"view": "strategic_ml", "source": "ubist", "measure": "sales", "filters": {"focus_brand_key": "리바로"}},
+    {"view": "strategic_ml", "source": "iqvia", "measure": "sales", "filters": {"focus_brand_key": "리바로"}},
+    {"view": "strategic_ml", "source": "iqvia", "measure": "sales", "filters": {"focus_brand_key": "마운자로"}},
+    {
+        "view": "strategic_cd",
+        "source": "ubist",
+        "measure": "sales",
+        "filters": {"focus_brand_key": "리바로하이"},
+    },
 )
 
 

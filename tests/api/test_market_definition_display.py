@@ -152,8 +152,8 @@ def test_apply_ml_equals_cd_definition_preserves_payload_atc_codes(monkeypatch) 
     assert payload["market_meta"]["atc_count"] == 2
 
 
-def test_apply_ml_equals_cd_definition_uses_parent_cache_when_payload_has_placeholder(monkeypatch) -> None:
-    # Given: a slim API image receives a CD cache payload with only a placeholder ATC value.
+def test_apply_ml_equals_cd_definition_uses_parent_catalog_when_payload_has_placeholder(monkeypatch) -> None:
+    # Given: a mart-direct CD payload has only a placeholder ATC value.
     monkeypatch.setattr(
         market_definition_display,
         "_cd_dim_by_id",
@@ -167,13 +167,12 @@ def test_apply_ml_equals_cd_definition_uses_parent_cache_when_payload_has_placeh
             }
         },
     )
-    monkeypatch.setattr(market_definition_display, "_ml_atc_codes", lambda: {})
-    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {"ml_011": "악템라"})
     monkeypatch.setattr(
         market_definition_display,
-        "_cached_parent_ml_atc_codes",
-        lambda payload, cd_market_id: ["L01G1", "L04B0", "L04D0", "M01C0"],
+        "_ml_atc_codes",
+        lambda: {"ml_011": ["L01G1", "L04B0", "L04D0", "M01C0"]},
     )
+    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {"ml_011": "악템라"})
     payload = {
         "brand": "악템라",
         "source": "IQVIA",

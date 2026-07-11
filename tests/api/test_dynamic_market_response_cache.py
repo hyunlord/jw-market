@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any
@@ -17,7 +18,10 @@ from pipeline.scripts.api.dynamic_market.response_cache import (
     DynamicMarketOverloadedError,
     DynamicResponseCache,
     DynamicResponseCacheUnavailable,
+    MySQLDynamicResponseCacheStore,
     canonical_request_json,
+    normalize_json_value,
+    select_eviction_keys,
 )
 
 
@@ -162,3 +166,162 @@ def test_response_cache_returns_429_when_distinct_build_slots_are_full() -> None
         cache.get_or_build({"source": "ubist", "filters": {"atc4": ["C10A1"]}}, lambda: {"value": 1})
 
     assert next(iter(store.rows.values()))["state"] == "failed"
+
+
+def test_response_cache_normalizes_non_finite_values_before_strict_serialization() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+
+    result = cache.get_or_build(
+        {"scope": "strategic"},
+        lambda: {"data": {"nan": math.nan, "positive_inf": math.inf, "items": [-math.inf]}},
+    )
+
+    assert result == {"data": {"nan": None, "positive_inf": None, "items": [None]}}
+    stored = next(iter(store.rows.values()))["payload"]
+    assert "NaN" not in stored
+    assert "Infinity" not in stored
+
+
+def test_select_eviction_keys_expires_first_then_uses_lfu_lru() -> None:
+    rows = [
+        {"cache_key": "expired", "payload_size": 30, "expired": True, "hit_count": 100, "last_used": 9},
+        {"cache_key": "least-used-old", "payload_size": 40, "expired": False, "hit_count": 0, "last_used": 1},
+        {"cache_key": "least-used-new", "payload_size": 40, "expired": False, "hit_count": 0, "last_used": 2},
+        {"cache_key": "popular", "payload_size": 40, "expired": False, "hit_count": 5, "last_used": 0},
+    ]
+
+    assert select_eviction_keys(
+        rows,
+        incoming_size=40,
+        max_rows=5,
+        max_bytes=160,
+        high_water_ratio=0.9,
+        low_water_ratio=0.75,
+    ) == [
+        "expired",
+        "least-used-old",
+    ]
+
+
+def test_select_eviction_keys_orders_expired_rows_by_age_before_hit_count() -> None:
+    rows = [
+        {"cache_key": "expired-old-hit", "payload_size": 50, "expired": True, "hit_count": 9, "last_used": 1},
+        {"cache_key": "expired-new-never-hit", "payload_size": 50, "expired": True, "hit_count": 0, "last_used": 2},
+        {"cache_key": "ready-never-hit", "payload_size": 50, "expired": False, "hit_count": 0, "last_used": 0},
+    ]
+
+    assert select_eviction_keys(
+        rows,
+        incoming_size=50,
+        max_rows=4,
+        max_bytes=200,
+        high_water_ratio=0.9,
+        low_water_ratio=0.75,
+    ) == ["expired-old-hit"]
+
+
+def test_select_eviction_keys_counts_but_never_selects_active_builds() -> None:
+    rows = [
+        {"cache_key": "active", "state": "building", "payload_size": 0, "hit_count": 0, "last_used": 0},
+        {"cache_key": "ready-old", "state": "ready", "payload_size": 50, "hit_count": 0, "last_used": 1},
+        {"cache_key": "ready-new", "state": "ready", "payload_size": 50, "hit_count": 0, "last_used": 2},
+    ]
+
+    selected = select_eviction_keys(
+        rows,
+        incoming_size=50,
+        max_rows=4,
+        max_bytes=200,
+        high_water_ratio=0.9,
+        low_water_ratio=0.75,
+    )
+
+    assert selected == ["ready-old"]
+    assert "active" not in selected
+
+def test_normalize_json_value_reports_nested_non_finite_paths() -> None:
+    paths: list[str] = []
+
+    normalized = normalize_json_value({"data": {"series": [1.0, math.nan]}}, on_non_finite=paths.append)
+
+    assert normalized == {"data": {"series": [1.0, None]}}
+    assert paths == ["$.data.series[1]"]
+
+
+def test_response_cache_serves_but_does_not_store_oversized_entry() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(
+        store=store,
+        max_entry_bytes=8,
+        poll_interval_seconds=0.001,
+        wait_timeout_seconds=1.0,
+    )
+
+    result = cache.get_or_build({"scope": "large"}, lambda: {"payload": "large-enough"})
+
+    assert result == {"payload": "large-enough"}
+    assert next(iter(store.rows.values()))["state"] == "failed"
+
+
+def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, _params: object) -> list[dict[str, object]]:
+        calls.append(sql)
+        if "information_schema.TABLES" in sql:
+            return [
+                {
+                    "TABLE_SCHEMA": "mart",
+                    "TABLE_NAME": "catalog_ml_market",
+                    "CREATE_TIME": "t1",
+                    "UPDATE_TIME": "t2",
+                }
+            ]
+        if "catalog_manifest_hash" in sql:
+            return [{"table_name": "catalog_ml_market", "catalog_manifest_hash": "manifest-1"}]
+        if "filter_dimension_metric" in sql:
+            table_name = (
+                "mart_strategic_filter_dimension_metric"
+                if "mart_strategic_filter_dimension_metric" in sql
+                else "mart_general_filter_dimension_metric"
+            )
+            return [{"table_name": table_name, "source": "ubist", "measure": "sales", "computed_at": "t1"}]
+        table_name = next(name for name in (
+            "mart_general_brand_metric",
+            "mart_general_market_metric",
+            "mart_strategic_ml_brand_metric",
+            "mart_strategic_ml_market_metric",
+            "mart_strategic_cd_brand_metric",
+            "mart_strategic_cd_market_metric",
+        ) if name in sql)
+        return [{"table_name": table_name, "source": "ubist", "measure": "sales", "computed_at": "t1", "period_count": 12}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all", fake_fetch_all)
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    )
+
+    assert len(store.source_epoch()) == 64
+    combined = "\n".join(calls)
+    for table_name in (
+        "mart_general_brand_metric",
+        "mart_general_market_metric",
+        "mart_strategic_ml_brand_metric",
+        "mart_strategic_ml_market_metric",
+        "mart_strategic_cd_brand_metric",
+        "mart_strategic_cd_market_metric",
+        "catalog_ml_market",
+        "catalog_cd_market",
+        "catalog_strategic_brand",
+        "mart_general_filter_dimension_metric",
+        "mart_strategic_filter_dimension_metric",
+    ):
+        assert table_name in combined
+    assert "UPDATE_TIME" in combined
+    assert "MAX(catalog_manifest_hash)" in combined
+    assert combined.count("MAX(computed_at)") >= 8
+    assert "`general_dimension`.`mart_general_filter_dimension_metric`" in combined
+    assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" in combined
