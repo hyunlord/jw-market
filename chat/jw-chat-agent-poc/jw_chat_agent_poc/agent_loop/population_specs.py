@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import re
 from typing import Callable, Final, TypeAlias
 
+from jw_chat_agent_poc.agentic.sales_filter_aliases import CHANNEL_ALIASES, match_channel_in_text
+
 
 QuerySpec: TypeAlias = dict[str, object]
 
@@ -31,7 +33,6 @@ class StrictQueryRule:
     build: StrictPlanBuilder
 
 
-CHANNEL_ALIASES: Final[tuple[str, ...]] = ("의원", "종병", "병원", "상급종병", "약국")
 CHANNEL_DISTRIBUTION_TERMS: Final[tuple[str, ...]] = (
     "채널별",
     "채널 별",
@@ -152,6 +153,42 @@ def _channel_molecule_plan(question: str, _brand: str, channel: str) -> StrictQu
     return None
 
 
+def _specific_channel_metric_plan(question: str, brand: str, channel: str) -> StrictQueryPlan | None:
+    if not channel or any(token in question for token in ("채널별", "채널 별")):
+        return None
+    if any(f"{alias}별" in question or f"{alias} 별" in question for alias in CHANNEL_ALIASES):
+        return None
+    if not any(token in question for token in ("매출", "판매")):
+        return None
+    return StrictQueryPlan(
+        specs=(
+            _spec(
+                "product",
+                metric="sales",
+                filters={"brand": brand, "channel": channel},
+                limit=1,
+            ),
+        ),
+    )
+
+
+def _unknown_specific_channel_plan(question: str, brand: str, channel: str) -> StrictQueryPlan | None:
+    if channel:
+        return None
+    match = re.search(r"([A-Za-z0-9가-힣_+-]+)\s*채널(?:에서|의|로)", question)
+    if match is None or match.group(1) == brand:
+        return None
+    label = match.group(1)
+    if label in {"어느", "어떤", "무슨", "마케팅", "홍보", "유튜브"}:
+        return None
+    return StrictQueryPlan(
+        unsupported_message=(
+            f"{label} 채널은 현재 지원하지 않습니다. "
+            "지원 채널은 상급종병, 종병, 병원, 의원, 보건소, 기타입니다."
+        )
+    )
+
+
 def _channel_share_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if "채널별" in question and "점유율" in question:
         specs = [_spec("channel", source="", metric="share", filters={"brand": brand})]
@@ -202,6 +239,8 @@ STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
     StrictQueryRule("yoy_product_growth", _yoy_plan),
     StrictQueryRule("average_product_share", _average_share_plan),
     StrictQueryRule("channel_molecule_share", _channel_molecule_plan),
+    StrictQueryRule("specific_channel_metric", _specific_channel_metric_plan),
+    StrictQueryRule("unknown_specific_channel", _unknown_specific_channel_plan),
     StrictQueryRule("channel_share", _channel_share_plan),
     StrictQueryRule("channel_distribution_sales", _channel_distribution_plan),
     StrictQueryRule("origin_generic_share", _origin_generic_plan),
@@ -234,10 +273,7 @@ def _spec(
 
 
 def _requested_channel(question: str) -> str:
-    for channel in CHANNEL_ALIASES:
-        if channel in question:
-            return channel
-    return ""
+    return match_channel_in_text(question) or ""
 
 
 def _asks_channel_distribution(question: str, brand: str) -> bool:

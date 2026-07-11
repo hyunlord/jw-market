@@ -12,6 +12,7 @@ class UploadedFileSearchResult:
     file_context: str
     file_sources: tuple[str, ...]
     errors: tuple[str, ...]
+    file_source_items: tuple[dict[str, Any], ...] = ()
 
 
 def search_uploaded_files(question: str, conversation_id: str | None) -> UploadedFileSearchResult | None:
@@ -43,15 +44,25 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
         return None
     raw_sources = body.get("file_sources") or []
     sources = []
+    items: list[dict[str, Any]] = []
+    seen_items: set[tuple[str, str]] = set()
     if isinstance(raw_sources, list):
         for source in raw_sources:
             if isinstance(source, dict):
                 name = str(source.get("file_name") or source.get("chunk_id") or "uploaded file")
                 if name:
                     sources.append(name)
+                item: dict[str, Any] = {"file_name": name}
+                if source.get("document_id") is not None:
+                    item["document_id"] = source["document_id"]
+                key = (name, str(item.get("document_id", "")))
+                if key not in seen_items:
+                    seen_items.add(key)
+                    items.append(item)
     errors = body.get("errors") or []
     return UploadedFileSearchResult(
         file_context=context,
         file_sources=tuple(dict.fromkeys(sources)),
         errors=tuple(str(error) for error in errors if error),
+        file_source_items=tuple(items),
     )

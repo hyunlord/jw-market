@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
+import os
+import threading
 import time
 from typing import Any, Callable, Iterator
 
@@ -12,8 +15,16 @@ from jw_chat_agent_poc.common.token_usage import public_token_usage
 Timing = MutableMapping[str, Any]
 StageEventSink = Callable[[dict[str, Any]], None]
 _ACTIVE_STAGE_SINK: ContextVar[StageEventSink | None] = ContextVar("active_stage_sink", default=None)
+STEP_HEARTBEAT_THRESHOLD_S_ENV = "STEP_HEARTBEAT_THRESHOLD_S"
+DEFAULT_STEP_HEARTBEAT_THRESHOLD_S = 3.0
+STEP_HEARTBEAT_INTERVAL_S = 2.5
 
 _PUBLIC_STAGE_NAMES = {
+    "question_received": "질문 접수",
+    "queue_wait": "대기 중",
+    "question_classification": "질문 분류",
+    "question_decomposition": "질문 분해",
+    "market_snapshot": "시장 데이터 준비",
     "agent_pre_resolve": "질문 해석",
     "llm_plan": "분석 계획",
     "strict_query_plan": "데이터 조회 설계",
@@ -29,7 +40,17 @@ _PUBLIC_STAGE_NAMES = {
     "chart_generation": "차트 준비",
 }
 
+
+@dataclass(slots=True)
+class StageProgress:
+    summary: str | None = None
+
 _PUBLIC_STAGE_DETAILS = {
+    "request processing": "전체 처리 진행",
+    "view selection": "시장 기준 판정",
+    "agent setup": "분석 구성 준비",
+    "BQ and tool routing": "질문 유형·도구 경로 판정",
+    "tool catalog and market snapshot": "조회 도구·시장 데이터 준비",
     "brand and period grounding": "브랜드·기간 확인",
     "population-sensitive spec mapping": "질문 조건 반영",
     "deterministic metric backfill": "누락 지표 보강",
@@ -81,18 +102,54 @@ def stage(
     name: str,
     detail: str = "",
     sink: StageEventSink | None = None,
-) -> Iterator[None]:
+) -> Iterator[StageProgress]:
     """Record elapsed milliseconds for one named processing stage."""
 
     effective_sink = sink or _ACTIVE_STAGE_SINK.get()
     started = time.perf_counter()
+    progress = StageProgress()
+    heartbeat_stop = threading.Event()
     _emit_stage_event(effective_sink, name, detail, "started")
+    _start_heartbeat(effective_sink, name, detail, started, heartbeat_stop)
     try:
-        yield
+        yield progress
     finally:
+        heartbeat_stop.set()
         elapsed_ms = (time.perf_counter() - started) * 1000
         add_stage(timing, name, elapsed_ms, detail)
-        _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms)
+        _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms, summary=progress.summary)
+
+
+def _start_heartbeat(
+    sink: StageEventSink | None,
+    name: str,
+    detail: str,
+    started: float,
+    stop: threading.Event,
+) -> threading.Thread | None:
+    if sink is None:
+        return None
+    try:
+        threshold = float(os.environ.get(STEP_HEARTBEAT_THRESHOLD_S_ENV, DEFAULT_STEP_HEARTBEAT_THRESHOLD_S))
+    except ValueError:
+        threshold = DEFAULT_STEP_HEARTBEAT_THRESHOLD_S
+    threshold = max(0.0, threshold)
+
+    def emit_until_done() -> None:
+        if stop.wait(threshold):
+            return
+        while not stop.is_set():
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            try:
+                _emit_stage_event(sink, name, detail, "in_progress", elapsed_ms)
+            except Exception:
+                pass
+            if stop.wait(STEP_HEARTBEAT_INTERVAL_S):
+                return
+
+    heartbeat = threading.Thread(target=emit_until_done, name=f"step-heartbeat-{name}", daemon=True)
+    heartbeat.start()
+    return heartbeat
 
 
 @contextmanager
@@ -112,6 +169,8 @@ def _emit_stage_event(
     detail: str,
     status: str,
     elapsed_ms: float | None = None,
+    *,
+    summary: str | None = None,
 ) -> None:
     if sink is None:
         return
@@ -124,6 +183,8 @@ def _emit_stage_event(
     }
     if elapsed_ms is not None:
         event["elapsed_ms"] = round(float(elapsed_ms), 2)
+    if summary:
+        event["summary"] = summary
     sink(event)
 
 

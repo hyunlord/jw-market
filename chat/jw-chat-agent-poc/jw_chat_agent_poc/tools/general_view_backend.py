@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -91,17 +92,16 @@ class GeneralViewBackend:
         return value
 
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket:
-        options = {"top_n": 100 if brand else 5}
-        key = ("market", source.lower(), measure.lower(), atc4.upper(), brand or "", tuple(sorted(options.items())))
+        key = ("market", source.lower(), measure.lower(), atc4.upper(), brand or "")
         cached = self._get_cached(key)
         if isinstance(cached, GeneralMarket):
             return cached
         filters: dict[str, object] = {"atc4": [atc4.upper()]}
         if brand:
-            filters["focus_brand_key"] = brand
+            filters["focus_brand_key"] = focus_brand_key(brand)
         payload = self._post_json(
             "/api/dynamic-market",
-            json={"filters": filters, "source": source, "measure": measure, "options": options},
+            json={"view": "general", "filters": filters, "source": source, "measure": measure},
         )
         value = parse_general_market_response(
             payload,
@@ -265,6 +265,17 @@ def parse_general_market_response(
         brand_rank=requested_row.rank if requested_row else _as_int(kpi.get("target_rank")),
         top_brands=top_brands,
     )
+
+
+def focus_brand_key(brand: str) -> str:
+    """Normalize a display brand name to the backend's brand_key convention.
+
+    The slimmed dynamic-market API matches focus_brand_key by exact brand_key
+    equality (casefolded, whitespace/punctuation stripped), e.g.
+    "휴텍스 아토르바스타틴" → "휴텍스아토르바스타틴", "휴마로그 100I.U/mL" → "휴마로그100iuml".
+    """
+
+    return re.sub(r"[^0-9a-z가-힣]", "", brand.casefold())
 
 
 def _normalize_source(value: object) -> str:

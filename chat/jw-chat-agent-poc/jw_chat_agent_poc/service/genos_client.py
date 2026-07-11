@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections.abc import Iterator
@@ -12,6 +13,7 @@ import requests
 from jw_chat_agent_poc.genos_config import resolve_final_genos_base_url, resolve_final_genos_token
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
+from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers as markdown_allowed_numbers
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels, table
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
@@ -30,6 +32,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     dedupe_repeated_hira_patient_counts,
     ensure_competitive_movement_analysis,
     ensure_causal_structure,
+    ensure_file_absence_statement,
     ensure_hira_patient_summary,
     ensure_hira_sales_link_analysis,
     ensure_issue_question_quant_analysis,
@@ -55,6 +58,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     single_brand_trend_fact_markdown,
     strict_allowed_numbers,
     strip_generated_source_sections,
+    uploaded_file_fact_tokens,
 )
 from jw_chat_agent_poc.common.timing import stage
 from jw_chat_agent_poc.service.portfolio_decline_render import ensure_portfolio_decline_summary
@@ -62,6 +66,14 @@ from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
+LOGGER = logging.getLogger(__name__)
+
+_FILE_QUOTE_INSTRUCTION = (
+    "업로드 파일 컨텍스트가 있고 질문이 파일의 값·비율·식별코드·고유 토큰·문구를 요구하면, "
+    "컨텍스트에서 확인된 해당 값과 코드·토큰을 원문 표기 그대로 답변 본문에 반드시 포함한다. "
+    "질문이 요구한 대상이 업로드 파일 컨텍스트에 없으면 '업로드 문서에서 해당 정보를 찾을 수 없습니다'처럼 "
+    "찾을 수 없는 대상을 명시해 답하고, 있는 내용만 나열하는 것으로 대체하지 않는다."
+)
 
 
 def _apply_final_claim_controls(question: str, answer: str, fact_md: str) -> str:
@@ -496,6 +508,28 @@ def _uploaded_file_context(agent_result: dict[str, Any]) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _warn_dropped_file_tokens(question: str, raw_interpretation: str, final_answer: str, file_context: str) -> None:
+    """원시 LLM 답변에 있던 파일 유래 토큰이 최종 답변에서 사라지면 경고만 남긴다(차단 아님)."""
+    if not file_context.strip():
+        return
+    file_tokens = set(uploaded_file_fact_tokens(file_context))
+    if not file_tokens:
+        return
+    raw_file_tokens = {
+        token
+        for token in markdown_allowed_numbers(raw_interpretation)
+        if fact_token_allowed(token, file_tokens)
+    }
+    final_tokens = set(markdown_allowed_numbers(final_answer))
+    dropped = sorted(token for token in raw_file_tokens if not fact_token_allowed(token, final_tokens) and token not in final_answer)
+    if dropped:
+        LOGGER.warning(
+            "file-grounded tokens dropped from final answer question=%r dropped=%s",
+            question[:120],
+            dropped,
+        )
+
+
 def _append_uploaded_file_source(answer: str, file_context: str) -> str:
     if not file_context.strip():
         return answer
@@ -656,7 +690,8 @@ class GenosClient:
                     "notice_count가 1 이상이어도 주의/면책 문구를 작성하지 말라. "
                     "사용자에게 필요한 결론만 남기고 내부 처리 기준은 숨겨라. "
                     "출처 섹션이나 출처 줄은 작성하지 말라. 출처는 시스템이 별도로 붙인다."
-                ),
+                )
+                + (f" {_FILE_QUOTE_INSTRUCTION}" if file_context else ""),
             },
             {"role": "user", "content": self._prompt(question, agent_result)},
         ]
@@ -680,6 +715,8 @@ class GenosClient:
         trend_fact_md = single_brand_trend_fact_markdown(fact_lookup_md, tool_calls) if _question_wants_trend_output(question) else ""
         fact_for_safety = "\n\n".join(part for part in (fact_md, trend_fact_md, file_context) if part)
         strict_numbers = strict_allowed_numbers(fact_for_safety, allowed_numbers)
+        if file_context:
+            strict_numbers = tuple(sorted({*strict_numbers, *uploaded_file_fact_tokens(file_context)}))
         messages = self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
         try:
             with stage(timing, "final_llm_expression", "GenOS markdown generation"):
@@ -769,6 +806,8 @@ class GenosClient:
         answer = _append_uploaded_file_source(answer, file_context)
         answer = apply_common_unavailable_response(question, answer, markdown_response)
         answer = apply_requested_source_trap_gate(question, answer)
+        answer = ensure_file_absence_statement(question, answer, file_context)
+        _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
         return _append_web_search_section(answer, tool_calls)
 
     @staticmethod
@@ -781,6 +820,7 @@ class GenosClient:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
         mandatory_md = mandatory_fact_block(fact_md)
         uploaded_md = file_context.strip() or "- 없음"
+        file_instruction = f" {_FILE_QUOTE_INSTRUCTION}" if file_context.strip() else ""
         return [
             {
                 "role": "system",
@@ -819,7 +859,8 @@ class GenosClient:
                     "같은 지표를 반복하지 않는다. 근거는 본문 분석에 녹이고 출처 표기는 생성하지 않는다. "
                     "숫자, 비율, 순위, 기간, 질병코드는 fact set에 있는 값만 사용하고 새 값을 만들지 않는다. "
                     "검은 별표 같은 장식 기호를 쓰지 말고, 간결한 한국어로 답한다."
-                ),
+                )
+                + file_instruction,
             },
             {
                 "role": "user",

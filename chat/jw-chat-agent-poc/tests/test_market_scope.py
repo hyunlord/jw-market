@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.cd_mart import CdBrandLink, StaticCdMartReader
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
     detect_market_scope_intent,
@@ -10,17 +11,17 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
 
 
-CD_CAUSE_PAYLOAD = {
-    "data": {
-        **CAUSE_PAYLOAD["data"],
-        "sources_data": {
-            **CAUSE_PAYLOAD["data"]["sources_data"],
-            "market_size_series": {
-                "2026-04": {"value": 34_833_057_844.92, "yoy_growth_pct": 7.7},
-            },
-        },
-    }
+CD_MART_SERIES = {
+    "2025-04": 32_342_749_925.11,
+    "2026-04": 34_833_057_844.92,
 }
+
+
+def _cd_mart_reader() -> StaticCdMartReader:
+    return StaticCdMartReader(
+        brand_links=(CdBrandLink("리바로", "cd_006", "ubist", "ml_006"),),
+        market_series={("cd_006", "ubist"): CD_MART_SERIES},
+    )
 
 
 def _resolver() -> MarketScopeResolver:
@@ -28,10 +29,9 @@ def _resolver() -> MarketScopeResolver:
     cause_reader = StaticCausePayloadReader(
         {
             ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): CAUSE_PAYLOAD,
-            ("리바로", "competitive_dynamics", "UBIST", "sales", "strategy_006"): CD_CAUSE_PAYLOAD,
         }
     )
-    return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader)
+    return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader, cd_mart_reader=_cd_mart_reader())
 
 
 def test_detect_market_scope_intent_defaults_to_market_landscape() -> None:
@@ -85,12 +85,13 @@ def test_market_scope_clarification_does_not_show_internal_view_enums() -> None:
     assert "competitive_dynamics" not in result["answer"]
 
 
-def test_market_scope_competitive_dynamics_uses_view_specific_cache_payload() -> None:
+def test_market_scope_competitive_dynamics_uses_cd_mart_series() -> None:
     result = _resolver().answer("리바로 같은 시장 경쟁군 기준", view_type="competitive_dynamics")
 
     data = result["tool_calls"][0]["render_data"]
     assert data["view_type"] == "competitive_dynamics"
     assert data["market_size_recent_krw"] == 34_833_057_844.92
+    assert data["period"] == "2026-04"
     assert "경쟁군 기준" in result["answer"]
 
 

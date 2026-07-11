@@ -8,9 +8,9 @@ import re
 from typing import Any
 
 from jw_chat_agent_poc.tools.metrics.cache_live import (
-    MariaDbMetricsCacheReader,
     MetricsCacheReader,
     TtlMetricsCache,
+    shared_metrics_cache,
 )
 
 
@@ -48,7 +48,7 @@ class BrandResolver:
         self._default_brand = default_brand
         self._mode = mode or os.environ.get("CHAT_RESOLVER_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
         ttl = ttl_seconds or int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
-        self._cache = TtlMetricsCache(brand_reader or MariaDbMetricsCacheReader(), ttl_seconds=ttl)
+        self._cache = TtlMetricsCache(brand_reader, ttl_seconds=ttl) if brand_reader is not None else shared_metrics_cache(ttl)
 
     def resolve(self, question_or_brand: str, allow_default: bool = True) -> BrandResolution:
         normalized = self._normalize(question_or_brand)

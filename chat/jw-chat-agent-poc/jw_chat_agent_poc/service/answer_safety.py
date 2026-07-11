@@ -64,6 +64,66 @@ def strict_allowed_numbers(fact_md: str, fallback_allowed: tuple[str, ...]) -> t
     return tuple(sorted(token for token in strict if token))
 
 
+_FILE_TOKEN_TRAILING_PUNCT = ".,;:)]}"
+
+
+def uploaded_file_fact_tokens(file_context: str) -> tuple[str, ...]:
+    """업로드 파일 컨텍스트에서 최종 답변에 그대로 인용 가능한 숫자/코드 토큰 허용 집합을 만든다.
+
+    fact 추출기는 파일 프로즈에서 문장부호가 붙은 코드(`NAR7712.`)나 영어 단위("37.8 percent")를
+    답변측 표기(`NAR-7712`, `37.8%`)와 일치시키지 못하므로, 답변측과 같은 추출기로 재추출하고
+    문장부호 꼬리 제거·비율 단위 별칭을 보강한다. file_context가 있을 때만 호출된다.
+    """
+    text = (file_context or "").strip()
+    if not text:
+        return ()
+    tokens: set[str] = set()
+    for raw in allowed_numbers(text):
+        candidates = {raw, raw.rstrip(_FILE_TOKEN_TRAILING_PUNCT)}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            tokens.update(_numeric_token_aliases(candidate))
+            if re.fullmatch(r"[+-]?\d[\d,]*(?:\.\d+)?", candidate):
+                tokens.update(_numeric_token_aliases(f"{candidate}%"))
+                tokens.update(_numeric_token_aliases(f"{candidate}%p"))
+    return tuple(sorted(token for token in tokens if token))
+
+
+_FILE_QUESTION_TARGET_RE = re.compile(
+    r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+"  # NOVA-ZETA-404, QA_E2E_... 같은 코드형 토큰
+    r"|(?:[A-Z][A-Za-z0-9]+\s+){1,3}[A-Z][A-Za-z0-9]+"  # Project Eclipse Harbor 같은 대문자 시작 연쇄
+    r"|[A-Z][a-z]{4,}"  # Polaris 같은 단독 고유명
+)
+
+
+def _file_question_targets(question: str) -> tuple[str, ...]:
+    targets = []
+    for match in _FILE_QUESTION_TARGET_RE.finditer(question):
+        target = match.group(0).strip()
+        if target and target not in targets:
+            targets.append(target)
+    return tuple(targets)
+
+
+def ensure_file_absence_statement(question: str, answer: str, file_context: str) -> str:
+    """질문이 지목한 대상이 업로드 파일 컨텍스트에 없고 답변도 그 대상을 다루지 않으면 부재 문장을 조립한다."""
+    context = (file_context or "").strip()
+    if not context:
+        return answer
+    context_fold = context.casefold()
+    answer_fold = answer.casefold()
+    missing = [
+        target
+        for target in _file_question_targets(question)
+        if target.casefold() not in context_fold and target.casefold() not in answer_fold
+    ]
+    if not missing:
+        return answer
+    lines = "\n".join(f"업로드 문서에서 {target}을(를) 찾을 수 없습니다." for target in missing)
+    return cleanup_markdown_answer(f"{lines}\n\n{answer}")
+
+
 def fallback_fact_answer(markdown_response: Any) -> str:
     """Build a non-empty deterministic answer from verified fact markdown."""
     if not isinstance(markdown_response, dict):

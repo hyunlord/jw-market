@@ -16,8 +16,6 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     CsdActivityRow,
     MariaDbCsdActivityTargetReader,
     MariaDbCsdActivityReader,
-    MariaDbCausePayloadReader,
-    MariaDbMetricsCacheReader,
     MetricsCacheReader,
     StaticCsdActivityReader,
     StaticCsdActivityTargetReader,
@@ -25,6 +23,8 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     TtlCsdActivityCache,
     TtlCsdActivityTargetCache,
     TtlMetricsCache,
+    shared_cause_payload_cache,
+    shared_metrics_cache,
 )
 
 
@@ -43,9 +43,13 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         path = fixture_path or Path(__file__).resolve().parents[2] / "fixtures" / "metrics_cache.json"
         self._data = json.loads(path.read_text(encoding="utf-8"))
         ttl = ttl_seconds or int(os.environ.get("CHAT_METRICS_TTL_SECONDS", "300"))
-        self._cache = TtlMetricsCache(cache_reader or MariaDbMetricsCacheReader(), ttl_seconds=ttl)
+        self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
         cause_ttl = int(os.environ.get("CHAT_CAUSE_TTL_SECONDS", str(ttl)))
-        self._cause_cache = TtlCausePayloadCache(cause_reader or MariaDbCausePayloadReader(), ttl_seconds=cause_ttl)
+        self._cause_cache = (
+            TtlCausePayloadCache(cause_reader, ttl_seconds=cause_ttl)
+            if cause_reader is not None
+            else shared_cause_payload_cache(cause_ttl)
+        )
         csd_ttl = int(os.environ.get("CHAT_CSD_ACTIVITY_TTL_SECONDS", str(ttl)))
         default_csd_reader: CsdActivityReader = MariaDbCsdActivityReader() if self._mode == "cache" else _fixture_csd_activity_reader()
         self._csd_activity_cache = TtlCsdActivityCache(csd_activity_reader or default_csd_reader, ttl_seconds=csd_ttl)

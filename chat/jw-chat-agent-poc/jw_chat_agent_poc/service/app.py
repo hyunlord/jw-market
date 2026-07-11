@@ -5,6 +5,8 @@ import logging
 import os
 import queue
 import threading
+import time
+from collections import OrderedDict
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -33,10 +35,12 @@ from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_una
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
     cleanup_markdown_answer,
+    ensure_file_absence_statement,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
 )
 from jw_chat_agent_poc.service.charts import build_charts
+from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
@@ -63,6 +67,8 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
 
 AgentFactory = Callable[..., ChatAgent]
 LOGGER = logging.getLogger(__name__)
+QUEUE_PROGRESS_THRESHOLD_S = 2.0
+QUEUE_PROGRESS_INTERVAL_S = 2.5
 
 DIRECT_ROUTE_API_KEY_ENV = "DIRECT_ROUTE_API_KEY"
 DIRECT_ROUTE_AUTH_HOSTS_ENV = "DIRECT_ROUTE_AUTH_HOSTS"
@@ -95,6 +101,7 @@ CHAT_STREAM_DESCRIPTION = """
 | conversation | plain string conversation_id | first, if conversation_id exists | 0-1 |
 | step | JSON `{index, name, detail, status, raw_name, raw_detail, elapsed_ms?}` | while live question processing stages start/finish | 0-N |
 | sources | comma-separated source labels | before content | 1 |
+| file_sources | JSON array `[{file_name, document_id?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
 | delta | markdown text chunk | prose segments | 0-N |
 | markdown_block | JSON `{kind, markdown}` | table segments | 0-N |
 | charts | JSON array | if charts are present | 0-1 |
@@ -114,20 +121,36 @@ class FinalAnswer:
     trace: dict[str, Any]
     sources: tuple[str, ...]
     conversation_id: str | None
+    file_sources: tuple[dict[str, Any], ...] = ()
+
+
+SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
+DEFAULT_SESSION_STORE_MAX = 500
 
 
 class SessionStore:
-    def __init__(self, conversations: ConversationStore | None = None) -> None:
-        self._items: dict[str, dict] = {}
+    def __init__(self, conversations: ConversationStore | None = None, max_sessions: int | None = None) -> None:
+        if max_sessions is None:
+            max_sessions = int(os.environ.get(SESSION_STORE_MAX_ENV, str(DEFAULT_SESSION_STORE_MAX)))
+        self._max_sessions = max(1, max_sessions)
+        self._items: OrderedDict[str, dict] = OrderedDict()
+        self._lock = threading.Lock()
         self.conversations = conversations or ConversationStore()
 
     def put(self, item: dict) -> str:
         session_id = uuid4().hex
-        self._items[session_id] = item
+        with self._lock:
+            self._items[session_id] = item
+            while len(self._items) > self._max_sessions:
+                self._items.popitem(last=False)
         return session_id
 
     def get(self, session_id: str) -> dict | None:
-        return self._items.get(session_id)
+        with self._lock:
+            item = self._items.get(session_id)
+            if item is not None:
+                self._items.move_to_end(session_id)
+            return item
 
 
 def _configured_direct_route_hosts() -> set[str]:
@@ -188,6 +211,7 @@ def create_app(
     store: SessionStore | None = None,
     history_store: ConversationHistoryStore | None = None,
     projection_runtime: HistoryProjectionRuntime | None = None,
+    concurrency_limiter: ChatConcurrencyLimiter | None = None,
 ) -> FastAPI:
     app = FastAPI(title="JW Chat Agent POC", version="0.2.0", root_path="/jw-chat-agent")
     app.add_middleware(
@@ -198,6 +222,7 @@ def create_app(
         allow_headers=["*"],
     )
     store = store or SessionStore()
+    limiter = concurrency_limiter or ChatConcurrencyLimiter()
     resolver = market_scope_resolver or MarketScopeResolver()
     make_agent = agent_factory or _default_agent_factory
     use_direct_agent_loop = agent_factory is None
@@ -230,17 +255,21 @@ def create_app(
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
-        result = _answer_question(
-            store,
-            resolver,
-            make_agent,
-            request.question,
-            request.external_mode,
-            request.conversation_id,
-            list(documents),
-            request.file_context,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
+        try:
+            with limiter.slot():
+                result = _answer_question(
+                    store,
+                    resolver,
+                    make_agent,
+                    request.question,
+                    request.external_mode,
+                    request.conversation_id,
+                    list(documents),
+                    request.file_context,
+                    use_direct_agent_loop=use_direct_agent_loop,
+                )
+        except ChatBusyError as exc:
+            raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         session_id = store.put({"question": request.question, "result": result["result"]})
         return ChatAccepted(
             session_id=session_id,
@@ -261,18 +290,22 @@ def create_app(
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
-        item = _answer_question(
-            store,
-            resolver,
-            make_agent,
-            request.question,
-            request.external_mode,
-            request.conversation_id,
-            list(documents),
-            request.file_context,
-            use_direct_agent_loop=use_direct_agent_loop,
-        )
-        final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+        try:
+            with limiter.slot():
+                item = _answer_question(
+                    store,
+                    resolver,
+                    make_agent,
+                    request.question,
+                    request.external_mode,
+                    request.conversation_id,
+                    list(documents),
+                    request.file_context,
+                    use_direct_agent_loop=use_direct_agent_loop,
+                )
+                final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+        except ChatBusyError as exc:
+            raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         _record_conversation_history(
             history,
             session_id=None,
@@ -286,6 +319,7 @@ def create_app(
             trace=final_answer.trace,
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
+            file_sources=[dict(item) for item in final_answer.file_sources],
         )
 
     @app.get(
@@ -319,6 +353,7 @@ def create_app(
                     history_store=history,
                     session_id=session_id,
                     projection_context=projection_context,
+                    limiter=limiter,
                 ),
                 media_type="text/event-stream",
             )
@@ -335,6 +370,7 @@ def create_app(
                 use_direct_agent_loop=use_direct_agent_loop,
                 history_store=history,
                 projection_context=projection_context,
+                limiter=limiter,
             ),
             media_type="text/event-stream",
         )
@@ -397,7 +433,7 @@ def _answer_question(
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         state = store.conversations.get_or_create(conversation_id)
-        delegated_file_context = _delegated_file_context(question, state.conversation_id, file_context)
+        delegated_file_context, file_source_items = _delegated_file_context(question, state.conversation_id, file_context)
         if not question.strip() and _has_file_signal(documents, delegated_file_context):
             result = _file_only_ready_result(documents, delegated_file_context)
         else:
@@ -411,22 +447,26 @@ def _answer_question(
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
-            result = _attach_file_context(result, delegated_file_context)
+            result = _attach_file_context(result, delegated_file_context, file_source_items)
         store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
 
 
-def _delegated_file_context(question: str, conversation_id: str | None, file_context: str | None) -> str | None:
+def _delegated_file_context(
+    question: str, conversation_id: str | None, file_context: str | None
+) -> tuple[str | None, tuple[dict[str, Any], ...]]:
     contexts: list[str] = []
+    file_source_items: tuple[dict[str, Any], ...] = ()
     uploaded = search_uploaded_files(question, conversation_id)
     if uploaded is not None and uploaded.file_context.strip():
         contexts.append(uploaded.file_context.strip())
+        file_source_items = uploaded.file_source_items
     provided = (file_context or "").strip()
     if provided:
         contexts.append(provided)
     if not contexts:
-        return None
-    return "\n\n".join(dict.fromkeys(contexts))
+        return None, ()
+    return "\n\n".join(dict.fromkeys(contexts)), file_source_items
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
@@ -452,12 +492,16 @@ def _file_only_ready_result(documents: list[Path] | None, file_context: str | No
     }
 
 
-def _attach_file_context(result: dict, file_context: str | None) -> dict:
+def _attach_file_context(
+    result: dict, file_context: str | None, file_source_items: tuple[dict[str, Any], ...] = ()
+) -> dict:
     context = (file_context or "").strip()
     if not context:
         return result
     copied = dict(result)
     copied["file_context"] = context
+    if file_source_items:
+        copied["file_source_items"] = [dict(item) for item in file_source_items]
     sources = [str(source) for source in copied.get("sources", []) if source]
     if "document" not in sources:
         sources.append("document")
@@ -558,7 +602,8 @@ def _answer_without_pending(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     route_method = getattr(market_scope_resolver, "general_route", None)
-    route = route_method(question) if callable(route_method) else GeneralRoute.EXISTING
+    with stage(None, "question_classification", "view selection"):
+        route = route_method(question) if callable(route_method) else GeneralRoute.EXISTING
     if route is GeneralRoute.GENERAL_ONLY:
         return market_scope_resolver.answer_general(question, compact=False, dual=False)
     if route is GeneralRoute.DUAL:
@@ -637,11 +682,15 @@ def _answer_existing_without_pending(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     if requested_unavailable_source(question) is not None and not documents:
-        return agent_factory(external_mode=external_mode).answer(question, documents)
+        with stage(None, "question_classification", "agent setup"):
+            agent = agent_factory(external_mode=external_mode)
+        return agent.answer(question, documents)
     if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
         return _answer_direct_agent_loop(question, external_mode)
     if should_use_agent_loop(question):
-        return agent_factory(external_mode=external_mode).answer(question, documents)
+        with stage(None, "question_classification", "agent setup"):
+            agent = agent_factory(external_mode=external_mode)
+        return agent.answer(question, documents)
     intent = detect_market_scope_intent(question)
     if intent is not None:
         if intent.requires_clarification:
@@ -659,12 +708,16 @@ def _answer_existing_without_pending(
             return market_scope_resolver.clarification(question, brand=brand)
         if intent.view_type is not None:
             return market_scope_resolver.answer(question, view_type=intent.view_type)
-    return agent_factory(external_mode=external_mode).answer(question, documents)
+    with stage(None, "question_classification", "agent setup"):
+        agent = agent_factory(external_mode=external_mode)
+    return agent.answer(question, documents)
 
 
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
-    dependencies = build_chat_agent_dependencies(external_mode=external_mode)
-    routes = dependencies.router.route(question, has_documents=False)
+    with stage(None, "question_classification", "agent setup"):
+        dependencies = build_chat_agent_dependencies(external_mode=external_mode)
+    with stage(None, "question_decomposition", "BQ and tool routing"):
+        routes = dependencies.router.route(question, has_documents=False)
     if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
         try:
             dependencies.resolver.resolve(question, allow_default=False)
@@ -715,31 +768,50 @@ def _stream_resolving_session_events(
     use_direct_agent_loop: bool = False,
     history_store: ConversationHistoryStore | None = None,
     projection_context: ProjectionRequestContext | None = None,
+    limiter: ChatConcurrencyLimiter | None = None,
 ):
     events: queue.Queue[dict[str, Any]] = queue.Queue()
     step_index = 0
+    step_index_lock = threading.Lock()
+    acquire_finished = threading.Event()
+    acquired = False
+
+    def indexed_step(event: dict[str, Any]) -> dict[str, Any]:
+        nonlocal step_index
+        with step_index_lock:
+            step_index += 1
+            index = step_index
+        item = dict(event)
+        item["index"] = index
+        return item
 
     def emit_step(event: dict[str, Any]) -> None:
-        nonlocal step_index
-        step_index += 1
-        item = dict(event)
-        item["index"] = step_index
+        item = indexed_step(event)
         events.put({"type": "step", "item": item})
 
     def run_worker() -> None:
+        nonlocal acquired
         try:
-            item = _answer_question(
-                store,
-                market_scope_resolver,
-                agent_factory,
-                question,
-                external_mode,
-                conversation_id,
-                use_direct_agent_loop=use_direct_agent_loop,
-                timing_sink=emit_step,
-            )
+            acquired = limiter is None or limiter.try_acquire()
+            acquire_finished.set()
+            if not acquired:
+                events.put({"type": "busy"})
+                return
+            emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "started", "raw_name": "question_received", "raw_detail": "request accepted"})
+            emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "done", "raw_name": "question_received", "raw_detail": "request accepted", "elapsed_ms": 0.0})
             with stage_event_sink(emit_step):
-                final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+                with stage(None, "answer_generation_total", "request processing"):
+                    item = _answer_question(
+                        store,
+                        market_scope_resolver,
+                        agent_factory,
+                        question,
+                        external_mode,
+                        conversation_id,
+                        use_direct_agent_loop=use_direct_agent_loop,
+                        timing_sink=emit_step,
+                    )
+                    final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
             _record_conversation_history(
                 history_store,
                 session_id=None,
@@ -749,13 +821,34 @@ def _stream_resolving_session_events(
             )
             events.put({"type": "result", "item": item, "final_answer": final_answer})
         except Exception as exc:
+            acquire_finished.set()
             events.put({"type": "error", "error_type": type(exc).__name__, "message": str(exc)})
+        finally:
+            if limiter is not None and acquired:
+                limiter.release()
 
     thread = threading.Thread(target=run_worker, name="chat-stream-answer-worker", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        raise
+    wait_started = time.perf_counter()
+    next_wait_progress = QUEUE_PROGRESS_THRESHOLD_S
     while True:
-        event = events.get()
+        try:
+            waited = time.perf_counter() - wait_started
+            poll_timeout = min(0.25, max(0.01, next_wait_progress - waited))
+            event = events.get(timeout=poll_timeout)
+        except queue.Empty:
+            waited = time.perf_counter() - wait_started
+            if not acquire_finished.is_set() and waited >= next_wait_progress:
+                yield _sse_json_event("step", indexed_step({"name": "대기 중", "detail": "처리 슬롯 대기", "status": "in_progress", "raw_name": "queue_wait", "raw_detail": "concurrency slot", "elapsed_ms": round(waited * 1000, 2)}))
+                next_wait_progress += QUEUE_PROGRESS_INTERVAL_S
+            continue
         event_type = event.get("type")
+        if event_type == "busy":
+            yield from _sse_busy_events()
+            return
         if event_type == "step":
             yield _sse_json_event("step", event.get("item", {}))
             continue
@@ -819,22 +912,38 @@ def _sse_events(
     history_store: ConversationHistoryStore | None = None,
     session_id: str | None = None,
     projection_context: ProjectionRequestContext | None = None,
+    limiter: ChatConcurrencyLimiter | None = None,
 ):
-    final_answer = compute_final_answer(question, result, conversation_id)
-    _record_conversation_history(
-        history_store,
-        session_id=session_id,
-        question=question,
-        final_answer=final_answer,
-        projection_context=projection_context,
-    )
+    if limiter is not None and not limiter.try_acquire():
+        yield from _sse_busy_events()
+        return
+    try:
+        final_answer = compute_final_answer(question, result, conversation_id)
+        _record_conversation_history(
+            history_store,
+            session_id=session_id,
+            question=question,
+            final_answer=final_answer,
+            projection_context=projection_context,
+        )
+    finally:
+        if limiter is not None:
+            limiter.release()
     yield from _sse_events_from_final_answer(final_answer)
+
+
+def _sse_busy_events():
+    yield _sse_delta(BUSY_MESSAGE)
+    yield _sse_json_event("error", {"type": "ServiceBusy", "message": BUSY_MESSAGE})
+    yield "event: done\ndata: error\n\n"
 
 
 def _sse_events_from_final_answer(final_answer: FinalAnswer):
     if final_answer.conversation_id:
         yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
     yield f"event: sources\ndata: {','.join(source_labels(final_answer.sources))}\n\n"
+    if final_answer.file_sources:
+        yield _sse_json_event("file_sources", list(final_answer.file_sources))
     yield from iter_markdown_sse_events(final_answer.text)
     if final_answer.charts:
         yield _sse_json_event("charts", final_answer.charts)
@@ -867,6 +976,13 @@ def _record_conversation_history(
         )
     except Exception:
         LOGGER.exception("failed to persist chat conversation history")
+
+
+def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
+    items = result.get("file_source_items")
+    if not isinstance(items, list):
+        return ()
+    return tuple(item for item in items if isinstance(item, dict))
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
@@ -948,6 +1064,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
     safe_answer = apply_common_unavailable_response(question, safe_answer, markdown_response)
     safe_answer = apply_requested_source_trap_gate(question, safe_answer)
+    safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
     trace = trace_envelope(
         question=question,
         result=result,
@@ -963,6 +1080,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         trace=trace,
         sources=tuple(result.get("sources", ())),
         conversation_id=conversation_id,
+        file_sources=_file_source_items(result),
     )
 
 

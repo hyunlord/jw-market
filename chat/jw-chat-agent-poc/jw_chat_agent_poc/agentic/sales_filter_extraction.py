@@ -5,9 +5,9 @@ from typing import Mapping
 
 from jw_chat_agent_poc.agentic.news_filters import FilterEntry, FilterValue
 from jw_chat_agent_poc.agentic.sales_filter_aliases import (
-    CHANNEL_ALIASES,
     LEVEL_ALIASES,
     SOURCE_ALIASES,
+    match_channel_in_text,
 )
 
 
@@ -113,10 +113,7 @@ def _unsupported_granularity(question: str) -> str | None:
 
 
 def _channel_from_question(question: str) -> str | None:
-    for alias, value in CHANNEL_ALIASES.items():
-        if alias in question:
-            return value
-    return None
+    return match_channel_in_text(question)
 
 
 def _level_from_question(question: str) -> str | None:

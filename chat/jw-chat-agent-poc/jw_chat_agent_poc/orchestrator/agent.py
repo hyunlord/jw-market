@@ -80,7 +80,7 @@ class ChatAgent:
     def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
         timing = new_timing()
         docs = documents or []
-        with stage(timing, "agent_pre_resolve", "router classification"):
+        with stage(timing, "question_decomposition", "BQ and tool routing"):
             routes = self.router.route(question, has_documents=bool(docs))
         if not docs and _is_known_ingredient_patent_question(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
