@@ -33,6 +33,8 @@ def test_tier2_manifest_pins_ga_workflow_and_stays_active() -> None:
     assert "--daily-call-limit 60" in manifest
     assert "--max-cost-krw 203.40" in manifest
     assert "python /opt/tier2/tier2_full_scoring_runner.py append-live" in manifest
+    assert "python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw" in manifest
+    assert manifest.index("sync-events-raw") < manifest.index("append-live")
     assert "name: tier2-llm-runner-rev5671" in manifest
     assert "suspend: false" in manifest
 

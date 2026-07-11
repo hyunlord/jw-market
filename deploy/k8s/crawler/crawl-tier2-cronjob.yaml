@@ -175,6 +175,8 @@ spec:
                 --db-name "$DB_NAME" \
                 --tier 2 \
                 --processed-by tier2_exact_rule_v1
+              python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw \
+                --retries 1
               python /opt/tier2/tier2_full_scoring_runner.py append-live \
                 --source-processor tier2_exact_rule_v1 \
                 --target-processor tier2_llm_v2_rev5671 \

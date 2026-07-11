@@ -19,6 +19,7 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     parse_wf324_response,
     score_tier,
     scoped_event_id,
+    sync_missing_events_raw,
 )
 
 
@@ -46,6 +47,38 @@ class RecordingConnection:
         self.commits = 0
 
     def cursor(self) -> RecordingCursor:
+        return self.cursor_obj
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+class SyncCursor:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+        self.rowcount = 55
+
+    def __enter__(self) -> "SyncCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, _params: object = None) -> None:
+        self.statements.append(sql)
+        if "SELECT COUNT(*) AS gap" in sql:
+            self.rowcount = 0
+
+    def fetchone(self) -> dict[str, int]:
+        return {"gap": 0}
+
+
+class SyncConnection:
+    def __init__(self) -> None:
+        self.cursor_obj = SyncCursor()
+        self.commits = 0
+
+    def cursor(self) -> SyncCursor:
         return self.cursor_obj
 
     def commit(self) -> None:
@@ -103,6 +136,20 @@ def test_live_append_uses_plain_insert_and_new_marker() -> None:
     assert "ON DUPLICATE KEY UPDATE" not in conn.cursor_obj.sql
     assert conn.cursor_obj.params[0][0] == "4b9063c28ad45d38:t2v2r5671"
     assert conn.cursor_obj.params[0][6] == PENDING_SOURCE_PROCESSOR
+    assert conn.commits == 1
+
+
+def test_events_raw_sync_inserts_only_missing_rows_and_requires_zero_gap() -> None:
+    conn = SyncConnection()
+
+    result = sync_missing_events_raw(conn)
+    sql = "\n".join(conn.cursor_obj.statements)
+
+    assert result == {"inserted": 55, "gap": 0}
+    assert "LEFT JOIN events_raw e ON e.news_id = n.news_id" in sql
+    assert "WHERE e.news_id IS NULL" in sql
+    assert "ON DUPLICATE KEY UPDATE" not in sql
+    assert "UPDATE events_raw" not in sql
     assert conn.commits == 1
 
 

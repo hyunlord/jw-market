@@ -769,6 +769,63 @@ def processor_snapshot(
     return {"rows": int(row["rows_count"]), "news": int(row["news_count"])}
 
 
+def events_raw_gap(conn: pymysql.connections.Connection) -> int:
+    """Return source articles that have not been cloned into ``events_raw``."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS gap
+            FROM news_raw n
+            LEFT JOIN events_raw e ON e.news_id = n.news_id
+            WHERE e.news_id IS NULL
+            """
+        )
+        return int(cursor.fetchone()["gap"] or 0)
+
+
+def sync_missing_events_raw(
+    conn: pymysql.connections.Connection,
+    *,
+    retries: int = 1,
+) -> dict[str, int]:
+    """Insert missing source rows and hard-gate the loader on a zero gap."""
+
+    total_inserted = 0
+    last_gap = 0
+    for _attempt in range(retries + 1):
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO events_raw (
+                    news_id, source_name, published_date, title, summary,
+                    body, url, created_at, ingested_at
+                )
+                SELECT
+                    n.news_id,
+                    n.source_name,
+                    n.published_date,
+                    n.title,
+                    LEFT(COALESCE(n.article_text, ''), 1000),
+                    n.article_text,
+                    n.article_url,
+                    n.ingested_at,
+                    n.ingested_at
+                FROM news_raw n
+                LEFT JOIN events_raw e ON e.news_id = n.news_id
+                WHERE e.news_id IS NULL
+                """
+            )
+            total_inserted += int(cursor.rowcount or 0)
+        conn.commit()
+        last_gap = events_raw_gap(conn)
+        if last_gap == 0:
+            return {"inserted": total_inserted, "gap": 0}
+    raise RuntimeError(
+        f"events_raw sync gap remains after {retries + 1} attempt(s): {last_gap}"
+    )
+
+
 def run_append_live(
     conn: pymysql.connections.Connection,
     *,
@@ -1221,6 +1278,9 @@ def main() -> int:
     append_parser.add_argument("--daily-call-limit", type=int, default=60)
     append_parser.add_argument("--max-cost-krw", type=float, default=203.40)
 
+    sync_parser = subparsers.add_parser("sync-events-raw")
+    sync_parser.add_argument("--retries", type=int, default=1)
+
     args = parser.parse_args()
     conn = connect_from_env()
     try:
@@ -1259,6 +1319,8 @@ def main() -> int:
                 daily_call_limit=args.daily_call_limit,
                 max_cost_krw=args.max_cost_krw,
             )
+        elif args.command == "sync-events-raw":
+            summary = sync_missing_events_raw(conn, retries=args.retries)
         else:  # pragma: no cover - argparse enforces commands.
             raise ValueError(f"unknown command={args.command!r}")
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True, default=str))
