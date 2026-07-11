@@ -5,6 +5,12 @@ import re
 from typing import Any, Final, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
+from jw_chat_agent_poc.orchestrator.answer_completeness import (
+    COMPLETENESS_INTENTS,
+    completeness_intent,
+    completeness_status,
+    repair_completeness,
+)
 from jw_chat_agent_poc.orchestrator.dosage_notes import DOSAGE_COMBINATION_NOTE_PREFIX, dosage_combination_note
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 
@@ -30,6 +36,7 @@ ANSWER_CONTRACT: Final[dict[str, ContractRule]] = {
         required_claims=("start_end_summary", "trend_state"),
         min_rows=4,
     ),
+    **{intent: ContractRule(required_facts=("deterministic_completion_fact",)) for intent in COMPLETENESS_INTENTS},
 }
 
 _MI_IMPLICATION_CONTRACTS: Final[frozenset[str]] = frozenset(
@@ -51,6 +58,12 @@ CONTRACT_REQUIRED_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "trend_support_matrix": ("get_brand_metric", "market_scope"),
     "ranking": ("get_brand_metric", "market_scope"),
     "trend": ("get_brand_metric",),
+    "brand_compare": ("get_brand_metric",),
+    "share_delta_compare": ("get_brand_metric", "market_scope"),
+    "top_n_share_sum": ("get_brand_metric", "market_scope"),
+    "concentration": ("get_brand_metric", "market_scope"),
+    "target_share_gap": ("get_brand_metric", "market_scope"),
+    "channel_provenance": ("get_brand_metric",),
 }
 
 
@@ -119,6 +132,8 @@ def enforce_answer_contract(
             fact = _trend_fact(fact_md)
             if fact is not None and len(fact.rows) >= rule.min_rows and not _trend_surface_ok(answer, fact, rule):
                 repaired = _join_blocks(_trend_answer(fact), _source_block(fact_md))
+        elif intent in COMPLETENESS_INTENTS:
+            repaired = repair_completeness(intent, question, answer, fact_md)
     repaired = _append_general_dosage_combination_note(_enforce_structural_contract(question, repaired, fact_md))
     return enforce_general_view_contract(repaired, dict(general_view_contract) if general_view_contract else None)
 
@@ -164,6 +179,14 @@ def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapp
             "required_tables": rule.required_tables,
             "required_claims": rule.required_claims,
             "row_count": len(fact.rows),
+        }
+    if intent in COMPLETENESS_INTENTS:
+        return {
+            "intent": intent,
+            "structural_contract": structural,
+            "status": completeness_status(intent, question, answer, fact_md),
+            "required_facts": rule.required_facts,
+            "derived": intent != "channel_provenance",
         }
     return {"intent": intent, "structural_contract": structural, "status": "not_evaluated"}
 
@@ -234,6 +257,9 @@ class ClinicalEvidenceRow:
 
 
 def _intent(question: str) -> str | None:
+    completeness = completeness_intent(question)
+    if completeness is not None:
+        return completeness
     if _ranking_question(question):
         return "ranking"
     if _trend_question(question):
