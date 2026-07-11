@@ -56,7 +56,7 @@ def test_news_and_cut_b_filters_share_processor_policy() -> None:
 
     news = _filter_news_exposure_rows(rows)
 
-    assert [row["id"] for row in news] == ["legacy-news", "new-news-edge"]
+    assert [row["id"] for row in news] == ["legacy-news", "new-news-low", "new-news-edge"]
 
     cut_b_rows = [
         {"id": "legacy-80", "tag": "자본/경영", "score": 80, "source_processor": None},
@@ -116,6 +116,10 @@ def test_query_events_applies_policy_predicate_in_source_sql() -> None:
     assert "s.brand_canonical = %s" in select_sql
     assert "COALESCE(s.brand_canonical, s.brand_name)" not in select_sql
     assert "s.source_processor = %s" in select_sql
-    assert "s.source_processor IS NULL OR s.source_processor <> %s" in select_sql
+    assert "s.source_processor IN (%s, %s)" in select_sql
+    assert (
+        "s.source_processor <> %s AND s.source_processor <> %s AND s.source_processor <> %s"
+        in select_sql
+    )
     assert "workflow_196_rev5674" in select_params
     assert "기타" in select_params
