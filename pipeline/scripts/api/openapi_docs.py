@@ -964,7 +964,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
 BRAND_ACTIVITY_INTEREST_RX_RESPONSES: Final = {
     200: {
         "description": (
-            "interest×처방빈도 버블. X=rx_frequency_score, Y=interest_score, 버블 면적=event_count. "
+            "interest×처방빈도 버블. X=rx_frequency_score, Y=prescription_evolution_score, 버블 면적=event_count. "
             "market_average는 차트 점선 십자 기준선입니다."
         ),
         "content": {

@@ -258,6 +258,55 @@ def test_activity_series_parse_accepts_general_market_scope_without_atc4() -> No
     assert parsed.filter_payload["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
 
 
+def test_activity_series_selected_brand_list_matches_string_response(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": period} for period in _months()]
+        if "GROUP BY market, master_product" in sql:
+            return [{"market": "LIVALO Market", "master_product": product} for product in ("LIVALO", "A", "B", "C")]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            return _activity_rows()
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    string_payload = _request(period={"start": "2025-Q1", "end": "2025-Q4"})
+    list_payload = {**string_payload, "selected_brand": [" ", "LIVALO", "OTHER"]}
+
+    string_response = service.get_csd_activity_series(string_payload)
+    list_response = service.get_csd_activity_series(list_payload)
+
+    assert list_response == string_response
+    assert list_response is not None
+    assert list_response["scope"]["selected_brand"] == "LIVALO"
+
+
+def test_csd_activity_series_request_accepts_string_and_list_selected_brand() -> None:
+    common = {"view": "general", "filters": {"atc4": ["C10A1"]}}
+
+    string_request = brand_activity.CsdActivitySeriesRequest(**common, selected_brand="LIVALO")
+    list_request = brand_activity.CsdActivitySeriesRequest(**common, selected_brand=["LIVALO"])
+
+    assert string_request.selected_brand == "LIVALO"
+    assert list_request.selected_brand == ["LIVALO"]
+
+
+def test_activity_series_selected_brand_list_keeps_required_validation() -> None:
+    for selected_brand in ([], ["", "  "]):
+        try:
+            service.parse_activity_request(
+                {
+                    "view": "general",
+                    "selected_brand": selected_brand,
+                    "filters": {"atc4": ["C10A1"]},
+                }
+            )
+        except service.CsdActivitySeriesInputError as exc:
+            assert str(exc) == "filters.atc4 and selected_brand are required"
+        else:
+            raise AssertionError("expected CsdActivitySeriesInputError")
+
+
 def _request(*, period: dict[str, str]) -> dict[str, Any]:
     return {
         "view": "general",
