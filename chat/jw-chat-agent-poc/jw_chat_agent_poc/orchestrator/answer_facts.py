@@ -17,6 +17,11 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     source_label,
     table,
 )
+from jw_chat_agent_poc.orchestrator.provenance_labels import (
+    public_axis_label,
+    public_market_label,
+    sanitize_provenance_labels,
+)
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
 from jw_chat_agent_poc.orchestrator.surface_policy import (
     DeltaOperands,
@@ -148,7 +153,7 @@ def answer_fact_markdown(calls: list[dict[str, Any]], sources: list[str]) -> str
     source_block = _source_block(calls, sources)
     if source_block:
         blocks.append(source_block)
-    return "\n\n".join(blocks)
+    return sanitize_provenance_labels("\n\n".join(blocks))
 
 
 def _is_fact_only_completion_call(call: dict[str, Any]) -> bool:
@@ -1978,7 +1983,7 @@ def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
         blocks.append(
             table(
                 "### 수치별 출처 fact",
-                ("수치", "소스", "기간", "시장정의", "축", "tool_call_id"),
+                ("수치", "소스", "기간", "시장정의", "축"),
                 tuple(
                     (
                         row.value_label,
@@ -1986,7 +1991,6 @@ def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
                         row.period,
                         row.market,
                         row.axis,
-                        row.tool_call_id,
                     )
                     for row in value_rows
                 ),
@@ -2085,18 +2089,30 @@ def _value_period(data: dict[str, Any]) -> str:
 def _value_market(data: dict[str, Any]) -> str:
     query_spec = data.get("query_spec")
     if isinstance(query_spec, dict):
-        market = str(query_spec.get("market") or query_spec.get("market_id") or "").strip()
-        if market:
+        market = public_market_label(
+            str(query_spec.get("market_name") or ""),
+            str(query_spec.get("market_definition_label") or ""),
+            str(query_spec.get("market") or ""),
+            str(query_spec.get("market_id") or ""),
+        )
+        if market != "해당 시장":
             return market
-    return str(data.get("market") or data.get("market_id") or "-")
+    return public_market_label(
+        str(data.get("market_name") or ""),
+        str(data.get("market_definition_label") or ""),
+        str(data.get("market") or ""),
+        str(data.get("market_id") or ""),
+    )
 
 
 def _value_axis(data: dict[str, Any]) -> str:
-    return str(data.get("requested_axis") or data.get("level") or data.get("metric") or "-")
+    return public_axis_label(str(data.get("requested_axis") or data.get("level") or data.get("metric") or "-"))
 
 
 def _value_tool_call_id(data: dict[str, Any], index: int) -> str:
-    return str(data.get("tool_call_id") or data.get("query_result_id") or f"tool_call_{index}")
+    del index
+    value = str(data.get("tool_call_id") or data.get("query_result_id") or "-")
+    return "-" if value.startswith("tool_call_") else value
 
 
 def _numeric_value_labels(data: dict[str, Any]) -> list[str]:

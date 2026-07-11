@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_provenance_labels
+
 _INTERNAL_DIAGNOSTIC_RE = re.compile(
     r"(?:cache_cause|CausePayloadKey|market_id\s*=|response_json|Traceback|LookupError|TypeError|KeyError|SELECT\s+|FROM\s+)",
     re.IGNORECASE,
@@ -321,10 +323,10 @@ def sanitize_internal_diagnostics(text: str) -> str:
     sanitized, protected_market_contexts = _protect_intentional_market_contexts(sanitized)
     sanitized = re.sub(r"CausePayloadKey\([^)]*\)", _GENERIC_UNAVAILABLE, sanitized)
     sanitized = re.sub(r"\bmarket_id\s*=\s*['\"]?[\w.-]+['\"]?", "시장 식별자", sanitized)
-    sanitized = _INTERNAL_ID_RE.sub("확정 시장", sanitized)
+    sanitized = _INTERNAL_ID_RE.sub("해당 시장", sanitized)
     sanitized = _restore_intentional_market_contexts(sanitized, protected_market_contexts)
     sanitized = sanitized.replace("cache_cause", "운영 데이터")
-    return _cleanup(sanitized)
+    return _cleanup(sanitize_provenance_labels(sanitized))
 
 
 def _protect_intentional_market_contexts(text: str) -> tuple[str, tuple[str, ...]]:

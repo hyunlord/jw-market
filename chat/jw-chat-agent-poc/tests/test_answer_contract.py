@@ -769,11 +769,11 @@ def test_sanitize_internal_diagnostics_removes_bare_internal_market_ids() -> Non
     revised = sanitize_internal_diagnostics(answer)
 
     assert "strategy_006" not in revised
-    assert "확정 시장" in revised
+    assert "해당 시장" in revised
     assert "IQVIA / UBIST" in revised
 
 
-def test_sanitize_internal_diagnostics_preserves_denominator_note_market_ids() -> None:
+def test_sanitize_internal_diagnostics_preserves_denominator_note_without_internal_ids() -> None:
     answer = (
         "- 데이터 상세: UBIST — 기간 2025-07~2026-04, 시장: ml_006 (market_landscape, 분모 470), "
         "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음"
@@ -781,12 +781,13 @@ def test_sanitize_internal_diagnostics_preserves_denominator_note_market_ids() -
 
     revised = sanitize_internal_diagnostics(answer)
 
-    assert "시장: ml_006" in revised
-    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in revised
-    assert "확정 시장" not in revised
+    assert "ml_006" not in revised
+    assert "strategy_006" not in revised
+    assert "분모 470" in revised
+    assert "6/516" in revised
 
 
-def test_sanitize_internal_diagnostics_preserves_intended_split_market_context() -> None:
+def test_sanitize_internal_diagnostics_preserves_split_market_context_without_internal_ids() -> None:
     answer = (
         "- 데이터 상세: IQVIA NSA — 기간 2025-Q4, 시장: ml_011 (market_landscape, 분모 26), "
         "Class 구분 존재: 운영 노출은 Class 2 기준 분모 26; "
@@ -795,10 +796,10 @@ def test_sanitize_internal_diagnostics_preserves_intended_split_market_context()
 
     revised = sanitize_internal_diagnostics(answer)
 
-    assert "시장: ml_011 (market_landscape, 분모 26)" in revised
+    assert "ml_011" not in revised
+    assert "분모 26" in revised
     assert "Class 구분 존재" in revised
     assert "Class 2 기준 분모 26" in revised
-    assert "확정 시장" not in revised
 
 
 def test_sanitize_internal_diagnostics_still_blocks_market_ids_in_error_context() -> None:

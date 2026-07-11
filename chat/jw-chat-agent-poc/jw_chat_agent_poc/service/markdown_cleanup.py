@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_provenance_labels
+
 
 def cleanup_markdown_answer(markdown: str) -> str:
     """Normalize generated markdown without inventing content."""
@@ -34,6 +36,7 @@ def cleanup_markdown_answer(markdown: str) -> str:
     lines = _renumber_section_headings(lines)
     text = "\n".join(lines).strip()
     text = _remove_adjacent_duplicate_sentences(text)
+    text = _remove_non_adjacent_duplicate_prose(text)
     return _remove_duplicate_top_brand_rank_prose(text)
 
 
@@ -66,7 +69,7 @@ def _replace_common_korean_typos_preserving_article_titles(text: str) -> str:
         return f"\uE000TITLE{len(protected) - 1}\uE001"
 
     masked = re.sub(r"「[^」]+」", protect, text)
-    fixed = masked.replace("있은", "있는")
+    fixed = masked.replace("있은", "있는").replace("없은", "없는")
     for index, original in enumerate(protected):
         fixed = fixed.replace(f"\uE000TITLE{index}\uE001", original)
     return fixed
@@ -88,7 +91,8 @@ def _has_jongseong(token: str) -> bool:
 def _replace_internal_source_labels(text: str) -> str:
     result = re.sub(r"(?<![A-Za-z0-9_])deep_analysis_events(?![A-Za-z0-9_])", "뉴스/이슈", text)
     result = re.sub(r"(?<![A-Za-z0-9_])cache(?![A-Za-z0-9_])", "UBIST", result)
-    return result.replace("내부 UBIST", "UBIST").replace("내부 심층분석", "뉴스/이슈")
+    result = result.replace("내부 UBIST", "UBIST").replace("내부 심층분석", "뉴스/이슈")
+    return sanitize_provenance_labels(result)
 
 
 def _normalize_table_row(line: str) -> str:
@@ -209,6 +213,21 @@ def _remove_adjacent_duplicate_sentence_across_paragraphs(markdown: str) -> str:
         previous = cleaned
         cleaned = sentence_pattern.sub(r"\g<sentence>", cleaned)
     return cleaned
+
+
+def _remove_non_adjacent_duplicate_prose(markdown: str) -> str:
+    paragraphs = re.split(r"(\n{2,})", markdown)
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for paragraph in paragraphs:
+        stripped = paragraph.strip()
+        is_plain_sentence = bool(stripped) and not paragraph.startswith("\n") and not _is_structured_markdown_block(paragraph)
+        if is_plain_sentence and stripped in seen:
+            continue
+        if is_plain_sentence:
+            seen.add(stripped)
+        cleaned.append(paragraph)
+    return "".join(cleaned).strip()
 
 
 def _remove_duplicate_top_brand_rank_prose(markdown: str) -> str:
