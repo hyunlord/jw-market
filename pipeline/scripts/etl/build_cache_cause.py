@@ -46,6 +46,7 @@ from cache_build_common import (
     series_latest_number,
     source_list,
 )
+from pipeline.scripts.api.dynamic_market.cause_sections import matrix_growth_value
 from pipeline.scripts.api.market_growth import compound_period_growth_pct
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
@@ -1703,7 +1704,13 @@ def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
     output = []
     for row in rows:
         share = safe_float(row.get("ms") or row.get("share_pct"))
-        contribution = safe_float(row.get("growth_contribution") or row.get("contribution_pct") or row.get("momentum_score"))
+        contribution = safe_float(
+            matrix_growth_value(
+                optional_float(row.get("growth_contribution")),
+                optional_float(row.get("contribution_pct")),
+                optional_float(row.get("momentum_score")),
+            )
+        )
         output.append(
             {
                 "brand": row.get("brand") or row.get("brand_key"),
@@ -1772,11 +1779,14 @@ def _display_brand_rows(
         cagr_5y_pct = round(cagr_5y * 100, 4) if cagr_5y is not None else None
         ei_5y = optional_float(ei_meta.get("ei"))
         momentum_score = first_float(extended.get("momentum_score"))
-        growth_contribution = safe_float(
-            extended.get("growth_contribution")
-            or extended.get("growth_contribution_pct")
-            or extended.get("momentum_score")
-        ) or 0.0
+        parsed_growth_contribution = safe_float(
+            matrix_growth_value(
+                optional_float(extended.get("growth_contribution")),
+                optional_float(extended.get("growth_contribution_pct")),
+                optional_float(extended.get("momentum_score")),
+            )
+        )
+        growth_contribution = parsed_growth_contribution if parsed_growth_contribution is not None else 0.0
         normalized.append(
             {
                 "brand": brand,

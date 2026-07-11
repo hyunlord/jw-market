@@ -837,6 +837,11 @@ def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:
     if not isinstance(general_payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "general_deep_analysis"})
 
+    is_jw, _is_target = _strategic_brand_flags(brand)
+    market_meta = general_payload.get("market_meta")
+    if isinstance(market_meta, dict):
+        market_meta["is_jw"] = is_jw
+
     return general_payload, general_row
 
 

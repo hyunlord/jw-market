@@ -24,6 +24,7 @@ for path in (PROJECT_ROOT, SCRIPT_DIR):
         sys.path.insert(0, str(path))
 
 from cache_build_common import api_source, decode_json, dump_payload, mariadb_connect, metric_recent, parser
+from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.etl.build_cache_deep_analysis import (
     ALL_COMBOS,
     FORECAST_DISCLOSURE,
@@ -577,7 +578,7 @@ def build_general_cache_row(
             "source_count": len({row["source"] for row in brand_rows}),
             "measure_count": len({row["measure"] for row in brand_rows}),
             "market_count": 1,
-            "is_jw": bool(base.get("is_jw")),
+            "is_jw": get_display_brand(brand) is not None,
             "is_target": bool(base.get("is_target")),
             "cache_scope": "general",
             "tie_break": "brand_atc4_exact_or_atc4_ascending",

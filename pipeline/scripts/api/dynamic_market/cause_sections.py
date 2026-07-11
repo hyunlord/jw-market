@@ -18,6 +18,19 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
 
 
+def matrix_growth_value(
+    growth_contribution: float | None,
+    contribution_pct: float | None,
+    momentum_score: float | None,
+) -> float | None:
+    """Return the first available matrix Y-axis value without treating zero as absent."""
+
+    for value in (growth_contribution, contribution_pct, momentum_score):
+        if value is not None:
+            return value
+    return None
+
+
 def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> list[dict[str, Any]]:
     """Build EI/MS and growth/MS entries used by two cause matrix cards."""
 
@@ -34,6 +47,8 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
         ei = (brand_growth / metrics.cagr * 100) if brand_growth is not None and metrics.cagr not in (None, 0) else None
         contribution = period_delta(hist)
         contribution_pct = safe_pct(contribution, market_growth)
+        momentum_score = _momentum(hist, market_history)
+        matrix_contribution = matrix_growth_value(contribution, contribution_pct, momentum_score)
         row = {
             "brand": brand.brand_name,
             "brand_key": brand.brand_key,
@@ -58,8 +73,8 @@ def matrix_rows(*, metrics: AggregatedMetrics, focus: BrandMetric | None) -> lis
             "ei_period_years": period_years(hist),
             "ei_note": "동적 시장은 runtime filter로 정의된다.",
             "cagr_basis": "first positive month to latest month",
-            "momentum_score": _momentum(hist, market_history),
-            "growth_contribution": contribution,
+            "momentum_score": momentum_score,
+            "growth_contribution": matrix_contribution,
             "growth_contribution_pct": contribution_pct,
             "contribution": contribution,
             "contribution_pct": contribution_pct,

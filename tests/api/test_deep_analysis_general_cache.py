@@ -43,6 +43,7 @@ def _stub_auxiliary(monkeypatch) -> None:
     monkeypatch.setattr(deep_analysis, "_load_cached_brand_elements", lambda _brand_keys: {})
     monkeypatch.setattr(deep_analysis, "_load_brand_strength_by_source", lambda _brand_keys: {})
     monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])
+    monkeypatch.setattr(deep_analysis, "_strategic_brand_flags", lambda _brand: (False, False))
     monkeypatch.setattr(
         deep_analysis,
         "_resolve_brand_factor_choices",
@@ -88,6 +89,30 @@ def test_deep_analysis_general_view_reuses_shared_sections_and_replaces_view_dep
     assert payload["data"]["events"] == [{"id": 1}]
     assert payload["data"]["forecast"]["by_combo"] == {"general.sales": {"period_unit": "월", "forecast_periods": []}}
     assert payload["data"]["simulation"]["by_combo"] == {"general.sales": {"kind": "general"}}
+
+
+def test_deep_analysis_general_view_refreshes_jw_identity_from_strategic_mart(monkeypatch) -> None:
+    general_row = _row("general", atc4="C10A1")
+    general_payload = json.loads(general_row["response_json"])
+    general_payload["market_meta"]["is_jw"] = False
+    general_payload["market_meta"]["is_target"] = False
+    general_row["response_json"] = json.dumps(general_payload, ensure_ascii=False)
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> dict[str, Any] | None:
+        if "cache_deep_analysis_general" in sql:
+            return general_row
+        if "mart_strategic_ml_brand_metric" in sql:
+            return {"is_jw": 1, "is_target": 1}
+        return None
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
+    _stub_auxiliary(monkeypatch)
+    monkeypatch.setattr(deep_analysis, "_strategic_brand_flags", lambda _brand: (True, True))
+
+    payload = deep_analysis.deep_analysis("JW브랜드", view="general")
+
+    assert payload["market_meta"]["is_jw"] is True
+    assert payload["market_meta"]["is_target"] is False
 
 
 def test_deep_analysis_general_view_builds_lightweight_mart_payload_without_on_demand_generation(monkeypatch) -> None:
@@ -167,6 +192,7 @@ def test_deep_analysis_general_view_for_strategic_brand_uses_only_general_mart_c
     monkeypatch.setattr(deep_analysis.db, "fetch_one", fake_fetch_one)
     monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
     _stub_auxiliary(monkeypatch)
+    monkeypatch.setattr(deep_analysis, "_strategic_brand_flags", lambda _brand: (True, True))
 
     payload = deep_analysis.deep_analysis("JW브랜드", view="general")
 
