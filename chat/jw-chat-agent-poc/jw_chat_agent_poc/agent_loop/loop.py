@@ -706,13 +706,13 @@ def _answer_contract_required_calls(
     external: ExternalApiClient | None,
     query_layer: StrategicQueryLayer | None,
 ) -> list[dict[str, Any]]:
-    if _has_unsupported_metric(calls):
-        return []
     required_tools = _contract_required_tools(question)
     if not required_tools:
         return []
     contract_status = evaluate_answer_contract(question, "", None)
     structural_contract = str(contract_status.get("structural_contract") or "")
+    if _has_unsupported_metric(calls) and structural_contract != "change_drivers":
+        return []
     existing = _public_contract_tools(calls)
     plans: list[ToolCallPlan] = []
     seen_plans: set[str] = set()

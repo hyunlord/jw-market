@@ -8,7 +8,7 @@ from typing import Any
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
-from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _sales_delta_calls
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _answer_contract_required_calls, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
@@ -592,6 +592,16 @@ def test_comparison_brand_uses_market_member_segment_when_not_canonical() -> Non
 def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
     metrics = _metrics_tool()
     news = _news_tool()
+    planner = Stage3ScriptedPlanner(
+        decisions=(
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "리바로"}, reason="뉴스 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
     agent = ChatAgent(
         router=BQRouter(),
         metrics=metrics,
@@ -599,7 +609,7 @@ def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
         agent_loop=ToolUseAgent(
             metrics=metrics,
             resolver=BrandResolver(),
-            planner=HeuristicToolPlanner(),
+            planner=planner,
             news=news,
         ),
     )
@@ -609,6 +619,81 @@ def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
     tools = {call["tool"] for call in result["tool_calls"]}
     assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
     assert "unsupported_metric" not in tools
+
+
+def test_news_sales_impact_backfills_contract_before_generic_series_completion() -> None:
+    metrics = _metrics_tool()
+    original = metrics.get_brand_metric
+
+    def metric_with_unsupported_series(brand: str, metric: str = "sales", **kwargs):
+        if metric == "series":
+            return {
+                "source": "cache",
+                "tool": "unsupported_metric",
+                "summary_text": "series unavailable",
+                "render_data": {"brand": brand, "metric": metric, "status": "unsupported"},
+            }
+        return original(brand, metric=metric, **kwargs)
+
+    metrics.get_brand_metric = metric_with_unsupported_series
+    news = _news_tool()
+    planner = Stage3ScriptedPlanner(
+        decisions=(
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(name="search_news", arguments={"brand": "리바로", "query": "리바로"}, reason="뉴스 확인"),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=news,
+        agent_loop=ToolUseAgent(
+            metrics=metrics,
+            resolver=BrandResolver(),
+            planner=planner,
+            news=news,
+        ),
+    )
+
+    result = agent.answer("리바로 관련 뉴스가 최근 매출에 미친 영향")
+
+    tools = {call["tool"] for call in result["tool_calls"]}
+    assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
+    assert "unsupported_metric" not in tools
+
+
+def test_news_sales_impact_required_tools_survive_planner_unsupported_metric() -> None:
+    metrics = _metrics_tool()
+    news = _news_tool()
+    calls = [
+        {
+            "source": "cache",
+            "tool": "unsupported_metric",
+            "render_data": {"brand": "리바로", "metric": "sales", "status": "unsupported"},
+        }
+    ]
+
+    completed = _answer_contract_required_calls(
+        "리바로 관련 뉴스가 최근 매출에 미친 영향",
+        calls,
+        [],
+        "리바로",
+        ("리바로",),
+        metrics,
+        BrandResolver(),
+        None,
+        None,
+        news,
+        None,
+        None,
+    )
+
+    tools = {call["tool"] for call in completed}
+    assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
 
 
 def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:
