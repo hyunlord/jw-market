@@ -95,6 +95,7 @@ def build_general_analysis_level_sections(
         ubist_channel_context=ubist_channel_context,
     )
     build_channels = list(dict.fromkeys([*channels, *status_channels]))
+    series_value_cache: cause_builder._SeriesValueCache = {}
     all_channel_levels = _rename_analysis_levels(
         cause_builder._build_analysis_levels_from_mart(
             rows=canonical_rows,
@@ -105,6 +106,7 @@ def build_general_analysis_level_sections(
             fallback_level_top5={},
             channels_override=build_channels,
             use_latest_valid_share=True,
+            series_value_cache=series_value_cache,
         ),
         specs,
     )
@@ -121,6 +123,7 @@ def build_general_analysis_level_sections(
             include_all_options=bool(focus),
             channel="전체",
             use_latest_valid_share=True,
+            series_value_cache=series_value_cache,
         ),
         specs,
     )
