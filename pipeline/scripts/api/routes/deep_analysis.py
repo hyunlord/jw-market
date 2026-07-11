@@ -17,6 +17,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandSetResolutionError,
     resolve_brand_set,
 )
+from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.deep_analysis_brand_elements import (
     build_brand_factors,
     fallback_brand_choices,
@@ -814,15 +815,8 @@ def _general_row_from_mart(brand: str, *, is_jw: bool = False) -> dict | None:
 
 
 def _strategic_brand_flags(brand: str) -> tuple[bool, bool]:
-    row = db.fetch_one(
-        """
-        SELECT MAX(is_jw) AS is_jw, MAX(is_target) AS is_target
-        FROM mart_strategic_ml_brand_metric
-        WHERE brand_name = %s
-        """,
-        [brand],
-    )
-    return bool(row and row.get("is_jw")), bool(row and row.get("is_target"))
+    is_jw = get_display_brand(brand) is not None
+    return is_jw, False
 
 
 def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:

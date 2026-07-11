@@ -269,3 +269,8 @@ def test_deep_analysis_normalizes_non_finite_section_values(monkeypatch) -> None
     result = deep_analysis.deep_analysis("멀티브랜드")
 
     assert result["data"]["forecast"]["score"] is None
+
+
+def test_strategic_brand_flags_use_the_display_brand_catalog() -> None:
+    assert deep_analysis._strategic_brand_flags("리바로") == (True, False)
+    assert deep_analysis._strategic_brand_flags("리피토") == (False, False)
