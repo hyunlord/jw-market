@@ -16,6 +16,7 @@ CATEGORY_SCORE_CUTOFFS: Final = {
 }
 LEGACY_WF196_PROCESSOR: Final = "workflow_196_optionB"
 NEW_WF196_PROCESSOR: Final = "workflow_196_rev5674"
+PENDING_TIER2_PROCESSOR: Final = "tier2_llm_v2_rev5671"
 CATEGORY_SCORE_CUTOFFS_BY_VERSION: Final = {
     LEGACY_WF196_PROCESSOR: CATEGORY_SCORE_CUTOFFS,
     NEW_WF196_PROCESSOR: {
@@ -99,10 +100,18 @@ def cutoff_for_tag(tag: str | None, source_processor: str | None = None) -> int 
     normalized = (tag or "").strip()
     if normalized in EXCLUDED_EVIDENCE_TAGS:
         return None
-    cutoffs = CATEGORY_SCORE_CUTOFFS_BY_VERSION.get(
-        (source_processor or "").strip(),
-        CATEGORY_SCORE_CUTOFFS,
-    )
+    processor = (source_processor or "").strip()
+    if processor in {
+        "",
+        LEGACY_WF196_PROCESSOR,
+        "tier2_llm_v1",
+        "cross_match_adapter_v1",
+    }:
+        cutoffs = CATEGORY_SCORE_CUTOFFS
+    elif processor == NEW_WF196_PROCESSOR:
+        cutoffs = CATEGORY_SCORE_CUTOFFS_BY_VERSION[NEW_WF196_PROCESSOR]
+    else:
+        return None
     return cutoffs.get(normalized, QUALITY_SCORE_CUTOFF)
 
 

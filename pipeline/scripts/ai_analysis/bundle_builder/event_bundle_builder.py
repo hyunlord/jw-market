@@ -17,6 +17,8 @@ CROSS_MATCH_SOURCE_PROCESSORS = ("cross_match_adapter_v1",)
 # - tier2_llm_v1 is LLM-confirmed brand/article evidence and is visible to Agent2.
 # - tier2_exact_rule_v1 is search/exact-rule provenance only and intentionally
 #   stays outside Agent2 narrative evidence.
+# - tier2_llm_v2_rev5671 is intentionally fail-closed until its calibrated
+#   category mapping is approved and activated atomically with serving policy.
 
 
 def _sql_placeholders(values) -> str:

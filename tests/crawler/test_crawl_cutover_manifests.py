@@ -22,10 +22,24 @@ def test_tier1_manifest_uses_rev5674_marker_and_redesigned_path() -> None:
     assert "suspend: true" in manifest
 
 
-def test_tier2_manifest_pins_ga_workflow_and_stays_suspended() -> None:
+def test_tier2_manifest_pins_ga_workflow_and_stays_active() -> None:
     manifest = _manifest("crawl-tier2-cronjob.yaml")
 
     assert f"@sha256:{CANONICAL_IMAGE_DIGEST}" in manifest
     assert "name: WF337_URL" in manifest
     assert "http://workflow-337.llmops.svc.cluster.local:8080/run/v2" in manifest
-    assert "suspend: true" in manifest
+    assert "append-live" in manifest
+    assert "--target-processor tier2_llm_v2_rev5671" in manifest
+    assert "--daily-call-limit 60" in manifest
+    assert "--max-cost-krw 203.40" in manifest
+    assert "python /opt/tier2/tier2_full_scoring_runner.py append-live" in manifest
+    assert "name: tier2-llm-runner-rev5671" in manifest
+    assert "suspend: false" in manifest
+
+
+def test_tier2_apply_script_generates_configmap_from_canonical_runner() -> None:
+    script = _manifest("apply-tier2-llm-schedule.sh")
+
+    assert "--from-file=tier2_full_scoring_runner.py=\"$runner\"" in script
+    assert "--dry-run=client -o yaml | kubectl apply -f -" in script
+    assert "kubectl -n \"$namespace\" apply -f \"$manifest\"" in script

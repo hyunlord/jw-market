@@ -22,19 +22,19 @@ from typing import Any, Iterable, Literal, Sequence
 
 import pymysql
 
-from pipeline.scripts.crawler.tier2_body_match_runner import connect_from_env
-
 DEFAULT_MATCH_TABLE = "tier2_match_staging"
 DEFAULT_WORKFLOW_URL = "http://workflow-337.llmops.svc.cluster.local:8080/run/v2"
 DEFAULT_WORKFLOW_ID = 337
 DEFAULT_WORKFLOW_REV = 5671
 DEFAULT_DEPLOYMENT_ID = 1453
 DEFAULT_SOURCE_PROCESSOR = "tier2_llm_v1"
+PENDING_SOURCE_PROCESSOR = "tier2_llm_v2_rev5671"
 TIER2_EXACT_PROCESSOR = "tier2_exact_rule_v1"
 TIER1_PROCESSORS = ("workflow_196_optionB", "workflow_196_rev5674", "cross_match_adapter_v1")
 MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_TIMEOUT_SECONDS = 420
 DEFAULT_BATCH_SIZE = 200
+WORKFLOW_CALL_COST_KRW = 3.39
 
 CATEGORY_CODE_BY_LABEL = {
     "신약/R&D": "rd",
@@ -44,6 +44,21 @@ CATEGORY_CODE_BY_LABEL = {
     "공급/생산": "supply",
     "기타": "external",
 }
+
+
+def connect_from_env() -> pymysql.connections.Connection:
+    """Open the d2 connection without depending on another repository module."""
+
+    return pymysql.connect(
+        host=os.environ["DB_HOST"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ.get("DB_NAME", "jw_mart_d2_stage_20260630_r2"),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+    )
 
 
 def strip_json_fence(text: str) -> str:
@@ -136,6 +151,18 @@ def score_tier(score: int) -> str:
 
 def make_staging_table_name() -> str:
     return "event_brand_scores_tier2_staging_" + dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
+
+
+def scoped_event_id(news_id: str, source_processor: str) -> str:
+    """Return a deterministic event id that can coexist with the exact-rule row."""
+
+    if source_processor != PENDING_SOURCE_PROCESSOR:
+        raise ValueError(f"unsupported append processor={source_processor!r}")
+    readable = f"{news_id}:t2v2r5671"
+    if len(readable) <= 64:
+        return readable
+    digest = hashlib.sha256(f"{source_processor}\t{news_id}".encode()).hexdigest()
+    return f"t2v2:{digest[:58]}"
 
 
 def build_workflow_payload(
@@ -453,6 +480,101 @@ def load_scoring_inputs(
     return out
 
 
+def load_pending_exact_inputs(
+    conn: pymysql.connections.Connection,
+    *,
+    source_processor: str,
+    target_processor: str,
+    limit: int,
+) -> list[NewsScoringInput]:
+    """Load exact-rule article/brand pairs that lack the target marker."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT s.news_id,
+                   COALESCE(g.brand_key, s.brand_canonical) AS brand_key,
+                   s.brand_canonical,
+                   'tier2_exact_rule_v1' AS match_source,
+                   JSON_ARRAY(s.brand_canonical) AS matched_keywords,
+                   COALESCE(n.title, '') AS title,
+                   COALESCE(n.article_text, '') AS body,
+                   COALESCE(n.source_name, '') AS source_name,
+                   COALESCE(n.article_url, '') AS article_url,
+                   COALESCE(CAST(n.published_date AS CHAR), '') AS published_date,
+                   n.collected_at,
+                   n.expire_at
+            FROM (
+                SELECT MIN(candidate.id) AS first_id, candidate.news_id
+                FROM event_brand_scores candidate
+                WHERE candidate.source_processor = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM event_brand_scores scored
+                      WHERE scored.news_id = candidate.news_id
+                        AND scored.brand_canonical = candidate.brand_canonical
+                        AND scored.source_processor = %s
+                  )
+                GROUP BY candidate.news_id
+                ORDER BY first_id
+                LIMIT %s
+            ) pending
+            JOIN event_brand_scores s
+              ON s.news_id = pending.news_id
+             AND s.source_processor = %s
+            JOIN news_raw n ON n.news_id = s.news_id
+            LEFT JOIN (
+                SELECT REPLACE(brand_name, ' ', '') AS normalized_brand,
+                       MIN(brand_key) AS brand_key
+                FROM mart_general_brand_metric
+                GROUP BY REPLACE(brand_name, ' ', '')
+            ) g
+              ON g.normalized_brand COLLATE utf8mb4_unicode_ci =
+                 REPLACE(s.brand_canonical, ' ', '') COLLATE utf8mb4_unicode_ci
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM event_brand_scores scored
+                WHERE scored.news_id = s.news_id
+                  AND scored.brand_canonical = s.brand_canonical
+                  AND scored.source_processor = %s
+            )
+            ORDER BY pending.first_id, s.brand_canonical, brand_key
+            """,
+            (source_processor, target_processor, limit, source_processor, target_processor),
+        )
+        rows = cursor.fetchall()
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["news_id"]), []).append(row)
+
+    items: list[NewsScoringInput] = []
+    for news_id, news_rows in grouped.items():
+        first = news_rows[0]
+        items.append(
+            NewsScoringInput(
+                news_id=news_id,
+                title=str(first.get("title") or ""),
+                body=str(first.get("body") or ""),
+                source_name=str(first.get("source_name") or ""),
+                article_url=str(first.get("article_url") or ""),
+                published_date=str(first.get("published_date") or ""),
+                collected_at=first.get("collected_at"),
+                expire_at=first.get("expire_at"),
+                brands=tuple(
+                    MatchedBrand(
+                        brand_key=str(row["brand_key"]),
+                        brand_name=str(row["brand_canonical"]),
+                        match_source=str(row["match_source"]),
+                        matched_keywords=_json_keywords(row.get("matched_keywords")),
+                    )
+                    for row in news_rows
+                ),
+            )
+        )
+    return items
+
+
 def create_staging_table(conn: pymysql.connections.Connection, table_name: str, *, replace: bool) -> None:
     with conn.cursor() as cursor:
         if replace:
@@ -578,6 +700,154 @@ def insert_staged_rows(
             inserted += len(chunk)
             conn.commit()
     return inserted
+
+
+def insert_live_rows(
+    conn: pymysql.connections.Connection,
+    *,
+    rows: Sequence[StagedScoreRow],
+    source_processor: str,
+) -> int:
+    """Append new processor rows without updating an existing score row."""
+
+    if not rows:
+        return 0
+    sql = """
+        INSERT INTO event_brand_scores
+          (event_id, brand_name, brand_canonical, is_jw, score, score_tier, reason,
+           source_processor, generated_at, news_id, derivation, tag, summary,
+           workflow_id, llm_meta, tier, collected_at, expire_at)
+        VALUES
+          (%s, %s, %s, 0, %s, %s, %s,
+           %s, CURRENT_TIMESTAMP(), %s, 'llm_direct', %s, %s,
+           %s, %s, 2, COALESCE(%s, CURRENT_TIMESTAMP()), %s)
+    """
+    with conn.cursor() as cursor:
+        cursor.executemany(
+            sql,
+            [
+                (
+                    scoped_event_id(row.news_id, source_processor),
+                    row.brand_name,
+                    row.brand_canonical,
+                    row.score,
+                    row.score_tier,
+                    row.reason,
+                    source_processor,
+                    row.news_id,
+                    row.tag,
+                    row.summary,
+                    DEFAULT_WORKFLOW_ID,
+                    row.llm_meta,
+                    row.collected_at,
+                    row.expire_at,
+                )
+                for row in rows
+            ],
+        )
+        inserted = int(cursor.rowcount)
+    conn.commit()
+    return inserted
+
+
+def processor_snapshot(
+    conn: pymysql.connections.Connection,
+    source_processor: str,
+) -> dict[str, int]:
+    """Return the row and article counts for an immutable processor generation."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS rows_count, COUNT(DISTINCT news_id) AS news_count
+            FROM event_brand_scores
+            WHERE source_processor = %s
+            """,
+            (source_processor,),
+        )
+        row = cursor.fetchone()
+    return {"rows": int(row["rows_count"]), "news": int(row["news_count"])}
+
+
+def run_append_live(
+    conn: pymysql.connections.Connection,
+    *,
+    source_processor: str,
+    target_processor: str,
+    workflow_url: str,
+    timeout_seconds: int,
+    daily_call_limit: int,
+    max_cost_krw: float,
+) -> dict[str, object]:
+    """Score pending exact rows and append a fail-closed processor generation."""
+
+    if target_processor != PENDING_SOURCE_PROCESSOR:
+        raise ValueError(f"unsupported target processor={target_processor!r}")
+    estimated_cost = daily_call_limit * WORKFLOW_CALL_COST_KRW
+    if estimated_cost > max_cost_krw + 1e-9:
+        raise ValueError(
+            f"daily call limit exceeds cost guard: calls={daily_call_limit} "
+            f"estimated_krw={estimated_cost:.2f} max_krw={max_cost_krw:.2f}"
+        )
+
+    source_before = processor_snapshot(conn, source_processor)
+    target_before = processor_snapshot(conn, target_processor)
+    items = load_pending_exact_inputs(
+        conn,
+        source_processor=source_processor,
+        target_processor=target_processor,
+        limit=daily_call_limit,
+    )
+    failures: list[dict[str, object]] = []
+    inserted_rows = 0
+    workflow_calls = 0
+    consecutive_failures = 0
+    started = time.time()
+
+    for item in items:
+        try:
+            result = call_workflow(
+                item,
+                workflow_url=workflow_url,
+                timeout_seconds=timeout_seconds,
+                max_attempts=1,
+            )
+            workflow_calls += result.attempts
+            inserted_rows += insert_live_rows(
+                conn,
+                rows=rows_from_result(item, result),
+                source_processor=target_processor,
+            )
+            consecutive_failures = 0
+        except (RuntimeError, pymysql.MySQLError) as exc:
+            conn.rollback()
+            workflow_calls += 1
+            failures.append({"news_id": item.news_id, "error": str(exc)})
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                raise RuntimeError(
+                    f"aborting after {consecutive_failures} consecutive append failures"
+                ) from exc
+
+    source_after = processor_snapshot(conn, source_processor)
+    if source_before != source_after:
+        raise RuntimeError(
+            f"source processor changed during append: before={source_before} after={source_after}"
+        )
+    return {
+        "source_processor": source_processor,
+        "target_processor": target_processor,
+        "pending_news_selected": len(items),
+        "workflow_calls": workflow_calls,
+        "inserted_rows": inserted_rows,
+        "failures": failures,
+        "estimated_cost_krw": round(workflow_calls * WORKFLOW_CALL_COST_KRW, 2),
+        "source_before": source_before,
+        "source_after": source_after,
+        "target_before": target_before,
+        "target_after": processor_snapshot(conn, target_processor),
+        "elapsed_sec": round(time.time() - started, 3),
+    }
 
 
 def validate_staging(
@@ -936,6 +1206,21 @@ def main() -> int:
     replace_parser.add_argument("--staging-table", required=True)
     replace_parser.add_argument("--backup-table", default=make_backup_table_name())
 
+    append_parser = subparsers.add_parser("append-live")
+    append_parser.add_argument("--source-processor", default=TIER2_EXACT_PROCESSOR)
+    append_parser.add_argument(
+        "--target-processor",
+        default=PENDING_SOURCE_PROCESSOR,
+        choices=(PENDING_SOURCE_PROCESSOR,),
+    )
+    append_parser.add_argument(
+        "--workflow-url",
+        default=os.getenv("WF337_URL", DEFAULT_WORKFLOW_URL),
+    )
+    append_parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
+    append_parser.add_argument("--daily-call-limit", type=int, default=60)
+    append_parser.add_argument("--max-cost-krw", type=float, default=203.40)
+
     args = parser.parse_args()
     conn = connect_from_env()
     try:
@@ -963,6 +1248,16 @@ def main() -> int:
                 conn,
                 staging_table=args.staging_table,
                 backup_table=args.backup_table,
+            )
+        elif args.command == "append-live":
+            summary = run_append_live(
+                conn,
+                source_processor=args.source_processor,
+                target_processor=args.target_processor,
+                workflow_url=args.workflow_url,
+                timeout_seconds=args.timeout_seconds,
+                daily_call_limit=args.daily_call_limit,
+                max_cost_krw=args.max_cost_krw,
             )
         else:  # pragma: no cover - argparse enforces commands.
             raise ValueError(f"unknown command={args.command!r}")

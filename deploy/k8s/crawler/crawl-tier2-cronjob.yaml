@@ -175,6 +175,12 @@ spec:
                 --db-name "$DB_NAME" \
                 --tier 2 \
                 --processed-by tier2_exact_rule_v1
+              python /opt/tier2/tier2_full_scoring_runner.py append-live \
+                --source-processor tier2_exact_rule_v1 \
+                --target-processor tier2_llm_v2_rev5671 \
+                --workflow-url "$WF337_URL" \
+                --daily-call-limit 60 \
+                --max-cost-krw 203.40
             command:
             - /bin/sh
             - -lc
@@ -210,6 +216,10 @@ spec:
             image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
             imagePullPolicy: IfNotPresent
             name: crawler
+            volumeMounts:
+            - mountPath: /opt/tier2
+              name: tier2-llm-runner
+              readOnly: true
             resources:
               limits:
                 cpu: '1'
@@ -226,6 +236,10 @@ spec:
           schedulerName: default-scheduler
           securityContext: {}
           terminationGracePeriodSeconds: 30
+          volumes:
+          - configMap:
+              name: tier2-llm-runner-rev5671
+            name: tier2-llm-runner
   schedule: 40 18 * * *
   successfulJobsHistoryLimit: 3
-  suspend: true
+  suspend: false

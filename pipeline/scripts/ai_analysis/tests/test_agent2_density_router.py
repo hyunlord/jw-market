@@ -5,6 +5,7 @@ from bundle_builder.agent2_density_router import (
     CATEGORY_SCORE_CUTOFFS_BY_VERSION,
     EvidenceCount,
     NEW_WF196_PROCESSOR,
+    PENDING_TIER2_PROCESSOR,
     ProcessingMode,
     cutoff_for_tag,
     density_bucket,
@@ -75,6 +76,13 @@ def test_rev5674_processor_uses_pl_confirmed_cutoffs() -> None:
     assert cutoff_for_tag("신약/R&D", NEW_WF196_PROCESSOR) == 73
     assert cutoff_for_tag("정책/규제", NEW_WF196_PROCESSOR) == 69
     assert cutoff_for_tag("기타", NEW_WF196_PROCESSOR) is None
+
+
+def test_unmapped_tier2_v2_marker_is_explicitly_fail_closed() -> None:
+    assert PENDING_TIER2_PROCESSOR == "tier2_llm_v2_rev5671"
+    assert PENDING_TIER2_PROCESSOR not in CATEGORY_SCORE_CUTOFFS_BY_VERSION
+    assert cutoff_for_tag("정책/규제", PENDING_TIER2_PROCESSOR) is None
+    assert cutoff_for_tag("외부/트렌드", "unknown_future_marker") is None
 
 
 def test_route_brand_applies_cutoff_for_each_processor_version() -> None:

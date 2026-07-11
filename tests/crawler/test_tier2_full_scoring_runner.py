@@ -9,13 +9,47 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     DEFAULT_WORKFLOW_ID,
     DEFAULT_WORKFLOW_REV,
     DEFAULT_WORKFLOW_URL,
+    PENDING_SOURCE_PROCESSOR,
     MatchedBrand,
     ParsedTier2Score,
+    StagedScoreRow,
     build_workflow_payload,
     find_workflow_text,
+    insert_live_rows,
     parse_wf324_response,
     score_tier,
+    scoped_event_id,
 )
+
+
+class RecordingCursor:
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: list[tuple[object, ...]] = []
+        self.rowcount = 0
+
+    def __enter__(self) -> "RecordingCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def executemany(self, sql: str, params: list[tuple[object, ...]]) -> None:
+        self.sql = sql
+        self.params = params
+        self.rowcount = len(params)
+
+
+class RecordingConnection:
+    def __init__(self) -> None:
+        self.cursor_obj = RecordingCursor()
+        self.commits = 0
+
+    def cursor(self) -> RecordingCursor:
+        return self.cursor_obj
+
+    def commit(self) -> None:
+        self.commits += 1
 
 
 def test_default_workflow_targets_ga_rebuild() -> None:
@@ -23,6 +57,53 @@ def test_default_workflow_targets_ga_rebuild() -> None:
     assert DEFAULT_WORKFLOW_ID == 337
     assert DEFAULT_WORKFLOW_REV == 5671
     assert DEFAULT_WORKFLOW_URL == "http://workflow-337.llmops.svc.cluster.local:8080/run/v2"
+    assert PENDING_SOURCE_PROCESSOR == "tier2_llm_v2_rev5671"
+
+
+def test_scoped_event_id_keeps_news_identity_while_avoiding_exact_row_collision() -> None:
+    event_id = scoped_event_id("4b9063c28ad45d38", PENDING_SOURCE_PROCESSOR)
+
+    assert event_id == "4b9063c28ad45d38:t2v2r5671"
+    assert len(event_id) <= 64
+
+
+def test_scoped_event_id_hashes_long_news_identity_within_schema_limit() -> None:
+    event_id = scoped_event_id("n" * 64, PENDING_SOURCE_PROCESSOR)
+
+    assert event_id.startswith("t2v2:")
+    assert len(event_id) <= 64
+
+
+def test_live_append_uses_plain_insert_and_new_marker() -> None:
+    conn = RecordingConnection()
+    rows = [
+        StagedScoreRow(
+            event_id="4b9063c28ad45d38",
+            news_id="4b9063c28ad45d38",
+            brand_name="스타빅",
+            brand_canonical="스타빅",
+            score=58,
+            score_tier="moderate",
+            reason="직접 언급",
+            tag="외부/트렌드",
+            summary="요약",
+            llm_meta="{}",
+            collected_at=None,
+            expire_at=None,
+        )
+    ]
+
+    inserted = insert_live_rows(
+        conn,
+        rows=rows,
+        source_processor=PENDING_SOURCE_PROCESSOR,
+    )
+
+    assert inserted == 1
+    assert "ON DUPLICATE KEY UPDATE" not in conn.cursor_obj.sql
+    assert conn.cursor_obj.params[0][0] == "4b9063c28ad45d38:t2v2r5671"
+    assert conn.cursor_obj.params[0][6] == PENDING_SOURCE_PROCESSOR
+    assert conn.commits == 1
 
 
 def _brands() -> list[MatchedBrand]:
