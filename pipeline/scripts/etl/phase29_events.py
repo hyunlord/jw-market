@@ -266,7 +266,7 @@ def _query_events(
             return []
 
     where = [
-        "COALESCE(s.brand_canonical, s.brand_name) = %s",
+        "s.brand_canonical = %s",
         "s.score >= %s",
     ]
     params: list[Any] = [brand, min_score]

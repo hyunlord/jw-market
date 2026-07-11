@@ -113,6 +113,8 @@ def test_query_events_applies_policy_predicate_in_source_sql() -> None:
     select_params = next(params for sql, params in zip(conn.statements, conn.params) if "FROM event_brand_scores s" in sql)
 
     assert "s.tag <> %s" in select_sql
+    assert "s.brand_canonical = %s" in select_sql
+    assert "COALESCE(s.brand_canonical, s.brand_name)" not in select_sql
     assert "s.source_processor = %s" in select_sql
     assert "s.source_processor IS NULL OR s.source_processor <> %s" in select_sql
     assert "workflow_196_rev5674" in select_params
