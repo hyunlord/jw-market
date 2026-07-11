@@ -11,6 +11,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import sys
+from threading import Lock
 from typing import Any
 
 from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
@@ -31,6 +32,7 @@ from pipeline.scripts.etl.ubist_channel_resolver import strategic_channel_totals
 
 
 JsonRow = dict[str, Any]
+_STRATEGIC_BUILD_LOCK = Lock()
 
 
 def build_strategic_payload(
@@ -43,7 +45,35 @@ def build_strategic_payload(
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
 ) -> JsonRow:
-    """Build a strategic dynamic-market response with cache-cause overlays."""
+    """Build one strategic response while bounding shared builder cache memory."""
+
+    with _STRATEGIC_BUILD_LOCK:
+        _clear_cause_builder_runtime_caches()
+        try:
+            return _build_strategic_payload(
+                mart_db=mart_db,
+                ml_id=ml_id,
+                cd_market_id=cd_market_id,
+                focus_brand_key=focus_brand_key,
+                source=source,
+                measure=measure,
+                analysis_level=analysis_level,
+            )
+        finally:
+            _clear_cause_builder_runtime_caches()
+
+
+def _build_strategic_payload(
+    *,
+    mart_db: str,
+    ml_id: str | None,
+    cd_market_id: str | None,
+    focus_brand_key: str | None,
+    source: str,
+    measure: str,
+    analysis_level: DynamicMarketAnalysisLevelFilters,
+) -> JsonRow:
+    """Assemble a strategic response from mart rows."""
 
     market_kind, view_source_id = _resolve_market_id(ml_id=ml_id, cd_market_id=cd_market_id)
     mart_source = normalize_source(source)
@@ -100,8 +130,6 @@ def build_strategic_payload(
             market_catalog_row=market_catalog_row,
         )
     strategic_brand = _strategic_brand_catalog()
-    if has_runtime_filter:
-        _clear_cause_builder_runtime_caches()
     with strategic_channel_totals_context(filtered_rows):
         raw_payload = cause_builder.build_response(
             brand_row=brand_row,

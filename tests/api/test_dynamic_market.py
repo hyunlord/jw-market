@@ -3220,6 +3220,30 @@ def test_strategic_runtime_has_no_legacy_cache_cause_read() -> None:
     assert "_cached_cause_payload" not in source
 
 
+def test_strategic_runtime_clears_builder_caches_around_every_mart_build(monkeypatch) -> None:
+    events: list[str] = []
+
+    monkeypatch.setattr(strategic_runtime, "_clear_cause_builder_runtime_caches", lambda: events.append("clear"))
+    monkeypatch.setattr(
+        strategic_runtime,
+        "_build_strategic_payload",
+        lambda **_kwargs: events.append("build") or {"data": {"kpi": {}}},
+    )
+
+    result = strategic_runtime.build_strategic_payload(
+        mart_db="mart",
+        ml_id="ml_006",
+        cd_market_id=None,
+        focus_brand_key="리바로",
+        source="ubist",
+        measure="sales",
+        analysis_level=DynamicMarketRequest().filters.analysis_level,
+    )
+
+    assert result == {"data": {"kpi": {}}}
+    assert events == ["clear", "build", "clear"]
+
+
 def test_strategic_sidecar_aggregation_keeps_recode_product_history(monkeypatch) -> None:
     calls: list[str] = []
 
