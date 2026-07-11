@@ -134,6 +134,21 @@ def test_concentration_backfills_market_scope_when_planner_only_fetched_metric()
     assert plans[0].arguments == {"brand": "리바로", "view": "market_landscape"}
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 시장 상위 5개 브랜드 합산 점유율 알려줘",
+        "리바로 시장 상위 3개 브랜드 점유율 변화를 비교해줘",
+    ),
+)
+def test_share_completeness_backfills_metric_when_planner_only_fetched_scope(question: str) -> None:
+    calls = [{"tool": "get_market_landscape", "render_data": {"status": "ok", "market_id": "ml_006"}}]
+    plans = answer_contract_backfill_tool_calls(question, "리바로", calls)
+    assert len(plans) == 1
+    assert plans[0].name == "get_metric"
+    assert plans[0].arguments == {"brand": "리바로", "measure": "market_share", "period": "latest"}
+
+
 def test_target_share_gap_adds_full_deterministic_calculation() -> None:
     revised = enforce_answer_contract("리바로 점유율 4% 달성에 필요한 매출", "현재 점유율은 3.76%입니다.", {"fact_md": TARGET_FACT})
     assert "시장 규모 2,256.77억원" in revised

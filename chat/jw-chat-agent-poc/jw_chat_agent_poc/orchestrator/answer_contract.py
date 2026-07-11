@@ -107,6 +107,14 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                 reason="AnswerContract concentration fact backfill",
             ),
         )
+    if intent in {"share_delta_compare", "top_n_share_sum"} and not _has_brand_metric_fact(calls, brand):
+        return (
+            ToolCallPlan(
+                name="get_metric",
+                arguments={"brand": brand, "measure": "market_share", "period": "latest"},
+                reason="AnswerContract share completeness fact backfill",
+            ),
+        )
     if intent != "ranking":
         return ()
     if _has_brand_metric_fact(calls, brand):
