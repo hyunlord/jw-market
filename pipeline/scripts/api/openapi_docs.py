@@ -821,7 +821,11 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                 "scope": BRAND_ACTIVITY_SCOPE_SCHEMA,
                                 "brands": {
                                     "type": "array",
-                                    "description": "브랜드 카드 목록. topic_shares 합 + etc_pct = 100입니다.",
+                                    "description": (
+                                        "브랜드 카드 목록. topic_shares의 각 share_pct는 토픽별 독립 비율이므로 "
+                                        "합계가 100%를 초과할 수 있습니다. etc_pct는 표시된 top_n 토픽 비율 합을 "
+                                        "100에서 뺀 뒤 0을 하한으로 적용한 호환 필드입니다."
+                                    ),
                                     "items": {
                                         "type": "object",
                                         "properties": {
@@ -833,7 +837,13 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                             "sales_rank": {"type": ["integer", "null"], "description": "시장 내 매출 rank. rank를 산출할 수 없으면 null."},
                                             "topic_shares": {"type": "array", "description": "상위 토픽 막대 목록(label/share_pct/topic_id/rank)."},
                                             "topics": {"type": "array", "description": "topic_shares와 같은 포탈 호환 alias."},
-                                            "etc_pct": {"type": "number", "description": "상위 토픽 외 기타 비율."},
+                                            "etc_pct": {
+                                                "type": "number",
+                                                "description": (
+                                                    "max(0, 100 - 표시된 top_n 토픽 share_pct 합). 기타 토픽 또는 "
+                                                    "미분류 행 비율이 아니며 top_n에 따라 달라지는 호환 필드입니다."
+                                                ),
+                                            },
                                             "brand_specific_topics": {"type": "array", "description": "토픽 정의/근거 행 수를 포함한 상세 목록."},
                                         },
                                     },
