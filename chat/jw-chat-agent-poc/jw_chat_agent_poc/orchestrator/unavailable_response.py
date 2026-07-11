@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping, Sequence
 
 _INTERNAL_DIAGNOSTIC_RE = re.compile(
     r"(?:cache_cause|CausePayloadKey|market_id\s*=|response_json|Traceback|LookupError|TypeError|KeyError|SELECT\s+|FROM\s+)",
@@ -37,6 +37,8 @@ _FIVE_STEP_MARKERS = (
 _SOURCE_HEADING_RE = re.compile(r"\n##\s*(?:출처|처리\s*시간)\b")
 _GENERIC_UNAVAILABLE = "요청한 일부 지표는 현재 운영 데이터에서 확정 경로를 찾지 못했습니다."
 _FORECAST_TOKENS = ("전망", "forecast", "예측", "향후")
+_ERROR_STATUSES = frozenset({"error", "query_failed", "mapping_failed", "timeout", "failed"})
+_ABSENT_STATUSES = frozenset({"no_data", "unsupported", "missing", "not_found", "incomplete_split"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +152,13 @@ _DEFAULT_PLAN = UnavailablePlan(
 )
 
 
-def apply_common_unavailable_response(question: str, answer: str, markdown_response: Mapping[str, object] | None) -> str:
+def apply_common_unavailable_response(
+    question: str,
+    answer: str,
+    markdown_response: Mapping[str, object] | None,
+    *,
+    tool_calls: Sequence[Mapping[str, Any]] | None = None,
+) -> str:
     """Sanitize internal diagnostics and append the common 5-step unavailable block when needed."""
 
     fact_md = _fact_markdown(markdown_response)
@@ -161,12 +169,118 @@ def apply_common_unavailable_response(question: str, answer: str, markdown_respo
     question_has_unavailable_signal = bool(_QUESTION_UNAVAILABLE_RE.search(question))
     if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not question_has_unavailable_signal:
         return _cleanup(sanitized_answer)
+    gated = _four_stage_unavailable_gate(
+        question,
+        sanitized_answer,
+        fact_md,
+        tool_calls,
+        question_has_unavailable_signal=question_has_unavailable_signal,
+    )
+    if gated is not None:
+        return gated
     if not question_has_unavailable_signal and _is_positioning_question(question):
         return _cleanup(sanitized_answer)
     if not question_has_unavailable_signal and not _UNAVAILABLE_SIGNAL_RE.search(sanitize_internal_diagnostics(fact_md)):
         return _cleanup(sanitized_answer)
     block = _five_step_block(_plan_for(question, sanitized_answer, fact_md))
     return _cleanup(_insert_before_source(sanitized_answer, block))
+
+
+def _four_stage_unavailable_gate(
+    question: str,
+    answer: str,
+    fact_md: str,
+    tool_calls: Sequence[Mapping[str, Any]] | None,
+    *,
+    question_has_unavailable_signal: bool,
+) -> str | None:
+    """Separate owned facts, source absence, and failed verification.
+
+    Slot reuse runs before final answer generation. This final gate therefore starts
+    at the current fact set and only evaluates tool evidence when the caller supplies
+    the executions from this turn. Omitting tool_calls preserves legacy pure-format
+    call sites.
+    """
+
+    if tool_calls is None:
+        return None
+    calls = tuple(tool_calls)
+    if not question_has_unavailable_signal and _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
+        return _cleanup("\n\n".join(("요청한 값은 현재 조회 결과에 존재합니다.", sanitize_internal_diagnostics(fact_md))))
+
+    required = _required_tools(question)
+    attempted = {_public_tool_name(call) for call in calls}
+    missing = tuple(tool for tool in required if tool not in attempted)
+    if missing:
+        return _unverified_answer(f"필요 도구({', '.join(missing)})가 이번 턴에 실행되지 않았습니다")
+
+    failed = tuple(
+        _public_tool_name(call)
+        for call in calls
+        if _tool_status(call) in _ERROR_STATUSES
+    )
+    if failed:
+        return _unverified_answer(f"도구 조회({', '.join(dict.fromkeys(failed))})가 실패했습니다")
+
+    absent = tuple(call for call in calls if _tool_status(call) in _ABSENT_STATUSES)
+    if absent or question_has_unavailable_signal:
+        plan = _plan_for(question, answer, fact_md)
+        source_absence = f"원천에 없음: {plan.missing}"
+        return _cleanup(_insert_before_source("\n\n".join((source_absence, answer)), _five_step_block(plan)))
+    return None
+
+
+def _required_tools(question: str) -> tuple[str, ...]:
+    from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
+
+    status = evaluate_answer_contract(question, "", None)
+    structural = status.get("structural_contract")
+    if isinstance(structural, str) and structural:
+        return CONTRACT_REQUIRED_TOOLS.get(structural, ())
+    intent = status.get("intent")
+    if isinstance(intent, str) and intent:
+        return CONTRACT_REQUIRED_TOOLS.get(intent, ())
+    return ()
+
+
+def _public_tool_name(call: Mapping[str, Any]) -> str:
+    tool = str(call.get("tool") or "")
+    aliases = {
+        "get_metric": "get_brand_metric",
+        "get_market_scope": "market_scope",
+        "get_market_landscape": "market_scope",
+    }
+    return aliases.get(tool, tool)
+
+
+def _tool_status(call: Mapping[str, Any]) -> str:
+    data = call.get("render_data")
+    if isinstance(data, Mapping):
+        return str(data.get("status") or "ok").lower()
+    return str(call.get("status") or "ok").lower()
+
+
+def _has_successful_fact_call(calls: Sequence[Mapping[str, Any]]) -> bool:
+    for call in calls:
+        if _tool_status(call) != "ok":
+            continue
+        data = call.get("render_data")
+        if isinstance(data, Mapping) and any(value not in (None, "", [], ()) for value in data.values()):
+            return True
+    return False
+
+
+def _has_positive_fact(fact_md: str) -> bool:
+    if not fact_md.strip():
+        return False
+    compact = re.sub(r"\s+", " ", fact_md).strip()
+    if compact in {"데이터 미보유", "미보유", "데이터 없음"}:
+        return False
+    return bool(re.search(r"(?:\d[\d,.]*\s*(?:억원|%|건|명)|확정 fact|시계열 fact|지표 fact)", compact))
+
+
+def _unverified_answer(reason: str) -> str:
+    return f"현재 확인 불가: {reason}. 이는 원천 데이터가 없다는 뜻은 아닙니다. 조회 경로가 정상화된 뒤 다시 확인해 주세요."
 
 
 def sanitize_internal_diagnostics(text: str) -> str:

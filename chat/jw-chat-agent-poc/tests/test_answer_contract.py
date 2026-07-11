@@ -463,6 +463,82 @@ def test_common_unavailable_layer_does_not_fire_for_owned_metric_answer() -> Non
     assert "미보유 데이터 처리" not in revised
 
 
+def test_unavailable_gate_surfaces_owned_fact_instead_of_false_absence() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 매출 알려줘",
+        "리바로 매출은 현재 fact set에 포함되지 않아 미보유입니다.",
+        {"fact_md": RANKING_FACT_MD},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "ok", "brand": "리바로", "sales_억원": 84.93},
+            }
+        ],
+    )
+
+    assert revised.startswith("요청한 값은 현재 조회 결과에 존재합니다.")
+    assert "84.93억원" in revised
+    assert "원천에 없음" not in revised
+
+
+def test_unavailable_gate_marks_missing_required_tool_as_unverified_not_absent() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 시장의 브랜드 집중도는 어때",
+        "집중도는 현재 데이터에 미보유입니다.",
+        {"fact_md": ""},
+        tool_calls=[{"tool": "get_brand_metric", "render_data": {"status": "ok", "sales_억원": 84.93}}],
+    )
+
+    assert revised.startswith("현재 확인 불가:")
+    assert "market_scope" in revised
+    assert "원천 데이터가 없다는 뜻은 아닙니다" in revised
+    assert "원천에 없음" not in revised
+
+
+def test_unavailable_gate_separates_tool_failure_from_source_absence() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 매출 알려줘",
+        "매출 데이터가 없습니다.",
+        {"fact_md": ""},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "query_failed", "message": "upstream timeout"},
+            }
+        ],
+    )
+
+    assert revised.startswith("현재 확인 불가:")
+    assert "get_brand_metric" in revised
+    assert "원천 데이터가 없다는 뜻은 아닙니다" in revised
+
+
+def test_unavailable_gate_allows_proven_source_absence_with_missing_grain() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 주간 채널별 매출을 알려줘",
+        "요청한 주간 채널 데이터는 미보유입니다.",
+        {"fact_md": "데이터 미보유"},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "no_data", "metric": "weekly_channel_sales"},
+            }
+        ],
+    )
+
+    assert revised.startswith("원천에 없음:")
+    assert "주간/월간/축별" in revised
+    assert "### 미보유 데이터 처리" in revised
+
+
+def test_unavailable_gate_does_not_retry_required_tool_after_one_attempt() -> None:
+    calls = [{"tool": "get_brand_metric", "render_data": {"status": "no_data", "brand": "리바로"}}]
+
+    plans = answer_contract_backfill_tool_calls("리바로 순위 알려줘", "리바로", calls)
+
+    assert plans == ()
+
+
 def test_common_unavailable_layer_does_not_duplicate_existing_5step_block() -> None:
     answer = """### 미보유 데이터 처리
 | 단계 | 내용 |

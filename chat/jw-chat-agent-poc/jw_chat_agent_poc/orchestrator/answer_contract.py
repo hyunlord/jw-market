@@ -73,7 +73,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
     structural = _structural_contract_type(question)
     if structural == "sales_activity_link":
         plans: list[ToolCallPlan] = []
-        if not _has_brand_metric_fact(calls, brand):
+        if not _has_tool_attempt(calls, "get_brand_metric"):
             plans.append(
                 ToolCallPlan(
                     name="get_metric",
@@ -81,7 +81,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                     reason="AnswerContract structural proxy backfill",
                 )
             )
-        if not _has_csd_activity_fact(calls, brand):
+        if not _has_tool_attempt(calls, "csd_activity_trend"):
             plans.append(
                 ToolCallPlan(
                     name="csd_activity_trend",
@@ -111,7 +111,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                     reason="AnswerContract change-driver news backfill",
                 )
             )
-        if not _has_brand_metric_fact(calls, brand):
+        if not _has_tool_attempt(calls, "get_brand_metric"):
             plans.append(
                 ToolCallPlan(
                     name="get_metric",
@@ -137,7 +137,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                 reason="AnswerContract concentration fact backfill",
             ),
         )
-    if intent in {"share_delta_compare", "top_n_share_sum"} and not _has_brand_metric_fact(calls, brand):
+    if intent in {"share_delta_compare", "top_n_share_sum"} and not _has_tool_attempt(calls, "get_brand_metric"):
         return (
             ToolCallPlan(
                 name="get_metric",
@@ -147,7 +147,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
         )
     if intent != "ranking":
         return ()
-    if _has_brand_metric_fact(calls, brand):
+    if _has_tool_attempt(calls, "get_brand_metric"):
         return ()
     return (
         ToolCallPlan(
@@ -339,6 +339,10 @@ def _fact_markdown(markdown_response: Mapping[str, Any] | None) -> str:
 
 def _has_ranking_fact(calls: list[dict[str, Any]], brand: str) -> bool:
     return _has_brand_metric_fact(calls, brand)
+
+
+def _has_tool_attempt(calls: list[dict[str, Any]], tool: str) -> bool:
+    return tool in _contract_tool_names(calls)
 
 
 def _has_brand_metric_fact(calls: list[dict[str, Any]], brand: str) -> bool:
