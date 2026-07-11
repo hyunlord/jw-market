@@ -22,11 +22,11 @@ from jw_chat_agent_poc.tools.query_layer.render import (
 from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, bounded_limit, level_name, parse_spec, validate_spec
 from jw_chat_agent_poc.tools.query_layer.store import (
-    MariaDbStrategicMartReader,
     MartRecord,
     MartSnapshot,
     StrategicMartReader,
     TtlStrategicMartStore,
+    shared_strategic_mart_store,
 )
 
 
@@ -54,10 +54,16 @@ class StrategicQueryLayer:
         self,
         *,
         reader: StrategicMartReader | None = None,
+        store: TtlStrategicMartStore | None = None,
         result_store: QueryResultStore | None = None,
         ttl_seconds: int = 300,
     ) -> None:
-        self._store = TtlStrategicMartStore(reader or MariaDbStrategicMartReader(), ttl_seconds=ttl_seconds)
+        if store is not None:
+            self._store = store
+        elif reader is not None:
+            self._store = TtlStrategicMartStore(reader, ttl_seconds=ttl_seconds)
+        else:
+            self._store = shared_strategic_mart_store(ttl_seconds)
         self._results = result_store or QueryResultStore()
 
     def catalog_for_brand(self, brand: str | None) -> QueryCatalog:

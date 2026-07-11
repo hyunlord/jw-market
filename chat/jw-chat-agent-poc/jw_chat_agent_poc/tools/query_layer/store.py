@@ -362,6 +362,23 @@ class TtlStrategicMartStore:
             return current
 
 
+_SHARED_STORE_LOCK = threading.Lock()
+_SHARED_MART_STORES: dict[int, TtlStrategicMartStore] = {}
+
+
+def shared_strategic_mart_store(ttl_seconds: int = 300) -> TtlStrategicMartStore:
+    """Return the process-wide mart snapshot store for the requested TTL."""
+    with _SHARED_STORE_LOCK:
+        store = _SHARED_MART_STORES.get(ttl_seconds)
+        if store is None:
+            store = TtlStrategicMartStore(
+                MariaDbStrategicMartReader(),
+                ttl_seconds=ttl_seconds,
+            )
+            _SHARED_MART_STORES[ttl_seconds] = store
+        return store
+
+
 def _loads(value: Any) -> dict[str, Any]:
     parsed = json.loads(value) if isinstance(value, str) and value else value
     return parsed if isinstance(parsed, dict) else {}
