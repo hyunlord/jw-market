@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
+from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationStore, PendingClarification
 
 
 class Clock:
@@ -47,3 +47,12 @@ def test_conversation_store_expires_conversation_and_pending() -> None:
     assert refreshed.conversation_id == "conv-1"
     assert refreshed.turns == ()
     assert refreshed.pending is None
+
+
+def test_conversation_store_preserves_structured_slots_with_turn() -> None:
+    store = ConversationStore()
+    slots = ConversationSlots(anchor_brand="리바로", ranked_brands=("로수젯", "리피토", "리바로"))
+
+    store.record_exchange("conv-slots", "상위 3개", "답변", slots=slots)
+
+    assert store.get_or_create("conv-slots").turns[-1].slots == slots

@@ -1277,3 +1277,65 @@ def test_stream_endpoint_preserves_single_turn_fallback_without_pending() -> Non
     assert response.status_code == 200
     assert "fallback:리바로 매출" in response.text
     assert FakeAgent.calls == [("리바로 매출", "live")]
+
+
+def test_answer_question_reuses_previous_ranked_brand_series_for_anaphora() -> None:
+    calls: list[str] = []
+
+    class ContextAgent:
+        def answer(self, question: str, _documents=None) -> dict:
+            calls.append(question)
+            return {
+                "answer": "상위 브랜드",
+                "resolution": {"canonical_brand": "리바로"},
+                "sources": ["UBIST"],
+                "tool_calls": [
+                    {
+                        "tool": "get_brand_metric",
+                        "source": "UBIST",
+                        "render_data": {
+                            "brand": "리바로",
+                            "market_id": "ml_006",
+                            "period": "2026-04",
+                            "level_top5_trend_series": [
+                                {
+                                    "brand": "로수젯",
+                                    "rank": 1,
+                                    "series": [
+                                        {"period": "2026-03", "value_krw": 19_500_000_000.0, "ms_pct": 8.7, "rank": 1},
+                                        {"period": "2026-04", "value_krw": 20_685_385_934.33, "ms_pct": 9.1659, "rank": 1},
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+
+    agent = ContextAgent()
+    store = SessionStore()
+    factory = lambda **_kwargs: agent
+
+    first = service_app._answer_question(store, _market_scope_resolver(), factory, "리바로 시장 상위 3개 브랜드 점유율", "live", "conv-context")
+    second = service_app._answer_question(store, _market_scope_resolver(), factory, "그중 1위 브랜드 점유율 추이는?", "live", "conv-context")
+
+    assert first["result"]["tool_calls"]
+    assert calls == ["리바로 시장 상위 3개 브랜드 점유율"]
+    assert second["result"]["context_fact_reused"] is True
+    assert second["result"]["tool_calls"][0]["render_data"]["brand"] == "로수젯"
+
+
+def test_answer_question_does_not_guess_unbound_anaphora() -> None:
+    FakeAgent.calls = []
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "그 브랜드 점유율 추이는?",
+        "live",
+        "conv-empty-context",
+    )
+
+    assert item["result"]["conversation_reference_unresolved"] is True
+    assert "어느 브랜드" in item["result"]["answer"]
+    assert FakeAgent.calls == []

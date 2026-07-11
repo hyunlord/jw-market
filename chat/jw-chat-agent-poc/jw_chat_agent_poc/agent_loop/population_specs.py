@@ -60,12 +60,6 @@ def strict_query_plan(question: str, brand: str) -> StrictQueryPlan | None:
     return None
 
 
-def _causal_news_sales_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
-    if _asks_causal_news_sales(question):
-        return StrictQueryPlan(unsupported_message="뉴스와 매출의 인과 효과는 현재 mart 지표만으로 단정할 수 없습니다.")
-    return None
-
-
 def _nhi_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_nhi(question):
         return StrictQueryPlan(unsupported_message="nhi_type dimension absent in strategic mart for this market.")
@@ -231,7 +225,6 @@ def _company_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan 
 
 
 STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
-    StrictQueryRule("causal_news_sales_unsupported", _causal_news_sales_plan),
     StrictQueryRule("nhi_unsupported", _nhi_plan),
     StrictQueryRule("source_crosscheck", _source_crosscheck_plan),
     StrictQueryRule("segment_compare", _segment_compare_plan),
@@ -296,10 +289,6 @@ def _asks_yoy(question: str) -> bool:
 
 def _asks_average_share(question: str) -> bool:
     return "평균" in question and "점유율" in question
-
-
-def _asks_causal_news_sales(question: str) -> bool:
-    return any(token in question for token in ("영향", "원인", "왜")) and any(token in question for token in ("뉴스", "이슈")) and "매출" in question
 
 
 def _asks_form_sales_trend(question: str) -> bool:

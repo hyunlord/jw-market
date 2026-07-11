@@ -589,6 +589,28 @@ def test_comparison_brand_uses_market_member_segment_when_not_canonical() -> Non
     assert "아토젯 매출 변화는 현재 지원 브랜드 목록" not in result["markdown_response"]["fact_md"]
 
 
+def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
+    metrics = _metrics_tool()
+    news = _news_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=news,
+        agent_loop=ToolUseAgent(
+            metrics=metrics,
+            resolver=BrandResolver(),
+            planner=HeuristicToolPlanner(),
+            news=news,
+        ),
+    )
+
+    result = agent.answer("리바로 관련 뉴스가 최근 매출에 미친 영향")
+
+    tools = {call["tool"] for call in result["tool_calls"]}
+    assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
+    assert "unsupported_metric" not in tools
+
+
 def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:
     metrics = _metrics_tool_with_atozet_trend_only()
     agent = ChatAgent(

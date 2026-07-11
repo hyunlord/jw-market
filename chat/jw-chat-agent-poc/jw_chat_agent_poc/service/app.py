@@ -42,6 +42,12 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
+from jw_chat_agent_poc.service.conversation_context import (
+    extract_conversation_slots,
+    resolve_anaphora,
+    reused_context_result,
+    unresolved_reference_result,
+)
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
@@ -448,7 +454,13 @@ def _answer_question(
                 use_direct_agent_loop=use_direct_agent_loop,
             )
             result = _attach_file_context(result, delegated_file_context, file_source_items)
-        store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
+        store.conversations.record_exchange(
+            state.conversation_id,
+            question,
+            str(result.get("answer") or ""),
+            _applied_filters(result),
+            slots=extract_conversation_slots(result),
+        )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
 
 
@@ -578,11 +590,18 @@ def _answer_with_conversation(
             use_direct_agent_loop=use_direct_agent_loop,
         )
         return _prepend_pending_notice(result)
+    state = store.conversations.get_or_create(conversation_id)
+    previous_turn = state.turns[-1] if state.turns else None
+    resolution = resolve_anaphora(question, previous_turn)
+    if resolution.unresolved_reference:
+        return unresolved_reference_result(question)
+    if resolution.reusable_ranked is not None:
+        return reused_context_result(question, resolution.reusable_ranked, previous_turn.slots if previous_turn else None)
     return _answer_without_pending(
         market_scope_resolver,
         agent_factory,
         conversation_id,
-        question,
+        resolution.resolved_question,
         external_mode,
         documents,
         store,

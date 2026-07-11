@@ -7,10 +7,37 @@ from uuid import uuid4
 
 
 @dataclass(frozen=True, slots=True)
+class SeriesPoint:
+    period: str
+    value_krw: float | None = None
+    ms_pct: float | None = None
+    rank: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RankedBrandSlot:
+    brand: str
+    rank: int | None = None
+    series: tuple[SeriesPoint, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationSlots:
+    anchor_brand: str | None = None
+    market: str | None = None
+    market_definition: str | None = None
+    period: str | None = None
+    denominator: str | None = None
+    ranked_brands: tuple[str, ...] = ()
+    ranked: tuple[RankedBrandSlot, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationTurn:
     question: str
     answer: str
     applied_filters: tuple[tuple[str, str], ...] = ()
+    slots: ConversationSlots = ConversationSlots()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +107,14 @@ class ConversationStore:
         question: str,
         answer: str,
         applied_filters: tuple[tuple[str, str], ...] = (),
+        *,
+        slots: ConversationSlots = ConversationSlots(),
     ) -> None:
         state = self.get_or_create(conversation_id)
-        turns = (*state.turns, ConversationTurn(question=question, answer=answer, applied_filters=applied_filters))
+        turns = (
+            *state.turns,
+            ConversationTurn(question=question, answer=answer, applied_filters=applied_filters, slots=slots),
+        )
         trimmed = turns[-self._max_turns :]
         self._states[conversation_id] = replace(state, turns=trimmed, pending=state.pending, updated_at=self._clock())
 

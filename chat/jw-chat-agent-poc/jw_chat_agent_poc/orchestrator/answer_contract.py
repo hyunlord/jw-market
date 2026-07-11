@@ -90,14 +90,44 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                 )
             )
         return tuple(plans)
-    if structural == "change_drivers" and not _has_brand_metric_fact(calls, brand):
-        return (
-            ToolCallPlan(
-                name="get_metric",
-                arguments={"brand": brand, "measure": "sales", "period": "latest"},
-                reason="AnswerContract structural proxy backfill",
-            ),
-        )
+    if structural == "change_drivers":
+        if not _is_news_sales_impact_question(question):
+            if _has_brand_metric_fact(calls, brand):
+                return ()
+            return (
+                ToolCallPlan(
+                    name="get_metric",
+                    arguments={"brand": brand, "measure": "sales", "period": "latest"},
+                    reason="AnswerContract structural proxy backfill",
+                ),
+            )
+        plans: list[ToolCallPlan] = []
+        existing = _contract_tool_names(calls)
+        if "search_news" not in existing:
+            plans.append(
+                ToolCallPlan(
+                    name="search_news",
+                    arguments={"brand": brand, "query": question},
+                    reason="AnswerContract change-driver news backfill",
+                )
+            )
+        if not _has_brand_metric_fact(calls, brand):
+            plans.append(
+                ToolCallPlan(
+                    name="get_metric",
+                    arguments={"brand": brand, "measure": "sales", "period": "latest"},
+                    reason="AnswerContract structural proxy backfill",
+                )
+            )
+        if "market_scope" not in existing:
+            plans.append(
+                ToolCallPlan(
+                    name="get_market_scope",
+                    arguments={"brand": brand, "view": "market_landscape"},
+                    reason="AnswerContract change-driver market-scope backfill",
+                )
+            )
+        return tuple(plans)
     intent = _intent(question)
     if intent == "concentration" and not _has_market_scope_fact(calls):
         return (
@@ -785,6 +815,8 @@ def _structural_contract_type(question: str) -> str:
         "목표 시장" in question and any(token in question for token in ("출시", "정책", "Line extension", "채널", "변화"))
     ):
         return "change_drivers"
+    if _is_news_sales_impact_question(question):
+        return "change_drivers"
     if "change driver" in text or "market expansion" in text:
         return "change_drivers"
     if _is_threat_detection_question(question):
@@ -794,6 +826,30 @@ def _structural_contract_type(question: str) -> str:
     if _is_news_ei_question(question):
         return "news_ei"
     return ""
+
+
+def _contract_tool_names(calls: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for call in calls:
+        tool = str(call.get("tool") or "")
+        data = call.get("render_data")
+        if tool == "deep_analysis_related_news":
+            names.add("search_news")
+        elif tool == "get_market_landscape":
+            names.add("market_scope")
+        elif tool:
+            names.add(tool)
+        if isinstance(data, dict) and data.get("facade_tool"):
+            names.add(str(data["facade_tool"]))
+    return names
+
+
+def _is_news_sales_impact_question(question: str) -> bool:
+    return (
+        "매출" in question
+        and any(token in question for token in ("뉴스", "이슈"))
+        and any(token in question for token in ("영향", "원인", "왜"))
+    )
 
 
 def _structural_contract_present(answer: str, contract_type: str) -> bool:

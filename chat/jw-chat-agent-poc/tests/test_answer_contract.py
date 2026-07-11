@@ -356,6 +356,16 @@ def test_change_drivers_contract_adds_external_internal_table() -> None:
     assert "이벤트 전후 1~3개월" in revised
 
 
+def test_news_sales_impact_is_change_drivers_and_backfills_all_required_facts() -> None:
+    question = "리바로 관련 뉴스가 최근 매출에 미친 영향"
+
+    status = evaluate_answer_contract(question, "", None)
+    plans = answer_contract_backfill_tool_calls(question, "리바로", [])
+
+    assert status["structural_contract"] == "change_drivers"
+    assert [plan.name for plan in plans] == ["search_news", "get_metric", "get_market_scope"]
+
+
 def test_change_drivers_contract_classifies_news_into_grounded_rows() -> None:
     answer = "채널 현황입니다.\n\n## 출처\n- 데이터: UBIST"
 

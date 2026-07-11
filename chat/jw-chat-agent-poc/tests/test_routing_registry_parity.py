@@ -65,6 +65,10 @@ def test_routing_public_output_matches_legacy_snapshot() -> None:
     assert _snapshot_json(current) == _snapshot_json(legacy)
 
 
+def test_news_sales_impact_is_not_rejected_before_fact_backfill() -> None:
+    assert strict_query_plan("리바로 관련 뉴스가 최근 매출에 미친 영향", "리바로") is None
+
+
 def _snapshot(
     key: str,
     question: str,
