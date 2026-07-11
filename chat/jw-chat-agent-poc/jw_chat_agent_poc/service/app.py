@@ -440,8 +440,10 @@ def _answer_question(
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         state = store.conversations.get_or_create(conversation_id)
-        delegated_file_context, file_source_items = _delegated_file_context(question, state.conversation_id, file_context)
-        has_file = _has_file_signal(documents, delegated_file_context)
+        delegated_file_context, file_source_items, has_active_upload = _delegated_file_context(
+            question, state.conversation_id, file_context
+        )
+        has_file = _has_file_signal(documents, delegated_file_context) or has_active_upload
         context_scope = resolve_context_scope(
             question,
             has_active_file=has_file,
@@ -477,10 +479,11 @@ def _answer_question(
 
 def _delegated_file_context(
     question: str, conversation_id: str | None, file_context: str | None
-) -> tuple[str | None, tuple[dict[str, Any], ...]]:
+) -> tuple[str | None, tuple[dict[str, Any], ...], bool]:
     contexts: list[str] = []
     file_source_items: tuple[dict[str, Any], ...] = ()
     uploaded = search_uploaded_files(question, conversation_id)
+    has_active_upload = bool(uploaded and uploaded.has_active_file)
     if uploaded is not None and uploaded.file_context.strip():
         contexts.append(uploaded.file_context.strip())
         file_source_items = uploaded.file_source_items
@@ -488,8 +491,8 @@ def _delegated_file_context(
     if provided:
         contexts.append(provided)
     if not contexts:
-        return None, ()
-    return "\n\n".join(dict.fromkeys(contexts)), file_source_items
+        return None, (), has_active_upload
+    return "\n\n".join(dict.fromkeys(contexts)), file_source_items, has_active_upload
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:

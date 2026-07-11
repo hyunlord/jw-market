@@ -4,6 +4,7 @@ import json
 import logging
 from types import SimpleNamespace
 
+import requests
 from fastapi.testclient import TestClient
 
 from jw_chat_agent_poc.service import app as service_app
@@ -133,6 +134,27 @@ def test_file_search_client_parses_file_source_items(monkeypatch) -> None:
         {"file_name": "qa_e2e_operations_brief.docx", "document_id": 112706},
         {"file_name": "qa_e2e_brand_sales.xlsx", "document_id": 112705},
     )
+
+
+def test_file_search_client_preserves_active_session_when_search_times_out(monkeypatch) -> None:
+    def timeout_post(url, json=None, timeout=None):
+        raise requests.Timeout("search timeout")
+
+    def documents_get(url, params=None, timeout=None):
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"documents": [{"document_id": 112829, "file_name": "fixture.xlsx"}]},
+        )
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.file_search_client.requests.post", timeout_post)
+    monkeypatch.setattr("jw_chat_agent_poc.service.file_search_client.requests.get", documents_get)
+
+    result = search_uploaded_files("업로드 파일의 리바로젯 항목", "conv-1")
+
+    assert result is not None
+    assert result.has_active_file is True
+    assert result.file_context == ""
+    assert result.errors == ("file search unavailable",)
 
 
 def _final_answer(file_sources=()) -> FinalAnswer:

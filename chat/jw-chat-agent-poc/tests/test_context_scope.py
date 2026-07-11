@@ -8,6 +8,7 @@ from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.app import SessionStore
 from jw_chat_agent_poc.service.context_scope import ContextScope, resolve_context_scope
 from jw_chat_agent_poc.service.genos_client import GenosClient
+from jw_chat_agent_poc.service.file_search_client import UploadedFileSearchResult
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
@@ -85,6 +86,35 @@ def test_neutral_file_question_remains_market_free() -> None:
 
     # Then: the existing uncontaminated baseline stays market-free.
     assert item["result"]["tool_calls"] == []
+
+
+def test_file_scope_stays_locked_when_search_context_times_out(monkeypatch) -> None:
+    # Given: the session owns an uploaded document, but chunk search returned no context yet.
+    monkeypatch.setattr(
+        service_app,
+        "search_uploaded_files",
+        lambda question, conversation_id: UploadedFileSearchResult(
+            file_context="",
+            file_sources=(),
+            errors=("search timeout",),
+            has_active_file=True,
+        ),
+    )
+
+    # When: a real market brand appears in a file-directed question.
+    item = service_app._answer_question(
+        SessionStore(),
+        _resolver(),
+        _factory,
+        "업로드 파일에서 리바로젯 항목을 알려줘",
+        "live",
+        "ctx-with-file",
+    )
+
+    # Then: active-file ownership keeps the market path closed despite missing chunks.
+    assert item["result"]["context_scope"] == "FILE"
+    assert item["result"]["tool_calls"] == []
+    assert "리바로 시장 꼬리" not in item["result"]["answer"]
 
 
 def test_file_session_market_question_keeps_market_path() -> None:
