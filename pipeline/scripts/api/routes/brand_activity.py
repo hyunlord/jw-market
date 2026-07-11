@@ -201,7 +201,7 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
     summary="interest×처방빈도 버블",
     description=(
         "mock `/jw-brand-activity-mock/api/brand-activity/interest-rx-matrix`와 대응되는 포탈 공유 API입니다. "
-        "X축은 rx_frequency_score, Y축은 interest_score, 버블 면적은 event_count입니다. "
+        "X축은 rx_frequency_score, Y축은 prescription_evolution_score, 버블 면적은 event_count입니다. "
         "market_average는 화면의 점선 십자 기준선입니다.\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
