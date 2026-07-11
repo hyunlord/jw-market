@@ -14,6 +14,21 @@ from .logging_utils import safe_log
 
 Chunk = dict[str, Any]
 
+TEMP_CHUNK_BATCH_SIZE = 100
+
+
+class TempChunkCompletenessError(RuntimeError):
+    """Raised before commit when temporary chunks cannot be recovered in full."""
+
+    def __init__(self, *, temp_document_id: int, expected: int, recovered: int) -> None:
+        self.temp_document_id = temp_document_id
+        self.expected = expected
+        self.recovered = recovered
+        super().__init__(
+            f"temp chunk completeness mismatch for {temp_document_id}: "
+            f"{expected} expected, {recovered} recovered"
+        )
+
 
 def schema_classes(client: httpx.Client) -> list[dict[str, Any]]:
     response = client.get(f"{settings.WEAVIATE_BASE}/v1/schema", timeout=settings.HTTP_TIMEOUT_S)
@@ -56,12 +71,11 @@ def resolve_temp_collection(
     return None
 
 
-def read_temp_chunks(client: httpx.Client, collection: str, temp_document_id: int) -> list[Chunk]:
+def _temp_chunk_count(client: httpx.Client, collection: str, temp_document_id: int) -> int:
     query = {
         "query": (
-            "{ Get { %s(where:{path:[\"temp_doc_id\"],operator:Equal,"
-            "valueNumber:%d}){ text temp_doc_id file_name file_path "
-            "i_chunk_on_doc i_chunk_on_page i_page file_size _additional { id vector } } } }"
+            "{ Aggregate { %s(where:{path:[\"temp_doc_id\"],operator:Equal,"
+            "valueNumber:%d}){ meta { count } } } }"
             % (collection, temp_document_id)
         )
     }
@@ -71,7 +85,89 @@ def read_temp_chunks(client: httpx.Client, collection: str, temp_document_id: in
         timeout=settings.HTTP_TIMEOUT_S,
     )
     response.raise_for_status()
-    return (response.json().get("data", {}).get("Get", {}) or {}).get(collection) or []
+    rows = (response.json().get("data", {}).get("Aggregate", {}) or {}).get(collection) or []
+    if not rows:
+        return 0
+    return int((rows[0].get("meta") or {}).get("count") or 0)
+
+
+def _chunk_order(chunk: Chunk) -> tuple[int, int, int, str]:
+    def _number(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 2**63 - 1
+
+    return (
+        _number(chunk.get("i_chunk_on_doc")),
+        _number(chunk.get("i_page")),
+        _number(chunk.get("i_chunk_on_page")),
+        str((chunk.get("_additional") or {}).get("id") or ""),
+    )
+
+
+def read_temp_chunks(client: httpx.Client, collection: str, temp_document_id: int) -> list[Chunk]:
+    expected = _temp_chunk_count(client, collection, temp_document_id)
+    if expected == 0:
+        return []
+
+    chunks: list[Chunk] = []
+    cursor: str | None = None
+    batches = 0
+    while len(chunks) < expected:
+        after = f', after:"{cursor}"' if cursor is not None else ""
+        query = {
+            "query": (
+                "{ Get { %s(where:{path:[\"temp_doc_id\"],operator:Equal,"
+                "valueNumber:%d}, limit:%d%s){ text temp_doc_id file_name file_path "
+                "i_chunk_on_doc i_chunk_on_page i_page file_size "
+                "_additional { id vector } } } }"
+                % (collection, temp_document_id, TEMP_CHUNK_BATCH_SIZE, after)
+            )
+        }
+        response = client.post(
+            f"{settings.WEAVIATE_BASE}/v1/graphql",
+            json=query,
+            timeout=settings.HTTP_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        batch = (response.json().get("data", {}).get("Get", {}) or {}).get(collection) or []
+        batches += 1
+        if not batch:
+            break
+        chunks.extend(batch)
+        next_cursor = str((batch[-1].get("_additional") or {}).get("id") or "")
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+    ids = [str((chunk.get("_additional") or {}).get("id") or "") for chunk in chunks]
+    if len(chunks) != expected or not all(ids) or len(set(ids)) != len(ids):
+        safe_log(
+            "temp_chunks_incomplete",
+            temp_document_id=temp_document_id,
+            expected=expected,
+            recovered=len(chunks),
+            unique_ids=len(set(ids)),
+            batches=batches,
+        )
+        raise TempChunkCompletenessError(
+            temp_document_id=temp_document_id,
+            expected=expected,
+            recovered=len(chunks),
+        )
+
+    chunks.sort(key=_chunk_order)
+    pages = {chunk.get("i_page") for chunk in chunks if chunk.get("i_page") is not None}
+    safe_log(
+        "temp_chunks_read_complete",
+        temp_document_id=temp_document_id,
+        expected=expected,
+        recovered=len(chunks),
+        pages=len(pages),
+        batches=batches,
+    )
+    return chunks
 
 
 def first_vector_dim(chunks: list[Chunk]) -> int | None:
