@@ -3,9 +3,12 @@ from __future__ import annotations
 import pytest
 
 from pipeline.scripts.agent3.run_source import (
+    ExecutionContractError,
     SourceCoverage,
+    _validate_execution_contract,
     _iter_identity_inputs,
     _verify_existing_market_positions,
+    run_source,
     validate_source_coverage,
 )
 from pipeline.scripts.agent3.source_loader import (
@@ -83,6 +86,47 @@ def test_pre_refresh_coverage_rejects_incomplete_source(coverage: SourceCoverage
         validate_source_coverage(coverage)
 
 
+def test_execution_contract_rejects_revision_mismatch() -> None:
+    with pytest.raises(ExecutionContractError, match="workflow revision mismatch"):
+        _validate_execution_contract(
+            workflow_rev=5365,
+            expected_workflow_rev=5692,
+            cli_mode="full",
+            environment_mode=None,
+        )
+
+
+def test_execution_contract_rejects_duplicate_mode_configuration() -> None:
+    with pytest.raises(ExecutionContractError, match="AGENT3_MODE must be unset"):
+        _validate_execution_contract(
+            workflow_rev=5692,
+            expected_workflow_rev=5692,
+            cli_mode="full",
+            environment_mode="dry-run",
+        )
+
+
+def test_revision_mismatch_aborts_before_repository_or_write(monkeypatch, tmp_path) -> None:
+    def unexpected_repository(*_args, **_kwargs):
+        raise AssertionError("revision assertion must run before repository construction")
+
+    monkeypatch.setattr("pipeline.scripts.agent3.run_source.Agent3Repository", unexpected_repository)
+    monkeypatch.setattr("pipeline.scripts.agent3.run_source.Agent3SourceLoader", unexpected_repository)
+
+    with pytest.raises(ExecutionContractError, match="workflow revision mismatch"):
+        run_source(
+            brand_source="general_all",
+            mode="full",
+            source_selection="all",
+            explicit_brands=None,
+            output=tmp_path / "result.json",
+            top_n=5,
+            workflow_rev=5365,
+            expected_workflow_rev=5692,
+            environment_mode=None,
+        )
+
+
 def test_manifests_use_source_aware_runner() -> None:
     from pathlib import Path
 
@@ -93,6 +137,10 @@ def test_manifests_use_source_aware_runner() -> None:
         assert "pipeline.scripts.agent3.run_full" not in text
         assert "--brand-source general_all" in text or '${AGENT3_BRAND_SOURCE}' in text
         assert "--source all" in text
+        assert 'name: AGENT3_WORKFLOW_REV' in text
+        assert 'value: "5692"' in text
+        assert "--expected-workflow-rev 5692" in text
+        assert "AGENT3_MODE" not in text
         images.add(next(line.split("image:", 1)[1].strip() for line in text.splitlines() if "image:" in line))
 
     assert len(images) == 1

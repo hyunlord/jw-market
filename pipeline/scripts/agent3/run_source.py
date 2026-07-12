@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Literal
@@ -42,6 +43,10 @@ MIN_SOURCE_UNITS = 35_521
 MIN_BRANDS = 24_789
 
 
+class ExecutionContractError(RuntimeError):
+    """Raised before I/O when the declared Agent3 execution contract is inconsistent."""
+
+
 @dataclass(frozen=True, slots=True)
 class SourceCoverage:
     source_units: int
@@ -62,6 +67,25 @@ def validate_source_coverage(coverage: SourceCoverage) -> None:
         )
 
 
+def _validate_execution_contract(
+    *,
+    workflow_rev: int,
+    expected_workflow_rev: int,
+    cli_mode: RunMode,
+    environment_mode: str | None,
+) -> None:
+    if workflow_rev != expected_workflow_rev:
+        raise ExecutionContractError(
+            "Agent3 workflow revision mismatch: "
+            f"execution={workflow_rev}, expected={expected_workflow_rev}"
+        )
+    if environment_mode is not None:
+        raise ExecutionContractError(
+            "AGENT3_MODE must be unset when --mode is supplied; "
+            f"cli={cli_mode!r}, environment={environment_mode!r}"
+        )
+
+
 def run_source(
     *,
     brand_source: BrandSource,
@@ -71,7 +95,22 @@ def run_source(
     output: Path,
     top_n: int,
     workflow_rev: int,
+    expected_workflow_rev: int,
+    environment_mode: str | None,
 ) -> dict[str, Any]:
+    _validate_execution_contract(
+        workflow_rev=workflow_rev,
+        expected_workflow_rev=expected_workflow_rev,
+        cli_mode=mode,
+        environment_mode=environment_mode,
+    )
+    print(
+        "[agent3-preflight] "
+        f"workflow_rev={workflow_rev} expected_workflow_rev={expected_workflow_rev} "
+        f"mode={mode} environment_mode=unset",
+        file=sys.stderr,
+        flush=True,
+    )
     repo = Agent3Repository(DbConfig.from_env())
     loader = Agent3SourceLoader(DbConfig.from_env())
     if mode == "verify-existing":
@@ -412,6 +451,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("/tmp/agent3_source.json"))
     parser.add_argument("--top-n", type=int, default=5)
     parser.add_argument("--workflow-rev", type=int, help="wf316 revision id to record in source input_hash/idempotency.")
+    parser.add_argument(
+        "--expected-workflow-rev",
+        type=int,
+        required=True,
+        help="Required deployment pin; execution aborts before I/O when it differs from --workflow-rev/AGENT3_WORKFLOW_REV.",
+    )
     return parser.parse_args()
 
 
@@ -434,6 +479,8 @@ def main() -> int:
         output=args.output,
         top_n=args.top_n,
         workflow_rev=resolve_workflow_rev(args.workflow_rev),
+        expected_workflow_rev=args.expected_workflow_rev,
+        environment_mode=os.environ.get("AGENT3_MODE"),
     )
     print(json.dumps({key: value for key, value in result.items() if key != "records"}, ensure_ascii=False, sort_keys=True))
     return 0
