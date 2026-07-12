@@ -887,15 +887,19 @@ def _ensure_split_class_alias(payload: dict[str, Any]) -> dict[str, Any]:
     일부 시장(예: 악템라)은 MI Master 정의상 Class가 Class 1/Class 2로
     쪼개진다. 하지만 현재 배포된 포탈 번들은 방어 없이
     analysis_levels.data.Class를 읽는다. 프론트만 고치는 대안은 이미 배포된
-    번들에는 효과가 없으므로, Class 1은 있고 Class는 없는 payload에 한해
-    Class=Class 1 alias를 추가한다. 원본 Class 1/Class 2는 데이터 구동
+    번들에는 효과가 없으므로, Class는 없고 split-class key가 있는 payload에
+    상세 시각화 기준인 Class 2를 Class alias로 추가한다. Class 2가 없는
+    payload만 Class 1로 대체한다. 원본 Class 1/Class 2는 데이터 구동
     셀렉터에 계속 필요하므로 삭제하지 않는다.
     """
     if not isinstance(payload, dict):
         return payload
     data = payload.get("data")
-    if isinstance(data, dict) and "Class" not in data and "Class 1" in data:
-        data["Class"] = deepcopy(data["Class 1"])
+    if isinstance(data, dict) and "Class" not in data:
+        if "Class 2" in data:
+            data["Class"] = deepcopy(data["Class 2"])
+        elif "Class 1" in data:
+            data["Class"] = deepcopy(data["Class 1"])
     return payload
 
 
