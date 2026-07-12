@@ -664,6 +664,8 @@ def choose_base(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _safe_table_name(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_]+", value or ""):
         raise SystemExit(f"unsafe table name: {value!r}")
+    if value == "cache_deep_analysis":
+        raise SystemExit(f"refusing live cache table as target: {value!r}")
     return value
 
 

@@ -1,0 +1,111 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-cache-refresh-daily
+  namespace: llmops
+  labels:
+    app: jw-cache-refresh
+    component: cache-deep-analysis
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 0
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: 'false'
+          labels:
+            app: jw-cache-refresh
+            component: cache-deep-analysis
+        spec:
+          containers:
+          - args:
+            - "set -euo pipefail\n\nRUN_ID=\"$(date -u +%Y%m%d%H%M%S)\"\nLIVE_TABLE=\"\
+              cache_deep_analysis\"\nSTAGING_TABLE=\"cache_deep_analysis_events_staging_${RUN_ID}\"\
+              \nBACKUP_TABLE=\"cache_deep_analysis_bak_d2_prev3_${RUN_ID}\"\nexport\
+              \ LIVE_TABLE STAGING_TABLE BACKUP_TABLE RUN_ID\n\nif [ -f /app/pipeline/scripts/etl/build_cache_deep_analysis.py\
+              \ ]; then\n  cd /app\nelif [ -f /workspace/pipeline/scripts/etl/build_cache_deep_analysis.py\
+              \ ]; then\n  cd /workspace\nelif [ -f pipeline/scripts/etl/build_cache_deep_analysis.py\
+              \ ]; then\n  :\nelse\n  echo \"ABORT: build_cache_deep_analysis.py not\
+              \ found in image\"\n  exit 20\nfi\nPYTHON_BIN=\"${PYTHON_BIN:-python3}\"\
+              \nif ! command -v \"${PYTHON_BIN}\" >/dev/null 2>&1; then\n  PYTHON_BIN=python\n\
+              fi\n\necho \"CACHE_REFRESH_START run_id=${RUN_ID} database=${MARIADB_DATABASE}\
+              \ staging=${STAGING_TABLE}\"\ntest \"${MARIADB_DATABASE}\" = \"jw_mart_d2_stage_20260630_r2\"\
+              \n\n\"${PYTHON_BIN}\" /opt/cache-refresh/cache_deep_analysis_events_update.py\
+              \ \\\n  --live-table \"${LIVE_TABLE}\" \\\n  --staging-table \"${STAGING_TABLE}\"\
+              \ \\\n  --build-staging\n\n\"${PYTHON_BIN}\" /opt/cache-refresh/cache_deep_analysis_refresh_validate.py\
+              \ \\\n  --live-table \"${LIVE_TABLE}\" \\\n  --staging-table \"${STAGING_TABLE}\"\
+              \n\n\"${PYTHON_BIN}\" /opt/cache-refresh/cache_deep_analysis_events_update.py\
+              \ \\\n  --live-table \"${LIVE_TABLE}\" \\\n  --backup-table \"${BACKUP_TABLE}\"\
+              \ \\\n  --backup-live\n\n\"${PYTHON_BIN}\" /opt/cache-refresh/cache_deep_analysis_events_update.py\
+              \ \\\n  --live-table \"${LIVE_TABLE}\" \\\n  --staging-table \"${STAGING_TABLE}\"\
+              \ \\\n  --apply-update\n\n\"${PYTHON_BIN}\" /opt/cache-refresh/cache_deep_analysis_events_update.py\
+              \ \\\n  --live-table \"${LIVE_TABLE}\" \\\n  --backup-table \"${BACKUP_TABLE}\"\
+              \ \\\n  --post-verify\n\n\"${PYTHON_BIN}\" /opt/cache-refresh/cache_deep_analysis_events_update.py\
+              \ \\\n  --staging-table \"${STAGING_TABLE}\" \\\n  --drop-staging\n\n\
+              echo \"CACHE_REFRESH_DONE run_id=${RUN_ID}\"\n"
+            command:
+            - /bin/bash
+            - -lc
+            env:
+            - name: MARIADB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: '3306'
+            - name: MARIADB_DATABASE
+              value: jw_mart_d2_stage_20260630_r2
+            - name: D2_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  key: username
+                  name: jw-mart-d2-writer
+            - name: D2_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: jw-mart-d2-writer
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  key: username
+                  name: jw-mart-d2-writer
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: jw-mart-d2-writer
+            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:321a79cf31c35b2beb8944e20b3c0af3f0c6b6f00e69e9c085284cde1bf581a2
+            imagePullPolicy: IfNotPresent
+            name: cache-refresh
+            resources:
+              limits:
+                cpu: '1'
+                memory: 2Gi
+              requests:
+                cpu: 200m
+                memory: 512Mi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+            - mountPath: /opt/cache-refresh
+              name: cache-refresh-validator
+              readOnly: true
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            genos: enabled
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          terminationGracePeriodSeconds: 30
+          volumes:
+          - configMap:
+              defaultMode: 420
+              name: cache-refresh-validator
+            name: cache-refresh-validator
+  schedule: 0 20 * * *
+  successfulJobsHistoryLimit: 3
+  suspend: false
