@@ -102,6 +102,15 @@ def test_planner_default_output_budget_covers_reasoning_models(monkeypatch) -> N
     assert file_sql_query._planner_max_tokens() == 2048
 
 
+def test_planner_prompt_declares_uploaded_cell_text_affinity(monkeypatch) -> None:
+    monkeypatch.delenv("JW_CHAT_FILE_SQL_PLANNER_SYSTEM_PROMPT", raising=False)
+
+    prompt = file_sql_query._planner_system_prompt()
+
+    assert "TEXT affinity" in prompt
+    assert "quoted string literals" in prompt
+
+
 def test_session_payload_preserves_workflow_and_both_session_aliases(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_FILE_WORKFLOW_ID", "301")
 

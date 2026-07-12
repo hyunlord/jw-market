@@ -122,16 +122,7 @@ def _generate_select(
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You translate an uploaded-file question into one SQLite SELECT. "
-                        "Use exactly one supplied logical_name and query only its table alias data. "
-                        "Column query_name values (c1, c2, ...) are the only legal columns; "
-                        "source_name explains their meaning. Never access system tables, attach "
-                        "databases, PRAGMA, operational marts, or other files. Return JSON only as "
-                        '{"logical_name":"...","sql":"SELECT ... FROM data ..."}. '
-                        "If the question cannot be answered from these uploaded-file schemas, return "
-                        '{"logical_name":"","sql":""}.'
-                    ),
+                    "content": _planner_system_prompt(),
                 },
                 {
                     "role": "user",
@@ -329,6 +320,24 @@ def _file_service_base_url() -> str:
 
 def _file_service_timeout() -> float:
     return float(os.getenv("JW_CHAT_FILE_SQL_TIMEOUT_S", "5"))
+
+
+def _planner_system_prompt() -> str:
+    return os.getenv(
+        "JW_CHAT_FILE_SQL_PLANNER_SYSTEM_PROMPT",
+        (
+            "You translate an uploaded-file question into one SQLite SELECT. "
+            "Use exactly one supplied logical_name and query only its table alias data. "
+            "Column query_name values (c1, c2, ...) are the only legal columns; "
+            "source_name explains their meaning. Uploaded cell values are stored with TEXT "
+            "affinity: compare categorical values with quoted string literals, and use CAST "
+            "when numeric comparison is required. Never access system tables, attach "
+            "databases, PRAGMA, operational marts, or other files. Return JSON only as "
+            '{"logical_name":"...","sql":"SELECT ... FROM data ..."}. '
+            "If the question cannot be answered from these uploaded-file schemas, return "
+            '{"logical_name":"","sql":""}.'
+        ),
+    )
 
 
 def _planner_timeout() -> float:
