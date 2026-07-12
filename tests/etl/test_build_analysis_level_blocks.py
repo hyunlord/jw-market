@@ -12,6 +12,7 @@ from pipeline.scripts.etl.build_analysis_level_blocks import (
     sharded_keys,
     profile_signature,
     variant_keys,
+    _general_data,
 )
 from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
     ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
@@ -100,6 +101,22 @@ def test_variant_keys_add_profile_and_trim_dimensions() -> None:
         BlockKey("strategic_cd", "cd_001", "IQVIA", "sales", "", "trim", None),
     ]
 
+
+def test_general_data_places_focus_in_filters(monkeypatch) -> None:
+    captured = {}
+
+    def fake_build(request):
+        captured["request"] = request
+        return {"result": {"data": {}}}
+
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.build_analysis_level_blocks._build_general_dynamic_response",
+        fake_build,
+    )
+
+    _general_data(market_id="A10C1", source="ubist", measure="sales", focus_brand_key="brand-a")
+
+    assert captured["request"].filters.focus_brand_key == "brand-a"
 
 def test_sharded_keys_partition_all_keys(monkeypatch) -> None:
     keys = [BlockKey("general", str(index), "UBIST", "sales") for index in range(3131)]
