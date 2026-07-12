@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Never
+
 from fastapi import APIRouter, HTTPException, Path
 
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
@@ -113,15 +115,16 @@ def brand_activity_topic(scope_id: str = Path(description="내부 토픽 scope �
 def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str, JsonValue]:
     """Return selected and competitor brand topic shares."""
 
+    service_payload, request_normalized = _portal_service_request(payload)
     try:
-        result = get_topic_brand_payload(_service_payload(payload))
+        result = get_topic_brand_payload(service_payload)
     except TopicRequestError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_brand_activity_topic_request", "message": str(exc)}) from exc
     except TopicPayloadError as exc:
         raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
     if result is None:
-        return {"data": None, "reason": "market_not_found"}
-    return {"data": result}
+        _raise_market_not_found(payload)
+    return _success_response(result, request_normalized=request_normalized)
 
 
 @router.post(
@@ -159,15 +162,16 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
 def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, JsonValue]:
     """Return integrated CSD activity and IQVIA prescription timeseries."""
 
+    service_payload, request_normalized = _portal_service_request(payload)
     try:
-        result = get_csd_timeseries(_service_payload(payload))
+        result = get_csd_timeseries(service_payload)
     except CsdTimeseriesInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_timeseries_request", "message": str(exc)}) from exc
     except CsdTimeseriesAmbiguousMarketError as exc:
         return {"data": None, "reason": "csd_market_ambiguous", "message": str(exc)}
     if result is None:
-        return {"data": None, "reason": "market_not_found"}
-    return {"data": result}
+        _raise_market_not_found(payload)
+    return _success_response(result, request_normalized=request_normalized)
 
 
 @router.post(
@@ -227,22 +231,77 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
 def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
     """Return interest/Rx distributions and detailing for selected brands."""
 
+    service_payload, request_normalized = _portal_service_request(payload)
     try:
-        result = get_interest_rx_matrix(_service_payload(payload))
+        result = get_interest_rx_matrix(service_payload)
     except InterestRxMatrixInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_interest_rx_matrix_request", "message": str(exc)}) from exc
     if result is None:
-        return {"data": None, "reason": "market_not_found"}
-    return {"data": result}
+        _raise_market_not_found(payload)
+    return _success_response(result, request_normalized=request_normalized)
+
+
+def _portal_service_request(
+    payload: CsdTimeseriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest,
+) -> tuple[dict[str, JsonValue], bool]:
+    """Apply the nested BFF compatibility layer before the canonical flat contract."""
+
+    filters_received = _received_filters(payload)
+    flat_atc4 = filters_received.get("atc4")
+    nested_atc = filters_received.get("atc")
+    nested_atc4 = nested_atc.get("atc4") if isinstance(nested_atc, dict) else None
+    has_flat_atc4 = flat_atc4 not in ({}, [], None)
+    has_nested_atc4 = nested_atc4 not in ({}, [], None)
+    if has_flat_atc4 and has_nested_atc4 and flat_atc4 != nested_atc4:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "conflicting_market_filter",
+                "message": "filters.atc4 and filters.atc.atc4 must match when both are provided",
+                "fields": ["filters.atc4", "filters.atc.atc4"],
+            },
+        )
+    return _service_payload(payload), has_nested_atc4
+
+
+def _success_response(result: dict[str, JsonValue], *, request_normalized: bool) -> dict[str, JsonValue]:
+    response: dict[str, JsonValue] = {"data": result}
+    if request_normalized:
+        response["meta"] = {"request_normalized": True}
+    return response
+
+
+def _raise_market_not_found(
+    payload: CsdTimeseriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest,
+) -> Never:
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "error": "market_not_found",
+            "message": "요청 필터로 시장을 식별할 수 없음",
+            "requested": {
+                "view": payload.view,
+                "filters_received": _received_filters(payload),
+            },
+            "hint": "flat filters.atc4 or market_id expected",
+        },
+    )
+
+
+def _received_filters(
+    payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest,
+) -> dict[str, JsonValue]:
+    data = payload.model_dump()
+    filters = _compact_filter(data.get("filters")) if isinstance(data.get("filters"), dict) else {}
+    legacy_filter = _compact_filter(data.get("filter")) if isinstance(data.get("filter"), dict) else {}
+    return filters or legacy_filter
 
 
 def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest) -> dict[str, JsonValue]:
     """Normalize mock v0.1.7 `filters` while preserving legacy `filter` input."""
 
     data = payload.model_dump()
-    filters = _compact_filter(data.get("filters")) if isinstance(data.get("filters"), dict) else {}
-    legacy_filter = _compact_filter(data.get("filter")) if isinstance(data.get("filter"), dict) else {}
-    normalized = _normalize_market_filter(filters or legacy_filter)
+    normalized = _normalize_market_filter(_received_filters(payload))
     data["filters"] = normalized
     data["filter"] = normalized
     return data

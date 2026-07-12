@@ -168,7 +168,10 @@ def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatc
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {
+        "data": expected,
+        "meta": {"request_normalized": True},
+    }
     assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
     assert captured["payload"]["filter"]["analysis_level"]["ubist"]["seller"] == ["JW중외제약"]
 

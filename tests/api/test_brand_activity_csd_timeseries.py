@@ -96,7 +96,7 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {"data": expected, "meta": {"request_normalized": True}}
     assert "market_id" not in captured
     assert captured["filters"]["atc4"] == ["C10A1"]
     assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
@@ -113,8 +113,15 @@ def test_csd_timeseries_route_ignores_stale_market_id_input(monkeypatch) -> None
         json={"view": "general", "market_id": "missing", "selected_brand": "리바로", "filter": {}},
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"data": None, "reason": "market_not_found"}
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": {
+            "error": "market_not_found",
+            "message": "요청 필터로 시장을 식별할 수 없음",
+            "requested": {"view": "general", "filters_received": {}},
+            "hint": "flat filters.atc4 or market_id expected",
+        }
+    }
 
 
 def test_csd_timeseries_service_uses_select_only_sql() -> None:
