@@ -21,7 +21,7 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
 
 
 def test_schema_version_is_independent_from_app_version() -> None:
-    assert ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION == "analysis-level-block-v2-profile"
+    assert ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION == "analysis-level-block-v3-ordered-profile"
 
 
 def test_framed_payload_sha256_uses_unambiguous_lengths() -> None:
@@ -75,8 +75,8 @@ def test_block_payload_rejects_pre_alias_strategic_class() -> None:
         raise AssertionError("pre-alias ml_011 payload must be rejected")
 
 
-def test_profile_signature_sorts_channels_before_hashing() -> None:
-    assert profile_signature(["전체", "의원", "병원"]) == profile_signature(["병원", "전체", "의원"])
+def test_profile_signature_preserves_channel_order() -> None:
+    assert profile_signature(["전체", "의원", "병원"]) != profile_signature(["병원", "전체", "의원"])
 
 
 def test_variant_keys_add_profile_and_trim_dimensions() -> None:

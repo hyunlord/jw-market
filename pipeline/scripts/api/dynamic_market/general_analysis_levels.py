@@ -11,6 +11,13 @@ from typing import Any
 from pymysql.err import MySQLError
 
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import build_analysis_rows
+from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import channel_profile_signature
+from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
+    AnalysisLevelBlock,
+    AnalysisLevelBlockKey,
+    current_analysis_level_source_epoch,
+    load_analysis_level_block,
+)
 from pipeline.scripts.api.dynamic_market.analysis_level_series import metric_history_from_periods
 from pipeline.scripts.api.dynamic_market.cause_time import SOURCE_LABELS
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
@@ -96,21 +103,30 @@ def build_general_analysis_level_sections(
     )
     build_channels = list(dict.fromkeys([*channels, *status_channels]))
     series_value_cache: cause_builder._SeriesValueCache = {}
-    all_channel_levels = _rename_analysis_levels(
-        cause_builder._build_analysis_levels_from_mart(
-            rows=canonical_rows,
-            source=source_api,
-            market=_synthetic_market(specs),
-            view_source_id=None,
-            target_name=None,
-            fallback_level_top5={},
-            channels_override=build_channels,
-            use_latest_valid_share=True,
-            series_value_cache=series_value_cache,
-        ),
-        specs,
+    precomputed = _load_precomputed_general_block(
+        definition=definition,
+        source=source_api,
+        measure=metrics.measure,
+        status_channels=status_channels,
     )
-    analysis_levels = _project_analysis_level_channels(all_channel_levels, channels)
+    if precomputed is None:
+        all_channel_levels = _rename_analysis_levels(
+            cause_builder._build_analysis_levels_from_mart(
+                rows=canonical_rows,
+                source=source_api,
+                market=_synthetic_market(specs),
+                view_source_id=None,
+                target_name=None,
+                fallback_level_top5={},
+                channels_override=build_channels,
+                use_latest_valid_share=True,
+                series_value_cache=series_value_cache,
+            ),
+            specs,
+        )
+        analysis_levels = _project_analysis_level_channels(all_channel_levels, channels)
+    else:
+        analysis_levels = precomputed.analysis_levels
     canonical_levels = [spec.canonical_level for spec in specs]
     rows_by_level = cause_builder._level_rows_by_segment(canonical_rows, canonical_levels)
     level_top5_trend = _rename_level_top5_trend(
@@ -127,17 +143,20 @@ def build_general_analysis_level_sections(
         ),
         specs,
     )
-    market_status_levels = _project_analysis_level_channels(all_channel_levels, status_channels)
-    market_status = cause_builder._ensure_analysis_level_market_status_contract(
-        cause_builder._analysis_level_market_status_by_channel(
-            level_top5_trend=level_top5_trend,
-            analysis_levels=market_status_levels,
-            rows=canonical_rows,
-            source=source_api,
-            channels=status_channels,
-            include_all_options=bool(focus),
+    if precomputed is None:
+        market_status_levels = _project_analysis_level_channels(all_channel_levels, status_channels)
+        market_status = cause_builder._ensure_analysis_level_market_status_contract(
+            cause_builder._analysis_level_market_status_by_channel(
+                level_top5_trend=level_top5_trend,
+                analysis_levels=market_status_levels,
+                rows=canonical_rows,
+                source=source_api,
+                channels=status_channels,
+                include_all_options=bool(focus),
+            )
         )
-    )
+    else:
+        market_status = precomputed.analysis_level_market_status
     return {
         "analysis_levels": analysis_levels,
         "analysis_level_market_status": market_status,
@@ -145,6 +164,31 @@ def build_general_analysis_level_sections(
         "rows": canonical_rows,
         "ubist_channel_context": ubist_channel_context,
     }
+
+
+def _load_precomputed_general_block(
+    *,
+    definition: MarketDefinition,
+    source: str,
+    measure: str,
+    status_channels: list[str],
+) -> AnalysisLevelBlock | None:
+    atc4_codes = [str(value) for value in definition.filter_echo.get("atc4", []) if str(value)]
+    epoch = current_analysis_level_source_epoch()
+    if len(atc4_codes) != 1 or epoch is None:
+        return None
+    profile_sig = channel_profile_signature(status_channels) if source == "UBIST" else ""
+    return load_analysis_level_block(
+        key=AnalysisLevelBlockKey(
+            view="general",
+            market_id=atc4_codes[0],
+            source=source,
+            measure=measure,
+            profile_sig=profile_sig,
+            trim_mode="full",
+        ),
+        source_epoch=epoch,
+    )
 
 
 def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralLevelSpec, ...]) -> dict[str, Any]:
