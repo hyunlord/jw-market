@@ -336,6 +336,8 @@ class TtlStrategicMartStore:
         self._ttl_seconds = ttl_seconds
         self._snapshot: MartSnapshot | None = None
         self._snapshot_lock = threading.Lock()
+        self._load_lock = threading.Lock()
+        self._refreshing = False
         if prewarm:
             self.prewarm()
 
@@ -349,17 +351,11 @@ class TtlStrategicMartStore:
 
     def _prewarm_snapshot(self) -> None:
         started_at = time.monotonic()
-        with self._snapshot_lock:
-            current = self._snapshot
-            now = time.monotonic()
-            if current is not None and now - current.loaded_at <= self._ttl_seconds:
-                return
-            try:
-                snapshot = self._reader.load()
-            except Exception:  # noqa: BLE001 - background prewarm must not break requests
-                logger.exception("strategic mart snapshot prewarm failed")
-                return
-            self._snapshot = snapshot
+        try:
+            snapshot = self._load_cold_snapshot()
+        except Exception:  # noqa: BLE001 - background prewarm must not break requests
+            logger.exception("strategic mart snapshot prewarm failed")
+            return
         logger.info(
             "strategic mart snapshot prewarmed",
             extra={
@@ -372,10 +368,52 @@ class TtlStrategicMartStore:
         with self._snapshot_lock:
             current = self._snapshot
             now = time.monotonic()
-            if current is None or now - current.loaded_at > self._ttl_seconds:
-                current = self._reader.load()
+            if current is not None:
+                if now - current.loaded_at > self._ttl_seconds:
+                    self._start_refresh_locked()
+                return current
+        return self._load_cold_snapshot()
+
+    def _load_cold_snapshot(self) -> MartSnapshot:
+        with self._load_lock:
+            with self._snapshot_lock:
+                current = self._snapshot
+                if current is not None:
+                    return current
+            current = self._reader.load()
+            with self._snapshot_lock:
                 self._snapshot = current
             return current
+
+    def _start_refresh_locked(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+        thread = threading.Thread(
+            target=self._refresh_snapshot,
+            name="strategic-mart-ttl-refresh",
+            daemon=True,
+        )
+        thread.start()
+
+    def _refresh_snapshot(self) -> None:
+        started_at = time.monotonic()
+        startup_timing_logger.info("strategic mart TTL refresh started")
+        try:
+            snapshot = self._reader.load()
+        except Exception:  # noqa: BLE001 - refresh failure must preserve the serving snapshot
+            with self._snapshot_lock:
+                self._refreshing = False
+            logger.exception("strategic mart TTL refresh failed")
+            return
+        with self._snapshot_lock:
+            self._snapshot = snapshot
+            self._refreshing = False
+        startup_timing_logger.info(
+            "strategic mart TTL refresh completed elapsed_s=%.3f records=%d",
+            time.monotonic() - started_at,
+            len(snapshot.records),
+        )
 
 
 _SHARED_STORE_LOCK = threading.Lock()

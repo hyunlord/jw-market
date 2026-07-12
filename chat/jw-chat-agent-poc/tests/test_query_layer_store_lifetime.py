@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import threading
 import time
 
@@ -19,6 +20,40 @@ class CountingReader:
         if self.delay_s:
             time.sleep(self.delay_s)
         return MartSnapshot((), time.monotonic())
+
+
+class BlockingRefreshReader:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.refresh_started = threading.Event()
+        self.release_refresh = threading.Event()
+
+    def load(self) -> MartSnapshot:
+        self.calls += 1
+        if self.calls > 1:
+            self.refresh_started.set()
+            self.release_refresh.wait(timeout=2)
+        return MartSnapshot((), time.monotonic())
+
+
+class FailingRefreshReader:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def load(self) -> MartSnapshot:
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("refresh failed")
+        return MartSnapshot((), time.monotonic())
+
+
+def wait_until(predicate: Callable[[], bool], *, timeout_s: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.001)
+    return predicate()
 
 
 def test_default_layers_share_store_but_isolate_query_results(monkeypatch) -> None:
@@ -77,5 +112,62 @@ def test_strategic_store_reloads_after_ttl_expiry() -> None:
     first = store.snapshot()
     second = store.snapshot()
 
+    assert second is first
+    assert wait_until(lambda: store._snapshot is not first)
     assert reader.calls == 2
-    assert first is not second
+
+
+def test_expired_snapshot_returns_stale_value_while_refresh_runs() -> None:
+    reader = BlockingRefreshReader()
+    store = TtlStrategicMartStore(reader, ttl_seconds=0, prewarm=False)
+    first = store.snapshot()
+    returned: list[MartSnapshot] = []
+    finished = threading.Event()
+
+    def read_expired_snapshot() -> None:
+        returned.append(store.snapshot())
+        finished.set()
+
+    thread = threading.Thread(target=read_expired_snapshot)
+    thread.start()
+    try:
+        assert reader.refresh_started.wait(timeout=1)
+        assert finished.wait(timeout=0.05)
+        assert returned == [first]
+    finally:
+        reader.release_refresh.set()
+        thread.join(timeout=2)
+
+
+def test_concurrent_expired_reads_start_one_refresh() -> None:
+    reader = BlockingRefreshReader()
+    store = TtlStrategicMartStore(reader, ttl_seconds=0, prewarm=False)
+    first = store.snapshot()
+    snapshots: list[MartSnapshot] = []
+
+    threads = [threading.Thread(target=lambda: snapshots.append(store.snapshot())) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    try:
+        assert reader.refresh_started.wait(timeout=1)
+        for thread in threads:
+            thread.join(timeout=0.1)
+        assert snapshots == [first] * 6
+        assert reader.calls == 2
+    finally:
+        reader.release_refresh.set()
+        for thread in threads:
+            thread.join(timeout=2)
+
+
+def test_failed_refresh_preserves_snapshot_and_allows_retry() -> None:
+    reader = FailingRefreshReader()
+    store = TtlStrategicMartStore(reader, ttl_seconds=0, prewarm=False)
+    first = store.snapshot()
+
+    assert store.snapshot() is first
+    assert wait_until(lambda: reader.calls == 2 and not store._refreshing)
+    assert store._snapshot is first
+
+    assert store.snapshot() is first
+    assert wait_until(lambda: reader.calls == 3 and store._snapshot is not first)
