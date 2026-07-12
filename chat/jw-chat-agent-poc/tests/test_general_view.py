@@ -20,6 +20,12 @@ from jw_chat_agent_poc.tools.general_view_backend import (
     GeneralViewBackendError,
     parse_general_market_response,
 )
+from jw_chat_agent_poc.tools.general_view_membership import (
+    GeneralBrandMembership,
+    GeneralMembershipLoadError,
+    StaticGeneralMembershipReader,
+    TtlGeneralMembershipCache,
+)
 
 
 def _payload(*, atc4: str = "C10A1", source: str = "ubist", measure: str = "sales") -> dict:
@@ -200,6 +206,61 @@ class StrategicMembership:
             if brand in question:
                 return type("Resolution", (), {"canonical_brand": brand})()
         raise LookupError(question)
+
+
+def test_membership_cache_preserves_all_atc4_sources_and_avoids_backend_candidate_scan() -> None:
+    memberships = (
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+    backend.market_map["A10S0"] = _market("A10S0", 10.0)
+
+    result = service.answer("IQVIA 마운자로 시장 점유율", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "A10S0"
+    assert backend.candidate_map == {}
+    assert cache.candidates("마운자로", "iqvia") == (AtcCandidate("A10S0", "GLP-1"),)
+
+
+def test_membership_cache_exact_lookup_does_not_silently_match_unknown_brand() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),)
+        ),
+        ttl_seconds=300,
+    )
+
+    assert cache.candidates("마운자로", "iqvia")
+    assert cache.candidates("마운", "iqvia") == ()
+
+
+class FailingGeneralMembership:
+    def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+        raise GeneralMembershipLoadError("membership unavailable")
+
+
+def test_membership_load_failure_falls_back_to_existing_candidate_api() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("마운자로", "iqvia")] = (AtcCandidate("A10S0", "GLP-1"),)
+    backend.market_map["A10S0"] = _market("A10S0", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=FailingGeneralMembership(),
+    )
+
+    result = service.answer("IQVIA 마운자로 시장 점유율", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "A10S0"
 
 
 def _market(atc4: str, brand_value: float) -> GeneralMarket:

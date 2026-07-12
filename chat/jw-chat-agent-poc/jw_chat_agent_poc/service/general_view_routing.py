@@ -13,6 +13,11 @@ from jw_chat_agent_poc.tools.general_view_backend import (
     GeneralViewBrandMismatchError,
     GeneralViewBackendError,
 )
+from jw_chat_agent_poc.tools.general_view_membership import (
+    GeneralMembershipLoadError,
+    MariaDbGeneralMembershipReader,
+    TtlGeneralMembershipCache,
+)
 
 
 _ATC4_PATTERN = re.compile(
@@ -44,16 +49,30 @@ class _StrategicMembership(Protocol):
     def resolve(self, question: str, allow_default: bool = False): ...
 
 
+class _GeneralMembership(Protocol):
+    def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]: ...
+
+
 class GeneralViewService:
-    def __init__(self, backend: _Backend, strategic_membership: _StrategicMembership, *, enabled: bool) -> None:
+    def __init__(
+        self,
+        backend: _Backend,
+        strategic_membership: _StrategicMembership,
+        *,
+        enabled: bool,
+        general_membership: _GeneralMembership | None = None,
+    ) -> None:
         self._backend = backend
         self._strategic_membership = strategic_membership
+        self._general_membership = general_membership
         self.enabled = enabled
 
     @classmethod
     def from_env(cls, strategic_membership: _StrategicMembership) -> "GeneralViewService":
         enabled = os.environ.get("GENERAL_VIEW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-        return cls(GeneralViewBackend(), strategic_membership, enabled=enabled)
+        ttl_seconds = float(os.environ.get("GENERAL_VIEW_MEMBERSHIP_TTL_SECONDS", "300"))
+        membership = TtlGeneralMembershipCache(MariaDbGeneralMembershipReader(), ttl_seconds=ttl_seconds)
+        return cls(GeneralViewBackend(), strategic_membership, enabled=enabled, general_membership=membership)
 
     def route(self, question: str) -> GeneralRoute:
         if not self.enabled:
@@ -82,7 +101,7 @@ class GeneralViewService:
             if explicit_atc4:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
             elif brand:
-                candidates = self._backend.candidates(brand, source)
+                candidates = self._membership_candidates(brand, source)
             else:
                 candidates = ()
             if not candidates:
@@ -99,6 +118,16 @@ class GeneralViewService:
             return _result(question, selected, contract)
         except GeneralViewBackendError as exc:
             return _unavailable_result(question, str(exc), dual=dual)
+
+    def _membership_candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+        if self._general_membership is not None:
+            try:
+                candidates = self._general_membership.candidates(brand, source)
+            except GeneralMembershipLoadError:
+                candidates = ()
+            if candidates:
+                return candidates
+        return self._backend.candidates(brand, source)
 
     def _fetch_candidates(
         self,
