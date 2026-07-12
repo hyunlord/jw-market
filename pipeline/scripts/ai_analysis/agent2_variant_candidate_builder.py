@@ -48,44 +48,52 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
 
 def _select_runs(conn: Any, brands: list[str], variant: str, zero: bool) -> dict[str, dict[str, Any]]:
     selected: dict[str, dict[str, Any]] = {}
-    for brand_chunk in _chunks(brands):
-        placeholders = ",".join(["%s"] * len(brand_chunk))
-        model = ZERO_MODEL if zero else LLM_MODEL
-        variant_filter = "legacy" if zero else variant
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT r.run_id, r.brand, r.snapshot_at, r.bundle_hash, r.model_version,
-                       r.created_at, r.analysis_variant
-                FROM zeta_analysis_runs r
-                JOIN (
-                    SELECT zr.brand, MAX(zr.run_id) AS run_id
-                    FROM zeta_analysis_runs zr
-                    JOIN zeta_analysis_outputs zo ON zo.run_id = zr.run_id
-                    WHERE zr.brand IN ({placeholders})
-                      AND zr.model_version = %s
-                      AND zr.analysis_variant = %s
-                      AND zr.status = 'ok'
-                      AND zo.validated = 1
-                    GROUP BY zr.brand, zr.run_id
-                    HAVING COUNT(DISTINCT zo.stage) = 4
-                ) latest ON latest.run_id = r.run_id
-                ORDER BY r.brand, r.run_id DESC
-                """,
-                [*brand_chunk, model, variant_filter],
-            )
-            for row in cursor.fetchall():
-                selected.setdefault(str(row["brand"]), row)
+    model = ZERO_MODEL if zero else LLM_MODEL
+    variant_filter = "legacy" if zero else variant
+    wanted = set(brands)
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT r.run_id, r.brand, r.snapshot_at, r.bundle_hash, r.model_version,
+                   r.created_at, r.analysis_variant
+            FROM zeta_analysis_runs r
+            JOIN (
+                SELECT run_id
+                FROM zeta_analysis_outputs
+                WHERE validated = 1
+                GROUP BY run_id
+                HAVING COUNT(DISTINCT stage) = 4
+            ) valid ON valid.run_id = r.run_id
+            WHERE r.model_version = %s
+              AND r.analysis_variant = %s
+              AND r.status = 'ok'
+            ORDER BY r.brand, r.run_id DESC
+            """,
+            (model, variant_filter),
+        )
+        for row in cursor.fetchall():
+            brand = str(row["brand"])
+            if brand in wanted:
+                selected.setdefault(brand, row)
     return selected
 
 
-def _load_payload(conn: Any, run: Mapping[str, Any], variant: str) -> dict[str, Any]:
-    with conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT stage, title, body, bullets FROM zeta_analysis_outputs WHERE run_id=%s AND validated=1",
-            (run["run_id"],),
-        )
-        rows = cursor.fetchall()
+def _load_outputs(conn: Any, run_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    result: dict[int, list[dict[str, Any]]] = {}
+    for run_chunk in _chunks([str(run_id) for run_id in run_ids]):
+        placeholders = ",".join(["%s"] * len(run_chunk))
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT run_id, stage, title, body, bullets FROM zeta_analysis_outputs "
+                f"WHERE run_id IN ({placeholders}) AND validated=1",
+                run_chunk,
+            )
+            for row in cursor.fetchall():
+                result.setdefault(int(row["run_id"]), []).append(row)
+    return result
+
+
+def _load_payload(run: Mapping[str, Any], rows: list[dict[str, Any]], variant: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "analysis_variant": variant,
         "generated_at": _iso(run["created_at"]),
@@ -136,6 +144,8 @@ def build_rows(conn: Any, manifest_rows: list[dict[str, Any]]) -> tuple[list[dic
     zero_runs = _select_runs(conn, [str(row["canonical_brand_name"]) for row in zero_rows], "legacy", True)
     short_runs = _select_runs(conn, [str(row["canonical_brand_name"]) for row in llm_rows], "short", False)
     long_runs = _select_runs(conn, [str(row["canonical_brand_name"]) for row in llm_rows], "long", False)
+    all_runs = {int(run["run_id"]): run for run in (*zero_runs.values(), *short_runs.values(), *long_runs.values())}
+    outputs_by_run = _load_outputs(conn, list(all_runs))
     output: list[dict[str, Any]] = []
     missing: list[dict[str, str]] = []
     for row in manifest_rows:
@@ -158,8 +168,14 @@ def build_rows(conn: Any, manifest_rows: list[dict[str, Any]]) -> tuple[list[dic
                     "brand": brand,
                     "brand_key": str(row["brand_key"]),
                     "market_id": None,
-                    "short": {"payload": _load_payload(conn, short_run, "short"), "lineage": _lineage(short_run, deterministic)},
-                    "long": {"payload": _load_payload(conn, long_run, "long"), "lineage": _lineage(long_run, deterministic)},
+                    "short": {
+                        "payload": _load_payload(short_run, outputs_by_run.get(int(short_run["run_id"]), []), "short"),
+                        "lineage": _lineage(short_run, deterministic),
+                    },
+                    "long": {
+                        "payload": _load_payload(long_run, outputs_by_run.get(int(long_run["run_id"]), []), "long"),
+                        "lineage": _lineage(long_run, deterministic),
+                    },
                 }
             )
         except (VariantContractError, json.JSONDecodeError) as exc:
