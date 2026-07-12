@@ -18,6 +18,7 @@ from jw_chat_agent_poc.tools.general_view_membership import (
     MariaDbGeneralMembershipReader,
     TtlGeneralMembershipCache,
 )
+from jw_chat_agent_poc.tools.general_view_mart import GeneralViewMartBackend, MariaDbGeneralMartReader
 
 
 _ATC4_PATTERN = re.compile(
@@ -72,7 +73,8 @@ class GeneralViewService:
         enabled = os.environ.get("GENERAL_VIEW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         ttl_seconds = float(os.environ.get("GENERAL_VIEW_MEMBERSHIP_TTL_SECONDS", "300"))
         membership = TtlGeneralMembershipCache(MariaDbGeneralMembershipReader(), ttl_seconds=ttl_seconds)
-        return cls(GeneralViewBackend(), strategic_membership, enabled=enabled, general_membership=membership)
+        backend = GeneralViewMartBackend(MariaDbGeneralMartReader(), GeneralViewBackend())
+        return cls(backend, strategic_membership, enabled=enabled, general_membership=membership)
 
     def route(self, question: str) -> GeneralRoute:
         if not self.enabled:
