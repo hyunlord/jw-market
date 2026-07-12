@@ -336,7 +336,7 @@ def _planner_timeout() -> float:
 
 
 def _planner_max_tokens() -> int:
-    return max(128, int(os.getenv("JW_CHAT_FILE_SQL_PLANNER_MAX_TOKENS", "512")))
+    return max(128, int(os.getenv("JW_CHAT_FILE_SQL_PLANNER_MAX_TOKENS", "2048")))
 
 
 def _max_schema_tables() -> int:

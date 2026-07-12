@@ -96,6 +96,12 @@ def test_query_headers_use_original_source_column_names(monkeypatch) -> None:
     assert "| c2 |" not in outcome.file_context
 
 
+def test_planner_default_output_budget_covers_reasoning_models(monkeypatch) -> None:
+    monkeypatch.delenv("JW_CHAT_FILE_SQL_PLANNER_MAX_TOKENS", raising=False)
+
+    assert file_sql_query._planner_max_tokens() == 2048
+
+
 def test_session_payload_preserves_workflow_and_both_session_aliases(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_FILE_WORKFLOW_ID", "301")
 
