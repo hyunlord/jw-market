@@ -5,7 +5,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandCandidate,
     BrandSetInputError,
     _brand_candidates,
-    _ml_id_for_brand,
+    _resolve_strategic_brand_context,
     _select_choices,
     resolve_brand_set,
     validate_audit_code_axis,
@@ -15,6 +15,7 @@ from pipeline.scripts.api.brand_activity_channel_axis import (
     parse_audit_code_axis,
 )
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
+from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContextError
 
 
 def test_brand_filter_uses_or_within_dimension_and_and_across_dimensions() -> None:
@@ -109,25 +110,116 @@ def test_unknown_audit_code_is_rejected_from_dynamic_matrix_keys() -> None:
         raise AssertionError("unknown audit_code must be rejected")
 
 
-def test_single_ml_brand_resolves_market(monkeypatch) -> None:
-    rows = [{"ml_id": "ml_006"}]
-    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", lambda *_args, **_kwargs: rows)
+def test_single_ml_brand_uses_shared_catalog_context_and_ubist_source(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
 
-    assert _ml_id_for_brand("가드렛") == "ml_006"
+    def fake_resolve(**kwargs: object):
+        calls.append(kwargs)
+        return type(
+            "Context",
+            (),
+            {"market_id": "ml_006", "brand_key": "리바로", "brand_name": "리바로", "db_source": "ubist"},
+        )()
+
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.resolve_deep_analysis_context", fake_resolve)
+
+    context = _resolve_strategic_brand_context("리바로", view_name="strategic_ml", market_id=None)
+
+    assert context.market_id == "ml_006"
+    assert context.db_source == "ubist"
+    assert calls == [{"brand": "리바로", "view_kind": "strategic_ml", "market_id": None, "source": None}]
 
 
-def test_ambiguous_ml_brand_raises_without_market_id_escape_hatch(monkeypatch) -> None:
-    rows = [{"ml_id": "ml_010"}, {"ml_id": "ml_002"}, {"ml_id": "ml_006"}]
-    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", lambda *_args, **_kwargs: rows)
+def test_livalo_strategic_resolution_reads_ubist_mart_rows(monkeypatch) -> None:
+    context = type(
+        "Context",
+        (),
+        {"market_id": "ml_006", "brand_key": "리바로", "brand_name": "리바로", "db_source": "ubist"},
+    )()
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.resolve_deep_analysis_context",
+        lambda **_kwargs: context,
+    )
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        calls.append(("brand", tuple(params)))
+        return [
+            {
+                "brand_key": "리바로",
+                "brand_name": "리바로",
+                "is_jw": 1,
+                "by_dimension": {"products": [{"product_code": "LIVALO"}]},
+                "overlay_data": {},
+                "metric_history": {"2026-05": {"rank": 1, "raw_value": 100.0}},
+                "audit_code_matrix": None,
+            }
+        ]
+
+    def fake_fetch_one(_sql: str, params: tuple[object, ...]) -> dict[str, object]:
+        calls.append(("market", tuple(params)))
+        return {
+            "ml_id": "ml_006",
+            "ml_name": "리바로 리바로젯",
+            "market_size_series": {"2026-05": 100.0},
+            "brand_ranking_stacked": {"2026-05": [{"brand_key": "리바로", "rank": 1, "raw_value": 100.0}]},
+        }
+
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.db.fetch_one", fake_fetch_one)
+
+    result = resolve_brand_set(view_name="strategic_ml", market_id=None, selected_brand="리바로")
+
+    assert result is not None
+    assert result.market_id == "ml_006"
+    assert [choice.brand_key for choice in result.choices] == ["리바로"]
+    assert calls == [("brand", ("ml_006", "ubist", "sales")), ("market", ("ml_006", "ubist", "sales"))]
+
+
+def test_ambiguous_ml_brand_preserves_409_context_contract(monkeypatch) -> None:
+    error = DeepAnalysisContextError(
+        status_code=409,
+        error="ambiguous_market_context",
+        message="market_id is required because the brand belongs to multiple markets",
+        available_contexts=({"view_kind": "strategic_ml", "market_id": "ml_002"}, {"view_kind": "strategic_ml", "market_id": "ml_006"}),
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.resolve_deep_analysis_context",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
 
     try:
-        _ml_id_for_brand("가드렛")
+        _resolve_strategic_brand_context("가드렛", view_name="strategic_ml", market_id=None)
     except BrandSetInputError as exc:
-        message = str(exc)
-        assert message == "ambiguous ml market for brand: ml_010, ml_002, ml_006"
-        assert "pass market_id" not in message
+        assert exc.status_code == 409
+        assert exc.detail()["available_contexts"] == list(error.available_contexts)
     else:
-        raise AssertionError("ambiguous ML brand must fail loudly")
+        raise AssertionError("ambiguous ML brand must return the shared context error")
+
+
+def test_nonmember_ml_brand_returns_structured_400_detail(monkeypatch) -> None:
+    error = DeepAnalysisContextError(
+        status_code=404,
+        error="brand_not_found",
+        message="brand has no serving context for the requested view",
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.resolve_deep_analysis_context",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    try:
+        _resolve_strategic_brand_context("비소속", view_name="strategic_ml", market_id=None)
+    except BrandSetInputError as exc:
+        assert exc.status_code == 400
+        assert exc.detail() == {
+            "error": "brand_not_found",
+            "message": "brand has no serving context for the requested view",
+            "requested": {"brand": "비소속", "view": "strategic_ml", "market_id": None},
+            "hint": "verify strategic catalog membership",
+        }
+    else:
+        raise AssertionError("nonmember ML brand must return a structured input error")
 
 
 def test_general_market_scope_member_resolves_livalo_to_member_atc4(monkeypatch) -> None:

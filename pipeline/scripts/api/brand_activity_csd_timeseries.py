@@ -106,7 +106,7 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
         raise CsdTimeseriesInputError(f"unsupported view: {view}")
     selected_brand = text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
-    market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else None
+    market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else (text(payload.get("market_id")) or None)
     if not selected_brand or (view == "general" and not market_id and not _has_market_scope(filter_payload)):
         raise CsdTimeseriesInputError("filters.atc4 and selected_brand are required")
     window = payload.get("window")

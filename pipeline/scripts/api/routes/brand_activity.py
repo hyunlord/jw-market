@@ -9,6 +9,7 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesInputError,
     get_csd_timeseries,
 )
+from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError
 from pipeline.scripts.api.brand_activity_csd_activity_series import (
     CsdActivitySeriesInputError,
     get_csd_activity_series,
@@ -119,6 +120,7 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     try:
         result = get_topic_brand_payload(service_payload)
     except TopicRequestError as exc:
+        _raise_brand_set_context_error(exc)
         raise HTTPException(status_code=400, detail={"error": "invalid_brand_activity_topic_request", "message": str(exc)}) from exc
     except TopicPayloadError as exc:
         raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
@@ -166,6 +168,7 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     try:
         result = get_csd_timeseries(service_payload)
     except CsdTimeseriesInputError as exc:
+        _raise_brand_set_context_error(exc)
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_timeseries_request", "message": str(exc)}) from exc
     except CsdTimeseriesAmbiguousMarketError as exc:
         return {"data": None, "reason": "csd_market_ambiguous", "message": str(exc)}
@@ -235,6 +238,7 @@ def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -
     try:
         result = get_interest_rx_matrix(service_payload)
     except InterestRxMatrixInputError as exc:
+        _raise_brand_set_context_error(exc)
         raise HTTPException(status_code=400, detail={"error": "invalid_interest_rx_matrix_request", "message": str(exc)}) from exc
     if result is None:
         _raise_market_not_found(payload)
@@ -271,6 +275,14 @@ def _success_response(result: dict[str, JsonValue], *, request_normalized: bool)
     return response
 
 
+def _raise_brand_set_context_error(error: Exception) -> None:
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, BrandSetInputError) and cause.error != "invalid_brand_activity_request":
+            raise HTTPException(status_code=cause.status_code, detail=cause.detail()) from error
+        cause = cause.__cause__
+
+
 def _raise_market_not_found(
     payload: CsdTimeseriesRequest | BrandActivityTopicsRequest | BrandActivityInterestRxRequest,
 ) -> Never:
@@ -301,6 +313,8 @@ def _service_payload(payload: CsdTimeseriesRequest | CsdActivitySeriesRequest | 
     """Normalize mock v0.1.7 `filters` while preserving legacy `filter` input."""
 
     data = payload.model_dump()
+    if data.get("view") == "general":
+        data.pop("market_id", None)
     normalized = _normalize_market_filter(_received_filters(payload))
     data["filters"] = normalized
     data["filter"] = normalized

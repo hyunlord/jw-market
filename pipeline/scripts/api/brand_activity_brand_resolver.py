@@ -29,6 +29,11 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.config import config
+from pipeline.scripts.api.deep_analysis_context import (
+    DeepAnalysisContext,
+    DeepAnalysisContextError,
+    resolve_deep_analysis_context,
+)
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 from pipeline.scripts.api.market_scope.catalog import MarketScopeCatalog
@@ -41,6 +46,33 @@ GENERAL_IQVIA_SIDE_CAR_DIMENSIONS: Final = ("mfr", "molecule_type", "molecule_de
 
 class BrandSetInputError(RuntimeError):
     """Raised when a Brand Activity brand-set request cannot be parsed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 400,
+        error: str = "invalid_brand_activity_request",
+        available_contexts: Sequence[Mapping[str, Any]] = (),
+        requested: Mapping[str, Any] | None = None,
+        hint: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error = error
+        self.available_contexts = tuple(dict(item) for item in available_contexts)
+        self.requested = dict(requested or {})
+        self.hint = hint
+
+    def detail(self) -> dict[str, Any]:
+        detail: dict[str, Any] = {"error": self.error, "message": str(self)}
+        if self.available_contexts:
+            detail["available_contexts"] = list(self.available_contexts)
+        if self.requested:
+            detail["requested"] = self.requested
+        if self.hint:
+            detail["hint"] = self.hint
+        return detail
 
 
 class BrandSetResolutionError(RuntimeError):
@@ -95,20 +127,29 @@ def resolve_brand_set(
         filter_payload=raw_filter_payload,
     )
     resolved_market_id = market_scope_market_id or market_id
-    if not resolved_market_id and view_name == "strategic_ml":
-        resolved_market_id = _ml_id_for_brand(selected_brand, source=source)
+    resolved_selected_brand = selected_brand
+    resolved_source = source
+    if view_name in {"strategic_ml", "strategic_cd"}:
+        context = _resolve_strategic_brand_context(
+            selected_brand,
+            view_name=view_name,
+            market_id=resolved_market_id,
+        )
+        resolved_market_id = context.market_id
+        resolved_selected_brand = context.brand_key
+        resolved_source = context.db_source
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
-    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=source))
+    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source))
     if not brand_rows:
         return None
-    market_row = _fetch_market_row(view, resolved_market_id, source=source)
+    market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
     if market_row is None:
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
     brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
-    if selected_brand not in brand_meta:
+    if resolved_selected_brand not in brand_meta:
         return None
     effective_filter_payload = _filter_payload_for_effective_market(raw_filter_payload, resolved_market_id, market_scope_market_id is not None)
     applied_filter = applied_brand_filter(view_name, resolved_market_id, effective_filter_payload)
@@ -121,18 +162,18 @@ def resolve_brand_set(
         ranking,
         ranking_quarters=ranking_quarters,
         audit_code_axis=channel_axis,
-        source=source,
+        source=resolved_source,
     )
     choices = _select_choices(
         candidates,
-        selected_brand=selected_brand,
+        selected_brand=resolved_selected_brand,
         applied_filter=applied_filter,
         rank_by_latest_period=rank_by_latest_period,
     )
     return BrandSetResolution(
         view_name=view_name,
         market_id=resolved_market_id,
-        selected_brand=selected_brand,
+        selected_brand=resolved_selected_brand,
         view=view,
         market_row=market_row,
         brand_rows=brand_rows,
@@ -217,28 +258,50 @@ def view_config(view_name: str) -> ViewConfig:
     raise BrandSetInputError(f"unsupported view: {view_name}")
 
 
-def _ml_id_for_brand(brand: str, *, source: str = SOURCE) -> str:
-    """Resolve one strategic ML market for a selected brand in the ranking scope."""
+def _resolve_strategic_brand_context(
+    brand: str,
+    *,
+    view_name: str,
+    market_id: str | None,
+) -> DeepAnalysisContext:
+    """Resolve strategic membership through the shared catalog contract."""
 
-    rows = db.fetch_all(
-        f"""
-        SELECT DISTINCT ml_id
-        FROM {quote_identifier(config.db_name)}.`mart_strategic_ml_brand_metric`
-        WHERE source = %s AND measure = %s AND (brand_key = %s OR brand_name = %s)
-        ORDER BY ml_id
-        """,
-        (source, RANKING_MEASURE, brand, brand),
-    )
-    market_ids = tuple(str(row["ml_id"]) for row in rows if row.get("ml_id"))
-    if not market_ids:
-        raise BrandSetInputError("brand not in any ml market")
-    if len(market_ids) > 1:
-        # Expected 1:1 in the IQVIA sales scope. If violated, fail loudly
-        # rather than silently returning a possibly-wrong market.
-        raise BrandSetInputError(
-            f"ambiguous ml market for brand: {', '.join(market_ids)}"
+    try:
+        return resolve_deep_analysis_context(
+            brand=brand,
+            view_kind=view_name,
+            market_id=market_id,
+            source=None,
         )
-    return market_ids[0]
+    except DeepAnalysisContextError as exc:
+        if exc.error == "ambiguous_source_context":
+            try:
+                return resolve_deep_analysis_context(
+                    brand=brand,
+                    view_kind=view_name,
+                    market_id=market_id,
+                    source="iqvia",
+                )
+            except DeepAnalysisContextError as source_exc:
+                raise _brand_set_context_error(brand, view_name, market_id, source_exc) from source_exc
+        raise _brand_set_context_error(brand, view_name, market_id, exc) from exc
+
+
+def _brand_set_context_error(
+    brand: str,
+    view_name: str,
+    market_id: str | None,
+    error: DeepAnalysisContextError,
+) -> BrandSetInputError:
+    status_code = 400 if error.status_code == 404 else error.status_code
+    return BrandSetInputError(
+        error.message,
+        status_code=status_code,
+        error=error.error,
+        available_contexts=error.available_contexts,
+        requested={"brand": brand, "view": view_name, "market_id": market_id},
+        hint="provide market_id from available_contexts" if error.available_contexts else "verify strategic catalog membership",
+    )
 
 
 def _fetch_brand_rows(view: ViewConfig, market_id: str, *, source: str = SOURCE) -> list[JsonMap]:

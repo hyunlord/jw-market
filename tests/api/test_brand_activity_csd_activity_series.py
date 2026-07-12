@@ -212,8 +212,9 @@ def test_brand_activity_openapi_hides_removed_request_fields() -> None:
         "BrandActivityInterestRxRequest",
         "CsdActivitySeriesRequest",
     )
-    for name in request_names:
-        assert "market_id" not in schemas[name]["properties"]
+    for name in request_names[:3]:
+        assert schemas[name]["properties"]["market_id"]["anyOf"][0]["type"] == "string"
+    assert "market_id" not in schemas[request_names[3]]["properties"]
     assert "top5_basis" not in schemas["CsdActivitySeriesRequest"]["properties"]
 
 
@@ -232,10 +233,13 @@ def test_brand_activity_request_models_ignore_stale_market_id_and_top5_basis() -
         brand_activity.CsdActivitySeriesRequest,
     )
 
-    for model in models:
+    for model in models[:3]:
         dumped = model(**common).model_dump()
-        assert "market_id" not in dumped
+        assert dumped["market_id"] == "STALE"
         assert "top5_basis" not in dumped
+    dumped = models[3](**common).model_dump()
+    assert "market_id" not in dumped
+    assert "top5_basis" not in dumped
 
 
 def test_csd_activity_series_service_uses_select_only_sql() -> None:

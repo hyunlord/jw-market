@@ -108,7 +108,7 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     view = _text(payload.get("view"))
     selected_brand = _text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
-    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else ""
+    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else _text(payload.get("market_id"))
     if not view or not selected_brand or (view == "general" and not market_id):
         raise TopicRequestError("view, filters.atc4, and selected_brand are required")
     top_n = _integer(payload.get("top_n") or 5)
