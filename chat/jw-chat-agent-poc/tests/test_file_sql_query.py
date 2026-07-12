@@ -111,6 +111,15 @@ def test_planner_prompt_declares_uploaded_cell_text_affinity(monkeypatch) -> Non
     assert "quoted string literals" in prompt
 
 
+def test_planner_prompt_uses_aggregates_supported_by_scoped_sql_policy(monkeypatch) -> None:
+    monkeypatch.delenv("JW_CHAT_FILE_SQL_PLANNER_SYSTEM_PROMPT", raising=False)
+
+    prompt = file_sql_query._planner_system_prompt()
+
+    assert "SUM and AVG directly" in prompt
+    assert "Never use CAST" in prompt
+
+
 def test_session_payload_preserves_workflow_and_both_session_aliases(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_FILE_WORKFLOW_ID", "301")
 
