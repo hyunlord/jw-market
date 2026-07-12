@@ -125,6 +125,7 @@ class ChatAgent:
                     resolution.canonical_brand,
                     metric=metric,
                     filter_entries=effective_filters,
+                    prefer_mart=resolution.support_source == "mart_membership",
                 )
             metric_calls = [brand_metric_call]
             scope = _answer_scope(question)
@@ -136,7 +137,11 @@ class ChatAgent:
                     if scope == "single_brand_trend" and data.get("metric") not in {"series", "trend"}:
                         continue
                     data["answer_scope"] = scope
-            if not effective_filters and metric not in {"hhi", "series", "trend", "momentum", "ei"}:
+            if (
+                resolution.support_source != "mart_membership"
+                and not effective_filters
+                and metric not in {"hhi", "series", "trend", "momentum", "ei"}
+            ):
                 with stage(timing, "tool:get_market_landscape", f"market={market}"):
                     market_landscape_call = self.metrics.get_market_landscape(market)
                 metric_calls.insert(0, market_landscape_call)
@@ -427,9 +432,18 @@ class ChatAgent:
         except (LookupError, TypeError, ValueError):
             return None
 
-    def _metric_call(self, brand: str, *, metric: str, filter_entries: tuple[FilterEntry, ...]) -> dict[str, Any]:
+    def _metric_call(
+        self,
+        brand: str,
+        *,
+        metric: str,
+        filter_entries: tuple[FilterEntry, ...],
+        prefer_mart: bool = False,
+    ) -> dict[str, Any]:
         if self.query_layer is not None:
             try:
+                if prefer_mart and not filter_entries:
+                    return self.query_layer.brand_metric(brand, metric, "latest")
                 catalog = self.query_layer.catalog_for_brand(brand)
                 if catalog.market_structure:
                     period = _metric_filter_period(filter_entries)

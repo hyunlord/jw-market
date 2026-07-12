@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
+from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 from jw_chat_agent_poc.resolver.brand_resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 
@@ -72,3 +73,20 @@ def test_factory_wires_query_layer_as_membership_reader(monkeypatch: pytest.Monk
 
     assert dependencies.query_layer is not None
     assert dependencies.resolver._membership_reader is dependencies.query_layer
+
+
+def test_mart_membership_brand_uses_query_layer_for_simple_metric() -> None:
+    class QueryLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, object]:
+            return {"source": "UBIST", "tool": "get_brand_metric", "render_data": {"brand": brand, "metric": metric}}
+
+    class CacheMetrics:
+        def get_brand_metric(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("mart-only brand must not fall back to cache_brands metrics")
+
+    agent = ChatAgent(metrics=CacheMetrics(), query_layer=QueryLayer())
+
+    call = agent._metric_call("피타틴", metric="sales", filter_entries=(), prefer_mart=True)
+
+    assert call["source"] == "UBIST"
+    assert call["render_data"]["brand"] == "피타틴"
