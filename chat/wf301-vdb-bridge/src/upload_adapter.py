@@ -19,6 +19,8 @@ from . import settings
 
 FILE_UPLOAD_PLUGIN_CODE = "WP01"
 LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
+# 로컬 XLSX 전처리 경로가 직접 처리하는 확장자. .xlsm은 매크로를 무시하고 데이터 시트만 색인한다.
+LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
 GATED_EXTERNAL_PREPROCESSOR_EXTENSIONS = frozenset({"pdf", "pptx"})
 PDF_PAGE_MARKER = re.compile(rb"/Type\s*/Page\b")
 PPTX_SLIDE_NAME = re.compile(r"^ppt/slides/slide\d+\.xml$")
@@ -278,7 +280,7 @@ def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[s
     errors: list[str] = []
     for file in files:
         extension = _extension(file.filename)
-        if extension in LOCAL_PREPROCESSOR_EXTENSIONS:
+        if extension in LOCAL_PREPROCESSOR_EXTENSIONS or extension in LOCAL_XLSX_EXTENSIONS:
             continue
         if extension not in allowed_extensions:
             errors.append(f"허용되지 않는 파일 확장자입니다: {file.filename}")
@@ -287,7 +289,7 @@ def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[s
 
 def requires_external_preprocessor(item: SavedTempDocument) -> bool:
     extension = _extension(item.file_name)
-    return extension not in LOCAL_PREPROCESSOR_EXTENSIONS and extension != "xlsx"
+    return extension not in LOCAL_PREPROCESSOR_EXTENSIONS and extension not in LOCAL_XLSX_EXTENSIONS
 
 
 def create_temp_vdb_index(

@@ -108,6 +108,18 @@ class SearchRequest(SessionRequest):
     )
 
 
+class FileSqlSchemaRequest(SessionRequest):
+    logical_name: str = Field(
+        description="/search의 sql_sources에서 받은 세션 소유 논리 테이블 이름입니다."
+    )
+
+
+class FileSqlQueryRequest(FileSqlSchemaRequest):
+    sql: str = Field(
+        description="SELECT/CTE-only 파일 질의입니다. data 논리 테이블만 참조할 수 있습니다."
+    )
+
+
 class DeleteDocumentRequest(SessionRequest):
     document_id: int | None = Field(default=None, description="/documents에서 확인한 정식 GenOS document ID입니다.")
     temp_document_id: int | None = Field(default=None, description="/upload 응답 또는 /documents 목록에 있는 임시 문서 ID입니다.")
@@ -135,7 +147,7 @@ class DocumentPlan(BaseModel):
     source_doc_key: str = Field(description="중복 등록 방지와 원본 추적에 사용하는 source document key입니다.")
     source_collection: str | None = Field(description="임시 청크를 읽은 temp VDB 컬렉션명입니다.")
     chunk_count: int = Field(description="읽어온 청크 수입니다. 0이면 commit해도 등록할 본문이 없습니다.")
-    route: Literal["vdb", "vdb_large", "blocked_oversized"] = Field(
+    route: Literal["vdb", "vdb_large", "blocked_oversized", "sql"] = Field(
         default="vdb",
         description="청크 수 기반 등록 경로 판정입니다. vdb_large는 경고만, blocked_oversized는 commit 차단입니다.",
     )
@@ -170,7 +182,7 @@ class CommitDocumentResult(BaseModel):
     document_id: int | None = Field(default=None, description="생성되었거나 이미 존재하던 GenOS document ID입니다.")
     document_upsert_id: int | None = Field(default=None, description="신규 commit 시 생성된 document_upsert ID입니다.")
     chunk_count: int = Field(description="등록 또는 중복 확인된 청크 수입니다.")
-    route: Literal["vdb", "vdb_large", "blocked_oversized"] = Field(
+    route: Literal["vdb", "vdb_large", "blocked_oversized", "sql"] = Field(
         default="vdb",
         description="청크 수 기반 등록 경로 판정입니다. blocked_oversized면 해당 문서는 VDB에 등록되지 않습니다.",
     )
@@ -179,6 +191,10 @@ class CommitDocumentResult(BaseModel):
     weaviate_object_ids: list[str] = Field(default_factory=list, description="VDB 139에 복사된 Weaviate 객체 ID 목록입니다.")
     status: str = Field(description="문서별 처리 상태입니다. committed, skipped_duplicate, no_chunks 등이 들어갑니다.")
     notes: list[str] = Field(default_factory=list)
+    sql_tables: list["SqlTableMetadata"] = Field(
+        default_factory=list,
+        description="SQL 라우팅 문서의 사용자/LLM용 논리 테이블 메타데이터입니다.",
+    )
 
 
 class CommitResponse(BaseModel):
@@ -210,6 +226,12 @@ class SessionDocument(BaseModel):
     file_size_bytes: int = Field(default=0, description="파일 크기 byte입니다.")
     chunk_count: int = Field(default=0, description="등록된 청크 수입니다.")
     is_expired: bool = Field(default=False, description="현재 시각 기준 TTL이 만료되었는지 여부입니다.")
+    storage_route: Literal["vdb", "sql"] = Field(
+        default="vdb",
+        description="문서의 실제 검색 경로입니다. 기존 문서는 vdb로 간주합니다.",
+    )
+    route_reason: str = Field(default="", description="결정론적 라우팅 판정 근거입니다.")
+    sql_tables: list["SqlTableMetadata"] = Field(default_factory=list)
 
 
 class QuotaLimits(BaseModel):
@@ -293,6 +315,55 @@ class FileSource(BaseModel):
     i_page: int | None = Field(default=None, description="원본 문서 내 페이지 번호입니다.")
     i_chunk_on_doc: int | None = Field(default=None, description="원본 문서 내 청크 순번입니다.")
     distance: float | None = Field(default=None, description="벡터 검색 distance 값입니다. 낮을수록 질문과 가까운 결과입니다.")
+    source_channel: str = Field(default="native_text", description="native text 또는 이미지 추출 provenance 채널입니다.")
+    visual_model: str | None = Field(default=None, description="이미지 추출 청크를 생성한 모델입니다.")
+
+
+class EmptyPageSource(BaseModel):
+    """검색에서 근거 제외된 빈 페이지 자리표시 청크의 상태 메타데이터입니다."""
+
+    document_id: int = Field(description="자리표시 청크가 속한 GenOS document ID입니다.")
+    file_name: str = Field(description="자리표시 청크가 속한 파일명입니다.")
+    chunk_id: str | None = Field(default=None, description="Weaviate 객체/chunk ID입니다.")
+    i_page: int | None = Field(default=None, description="원본 문서 내 페이지 번호입니다.")
+    status: str = Field(
+        description=(
+            "페이지 시각 콘텐츠 처리 상태입니다. visual_content_not_processed는 네이티브 텍스트가 없고 "
+            "시각 채널 처리도 확인되지 않은 페이지, visual_content_processed는 같은 페이지가 VLM 시각 "
+            "채널로 별도 처리된 경우입니다."
+        )
+    )
+
+
+class SqlTableMetadata(BaseModel):
+    logical_name: str = Field(description="세션 내부에서만 유효한 논리 테이블 이름입니다.")
+    sheet_name: str = Field(description="원본 XLSX 시트 이름입니다.")
+    row_count: int = Field(description="라우팅 시 관측한 시트 행 수입니다.")
+    column_count: int = Field(description="라우팅 시 관측한 시트 열 수입니다.")
+
+
+class FileSqlSource(SqlTableMetadata):
+    document_id: int = Field(description="소유권 검증에 사용한 document ID입니다.")
+    file_name: str = Field(description="사용자가 업로드한 원본 파일명입니다.")
+
+
+class FileSqlColumn(BaseModel):
+    query_name: str
+    source_name: str
+
+
+class FileSqlSchemaResponse(BaseModel):
+    logical_name: str
+    query_table: Literal["data"] = "data"
+    columns: list[FileSqlColumn]
+    llm_description: str
+
+
+class FileSqlQueryResponse(BaseModel):
+    logical_name: str
+    columns: list[str]
+    rows: list[list[str | int | float | None]]
+    row_count: int
 
 
 class SearchResponse(BaseModel):
@@ -305,4 +376,19 @@ class SearchResponse(BaseModel):
     result_count: int = Field(description="VDB 검색으로 반환된 청크 수입니다.")
     file_context: str = Field(description="wf301 채팅 답변에 주입할 파일 기반 컨텍스트 문자열입니다.")
     file_sources: list[FileSource] = Field(description="file_context를 구성한 검색 출처 목록입니다.")
+    sql_available: bool = Field(
+        default=False,
+        description="현재 세션에 조건부 SQL 라우팅 문서가 있는지 나타냅니다.",
+    )
+    sql_sources: list[FileSqlSource] = Field(
+        default_factory=list,
+        description="chat이 schema/query API에 전달할 세션 소유 논리 테이블 목록입니다.",
+    )
+    empty_page_sources: list[EmptyPageSource] = Field(
+        default_factory=list,
+        description=(
+            "검색 상위 결과에 있었지만 근거에서 제외된 빈 페이지 자리표시 청크 목록입니다. "
+            "chat은 이 목록으로 '해당 페이지의 시각 콘텐츠가 처리되지 않았음'을 명시할 수 있습니다."
+        ),
+    )
     errors: list[str] = Field(default_factory=list)

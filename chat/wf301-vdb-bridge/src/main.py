@@ -14,9 +14,17 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 
-from . import delete_ops, ledger, session_wiki, settings, upload_adapter, weaviate_ops
+from . import delete_ops, ledger, pdf_vlm, session_wiki, settings, upload_adapter, weaviate_ops
+from .file_sql import (
+    FileSqlNotFoundError,
+    FileSqlRejectedError,
+    describe_schema_for_llm,
+    drop_logical_table,
+    provision_session_table,
+    run_scoped_query,
+)
 from .logging_utils import safe_log
 from .models import (
     BlockedUpload,
@@ -27,7 +35,14 @@ from .models import (
     DeleteDocumentResponse,
     DocumentPlan,
     DocumentsResponse,
+    EmptyPageSource,
     FileSource,
+    FileSqlColumn,
+    FileSqlQueryRequest,
+    FileSqlQueryResponse,
+    FileSqlSchemaRequest,
+    FileSqlSchemaResponse,
+    FileSqlSource,
     DryRunResponse,
     PlannedDocumentRow,
     PlannedUpsertRow,
@@ -38,22 +53,46 @@ from .models import (
     SearchResponse,
     SessionDocument,
     SessionRequest,
+    SqlTableMetadata,
     TempDocument,
     UploadedTempDocument,
     UploadResponse,
 )
 from .xlsx_preprocessor import (
+    SheetSkip,
     XlsxPreprocessError,
     extract_xlsx_chunks,
     iter_xlsx_chunks,
     should_stream_xlsx_chunks,
 )
 from .docx_preprocessor import DocxPreprocessError, extract_docx_chunks
+from .xlsx_sql_route import (
+    WorkbookSqlDecision,
+    inspect_xlsx_for_sql,
+    load_sql_sheet,
+)
 
 WORKFLOW_ID_EXAMPLE = 301
 SESSION_KEY_EXAMPLE = "puc-004928"
 SESSION_KEY_SCHEMA = {"maxLength": 36, "pattern": "^[A-Za-z0-9_-]{1,36}$"}
 TARGET_VDB_EXAMPLE = settings.TARGET_VDB_ID
+# .xlsm은 매크로(vbaProject)를 무시하고 데이터 시트만 .xlsx와 같은 로컬 전처리 경로로 처리한다.
+LOCAL_XLSX_SUFFIXES = (".xlsx", ".xlsm")
+
+
+def _xlsx_timeout_gate(chunk_count: int) -> tuple[str, str] | None:
+    """Fail-closed gate: 임베딩이 업로드 시간 예산을 넘길 XLSX는 조용한 부분 색인 대신 명시 차단."""
+    limit = int(settings.XLSX_EMBED_CHUNKS_PER_SEC * settings.XLSX_UPLOAD_TIME_BUDGET_S)
+    if chunk_count <= limit:
+        return None
+    estimated_s = chunk_count / settings.XLSX_EMBED_CHUNKS_PER_SEC
+    reason = (
+        f"chunk_count={chunk_count} exceeds timeout-safe xlsx commit limit {limit} "
+        f"(estimated embedding {estimated_s:.0f}s > budget {settings.XLSX_UPLOAD_TIME_BUDGET_S:.0f}s); "
+        "파일이 커서 제한 시간 안에 색인을 마칠 수 없어 등록을 차단했습니다. "
+        "시트를 나누거나 필요한 데이터만 추려 다시 업로드해 주세요."
+    )
+    return ("blocked_oversized", reason)
 
 
 def _chunk_route(chunk_count: int) -> tuple[str, str]:
@@ -439,6 +478,9 @@ def _description(
     source_collection: str | None,
     expires_at: str,
     file_size_bytes: int,
+    storage_route: str = "vdb",
+    route_reason: str = "",
+    sql_tables: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "workflow_id": req.workflow_id,
@@ -453,11 +495,122 @@ def _description(
         "ttl_days": settings.TTL_DAYS,
         "file_size_bytes": file_size_bytes,
         "bridge": "wf301-vdb-bridge",
+        "storage_route": storage_route,
+        "route_reason": route_reason,
+        "sql_tables": sql_tables or [],
     }
 
 
+def _sql_decision_for_temp_doc(temp_doc: TempDocument) -> WorkbookSqlDecision | None:
+    if not temp_doc.file_name.lower().endswith(LOCAL_XLSX_SUFFIXES) or not temp_doc.file_path:
+        return None
+    path = Path(temp_doc.file_path)
+    if not path.is_file():
+        return None
+    decision = inspect_xlsx_for_sql(path)
+    safe_log(
+        "xlsx_storage_route",
+        file_name=temp_doc.file_name,
+        route=decision.route,
+        route_reason=decision.reason,
+        sheet_profiles=[profile.audit_dict() for profile in decision.profiles],
+    )
+    return decision
+
+
+def _sql_table_metadata(
+    temp_doc: TempDocument,
+    decision: WorkbookSqlDecision,
+) -> list[SqlTableMetadata]:
+    return [
+        SqlTableMetadata(
+            logical_name=f"doc-{temp_doc.temp_document_id}:sheet-{profile.sheet_index}",
+            sheet_name=profile.sheet_name,
+            row_count=profile.row_count,
+            column_count=profile.column_count,
+        )
+        for profile in decision.selected_sheets
+    ]
+
+
+def _no_native_text_page_notes(enrichment: pdf_vlm.VisualEnrichment) -> list[str]:
+    """네이티브 텍스트가 없는 페이지의 시각 처리 상태를 명시 고지 노트로 만든다.
+
+    외부 전처리기는 이런 페이지를 색인에서 조용히 누락시킨다. 근거로 오용될 청크는 없지만
+    사용자/chat이 '해당 페이지 정보는 없음' 대신 '처리되지 않았음'을 구분하도록 상태를 남긴다.
+    VLM이 정상 처리한 페이지(selected에서 failed 제외)는 not_processed로 오분류하지 않는다.
+    """
+    if not enrichment.no_native_text_pages:
+        return []
+    visual_ok = set(enrichment.selected_pages) - set(enrichment.failed_pages)
+    not_processed = [page for page in enrichment.no_native_text_pages if page not in visual_ok]
+    processed = [page for page in enrichment.no_native_text_pages if page in visual_ok]
+    notes: list[str] = []
+    if not_processed:
+        notes.append(
+            f"no_native_text_pages={not_processed} "
+            f"status={settings.PDF_EMPTY_PAGE_STATUS_NOT_PROCESSED}; "
+            "텍스트가 없는 페이지는 색인되지 않았으며 시각 콘텐츠도 처리되지 않았습니다."
+        )
+    if processed:
+        notes.append(
+            f"no_native_text_pages={processed} "
+            f"status={settings.PDF_EMPTY_PAGE_STATUS_PROCESSED}; "
+            "텍스트가 없는 페이지지만 VLM 시각 채널로 별도 처리되었습니다."
+        )
+    return notes
+
+
+def _annotate_empty_page_chunks(
+    chunks: list[weaviate_ops.Chunk],
+    *,
+    visual_pages: set[Any],
+) -> list[str]:
+    """빈 페이지 자리표시 청크에 상태 provenance를 기록하고 사용자 고지 노트를 돌려준다.
+
+    청크 수/본문 텍스트는 그대로 두고 summary provenance만 갱신하므로 라우팅·카운트에는
+    영향이 없다. VLM 시각 채널이 처리한 페이지(visual_pages)는 not_processed로 오분류하지
+    않는다.
+    """
+    not_processed_pages: list[Any] = []
+    processed_pages: list[Any] = []
+    for chunk in chunks:
+        provenance = _hit_provenance(chunk)
+        if str(provenance.get("source_channel") or "") == pdf_vlm.SOURCE_CHANNEL:
+            continue
+        if not _is_empty_page_marker_text(str(chunk.get("text") or "")):
+            continue
+        page = chunk.get("i_page")
+        visual_processed = page in visual_pages
+        provenance.update(
+            {
+                "empty_page": True,
+                "visual_processed": visual_processed,
+                "empty_page_status": settings.PDF_EMPTY_PAGE_STATUS_PROCESSED
+                if visual_processed
+                else settings.PDF_EMPTY_PAGE_STATUS_NOT_PROCESSED,
+            }
+        )
+        chunk["summary"] = json.dumps(provenance, ensure_ascii=False, separators=(",", ":"))
+        (processed_pages if visual_processed else not_processed_pages).append(page)
+    notes: list[str] = []
+    if not_processed_pages:
+        notes.append(
+            f"empty_pages={sorted(not_processed_pages, key=str)} "
+            f"status={settings.PDF_EMPTY_PAGE_STATUS_NOT_PROCESSED}; "
+            "텍스트가 없는 페이지의 자리표시 청크는 검색 근거에서 제외됩니다."
+        )
+    if processed_pages:
+        notes.append(
+            f"empty_pages={sorted(processed_pages, key=str)} "
+            f"status={settings.PDF_EMPTY_PAGE_STATUS_PROCESSED}; "
+            "해당 페이지는 VLM 시각 채널로 별도 처리되었습니다."
+        )
+    return notes
+
+
 def _load_temp_chunks(
-    client: httpx.Client, temp_doc: TempDocument
+    client: httpx.Client, temp_doc: TempDocument, *, enrich_visual: bool = False
 ) -> tuple[str | None, list[weaviate_ops.Chunk], list[str]]:
     notes: list[str] = []
     local_xlsx = _load_local_xlsx_chunks(client, temp_doc)
@@ -479,6 +632,35 @@ def _load_temp_chunks(
         notes.append("no chunks found for temp document")
     if chunks and weaviate_ops.first_vector_dim(chunks) is None:
         notes.append("vector not present in chunk read")
+    if enrich_visual and chunks and temp_doc.file_path and temp_doc.file_name.lower().endswith(".pdf"):
+        path = Path(temp_doc.file_path)
+        if path.is_file():
+            try:
+                enrichment = pdf_vlm.enrich_pdf_chunks(
+                    client,
+                    path=path,
+                    temp_document_id=temp_doc.temp_document_id,
+                    file_name=temp_doc.file_name,
+                    native_chunks=chunks,
+                    embed_texts=lambda texts: weaviate_ops.embed_texts(client, texts),
+                )
+                chunks = enrichment.chunks
+                notes.extend(enrichment.notes)
+                notes.append(
+                    f"pdf_visual_status={enrichment.status} "
+                    f"suspect_pages={enrichment.suspect_pages} selected_pages={enrichment.selected_pages} "
+                    f"tokens={enrichment.usage.total_tokens} elapsed_s={enrichment.elapsed_s:.3f}"
+                )
+                notes.extend(_no_native_text_page_notes(enrichment))
+            except Exception as exc:
+                notes.append(f"pdf_visual_status=partial_visual visual_failed error={type(exc).__name__}: {exc}")
+    if chunks and temp_doc.file_name.lower().endswith(".pdf"):
+        visual_pages = {
+            chunk.get("i_page")
+            for chunk in chunks
+            if str(_hit_provenance(chunk).get("source_channel") or "") == pdf_vlm.SOURCE_CHANNEL
+        }
+        notes.extend(_annotate_empty_page_chunks(chunks, visual_pages=visual_pages))
     return collection, chunks, notes
 
 
@@ -511,7 +693,7 @@ def _load_local_xlsx_chunks(
 def _load_local_xlsx_texts(
     temp_doc: TempDocument,
 ) -> tuple[str, list[str], list[str], int] | None:
-    if not temp_doc.file_name.lower().endswith(".xlsx") or not temp_doc.file_path:
+    if not temp_doc.file_name.lower().endswith(LOCAL_XLSX_SUFFIXES) or not temp_doc.file_path:
         return None
     path = Path(temp_doc.file_path)
     if not path.is_file():
@@ -521,8 +703,10 @@ def _load_local_xlsx_texts(
             texts = list(iter_xlsx_chunks(path))
             notes = ["xlsx 스트리밍 전처리 적용: 대형 flat 시트 청킹"]
         else:
-            texts = extract_xlsx_chunks(path)
+            skip_report: list[SheetSkip] = []
+            texts = extract_xlsx_chunks(path, skip_report=skip_report)
             notes = ["xlsx 전용 전처리 적용: 헤더-값 보존 청킹"]
+            notes.extend(skip.note() for skip in skip_report)
     except XlsxPreprocessError as exc:
         return ("local_xlsx_preprocessor_failed", [], [f"xlsx 전용 전처리 실패: {exc}"], 0)
     file_size = path.stat().st_size
@@ -583,7 +767,10 @@ def health() -> dict[str, Any]:
             "/documents/delete",
             "/quota/check",
             "/search",
+            "/file-sql/schema",
+            "/file-sql/query",
         ],
+        "file_sql_enabled": settings.FILE_SQL_ENABLED,
         "ttl_days": settings.TTL_DAYS,
         "quota": _quota_limits().model_dump(),
     }
@@ -635,8 +822,26 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
                     )
                 )
                 continue
-            local_xlsx = _load_local_xlsx_texts(temp_doc)
-            if local_xlsx is not None:
+            sql_decision = _sql_decision_for_temp_doc(temp_doc)
+            sql_tables = (
+                _sql_table_metadata(temp_doc, sql_decision)
+                if sql_decision is not None and sql_decision.route == "sql"
+                else []
+            )
+            local_xlsx = None if sql_tables else _load_local_xlsx_texts(temp_doc)
+            if sql_tables:
+                collection = "session_sqlite"
+                notes = [
+                    sql_decision.reason,
+                    *(
+                        json.dumps(profile.audit_dict(), ensure_ascii=False)
+                        for profile in sql_decision.profiles
+                    ),
+                ]
+                file_size_bytes = Path(temp_doc.file_path or "").stat().st_size
+                chunk_count = 0
+                vector_dim = None
+            elif local_xlsx is not None:
                 collection, texts, notes, file_size_bytes = local_xlsx
                 chunk_count = len(texts)
                 vector_dim = None
@@ -645,7 +850,15 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
                 chunk_count = len(chunks)
                 vector_dim = weaviate_ops.first_vector_dim(chunks)
                 file_size_bytes = weaviate_ops.max_file_size_bytes(chunks)
-            route, route_reason = _chunk_route(chunk_count)
+            route, route_reason = (
+                ("sql", sql_decision.reason)
+                if sql_tables and sql_decision is not None
+                else _chunk_route(chunk_count)
+            )
+            if local_xlsx is not None and route != "blocked_oversized":
+                timeout_gate = _xlsx_timeout_gate(chunk_count)
+                if timeout_gate is not None:
+                    route, route_reason = timeout_gate
             description = json.dumps(
                 _description(
                     req,
@@ -655,12 +868,15 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
                     source_collection=collection,
                     expires_at=_expires_at(),
                     file_size_bytes=file_size_bytes,
+                    storage_route="sql" if sql_tables else "vdb",
+                    route_reason=route_reason,
+                    sql_tables=[table.model_dump() for table in sql_tables],
                 ),
                 ensure_ascii=False,
             )
             planned_doc = None
             planned_upsert = None
-            if chunk_count:
+            if chunk_count or sql_tables:
                 planned_doc = PlannedDocumentRow(
                     vdb_id=req.vdb_id,
                     org_file_name=temp_doc.file_name,
@@ -670,7 +886,7 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
                 planned_upsert = PlannedUpsertRow(
                     vdb_id=req.vdb_id,
                     doc_id_placeholder="<document.id at commit>",
-                    n_vectors=chunk_count,
+                    n_vectors=0 if sql_tables else chunk_count,
                 )
             plans.append(
                 DocumentPlan(
@@ -687,7 +903,7 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
                     planned_document=planned_doc,
                     planned_upsert=planned_upsert,
                     planned_vector_ids=0,
-                    planned_139_objects=chunk_count,
+                    planned_139_objects=0 if sql_tables else chunk_count,
                     notes=notes,
                 )
             )
@@ -765,23 +981,57 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                         "vector_dim": None,
                         "file_size_bytes": gate_block.file_size_bytes,
                         "existing_doc_id": None,
+                        "sql_decision": None,
+                        "sql_tables": [],
                     }
                 )
                 continue
-            local_xlsx = _load_local_xlsx_texts(temp_doc)
+            sql_decision = _sql_decision_for_temp_doc(temp_doc)
+            sql_tables = (
+                _sql_table_metadata(temp_doc, sql_decision)
+                if sql_decision is not None and sql_decision.route == "sql"
+                else []
+            )
+            local_xlsx = None if sql_tables else _load_local_xlsx_texts(temp_doc)
             local_xlsx_texts: list[str] | None = None
-            if local_xlsx is not None:
+            if sql_tables:
+                collection = "session_sqlite"
+                notes = [
+                    sql_decision.reason,
+                    *(
+                        json.dumps(profile.audit_dict(), ensure_ascii=False)
+                        for profile in sql_decision.profiles
+                    ),
+                ]
+                chunks = []
+                chunk_count = 0
+                vector_dim = None
+                file_size_bytes = Path(temp_doc.file_path or "").stat().st_size
+            elif local_xlsx is not None:
                 collection, local_xlsx_texts, notes, file_size_bytes = local_xlsx
                 chunks: list[weaviate_ops.Chunk] = []
                 chunk_count = len(local_xlsx_texts)
                 vector_dim = None
             else:
-                collection, chunks, notes = _load_temp_chunks(client, temp_doc)
+                collection, chunks, notes = _load_temp_chunks(client, temp_doc, enrich_visual=True)
                 chunk_count = len(chunks)
                 vector_dim = weaviate_ops.first_vector_dim(chunks)
                 file_size_bytes = weaviate_ops.max_file_size_bytes(chunks)
-            route, route_reason = _chunk_route(chunk_count)
-            existing_doc_id = ledger.find_existing_document(conn, source_doc_key) if chunk_count else None
+            route, route_reason = (
+                ("sql", sql_decision.reason)
+                if sql_tables and sql_decision is not None
+                else _chunk_route(chunk_count)
+            )
+            if local_xlsx is not None and route != "blocked_oversized":
+                timeout_gate = _xlsx_timeout_gate(chunk_count)
+                if timeout_gate is not None:
+                    route, route_reason = timeout_gate
+                    notes = [*notes, route_reason]
+            existing_doc_id = (
+                ledger.find_existing_document(conn, source_doc_key)
+                if chunk_count or sql_tables
+                else None
+            )
             prepared.append(
                 {
                     "temp_doc": temp_doc,
@@ -797,10 +1047,18 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                     "vector_dim": vector_dim,
                     "file_size_bytes": file_size_bytes,
                     "existing_doc_id": existing_doc_id,
+                    "sql_decision": sql_decision,
+                    "sql_tables": sql_tables,
                 }
             )
 
-        new_items = [item for item in prepared if item["chunk_count"] and item["existing_doc_id"] is None]
+        new_items = [
+            item
+            for item in prepared
+            if (item["chunk_count"] or item["sql_tables"])
+            and item["existing_doc_id"] is None
+            and item["route"] != "blocked_oversized"
+        ]
         incoming_sizes = [int(item["file_size_bytes"] or 0) for item in new_items]
         quota = _quota_snapshot(
             current_docs,
@@ -835,6 +1093,8 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
             notes = item["notes"]
             vector_dim = item["vector_dim"]
             file_size_bytes = int(item["file_size_bytes"] or 0)
+            sql_decision = item["sql_decision"]
+            sql_tables: list[SqlTableMetadata] = item["sql_tables"]
             if route == "blocked_oversized":
                 results.append(
                     CommitDocumentResult(
@@ -852,7 +1112,7 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                 )
                 continue
 
-            if not chunk_count:
+            if not chunk_count and not sql_tables:
                 results.append(
                     CommitDocumentResult(
                         temp_document_id=temp_doc.temp_document_id,
@@ -885,11 +1145,28 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                         vector_dim=vector_dim,
                         status="skipped_duplicate",
                         notes=["existing active document found by source_doc_key"],
+                        sql_tables=sql_tables,
                     )
                 )
                 continue
 
+            provisioned_logical_names: list[str] = []
             try:
+                if sql_tables:
+                    path = Path(temp_doc.file_path or "")
+                    for table, profile in zip(
+                        sql_tables,
+                        sql_decision.selected_sheets,
+                        strict=True,
+                    ):
+                        sheet_data = load_sql_sheet(path, profile)
+                        provision_session_table(
+                            session_id,
+                            table.logical_name,
+                            sheet_data.columns,
+                            sheet_data.rows(),
+                        )
+                        provisioned_logical_names.append(table.logical_name)
                 description = _description(
                     req,
                     source_doc_key=source_doc_key,
@@ -898,6 +1175,9 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                     source_collection=collection,
                     expires_at=_expires_at(),
                     file_size_bytes=file_size_bytes,
+                    storage_route="sql" if sql_tables else "vdb",
+                    route_reason=route_reason,
+                    sql_tables=[table.model_dump() for table in sql_tables],
                 )
                 document_id = ledger.insert_document(
                     conn,
@@ -908,10 +1188,12 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                 upsert_id = ledger.insert_document_upsert(
                     conn,
                     document_id=document_id,
-                    chunk_count=chunk_count,
+                    chunk_count=0 if sql_tables else chunk_count,
                     user_id=user_id,
                 )
-                if local_xlsx_texts is not None:
+                if sql_tables:
+                    object_ids = []
+                elif local_xlsx_texts is not None:
                     object_ids, vector_dim = weaviate_ops.copy_texts_to_target(
                         client,
                         local_xlsx_texts,
@@ -929,18 +1211,30 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                         file_name=temp_doc.file_name,
                         idempotency_key=idempotency_key,
                     )
-                session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
+                if not sql_tables:
+                    session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
                 conn.commit()
             except Exception:
                 conn.rollback()
+                for logical_name in provisioned_logical_names:
+                    try:
+                        drop_logical_table(session_id, logical_name)
+                    except (FileSqlNotFoundError, FileSqlRejectedError):
+                        pass
                 raise
 
             write_count += 2 + len(object_ids)
             committed_count += 1
-            rollback.append(
-                f"document_id={document_id}: set document/document_upsert is_active=0 "
-                f"and delete Weaviate object ids {object_ids}"
-            )
+            if sql_tables:
+                rollback.append(
+                    f"document_id={document_id}: set document/document_upsert is_active=0 "
+                    f"and drop session SQL tables {provisioned_logical_names}"
+                )
+            else:
+                rollback.append(
+                    f"document_id={document_id}: set document/document_upsert is_active=0 "
+                    f"and delete Weaviate object ids {object_ids}"
+                )
             results.append(
                 CommitDocumentResult(
                     temp_document_id=temp_doc.temp_document_id,
@@ -954,8 +1248,9 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
                     route_reason=route_reason,
                     vector_dim=vector_dim,
                     weaviate_object_ids=object_ids,
-                    status="committed",
+                    status="committed_sql" if sql_tables else "committed",
                     notes=notes,
+                    sql_tables=sql_tables,
                 )
             )
 
@@ -1383,26 +1678,78 @@ def quota_check(
     )
 
 
+def _is_empty_page_marker_text(text: str) -> bool:
+    """외부 PDF 전처리기의 빈 페이지 자리표시 텍스트인지 판정한다."""
+    normalized = text.strip().lower()
+    return bool(normalized) and normalized == settings.PDF_EMPTY_PAGE_MARKER.lower()
+
+
+def _hit_provenance(hit: dict[str, Any]) -> dict[str, Any]:
+    summary = hit.get("summary")
+    if isinstance(summary, str) and summary:
+        try:
+            decoded = json.loads(summary)
+            if isinstance(decoded, dict):
+                return decoded
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _is_empty_page_marker_hit(text: str, provenance: dict[str, Any]) -> bool:
+    return bool(provenance.get("empty_page")) or _is_empty_page_marker_text(text)
+
+
 def _context_from_hits(
     hits: list[dict[str, Any]],
     char_limit: int = settings.SEARCH_CONTEXT_CHAR_LIMIT,
-) -> tuple[str, list[FileSource]]:
+) -> tuple[str, list[FileSource], list[EmptyPageSource]]:
     lines: list[str] = []
     sources: list[FileSource] = []
+    empty_pages: list[EmptyPageSource] = []
     used_chars = 0
-    for index, hit in enumerate(hits, start=1):
+    # 같은 문서/페이지가 VLM 시각 채널 청크로도 조회됐는지 먼저 수집한다.
+    # 빈 페이지 자리표시를 visual_content_not_processed로 잘못 표시하지 않기 위한 판정 근거.
+    vlm_pages: set[tuple[int, Any]] = set()
+    for hit in hits:
+        provenance = _hit_provenance(hit)
+        if str(provenance.get("source_channel") or "") == pdf_vlm.SOURCE_CHANNEL:
+            vlm_pages.add((int(hit.get("doc_id") or 0), hit.get("i_page")))
+    index = 0
+    for hit in hits:
         text = str(hit.get("text") or "").strip()
         if not text:
+            continue
+        doc_id = int(hit.get("doc_id") or 0)
+        file_name = str(hit.get("file_name") or "")
+        provenance = _hit_provenance(hit)
+        additional = hit.get("_additional") or {}
+        if _is_empty_page_marker_hit(text, provenance):
+            # 텍스트 없는 페이지의 자리표시 청크는 근거가 아니므로 검색 컨텍스트에서 제외한다.
+            visual_processed = bool(provenance.get("visual_processed")) or (
+                (doc_id, hit.get("i_page")) in vlm_pages
+            )
+            empty_pages.append(
+                EmptyPageSource(
+                    document_id=doc_id,
+                    file_name=file_name,
+                    chunk_id=additional.get("id"),
+                    i_page=hit.get("i_page"),
+                    status=settings.PDF_EMPTY_PAGE_STATUS_PROCESSED
+                    if visual_processed
+                    else settings.PDF_EMPTY_PAGE_STATUS_NOT_PROCESSED,
+                )
+            )
             continue
         remaining = char_limit - used_chars
         if remaining <= 0:
             break
         clipped = text[:remaining]
         used_chars += len(clipped)
-        doc_id = int(hit.get("doc_id") or 0)
-        file_name = str(hit.get("file_name") or "")
-        lines.append(f"[{index}] {file_name} (document_id={doc_id})\n{clipped}")
-        additional = hit.get("_additional") or {}
+        source_channel = str(provenance.get("source_channel") or "native_text")
+        label = " [image-derived extraction]" if source_channel == pdf_vlm.SOURCE_CHANNEL else ""
+        index += 1
+        lines.append(f"[{index}] {file_name} (document_id={doc_id}){label}\n{clipped}")
         sources.append(
             FileSource(
                 document_id=doc_id,
@@ -1411,15 +1758,93 @@ def _context_from_hits(
                 i_page=hit.get("i_page"),
                 i_chunk_on_doc=hit.get("i_chunk_on_doc"),
                 distance=additional.get("distance"),
+                source_channel=source_channel,
+                visual_model=provenance.get("visual_model"),
             )
         )
-    return "\n\n".join(lines), sources
+    return "\n\n".join(lines), sources, empty_pages
 
 
 def _join_file_contexts(wiki_context: str, vdb_context: str) -> str:
     if wiki_context and vdb_context:
         return f"{wiki_context}\n\n{vdb_context}"
     return wiki_context or vdb_context
+
+
+def _sql_sources_from_rows(rows: list[dict[str, Any]]) -> list[FileSqlSource]:
+    sources: list[FileSqlSource] = []
+    for row in rows:
+        if row.get("storage_route") != "sql":
+            continue
+        for raw_table in row.get("sql_tables") or []:
+            if not isinstance(raw_table, dict):
+                continue
+            sources.append(
+                FileSqlSource(
+                    document_id=int(row["document_id"]),
+                    file_name=str(row.get("file_name") or ""),
+                    **raw_table,
+                )
+            )
+    return sources
+
+
+def _require_owned_sql_source(req: FileSqlSchemaRequest) -> FileSqlSource:
+    errors = _session_guard(req)
+    if errors:
+        raise HTTPException(status_code=400, detail=errors)
+    session_id = _session_id(req)
+    with ledger.ledger_connection() as conn:
+        sources = _sql_sources_from_rows(
+            ledger.list_session_documents(
+                conn,
+                workflow_id=req.workflow_id,
+                session_id=session_id,
+            )
+        )
+    source = next(
+        (item for item in sources if item.logical_name == req.logical_name),
+        None,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="file SQL table not found for session")
+    return source
+
+
+@app.post("/file-sql/schema", response_model=FileSqlSchemaResponse)
+def file_sql_schema(req: FileSqlSchemaRequest) -> FileSqlSchemaResponse:
+    _require_owned_sql_source(req)
+    try:
+        schema = describe_schema_for_llm(_session_id(req), req.logical_name)
+    except (FileSqlNotFoundError, FileSqlRejectedError) as exc:
+        raise HTTPException(status_code=404, detail="file SQL schema unavailable") from exc
+    return FileSqlSchemaResponse(
+        logical_name=schema.logical_name,
+        columns=[
+            FileSqlColumn(query_name=query, source_name=source)
+            for source, query in zip(
+                schema.source_columns,
+                schema.query_columns,
+                strict=True,
+            )
+        ],
+        llm_description=schema.llm_description,
+    )
+
+
+@app.post("/file-sql/query", response_model=FileSqlQueryResponse)
+def file_sql_query(req: FileSqlQueryRequest) -> FileSqlQueryResponse:
+    _require_owned_sql_source(req)
+    try:
+        result = run_scoped_query(_session_id(req), req.logical_name, req.sql)
+    except (FileSqlNotFoundError, FileSqlRejectedError) as exc:
+        raise HTTPException(status_code=400, detail="file SQL query rejected") from exc
+    return FileSqlQueryResponse(
+        logical_name=req.logical_name,
+        columns=list(result.columns),
+        rows=[list(row) for row in result.rows],
+        row_count=len(result.rows),
+    )
 
 
 @app.post(
@@ -1452,19 +1877,25 @@ def search(req: SearchRequest) -> SearchResponse:
             workflow_id=req.workflow_id,
             session_id=session_id,
         )
-        if settings.WIKI_ENABLED:
+        vdb_rows = [row for row in rows if row.get("storage_route") != "sql"]
+        if settings.WIKI_ENABLED and vdb_rows:
             pages = session_wiki.read_ready_pages(
-                conn, req.workflow_id, session_id, rows
+                conn, req.workflow_id, session_id, vdb_rows
             )
             if pages:
                 wiki_context, wiki_sources = session_wiki.context_from_pages(
                     pages,
                     min(settings.WIKI_CONTEXT_CHAR_LIMIT, settings.SEARCH_CONTEXT_CHAR_LIMIT),
                 )
-            elif session_wiki.should_trigger(rows):
+            elif session_wiki.should_trigger(vdb_rows):
                 session_wiki.trigger_compile_async(req.workflow_id, session_id)
-    doc_ids = [int(row["document_id"]) for row in rows]
-    if not doc_ids:
+    sql_sources = _sql_sources_from_rows(rows)
+    doc_ids = [
+        int(row["document_id"])
+        for row in rows
+        if row.get("storage_route") != "sql"
+    ]
+    if not rows:
         return SearchResponse(
             target_vdb_id=req.vdb_id,
             workflow_id=req.workflow_id,
@@ -1476,6 +1907,20 @@ def search(req: SearchRequest) -> SearchResponse:
             file_context="",
             file_sources=[],
         )
+    if not doc_ids:
+        return SearchResponse(
+            target_vdb_id=req.vdb_id,
+            workflow_id=req.workflow_id,
+            app_session_id=req.app_session_id,
+            session_id=session_id,
+            question=req.question,
+            document_count=len(rows),
+            result_count=0,
+            file_context="",
+            file_sources=[],
+            sql_available=bool(sql_sources),
+            sql_sources=sql_sources,
+        )
     with httpx.Client() as client:
         vector = weaviate_ops.embed_text(client, req.question)
         hits = weaviate_ops.search_target_chunks(
@@ -1485,7 +1930,7 @@ def search(req: SearchRequest) -> SearchResponse:
             limit=req.limit or settings.SEARCH_LIMIT,
         )
     remaining_chars = max(settings.SEARCH_CONTEXT_CHAR_LIMIT - len(wiki_context) - (2 if wiki_context else 0), 0)
-    vdb_context, vdb_sources = _context_from_hits(hits, remaining_chars)
+    vdb_context, vdb_sources, empty_page_sources = _context_from_hits(hits, remaining_chars)
     file_context = _join_file_contexts(wiki_context, vdb_context)
     file_sources = [*wiki_sources, *vdb_sources]
     return SearchResponse(
@@ -1494,8 +1939,11 @@ def search(req: SearchRequest) -> SearchResponse:
         app_session_id=req.app_session_id,
         session_id=session_id,
         question=req.question,
-        document_count=len(doc_ids),
+        document_count=len(rows),
         result_count=len(hits),
         file_context=file_context,
         file_sources=file_sources,
+        sql_available=bool(sql_sources),
+        sql_sources=sql_sources,
+        empty_page_sources=empty_page_sources,
     )
