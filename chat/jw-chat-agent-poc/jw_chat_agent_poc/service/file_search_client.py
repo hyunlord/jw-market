@@ -6,6 +6,11 @@ from typing import Any
 
 import requests
 
+from jw_chat_agent_poc.service.file_sql_query import (
+    SqlFileSource,
+    query_uploaded_sql,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class UploadedFileSearchResult:
@@ -66,14 +71,54 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
                 if key not in seen_items:
                     seen_items.add(key)
                     items.append(item)
-    errors = body.get("errors") or []
+    errors = [str(error) for error in (body.get("errors") or []) if error]
+    sql_sources = _sql_sources(body.get("sql_sources"))
+    if body.get("sql_available") and sql_sources:
+        sql_outcome = query_uploaded_sql(question, conversation_id, sql_sources)
+        context = _join_contexts(context, sql_outcome.file_context)
+        for item in sql_outcome.file_source_items:
+            name = str(item.get("file_name") or "uploaded file")
+            key = (name, str(item.get("document_id", "")))
+            if key not in seen_items:
+                seen_items.add(key)
+                items.append(dict(item))
+            if name:
+                sources.append(name)
+        errors.extend(sql_outcome.errors)
     return UploadedFileSearchResult(
         file_context=context,
         file_sources=tuple(dict.fromkeys(sources)),
-        errors=tuple(str(error) for error in errors if error),
+        errors=tuple(dict.fromkeys(errors)),
         file_source_items=tuple(items),
         has_active_file=True,
     )
+
+
+def _sql_sources(raw_sources: Any) -> tuple[SqlFileSource, ...]:
+    if not isinstance(raw_sources, list):
+        return ()
+    sources: list[SqlFileSource] = []
+    for raw in raw_sources:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            sources.append(
+                SqlFileSource(
+                    logical_name=str(raw["logical_name"]),
+                    file_name=str(raw["file_name"]),
+                    sheet_name=str(raw["sheet_name"]),
+                    document_id=int(raw["document_id"]),
+                    row_count=int(raw["row_count"]) if raw.get("row_count") is not None else None,
+                    column_count=int(raw["column_count"]) if raw.get("column_count") is not None else None,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(sources)
+
+
+def _join_contexts(*values: str) -> str:
+    return "\n\n".join(value.strip() for value in values if value.strip())
 
 
 def _active_file_fallback(
