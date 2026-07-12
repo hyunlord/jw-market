@@ -457,6 +457,7 @@ def test_create_app_exposes_chat_routes() -> None:
     assert "/chat/stream" in paths
     assert "/__version" in paths
     assert "/healthz" in paths
+    assert "/readyz" in paths
 
 
 def test_version_endpoint_reports_runtime_and_policy_provenance(monkeypatch) -> None:

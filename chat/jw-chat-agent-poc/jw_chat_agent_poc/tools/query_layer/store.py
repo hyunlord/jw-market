@@ -283,6 +283,7 @@ class MariaDbStrategicMartReader:
     def load(self) -> MartSnapshot:
         import pymysql
 
+        started_at = time.monotonic()
         sql = f"""
             SELECT ml_id, brand_name, source, measure,
                    metric_history, channel_data, specialty_data, dimension_data, by_dimension
@@ -306,7 +307,22 @@ class MariaDbStrategicMartReader:
             with connection.cursor() as cursor:
                 cursor.execute(sql)
                 rows = cursor.fetchall()
-        return MartSnapshot(tuple(MartRecord.from_row(dict(row)) for row in rows), time.monotonic())
+        query_completed_at = time.monotonic()
+        records = tuple(MartRecord.from_row(dict(row)) for row in rows)
+        deserialization_completed_at = time.monotonic()
+        snapshot = MartSnapshot(records, time.monotonic())
+        completed_at = time.monotonic()
+        logger.info(
+            "strategic mart snapshot load stages",
+            extra={
+                "snapshot_query_s": round(query_completed_at - started_at, 3),
+                "deserialization_s": round(deserialization_completed_at - query_completed_at, 3),
+                "build_s": round(completed_at - deserialization_completed_at, 3),
+                "total_s": round(completed_at - started_at, 3),
+                "records": len(records),
+            },
+        )
+        return snapshot
 
 
 class TtlStrategicMartStore:

@@ -63,6 +63,11 @@ from jw_chat_agent_poc.service.history_projection import (
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
+from jw_chat_agent_poc.service.startup_warmup import (
+    DisabledStartupWarmup,
+    StartupWarmup,
+    startup_warmup_from_env,
+)
 from jw_chat_agent_poc.common.timing import StageEventSink, ensure_timing, finish, stage, stage_event_sink
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
@@ -220,6 +225,7 @@ def create_app(
     history_store: ConversationHistoryStore | None = None,
     projection_runtime: HistoryProjectionRuntime | None = None,
     concurrency_limiter: ChatConcurrencyLimiter | None = None,
+    startup_warmup: StartupWarmup | None = None,
 ) -> FastAPI:
     app = FastAPI(title="JW Chat Agent POC", version="0.2.0", root_path="/jw-chat-agent")
     app.add_middleware(
@@ -236,10 +242,12 @@ def create_app(
     use_direct_agent_loop = agent_factory is None
     projection = projection_runtime or HistoryProjectionRuntime.from_env()
     history = history_store or MySQLConversationHistoryStore(projection_outbox=projection.outbox)
+    warmup = startup_warmup or DisabledStartupWarmup()
 
     @app.on_event("startup")
     def start_history_projection_worker() -> None:
         projection.start()
+        warmup.start()
 
     @app.on_event("shutdown")
     def stop_history_projection_worker() -> None:
@@ -247,6 +255,12 @@ def create_app(
 
     @app.get("/healthz", response_model=HealthResponse)
     def healthz() -> HealthResponse:
+        return HealthResponse(status="ok")
+
+    @app.get("/readyz", response_model=HealthResponse)
+    def readyz() -> HealthResponse:
+        if not warmup.is_ready():
+            raise HTTPException(status_code=503, detail="strategic mart startup warmup is in progress")
         return HealthResponse(status="ok")
 
     @app.get("/__version")
@@ -1157,4 +1171,4 @@ def _sse_json_event(event_name: str, payload: object) -> str:
     return f"event: {event_name}\n{encoded}\n\n"
 
 
-app = create_app()
+app = create_app(startup_warmup=startup_warmup_from_env())
