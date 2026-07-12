@@ -10,6 +10,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     BrandMeta,
     CsdCrosswalk,
     CsdTimeseriesAmbiguousMarketError,
+    CsdTimeseriesNoMappingError,
     JsonMap,
     first,
     float_value,
@@ -65,6 +66,7 @@ class MatrixInputs:
     weights: JsonMap
     aliases: dict[str, str]
     crosswalk: CsdCrosswalk | None
+    csd_availability: JsonMap | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +110,7 @@ def get_interest_rx_matrix(payload: Mapping[str, Any]) -> JsonMap | None:
 
 def _parse_request(payload: Mapping[str, Any]) -> MatrixRequest:
     view = text(payload.get("view"))
-    if view not in {"general", "strategic_ml"}:
+    if view not in {"general", "strategic_ml", "strategic_cd"}:
         raise InterestRxMatrixInputError(f"unsupported view: {view}")
     selected_brand = text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
@@ -138,15 +140,41 @@ def _period(request: MatrixRequest) -> PeriodWindow:
 
 def _inputs(request: MatrixRequest, period: PeriodWindow, brand_set: BrandSetResolution) -> MatrixInputs:
     aliases = _alias_lookup()
-    product_codes = {code for meta in brand_set.brand_meta.values() for code in meta.product_codes}
-    return MatrixInputs(request, period, brand_set, resolved_weights(request.weights), aliases, _maybe_csd_market(product_codes))
+    selected_meta = brand_set.brand_meta[brand_set.selected_brand]
+    candidate_codes = {
+        code
+        for choice in brand_set.choices
+        for code in brand_set.brand_meta[choice.brand_key].product_codes
+    }
+    crosswalk, csd_availability = _maybe_csd_market(
+        selected_product_codes=set(selected_meta.product_codes),
+        candidate_product_codes=candidate_codes,
+    )
+    return MatrixInputs(request, period, brand_set, resolved_weights(request.weights), aliases, crosswalk, csd_availability)
 
 
-def _maybe_csd_market(product_codes: set[str]) -> CsdCrosswalk | None:
+def _maybe_csd_market(
+    *,
+    selected_product_codes: set[str],
+    candidate_product_codes: set[str],
+) -> tuple[CsdCrosswalk | None, JsonMap | None]:
     try:
-        return resolve_csd_market(product_codes)
-    except CsdTimeseriesAmbiguousMarketError:
-        return None
+        return (
+            resolve_csd_market(
+                selected_product_codes=selected_product_codes,
+                candidate_product_codes=candidate_product_codes,
+            ),
+            None,
+        )
+    except CsdTimeseriesNoMappingError as exc:
+        return None, _csd_availability("no_csd_mapping", str(exc), csd_source_present=False)
+    except CsdTimeseriesAmbiguousMarketError as exc:
+        return None, _csd_availability(
+            "csd_market_ambiguous",
+            str(exc),
+            csd_source_present=True,
+            candidates=list(exc.candidates),
+        )
 
 
 def _keyword_query(inputs: MatrixInputs) -> KeywordQuery:
@@ -266,7 +294,7 @@ def _canonical_product(value: str, aliases: dict[str, str]) -> str:
 
 def _scope_payload(inputs: MatrixInputs) -> JsonMap:
     crosswalk = inputs.crosswalk
-    return {
+    scope = {
         "view": inputs.request.view,
         "market_id": inputs.brand_set.market_id,
         "market_name": str(inputs.brand_set.market_row.get(inputs.brand_set.view.market_name_column) or inputs.brand_set.market_id),
@@ -276,6 +304,25 @@ def _scope_payload(inputs: MatrixInputs) -> JsonMap:
         "applied_filter": inputs.brand_set.applied_filter,
         "applied_filters": inputs.brand_set.applied_filter,
         "resolved_market": _resolved_market_payload(inputs),
+    }
+    if inputs.csd_availability is not None:
+        scope["csd_availability"] = inputs.csd_availability
+    return scope
+
+
+def _csd_availability(
+    reason: str,
+    message: str,
+    *,
+    csd_source_present: bool,
+    candidates: list[JsonMap] | None = None,
+) -> JsonMap:
+    return {
+        "available": False,
+        "reason": reason,
+        "message": message,
+        "csd_source_present": csd_source_present,
+        "candidates": candidates or [],
     }
 
 

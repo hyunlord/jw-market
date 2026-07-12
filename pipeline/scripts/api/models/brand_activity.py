@@ -241,7 +241,7 @@ class BrandActivityBaseRequest(BaseModel):
 class CsdTimeseriesRequest(BrandActivityBaseRequest):
     """Request body for the Brand Activity integrated CSD timeseries route."""
 
-    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id.")
+    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id 또는 cd_id.")
     mode: str = Field(
         "absolute",
         description="추세 차트 표현 방식. [입력] absolute=절대값, share=시장 총합 대비 점유율.",
@@ -262,7 +262,7 @@ class CsdTimeseriesRequest(BrandActivityBaseRequest):
 class BrandActivityTopicsRequest(BrandActivityBaseRequest):
     """Request body for the filtered Brand Activity topic route."""
 
-    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id.")
+    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id 또는 cd_id.")
     visit_location: str | list[str] = Field("전체", description="종별 shortcut. 문자열 또는 OR 리스트.")
     specialty: str | list[str] = Field("전체", description="진료과 shortcut. 문자열 또는 OR 리스트.")
     interest: str | list[str] = Field("전체", description="키워드 유용성 shortcut. 문자열 또는 OR 리스트.")
@@ -297,7 +297,7 @@ class InterestRxWeights(BaseModel):
 class BrandActivityInterestRxRequest(BrandActivityBaseRequest):
     """Request body for the Brand Activity interest/Rx matrix route."""
 
-    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id.")
+    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id 또는 cd_id.")
     visit_location: str = Field("전체", description="종별 단일 선택 shortcut.")
     specialty: str = Field("전체", description="진료과 단일 선택 shortcut.")
     period_start: str | None = Field(default=None, description="조회 시작 월. 예: 2024-01.")

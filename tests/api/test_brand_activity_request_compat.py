@@ -189,6 +189,79 @@ def test_portal_strategic_ml_payload_reaches_all_three_services(
 
 
 @pytest.mark.parametrize(("route", "getter_name"), ROUTE_GETTERS)
+def test_portal_strategic_cd_payload_reaches_all_three_services(
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    getter_name: str,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def getter(payload: dict[str, object]) -> dict[str, object]:
+        captured.update(payload)
+        return {"scope": {"view": "strategic_cd", "market_id": "cd_006"}, "brands": [{"brand_key": "리바로"}]}
+
+    response = _client(monkeypatch, getter_name, getter).post(
+        f"/api/brand-activity/{route}",
+        json={
+            "view": "strategic_cd",
+            "market_id": "cd_006",
+            "selected_brand": "리바로",
+            "filters": {},
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["view"] == "strategic_cd"
+    assert captured["selected_brand"] == "리바로"
+    assert captured["market_id"] == "cd_006"
+
+
+def test_no_csd_mapping_returns_structured_non_null_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pipeline.scripts.api.brand_activity_csd_shared import CsdTimeseriesNoMappingError
+
+    def getter(_payload: dict[str, object]) -> dict[str, object]:
+        raise CsdTimeseriesNoMappingError("이 브랜드는 CSD 원천에 활동 데이터가 없음")
+
+    response = _client(monkeypatch, "get_csd_timeseries", getter).post(
+        "/api/brand-activity/csd-timeseries",
+        json={"view": "general", "selected_brand": "헴리브라", "filters": {"atc4": ["B02D1"]}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "data": {
+            "available": False,
+            "reason": "no_csd_mapping",
+            "message": "이 브랜드는 CSD 원천에 활동 데이터가 없음",
+            "csd_source_present": False,
+            "candidates": [],
+        }
+    }
+
+
+def test_csd_market_tie_exposes_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pipeline.scripts.api.brand_activity_csd_shared import CsdTimeseriesAmbiguousMarketError
+
+    def getter(_payload: dict[str, object]) -> dict[str, object]:
+        raise CsdTimeseriesAmbiguousMarketError(
+            "CSD market overlap tie: Alpha Market, Beta Market",
+            candidates=(
+                {"market": "Alpha Market", "display_market": "Alpha", "overlap": ["SELECTED"], "score": 1},
+                {"market": "Beta Market", "display_market": "Beta", "overlap": ["SELECTED"], "score": 1},
+            ),
+        )
+
+    response = _client(monkeypatch, "get_csd_timeseries", getter).post(
+        "/api/brand-activity/csd-timeseries",
+        json={"view": "general", "selected_brand": "선택", "filters": {"atc4": ["A00A0"]}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["reason"] == "csd_market_ambiguous"
+    assert [item["market"] for item in response.json()["data"]["candidates"]] == ["Alpha Market", "Beta Market"]
+
+
+@pytest.mark.parametrize(("route", "getter_name"), ROUTE_GETTERS)
 def test_ambiguous_strategic_market_returns_shared_409(
     monkeypatch: pytest.MonkeyPatch,
     route: str,

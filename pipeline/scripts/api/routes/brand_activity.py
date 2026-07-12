@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Path
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesAmbiguousMarketError,
     CsdTimeseriesInputError,
+    CsdTimeseriesNoMappingError,
     get_csd_timeseries,
 )
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError
@@ -170,8 +171,15 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     except CsdTimeseriesInputError as exc:
         _raise_brand_set_context_error(exc)
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_timeseries_request", "message": str(exc)}) from exc
+    except CsdTimeseriesNoMappingError as exc:
+        return _csd_unavailable_response("no_csd_mapping", str(exc), csd_source_present=False)
     except CsdTimeseriesAmbiguousMarketError as exc:
-        return {"data": None, "reason": "csd_market_ambiguous", "message": str(exc)}
+        return _csd_unavailable_response(
+            "csd_market_ambiguous",
+            str(exc),
+            csd_source_present=True,
+            candidates=list(exc.candidates),
+        )
     if result is None:
         _raise_market_not_found(payload)
     return _success_response(result, request_normalized=request_normalized)
@@ -195,8 +203,15 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
         result = get_csd_activity_series(_service_payload(payload))
     except CsdActivitySeriesInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_activity_series_request", "message": str(exc)}) from exc
+    except CsdTimeseriesNoMappingError as exc:
+        return _csd_unavailable_response("no_csd_mapping", str(exc), csd_source_present=False)
     except CsdTimeseriesAmbiguousMarketError as exc:
-        return {"data": None, "reason": "csd_market_ambiguous", "message": str(exc)}
+        return _csd_unavailable_response(
+            "csd_market_ambiguous",
+            str(exc),
+            csd_source_present=True,
+            candidates=list(exc.candidates),
+        )
     if result is None:
         return {"data": None, "reason": "market_not_found"}
     return {"data": result}
@@ -273,6 +288,24 @@ def _success_response(result: dict[str, JsonValue], *, request_normalized: bool)
     if request_normalized:
         response["meta"] = {"request_normalized": True}
     return response
+
+
+def _csd_unavailable_response(
+    reason: str,
+    message: str,
+    *,
+    csd_source_present: bool,
+    candidates: list[dict[str, JsonValue]] | None = None,
+) -> dict[str, JsonValue]:
+    return {
+        "data": {
+            "available": False,
+            "reason": reason,
+            "message": message,
+            "csd_source_present": csd_source_present,
+            "candidates": candidates or [],
+        }
+    }
 
 
 def _raise_brand_set_context_error(error: Exception) -> None:

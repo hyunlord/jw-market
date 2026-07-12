@@ -11,6 +11,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import JsonMap, text
 FILTER_DIMENSIONS_BY_VIEW: Final[dict[str, tuple[str, ...]]] = {
     "general": ("atc4", "molecule", "mfr", "molecule_type", "molecule_desc", "pack", "strength", "nhi"),
     "strategic_ml": ("atc4", "molecule", "class"),
+    "strategic_cd": ("atc4", "molecule", "class"),
 }
 IQVIA_ANALYSIS_LEVEL_DIMENSIONS: Final[dict[str, str]] = {
     "mfr_name_kor": "mfr",
