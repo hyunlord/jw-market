@@ -73,6 +73,19 @@ class StrategicQueryLayer:
             return default_catalog()
         return QueryCatalog.from_snapshot(snapshot, market, snapshot.source_for_market(market))
 
+    def brand_memberships(self) -> tuple[dict[str, str], ...]:
+        """Return exact brand-market memberships from the shared mart snapshot."""
+
+        memberships = {
+            (record.brand_name, record.ml_id)
+            for record in self._snapshot().records
+            if record.brand_name and record.ml_id
+        }
+        return tuple(
+            {"brand": brand, "market_id": market_id, "market_name": market_id}
+            for brand, market_id in sorted(memberships)
+        )
+
     def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand)

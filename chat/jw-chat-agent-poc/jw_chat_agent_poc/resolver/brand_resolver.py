@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import os
 import re
-from typing import Any
+from typing import Any, Protocol
 
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     MetricsCacheReader,
@@ -32,6 +32,10 @@ class UnsupportedBrandError(LookupError):
     """Raised when a brand-required question is outside the supported catalog."""
 
 
+class BrandMembershipReader(Protocol):
+    def brand_memberships(self) -> tuple[dict[str, str], ...]: ...
+
+
 class BrandResolver:
     def __init__(
         self,
@@ -39,6 +43,7 @@ class BrandResolver:
         default_brand: str = "리바로",
         mode: str | None = None,
         brand_reader: MetricsCacheReader | None = None,
+        membership_reader: BrandMembershipReader | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
         path = fixture_path or Path(__file__).resolve().parents[1] / "fixtures" / "brand_catalog.json"
@@ -47,6 +52,7 @@ class BrandResolver:
         self._fixture_items = items
         self._default_brand = default_brand
         self._mode = mode or os.environ.get("CHAT_RESOLVER_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
+        self._membership_reader = membership_reader
         ttl = ttl_seconds or int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(brand_reader, ttl_seconds=ttl) if brand_reader is not None else shared_metrics_cache(ttl)
 
@@ -111,27 +117,42 @@ class BrandResolver:
     def _items(self) -> list[dict[str, Any]]:
         if self._mode != "cache":
             return list(self._fixture_items)
-        merged: list[dict[str, Any]] = []
+        merged: dict[str, dict[str, Any]] = {}
         for brand in self._cache.snapshot().cache_brands:
             name = str(brand.get("brand") or "")
             if not name:
                 continue
             sidecar = self._sidecar_by_brand.get(name, {})
-            merged.append(
-                {
+            merged[name] = {
+                "canonical_brand": name,
+                "aliases": list(sidecar.get("aliases", [])),
+                "audit_code": sidecar.get("audit_code", ""),
+                "molecule_en": list(sidecar.get("molecule_en", [])),
+                "atc": list(sidecar.get("atc", [])),
+                "edi_code": sidecar.get("edi_code"),
+                "item_seq": sidecar.get("item_seq"),
+                "market_id": brand.get("market_id"),
+                "market_name": brand.get("market_name"),
+                "support_source": "cache_brands+fixture_sidecar" if sidecar else "cache_brands",
+            }
+        if self._membership_reader is not None:
+            for membership in self._membership_reader.brand_memberships():
+                name = str(membership.get("brand") or "")
+                if not name or name in merged:
+                    continue
+                merged[name] = {
                     "canonical_brand": name,
-                    "aliases": list(sidecar.get("aliases", [])),
-                    "audit_code": sidecar.get("audit_code", ""),
-                    "molecule_en": list(sidecar.get("molecule_en", [])),
-                    "atc": list(sidecar.get("atc", [])),
-                    "edi_code": sidecar.get("edi_code"),
-                    "item_seq": sidecar.get("item_seq"),
-                    "market_id": brand.get("market_id"),
-                    "market_name": brand.get("market_name"),
-                    "support_source": "cache_brands+fixture_sidecar" if sidecar else "cache_brands",
+                    "aliases": [],
+                    "audit_code": "",
+                    "molecule_en": [],
+                    "atc": [],
+                    "edi_code": None,
+                    "item_seq": None,
+                    "market_id": membership.get("market_id"),
+                    "market_name": membership.get("market_name"),
+                    "support_source": "mart_membership",
                 }
-            )
-        return merged
+        return list(merged.values())
 
     @staticmethod
     def _to_resolution(item: dict[str, Any]) -> BrandResolution:
