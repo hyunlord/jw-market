@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 from pathlib import Path
 import sys
@@ -428,12 +429,16 @@ def normalize_portal_read_data(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ensure_class_alias(section: dict[str, Any]) -> dict[str, Any]:
-    """Mirror the cache builder's split-class alias for portal chart compatibility."""
+    """Expose the detailed split class while preserving portal chart compatibility."""
 
     data = section.get("data")
-    if not isinstance(data, dict) or "Class" in data or "Class 1" not in data:
+    if not isinstance(data, dict) or "Class" in data:
         return section
-    return {**section, "data": {**data, "Class": data["Class 1"]}}
+    if "Class 2" in data:
+        return {**section, "data": {**data, "Class": deepcopy(data["Class 2"])}}
+    if "Class 1" in data:
+        return {**section, "data": {**data, "Class": deepcopy(data["Class 1"])}}
+    return section
 
 
 def build_market_meta(
