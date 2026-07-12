@@ -360,14 +360,16 @@ def save_temp_documents(
     files: list[UploadFile],
     *,
     temp_document_ids: list[int],
+    destination_dir: Path | None = None,
 ) -> list[SavedTempDocument]:
-    Path(settings.TEMP_DOCUMENT_DIR).mkdir(parents=True, exist_ok=True)
+    target_dir = destination_dir or Path(settings.TEMP_DOCUMENT_DIR)
+    target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     saved: list[SavedTempDocument] = []
     for file, temp_document_id in zip(files, temp_document_ids, strict=True):
         extension = Path(file.filename or "").suffix.lstrip(".")
         file_name = file.filename or f"upload-{temp_document_id}"
         temp_path = (
-            Path(settings.TEMP_DOCUMENT_DIR) / f"TEMP_DOCUMENT_{temp_document_id}.{extension}"
+            target_dir / f"TEMP_DOCUMENT_{temp_document_id}.{extension}"
         )
         file.file.seek(0)
         with temp_path.open("wb") as output:

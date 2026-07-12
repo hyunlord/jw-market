@@ -8,13 +8,15 @@ by COMMIT_ENABLED and DB credentials supplied through Kubernetes secrets.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 
 from . import delete_ops, ledger, pdf_vlm, session_wiki, settings, upload_adapter, weaviate_ops
 from .file_sql import (
@@ -26,6 +28,7 @@ from .file_sql import (
     run_scoped_query,
 )
 from .logging_utils import safe_log
+from .upload_ownership import TempDocumentNotFoundError, UploadOwnershipRegistry
 from .models import (
     BlockedUpload,
     BridgeRequest,
@@ -78,6 +81,7 @@ SESSION_KEY_SCHEMA = {"maxLength": 36, "pattern": "^[A-Za-z0-9_-]{1,36}$"}
 TARGET_VDB_EXAMPLE = settings.TARGET_VDB_ID
 # .xlsm은 매크로(vbaProject)를 무시하고 데이터 시트만 .xlsx와 같은 로컬 전처리 경로로 처리한다.
 LOCAL_XLSX_SUFFIXES = (".xlsx", ".xlsm")
+_UPLOAD_OWNERSHIP = UploadOwnershipRegistry(Path(settings.TEMP_DOCUMENT_DIR))
 
 
 def _xlsx_timeout_gate(chunk_count: int) -> tuple[str, str] | None:
@@ -417,6 +421,61 @@ def _session_guard(req: SessionRequest) -> list[str]:
 
 def _session_id(req: SessionRequest | BridgeRequest) -> str:
     return req.chat_id or req.app_session_id
+
+
+def _audit_hash(value: str | int | None) -> str:
+    return hashlib.sha256(str(value or "anonymous").encode("utf-8")).hexdigest()[:16]
+
+
+def _request_id(request: Request | None) -> str:
+    if request is not None:
+        supplied = request.headers.get("x-request-id", "").strip()
+        if supplied and len(supplied) <= 128:
+            return supplied
+    return uuid.uuid4().hex
+
+
+def _owned_bridge_request(
+    req: BridgeRequest,
+    *,
+    request_id: str,
+) -> BridgeRequest:
+    session_id = _session_id(req)
+    temp_ids = [item.temp_document_id for item in req.temp_documents]
+    try:
+        owned = _UPLOAD_OWNERSHIP.resolve_many(session_id, req.workflow_id, temp_ids)
+    except TempDocumentNotFoundError as exc:
+        safe_log(
+            "temp_ownership_decision",
+            request_id=request_id,
+            principal_hash=_audit_hash(req.user_id),
+            session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+            temp_document_ids=temp_ids,
+            decision="deny",
+            reason="not_owned_or_unavailable",
+        )
+        raise HTTPException(status_code=404, detail="temporary document not found") from exc
+    safe_log(
+        "temp_ownership_decision",
+        request_id=request_id,
+        principal_hash=_audit_hash(req.user_id),
+        session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+        temp_document_ids=temp_ids,
+        decision="allow",
+        reason="session_ledger_match",
+    )
+    return req.model_copy(
+        update={
+            "temp_documents": [
+                TempDocument(
+                    temp_document_id=item.temp_document_id,
+                    file_name=item.file_name,
+                    file_path=str(item.file_path),
+                )
+                for item in owned
+            ]
+        }
+    )
 
 
 def _expires_at() -> str:
@@ -782,7 +841,7 @@ def health() -> dict[str, Any]:
     summary="임시 문서 등록 계획 미리보기",
     description=DRY_RUN_DESCRIPTION,
 )
-def dry_run(req: BridgeRequest) -> DryRunResponse:
+def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
     errors = _guard(req)
     plans: list[DocumentPlan] = []
     if errors and any("not allowed" in item for item in errors):
@@ -795,6 +854,7 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
             errors=errors,
         )
 
+    req = _owned_bridge_request(req, request_id=_request_id(request))
     session_id = _session_id(req)
     with httpx.Client() as client:
         for temp_doc in req.temp_documents:
@@ -925,11 +985,22 @@ def dry_run(req: BridgeRequest) -> DryRunResponse:
     summary="임시 문서를 공용 VDB 139에 정식 등록",
     description=COMMIT_DESCRIPTION,
 )
-def commit(req: BridgeRequest) -> CommitResponse:
-    return _commit_temp_documents(req)
+def commit(req: BridgeRequest, request: Request) -> CommitResponse:
+    return _commit_temp_documents(req, request_id=_request_id(request))
 
 
-def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
+def _commit_temp_documents(req: BridgeRequest, *, request_id: str | None = None) -> CommitResponse:
+    request_id = request_id or _request_id(None)
+    if _guard(req) or not settings.COMMIT_ENABLED:
+        return _commit_owned_temp_documents(req, request_id=request_id)
+    session_id = _session_id(req)
+    temp_ids = [item.temp_document_id for item in req.temp_documents]
+    with _UPLOAD_OWNERSHIP.commit_guard(session_id, req.workflow_id, temp_ids):
+        owned_req = _owned_bridge_request(req, request_id=request_id)
+        return _commit_owned_temp_documents(owned_req, request_id=request_id)
+
+
+def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> CommitResponse:
     errors = _guard(req)
     if not settings.COMMIT_ENABLED:
         errors.append("commit stage is disabled")
@@ -1262,7 +1333,17 @@ def _commit_temp_documents(req: BridgeRequest) -> CommitResponse:
             )
         )
 
-    safe_log("commit_done", workflow_id=req.workflow_id, docs=len(results), write_count=write_count)
+    safe_log(
+        "commit_done",
+        request_id=request_id,
+        principal_hash=_audit_hash(req.user_id),
+        session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+        temp_document_ids=[item.temp_document_id for item in req.temp_documents],
+        decision="committed",
+        workflow_id=req.workflow_id,
+        docs=len(results),
+        write_count=write_count,
+    )
     return CommitResponse(
         commit_enabled=settings.COMMIT_ENABLED,
         write_count=write_count,
@@ -1436,6 +1517,9 @@ def upload(
                 saved_documents = upload_adapter.save_temp_documents(
                     files,
                     temp_document_ids=temp_document_ids,
+                    destination_dir=_UPLOAD_OWNERSHIP.session_root(
+                        Path(settings.TEMP_DOCUMENT_DIR), session_value
+                    ),
                 )
                 saved_blocks = upload_adapter.blocked_saved_external_preprocessor_documents(
                     saved_documents
@@ -1454,6 +1538,17 @@ def upload(
                         quota=quota,
                         blocked_uploads=_blocked_upload_models(saved_blocks),
                         errors=[block.route_reason for block in saved_blocks],
+                    )
+                expires_at = datetime.now(timezone.utc) + timedelta(days=config.lifespan_days)
+                for item in saved_documents:
+                    _UPLOAD_OWNERSHIP.register(
+                        root_dir=Path(settings.TEMP_DOCUMENT_DIR),
+                        session_id=session_value,
+                        workflow_id=workflow_id,
+                        temp_document_id=item.temp_document_id,
+                        file_name=item.file_name,
+                        file_path=Path(item.file_path),
+                        expires_at=expires_at,
                     )
                 external_preprocessor_documents = [
                     item
@@ -1476,7 +1571,16 @@ def upload(
             conn.commit()
             raise
 
-    safe_log("upload_done", workflow_id=workflow_id, docs=len(files))
+    safe_log(
+        "upload_done",
+        request_id=uuid.uuid4().hex,
+        principal_hash=_audit_hash(user_id),
+        session_hash=_UPLOAD_OWNERSHIP.session_hash(session_value),
+        temp_document_ids=temp_document_ids,
+        decision="registered",
+        workflow_id=workflow_id,
+        docs=len(files),
+    )
     uploaded_temp_documents = [
         UploadedTempDocument(
             temp_document_id=item.temp_document_id,
@@ -1610,11 +1714,14 @@ def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
             status="rejected",
             errors=errors,
         )
-    return delete_ops.delete_session_document(
+    response = delete_ops.delete_session_document(
         req,
         session_id=session_id,
         user_id=req.user_id or settings.DEFAULT_USER_ID,
     )
+    if response.status in {"deleted", "already_deleted"} and response.temp_document_id is not None:
+        _UPLOAD_OWNERSHIP.remove(session_id, response.temp_document_id)
+    return response
 
 
 @app.get(
