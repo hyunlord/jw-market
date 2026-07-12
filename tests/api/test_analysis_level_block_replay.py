@@ -41,7 +41,7 @@ def test_load_analysis_level_block_requires_six_tuple_build_and_epoch(monkeypatc
         "sales",
         "profile",
         "full",
-        "analysis-level-block-v2-profile",
+        "analysis-level-block-v3-ordered-profile",
         "epoch",
     )
     assert "build_version = %s" in captured["sql"]
