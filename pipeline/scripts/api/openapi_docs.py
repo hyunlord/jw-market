@@ -1493,9 +1493,12 @@ DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = {
 DEEP_ANALYSIS_RESPONSES: Final = {
     200: {
         "description": (
-            "포탈 심층분석 payload. query `view`는 general 또는 strategic이며 생략 시 strategic입니다. "
-            "general은 브랜드 카탈로그/mart에서 ATC4를 유도합니다. `atc4` query parameter는 지원하지 않습니다. "
-            "데이터가 없는 섹션은 404/500 대신 빈 배열, 빈 객체, unavailable 객체 등 기존 구조 안의 빈 상태로 반환됩니다."
+            "포탈 심층분석 payload. 신규 호출은 `view_kind`(general/strategic_ml/strategic_cd), "
+            "`market_id`, `source`(ubist/iqvia)로 시장 컨텍스트를 지정합니다. `market_id`와 source는 "
+            "가용 컨텍스트가 하나일 때만 생략할 수 있으며, 모호하면 가용 컨텍스트와 함께 409를 반환합니다. "
+            "기존 `view=general|strategic` 호출은 SI 전환 기간 동안 유지됩니다. `atc4` query parameter는 "
+            "지원하지 않으며 general의 ATC4는 `market_id`로 전달합니다. optional 섹션이 없거나 catalog에는 "
+            "있지만 mart 데이터가 없으면 전체 요청을 실패시키지 않고 빈 섹션과 상태 meta를 반환합니다."
         ),
         "content": {
             "application/json": {
@@ -1514,6 +1517,26 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                                 "ai_analysis_short": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "ai_analysis_long": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "brand_factors": deepcopy(DEEP_ANALYSIS_BRAND_FACTORS_SCHEMA),
+                                "events_meta": {
+                                    "type": "object",
+                                    "description": "이벤트 번들 가용 상태. 뉴스가 없으면 status=no_news입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "forecast_meta": {
+                                    "type": "object",
+                                    "description": "선택 시장 컨텍스트의 forecast 생성/가용 상태입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "strength_meta": {
+                                    "type": "object",
+                                    "description": "선택 시장 컨텍스트의 Agent3 strength 생성/가용 상태입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "data_meta": {
+                                    "type": "object",
+                                    "description": "catalog membership은 유효하지만 mart 데이터가 없을 때 원인과 source 범위를 제공합니다.",
+                                    "additionalProperties": True,
+                                },
                             },
                         },
                     },
@@ -1529,8 +1552,9 @@ DEEP_ANALYSIS_RESPONSES: Final = {
             }
 	        },
     },
-    404: {"description": "브랜드 심층분석 cache 없음"},
-    422: {"description": "지원하지 않는 view 또는 제거된 atc4 query parameter"},
+    404: {"description": "브랜드가 요청 시장에 실제로 속하지 않거나 view에 가용 컨텍스트가 없음"},
+    409: {"description": "market_id 또는 source를 생략했으나 가용 컨텍스트가 둘 이상임"},
+    422: {"description": "지원하지 않는 view/source/market_id 조합 또는 제거된 atc4 query parameter"},
 }
 
 
