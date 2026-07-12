@@ -66,16 +66,19 @@ def repair_variant_sql(table: str, variant: Variant) -> str:
     if not _TABLE_NAME.fullmatch(table):
         raise ValueError(f"unsafe table name: {table!r}")
     return (
-        f"UPDATE {table} SET "
-        f"ai_analysis_{variant}_json = %s, "
-        f"{variant}_workflow_id = %s, "
-        f"{variant}_workflow_revision_id = %s, "
-        f"{variant}_generation_id = %s, "
-        f"{variant}_input_hash = %s, "
-        f"{variant}_generated_at = %s, "
-        f"{variant}_source_epoch = %s, "
-        f"{variant}_generation_status = %s "
-        "WHERE brand_key = %s"
+        f"INSERT INTO {table} (brand, brand_key, ai_analysis_{variant}_json, "
+        f"{variant}_workflow_id, {variant}_workflow_revision_id, {variant}_generation_id, "
+        f"{variant}_input_hash, {variant}_generated_at, {variant}_source_epoch, "
+        f"{variant}_generation_status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON DUPLICATE KEY UPDATE "
+        f"ai_analysis_{variant}_json = VALUES(ai_analysis_{variant}_json), "
+        f"{variant}_workflow_id = VALUES({variant}_workflow_id), "
+        f"{variant}_workflow_revision_id = VALUES({variant}_workflow_revision_id), "
+        f"{variant}_generation_id = VALUES({variant}_generation_id), "
+        f"{variant}_input_hash = VALUES({variant}_input_hash), "
+        f"{variant}_generated_at = VALUES({variant}_generated_at), "
+        f"{variant}_source_epoch = VALUES({variant}_source_epoch), "
+        f"{variant}_generation_status = VALUES({variant}_generation_status)"
     )
 
 
@@ -110,14 +113,14 @@ def _needs_repair(conn: Any, table: str, brand_key: str, variant: Variant) -> bo
             (brand_key,),
         )
         row = cursor.fetchone()
-    if row is None:
-        raise RuntimeError(f"candidate row not found: {brand_key}")
-    return row["payload"] is None or row["status"] not in {"complete", FALLBACK_STATUS}
+    return row is None or row["payload"] is None or row["status"] not in {"complete", FALLBACK_STATUS}
 
 
-def _repair_value(record: VariantRecord, brand_key: str) -> tuple[Any, ...]:
+def _repair_value(record: VariantRecord, brand_key: str, brand_name: str) -> tuple[Any, ...]:
     lineage = record.lineage
     return (
+        brand_name,
+        brand_key,
         json.dumps(record.payload, ensure_ascii=False),
         lineage.workflow_id,
         lineage.workflow_revision_id,
@@ -126,7 +129,6 @@ def _repair_value(record: VariantRecord, brand_key: str) -> tuple[Any, ...]:
         lineage.generated_at,
         lineage.source_epoch,
         lineage.generation_status,
-        brand_key,
     )
 
 
@@ -163,7 +165,7 @@ def main() -> int:
             with conn.cursor() as cursor:
                 affected = cursor.execute(
                     repair_variant_sql(args.candidate, variant),
-                    _repair_value(record, brand_key),
+                    _repair_value(record, brand_key, brand_name),
                 )
             if affected != 1:
                 raise RuntimeError(f"repair affected {affected} rows for {brand_key}/{variant}")

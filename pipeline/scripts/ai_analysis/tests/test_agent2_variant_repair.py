@@ -34,10 +34,11 @@ def test_fallback_record_uses_actual_snapshot_and_truthful_status() -> None:
     assert record.lineage.source_epoch == "2026-Q1"
 
 
-def test_repair_sql_updates_only_requested_variant_and_lineage() -> None:
+def test_repair_sql_upserts_only_requested_variant_and_lineage() -> None:
     sql = repair_variant_sql("candidate_table", "long")
 
-    assert "ai_analysis_long_json = %s" in sql
-    assert "long_generation_status = %s" in sql
+    assert sql.startswith("INSERT INTO candidate_table (brand, brand_key, ai_analysis_long_json")
+    assert "ON DUPLICATE KEY UPDATE" in sql
+    assert "ai_analysis_long_json = VALUES(ai_analysis_long_json)" in sql
+    assert "long_generation_status = VALUES(long_generation_status)" in sql
     assert "ai_analysis_short_json" not in sql
-    assert "WHERE brand_key = %s" in sql
