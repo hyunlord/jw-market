@@ -90,7 +90,12 @@ def _load_payload(conn: Any, run: Mapping[str, Any], variant: str) -> dict[str, 
         "analysis_variant": variant,
         "generated_at": _iso(run["created_at"]),
         "model_version": run["model_version"],
+        "phase_zeta_stage": "stage3a7",
         "run_id_phase_zeta": int(run["run_id"]),
+        "reload_reason": (
+            "Permanent insert into cache_deep_analysis_ai_analysis "
+            "(separated from cache_deep_analysis). Source: zeta_analysis_outputs."
+        ),
     }
     for row in rows:
         stage = str(row["stage"])
