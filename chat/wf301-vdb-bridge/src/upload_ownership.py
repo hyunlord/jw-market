@@ -98,9 +98,9 @@ class UploadOwnershipRegistry:
     def commit_guard(
         self,
         session_id: str,
-        workflow_id: int,
-        temp_document_ids: Sequence[int],
-    ) -> Iterator[tuple[OwnedTempDocument, ...]]:
+        _workflow_id: int,
+        _temp_document_ids: Sequence[int],
+    ) -> Iterator[None]:
         with self._lock:
             root_dir = self._required_root()
             lock_dir = self.session_root(root_dir, session_id) / ".ownership"
@@ -109,8 +109,7 @@ class UploadOwnershipRegistry:
             with lock_path.open("a+b") as lock_file:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:
-                    owned = self.resolve_many(session_id, workflow_id, temp_document_ids)
-                    yield owned
+                    yield
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
