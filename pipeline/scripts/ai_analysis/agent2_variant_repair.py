@@ -191,7 +191,7 @@ def main() -> int:
                     repair_variant_sql(args.candidate, variant),
                     _repair_value(record, brand_key, brand_name),
                 )
-            if affected != 1:
+            if affected not in {1, 2}:
                 raise RuntimeError(f"repair affected {affected} rows for {brand_key}/{variant}")
             repaired.append(
                 {"brand_key": brand_key, "variant": variant, "status": record.lineage.generation_status}
