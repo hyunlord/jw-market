@@ -86,12 +86,17 @@ def test_pre_refresh_coverage_rejects_incomplete_source(coverage: SourceCoverage
 def test_manifests_use_source_aware_runner() -> None:
     from pathlib import Path
 
+    images: set[str] = set()
     for name in ("agent3-full-job.yaml", "agent3-refresh-cronjob.yaml"):
         text = (Path("deploy/k8s/agent3") / name).read_text(encoding="utf-8")
         assert "pipeline.scripts.agent3.run_source" in text
         assert "pipeline.scripts.agent3.run_full" not in text
         assert "--brand-source general_all" in text or '${AGENT3_BRAND_SOURCE}' in text
         assert "--source all" in text
+        images.add(next(line.split("image:", 1)[1].strip() for line in text.splitlines() if "image:" in line))
+
+    assert len(images) == 1
+    assert "@sha256:" in next(iter(images))
 
 
 def test_api_image_contains_canonical_agent3_runtime() -> None:
