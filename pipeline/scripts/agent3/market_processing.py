@@ -166,7 +166,7 @@ def _target_metric_row(row: StrategicMetricRow, market_id: str) -> MetricRow:
         raw_value_history=row.raw_value_history,
         channel_data=row.channel_data,
         specialty_data=row.specialty_data,
-        channel_specialty_matrix=row.dimension_specialty_data,
+        channel_specialty_matrix={},
         dimension_data=row.dimension_data,
     )
 

@@ -132,6 +132,52 @@ def test_strategic_inputs_carry_native_scope_and_candidate_evidence() -> None:
     assert all("strategic_scope.competitive_dynamics.cd_001" in item["evidence"] for item in candidates)
 
 
+def test_strategic_inputs_do_not_treat_dimension_labels_as_periods() -> None:
+    unit = MarketUnit(
+        view_kind="market_landscape",
+        market_id="ml_001",
+        brand_key="target",
+        brand_name="가나플럭스",
+        source="ubist",
+        mart_source="ubist",
+    )
+    scope = [
+        StrategicMetricRow(
+            view_kind="market_landscape",
+            market_id="ml_001",
+            brand_key="target",
+            brand_name="가나플럭스",
+            source="ubist",
+            measure="sales",
+            unit_label="원",
+            raw_value_history={"2026-04": 500_000_000.0, "2026-05": 600_000_000.0},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            dimension_channel_data={},
+            dimension_specialty_data={
+                "dosage_form": {
+                    "정제, 저작정(TB)": {
+                        "의원 IGF": 10_000_000.0,
+                        "종합병원 내분비": 20_000_000.0,
+                    }
+                }
+            },
+        ),
+        _row(
+            market_id="ml_001",
+            brand_key="other",
+            brand_name="경쟁약",
+            history={"2026-04": 700_000_000.0, "2026-05": 700_000_000.0},
+        ),
+    ]
+
+    profile, candidates = build_strategic_inputs(unit, scope, top_n=5)
+
+    assert profile["brand"] == "가나플럭스"
+    assert all("channel_specialty_matrix" not in item["evidence"] for item in candidates)
+
+
 def test_market_hash_changes_across_native_scopes() -> None:
     profile = {"brand": "A"}
     candidates = [{"metric": "recent_growth"}]
