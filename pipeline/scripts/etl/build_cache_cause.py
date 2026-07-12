@@ -976,27 +976,15 @@ def _is_ml011_view(market: dict[str, Any] | None, view_source_id: str | None) ->
 
 
 def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
-    """Return the v0.9.1 level keys that must always be visible in cause.
-
-    Most markets expose the seven canonical levels. The existing ml_011
-    Aktemra split is kept as-is because downstream Phase 30/31 checks already
-    depend on Class 1/Class 2 being distinct instead of a single Class bucket.
-    """
+    """Return only the analysis levels enabled by the market catalog."""
+    enabled_levels = set(_strategic_levels(market, view_source_id))
+    enabled_levels.add("Brand")
     if _is_ml011_view(market, view_source_id) and bool((market or {}).get("analyze_class")):
-        levels = list(CAUSE_LEVELS_ML011)
+        ordered_levels = CAUSE_LEVELS_ML011
     else:
-        levels = list(CAUSE_LEVELS_V091)
-    if bool((market or {}).get("analyze_fish_oil")) and FISH_OIL_LEVEL not in levels:
-        levels.append(FISH_OIL_LEVEL)
-    market_id = (market or {}).get("ml_id") or (market or {}).get("cd_id") or view_source_id
-    if is_iron_iv_dimension_market(market_id) and FE_CONTENT_LEVEL not in levels:
-        # 무엇: response contract에 Fe/ml level을 iron market 한정으로 추가한다.
-        # 왜: mart에는 Fe/ml을 IV-only로 materialize하지만 cache level mapping이
-        # 없으면 화면/검증 payload에서 dimension이 사라진다.
-        # 기각 대안: CAUSE_LEVELS_V091 전역 추가는 비철 시장에 빈 level을 만든다.
-        insert_at = levels.index("용량") + 1 if "용량" in levels else len(levels)
-        levels.insert(insert_at, FE_CONTENT_LEVEL)
-    return levels
+        ordered_levels = CAUSE_LEVELS_V091
+    ordered_levels = [*ordered_levels, FISH_OIL_LEVEL, FE_CONTENT_LEVEL]
+    return [level for level in ordered_levels if level in enabled_levels]
 
 
 def _split_atomic_dimension(level: str, value: Any) -> list[str]:
