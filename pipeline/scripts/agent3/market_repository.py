@@ -45,7 +45,7 @@ class StrategicMarketRepository:
         self.config = config or DbConfig.from_env()
 
     def load_native_scope(self, unit: MarketUnit) -> list[StrategicMetricRow]:
-        table, market_column = _table_spec(unit.view_kind)
+        table, market_column, specialty_dimension = _table_spec(unit.view_kind)
         with connect(self.config) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -53,7 +53,7 @@ class StrategicMarketRepository:
                     SELECT brand_key, brand_name, source, measure, unit_label,
                            raw_value_history, channel_data, specialty_data,
                            dimension_data, dimension_channel_data,
-                           dimension_specialty_data
+                           {specialty_dimension}
                     FROM {table}
                     WHERE {market_column}=%s AND source=%s AND measure='sales'
                     ORDER BY brand_key
@@ -97,10 +97,10 @@ def _parse_unit(row: dict[str, str]) -> MarketUnit:
     )
 
 
-def _table_spec(view_kind: MarketViewKind) -> tuple[str, str]:
+def _table_spec(view_kind: MarketViewKind) -> tuple[str, str, str]:
     if view_kind == "market_landscape":
-        return "mart_strategic_ml_brand_metric", "ml_id"
-    return "mart_strategic_cd_brand_metric", "cd_market_id"
+        return "mart_strategic_ml_brand_metric", "ml_id", "dimension_specialty_data"
+    return "mart_strategic_cd_brand_metric", "cd_market_id", "NULL AS dimension_specialty_data"
 
 
 def _metric_row(unit: MarketUnit, row: dict[str, Any]) -> StrategicMetricRow:

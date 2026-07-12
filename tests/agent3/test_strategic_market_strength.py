@@ -15,7 +15,7 @@ from pipeline.scripts.agent3.market_processing import (
     build_native_market_position,
     build_strategic_inputs,
 )
-from pipeline.scripts.agent3.market_repository import MarketUnit, StrategicMetricRow
+from pipeline.scripts.agent3.market_repository import MarketUnit, StrategicMetricRow, _table_spec
 from pipeline.scripts.agent3.run_market_source import load_worklist
 from pipeline.scripts.agent3.run_source import ExecutionContractError
 
@@ -68,6 +68,14 @@ def test_native_market_position_uses_only_requested_market_members() -> None:
     assert result.candidate["market_key"] == "market_landscape:ml_011:ubist"
     assert result.candidate["slice"] == "UBIST 전략 ML ml_011"
     assert "ATC4" not in result.narrative
+
+
+def test_cd_scope_projects_missing_specialty_dimension_as_null() -> None:
+    assert _table_spec("competitive_dynamics") == (
+        "mart_strategic_cd_brand_metric",
+        "cd_market_id",
+        "NULL AS dimension_specialty_data",
+    )
 
 
 def test_strategic_inputs_carry_native_scope_and_candidate_evidence() -> None:
