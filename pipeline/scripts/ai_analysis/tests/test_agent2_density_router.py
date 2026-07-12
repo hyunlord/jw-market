@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from bundle_builder.agent2_density_router import (
     CATEGORY_SCORE_CUTOFFS,
     CATEGORY_SCORE_CUTOFFS_BY_VERSION,
@@ -9,6 +11,7 @@ from bundle_builder.agent2_density_router import (
     ProcessingMode,
     cutoff_for_tag,
     density_bucket,
+    is_score_allowed_for_density,
     route_brand,
     route_worklist,
 )
@@ -78,11 +81,37 @@ def test_rev5674_processor_uses_pl_confirmed_cutoffs() -> None:
     assert cutoff_for_tag("기타", NEW_WF196_PROCESSOR) is None
 
 
-def test_unmapped_tier2_v2_marker_is_explicitly_fail_closed() -> None:
+def test_tier2_v2_marker_uses_serving_cutoffs() -> None:
     assert PENDING_TIER2_PROCESSOR == "tier2_llm_v2_rev5671"
-    assert PENDING_TIER2_PROCESSOR not in CATEGORY_SCORE_CUTOFFS_BY_VERSION
-    assert cutoff_for_tag("정책/규제", PENDING_TIER2_PROCESSOR) is None
+    assert CATEGORY_SCORE_CUTOFFS_BY_VERSION[PENDING_TIER2_PROCESSOR] == {
+        "자본/경영": 41,
+        "외부/트렌드": 48,
+        "공급/생산": 22,
+        "신약/R&D": 62,
+        "정책/규제": 58,
+    }
+    assert cutoff_for_tag("기타", PENDING_TIER2_PROCESSOR) is None
     assert cutoff_for_tag("외부/트렌드", "unknown_future_marker") is None
+
+
+@pytest.mark.parametrize(
+    ("tag", "cutoff"),
+    (
+        ("자본/경영", 41),
+        ("외부/트렌드", 48),
+        ("공급/생산", 22),
+        ("신약/R&D", 62),
+        ("정책/규제", 58),
+    ),
+)
+def test_tier2_v2_marker_enforces_each_cutoff_boundary(tag: str, cutoff: int) -> None:
+    assert not is_score_allowed_for_density(cutoff - 1, tag, PENDING_TIER2_PROCESSOR)
+    assert is_score_allowed_for_density(cutoff, tag, PENDING_TIER2_PROCESSOR)
+
+
+def test_unknown_marker_remains_fail_closed() -> None:
+    assert cutoff_for_tag("정책/규제", "unknown_future_marker") is None
+    assert not is_score_allowed_for_density(100, "정책/규제", "unknown_future_marker")
 
 
 def test_route_brand_applies_cutoff_for_each_processor_version() -> None:

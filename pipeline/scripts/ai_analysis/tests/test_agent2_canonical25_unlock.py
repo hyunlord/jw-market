@@ -101,7 +101,8 @@ def test_event_bundle_processors_are_configured_without_rule_only_tier2():
         "workflow_196_optionB",
         "workflow_196_rev5674",
         "tier2_llm_v1",
+        "tier2_llm_v2_rev5671",
     )
     assert event_bundle_builder.CROSS_MATCH_SOURCE_PROCESSORS == ("cross_match_adapter_v1",)
     assert "tier2_exact_rule_v1" not in event_bundle_builder.DIRECT_EVENT_SOURCE_PROCESSORS
-    assert "tier2_llm_v2_rev5671" not in event_bundle_builder.DIRECT_EVENT_SOURCE_PROCESSORS
+    assert "tier2_llm_v2_rev5671" in event_bundle_builder.DIRECT_EVENT_SOURCE_PROCESSORS

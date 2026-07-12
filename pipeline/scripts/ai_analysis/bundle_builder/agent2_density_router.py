@@ -26,6 +26,13 @@ CATEGORY_SCORE_CUTOFFS_BY_VERSION: Final = {
         "신약/R&D": 73,
         "정책/규제": 69,
     },
+    PENDING_TIER2_PROCESSOR: {
+        "자본/경영": 41,
+        "외부/트렌드": 48,
+        "공급/생산": 22,
+        "신약/R&D": 62,
+        "정책/규제": 58,
+    },
 }
 EXCLUDED_EVIDENCE_TAGS: Final = frozenset({"기타"})
 FULL_MIN_EVIDENCE: Final = 10
@@ -108,8 +115,8 @@ def cutoff_for_tag(tag: str | None, source_processor: str | None = None) -> int 
         "cross_match_adapter_v1",
     }:
         cutoffs = CATEGORY_SCORE_CUTOFFS
-    elif processor == NEW_WF196_PROCESSOR:
-        cutoffs = CATEGORY_SCORE_CUTOFFS_BY_VERSION[NEW_WF196_PROCESSOR]
+    elif processor in CATEGORY_SCORE_CUTOFFS_BY_VERSION:
+        cutoffs = CATEGORY_SCORE_CUTOFFS_BY_VERSION[processor]
     else:
         return None
     return cutoffs.get(normalized, QUALITY_SCORE_CUTOFF)
