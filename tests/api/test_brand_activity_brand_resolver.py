@@ -56,6 +56,14 @@ def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> No
     assert "channel_axis" not in applied_brand_filter("strategic_ml", "ml_006", payload)
 
 
+def test_strategic_cd_uses_the_strategic_ml_filter_dimensions() -> None:
+    payload = {"atc4": ["C10A1"], "molecule": ["pitavastatin"], "class": ["Statin"]}
+
+    assert applied_brand_filter("strategic_cd", "cd_006", payload) == applied_brand_filter(
+        "strategic_ml", "ml_006", payload
+    )
+
+
 def test_applied_filter_accepts_iqvia_dimension_filters() -> None:
     payload = {
         "analysis_level": {
@@ -128,6 +136,25 @@ def test_single_ml_brand_uses_shared_catalog_context_and_ubist_source(monkeypatc
     assert context.market_id == "ml_006"
     assert context.db_source == "ubist"
     assert calls == [{"brand": "리바로", "view_kind": "strategic_ml", "market_id": None, "source": None}]
+
+
+def test_single_cd_brand_uses_shared_catalog_context(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_resolve(**kwargs: object):
+        calls.append(kwargs)
+        return type(
+            "Context",
+            (),
+            {"market_id": "cd_006", "brand_key": "리바로", "brand_name": "리바로", "db_source": "iqvia_nsa"},
+        )()
+
+    monkeypatch.setattr("pipeline.scripts.api.brand_activity_brand_resolver.resolve_deep_analysis_context", fake_resolve)
+
+    context = _resolve_strategic_brand_context("리바로", view_name="strategic_cd", market_id="cd_006")
+
+    assert context.market_id == "cd_006"
+    assert calls == [{"brand": "리바로", "view_kind": "strategic_cd", "market_id": "cd_006", "source": None}]
 
 
 def test_livalo_strategic_resolution_reads_ubist_mart_rows(monkeypatch) -> None:

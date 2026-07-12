@@ -66,10 +66,18 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
         raise CsdActivitySeriesInputError(str(exc)) from exc
     if brand_set is None:
         return None
-    selected_meta = brand_set.brand_meta.get(request.selected_brand)
+    selected_meta = brand_set.brand_meta.get(brand_set.selected_brand)
     if selected_meta is None:
         return None
-    crosswalk = resolve_csd_market({code for meta in brand_set.brand_meta.values() for code in meta.product_codes})
+    candidate_codes = {
+        code
+        for choice in brand_set.choices
+        for code in brand_set.brand_meta[choice.brand_key].product_codes
+    }
+    crosswalk = resolve_csd_market(
+        selected_product_codes=set(selected_meta.product_codes),
+        candidate_product_codes=candidate_codes,
+    )
     rows = _fetch_activity_rows(crosswalk, request.csd_channel)
     activity = _activity_rows(rows, activity_months, all_months)
     selected_key = _selected_entity_key(request.entity_level, request.selected_brand, selected_meta, brand_set)

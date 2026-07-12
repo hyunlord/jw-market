@@ -15,6 +15,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     CsdCrosswalk,
     CsdTimeseriesAmbiguousMarketError,
     CsdTimeseriesInputError,
+    CsdTimeseriesNoMappingError,
     JsonMap,
     ViewConfig,
     display_csd_market,
@@ -54,11 +55,18 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
         return None
     choices = list(brand_set.choices)
     brand_meta = brand_set.brand_meta
-    selected_meta = brand_meta.get(request["selected_brand"])
+    selected_meta = brand_meta.get(brand_set.selected_brand)
     if selected_meta is None:
         return None
-    mart_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
-    crosswalk = resolve_csd_market(mart_codes)
+    candidate_codes = {
+        code
+        for choice in choices
+        for code in brand_meta[choice.brand_key].product_codes
+    }
+    crosswalk = resolve_csd_market(
+        selected_product_codes=set(selected_meta.product_codes),
+        candidate_product_codes=candidate_codes,
+    )
     rx_rows = _fetch_rx_rows(brand_set.view, brand_set.market_id, tuple(choice.brand_key for choice in choices))
     activity = _activity_series(crosswalk.market, choices, brand_meta, activity_months)
     return {
@@ -78,8 +86,12 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     }
 
 
-def resolve_csd_market(mart_product_codes: set[str]) -> CsdCrosswalk:
-    """Resolve a mart market to exactly one CSD market by product overlap."""
+def resolve_csd_market(
+    *,
+    selected_product_codes: set[str],
+    candidate_product_codes: set[str],
+) -> CsdCrosswalk:
+    """Resolve the selected brand to one CSD market, then rank by full overlap."""
 
     rows = db.fetch_all(_sql_csd_products())
     by_market: dict[str, set[str]] = {}
@@ -87,22 +99,36 @@ def resolve_csd_market(mart_product_codes: set[str]) -> CsdCrosswalk:
         by_market.setdefault(str(row["market"]), set()).add(str(row["master_product"]))
     scored: list[CsdCrosswalk] = []
     for market, products in by_market.items():
-        overlap = tuple(sorted(normalized_product_overlap(mart_product_codes, products)))
-        if overlap:
-            scored.append(CsdCrosswalk(market=market, display_market=display_csd_market(market), overlap=overlap, score=len(overlap)))
+        selected_overlap = normalized_product_overlap(selected_product_codes, products)
+        if not selected_overlap:
+            continue
+        overlap = tuple(sorted(normalized_product_overlap(candidate_product_codes, products)))
+        scored.append(CsdCrosswalk(market=market, display_market=display_csd_market(market), overlap=overlap, score=len(overlap)))
     if not scored:
-        raise CsdTimeseriesAmbiguousMarketError("no CSD market overlaps mart product codes")
+        raise CsdTimeseriesNoMappingError("이 브랜드는 CSD 원천에 활동 데이터가 없음")
     scored.sort(key=lambda item: (-item.score, item.market))
     best = scored[0]
     ties = [item for item in scored if item.score == best.score]
     if len(ties) > 1:
-        raise CsdTimeseriesAmbiguousMarketError(f"CSD market overlap tie: {', '.join(item.market for item in ties)}")
+        raise CsdTimeseriesAmbiguousMarketError(
+            f"CSD market overlap tie: {', '.join(item.market for item in ties)}",
+            candidates=tuple(_crosswalk_payload(item) for item in ties),
+        )
     return best
+
+
+def _crosswalk_payload(item: CsdCrosswalk) -> JsonMap:
+    return {
+        "market": item.market,
+        "display_market": item.display_market,
+        "overlap": list(item.overlap),
+        "score": item.score,
+    }
 
 
 def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
     view = text(payload.get("view"))
-    if view not in {"general", "strategic_ml"}:
+    if view not in {"general", "strategic_ml", "strategic_cd"}:
         raise CsdTimeseriesInputError(f"unsupported view: {view}")
     selected_brand = text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)

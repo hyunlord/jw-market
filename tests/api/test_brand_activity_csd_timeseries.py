@@ -58,6 +58,68 @@ def test_normalized_product_overlap_respects_alias_rules() -> None:
     assert overlap == {"APITO"}
 
 
+def test_csd_market_resolution_requires_selected_brand_membership(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql: [
+            {"market": "Selected Market", "master_product": "SELECTED"},
+            {"market": "Selected Market", "master_product": "RIVAL_A"},
+            {"market": "Competitor Market", "master_product": "RIVAL_A"},
+            {"market": "Competitor Market", "master_product": "RIVAL_B"},
+            {"market": "Competitor Market", "master_product": "RIVAL_C"},
+        ],
+    )
+
+    resolved = service.resolve_csd_market(
+        selected_product_codes={"SELECTED"},
+        candidate_product_codes={"SELECTED", "RIVAL_A", "RIVAL_B", "RIVAL_C"},
+    )
+
+    assert resolved.market == "Selected Market"
+    assert resolved.overlap == ("RIVAL_A", "SELECTED")
+
+
+def test_csd_market_resolution_rejects_competitor_only_overlap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql: [{"market": "Competitor Market", "master_product": "RIVAL"}],
+    )
+
+    try:
+        service.resolve_csd_market(
+            selected_product_codes={"SELECTED"},
+            candidate_product_codes={"SELECTED", "RIVAL"},
+        )
+    except shared.CsdTimeseriesNoMappingError as exc:
+        assert str(exc) == "이 브랜드는 CSD 원천에 활동 데이터가 없음"
+        assert exc.csd_source_present is False
+    else:
+        raise AssertionError("competitor-only overlap must not select a CSD market")
+
+
+def test_csd_market_resolution_exposes_true_tie_candidates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql: [
+            {"market": "Alpha Market", "master_product": "SELECTED"},
+            {"market": "Beta Market", "master_product": "SELECTED"},
+        ],
+    )
+
+    try:
+        service.resolve_csd_market(
+            selected_product_codes={"SELECTED"},
+            candidate_product_codes={"SELECTED"},
+        )
+    except shared.CsdTimeseriesAmbiguousMarketError as exc:
+        assert [item["market"] for item in exc.candidates] == ["Alpha Market", "Beta Market"]
+    else:
+        raise AssertionError("a true top-score tie must remain ambiguous")
+
+
 def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
     expected = {
         "scope": {
@@ -142,6 +204,20 @@ def test_csd_timeseries_parse_accepts_general_market_scope_without_atc4() -> Non
 
     assert parsed["market_id"] is None
     assert parsed["filter"]["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
+
+
+def test_csd_timeseries_parse_accepts_strategic_cd_market_id() -> None:
+    parsed = service._parse_request(
+        {
+            "view": "strategic_cd",
+            "market_id": "cd_006",
+            "selected_brand": "리바로",
+            "filters": {},
+        }
+    )
+
+    assert parsed["view"] == "strategic_cd"
+    assert parsed["market_id"] == "cd_006"
 
 
 def test_csd_timeseries_public_measures_include_sales() -> None:
