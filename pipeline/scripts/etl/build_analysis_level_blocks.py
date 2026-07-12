@@ -285,8 +285,7 @@ def _general_data(*, market_id: str, source: str, measure: str, focus_brand_key:
             "view": "general",
             "source": source,
             "measure": measure,
-            "focus_brand_key": focus_brand_key,
-            "filters": {"atc4": [market_id]},
+            "filters": {"atc4": [market_id], "focus_brand_key": focus_brand_key},
         }
     )
     response = _build_general_dynamic_response(request)
