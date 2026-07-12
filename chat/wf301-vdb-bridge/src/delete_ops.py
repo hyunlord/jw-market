@@ -9,6 +9,7 @@ import httpx
 import pymysql
 
 from . import ledger, session_wiki, settings, weaviate_ops
+from .file_sql import FileSqlNotFoundError, FileSqlRejectedError, drop_logical_table
 from .logging_utils import safe_log
 from .models import DeleteDocumentRequest, DeleteDocumentResponse
 
@@ -21,10 +22,18 @@ class DeleteTarget:
     idempotency_key: str | None
     is_active: bool
     authorized: bool
+    storage_route: str
+    sql_logical_names: tuple[str, ...]
 
 
 def _target_from_row(row: dict[str, Any], *, workflow_id: int, session_id: str) -> DeleteTarget:
     description = ledger._parse_description(row.get("description"))
+    raw_tables = description.get("sql_tables")
+    sql_logical_names = tuple(
+        str(table.get("logical_name"))
+        for table in raw_tables
+        if isinstance(table, dict) and table.get("logical_name")
+    ) if isinstance(raw_tables, list) else ()
     return DeleteTarget(
         document_id=int(row["document_id"]),
         file_name=str(row.get("file_name") or ""),
@@ -40,6 +49,8 @@ def _target_from_row(row: dict[str, Any], *, workflow_id: int, session_id: str) 
         ),
         is_active=bool(row.get("is_active")),
         authorized=ledger._session_matches(description, workflow_id, session_id),
+        storage_route=str(description.get("storage_route") or "vdb"),
+        sql_logical_names=sql_logical_names,
     )
 
 
@@ -215,21 +226,35 @@ def delete_session_document(
                 rollback_hint=[f"document_id={target.document_id}: already inactive"],
             )
         try:
-            with httpx.Client() as client:
-                deleted_ids = weaviate_ops.delete_target_objects_for_document(
-                    client,
-                    document_id=target.document_id,
-                )
+            if target.storage_route == "sql":
+                deleted_ids = []
+            else:
+                with httpx.Client() as client:
+                    deleted_ids = weaviate_ops.delete_target_objects_for_document(
+                        client,
+                        document_id=target.document_id,
+                    )
             ledger_updates = soft_delete_document(
                 conn,
                 document_id=target.document_id,
                 user_id=user_id,
             )
-            session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
+            if target.storage_route != "sql":
+                session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
             conn.commit()
         except (httpx.HTTPError, pymysql.MySQLError):
             conn.rollback()
             raise
+
+    for logical_name in target.sql_logical_names:
+        try:
+            drop_logical_table(session_id, logical_name)
+        except (FileSqlNotFoundError, FileSqlRejectedError):
+            safe_log(
+                "file_sql_delete_missing",
+                document_id=target.document_id,
+                logical_name=logical_name,
+            )
 
     safe_log(
         "delete_done",

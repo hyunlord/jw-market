@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
@@ -209,7 +210,7 @@ def copy_chunks_to_target(
         props = {
             "doc_id": document_id,
             "text": text,
-            "summary": "",
+            "summary": str(chunk.get("summary") or ""),
             "file_name": file_name,
             "file_path": chunk.get("file_path") or "",
             "file_size": int(chunk.get("file_size") or 0),
@@ -326,7 +327,17 @@ def _embed_text_batch(client: httpx.Client, texts: list[str]) -> list[list[float
             vectors.extend(_embed_text_batch(client, texts[start : start + fallback_size]))
         return vectors
     response.raise_for_status()
-    return _parse_embeddings(response.json(), len(texts))
+    try:
+        return _parse_embeddings(response.json(), len(texts))
+    except RuntimeError:
+        # 임베딩 serving이 배치 일부만 반환하는 경우(요청당 처리 한도 초과 등):
+        # 배치를 반으로 나눠 재시도한다. 1개까지 줄어도 실패하면 그대로 올려
+        # 조용한 부분 임베딩 없이 fail-closed로 남긴다.
+        if len(texts) <= 1:
+            raise
+        middle = len(texts) // 2
+        safe_log("embedding_batch_incomplete_split", count=len(texts), retry_sizes=[middle, len(texts) - middle])
+        return _embed_text_batch(client, texts[:middle]) + _embed_text_batch(client, texts[middle:])
 
 
 def embed_texts(client: httpx.Client, texts: list[str]) -> list[list[float]]:
@@ -515,7 +526,7 @@ def search_target_chunks(
     query = {
         "query": (
             "{ Get { %s(nearVector:{vector:[%s]}, where:%s, limit:%d)"
-            "{ text doc_id file_name i_page i_chunk_on_doc _additional { id distance } } } }"
+            "{ text summary doc_id file_name i_page i_chunk_on_doc _additional { id distance } } } }"
             % (settings.TARGET_VDB_COLLECTION, vector_literal, where, limit)
         )
     }
@@ -633,7 +644,7 @@ def read_target_chunks(client: httpx.Client, doc_ids: list[int], limit: int) -> 
         "query": (
             "{ Get { %s(where:%s, limit:%d, "
             "sort:[{path:[\"i_chunk_on_doc\"],order:asc}])"
-            "{ text doc_id file_name i_page i_chunk_on_doc _additional { id } } } }"
+            "{ text summary doc_id file_name i_page i_chunk_on_doc _additional { id } } } }"
             % (settings.TARGET_VDB_COLLECTION, where, limit)
         )
     }
@@ -647,14 +658,25 @@ def read_target_chunks(client: httpx.Client, doc_ids: list[int], limit: int) -> 
     if body.get("errors"):
         raise RuntimeError(f"weaviate chunk read errors: {body['errors'][:1]}")
     rows = (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
-    return [
-        {
+    chunks: list[dict[str, Any]] = []
+    for row in rows:
+        provenance: dict[str, Any] = {}
+        summary = row.get("summary")
+        if isinstance(summary, str) and summary:
+            try:
+                decoded = json.loads(summary)
+                if isinstance(decoded, dict):
+                    provenance = decoded
+            except json.JSONDecodeError:
+                pass
+        chunks.append({
             "chunk_id": (row.get("_additional") or {}).get("id"),
             "doc_id": row.get("doc_id"),
             "file_name": row.get("file_name"),
             "text": row.get("text"),
             "i_page": row.get("i_page"),
             "i_chunk_on_doc": row.get("i_chunk_on_doc"),
-        }
-        for row in rows
-    ]
+            "source_channel": provenance.get("source_channel") or "native_text",
+            "visual_model": provenance.get("visual_model"),
+        })
+    return chunks

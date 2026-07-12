@@ -32,9 +32,34 @@ TEMP_VDB_INDEX_API_BASE = os.environ.get(
 PREPROCESSOR_API_BASE = os.environ.get(
     "PREPROCESSOR_API_BASE", "http://llmops-preprocess-api-service:8080"
 )
+PDF_VLM_BASE = os.environ.get(
+    "PDF_VLM_BASE", "http://llmops-gateway-api-service:8080/rep/serving/163"
+)
+PDF_VLM_MODEL = os.environ.get("PDF_VLM_MODEL", "genos/163/gemini-3.1-flash-lite")
+PDF_VLM_MODEL_HEADER = os.environ.get("PDF_VLM_MODEL_HEADER", "gemini-3.1-flash-lite")
+PDF_VLM_RENDER_DPI = int(os.environ.get("PDF_VLM_RENDER_DPI", "150"))
+PDF_VLM_MAX_PAGES_PER_DOCUMENT = int(os.environ.get("PDF_VLM_MAX_PAGES_PER_DOCUMENT", "25"))
+PDF_VLM_TIMEOUT_S = float(os.environ.get("PDF_VLM_TIMEOUT_S", "45"))
+PDF_VLM_RETRIES = int(os.environ.get("PDF_VLM_RETRIES", "1"))
+PDF_VLM_RETRY_BACKOFF_S = float(os.environ.get("PDF_VLM_RETRY_BACKOFF_S", "0.5"))
+PDF_VLM_MAX_IMAGE_BYTES = int(os.environ.get("PDF_VLM_MAX_IMAGE_BYTES", str(7 * 1024 * 1024)))
+PDF_VLM_IMAGE_COVERAGE_MIN = float(os.environ.get("PDF_VLM_IMAGE_COVERAGE_MIN", "0.28"))
+PDF_VLM_NATIVE_CHAR_MAX = int(os.environ.get("PDF_VLM_NATIVE_CHAR_MAX", "1200"))
 TEMP_DOCUMENT_DIR = os.environ.get("TEMP_DOCUMENT_DIR", "/nfs-root/temp-document")
 SEARCH_LIMIT = int(os.environ.get("SEARCH_LIMIT", "5"))
 SEARCH_CONTEXT_CHAR_LIMIT = int(os.environ.get("SEARCH_CONTEXT_CHAR_LIMIT", "8000"))
+
+# 외부 PDF 전처리기가 텍스트 없는 페이지에 남기는 자리표시 청크 텍스트.
+# 이 청크는 근거(evidence)가 아니므로 검색 컨텍스트에서 제외하고 상태 메타데이터로만 노출한다.
+PDF_EMPTY_PAGE_MARKER = os.environ.get("PDF_EMPTY_PAGE_MARKER", "[empty_page]")
+# 미보유 3-상태 연계용 상태 라벨: 페이지에 네이티브 텍스트가 없고 시각 채널 처리도 없던 경우.
+PDF_EMPTY_PAGE_STATUS_NOT_PROCESSED = os.environ.get(
+    "PDF_EMPTY_PAGE_STATUS_NOT_PROCESSED", "visual_content_not_processed"
+)
+# 같은 페이지를 VLM 시각 채널이 별도로 처리한 경우(자리표시 청크만 근거 제외).
+PDF_EMPTY_PAGE_STATUS_PROCESSED = os.environ.get(
+    "PDF_EMPTY_PAGE_STATUS_PROCESSED", "visual_content_processed"
+)
 
 DB_HOST = os.environ.get("DB_HOST", "galera-mariadb-galera")
 DB_PORT = int(os.environ.get("DB_PORT", "3306"))
@@ -53,6 +78,14 @@ EXTERNAL_PREPROCESSOR_MAX_FILE_MB = int(os.environ.get("EXTERNAL_PREPROCESSOR_MA
 EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES", "250"))
 EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES", "120"))
 
+# 로컬 XLSX 전처리(청킹+임베딩+139 복사)의 fail-closed 타임아웃 게이트.
+# XLSX_EMBED_CHUNKS_PER_SEC 근거: 2026-07-11 실측 — crosstab.xlsx 3,166청크가 약 158초
+# (청킹 1.4초 + 임베딩/복사 나머지) ≈ 20 chunks/s. 임베딩 serving 처리량이 바뀌면 env로 조정.
+XLSX_EMBED_CHUNKS_PER_SEC = float(os.environ.get("XLSX_EMBED_CHUNKS_PER_SEC", "20"))
+# XLSX_UPLOAD_TIME_BUDGET_S 근거: chat→235 게이트웨이/클라이언트 타임아웃 180초에서
+# 업로드 저장·원장 기록·응답 오버헤드 여유 30초를 뺀 값. 게이트웨이 타임아웃이 바뀌면 env로 조정.
+XLSX_UPLOAD_TIME_BUDGET_S = float(os.environ.get("XLSX_UPLOAD_TIME_BUDGET_S", "150"))
+
 PREPROCESSOR_ID = int(os.environ.get("PREPROCESSOR_ID", "64"))
 EMBEDDING_SERVING_ID = int(os.environ.get("EMBEDDING_SERVING_ID", "25"))
 EMBEDDING_SERVING_REV_ID = int(os.environ.get("EMBEDDING_SERVING_REV_ID", "31"))
@@ -61,6 +94,13 @@ DEFAULT_USER_ID = int(os.environ.get("DEFAULT_USER_ID", "7"))
 
 JS_COMPLETE = "JS0003"
 VDB_DATA_TYPE_DOCUMENT = "VT0002"
+
+FILE_SQL_ENABLED = os.environ.get("FILE_SQL_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 WIKI_ENABLED = os.environ.get("WIKI_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 WIKI_AUTO_CREATE_SCHEMA = os.environ.get("WIKI_AUTO_CREATE_SCHEMA", "false").lower() in {"1", "true", "yes", "on"}
