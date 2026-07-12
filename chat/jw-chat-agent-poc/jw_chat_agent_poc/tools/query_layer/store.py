@@ -314,14 +314,13 @@ class MariaDbStrategicMartReader:
         snapshot = MartSnapshot(records, time.monotonic())
         completed_at = time.monotonic()
         startup_timing_logger.info(
-            "strategic mart snapshot load stages",
-            extra={
-                "snapshot_query_s": round(query_completed_at - started_at, 3),
-                "deserialization_s": round(deserialization_completed_at - query_completed_at, 3),
-                "build_s": round(completed_at - deserialization_completed_at, 3),
-                "total_s": round(completed_at - started_at, 3),
-                "records": len(records),
-            },
+            "strategic mart snapshot load stages snapshot_query_s=%.3f "
+            "deserialization_s=%.3f build_s=%.3f total_s=%.3f records=%d",
+            query_completed_at - started_at,
+            deserialization_completed_at - query_completed_at,
+            completed_at - deserialization_completed_at,
+            completed_at - started_at,
+            len(records),
         )
         return snapshot
 

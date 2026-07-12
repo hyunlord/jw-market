@@ -65,17 +65,15 @@ class StrategicMartStartupWarmup:
             snapshot = self._load_snapshot()
         except Exception:  # noqa: BLE001 - process readiness boundary logs and stays closed
             LOGGER.exception(
-                "strategic mart startup warmup failed",
-                extra={"elapsed_s": round(time.monotonic() - started_at, 3)},
+                "strategic mart startup warmup failed elapsed_s=%.3f",
+                time.monotonic() - started_at,
             )
             return
         self._ready.set()
         LOGGER.info(
-            "strategic mart startup warmup completed",
-            extra={
-                "elapsed_s": round(time.monotonic() - started_at, 3),
-                "records": len(snapshot.records),
-            },
+            "strategic mart startup warmup completed elapsed_s=%.3f records=%d",
+            time.monotonic() - started_at,
+            len(snapshot.records),
         )
 
 
