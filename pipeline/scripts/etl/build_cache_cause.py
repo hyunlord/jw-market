@@ -48,6 +48,11 @@ from cache_build_common import (
     source_list,
 )
 from pipeline.scripts.api.dynamic_market.cause_sections import matrix_growth_value
+from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
+    AnalysisLevelBlockKey,
+    current_analysis_level_source_epoch,
+    load_analysis_level_block,
+)
 from pipeline.scripts.api.market_growth import compound_period_growth_pct
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
@@ -2867,7 +2872,27 @@ def build_response(
         if isinstance(ubist_channel_context, dict) and ubist_channel_context.get("channels")
         else None
     )
-    if analysis_cache_key not in ANALYSIS_LEVELS_CACHE:
+    include_all_d3_options = bool(brand_row.get("is_jw") or brand_row.get("is_target"))
+    block_epoch = current_analysis_level_source_epoch()
+    precomputed_block = (
+        load_analysis_level_block(
+            key=AnalysisLevelBlockKey(
+                view="strategic_cd" if view_type == "competitive_dynamics" else "strategic_ml",
+                market_id=view_source_id,
+                source=source_api,
+                measure=measure,
+                profile_sig="",
+                trim_mode="full" if include_all_d3_options else "trim",
+            ),
+            source_epoch=block_epoch,
+        )
+        if block_epoch is not None
+        else None
+    )
+    if precomputed_block is not None:
+        analysis_levels = deepcopy(precomputed_block.analysis_levels)
+        ANALYSIS_LEVELS_CACHE[analysis_cache_key] = deepcopy(analysis_levels)
+    elif analysis_cache_key not in ANALYSIS_LEVELS_CACHE:
         ANALYSIS_LEVELS_CACHE[analysis_cache_key] = _build_analysis_levels_from_mart(
             rows=sibling_rows,
             source=source_api,
@@ -2877,14 +2902,14 @@ def build_response(
             fallback_level_top5=level_top5,
             channels_override=channels_override,
         )
-    analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key]))
+    if precomputed_block is None:
+        analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key]))
     if analysis_cache_key not in LEVEL_ROW_GROUPS_CACHE:
         LEVEL_ROW_GROUPS_CACHE[analysis_cache_key] = _level_rows_by_segment(
             sibling_rows,
             ANALYSIS_LEVELS_CACHE[analysis_cache_key].get("levels") or [],
         )
-    include_all_d3_options = bool(brand_row.get("is_jw") or brand_row.get("is_target"))
-    if not include_all_d3_options:
+    if precomputed_block is None and not include_all_d3_options:
         analysis_levels = _trim_analysis_levels(analysis_levels)
     brand_ranking_stacked = _stacked_ranking(
         brand_ranking,
@@ -2943,7 +2968,7 @@ def build_response(
             target_customer_channels = [str(channel) for channel in specialty_channels]
     analysis_level_market_channels = target_customer_channels or _channels_for_source(source_api)
     clone_analysis_levels = analysis_levels
-    if analysis_level_market_channels:
+    if analysis_level_market_channels and precomputed_block is None:
         clone_levels_key = (analysis_cache_key, "analysis_level_market_status", tuple(analysis_level_market_channels))
         if clone_levels_key not in ANALYSIS_LEVELS_BY_CHANNEL_CACHE:
             ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key] = _build_analysis_levels_from_mart(
@@ -2975,15 +3000,18 @@ def build_response(
         include_all_options=include_all_d3_options,
     )
     target_customer_competition = target_customer_competition_by_channel
-    analysis_level_market_status = _ensure_analysis_level_market_status_contract(_analysis_level_market_status_by_channel(
-        level_top5_trend=level_top5_trend,
-        analysis_levels=clone_analysis_levels,
-        rows=sibling_rows,
-        source=source_api,
-        channels=analysis_level_market_channels,
-        include_all_options=include_all_d3_options,
-        cache_key=(analysis_cache_key, include_all_d3_options, tuple(analysis_level_market_channels or [])),
-    ))
+    if precomputed_block is not None:
+        analysis_level_market_status = deepcopy(precomputed_block.analysis_level_market_status)
+    else:
+        analysis_level_market_status = _ensure_analysis_level_market_status_contract(_analysis_level_market_status_by_channel(
+            level_top5_trend=level_top5_trend,
+            analysis_levels=clone_analysis_levels,
+            rows=sibling_rows,
+            source=source_api,
+            channels=analysis_level_market_channels,
+            include_all_options=include_all_d3_options,
+            cache_key=(analysis_cache_key, include_all_d3_options, tuple(analysis_level_market_channels or [])),
+        ))
     direct_competition_count = max(
         len({r.get("brand_key") for r in sibling_rows if r.get("brand_key")}),
         len({member["name"] for member in catalog_members if member.get("name")}),
