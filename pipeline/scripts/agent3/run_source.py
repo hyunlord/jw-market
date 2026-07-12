@@ -86,6 +86,15 @@ def _validate_execution_contract(
         )
 
 
+def _should_reestablish_revision(
+    old: ExistingAgent3SourceState,
+    *,
+    workflow_rev: int,
+    enabled: bool,
+) -> bool:
+    return enabled and old.workflow_rev != workflow_rev
+
+
 def run_source(
     *,
     brand_source: BrandSource,
@@ -97,6 +106,7 @@ def run_source(
     workflow_rev: int,
     expected_workflow_rev: int,
     environment_mode: str | None,
+    reestablish_revision: bool = False,
 ) -> dict[str, Any]:
     _validate_execution_contract(
         workflow_rev=workflow_rev,
@@ -134,6 +144,7 @@ def run_source(
         "skipped_same_hash": 0,
         "skipped_same_content": 0,
         "canonical_mismatch": 0,
+        "revision_reestablished": 0,
         "source_units": 0,
         "workflow_errors": 0,
     }
@@ -273,6 +284,25 @@ def run_source(
                 hash_candidates=primary_candidates,
             )
             if old is not None and canonical_content_matches(old, record):
+                if _should_reestablish_revision(
+                    old,
+                    workflow_rev=workflow_rev,
+                    enabled=reestablish_revision,
+                ):
+                    counts["revision_reestablished"] += 1
+                    if mode == "full":
+                        pending_records.append(record)
+                    records.append(
+                        _record_summary(
+                            identity.brand_key,
+                            identity.brand_name,
+                            source,
+                            stored_candidates,
+                            record.input_hash,
+                            "revision_reestablished",
+                        )
+                    )
+                    continue
                 counts["skipped_same_content"] += 1
                 records.append(
                     _record_summary(
@@ -457,6 +487,11 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="Required deployment pin; execution aborts before I/O when it differs from --workflow-rev/AGENT3_WORKFLOW_REV.",
     )
+    parser.add_argument(
+        "--reestablish-revision",
+        action="store_true",
+        help="For an explicitly bounded repair, persist validated canonical-equal output when stored lineage is stale.",
+    )
     return parser.parse_args()
 
 
@@ -481,6 +516,7 @@ def main() -> int:
         workflow_rev=resolve_workflow_rev(args.workflow_rev),
         expected_workflow_rev=args.expected_workflow_rev,
         environment_mode=os.environ.get("AGENT3_MODE"),
+        reestablish_revision=args.reestablish_revision,
     )
     print(json.dumps({key: value for key, value in result.items() if key != "records"}, ensure_ascii=False, sort_keys=True))
     return 0

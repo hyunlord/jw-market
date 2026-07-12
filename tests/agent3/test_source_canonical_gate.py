@@ -5,6 +5,7 @@ import pytest
 from pipeline.scripts.agent3.run_source import (
     ExecutionContractError,
     SourceCoverage,
+    _should_reestablish_revision,
     _validate_execution_contract,
     _iter_identity_inputs,
     _verify_existing_market_positions,
@@ -125,6 +126,20 @@ def test_revision_mismatch_aborts_before_repository_or_write(monkeypatch, tmp_pa
             expected_workflow_rev=5692,
             environment_mode=None,
         )
+
+
+def test_revision_reestablishment_is_explicit_and_only_for_stale_lineage() -> None:
+    old = ExistingAgent3SourceState(
+        input_hash="old-revision-hash",
+        workflow_rev=5365,
+        profile_json={"brand": "A"},
+        strength_candidates_json=[],
+        strength_summary_json={"strength_items": []},
+    )
+
+    assert _should_reestablish_revision(old, workflow_rev=5692, enabled=True)
+    assert not _should_reestablish_revision(old, workflow_rev=5692, enabled=False)
+    assert not _should_reestablish_revision(old, workflow_rev=5365, enabled=True)
 
 
 def test_manifests_use_source_aware_runner() -> None:
