@@ -188,3 +188,23 @@ def test_bridge_request_returns_404_for_wrong_owner(
         main._owned_bridge_request(request, request_id="test-request")
 
     assert captured.value.status_code == 404
+
+
+def test_commit_boundary_returns_404_for_wrong_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = UploadOwnershipRegistry()
+    _register(registry, tmp_path, "session-a", 11)
+    monkeypatch.setattr(main, "_UPLOAD_OWNERSHIP", registry)
+    monkeypatch.setattr(main.settings, "COMMIT_ENABLED", True)
+    request = BridgeRequest(
+        workflow_id=301,
+        vdb_id=139,
+        app_session_id="session-b",
+        temp_documents=[TempDocument(temp_document_id=11, file_name="owned.xlsx")],
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        main._commit_temp_documents(request, request_id="test-request")
+
+    assert captured.value.status_code == 404
