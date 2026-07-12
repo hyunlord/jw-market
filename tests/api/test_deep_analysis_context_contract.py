@@ -157,6 +157,22 @@ def test_catalog_member_without_sales_rows_resolves_as_no_market_data(monkeypatc
     assert context.brand_available_sources == ("iqvia_nsa",)
 
 
+def test_catalog_both_source_exposes_ubist_and_iqvia_contexts(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, _params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        if "catalog_strategic_brand" in sql:
+            return [_catalog_row(market_id="ml_003", data_source="both")]
+        return []
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+
+    contexts = deep_analysis_context._strategic_contexts("선택브랜드", "strategic_ml")
+
+    assert [(item.source, item.db_source) for item in contexts] == [
+        ("iqvia", "iqvia_nsa"),
+        ("ubist", "ubist"),
+    ]
+
+
 def test_general_context_uses_explicit_atc4_and_source(monkeypatch) -> None:
     monkeypatch.setattr(
         deep_analysis_context.db,

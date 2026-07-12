@@ -395,6 +395,8 @@ def _brand_available_sources(brand: str, brand_key: str, brand_name: str) -> tup
 
 def _catalog_sources(value: object) -> tuple[DeepAnalysisSource, ...]:
     text = str(value or "").upper()
+    if text == "BOTH":
+        return ("ubist", "iqvia")
     sources: list[DeepAnalysisSource] = []
     if "UBIST" in text:
         sources.append("ubist")
