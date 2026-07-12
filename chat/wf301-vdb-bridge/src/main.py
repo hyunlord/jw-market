@@ -455,6 +455,25 @@ def _owned_bridge_request(
             reason="not_owned_or_unavailable",
         )
         raise HTTPException(status_code=404, detail="temporary document not found") from exc
+    metadata_matches = all(
+        supplied.file_name == registered.file_name
+        and (
+            supplied.file_path is None
+            or supplied.file_path == str(registered.file_path)
+        )
+        for supplied, registered in zip(req.temp_documents, owned, strict=True)
+    )
+    if not metadata_matches:
+        safe_log(
+            "temp_ownership_decision",
+            request_id=request_id,
+            principal_hash=_audit_hash(req.user_id),
+            session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+            temp_document_ids=temp_ids,
+            decision="deny",
+            reason="metadata_mismatch",
+        )
+        raise HTTPException(status_code=404, detail="temporary document not found")
     safe_log(
         "temp_ownership_decision",
         request_id=request_id,

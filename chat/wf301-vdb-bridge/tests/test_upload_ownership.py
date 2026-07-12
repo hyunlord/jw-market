@@ -146,11 +146,11 @@ def test_commit_guard_serializes_concurrent_commits(tmp_path: Path) -> None:
     assert entered == ["first", "second"]
 
 
-def test_bridge_request_ignores_forged_filename_and_path(
+def test_bridge_request_rejects_forged_filename_and_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = UploadOwnershipRegistry()
-    owned = _register(registry, tmp_path, "session-a", 11)
+    _register(registry, tmp_path, "session-a", 11)
     monkeypatch.setattr(main, "_UPLOAD_OWNERSHIP", registry)
     request = BridgeRequest(
         workflow_id=301,
@@ -165,10 +165,10 @@ def test_bridge_request_ignores_forged_filename_and_path(
         ],
     )
 
-    resolved = main._owned_bridge_request(request, request_id="test-request")
+    with pytest.raises(HTTPException) as captured:
+        main._owned_bridge_request(request, request_id="test-request")
 
-    assert resolved.temp_documents[0].file_name == owned.file_name
-    assert Path(resolved.temp_documents[0].file_path or "") == owned.file_path
+    assert captured.value.status_code == 404
 
 
 def test_bridge_request_returns_404_for_wrong_owner(
