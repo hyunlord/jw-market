@@ -112,6 +112,8 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
     context = (file_context or "").strip()
     if not context:
         return answer
+    if "## 업로드 파일 SQL 결과" in context and "상태: 확인됨" in context:
+        return answer
     context_fold = context.casefold()
     answer_fold = answer.casefold()
     missing = [

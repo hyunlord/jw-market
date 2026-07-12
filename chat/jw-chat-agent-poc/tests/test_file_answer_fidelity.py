@@ -113,6 +113,22 @@ def test_absence_statement_not_added_when_target_addressed_or_present() -> None:
     assert ensure_file_absence_statement(question, "일반 답변", "") == "일반 답변"
 
 
+def test_absence_statement_not_added_to_confirmed_sql_result() -> None:
+    question = "BPI Numeric 시트에서 q1 값 1.0과 2.0 각각의 응답 수와 no 합계를 알려줘"
+    answer = "| q1 | 응답 수 | no 합계 |\n| --- | --- | --- |\n| 1.0 | 690 | 2,679,529.0 |"
+    sql_context = (
+        "## 업로드 파일 SQL 결과\n"
+        "파일: d2_bpi.xlsx\n"
+        "시트: Numeric\n"
+        "상태: 확인됨\n"
+        "| q1 | COUNT(*) | SUM(no) |\n"
+        "| --- | --- | --- |\n"
+        "| 1.0 | 690 | 2679529.0 |"
+    )
+
+    assert ensure_file_absence_statement(question, answer, sql_context) == answer
+
+
 def test_file_search_client_parses_file_source_items(monkeypatch) -> None:
     body = {
         "file_context": DOCX_FILE_CONTEXT,
