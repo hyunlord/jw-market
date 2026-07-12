@@ -1063,8 +1063,7 @@ def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_diffe
 
     block = deterministic_source_block(fact_md)
 
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 516 | 전체 | — |" in block
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470 | 전체 | — |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470, 516 | 전체 | — |" in block
     assert "ml_006" not in block
 
 

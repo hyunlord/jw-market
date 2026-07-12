@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -175,6 +176,61 @@ def normalized_row(
 def dedupe_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
     clean = tuple(dict.fromkeys(normalized_row(*row.as_tuple()) for row in rows))
     return clean or (ProvenanceRow(),)
+
+
+def merge_public_source_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
+    """Merge public rows only when both source and view are identical."""
+
+    groups: dict[tuple[str, str], list[ProvenanceRow]] = {}
+    for row in dedupe_rows(rows):
+        clean = normalized_row(*row.as_tuple())
+        groups.setdefault((clean.source, clean.view), []).append(clean)
+
+    merged = tuple(_merge_source_group(group) for group in groups.values())
+    return merged or (ProvenanceRow(),)
+
+
+def _merge_source_group(rows: Sequence[ProvenanceRow]) -> ProvenanceRow:
+    raw_periods = sorted(
+        {row.period for row in rows if row.period != MISSING_LABEL},
+        key=lambda value: (value.casefold(), value),
+    )
+    if len(raw_periods) == 1:
+        merged_period = raw_periods[0]
+    else:
+        period_values = sorted(
+            {token for period in raw_periods for token in period_tokens(period)},
+            key=lambda value: (value.casefold(), value),
+        )
+        merged_period = period_range(period_values)
+    return ProvenanceRow(
+        source=rows[0].source,
+        period=merged_period,
+        view=rows[0].view,
+        market=_merge_values(tuple(row.market for row in rows)),
+        denominator=_merge_values(tuple(row.denominator for row in rows)),
+        channel=_merge_values(tuple(row.channel for row in rows)),
+        unit=_merge_values(tuple(row.unit for row in rows)),
+    )
+
+
+def _merge_values(values: Sequence[str], *, missing: str = MISSING_LABEL) -> str:
+    clean = sorted(
+        {
+            public_value(value, missing=missing)
+            for value in values
+            if public_value(value, missing=missing) != missing
+        },
+        key=lambda value: (value.casefold(), value),
+    )
+    if not clean:
+        return missing
+    separator = os.getenv("JW_CHAT_PROVENANCE_MULTI_VALUE_SEPARATOR", ", ")
+    limit = max(2, int(os.getenv("JW_CHAT_PROVENANCE_MULTI_VALUE_LIMIT", "3")))
+    if len(clean) <= limit:
+        return separator.join(clean)
+    displayed = clean[: limit - 1]
+    return f"{separator.join(displayed)} 외 {len(clean) - len(displayed)}"
 
 
 def render_provenance_table(title: str, rows: Sequence[ProvenanceRow]) -> str:

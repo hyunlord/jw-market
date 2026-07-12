@@ -11,6 +11,7 @@ from jw_chat_agent_poc.orchestrator.provenance_facts import (
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     ProvenanceRow,
     dedupe_rows,
+    merge_public_source_rows,
     render_provenance_table,
     sanitize_internal_provenance_labels,
 )
@@ -47,4 +48,4 @@ def _render_source_rows(rows: list[ProvenanceRow], *, file_context: str) -> str:
         if rows == [ProvenanceRow()]:
             rows.clear()
         rows.append(file_row)
-    return render_provenance_table("## 출처", dedupe_rows(rows))
+    return render_provenance_table("## 출처", merge_public_source_rows(rows))

@@ -176,3 +176,72 @@ def test_r1_provenance_rewrite_preserves_answer_body_numbers() -> None:
     assert after_body == before_body
     assert allowed_numbers(after_body) == allowed_numbers(before_body)
     assert "30.33%" in revised
+
+
+def test_same_source_and_view_merge_period_and_multi_value_fields() -> None:
+    fact_md = """### provenance fact
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470 | 전체 | 억원 |
+| UBIST | 2025-07~2026-03 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 516 | 의원 | % |
+"""
+
+    block = deterministic_source_block(fact_md)
+
+    assert block.count("| UBIST |") == 1
+    assert (
+        "| UBIST | 2025-07~2026-04 | 전략뷰 (market_landscape) | "
+        "리바로/리바로젯 | 470, 516 | 의원, 전체 | %, 억원 |"
+    ) in block
+
+
+def test_source_and_view_are_strict_group_boundaries() -> None:
+    fact_md = """### provenance fact
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-04 | 전략뷰 (market_landscape) | — | 470 | 전체 | 억원 |
+| UBIST | 2026-04 | 일반뷰 (ATC4) | ATC4 C10A1 | 516 | 전체 | 억원 |
+| IQVIA NSA | 2025-Q4 | 전략뷰 (market_landscape) | — | — | 전체 | 억원 |
+"""
+
+    block = deterministic_source_block(fact_md)
+
+    assert block.count("| UBIST |") == 2
+    assert block.count("| IQVIA NSA |") == 1
+    assert "전략뷰 (market_landscape)" in block
+    assert "일반뷰 (ATC4)" in block
+
+
+def test_multi_value_limit_and_separator_are_environment_driven(monkeypatch) -> None:
+    monkeypatch.setenv("JW_CHAT_PROVENANCE_MULTI_VALUE_LIMIT", "3")
+    monkeypatch.setenv("JW_CHAT_PROVENANCE_MULTI_VALUE_SEPARATOR", " / ")
+    fact_md = """### provenance fact
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-01 | 전략뷰 (market_landscape) | A | 470 | 전체 | 억원 |
+| UBIST | 2026-02 | 전략뷰 (market_landscape) | B | 516 | 의원 | % |
+| UBIST | 2026-03 | 전략뷰 (market_landscape) | C | 600 | 병원 | 위 |
+| UBIST | 2026-04 | 전략뷰 (market_landscape) | D | 700 | 약국 | 명 |
+"""
+
+    block = deterministic_source_block(fact_md)
+
+    assert "| A / B 외 2 |" in block
+    assert "| 470 / 516 외 2 |" in block
+    assert "| 병원 / 약국 외 2 |" in block
+    assert "| % / 명 외 2 |" in block
+
+
+def test_merging_public_source_rows_does_not_modify_answer_body() -> None:
+    answer = "합산 점유율은 30.33%입니다."
+    fact_md = """### provenance fact
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-03 | 전략뷰 (market_landscape) | — | 470 | 전체 | 억원 |
+| UBIST | 2026-04 | 전략뷰 (market_landscape) | — | 470 | 전체 | % |
+"""
+
+    revised = append_deterministic_source_block(answer, fact_md)
+
+    assert revised.split("## 출처", 1)[0].strip() == answer
+    assert "30.33%" in revised
