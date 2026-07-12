@@ -37,6 +37,22 @@ def test_response_levels_preserve_catalog_order_for_cd_market() -> None:
     assert levels == ["Class", "Molecule", "Brand", "제형/투여경로"]
 
 
+def test_iron_market_keeps_fe_content_immediately_after_strength() -> None:
+    market = {
+        "ml_id": "ml_012",
+        "analyze_class": 1,
+        "analyze_molecule": 1,
+        "analyze_dosage_form": 1,
+        "analyze_strength_pack": 1,
+        "analyze_nhi_type": 1,
+        "analyze_ox_gx": 0,
+    }
+
+    levels = build_cache_cause._response_levels(market, "ml_012")
+
+    assert levels == ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "1ml당 Fe함량", "비/급여"]
+
+
 def test_ml011_keeps_split_class_levels_and_portal_alias() -> None:
     market = {
         "ml_id": "ml_011",

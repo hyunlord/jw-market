@@ -983,7 +983,10 @@ def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) 
         ordered_levels = CAUSE_LEVELS_ML011
     else:
         ordered_levels = CAUSE_LEVELS_V091
-    ordered_levels = [*ordered_levels, FISH_OIL_LEVEL, FE_CONTENT_LEVEL]
+    ordered_levels = [*ordered_levels, FISH_OIL_LEVEL]
+    if FE_CONTENT_LEVEL in enabled_levels:
+        insert_at = ordered_levels.index("용량") + 1 if "용량" in ordered_levels else len(ordered_levels)
+        ordered_levels.insert(insert_at, FE_CONTENT_LEVEL)
     return [level for level in ordered_levels if level in enabled_levels]
 
 
