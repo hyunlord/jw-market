@@ -205,6 +205,15 @@ def view_config(view_name: str) -> ViewConfig:
         return ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     if view_name == "strategic_ml":
         return ViewConfig("mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "ml_id", "ml_name", "brand_ranking_stacked", True)
+    if view_name == "strategic_cd":
+        return ViewConfig(
+            "mart_strategic_cd_brand_metric",
+            "mart_strategic_cd_market_metric",
+            "cd_market_id",
+            "cd_market_name",
+            "brand_ranking_stacked",
+            True,
+        )
     raise BrandSetInputError(f"unsupported view: {view_name}")
 
 
