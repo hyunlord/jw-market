@@ -53,8 +53,9 @@ class AgentToolFacade:
         self._external = external or ExternalApiClient()
         self._query_layer = query_layer
 
-    def schemas(self) -> tuple[dict[str, Any], ...]:
-        return tool_schemas(self._allowed_brands, self._periods.schema_periods, self._query_catalog())
+    def schemas(self, planner_allowed_brands: tuple[str, ...] | None = None) -> tuple[dict[str, Any], ...]:
+        schema_brands = self._allowed_brands if planner_allowed_brands is None else planner_allowed_brands
+        return tool_schemas(schema_brands, self._periods.schema_periods, self._query_catalog())
 
     def execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
         try:

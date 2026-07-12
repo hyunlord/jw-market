@@ -555,7 +555,7 @@ def _brand(question: str, allowed_brands: tuple[str, ...]) -> str:
 def _brand_hint(allowed_brands: tuple[str, ...]) -> str:
     if not allowed_brands:
         return "No brand has been pre-resolved yet; if a brand tool is needed, use an exact canonical brand from observations only."
-    return "Pre-resolved canonical brand enum: " + ", ".join(allowed_brands) + "."
+    return f"Tool schemas contain {len(allowed_brands)} canonical brands; use those enums without copying or inventing names."
 
 
 def _period_hint(allowed_periods: tuple[str, ...]) -> str:

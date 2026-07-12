@@ -70,8 +70,14 @@ class ToolUseAgent:
         seen: set[str] = set()
         notices: list[str] = []
         status = "ok"
+        expanded_members_exposed = False
         for step in range(1, self.max_steps + 1):
             allowed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
+            planner_allowed_brands = _planner_allowed_brands(
+                base_allowed_brands,
+                tuple(observations),
+                expanded_members_exposed=expanded_members_exposed,
+            )
             facade = AgentToolFacade(
                 metrics=self.metrics,
                 resolver=self.resolver,
@@ -83,13 +89,21 @@ class ToolUseAgent:
                 query_layer=self.query_layer,
             )
             with stage(timing, "market_snapshot", "tool catalog and market snapshot"):
-                tool_schemas = facade.schemas()
+                tool_schemas = facade.schemas(planner_allowed_brands)
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
-            brand_detail = ", ".join(allowed_brands) or "unresolved"
+            brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
             with stage(timing, "llm_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
-                decision = planner.decide(question, tuple(observations), tool_schemas, allowed_brands, period_grounding.schema_periods)
+                decision = planner.decide(
+                    question,
+                    tuple(observations),
+                    tool_schemas,
+                    planner_allowed_brands,
+                    period_grounding.schema_periods,
+                )
                 _record_planner_token_usage(timing, planner)
                 progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
+            if _has_market_members(tuple(observations)):
+                expanded_members_exposed = True
             if not decision.tool_calls:
                 trace.append(_trace_step(step, decision, ()))
                 break
@@ -1680,6 +1694,40 @@ def _step_allowed_brands(base_allowed_brands: tuple[str, ...], observations: tup
         if isinstance(members, tuple | list):
             brands.extend(str(member) for member in members)
     return tuple(dict.fromkeys(brands))
+
+
+def _planner_allowed_brands(
+    base_allowed_brands: tuple[str, ...],
+    observations: tuple[AgentObservation, ...],
+    *,
+    expanded_members_exposed: bool,
+) -> tuple[str, ...]:
+    if not expanded_members_exposed:
+        return _step_allowed_brands(base_allowed_brands, observations)
+    brands = list(base_allowed_brands)
+    for observation in observations:
+        brands.extend(str(value) for key, value in observation.arguments.items() if key in {"brand", "comparison_brand"} and value)
+        data = (observation.call or {}).get("render_data", {})
+        if not isinstance(data, dict):
+            continue
+        brands.extend(str(data[key]) for key in ("brand", "anchor_brand") if data.get(key))
+        segments = data.get("level_segments")
+        if isinstance(segments, tuple | list):
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                value = segment.get("brand") or segment.get("name")
+                if value:
+                    brands.append(str(value))
+    return tuple(dict.fromkeys(brands))
+
+
+def _has_market_members(observations: tuple[AgentObservation, ...]) -> bool:
+    for observation in observations:
+        data = (observation.call or {}).get("render_data", {})
+        if isinstance(data, dict) and isinstance(data.get("member_brands"), tuple | list):
+            return True
+    return False
 
 
 _SUFFICIENT_METRIC_TOOLS = {
