@@ -60,8 +60,8 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
         return None
     candidate_codes = {
         code
-        for choice in choices
-        for code in brand_meta[choice.brand_key].product_codes
+        for meta in brand_meta.values()
+        for code in meta.product_codes
     }
     crosswalk = resolve_csd_market(
         selected_product_codes=set(selected_meta.product_codes),

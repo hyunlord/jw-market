@@ -87,6 +87,29 @@ def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(mon
     assert payload["scope"]["csd_market"] == "LIVALO"
 
 
+def test_interest_rx_csd_tiebreak_preserves_full_market_product_universe(monkeypatch) -> None:
+    # Given
+    from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
+    from pipeline.scripts.api import brand_activity_interest_rx_source as source
+
+    captured: dict[str, set[str]] = {}
+
+    def capture_crosswalk(**codes: set[str]) -> CsdCrosswalk:
+        captured.update(codes)
+        return _crosswalk()
+
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(service, "resolve_csd_market", capture_crosswalk)
+    monkeypatch.setattr(service, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
+
+    # When
+    service.get_interest_rx_matrix({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
+
+    # Then
+    assert captured["candidate_product_codes"] == {"LIVALO", "LIPITOR", "CRESTOR", "BACKBENCH"}
+
+
 def test_interest_rx_service_rebuilds_distribution_for_specialty_filter(monkeypatch) -> None:
     # Given
     from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
@@ -288,6 +311,7 @@ def _brand_set() -> BrandSetResolution:
         "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
         "리피토": BrandMeta("리피토", "리피토", ("LIPITOR",), False),
         "크레스토": BrandMeta("크레스토", "크레스토", ("CRESTOR",), False),
+        "후순위": BrandMeta("후순위", "후순위", ("BACKBENCH",), False),
     }
     return BrandSetResolution(
         view_name="general",
