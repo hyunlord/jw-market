@@ -30,6 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from cache_build_common import (
     MEASURES_BY_SOURCE,
+    active_catalog_member_rows,
     api_source,
     calculate_ei_with_fallback,
     decode_json,
@@ -1179,6 +1180,26 @@ def _has_dimension_specialty_field(row: dict[str, Any], field: str | None) -> bo
     return isinstance(dimension_specialty_data, dict) and isinstance(dimension_specialty_data.get(field), dict)
 
 
+def _coalesced_dimension_channel_series(
+    row: dict[str, Any],
+    field: str | None,
+    source: str,
+    channel: str,
+) -> dict[str, dict[str, Any]]:
+    specialty = (
+        _dimension_specialty_series_map(row, field, channel)
+        if source == "UBIST"
+        else {}
+    )
+    channel_series = _dimension_channel_series_map(row, field, source, channel)
+    if not specialty:
+        return channel_series
+    return {
+        **channel_series,
+        **specialty,
+    }
+
+
 def _series_periods_from_channel_map(channel_map: dict[str, Any]) -> list[str]:
     periods: set[str] = set()
     for series in channel_map.values():
@@ -1305,7 +1326,7 @@ def _segment_rows_for_level(
             else False
         )
         dimension_specialty_series = (
-            _dimension_specialty_series_map(row, field, channel)
+            _coalesced_dimension_channel_series(row, field, source, channel)
             if dimension_specialty_present
             else {}
         )
@@ -1314,7 +1335,7 @@ def _segment_rows_for_level(
             if channel != "전체" and not dimension_specialty_present
             else None
         )
-        use_dimension_channel = channel != "전체" and not dimension_specialty_present and not isinstance(dual_channel_data, dict)
+        use_dimension_channel = channel != "전체" and not isinstance(dual_channel_data, dict)
         dimension_channel_present = _has_dimension_channel_field(row, field) if use_dimension_channel else False
         dimension_channel_series = _dimension_channel_series_map(row, field, source, channel) if use_dimension_channel else {}
         active_dimension_series = dimension_series if channel == "전체" else (dimension_specialty_series or dimension_channel_series)
@@ -1324,11 +1345,11 @@ def _segment_rows_for_level(
                 _add_series(grouped[name], series, periods, series_value_cache=series_value_cache)
                 _add_series(totals, series, periods, series_value_cache=series_value_cache)
             continue
-        if dimension_field_present:
+        if dimension_field_present and dimension_series:
             continue
-        if dimension_specialty_present:
+        if dimension_specialty_present and dimension_specialty_series:
             continue
-        if dimension_channel_present:
+        if dimension_channel_present and dimension_channel_series:
             continue
 
         names = _dimension_values(row, level)
@@ -1488,7 +1509,7 @@ def _rows_for_dimension(
             else False
         )
         dimension_specialty_series = (
-            _dimension_specialty_series_map(row, field, channel)
+            _coalesced_dimension_channel_series(row, field, source_text, channel)
             if dimension_specialty_present
             else {}
         )
@@ -1497,7 +1518,7 @@ def _rows_for_dimension(
             if channel != "전체" and not dimension_specialty_present
             else None
         )
-        use_dimension_channel = channel != "전체" and not dimension_specialty_present and not isinstance(dual_channel_data, dict)
+        use_dimension_channel = channel != "전체" and not isinstance(dual_channel_data, dict)
         dimension_channel_present = _has_dimension_channel_field(row, field) if use_dimension_channel else False
         dimension_channel_series = (
             _dimension_channel_series_map(row, field, source_text, channel)
@@ -1519,7 +1540,11 @@ def _rows_for_dimension(
                     )
                 )
             continue
-        if dimension_present or dimension_specialty_present or dimension_channel_present:
+        if (
+            (dimension_present and dimension_series)
+            or (dimension_specialty_present and dimension_specialty_series)
+            or (dimension_channel_present and dimension_channel_series)
+        ):
             continue
 
         if str(segment_name) not in _dimension_values(row, level):
@@ -2602,6 +2627,14 @@ def _level_top5_trend(
     available_levels = [{"key": level, "label": level} for level in levels]
     by_level = {}
     for level in levels:
+        full_market_rows = _rows_for_channel(
+            rows,
+            source,
+            channel,
+            periods,
+            series_value_cache=series_value_cache,
+        )
+        full_market_series = _total_series_for_rows(full_market_rows, periods)
         all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get(channel) or []
         overall_segment = next(
             (segment for segment in all_level_segments if isinstance(segment, dict) and segment.get("is_overall")),
@@ -2622,13 +2655,7 @@ def _level_top5_trend(
         if len(overall_value_series) != len(periods):
             overall_value_series = overall_value_series[-len(periods):] if periods else []
         if overall_segment:
-            channel_rows = _rows_for_channel(
-                rows,
-                source,
-                channel,
-                periods,
-                series_value_cache=series_value_cache,
-            )
+            channel_rows = full_market_rows
             if not overall_value_series:
                 overall_value_series = _total_series_for_rows(channel_rows, periods)
             values.append(
@@ -2690,7 +2717,7 @@ def _level_top5_trend(
         overall_total = (
             safe_float(overall_value_series[-1]) or 0.0
             if overall_value_series
-            else None
+            else safe_float(full_market_series[-1] if full_market_series else None)
         )
         by_level[level] = {
             "level_label": level,
@@ -2730,11 +2757,14 @@ def _catalog_member_rows(strategic_brand: Any, view_source_id: str) -> list[dict
 
 
 def _catalog_members_for_market(strategic_brand: Any, view_source_id: str) -> list[dict[str, Any]]:
-    rows = _catalog_member_rows(strategic_brand, view_source_id)
+    field = "cd_id" if view_source_id.startswith("cd_") else "ml_id"
+    rows = active_catalog_member_rows(strategic_brand, field, view_source_id)
     members = []
+    seen: set[str] = set()
     for row in rows:
         name = str(row.get("canonical_name") or row.get("name") or "")
-        if name:
+        if name and name not in seen:
+            seen.add(name)
             members.append({"name": name, "is_jw": bool(row.get("is_jw")), "company": row.get("판매사")})
     return members
 

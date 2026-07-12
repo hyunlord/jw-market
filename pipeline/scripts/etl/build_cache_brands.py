@@ -8,6 +8,8 @@ import sys
 from cache_build_common import (
     CANONICAL_25,
     PROJECT_ROOT,
+    catalog_input_manifest,
+    current_build_sha,
     dump_payload,
     load_catalog,
     parser,
@@ -49,8 +51,14 @@ def main() -> None:
         "query_key": "default",
         "response_json": dump_payload(payload),
         "payload_size": payload_size(payload),
+        "build_sha": current_build_sha(),
+        "input_manifest_json": catalog_input_manifest({"strategic_brand": strategic_brand}),
     }
-    replace_rows(args.target_table, ["query_key", "response_json", "payload_size"], [row])
+    replace_rows(
+        args.target_table,
+        ["query_key", "response_json", "payload_size", "build_sha", "input_manifest_json"],
+        [row],
+    )
     if args.verbose:
         print(f"cache_brands default brand_count={len(payload)} payload_size={row['payload_size']}")
 

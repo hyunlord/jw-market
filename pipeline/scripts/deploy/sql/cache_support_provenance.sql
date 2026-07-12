@@ -1,0 +1,7 @@
+ALTER TABLE cache_brands
+  ADD COLUMN IF NOT EXISTS build_sha VARCHAR(64) NULL,
+  ADD COLUMN IF NOT EXISTS input_manifest_json LONGTEXT NULL;
+
+ALTER TABLE cache_market_status
+  ADD COLUMN IF NOT EXISTS build_sha VARCHAR(64) NULL,
+  ADD COLUMN IF NOT EXISTS input_manifest_json LONGTEXT NULL;
