@@ -13,6 +13,7 @@ from pipeline.scripts.etl.build_analysis_level_blocks import (
     profile_signature,
     variant_keys,
     _general_data,
+    _upsert_params,
 )
 from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
     ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
@@ -146,3 +147,13 @@ def test_current_keys_is_scoped_to_epoch_and_build(monkeypatch) -> None:
     assert captured["params"] == ("epoch", "build")
     assert "source_epoch = %s" in captured["sql"]
     assert "profile_sig" in captured["sql"]
+
+
+def test_upsert_params_include_source_epoch() -> None:
+    block = BlockPayload.for_test(market_id="A10N1", payload_size=2)
+
+    params = _upsert_params(block, built_at="built-at")
+
+    assert len(params) == 13
+    assert params[9] == block.source_epoch
+    assert params[10] == block.build_version

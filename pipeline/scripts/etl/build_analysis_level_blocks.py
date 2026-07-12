@@ -328,23 +328,7 @@ ON DUPLICATE KEY UPDATE
 
 
 def write_batch(batch: Sequence[BlockPayload]) -> None:
-    params = [
-        (
-            block.view,
-            block.market_id,
-            block.source,
-            block.measure,
-            block.profile_sig,
-            block.trim_mode,
-            block.analysis_levels_json,
-            block.market_status_json,
-            block.payload_sha256,
-            block.build_version,
-            block.payload_size,
-            datetime.now(),
-        )
-        for block in batch
-    ]
+    params = [_upsert_params(block, built_at=datetime.now()) for block in batch]
     for attempt in range(4):
         try:
             with db.connect() as conn, conn.cursor() as cursor:
@@ -355,6 +339,24 @@ def write_batch(batch: Sequence[BlockPayload]) -> None:
             if exc.args[0] not in {1205, 1213} or attempt == 3:
                 raise
             time.sleep(0.25 * (2**attempt))
+
+
+def _upsert_params(block: BlockPayload, *, built_at: Any) -> tuple[Any, ...]:
+    return (
+        block.view,
+        block.market_id,
+        block.source,
+        block.measure,
+        block.profile_sig,
+        block.trim_mode,
+        block.analysis_levels_json,
+        block.market_status_json,
+        block.payload_sha256,
+        block.source_epoch,
+        block.build_version,
+        block.payload_size,
+        built_at,
+    )
 
 
 def source_epoch() -> str:
