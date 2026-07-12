@@ -36,6 +36,36 @@ def test_signed_percent_rounding_matches_bundle_raw():
     assert find_match_unit_aware(match["value"], bundle_index, number_type, RunnerConfig.default_for_tests().validator)
 
 
+def test_display_percent_matches_ratio_bundle_value_without_relaxing_tolerance():
+    text = "최근 성장률은 48.26%입니다."
+    bundle = {
+        "market_views": [
+            {"target_brand_metric": {"mat_yoy_pct": 0.48263983937799626}}
+        ]
+    }
+    bundle_index = build_bundle_path_index(bundle)
+
+    match = next(item for item in extract_numbers(text) if item["pattern"] == "percent")
+
+    assert find_match_unit_aware(
+        match["value"],
+        bundle_index,
+        match["number_type"],
+        RunnerConfig.default_for_tests().validator,
+    ) == "market_views[0].target_brand_metric.mat_yoy_pct"
+
+
+def test_display_percent_does_not_scale_non_percent_numbers():
+    bundle_index = build_bundle_path_index({"market_views": [{"raw_value": 0.4826}]})
+
+    assert find_match_unit_aware(
+        48.26,
+        bundle_index,
+        "currency_krw",
+        RunnerConfig.default_for_tests().validator,
+    ) is None
+
+
 def test_currency_krw_precision_still_matches_exact_raw():
     text = "매출 14,450,706,270.69 KRW"
     bundle = {"raw_value": 14450706270.69}

@@ -200,3 +200,18 @@ def test_build_kpi_provider_switches_by_view_kind():
 
     assert isinstance(strategic, kpi_provider.StrategicMlKpiProvider)
     assert isinstance(general, kpi_provider.GeneralViewKpiProvider)
+
+
+def test_general_provider_maps_public_iqvia_source_to_mart_source():
+    conn = _Conn([{"brand_key": "target", "brand_name": "타겟", "atc4_code": "C10A1"}])
+    provider = kpi_provider.GeneralViewKpiProvider(
+        db_conn=conn,
+        mart_db="jw_mart",
+        bridge_db="jw_mart",
+        source="iqvia",
+    )
+
+    rows = provider._brand_rows_for_key("target")
+
+    assert rows[0]["brand_key"] == "target"
+    assert conn.cursor_obj.executed[-1][1] == ("target", "iqvia_nsa", "sales")

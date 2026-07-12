@@ -98,6 +98,62 @@ def _execute_row(cursor: Any, table: str, id_col: str, market_id: str, source: s
     return _row_to_dict(cursor, cursor.fetchone())
 
 
+def _execute_general_history(
+    cursor: Any,
+    brand_key: str,
+    atc4_codes: list[str],
+    source: str,
+    measure: str,
+) -> dict[str, float]:
+    cursor.execute(
+        """
+        SELECT raw_value_history
+        FROM mart_general_brand_metric
+        WHERE brand_key = %s
+          AND atc4_code IN %s
+          AND source IN %s
+          AND measure = %s
+        ORDER BY atc4_code
+        """,
+        (brand_key, tuple(atc4_codes), _source_candidates(source), measure),
+    )
+    combined: dict[str, float] = {}
+    for raw_row in cursor.fetchall():
+        row = _row_to_dict(cursor, raw_row) or {}
+        for period, value in _load_history(row.get("raw_value_history")).items():
+            if isinstance(value, dict):
+                value = value.get("raw_value", value.get("value"))
+            numeric = _numeric(value)
+            if numeric is not None:
+                combined[str(period)] = combined.get(str(period), 0.0) + numeric
+    return combined
+
+
+def _validate_general_history(
+    checks: list[BundleMartCheck],
+    view_id: str,
+    bundle_history: dict[str, Any],
+    raw_value_history: Any,
+    config: ValidatorConfig,
+) -> None:
+    mart_history = _load_history(raw_value_history)
+    for period, bundle_period in (bundle_history or {}).items():
+        if not isinstance(bundle_period, dict):
+            continue
+        mart_value = mart_history.get(period)
+        if isinstance(mart_value, dict):
+            mart_value = mart_value.get("raw_value", mart_value.get("value"))
+        _append_compare(
+            checks,
+            view_id,
+            str(period),
+            "raw_value",
+            bundle_period.get("raw_value"),
+            mart_value,
+            config.tolerance_default,
+        )
+
+
 def fetch_market_size_history(db_conn: Any, market_type: str, market_id: str, source: str, measure: str) -> dict[str, float]:
     if market_type not in {"ml", "cd"} or not market_id:
         return {}
@@ -209,6 +265,37 @@ def validate_bundle_against_mart(bundle: dict[str, Any], db_conn: Any, config: V
 
     for view in bundle.get("market_views", []) or []:
         view_id = str(view.get("view_id", "unknown_view"))
+        if view.get("view") == "general_view" or view_id.startswith("GENERAL."):
+            brand_key = str(
+                ((view.get("target_brand_metric") or {}).get("brand_key"))
+                or ((bundle.get("brand_context") or {}).get("brand_key"))
+                or ""
+            )
+            atc4_codes = list(((view.get("market_meta") or {}).get("atc4_codes")) or [])
+            source = str(view.get("source", ""))
+            measure = str(view.get("measure", ""))
+            mart_history = _execute_general_history(cursor, brand_key, atc4_codes, source, measure)
+            if not mart_history:
+                checks.append(
+                    BundleMartCheck(
+                        view_id,
+                        "N/A",
+                        "row_existence",
+                        None,
+                        None,
+                        False,
+                        f"mart row not found: mart_general_brand_metric {brand_key} {atc4_codes} {source} {measure}",
+                    )
+                )
+                continue
+            _validate_general_history(
+                checks,
+                view_id,
+                ((view.get("target_brand_metric", {}) or {}).get("history", {}) or {}),
+                mart_history,
+                config,
+            )
+            continue
         market_type, market_id, id_col = _market_id(view)
         table = f"mart_strategic_{market_type}_brand_metric"
         source = str(view.get("source", ""))

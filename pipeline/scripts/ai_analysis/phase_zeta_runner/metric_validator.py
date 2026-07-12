@@ -56,7 +56,7 @@ SIMULATION_CI_RE = re.compile(r"(95\s*%\s*(?:신뢰구간|CI)|(?:신뢰구간|CI
 FORECAST_VIEW_PATH_RE = re.compile(r"forecast_simulation\.by_view\.([A-Z]+)\.([A-Z]+)\.([^.]+)")
 MARKET_VIEW_PATH_RE = re.compile(r"market_views\[(\d+)\]")
 VIEW_LABEL_IN_TEXT_RE = re.compile(
-    r"(Market\s+Landscape|Competitive\s+Dynamics)\s*·\s*(UBIST|IQVIA)\s*기준",
+    r"(Market\s+Landscape|Competitive\s+Dynamics|General\s+View)\s*·\s*(UBIST|IQVIA)\s*기준(?:\s*\(ATC4\))?",
     re.IGNORECASE,
 )
 SOURCE_IN_TEXT_RE = re.compile(r"(?<![A-Z])(UBIST|IQVIA)(?![A-Z])", re.IGNORECASE)
@@ -70,7 +70,7 @@ PREDICTION_NEWS_TRIGGER_RE = re.compile(
     re.IGNORECASE,
 )
 NUMERIC_EVIDENCE_TAG_RE = re.compile(
-    r"\d[\d,]*(?:\.\d+)?\s*(?:KRW|원|₩)?\s*\([^)]*(?:ML|CD|Market\s+Landscape|Competitive\s+Dynamics|UBIST|IQVIA)",
+    r"\d[\d,]*(?:\.\d+)?\s*(?:KRW|원|₩)?\s*\([^)]*(?:ML|CD|GENERAL|Market\s+Landscape|Competitive\s+Dynamics|General\s+View|UBIST|IQVIA)",
     re.IGNORECASE,
 )
 NUMERIC_EVIDENCE_VALUE_RE = re.compile(r"(?<![\d,.])(\d+(?:,\d{3})*(?:\.\d+)?)(?![\d,.])")
@@ -81,6 +81,8 @@ VIEW_DISPLAY = {
     "CD": "Competitive Dynamics",
     "market_landscape": "Market Landscape",
     "competitive_dynamics": "Competitive Dynamics",
+    "GENERAL": "General View",
+    "general_view": "General View",
 }
 
 
@@ -364,12 +366,21 @@ def find_match_unit_aware(
     best_delta: float | None = None
     best_priority: int | None = None
 
+    percent_display = number_type in {"percent", "percent_signed"}
     for bundle_value, paths in bundle_index.items():
-        delta = abs(bundle_value - numeric)
-        matches_absolute = delta <= tolerance
-        matches_relative = abs(bundle_value) > 1000 and delta / abs(bundle_value) <= relative_tolerance
-        if not (matches_absolute or matches_relative):
+        comparable_values = [bundle_value]
+        if percent_display and -1.0 <= bundle_value <= 1.0:
+            comparable_values.append(bundle_value * 100.0)
+        matching_deltas = []
+        for comparable_value in comparable_values:
+            delta = abs(comparable_value - numeric)
+            matches_absolute = delta <= tolerance
+            matches_relative = abs(comparable_value) > 1000 and delta / abs(comparable_value) <= relative_tolerance
+            if matches_absolute or matches_relative:
+                matching_deltas.append(delta)
+        if not matching_deltas:
             continue
+        delta = min(matching_deltas)
         path = min(paths, key=_path_priority)
         priority = _path_priority(path)
         if (

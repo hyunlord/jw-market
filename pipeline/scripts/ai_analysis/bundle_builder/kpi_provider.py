@@ -180,7 +180,17 @@ class GeneralViewKpiProvider:
             "measure": self.measure,
             "brand_key": brand_key,
             "brand_name": target_metric.brand_name if target_metric else target_rows[0]["brand_name"],
+            "available": target_metric is not None,
             "atc4_codes": list(atc4_codes),
+            "unit_label": metrics.unit_label,
+            "latest_period": target_metric.latest_period if target_metric else None,
+            "target_history": self._target_history(metrics, target_metric),
+            "market_size_history": {
+                str(point.get("period")): point.get("market_size")
+                for point in metrics.monthly_series
+                if point.get("period")
+            },
+            "competitors_top5": self._competitors(metrics, target_metric),
             "market_size_recent": kpi.get("market_size_recent"),
             "market_cagr_5y_pct": kpi.get("market_cagr_5y_pct"),
             "hhi_recent": kpi.get("hhi_recent"),
@@ -210,7 +220,7 @@ class GeneralViewKpiProvider:
                   AND measure = %s
                 ORDER BY atc4_code, brand_name, brand_key
                 """,
-                (brand_key, self.source, self.measure),
+                (brand_key, source_public_to_db(self.source), self.measure),
             )
             return [dict(row) for row in cur.fetchall()]
 
@@ -247,6 +257,49 @@ class GeneralViewKpiProvider:
         if latest_market <= 0:
             return target.market_share_pct
         return target.latest_value / latest_market * 100 if target.latest_value is not None else None
+
+    @staticmethod
+    def _period_market_size(metrics: Any, period: str) -> float:
+        return sum(
+            float(point.get("value") or 0.0)
+            for brand in metrics.all_brands
+            for point in brand.monthly_series
+            if str(point.get("period")) == period
+        )
+
+    @classmethod
+    def _target_history(cls, metrics: Any, target: BrandMetric | None) -> dict[str, dict[str, Any]]:
+        if target is None:
+            return {}
+        history: dict[str, dict[str, Any]] = {}
+        for point in target.monthly_series:
+            period = str(point.get("period") or "")
+            if not period:
+                continue
+            raw_value = point.get("value")
+            market_size = cls._period_market_size(metrics, period)
+            history[period] = {
+                "raw_value": raw_value,
+                "ms_pct": (float(raw_value) / market_size * 100) if raw_value is not None and market_size > 0 else None,
+                "rank": target.rank if period == target.latest_period else None,
+            }
+        return history
+
+    @classmethod
+    def _competitors(cls, metrics: Any, target: BrandMetric | None) -> list[dict[str, Any]]:
+        competitors: list[dict[str, Any]] = []
+        for metric in sorted(metrics.brands, key=lambda item: (item.rank, item.brand_name))[:5]:
+            if target is not None and metric.brand_key == target.brand_key:
+                continue
+            competitors.append(
+                {
+                    "brand_key": metric.brand_key,
+                    "brand_name": metric.brand_name,
+                    "rank_in_market": metric.rank,
+                    "history": cls._target_history(metrics, metric),
+                }
+            )
+        return competitors
 
     @staticmethod
     def _extract_payload_kpi(payload: dict[str, Any]) -> dict[str, Any]:

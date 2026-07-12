@@ -6,6 +6,7 @@ from typing import Any
 __all__ = [
     "BundleConfig",
     "build_brand_bundle",
+    "build_general_brand_bundle",
     "render_narrative",
     "compute_mat_12m_absolute",
     "recompute_ms_pct",
@@ -22,6 +23,10 @@ def __getattr__(name: str) -> Any:
             from .orchestrator import build_brand_bundle
 
             return build_brand_bundle
+        case "build_general_brand_bundle":
+            from .general_bundle_adapter import build_general_brand_bundle
+
+            return build_general_brand_bundle
         case "render_narrative":
             from .prompt_renderer import render_narrative
 

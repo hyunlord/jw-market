@@ -133,6 +133,9 @@ def test_prompt_declares_view_label_and_evidence_contracts():
     assert "retained event 목록" in question
     assert "evidence 배열을 비워두거나 항목 수를 줄이세요" in question
     assert "source label만 있는 근거" in question
+    assert "bundle에 있는 수치만" in question
+    assert "억/만 단위로 변환" in question
+    assert "계산하거나 추정하지 마세요" in question
 
 
 def test_prompt_declares_simulation_horizon_contract_when_all_horizons_exist():
@@ -168,3 +171,14 @@ def test_prompt_omits_simulation_horizon_contract_when_horizons_are_missing():
     question = build_question_string(bundle, RunnerConfig.default_for_tests())
 
     assert "각 horizon의 실제 수치" not in question
+
+
+def test_general_bundle_prompt_uses_general_atc4_label_only():
+    bundle = sample_bundle()
+    bundle["market_views"][0]["view"] = "general_view"
+    bundle["market_views"][0]["view_id"] = "GENERAL.UBIST.sales"
+
+    question = build_question_string(bundle, RunnerConfig.default_for_tests())
+
+    assert "General View · {SOURCE} 기준 (ATC4)" in question
+    assert "Market Landscape · {SOURCE} 기준" not in question

@@ -67,7 +67,11 @@ def _variant_instruction(analysis_variant: str) -> str:
     return "legacy variant: 기존 운영 호환 인사이트입니다. prediction stage에 1년/3년/5년 전망을 모두 포함하세요."
 
 
-def _validation_contract_block(forecast: dict[str, Any], analysis_variant: str = "legacy") -> str:
+def _validation_contract_block(
+    forecast: dict[str, Any],
+    analysis_variant: str = "legacy",
+    market_views: list[dict[str, Any]] | None = None,
+) -> str:
     variant = require_analysis_variant(analysis_variant)
     horizon_rule = ""
     if _forecast_has_all_horizons(forecast):
@@ -87,16 +91,24 @@ def _validation_contract_block(forecast: dict[str, Any], analysis_variant: str =
                 "prediction stage에서 시뮬레이션을 언급할 때는 1y/3y/5y 각 horizon의 실제 수치를 모두 명시하세요. "
                 "방향성 서술만 쓰지 마세요."
             )
+    has_general = any(view.get("view") == "general_view" for view in market_views or [])
+    source_contract = (
+        "`General View · {SOURCE} 기준 (ATC4)` 형식의 전체 표기"
+        if has_general
+        else "`Market Landscape · {SOURCE} 기준` 또는 `Competitive Dynamics · {SOURCE} 기준` 형식의 전체 표기"
+    )
+    forbidden_short = "`GENERAL·UBIST·매출`" if has_general else "`ML·UBIST·매출`, `CD·IQVIA·매출`"
     return (
         "\n\n[검증 계약]\n"
-        "- market/competitive 수치를 인용할 때는 반드시 "
-        "`Market Landscape · {SOURCE} 기준` 또는 `Competitive Dynamics · {SOURCE} 기준` 형식의 전체 표기를 함께 쓰세요. "
-        "`ML·UBIST·매출`, `CD·IQVIA·매출` 같은 축약형만 쓰는 것은 금지입니다.\n"
+        f"- market/competitive 수치를 인용할 때는 반드시 {source_contract}를 함께 쓰세요. "
+        f"{forbidden_short} 같은 축약형만 쓰는 것은 금지입니다.\n"
         "- prediction evidence의 event/news 근거는 반드시 위 retained event 목록의 `news_id` 또는 `title`을 정확히 복사해서 쓰세요. "
         "retained event 목록에 없는 사건은 인용하지 마세요.\n"
         "- retained event나 실제 수치/시뮬레이션 근거가 마땅치 않으면 prediction evidence 배열을 비워두거나 항목 수를 줄이세요. "
         "source label만 있는 근거, 예측 데이터 부재 placeholder, 실제 뉴스 제목/수치가 없는 근거를 억지로 만들지 마세요.\n"
         "- 수치/시뮬레이션 근거는 `basis`에 실제 수치와 source/view 표기를 함께 넣어 event/news 근거와 구분하세요."
+        "\n- bundle에 있는 수치만 인용하고, bundle 밖의 수치를 계산하거나 추정하지 마세요. "
+        "forecast_simulation의 KRW 값은 원문 숫자 그대로 쓰며 억/만 단위로 변환하지 마세요."
         f"{horizon_rule}"
     )
 
@@ -120,7 +132,7 @@ def build_question_string(bundle: dict[str, Any], config: RunnerConfig | None = 
     mode_instruction = _mode_instruction(mode)
     mode_block = f"\n\n[출력 밀도]\n{mode_instruction}" if mode_instruction else ""
     variant_block = f"\n\n[analysis_variant: {analysis_variant}]\n{_variant_instruction(analysis_variant)}"
-    validation_contract = _validation_contract_block(forecast, analysis_variant)
+    validation_contract = _validation_contract_block(forecast, analysis_variant, bundle.get("market_views") or [])
 
     return f"""[분석 대상]
 brand: {brand_name}

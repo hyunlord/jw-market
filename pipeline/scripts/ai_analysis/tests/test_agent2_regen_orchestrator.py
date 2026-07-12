@@ -485,10 +485,13 @@ def test_mart_universe_worklist_is_explicit_and_reads_ml_mart():
 
 
 def test_parse_args_accepts_general_density_source() -> None:
-    args = parse_args(["--brand-source", "general-density", "--route-plan-only"])
+    args = parse_args(
+        ["--brand-source", "general-density", "--route-plan-only", "--brand-keys-file", "sample.json"]
+    )
 
     assert args.brand_source == "general-density"
     assert args.route_plan_only is True
+    assert args.brand_keys_file == "sample.json"
 
 
 def test_routed_run_uses_zero_template_without_llm(tmp_path) -> None:
@@ -587,10 +590,11 @@ def test_routed_zero_template_uses_kpi_snapshot_without_bundle_or_llm(tmp_path) 
 
 
 def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
-    calls = {"brand": "", "mode": "", "brand_centric": 0}
+    calls = {"brand": "", "brand_key": "", "mode": "", "brand_centric": 0}
 
-    def build_bundle(brand: str):
+    def build_bundle(brand: str, brand_key: str):
         calls["brand"] = brand
+        calls["brand_key"] = brand_key
         return {
             "bundle_meta": {"bundle_hash": "sha256:testhash", "brand": brand},
             "brand_context": {"brand_name": brand},
@@ -641,6 +645,7 @@ def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
     manifest = orchestrator.run_routed(worklist)
 
     assert calls["brand"] == "자본브랜드"
+    assert calls["brand_key"] == "capital-key"
     assert calls["mode"] == "compact"
     assert calls["brand_centric"] == 3
     assert manifest["brands"]["capital-key"]["status"] == "validated"

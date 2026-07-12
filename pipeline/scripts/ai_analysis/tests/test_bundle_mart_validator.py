@@ -16,6 +16,9 @@ class FakeCursor:
         self.last_params = params
 
     def fetchone(self):
+        if len(self.last_params) == 4 and isinstance(self.last_params[1], tuple) and self.last_params[0] == "general_key":
+            brand_key, atc4_codes, source, measure = self.last_params
+            return self.rows.get(("general", brand_key, atc4_codes, source, measure))
         if len(self.last_params) == 4:
             market_id, source_candidates, measure, brand = self.last_params
             key = ("brand", market_id, tuple(source_candidates), measure, brand)
@@ -23,6 +26,12 @@ class FakeCursor:
         market_id, source_candidates, measure = self.last_params
         key = ("market", market_id, tuple(source_candidates), measure)
         return self.rows.get(key)
+
+    def fetchall(self):
+        if len(self.last_params) == 4 and isinstance(self.last_params[1], tuple) and self.last_params[0] == "general_key":
+            brand_key, atc4_codes, source, measure = self.last_params
+            return self.rows.get(("general_rows", brand_key, atc4_codes, source, measure), [])
+        return []
 
 
 class FakeConnection:
@@ -196,3 +205,71 @@ def test_competitor_ms_uses_canonical_market_size():
 
     assert result["valid"]
     assert not result["mismatched"]
+
+
+def test_general_view_validates_raw_history_against_general_mart():
+    bundle = {
+        "brand_context": {"name": "일반브랜드", "brand_key": "general_key"},
+        "market_views": [
+            {
+                "view_id": "GENERAL.UBIST.sales",
+                "view": "general_view",
+                "source": "UBIST",
+                "measure": "sales",
+                "market_meta": {"atc4_codes": ["A01A1"]},
+                "target_brand_metric": {
+                    "brand_key": "general_key",
+                    "history": {"2026-05": {"raw_value": 100.0, "ms_pct": 10.0, "rank": 2}},
+                },
+                "competitors_top5": [],
+            }
+        ],
+    }
+    conn = FakeConnection(
+        {
+            ("general_rows", "general_key", ("A01A1",), ("UBIST", "ubist"), "sales"): [
+                {"raw_value_history": json.dumps({"2026-05": 100.0})}
+            ]
+        }
+    )
+
+    result = validate_bundle_against_mart(bundle, conn, RunnerConfig.default_for_tests().validator)
+
+    assert result["valid"]
+    assert result["matched"] == 1
+
+
+def test_general_view_sums_history_across_multiple_atc4_rows():
+    bundle = {
+        "brand_context": {"name": "일반브랜드", "brand_key": "general_key"},
+        "market_views": [
+            {
+                "view_id": "GENERAL.UBIST.sales",
+                "view": "general_view",
+                "source": "UBIST",
+                "measure": "sales",
+                "market_meta": {"atc4_codes": ["A01A1", "A01A2"]},
+                "target_brand_metric": {
+                    "brand_key": "general_key",
+                    "history": {
+                        "2026-04": {"raw_value": 30.0},
+                        "2026-05": {"raw_value": 125.0},
+                    },
+                },
+                "competitors_top5": [],
+            }
+        ],
+    }
+    conn = FakeConnection(
+        {
+            ("general_rows", "general_key", ("A01A1", "A01A2"), ("UBIST", "ubist"), "sales"): [
+                {"raw_value_history": json.dumps({"2026-04": 10.0, "2026-05": 100.0})},
+                {"raw_value_history": json.dumps({"2026-04": 20.0, "2026-05": 25.0})},
+            ]
+        }
+    )
+
+    result = validate_bundle_against_mart(bundle, conn, RunnerConfig.default_for_tests().validator)
+
+    assert result["valid"]
+    assert result["matched"] == 2

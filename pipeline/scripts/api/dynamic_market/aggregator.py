@@ -189,8 +189,20 @@ def compute_cagr(monthly_series: tuple[dict[str, float | str], ...]) -> float | 
 
 
 def month_distance(start: str, end: str) -> int:
-    """Return elapsed month count between two ``YYYY-MM`` labels."""
+    """Return elapsed months between ``YYYY-MM`` or ``YYYY-Qn`` labels."""
 
-    start_year, start_month = (int(part) for part in start.split("-", 1))
-    end_year, end_month = (int(part) for part in end.split("-", 1))
-    return (end_year * 12 + end_month) - (start_year * 12 + start_month)
+    def month_index(period: str) -> int:
+        year_text, part = period.split("-", 1)
+        year = int(year_text)
+        if part.startswith("Q"):
+            quarter = int(part[1:])
+            if quarter not in {1, 2, 3, 4}:
+                raise ValueError(f"invalid quarter period: {period}")
+            month = (quarter - 1) * 3 + 1
+        else:
+            month = int(part)
+            if month not in range(1, 13):
+                raise ValueError(f"invalid month period: {period}")
+        return year * 12 + month
+
+    return month_index(end) - month_index(start)

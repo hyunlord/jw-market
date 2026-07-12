@@ -26,7 +26,7 @@ PHASE_ZETA_ROOT = Path(__file__).resolve().parent
 if str(PHASE_ZETA_ROOT) not in sys.path:
     sys.path.insert(0, str(PHASE_ZETA_ROOT))
 
-from bundle_builder import BundleConfig, build_brand_bundle
+from bundle_builder import BundleConfig, build_brand_bundle, build_general_brand_bundle
 from bundle_builder.agent2_density_router import ProcessingMode
 from bundle_builder.agent2_zero_template import render_zero_template
 from bundle_builder.hash_util import compute_bundle_hash
@@ -52,8 +52,11 @@ STAGES = ("phenomenon", "cause", "prediction", "recommendation")
 DEFAULT_FORMATTER_VERSION = "wf217-order2-v10.3"
 DEFAULT_WORKFLOW_REVISION_ID = 3727
 
-TAG_RE = re.compile(r"\((ML|CD)·([^()·]+)·([^()·]+)(?:·([^()·]+))?\)")
-SOURCE_LABEL_RE = re.compile(r"\b(Market Landscape|Competitive Dynamics)\s*·\s*(IQVIA|UBIST)\s*기준", re.IGNORECASE)
+TAG_RE = re.compile(r"\((ML|CD|GENERAL)·([^()·]+)·([^()·]+)(?:·([^()·]+))?\)")
+SOURCE_LABEL_RE = re.compile(
+    r"\b(Market Landscape|Competitive Dynamics|General View)\s*·\s*(IQVIA|UBIST)\s*기준(?:\s*\(ATC4\))?",
+    re.IGNORECASE,
+)
 PERIOD_RE = re.compile(r"^20\d{2}-(?:Q[1-4]|\d{2})$")
 DAMAGED_DATE_RE = re.compile(r"(?:2,0\d{2}\.00|20\d{2}\.00|\d,0\d{2}\.00-\d|\.00\.00)")
 THREE_PLUS_DECIMAL_RE = re.compile(r"(?<!\d)\d[\d,]*\.\d{3,}\s*(?:%p|%|배)?")
@@ -336,7 +339,7 @@ class Agent2RegenOrchestrator:
                 case ProcessingMode.TEMPLATE_ZERO:
                     record = self._run_zero_template(item)
                 case ProcessingMode.LLM_FULL | ProcessingMode.LLM_COMPACT | ProcessingMode.LLM_RECAP:
-                    record = self._run_brand(item.canonical_brand_name, item.route.mode, variant)
+                    record = self._run_brand(item.canonical_brand_name, item.route.mode, variant, brand_key=item.brand_key)
                     record["brand_key"] = item.brand_key
                     record["canonical_brand_name"] = item.canonical_brand_name
                     record["density_route"] = _route_metadata(item)
@@ -393,12 +396,16 @@ class Agent2RegenOrchestrator:
         brand: str,
         mode: str | ProcessingMode = PROCESSING_MODE_FULL,
         analysis_variant: str = "legacy",
+        brand_key: str | None = None,
     ) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc).isoformat()
         mode_name = normalize_processing_mode(mode)
         variant = require_analysis_variant(analysis_variant)
         try:
-            bundle = self.ports.build_bundle(brand)
+            if brand_key is not None and len(inspect.signature(self.ports.build_bundle).parameters) >= 2:
+                bundle = self.ports.build_bundle(brand, brand_key)
+            else:
+                bundle = self.ports.build_bundle(brand)
             bundle = trim_bundle_for_mode(bundle, mode_name)
             bundle_hash = bundle.get("bundle_meta", {}).get("bundle_hash") or compute_bundle_hash(bundle)
             idempotency_key = compute_idempotency_key(
@@ -668,6 +675,7 @@ def make_real_ports(
     snapshot_at: datetime,
     catalog_path: str,
     work_dir: Path,
+    bundle_kind: str = "strategic",
 ) -> tuple[DependencyPorts, ZeroKpiSnapshotProvider, Callable[[], None], dict[str, Any]]:
     bundle_conn = _connect_bundle_db(bundle_config)
     runner_conn = _connect_runner_db(runner_config)
@@ -677,8 +685,20 @@ def make_real_ports(
         bundle_conn.close()
         runner_conn.close()
 
-    def build_bundle_port(brand: str) -> dict[str, Any]:
-        bundle = build_brand_bundle(brand, snapshot_at, bundle_config, bundle_conn, catalog_path)
+    def build_bundle_port(brand: str, brand_key: str | None = None) -> dict[str, Any]:
+        if bundle_kind == "general":
+            if not brand_key:
+                raise ValueError("general bundle generation requires an explicit brand_key")
+            bundle = build_general_brand_bundle(
+                brand_key,
+                snapshot_at,
+                bundle_config,
+                bundle_conn,
+                mart_db=bundle_config.db.database,
+                bridge_db=bundle_config.db.database,
+            )
+        else:
+            bundle = build_brand_bundle(brand, snapshot_at, bundle_config, bundle_conn, catalog_path)
         bundle.setdefault("bundle_meta", {})
         bundle["bundle_meta"]["bundle_hash"] = bundle["bundle_meta"].get("bundle_hash") or compute_bundle_hash(bundle)
         bundle_path = work_dir / "bundles" / f"{brand}.json"
@@ -758,6 +778,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--apply", action="store_true", default=False, help="Reserved for separately approved live swap run.")
     parser.add_argument("--brands", nargs="*", help="Explicit brands to process. Overrides --brand-source.")
     parser.add_argument(
+        "--brand-keys-file",
+        help="JSON array of exact general-density brand keys to process after the routed worklist is built.",
+    )
+    parser.add_argument(
         "--brand-source",
         choices=("ai-analysis-cache", "mart-universe", "general-density"),
         default="ai-analysis-cache",
@@ -781,6 +805,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workflow-revision-id", type=int, default=DEFAULT_WORKFLOW_REVISION_ID)
     parser.add_argument("--formatter-version", default=DEFAULT_FORMATTER_VERSION)
     parser.add_argument("--analysis-variant", choices=("legacy", "short", "long"), default="legacy")
+    parser.add_argument(
+        "--bundle-kind",
+        choices=("strategic", "general"),
+        default="strategic",
+        help="Use strategic MI bundles (default) or ATC4 general-view bundles.",
+    )
     parser.add_argument("--fail-threshold", type=int, default=5)
     return parser.parse_args(argv)
 
@@ -800,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_at=snapshot_at,
         catalog_path=args.catalog,
         work_dir=work_dir,
+        bundle_kind=args.bundle_kind,
     )
     try:
         if not diagnostics["upstream_freshness"]["valid"]:
@@ -807,6 +838,8 @@ def main(argv: list[str] | None = None) -> int:
             print(_json_dumps({"status": "aborted", "reason": "upstream_freshness_failed", "diagnostics": diagnostics}))
             return 2
         if args.brands:
+            if args.bundle_kind == "general":
+                raise ValueError("--bundle-kind general requires --brand-source general-density for brand_key identity")
             brands = args.brands
             routed_worklist = None
         else:
@@ -818,6 +851,15 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.brand_source == "general-density":
                     density_worklist = load_density_worklist(brand_conn)
                     routed_worklist = list(density_worklist.routed)
+                    if args.brand_keys_file:
+                        requested = json.loads(Path(args.brand_keys_file).read_text(encoding="utf-8"))
+                        if not isinstance(requested, list) or not all(isinstance(key, str) for key in requested):
+                            raise ValueError("--brand-keys-file must contain a JSON string array")
+                        requested_keys = set(requested)
+                        routed_worklist = [item for item in routed_worklist if item.brand_key in requested_keys]
+                        missing_keys = requested_keys - {item.brand_key for item in routed_worklist}
+                        if missing_keys:
+                            raise ValueError(f"unknown general-density brand keys: {sorted(missing_keys)}")
                     brands = [item.canonical_brand_name for item in routed_worklist]
                     diagnostics["density_worklist"] = {
                         "unmatched_known": list(density_worklist.evidence.unmatched_known),
