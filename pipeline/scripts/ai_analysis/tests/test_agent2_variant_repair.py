@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from agent2_variant_repair import build_fallback_record, repair_variant_sql
+from agent2_variant_repair import build_fallback_record, load_validated_trace_records, repair_variant_sql
 from bundle_builder.agent2_zero_template import KpiSnapshot
 
 
@@ -42,3 +42,43 @@ def test_repair_sql_upserts_only_requested_variant_and_lineage() -> None:
     assert "ai_analysis_long_json = VALUES(ai_analysis_long_json)" in sql
     assert "long_generation_status = VALUES(long_generation_status)" in sql
     assert "ai_analysis_short_json" not in sql
+
+
+def test_validated_trace_loader_keeps_variants_separate(monkeypatch) -> None:
+    runs = {
+        "short": {"브랜드": {"run_id": 11}},
+        "long": {"브랜드": {"run_id": 12}},
+    }
+    monkeypatch.setattr(
+        "agent2_variant_repair._select_runs",
+        lambda conn, names, variant, zero: runs[variant],
+    )
+    monkeypatch.setattr(
+        "agent2_variant_repair._load_outputs",
+        lambda conn, run_ids: {run_ids[0]: []},
+    )
+    monkeypatch.setattr(
+        "agent2_variant_repair._load_payload",
+        lambda run, outputs, variant: {"analysis_variant": variant},
+    )
+    monkeypatch.setattr(
+        "agent2_variant_repair._lineage",
+        lambda run, deterministic: {
+            "workflow_id": 217,
+            "workflow_revision_id": 3727,
+            "generation_id": f"zeta-run-{run['run_id']}",
+            "input_hash": "a" * 64,
+            "generated_at": datetime(2026, 7, 12, 10, 0, 0),
+            "source_epoch": "2026-07",
+            "generation_status": "complete",
+            "deterministic": False,
+        },
+    )
+
+    records = load_validated_trace_records(
+        object(),
+        [("브랜드", "브랜드", "short"), ("브랜드", "브랜드", "long")],
+    )
+
+    assert records[("브랜드", "short")].payload["analysis_variant"] == "short"
+    assert records[("브랜드", "long")].payload["analysis_variant"] == "long"

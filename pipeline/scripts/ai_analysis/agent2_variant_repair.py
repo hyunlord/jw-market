@@ -12,6 +12,7 @@ from typing import Any, Final, Literal
 import pymysql
 
 from agent2_variant_contract import VariantLineage, validate_variant_payload
+from agent2_variant_candidate_builder import _lineage, _load_outputs, _load_payload, _select_runs
 from agent2_variant_promotion import VariantRecord
 from bundle_builder.agent2_zero_template import KpiSnapshot, render_zero_template
 from bundle_builder.zero_kpi_provider import BatchGeneralZeroKpiSnapshotProvider
@@ -132,10 +133,27 @@ def _repair_value(record: VariantRecord, brand_key: str, brand_name: str) -> tup
     )
 
 
+def load_validated_trace_records(
+    conn: Any,
+    pairs: list[tuple[str, str, Variant]],
+) -> dict[tuple[str, Variant], VariantRecord]:
+    records: dict[tuple[str, Variant], VariantRecord] = {}
+    for variant in ("short", "long"):
+        names = [brand_name for _, brand_name, pair_variant in pairs if pair_variant == variant]
+        runs = _select_runs(conn, names, variant, False)
+        outputs = _load_outputs(conn, [int(run["run_id"]) for run in runs.values()])
+        for brand_name, run in runs.items():
+            payload = _load_payload(run, outputs.get(int(run["run_id"]), []), variant)
+            lineage = VariantLineage(**_lineage(run, False))
+            records[(brand_name, variant)] = VariantRecord(payload=payload, lineage=lineage)
+    return records
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fill only missing Agent2 variants with approved KPI templates")
     parser.add_argument("--missing", type=Path, required=True)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--source", choices=("validated-trace", "template-fallback"), default="template-fallback")
     parser.add_argument("--db-host", default="127.0.0.1")
     parser.add_argument("--db-port", type=int, default=3306)
     parser.add_argument("--db-user", default="root")
@@ -145,23 +163,29 @@ def main() -> int:
     conn = _connect(args)
     repaired: list[dict[str, str]] = []
     try:
-        provider = BatchGeneralZeroKpiSnapshotProvider(conn)
+        pairs = _missing_pairs(args.missing)
+        trace_records = load_validated_trace_records(conn, pairs) if args.source == "validated-trace" else {}
+        provider = BatchGeneralZeroKpiSnapshotProvider(conn) if args.source == "template-fallback" else None
         generated_at = datetime.now(timezone.utc)
-        for brand_key, brand_name, variant in _missing_pairs(args.missing):
+        for brand_key, brand_name, variant in pairs:
             if not _needs_repair(conn, args.candidate, brand_key, variant):
                 continue
-            snapshot = provider.get_snapshot(brand_key, brand_name)
-            source_epoch_value = getattr(snapshot, "source_epoch", None)
-            if not source_epoch_value:
-                raise RuntimeError(f"KPI snapshot has no source period: {brand_key}")
-            source_epoch = str(source_epoch_value)
-            record = build_fallback_record(
-                brand_key=brand_key,
-                variant=variant,
-                snapshot=snapshot,
-                source_epoch=source_epoch,
-                generated_at=generated_at,
-            )
+            record = trace_records.get((brand_name, variant))
+            if record is None and args.source == "validated-trace":
+                continue
+            if record is None:
+                assert provider is not None
+                snapshot = provider.get_snapshot(brand_key, brand_name)
+                source_epoch_value = getattr(snapshot, "source_epoch", None)
+                if not source_epoch_value:
+                    raise RuntimeError(f"KPI snapshot has no source period: {brand_key}")
+                record = build_fallback_record(
+                    brand_key=brand_key,
+                    variant=variant,
+                    snapshot=snapshot,
+                    source_epoch=str(source_epoch_value),
+                    generated_at=generated_at,
+                )
             with conn.cursor() as cursor:
                 affected = cursor.execute(
                     repair_variant_sql(args.candidate, variant),
@@ -169,7 +193,9 @@ def main() -> int:
                 )
             if affected != 1:
                 raise RuntimeError(f"repair affected {affected} rows for {brand_key}/{variant}")
-            repaired.append({"brand_key": brand_key, "variant": variant, "status": FALLBACK_STATUS})
+            repaired.append(
+                {"brand_key": brand_key, "variant": variant, "status": record.lineage.generation_status}
+            )
         conn.commit()
     finally:
         conn.close()
