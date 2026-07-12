@@ -94,6 +94,18 @@ def test_manifests_use_source_aware_runner() -> None:
         assert "--source all" in text
 
 
+def test_api_image_contains_canonical_agent3_runtime() -> None:
+    from pathlib import Path
+
+    text = Path("api/Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY pipeline/scripts/agent3 /app/pipeline/scripts/agent3" in text
+    assert (
+        "COPY pipeline/scripts/ai_analysis/bundle_builder "
+        "/app/pipeline/scripts/ai_analysis/bundle_builder"
+    ) in text
+
+
 def test_identity_inputs_are_loaded_in_bounded_batches() -> None:
     identities = [type("Identity", (), {"brand_key": str(i), "brand_name": f"B{i}"})() for i in range(5)]
     seen_sizes: list[int] = []
