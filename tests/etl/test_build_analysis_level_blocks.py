@@ -120,7 +120,7 @@ def test_general_data_places_focus_in_filters(monkeypatch) -> None:
     assert captured["request"].filters.focus_brand_key == "brand-a"
 
 def test_sharded_keys_partition_all_keys(monkeypatch) -> None:
-    keys = [BlockKey("general", str(index), "UBIST", "sales") for index in range(3131)]
+    keys = [BlockKey("general", str(index), "UBIST", "sales") for index in range(3138)]
     partitions = []
     for index in range(4):
         monkeypatch.setenv("MALB_SHARD_COUNT", "4")
@@ -128,7 +128,7 @@ def test_sharded_keys_partition_all_keys(monkeypatch) -> None:
         partitions.extend(sharded_keys(keys))
 
     assert sorted(item.market_id for item in partitions) == sorted(item.market_id for item in keys)
-    assert len({item.market_id for item in partitions}) == 3131
+    assert len({item.market_id for item in partitions}) == 3138
 
 
 def test_current_keys_is_scoped_to_epoch_and_build(monkeypatch) -> None:

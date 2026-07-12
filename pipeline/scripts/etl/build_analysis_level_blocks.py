@@ -433,8 +433,8 @@ def run_parity() -> None:
 
 
 def sharded_keys(keys: list[BlockKey]) -> list[BlockKey]:
-    if len(keys) != 3131:
-        raise RuntimeError(f"expected 3131 keys, found {len(keys)}")
+    if len(keys) != 3138:
+        raise RuntimeError(f"expected 3138 keys, found {len(keys)}")
     count = int(os.environ.get("MALB_SHARD_COUNT", "1"))
     index = int(os.environ.get("MALB_SHARD_INDEX", "0"))
     if count < 1 or index < 0 or index >= count:
