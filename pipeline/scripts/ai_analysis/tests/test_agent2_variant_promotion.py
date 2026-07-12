@@ -106,3 +106,42 @@ def test_jsonl_loader_rejects_incomplete_complete_lineage(tmp_path):
     )
     with pytest.raises(ValueError, match="invalid promotion row"):
         load_rows(path)
+
+
+def test_template_fallback_is_complete_but_remains_distinguishable() -> None:
+    lineage = VariantLineage(
+        None,
+        None,
+        "template-fallback-brand-short",
+        "c" * 64,
+        datetime(2026, 7, 12),
+        "2026-Q1",
+        "complete_template_fallback",
+        deterministic=True,
+    )
+    row = PromotionRow(
+        "브랜드",
+        "브랜드",
+        None,
+        VariantRecord(_payload("short"), lineage),
+        _record("long", "d" * 64),
+    )
+
+    values = promotion_values(row)
+
+    assert "complete_template_fallback" in values
+    assert lineage.workflow_id is None
+    assert lineage.workflow_revision_id is None
+
+
+def test_template_fallback_requires_deterministic_lineage() -> None:
+    with pytest.raises(VariantContractError, match="template fallback lineage must be deterministic"):
+        VariantLineage(
+            217,
+            3727,
+            "template-fallback-brand-short",
+            "e" * 64,
+            datetime(2026, 7, 12),
+            "2026-Q1",
+            "complete_template_fallback",
+        )

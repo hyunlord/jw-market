@@ -31,6 +31,7 @@ class SourcedKpiSnapshot(KpiSnapshot):
     """KPI snapshot plus the mart source selected for deterministic rendering."""
 
     source: str | None = None
+    source_epoch: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +150,7 @@ def snapshot_with_brand(snapshot: KpiSnapshot, brand_name: str) -> KpiSnapshot:
         first_positive_period=snapshot.first_positive_period,
         is_new=snapshot.is_new,
         source=getattr(snapshot, "source", None),
+        source_epoch=getattr(snapshot, "source_epoch", None),
     )
 
 
@@ -212,6 +214,7 @@ def _snapshots_for_source(rows: list[_MetricRow], source: str) -> dict[str, KpiS
                 hhi=hhi,
                 market_size_recent=market_size_recent,
                 source=source,
+                source_epoch=latest_period,
             )
     return snapshots
 

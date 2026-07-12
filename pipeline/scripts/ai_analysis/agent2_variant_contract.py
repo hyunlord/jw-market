@@ -8,7 +8,8 @@ from typing import Any, Mapping
 
 STAGES = ("phenomenon", "cause", "prediction", "recommendation")
 VARIANTS = ("short", "long")
-GENERATION_STATUSES = {"complete", "legacy_unbound", "invalid", "retired"}
+COMPLETE_GENERATION_STATUSES = {"complete", "complete_template_fallback"}
+GENERATION_STATUSES = {*COMPLETE_GENERATION_STATUSES, "legacy_unbound", "invalid", "retired"}
 
 
 class VariantContractError(ValueError):
@@ -29,7 +30,9 @@ class VariantLineage:
     def __post_init__(self) -> None:
         if self.generation_status not in GENERATION_STATUSES:
             raise VariantContractError(f"unsupported generation status: {self.generation_status}")
-        if self.generation_status == "complete":
+        if self.generation_status in COMPLETE_GENERATION_STATUSES:
+            if self.generation_status == "complete_template_fallback" and not self.deterministic:
+                raise VariantContractError("template fallback lineage must be deterministic")
             required = {
                 "generation_id": self.generation_id,
                 "input_hash": self.input_hash,

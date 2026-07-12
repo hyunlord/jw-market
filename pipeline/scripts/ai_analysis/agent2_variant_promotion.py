@@ -11,7 +11,12 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import pymysql
 
-from agent2_variant_contract import VariantLineage, parse_legacy_lineage, validate_variant_payload
+from agent2_variant_contract import (
+    COMPLETE_GENERATION_STATUSES,
+    VariantLineage,
+    parse_legacy_lineage,
+    validate_variant_payload,
+)
 
 
 LIVE_TABLE = "cache_deep_analysis_ai_analysis"
@@ -70,7 +75,7 @@ def additive_schema_sql(existing_columns: set[str], table: str = LIVE_TABLE) -> 
 
 def should_skip(existing_hash: str | None, existing_status: str | None, incoming: VariantRecord) -> bool:
     return (
-        existing_status == "complete"
+        existing_status in COMPLETE_GENERATION_STATUSES
         and existing_hash is not None
         and existing_hash == incoming.lineage.input_hash
     )
@@ -81,9 +86,9 @@ def validate_promotion_row(row: PromotionRow) -> None:
         raise ValueError("brand and brand_key are required")
     validate_variant_payload(row.short.payload, "short")
     validate_variant_payload(row.long.payload, "long")
-    if row.short.lineage.generation_status != "complete":
+    if row.short.lineage.generation_status not in COMPLETE_GENERATION_STATUSES:
         raise ValueError("short lineage must be complete")
-    if row.long.lineage.generation_status != "complete":
+    if row.long.lineage.generation_status not in COMPLETE_GENERATION_STATUSES:
         raise ValueError("long lineage must be complete")
 
 
@@ -294,8 +299,10 @@ def candidate_counts(conn: Any, table: str) -> dict[str, int]:
     with conn.cursor() as cursor:
         cursor.execute(
             f"SELECT COUNT(*) AS inserted, "
-            "SUM(ai_analysis_short_json IS NOT NULL AND short_generation_status = 'complete') AS short_complete, "
-            "SUM(ai_analysis_long_json IS NOT NULL AND long_generation_status = 'complete') AS long_complete "
+            "SUM(ai_analysis_short_json IS NOT NULL AND short_generation_status IN "
+            "('complete', 'complete_template_fallback')) AS short_complete, "
+            "SUM(ai_analysis_long_json IS NOT NULL AND long_generation_status IN "
+            "('complete', 'complete_template_fallback')) AS long_complete "
             f"FROM {table}"
         )
         row = cursor.fetchone()
