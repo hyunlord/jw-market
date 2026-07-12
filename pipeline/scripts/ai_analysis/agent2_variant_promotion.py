@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import pymysql
 
@@ -254,26 +254,39 @@ def _lineage_from_json(value: Mapping[str, Any]) -> VariantLineage:
     )
 
 
-def load_rows(path: Path) -> list[PromotionRow]:
-    rows: list[PromotionRow] = []
+def iter_rows(path: Path) -> Iterator[PromotionRow]:
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
             try:
                 value = json.loads(line)
-                rows.append(
-                    PromotionRow(
-                        brand=str(value["brand"]),
-                        brand_key=str(value["brand_key"]),
-                        market_id=value.get("market_id"),
-                        short=VariantRecord(value["short"]["payload"], _lineage_from_json(value["short"]["lineage"])),
-                        long=VariantRecord(value["long"]["payload"], _lineage_from_json(value["long"]["lineage"])),
-                    )
+                yield PromotionRow(
+                    brand=str(value["brand"]),
+                    brand_key=str(value["brand_key"]),
+                    market_id=value.get("market_id"),
+                    short=VariantRecord(value["short"]["payload"], _lineage_from_json(value["short"]["lineage"])),
+                    long=VariantRecord(value["long"]["payload"], _lineage_from_json(value["long"]["lineage"])),
                 )
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise ValueError(f"invalid promotion row at line {line_number}: {exc}") from exc
-    return rows
+
+
+def load_rows(path: Path) -> list[PromotionRow]:
+    return list(iter_rows(path))
+
+
+def execute_row_batches(conn: Any, table: str, rows: Iterable[PromotionRow], batch_size: int = 250) -> int:
+    batch: list[PromotionRow] = []
+    loaded = 0
+    for row in rows:
+        batch.append(row)
+        if len(batch) == batch_size:
+            loaded += execute_rows(conn, table, batch)
+            batch.clear()
+    if batch:
+        loaded += execute_rows(conn, table, batch)
+    return loaded
 
 
 def candidate_counts(conn: Any, table: str) -> dict[str, int]:
@@ -319,8 +332,7 @@ def main() -> int:
         elif args.command == "load":
             if args.jsonl is None:
                 raise ValueError("--jsonl is required for load")
-            rows = load_rows(args.jsonl)
-            result = {"loaded": execute_rows(conn, args.candidate, rows)}
+            result = {"loaded": execute_row_batches(conn, args.candidate, iter_rows(args.jsonl))}
         elif args.command == "verify":
             counts = candidate_counts(conn, args.candidate)
             counts["route_count"] = args.expected
