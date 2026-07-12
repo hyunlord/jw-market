@@ -21,10 +21,10 @@ LIMIT_SCHEMA = {"examples": [5]}
 
 class TempDocument(BaseModel):
     temp_document_id: int = Field(description="/upload 또는 GenOS 임시 문서 테이블에서 받은 임시 문서 ID입니다.")
-    file_name: str = Field(description="사용자가 업로드한 원본 파일명입니다. commit/search/delete 응답에서 사용자 표시용 이름으로 유지됩니다.")
+    file_name: str = Field(description="하위호환용 표시값입니다. commit은 업로드 세션 원장의 서버측 파일명을 사용합니다.")
     file_path: str | None = Field(
         default=None,
-        description="로컬 임시 파일 경로입니다. 일반 temp VDB 청크 조회에는 없어도 되며, xlsx 로컬 전처리 경로가 있을 때 사용됩니다.",
+        description="하위호환용 값입니다. commit은 이 경로를 신뢰하지 않고 세션 원장의 canonical 경로를 사용합니다.",
     )
 
 
@@ -70,7 +70,7 @@ class BridgeRequest(BaseModel):
     user_id: int | None = Field(default=None, description="GenOS 문서 원장과 임시 VDB 호출에 전달할 사용자 ID입니다.")
     temp_documents: list[TempDocument] = Field(
         default_factory=list,
-        description="/upload 응답에서 받은 temp_documents입니다. /commit 또는 /dry-run에 그대로 전달합니다.",
+        description="/upload 응답의 temp_document_id를 전달합니다. 서버가 호출 세션 원장에서 소유권과 canonical 메타데이터를 확인합니다.",
     )
 
 

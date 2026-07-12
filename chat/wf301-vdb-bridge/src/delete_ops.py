@@ -204,15 +204,11 @@ def delete_session_document(
                 errors=["document not found"],
             )
         if not target.authorized:
-            return DeleteDocumentResponse(
-                target_vdb_id=req.vdb_id,
-                workflow_id=req.workflow_id,
-                app_session_id=req.app_session_id,
+            return error_response(
+                req,
                 session_id=session_id,
-                document_id=target.document_id,
-                temp_document_id=target.temp_document_id,
-                status="forbidden",
-                errors=["document does not belong to this session"],
+                status="not_found",
+                errors=["document not found"],
             )
         if not target.is_active:
             return DeleteDocumentResponse(
