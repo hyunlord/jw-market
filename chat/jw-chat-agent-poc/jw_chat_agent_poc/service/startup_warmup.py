@@ -10,7 +10,7 @@ from typing import Final, Protocol, final
 from jw_chat_agent_poc.tools.query_layer.store import MartSnapshot, shared_strategic_mart_store
 
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("uvicorn.error")
 WARMUP_ENABLED_ENV: Final = "CHAT_STARTUP_WARMUP_ENABLED"
 WARMUP_TTL_ENV: Final = "CHAT_QUERY_MART_TTL_SECONDS"
 

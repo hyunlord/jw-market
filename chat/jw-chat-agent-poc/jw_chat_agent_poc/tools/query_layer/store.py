@@ -13,6 +13,7 @@ from jw_chat_agent_poc.agentic.sales_filter_aliases import normalise_channel_dat
 
 
 logger = logging.getLogger(__name__)
+startup_timing_logger = logging.getLogger("uvicorn.error")
 
 FAILED_VALUE_STATUSES: Final[frozenset[str]] = frozenset(
     {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}
@@ -312,7 +313,7 @@ class MariaDbStrategicMartReader:
         deserialization_completed_at = time.monotonic()
         snapshot = MartSnapshot(records, time.monotonic())
         completed_at = time.monotonic()
-        logger.info(
+        startup_timing_logger.info(
             "strategic mart snapshot load stages",
             extra={
                 "snapshot_query_s": round(query_completed_at - started_at, 3),
