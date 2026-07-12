@@ -73,6 +73,37 @@ def test_gate_scrubs_agent_loop_wording() -> None:
         assert "agent_loop" not in out
 
 
+def test_gate_scrubs_fact_family_headings() -> None:
+    for heading in (
+        "### 리바로 지표 fact",
+        "### 상위 브랜드 월별 MS fact",
+        "### 수치별 출처 fact",
+        "### 인사이트 근거 fact - 뉴스/이슈",
+        "### 특허 fact",
+        "## 확정 fact set",
+    ):
+        out = cleanup_markdown_answer(heading + "\n\n내용입니다.")
+        assert "fact" not in out, f"'fact' marker leaked via {heading!r}: {out!r}"
+
+
+def test_gate_scrubs_tool_call_id_column() -> None:
+    table = (
+        "### 수치별 출처 fact\n\n"
+        "| 수치 | 소스 | 기간 | 시장정의 | 축 | tool_call_id |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| 로수젯 매출 206.85억원 | UBIST | 2026-04 | — | Brand | tool_call_0 |"
+    )
+    out = cleanup_markdown_answer(table)
+    assert "tool_call_id" not in out
+    assert "tool_call_0" not in out
+    assert "로수젯" in out and "206.85" in out  # data preserved
+
+
+def test_gate_fact_scrub_is_word_bounded() -> None:
+    out = cleanup_markdown_answer("이 factor는 artifact이며 factory 데이터입니다.")
+    assert "factor" in out and "artifact" in out and "factory" in out
+
+
 # ----- false-positive guards (오탐 0): must remain intact -----
 
 @pytest.mark.parametrize(

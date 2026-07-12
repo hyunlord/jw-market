@@ -46,9 +46,15 @@ _VERIFIER_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
 )
 _INTERNAL_ID_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"query_result_id\s*[:：]?\s*[0-9A-Za-z_-]*"), ""),
+    (re.compile(r"(?<![A-Za-z0-9_])tool_call_id(?![A-Za-z0-9_])"), ""),
     (re.compile(r"(?<![A-Za-z0-9_])qr_\d+(?![A-Za-z0-9_])"), ""),
     (re.compile(r"query\(spec\)"), "조회"),
 )
+# Internal fact-set section marker. Every internal fact block heading ends in the
+# English word "fact" (### … fact); it is parsed structurally inside the pipeline
+# but must never surface. "fact" is English-only here so removing the standalone
+# word is false-positive-free (word boundary protects factor/artifact/factory).
+_INTERNAL_FACT_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*\bfact\b")
 # Exact internal phrases, longest/most-specific first.
 _INTERNAL_PHRASES: Final[tuple[tuple[str, str], ...]] = (
     ("확정 fact set", "확정 데이터"),
@@ -77,6 +83,7 @@ def scrub_internal_terminology(text: str) -> str:
     for pattern, replacement in _INTERNAL_ID_PATTERNS:
         result = pattern.sub(replacement, result)
     result = _TOOL_TOKEN_RE.sub(lambda match: _INTERNAL_TOOL_LABELS[match.group(1)], result)
+    result = _INTERNAL_FACT_MARKER_RE.sub("", result)
     # Tidy only spaces created by removals; never touch line-leading indentation.
     result = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", result)
     return re.sub(r"(?<=\S) +(?=[,.)}\]。」])", "", result)
