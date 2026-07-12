@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
@@ -124,6 +124,47 @@ def test_brand_metric_carries_split_market_structure_for_source_detail() -> None
     fact_md = answer_fact_markdown([call], ["IQVIA NSA"])
     assert "Class 구분 존재" in fact_md
     assert "Class 2 기준" in fact_md
+
+
+def test_brand_metric_uses_the_source_that_contains_an_iqvia_only_brand() -> None:
+    """Given a mixed-source market, an IQVIA-only brand must not inherit the market UBIST default."""
+
+    periods = ("2026-Q1",)
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(_record_with_market("ml_003", "UBIST브랜드", (100.0,), periods, [100.0]), source="ubist"),
+                replace(_record_with_market("ml_003", "마운자로", (200.0,), periods, [200.0]), source="iqvia_nsa"),
+            )
+        )
+    )
+
+    call = layer.brand_metric("마운자로", "market_share", "latest")
+
+    assert call["source"] == "IQVIA"
+    assert call["render_data"]["brand"] == "마운자로"
+
+
+def test_query_uses_the_source_that_contains_an_iqvia_only_fallback_brand() -> None:
+    """Given no explicit source, a filtered query follows the fallback brand's available source."""
+
+    periods = ("2026-Q1",)
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(_record_with_market("ml_003", "UBIST브랜드", (100.0,), periods, [100.0]), source="ubist"),
+                replace(_record_with_market("ml_003", "마운자로", (200.0,), periods, [200.0]), source="iqvia_nsa"),
+            )
+        )
+    )
+
+    call = layer.query(
+        {"market": "ml_003", "metrics": ["sales"], "filters": {"brand": "마운자로", "period": "latest"}},
+        fallback_brand="마운자로",
+    )
+
+    assert call["source"] == "IQVIA"
+    assert call["render_data"]["source_label"] == "IQVIA"
 
 
 def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:

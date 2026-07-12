@@ -89,7 +89,7 @@ class StrategicQueryLayer:
     def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand)
-        source = _default_source_for_metric(snapshot, market, period)
+        source = _default_source_for_metric(snapshot, market, brand, period)
         record = snapshot.record(market, brand, source)
         requested_period = _actual_period(snapshot, market, source, period)
         actual_period = _display_period(snapshot, record, requested_period, period)
@@ -303,7 +303,7 @@ class StrategicQueryLayer:
         spec = parse_spec(raw_spec)
         snapshot = self._snapshot()
         market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or default_catalog().market)
-        source = _default_source_for_query(snapshot, market, spec)
+        source = _default_source_for_query(snapshot, market, spec, fallback_brand)
         catalog = QueryCatalog.from_snapshot(snapshot, market, source)
         validate_spec(spec, catalog)
         limit = bounded_limit(spec.get("limit"), 10)
@@ -373,8 +373,8 @@ def _actual_period(snapshot: MartSnapshot, market: str, source: str, period: str
     return period
 
 
-def _default_source_for_metric(snapshot: MartSnapshot, market: str, period: str) -> str:
-    sources = snapshot.sources_for_market(market)
+def _default_source_for_metric(snapshot: MartSnapshot, market: str, brand: str, period: str) -> str:
+    sources = snapshot.sources_for_brand(market, brand) or snapshot.sources_for_market(market)
     if _single_source(sources):
         return sources[0]
     if _is_quarter_period(period) and "iqvia_nsa" in sources:
@@ -382,11 +382,13 @@ def _default_source_for_metric(snapshot: MartSnapshot, market: str, period: str)
     return snapshot.source_for_market(market)
 
 
-def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any]) -> str:
+def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any], fallback_brand: str) -> str:
     explicit_source = str(spec.get("source") or "").strip()
     if explicit_source:
         return explicit_source
-    sources = snapshot.sources_for_market(market)
+    filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
+    subject_brand = str(filters.get("brand") or fallback_brand)
+    sources = snapshot.sources_for_brand(market, subject_brand) or snapshot.sources_for_market(market)
     if _single_source(sources):
         return sources[0]
     if _query_uses_ubist_axes(spec) and "ubist" in sources:

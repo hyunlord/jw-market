@@ -150,7 +150,7 @@ class BrandResolver:
                     "item_seq": None,
                     "market_id": membership.get("market_id"),
                     "market_name": membership.get("market_name"),
-                    "support_source": "mart_membership",
+                    "support_source": "catalog_membership",
                 }
         return list(merged.values())
 

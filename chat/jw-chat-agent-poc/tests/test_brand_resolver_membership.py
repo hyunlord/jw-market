@@ -25,7 +25,7 @@ def _cache_reader() -> StaticMetricsCacheReader:
     )
 
 
-def test_cache_resolver_adds_mart_membership_brands() -> None:
+def test_cache_resolver_adds_catalog_membership_brands() -> None:
     memberships = StaticMembershipReader(
         (
             {"brand": "피타틴", "market_id": "ml_006", "market_name": "스타틴 시장"},
@@ -41,10 +41,10 @@ def test_cache_resolver_adds_mart_membership_brands() -> None:
         resolution = resolver.resolve(brand, allow_default=False)
         assert resolution.canonical_brand == brand
         assert resolution.market_id == "ml_006"
-        assert resolution.support_source == "mart_membership"
+        assert resolution.support_source == "catalog_membership"
 
 
-def test_cache_brand_metadata_wins_over_mart_membership() -> None:
+def test_cache_brand_metadata_wins_over_catalog_membership() -> None:
     memberships = StaticMembershipReader(
         ({"brand": "리바로", "market_id": "ml_006", "market_name": "스타틴 시장"},)
     )
@@ -57,7 +57,7 @@ def test_cache_brand_metadata_wins_over_mart_membership() -> None:
     assert resolution.support_source.startswith("cache_brands")
 
 
-def test_unknown_brand_remains_unsupported_with_mart_membership() -> None:
+def test_unknown_brand_remains_unsupported_with_catalog_membership() -> None:
     memberships = StaticMembershipReader(
         ({"brand": "피타틴", "market_id": "ml_006", "market_name": "스타틴 시장"},)
     )
@@ -67,12 +67,13 @@ def test_unknown_brand_remains_unsupported_with_mart_membership() -> None:
         resolver.resolve("없는브랜드123", allow_default=False)
 
 
-def test_factory_wires_query_layer_as_membership_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_wires_catalog_as_membership_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHAT_METRICS_MODE", "cache")
     dependencies = build_chat_agent_dependencies(external_mode="fixture")
 
     assert dependencies.query_layer is not None
-    assert dependencies.resolver._membership_reader is dependencies.query_layer
+    assert dependencies.resolver._membership_reader is not dependencies.query_layer
+    assert dependencies.resolver._membership_reader.__class__.__name__ == "TtlCatalogMembershipReader"
 
 
 def test_mart_membership_brand_uses_query_layer_for_simple_metric() -> None:
