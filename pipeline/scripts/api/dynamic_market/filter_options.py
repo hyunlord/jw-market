@@ -117,6 +117,16 @@ def build_filter_options(
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
     market_id_for_atc = resolved_market_id if normalized_view == "general" else None
     parsed_atc4_codes = _parse_atc4_codes(market_id_for_atc, atc4_codes)
+    brand_atc4_codes: tuple[str, ...] = ()
+    if normalized_view == "general" and normalized_brand:
+        brand_atc4_codes = _general_atc4_codes_for_brand(
+            mart_db=mart_db,
+            source=normalized_source,
+            brand=normalized_brand,
+        )
+    option_atc4_codes = parsed_atc4_codes
+    if normalized_view == "general" and normalized_brand and not market_id:
+        option_atc4_codes = ()
     parsed_selections = _parse_selection_map(selections)
     payload = _build_filter_options_uncached(
         mart_db=mart_db,
@@ -126,13 +136,13 @@ def build_filter_options(
         brand=normalized_brand,
         market_id=resolved_market_id,
         measure=normalized_measure,
-        atc4_codes=parsed_atc4_codes,
+        atc4_codes=option_atc4_codes,
         selections=parsed_selections,
     )
     brand_matched: dict[str, list[str]] = {}
     if normalized_brand:
         payload["brand"] = normalized_brand
-        if normalized_view == "general" and parsed_atc4_codes:
+        if normalized_view == "general":
             brand_matched = _load_brand_dimension_matches(
                 dimension_db=dimension_db,
                 brand=normalized_brand,
@@ -140,9 +150,9 @@ def build_filter_options(
                 source=normalized_source,
                 market_id=resolved_market_id,
                 measure=normalized_measure,
-                atc4_codes=parsed_atc4_codes,
+                atc4_codes=brand_atc4_codes,
             )
-            brand_matched.setdefault("atc4", list(parsed_atc4_codes))
+            brand_matched["atc4"] = list(brand_atc4_codes)
         payload["brand_matched"] = brand_matched
     _apply_option_state(
         payload=payload,
@@ -165,9 +175,9 @@ def resolve_filter_option_market_id(
     """Resolve the optional market id hidden behind the filter-options API.
 
     Explicit ``market_id`` stays authoritative for old callers.  Without it,
-    strategic views use the 25-brand display catalog and general views use the
-    general mart's brand-to-ATC4 mapping.  Missing or unknown brands fall back
-    to the source-wide option universe instead of failing the option list.
+    strategic views use the 25-brand display catalog. General views keep the
+    source-wide option universe and resolve brand ATC4 membership separately
+    so every matching market can be flagged without narrowing the list.
     """
 
     explicit_market_id = market_id.strip() if market_id else ""
@@ -182,7 +192,7 @@ def resolve_filter_option_market_id(
         display_brand = get_display_brand(normalized_brand)
         return display_brand.ml_id if display_brand else None
 
-    return _general_market_id_for_brand(mart_db=mart_db, source=source, brand=normalized_brand)
+    return None
 
 
 def clear_filter_option_cache() -> None:
@@ -1219,7 +1229,7 @@ def _atc_values_by_level(atc4_codes: Sequence[str]) -> dict[str, set[str]]:
     return values
 
 
-def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> str | None:
+def _general_atc4_codes_for_brand(*, mart_db: str, source: str, brand: str) -> tuple[str, ...]:
     rows = db.fetch_all(
         f"""
         SELECT DISTINCT atc4_code
@@ -1235,10 +1245,13 @@ def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> st
         """,
         [source, brand, brand, brand, brand],
     )
-    for row in rows:
-        if atc4_code := str(row.get("atc4_code") or "").strip().upper():
-            return atc4_code
-    return None
+    return tuple(
+        dict.fromkeys(
+            atc4_code
+            for row in rows
+            if (atc4_code := str(row.get("atc4_code") or "").strip().upper())
+        )
+    )
 
 
 def _strategic_market_filter(market_id: str) -> tuple[str, str]:

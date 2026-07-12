@@ -47,6 +47,10 @@ def test_filter_options_openapi_documents_key_value_request_contract() -> None:
     assert "일반 차원 요청에는 value를 다시 넣습니다" in payload
     assert "key='carteolol', value='CARTEOLOL'" in payload
     assert "pairs는 key='종별|진료과'" in payload
+    operation = schema["paths"]["/api/dynamic-market/filter-options"]["get"]
+    assert "전체 ATC4 universe" in operation["description"]
+    brand_parameter = next(parameter for parameter in operation["parameters"] if parameter["name"] == "brand")
+    assert "전체 목록을 제한하지 않고" in brand_parameter["description"]
 
 
 def test_parse_atc_code_handles_deployed_source_shapes() -> None:
@@ -86,14 +90,11 @@ def test_filter_options_keeps_explicit_market_id_override(monkeypatch) -> None:
     assert resolved == "C10A1"
 
 
-def test_filter_options_resolves_general_market_from_brand_mart(monkeypatch) -> None:
-    calls: list[tuple[str, list[object]]] = []
+def test_filter_options_keeps_general_market_unscoped_for_brand(monkeypatch) -> None:
+    def fail_fetch_all(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError("general brand membership must be resolved separately")
 
-    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
-        calls.append((sql, params))
-        return [{"atc4_code": "C10A1"}]
-
-    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(filter_options.db, "fetch_all", fail_fetch_all)
 
     resolved = filter_options.resolve_filter_option_market_id(
         mart_db="jw_mart",
@@ -103,22 +104,87 @@ def test_filter_options_resolves_general_market_from_brand_mart(monkeypatch) -> 
         market_id=None,
     )
 
-    assert resolved == "C10A1"
-    assert calls == [
-        (
-            calls[0][0],
-            ["ubist", "리바로", "리바로", "리바로", "리바로"],
+    assert resolved is None
+
+
+def test_general_filter_options_keeps_full_atc_universe_and_flags_all_brand_markets(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+    all_atc4 = ("J01G1", "J01G2", "S01A0", "S02A0")
+    brand_atc4 = ("J01G1", "J01G2", "S01A0")
+    uncached_calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert params == ["iqvia_nsa", "에펙신", "에펙신", "에펙신", "에펙신"]
+        return [{"atc4_code": code} for code in brand_atc4]
+
+    def fake_uncached(**kwargs: object) -> dict[str, object]:
+        market_id = kwargs["market_id"]
+        atc4_codes = tuple(kwargs["atc4_codes"])
+        uncached_calls.append((market_id, atc4_codes))
+        return filter_options.build_filter_option_payload(
+            view="general",
+            source="iqvia_nsa",
+            market_id=market_id,
+            dimensions=(),
+            atc_rows=tuple({"atc4_code": code} for code in all_atc4),
         )
-    ]
-    assert "mart_general_brand_metric" in calls[0][0]
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(filter_options, "_build_filter_options_uncached", fake_uncached)
+    monkeypatch.setattr(filter_options, "_load_brand_dimension_matches", lambda **_kwargs: {})
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        view="general",
+        source="iqvia_nsa",
+        brand="에펙신",
+    )
+
+    assert uncached_calls == [(None, ())]
+    assert [item["key"] for item in payload["atc"]["atc4"]] == list(all_atc4)
+    assert [item["key"] for item in payload["atc"]["atc4"] if item["flag"]] == list(brand_atc4)
+    assert payload["brand_matched"]["atc4"] == list(brand_atc4)
+
+
+def test_general_filter_options_unknown_brand_keeps_full_universe_without_flags(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+    all_atc4 = ("A01A1", "C10A1")
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", lambda _sql, _params: [])
+    monkeypatch.setattr(
+        filter_options,
+        "_build_filter_options_uncached",
+        lambda **kwargs: filter_options.build_filter_option_payload(
+            view="general",
+            source="ubist",
+            market_id=kwargs["market_id"],
+            dimensions=(),
+            atc_rows=tuple({"atc4_code": code} for code in all_atc4),
+        ),
+    )
+    monkeypatch.setattr(filter_options, "_load_brand_dimension_matches", lambda **_kwargs: {})
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        brand="존재하지않는브랜드",
+    )
+
+    assert [item["key"] for item in payload["atc"]["atc4"]] == list(all_atc4)
+    assert not any(item["flag"] for item in payload["atc"]["atc4"])
+    assert payload["brand_matched"] == {"atc4": []}
 
 
 def test_build_filter_options_uses_resolved_market_id_for_payload_and_brand_match(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     captured: dict[str, Any] = {}
 
-    def fake_resolve(**_kwargs: object) -> str:
-        return "C10A1"
+    def fake_resolve(**_kwargs: object) -> None:
+        return None
 
     def fake_uncached(**kwargs: object) -> dict[str, object]:
         captured["uncached_market_id"] = kwargs["market_id"]
@@ -135,6 +201,7 @@ def test_build_filter_options_uses_resolved_market_id_for_payload_and_brand_matc
         return {"seller": ["jw중외제약"]}
 
     monkeypatch.setattr(filter_options, "resolve_filter_option_market_id", fake_resolve)
+    monkeypatch.setattr(filter_options, "_general_atc4_codes_for_brand", lambda **_kwargs: ("C10A1",))
     monkeypatch.setattr(filter_options, "_build_filter_options_uncached", fake_uncached)
     monkeypatch.setattr(filter_options, "_load_brand_dimension_matches", fake_brand_matches)
 
@@ -147,12 +214,12 @@ def test_build_filter_options_uses_resolved_market_id_for_payload_and_brand_matc
         brand="리바로",
     )
 
-    assert payload["market_id"] == "C10A1"
+    assert payload["market_id"] is None
     assert payload["brand"] == "리바로"
     assert payload["brand_matched"] == {"seller": ["jw중외제약"], "atc4": ["C10A1"]}
     assert captured == {
-        "uncached_market_id": "C10A1",
-        "brand_match_market_id": "C10A1",
+        "uncached_market_id": None,
+        "brand_match_market_id": None,
     }
 
 
@@ -193,7 +260,7 @@ def test_general_filter_options_scope_dimensions_to_selected_atc4(monkeypatch) -
     assert payload["applied_selections"]["atc4"] == ["C10A1", "C10C0"]
 
 
-def test_general_filter_options_splits_comma_atc4_codes_and_flags_all_defaults(monkeypatch) -> None:
+def test_general_filter_options_keeps_brand_universe_full_with_explicit_atc4_selection(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     captured_dimension_params: list[object] = []
     captured_match_params: list[object] = []
@@ -213,7 +280,7 @@ def test_general_filter_options_splits_comma_atc4_codes_and_flags_all_defaults(m
             ]
         if "mart_general_filter_dimension_metric" in sql:
             captured_dimension_params = params
-            assert "atc4_code IN" in sql
+            assert "atc4_code IN" not in sql
             return []
         if "mart_general_brand_metric" in sql:
             return [{"atc4_code": "C10A1"}, {"atc4_code": "C10C0"}]
@@ -232,7 +299,7 @@ def test_general_filter_options_splits_comma_atc4_codes_and_flags_all_defaults(m
         atc4_codes=["C10A1,C10C0"],
     )
 
-    assert captured_dimension_params == ["ubist", "sales", "C10A1", "C10C0"]
+    assert captured_dimension_params == ["ubist", "sales"]
     assert captured_match_params[-2:] == ["C10A1", "C10C0"]
     assert payload["default_selections"]["atc4"] == ["C10A1", "C10C0"]
     assert payload["brand_matched"]["atc4"] == ["C10A1", "C10C0"]

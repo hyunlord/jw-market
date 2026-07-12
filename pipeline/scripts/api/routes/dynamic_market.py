@@ -360,7 +360,8 @@ def _resolve_strategic_market_selection(payload: DynamicMarketRequest) -> Strate
     summary="동적 시장 필터 옵션",
     description=(
         "포탈 필터 UI가 사용하는 옵션 목록입니다. 전략뷰는 시장 소속 ATC/차원을 한 번에 반환하고, "
-        "일반뷰는 선택된 ATC4 set 기준으로 소스별 scoped 옵션을 실시간 산출합니다."
+        "일반뷰에서 brand를 보내면 소스의 전체 ATC4 universe를 유지하고 브랜드 소속 시장만 flag=true로 표시합니다. "
+        "brand가 없고 ATC4를 명시한 요청은 선택된 ATC4 set 기준으로 소스별 scoped 옵션을 실시간 산출합니다."
     ),
     response_model=None,
     responses=FILTER_OPTIONS_RESPONSES,
@@ -371,7 +372,7 @@ def dynamic_market_filter_options(
     measure: str = Query("sales", description="[입력] sales 또는 qty.", examples=["sales"]),
     brand: str | None = Query(
         default=None,
-        description="[입력] 선택 브랜드명. market_id는 이 브랜드로 내부 조회되어 응답에 echo됩니다.",
+        description="[입력] 선택 브랜드명. 전체 목록을 제한하지 않고 브랜드 소속 ATC4에 flag를 표시합니다.",
         examples=["리바로"],
     ),
     atc4_codes: list[str] | None = Query(
