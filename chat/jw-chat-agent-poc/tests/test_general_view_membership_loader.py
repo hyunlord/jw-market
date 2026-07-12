@@ -10,8 +10,8 @@ from scripts.build_general_view_membership import (
 
 def test_build_membership_rows_deduplicates_metric_rows_without_losing_sources() -> None:
     rows = [
-        {"brand_key": "mounjaro", "brand_name": "마운자로", "atc4_code": "a10s0", "atc4_desc": "GLP-1", "source": "IQVIA"},
-        {"brand_key": "mounjaro", "brand_name": "마운자로", "atc4_code": "a10s0", "atc4_desc": "GLP-1", "source": "IQVIA"},
+        {"brand_key": "mounjaro", "brand_name": "마운자로", "atc4_code": "a10s0", "atc4_desc": "GLP-1", "source": "IQVIA_NSA"},
+        {"brand_key": "mounjaro", "brand_name": "마운자로", "atc4_code": "a10s0", "atc4_desc": "GLP-1", "source": "IQVIA_NSA"},
         {"brand_key": "mounjaro", "brand_name": "마운자로", "atc4_code": "a10s0", "atc4_desc": "GLP-1", "source": "UBIST"},
     ]
 

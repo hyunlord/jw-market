@@ -85,7 +85,7 @@ class MariaDbGeneralMembershipReader:
                 brand_name=str(row["brand_name"]),
                 atc4_code=str(row["atc4_code"]).upper(),
                 atc4_description=str(row["atc4_description"] or f"ATC4 {row['atc4_code']}"),
-                source=str(row["source"]).lower(),
+                source=normalize_general_source(str(row["source"])),
             )
             for row in rows
         )
@@ -105,7 +105,7 @@ class TtlGeneralMembershipCache:
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         self._refresh_if_expired()
         normalized = normalize_general_brand(brand)
-        normalized_source = source.strip().lower()
+        normalized_source = normalize_general_source(source)
         source_aliases = self._aliases.get(normalized_source, {})
         canonical = source_aliases.get(normalized, normalized)
         return self._snapshot.get(normalized_source, {}).get(canonical, ())
@@ -128,7 +128,7 @@ def _build_snapshot(
     candidates_by_source: dict[str, dict[str, dict[str, AtcCandidate]]] = {}
     aliases: dict[str, dict[str, str]] = {}
     for membership in memberships:
-        source = membership.source.strip().lower()
+        source = normalize_general_source(membership.source)
         canonical = normalize_general_brand(membership.brand_key)
         if not canonical:
             continue
@@ -150,6 +150,11 @@ def _build_snapshot(
 
 def normalize_general_brand(value: str) -> str:
     return _BRAND_NORMALIZER.sub("", value).lower()
+
+
+def normalize_general_source(value: str) -> str:
+    normalized = value.strip().lower()
+    return "iqvia" if normalized in {"iqvia", "iqvia_nsa", "nsa"} else normalized
 
 
 def _quote_identifier(value: str) -> str:

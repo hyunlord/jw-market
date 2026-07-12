@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from jw_chat_agent_poc.tools.general_view_membership import normalize_general_brand
+from jw_chat_agent_poc.tools.general_view_membership import normalize_general_brand, normalize_general_source
 
 
 TARGET_TABLE = "chat_general_brand_membership"
@@ -28,7 +28,7 @@ def build_membership_rows(rows: list[dict[str, str | None]]) -> tuple[Membership
         brand_key = str(row.get("brand_key") or "").strip()
         brand_name = str(row.get("brand_name") or brand_key).strip()
         atc4_code = str(row.get("atc4_code") or "").strip().upper()
-        source = str(row.get("source") or "").strip().lower()
+        source = normalize_general_source(str(row.get("source") or ""))
         normalized = normalize_general_brand(brand_name or brand_key)
         if not (normalized and brand_key and atc4_code and source):
             continue
