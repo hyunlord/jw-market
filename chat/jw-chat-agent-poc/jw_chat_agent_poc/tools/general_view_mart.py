@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from jw_chat_agent_poc.tools.general_view_backend import (
@@ -44,7 +44,12 @@ class GeneralBackendFallback(Protocol):
 class MariaDbGeneralMartReader:
     host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
     port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
-    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
+    database: str = field(
+        default_factory=lambda: os.environ.get(
+            "CHAT_GENERAL_MART_SCHEMA",
+            os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart"),
+        )
+    )
     user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
     password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
     connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))

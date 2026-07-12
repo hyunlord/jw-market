@@ -4,6 +4,7 @@ from jw_chat_agent_poc.tools.general_view_backend import AtcCandidate
 from jw_chat_agent_poc.tools.general_view_mart import (
     GeneralMartRows,
     GeneralViewMartBackend,
+    MariaDbGeneralMartReader,
 )
 
 
@@ -31,6 +32,15 @@ class FakeGeneralMartReader:
 class CandidateOnlyBackend:
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         return (AtcCandidate("A10S0", "GLP-1"),)
+
+
+def test_reader_uses_general_mart_schema_when_configured(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
+    monkeypatch.setenv("CHAT_GENERAL_MART_SCHEMA", "jw_mart_d2_stage_20260630_r2")
+
+    reader = MariaDbGeneralMartReader()
+
+    assert reader.database == "jw_mart_d2_stage_20260630_r2"
 
 
 def test_mart_backend_uses_latest_period_for_market_brand_and_top_five() -> None:
