@@ -3160,7 +3160,7 @@ def test_genos_markdown_interpretation_reports_fail_closed_when_numbers_are_remo
     answer = "".join(client.stream_answer("리바로 경쟁 상황이랑 임상 현황?", result))
 
     assert "999억원" not in answer
-    assert "숫자 검증" in answer
+    assert "표에 있는 확정 수치를 기준으로 정리했습니다." in answer
     assert "표에 포함된 확정 데이터만" in answer
 
 
@@ -3753,7 +3753,7 @@ def test_genos_markdown_interpretation_filters_mixed_kcd_codes_on_same_line(monk
     assert "E78" not in body
     assert "E98" not in body
     assert "E78" in answer
-    assert "숫자 검증" in answer
+    assert "표에 있는 확정 수치를 기준으로 정리했습니다." in answer
 
 
 def test_genos_markdown_path_generates_full_answer_from_fact_set(monkeypatch) -> None:

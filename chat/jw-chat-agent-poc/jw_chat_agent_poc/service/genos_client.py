@@ -648,7 +648,7 @@ class GenosClient:
         if self.token and isinstance(markdown_response, dict):
             tool_calls = agent_result.get("tool_calls")
             if _requires_deterministic_external_relay(tool_calls if isinstance(tool_calls, list) else None):
-                yield from chunk_text(_deterministic_external_relay_answer(markdown_response))
+                yield from chunk_text(cleanup_markdown_answer(_deterministic_external_relay_answer(markdown_response)))
                 return
             yield from chunk_text(
                 cleanup_markdown_answer(
@@ -677,6 +677,7 @@ class GenosClient:
                     "uploaded_file_context가 있으면 내부 mart fact와 구분해 업로드 파일 기준으로 답하라. "
                     "notice_count가 1 이상이어도 주의/면책 문구를 작성하지 말라. "
                     "사용자에게 필요한 결론만 남기고 내부 처리 기준은 숨겨라. "
+                    "get_brand_metric·search_news·csd_activity_trend 같은 도구 이름, query id, 'fact set', 'agent loop' 등 내부 식별자·처리용어는 답변에 쓰지 말라. "
                     "출처 섹션이나 출처 줄은 작성하지 말라. 출처는 시스템이 별도로 붙인다."
                 )
                 + (f" {_FILE_QUOTE_INSTRUCTION}" if file_context else ""),
@@ -846,7 +847,7 @@ class GenosClient:
                     "추이 산문에는 trend fact에 없는 기간·값·원인을 만들지 않는다. "
                     "비자명 신호가 없으면 억지 결론을 만들지 말고, 신호가 있으면 근거 기반 추론임을 밝히며 적극 분석한다. "
                     "뉴스 기준, 필터명, date_grain, on_list, impact_score, 내부 cache, fact_id 같은 내부 메타를 노출하지 않는다. "
-                    "내부 저장소명이나 내부 식별자를 쓰지 않는다. "
+                    "내부 저장소명이나 내부 식별자를 쓰지 않는다. get_brand_metric·search_news·csd_activity_trend 같은 도구 이름, query id, 'fact set', 'agent loop' 같은 내부 처리용어도 출력에 쓰지 않는다. "
                     "출처 섹션이나 출처 줄은 작성하지 말라. 출처는 시스템이 검증 fact에서 구조화해 맨 뒤에 붙인다. "
                     "표는 꼭 필요한 경우에만 쓰고, 모든 표와 시계열 제목에는 브랜드명과 기간을 명시한다. 익명 '브랜드 시계열'은 쓰지 않는다. "
                     "같은 지표를 반복하지 않는다. 근거는 본문 분석에 녹이고 출처 표기는 생성하지 않는다. "

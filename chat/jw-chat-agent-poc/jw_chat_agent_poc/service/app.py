@@ -40,6 +40,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
 )
+from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
 from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
@@ -1139,6 +1140,9 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     )
     safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
+    # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
+    # notice/source appenders above so no path bypasses terminology scrubbing.
+    safe_answer = scrub_internal_terminology(safe_answer)
     trace = trace_envelope(
         question=question,
         result=result,
