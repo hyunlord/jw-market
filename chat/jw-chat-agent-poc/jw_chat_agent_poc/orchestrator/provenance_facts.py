@@ -37,15 +37,23 @@ def provenance_rows_from_fact_markdown(fact_md: str) -> tuple[ProvenanceRow, ...
 def provenance_row_from_file_context(file_context: str) -> ProvenanceRow | None:
     if not file_context.strip():
         return None
+    sql_marker = "## 업로드 파일 SQL 결과"
+    provenance_context = (
+        file_context.split(sql_marker, 1)[1]
+        if sql_marker in file_context
+        else file_context
+    )
     filename = next(
         (
             match.group(1).strip()
             for pattern in _FILE_NAME_PATTERNS
-            if (match := pattern.search(file_context)) is not None
+            if (match := pattern.search(provenance_context)) is not None
         ),
         "",
     )
     source = f"업로드 파일({filename})" if filename else "업로드 파일"
+    if sql_marker in file_context:
+        return ProvenanceRow(source=source)
     return ProvenanceRow(source=source, view="파일")
 
 
