@@ -103,7 +103,7 @@ def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {"data": expected, "meta": {"request_normalized": True}}
     assert "market_id" not in captured
     assert captured["filters"]["atc4"] == ["C10A1"]
     assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
