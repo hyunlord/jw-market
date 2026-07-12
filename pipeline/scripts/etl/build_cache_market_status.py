@@ -9,7 +9,10 @@ from typing import Any
 
 from cache_build_common import (
     API_TO_SOURCE,
+    active_catalog_member_rows,
+    catalog_input_manifest,
     CANONICAL_25,
+    current_build_sha,
     display_ukrw,
     dump_payload,
     fetch_all,
@@ -123,7 +126,7 @@ def source_card_payload(row: dict, market_recent: float | None = None) -> dict:
     source = row.get("source")
     value_recent = safe_float(recent.get("raw_value"))
     if market_recent and market_recent > 0 and value_recent is not None:
-        ms_recent = round(value_recent / market_recent * 100, 4)
+        ms_recent = value_recent / market_recent * 100
     else:
         ms_recent = safe_float(recent.get("ms"))
     ym_yoy = yoy_pct_from_history(history, source)
@@ -176,7 +179,7 @@ def _ordered_sources(sources: list[str]) -> list[str]:
 
 def _ratio_to_pct(value: Any) -> float | None:
     number = optional_float(value)
-    return round(number * 100, 4) if number is not None else None
+    return number * 100 if number is not None else None
 
 
 def _ratio_to_pct_5y_then_3y(metric: dict[str, Any]) -> float | None:
@@ -205,16 +208,16 @@ def _catalog_company(catalog_row: dict) -> str | None:
 
 def _direct_competition_count(strategic_brand: Any, cd_id: Any) -> int:
     cd = _valid_text(cd_id)
-    if not cd or strategic_brand is None or "cd_id" not in strategic_brand:
+    if not cd or strategic_brand is None:
         return 0
-    return int((strategic_brand["cd_id"].astype(str) == cd).sum())
+    return len(active_catalog_member_rows(strategic_brand, "cd_id", cd))
 
 
 def _market_brand_count(strategic_brand: Any, ml_id: Any) -> int:
     market = _valid_text(ml_id)
-    if not market or strategic_brand is None or "ml_id" not in strategic_brand:
+    if not market or strategic_brand is None:
         return 0
-    return int((strategic_brand["ml_id"].astype(str) == market).sum())
+    return len(active_catalog_member_rows(strategic_brand, "ml_id", market))
 
 
 def _first_existing(*values: Any) -> Any:
@@ -264,7 +267,7 @@ def build_brand_card(
     # 따라서 공유 helper의 시장 series endpoint(5y 가능 시 5y, 없으면 3y)를
     # 그대로 사용한다. per-brand 기준에 맞추는 대안은 헤드라인 의미를 깨서 기각했다.
     market_cagr = series_cagr(market_series)
-    excess_growth = round(brand_cagr - market_cagr, 4) if brand_cagr is not None and market_cagr is not None else None
+    excess_growth = brand_cagr - market_cagr if brand_cagr is not None and market_cagr is not None else None
     company = (
         MARKET_STATUS_COMPANY_BY_BRAND.get(brand_name)
         or _catalog_company(brand_row.get("catalog_row", {}))
@@ -354,7 +357,7 @@ def cagr_from_source_rows(source: str, rows: list[dict]) -> float | None:
     years = (len(periods) - 1) / periods_per_year
     if years <= 0:
         return None
-    return round(((last / first) ** (1 / years) - 1) * 100, 4)
+    return ((last / first) ** (1 / years) - 1) * 100
 
 
 def period_recent_from_rows(rows: list[dict]) -> str | None:
@@ -486,8 +489,17 @@ def main() -> None:
     }
     replace_rows(
         args.target_table,
-        ["query_key", "response_json", "payload_size"],
-        [{"query_key": "default", "response_json": dump_payload(payload), "payload_size": payload_size(payload)}],
+        ["query_key", "response_json", "payload_size", "build_sha", "input_manifest_json"],
+        [{
+            "query_key": "default",
+            "response_json": dump_payload(payload),
+            "payload_size": payload_size(payload),
+            "build_sha": current_build_sha(),
+            "input_manifest_json": catalog_input_manifest({
+                "ml_market": ml_market.reset_index().to_dict("records"),
+                "strategic_brand": strategic_brand,
+            }),
+        }],
     )
     if args.verbose:
         print(f"cache_market_status default brand_cards={len(cards)} payload_size={payload_size(payload)}")

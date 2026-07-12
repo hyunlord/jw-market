@@ -59,6 +59,8 @@ def create_cache_tables(target_db: str) -> None:
                 query_key VARCHAR(255) PRIMARY KEY,
                 response_json LONGTEXT NOT NULL CHECK (JSON_VALID(response_json)),
                 payload_size INT NOT NULL,
+                build_sha VARCHAR(64) NULL,
+                input_manifest_json LONGTEXT NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
@@ -70,11 +72,18 @@ def create_cache_tables(target_db: str) -> None:
                 query_key VARCHAR(255) PRIMARY KEY,
                 response_json LONGTEXT NOT NULL CHECK (JSON_VALID(response_json)),
                 payload_size INT NOT NULL,
+                build_sha VARCHAR(64) NULL,
+                input_manifest_json LONGTEXT NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
+        for table in ("cache_brands", "cache_market_status"):
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS build_sha VARCHAR(64) NULL")
+            cur.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS input_manifest_json LONGTEXT NULL"
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS cache_cause (

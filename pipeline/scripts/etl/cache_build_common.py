@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import re
+import subprocess
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -258,6 +261,47 @@ def parser(description: str) -> argparse.ArgumentParser:
     return p
 
 
+CATALOG_REQUIRED_COLUMNS = {
+    "ml_market": {"ml_id", "atc_codes_json"},
+    "cd_market": {"cd_id"},
+    "strategic_brand": {"ml_id", "cd_id", "canonical_name", "is_excluded"},
+}
+
+
+def validate_catalog_schema(name: str, catalog: Any) -> None:
+    required = CATALOG_REQUIRED_COLUMNS.get(name, set())
+    missing = sorted(required - set(catalog.columns))
+    if missing:
+        raise RuntimeError(f"{name} catalog missing required columns: {missing}")
+
+
+def active_catalog_member_rows(catalog: Any, field: str, market_id: str) -> list[dict[str, Any]]:
+    """Return distinct, non-excluded strategic catalog members for a market."""
+    if isinstance(catalog, list):
+        candidates = catalog
+    elif field in catalog.columns:
+        candidates = [
+            row.to_dict()
+            for _, row in catalog[catalog[field].astype(str) == str(market_id)].iterrows()
+        ]
+    else:
+        return []
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in candidates:
+        if str(row.get(field) or "") != str(market_id):
+            continue
+        if int(safe_float(row.get("is_excluded")) or 0) != 0:
+            continue
+        name = str(row.get("canonical_name") or row.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append(row)
+    return result
+
+
 def load_catalog(name: str) -> Any:
     """Read a parquet catalog only for offline cache-build commands.
 
@@ -269,7 +313,48 @@ def load_catalog(name: str) -> Any:
 
     import pandas as pd
 
-    return pd.read_parquet(CATALOG_DIR / name / f"{name}.parquet")
+    table = f"catalog_{name}"
+    catalog = pd.DataFrame(fetch_all(f"SELECT * FROM {table}"))
+    validate_catalog_schema(name, catalog)
+    return catalog
+
+
+def current_build_sha() -> str:
+    configured = str(os.getenv("GIT_COMMIT") or os.getenv("APP_COMMIT_SHA") or "").strip()
+    if configured:
+        return configured
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
+    ).strip()
+
+
+def catalog_input_manifest(catalogs: dict[str, Any]) -> str:
+    inputs: dict[str, dict[str, Any]] = {}
+    for name, catalog in sorted(catalogs.items()):
+        records = catalog.to_dict("records") if hasattr(catalog, "to_dict") else list(catalog)
+        inputs[name] = {
+            "row_count": len(records),
+            "source_file_versions": sorted({
+                str(row.get("source_file_version"))
+                for row in records
+                if row.get("source_file_version")
+            }),
+            "catalog_manifest_hashes": sorted({
+                str(row.get("catalog_manifest_hash"))
+                for row in records
+                if row.get("catalog_manifest_hash")
+            }),
+            "ingested_at": sorted({
+                str(row.get("ingested_at")) for row in records if row.get("ingested_at")
+            }),
+        }
+    canonical = json.dumps(inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {"inputs": inputs, "manifest_sha256": hashlib.sha256(canonical.encode()).hexdigest()},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def ml_to_strategy(ml_id: str | None) -> str | None:
