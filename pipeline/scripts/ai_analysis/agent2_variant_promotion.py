@@ -250,6 +250,7 @@ def _lineage_from_json(value: Mapping[str, Any]) -> VariantLineage:
         generated_at=generated_at,
         source_epoch=value.get("source_epoch"),
         generation_status=str(value.get("generation_status")),
+        deterministic=bool(value.get("deterministic", False)),
     )
 
 

@@ -24,19 +24,23 @@ class VariantLineage:
     generated_at: datetime | None
     source_epoch: str | None
     generation_status: str
+    deterministic: bool = False
 
     def __post_init__(self) -> None:
         if self.generation_status not in GENERATION_STATUSES:
             raise VariantContractError(f"unsupported generation status: {self.generation_status}")
         if self.generation_status == "complete":
             required = {
-                "workflow_id": self.workflow_id,
-                "workflow_revision_id": self.workflow_revision_id,
                 "generation_id": self.generation_id,
                 "input_hash": self.input_hash,
                 "generated_at": self.generated_at,
                 "source_epoch": self.source_epoch,
             }
+            if not self.deterministic:
+                required.update(
+                    workflow_id=self.workflow_id,
+                    workflow_revision_id=self.workflow_revision_id,
+                )
             missing = [name for name, value in required.items() if value in (None, "")]
             if missing:
                 raise VariantContractError(f"complete lineage is missing: {', '.join(missing)}")
