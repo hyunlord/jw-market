@@ -5,6 +5,9 @@ metadata:
   namespace: llmops
 spec:
   template:
+    metadata:
+      annotations:
+        jw-market/source-sha256: f153ae7228efab072e53c26480762df18552719842c7f8e54becb14847597b45
     spec:
       containers:
         - name: preprocessor-91

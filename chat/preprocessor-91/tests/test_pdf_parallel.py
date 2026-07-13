@@ -149,3 +149,4 @@ def test_deployment_contract_reserves_parallel_resources() -> None:
     assert 'value: "5242880"' in manifest
     assert 'cpu: "4"' in manifest
     assert "memory: 16Gi" in manifest
+    assert "jw-market/source-sha256: f153ae7228efab072e53c26480762df18552719842c7f8e54becb14847597b45" in manifest
