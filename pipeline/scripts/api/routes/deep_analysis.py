@@ -1240,6 +1240,7 @@ def _formal_brand_factors(brand: str, context: DeepAnalysisContext) -> dict[str,
             filter_payload={"atc4": [context.market_id]} if context.view_kind == "general" else {},
             source=context.db_source,
             rank_by_latest_period=True,
+            resolved_context=context,
         )
     except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
         logger.info("formal deep-analysis brand-factor resolver unavailable", exc_info=True)

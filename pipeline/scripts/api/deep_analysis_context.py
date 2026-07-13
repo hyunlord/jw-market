@@ -231,17 +231,21 @@ def _general_contexts(brand: str) -> tuple[DeepAnalysisContext, ...]:
 
 
 def _general_rows(brand: str) -> list[dict[str, Any]]:
-    rows = db.fetch_all(
-        """
-        SELECT DISTINCT brand_key, brand_name, atc4_code, atc4_desc AS market_name, source
-        FROM mart_general_brand_metric
-        WHERE brand_key = %s OR brand_name = %s
-        ORDER BY atc4_code, source
-        """,
-        (brand, brand),
-    )
-    if rows:
-        return rows
+    # F-055: an OR across brand_key/brand_name disables index selection and
+    # full-scans the 8GiB mart. Probe the indexed brand_key first and only
+    # fall back to brand_name on a miss; key matches keep their precedence.
+    for column in ("brand_key", "brand_name"):
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT brand_key, brand_name, atc4_code, atc4_desc AS market_name, source
+            FROM mart_general_brand_metric
+            WHERE {column} = %s
+            ORDER BY atc4_code, source
+            """,
+            (brand,),
+        )
+        if rows:
+            return rows
     compact = compact_brand_name(brand)
     if not compact:
         return []
@@ -381,16 +385,21 @@ def _strategic_mart_rows(
 
 
 def _brand_available_sources(brand: str, brand_key: str, brand_name: str) -> tuple[str, ...]:
-    rows = db.fetch_all(
-        """
-        SELECT DISTINCT source
-        FROM mart_general_brand_metric
-        WHERE brand_key IN (%s, %s, %s) OR brand_name IN (%s, %s, %s)
-        ORDER BY source
-        """,
-        (brand, brand_key, brand_name, brand, brand_key, brand_name),
-    )
-    return tuple(str(row["source"]) for row in rows if row.get("source"))
+    # F-055: same OR-defeats-index shape as _general_rows; probe the indexed
+    # brand_key identifiers first and fall back to brand_name on a miss.
+    for column in ("brand_key", "brand_name"):
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT source
+            FROM mart_general_brand_metric
+            WHERE {column} IN (%s, %s, %s)
+            ORDER BY source
+            """,
+            (brand, brand_key, brand_name),
+        )
+        if rows:
+            return tuple(str(row["source"]) for row in rows if row.get("source"))
+    return ()
 
 
 def _catalog_sources(value: object) -> tuple[DeepAnalysisSource, ...]:

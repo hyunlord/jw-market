@@ -1,0 +1,166 @@
+"""F-055: cold-latency regression tests for indexed brand lookups and scan reuse."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from pipeline.scripts.api import brand_activity_brand_molecules as molecules
+from pipeline.scripts.api import brand_activity_brand_resolver as resolver
+from pipeline.scripts.api import deep_analysis_context
+from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContext
+
+
+def _context(
+    *,
+    market_allowed_sources: tuple[str, ...] = ("ubist",),
+    db_source: str = "ubist",
+) -> DeepAnalysisContext:
+    return DeepAnalysisContext(
+        brand_key="선택브랜드",
+        brand_name="선택브랜드",
+        view_kind="strategic_ml",
+        market_id="ml_003",
+        market_name="당뇨 OAD",
+        source="ubist",
+        db_source=db_source,
+        in_catalog=True,
+        has_market_data=True,
+        market_allowed_sources=market_allowed_sources,  # type: ignore[arg-type]
+        brand_available_sources=("ubist",),
+    )
+
+
+def test_general_rows_key_hit_uses_single_indexed_query(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def fake_fetch_all(sql: str, params: Any) -> list[dict[str, Any]]:
+        calls.append((sql, tuple(params)))
+        return [{"brand_key": "리바로", "brand_name": "리바로", "atc4_code": "C10A1", "market_name": "지질", "source": "ubist"}]
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+    rows = deep_analysis_context._general_rows("리바로")
+    assert rows and rows[0]["brand_key"] == "리바로"
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert "brand_key = %s" in sql
+    assert " OR " not in sql
+    assert params == ("리바로",)
+
+
+def test_general_rows_key_miss_falls_back_to_brand_name(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: Any) -> list[dict[str, Any]]:
+        calls.append(sql)
+        if "brand_name = %s" in sql:
+            return [{"brand_key": "K", "brand_name": "이름", "atc4_code": "A", "market_name": None, "source": "ubist"}]
+        return []
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+    rows = deep_analysis_context._general_rows("이름")
+    assert rows and rows[0]["brand_name"] == "이름"
+    assert "brand_key = %s" in calls[0]
+    assert "brand_name = %s" in calls[1]
+    assert all(" OR " not in sql for sql in calls)
+
+
+def test_brand_available_sources_key_hit_short_circuits(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: Any) -> list[dict[str, Any]]:
+        calls.append(sql)
+        return [{"source": "ubist"}, {"source": "iqvia_nsa"}]
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+    sources = deep_analysis_context._brand_available_sources("브랜드", "키", "이름")
+    assert sources == ("ubist", "iqvia_nsa")
+    assert len(calls) == 1
+    assert "brand_key IN" in calls[0]
+    assert " OR " not in calls[0]
+
+
+def test_brand_available_sources_key_miss_falls_back(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: Any) -> list[dict[str, Any]]:
+        calls.append(sql)
+        if "brand_name IN" in sql:
+            return [{"source": "iqvia_nsa"}]
+        return []
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+    sources = deep_analysis_context._brand_available_sources("브랜드", "키", "이름")
+    assert sources == ("iqvia_nsa",)
+    assert len(calls) == 2
+
+
+def test_resolve_brand_set_reuses_resolved_context(monkeypatch) -> None:
+    def forbidden_resolve(**kwargs: Any) -> DeepAnalysisContext:
+        raise AssertionError("resolve_deep_analysis_context must not re-run with resolved_context")
+
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_brand_rows(view: Any, market_id: str, *, source: str) -> tuple:
+        captured["market_id"] = market_id
+        captured["source"] = source
+        return ()
+
+    monkeypatch.setattr(resolver, "resolve_deep_analysis_context", forbidden_resolve)
+    monkeypatch.setattr(resolver, "_fetch_brand_rows", fake_fetch_brand_rows)
+    result = resolver.resolve_brand_set(
+        view_name="strategic_ml",
+        market_id="ml_003",
+        selected_brand="선택브랜드",
+        filter_payload={},
+        source="ubist",
+        resolved_context=_context(),
+    )
+    assert result is None
+    assert captured == {"market_id": "ml_003", "source": "ubist"}
+
+
+def test_resolve_brand_set_context_multi_source_mirrors_iqvia_retry(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_brand_rows(view: Any, market_id: str, *, source: str) -> tuple:
+        captured["source"] = source
+        return ()
+
+    monkeypatch.setattr(resolver, "_fetch_brand_rows", fake_fetch_brand_rows)
+    resolver.resolve_brand_set(
+        view_name="strategic_ml",
+        market_id="ml_003",
+        selected_brand="선택브랜드",
+        filter_payload={},
+        source="ubist",
+        resolved_context=_context(market_allowed_sources=("ubist", "iqvia")),
+    )
+    assert captured["source"] == "iqvia_nsa"
+
+
+def test_fetch_raw_molecules_loads_latest_quarter_once(monkeypatch) -> None:
+    molecules._fetch_raw_molecules.cache_clear()
+    molecules._latest_quarter_molecule_pairs.cache_clear()
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, params: Any) -> list[dict[str, Any]]:
+        calls.append(sql)
+        return [
+            {"product_code": "A", "molecule": "M1"},
+            {"product_code": "B", "molecule": "M2"},
+            {"product_code": None, "molecule": "M3"},
+        ]
+
+    monkeypatch.setattr(molecules.db, "fetch_all", fake_fetch_all)
+    try:
+        first = molecules._fetch_raw_molecules(("A",))
+        second = molecules._fetch_raw_molecules(("B", "C"))
+        assert first == [{"product_code": "A", "molecule": "M1"}]
+        assert second == [{"product_code": "B", "molecule": "M2"}]
+        assert len(calls) == 1
+        assert "IN (" not in calls[0]
+    finally:
+        molecules._fetch_raw_molecules.cache_clear()
+        molecules._latest_quarter_molecule_pairs.cache_clear()

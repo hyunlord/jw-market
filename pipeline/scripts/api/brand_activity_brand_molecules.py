@@ -33,10 +33,24 @@ def general_molecules_by_product(metas: Mapping[str, BrandMeta]) -> dict[str, tu
 
 @lru_cache(maxsize=64)
 def _fetch_raw_molecules(product_codes: tuple[str, ...]) -> list[JsonMap]:
-    """Read latest-quarter raw NSA molecule bridge rows for candidate product codes."""
-    placeholders = ", ".join(["%s"] * len(product_codes))
+    """Return latest-quarter raw NSA molecule bridge rows for candidate product codes."""
+    # F-055: the previous per-chunk query re-evaluated JSON_EXTRACT over every
+    # latest-quarter row (~45k longtext payloads, ~2s CPU) once per market.
+    # Load the distinct (product, molecule) pairs once per process instead and
+    # filter in Python with the same exact-match semantics as the old IN list.
+    wanted = set(product_codes)
+    return [
+        {"product_code": product_code, "molecule": molecule}
+        for product_code, molecule in _latest_quarter_molecule_pairs()
+        if product_code in wanted
+    ]
+
+
+@lru_cache(maxsize=1)
+def _latest_quarter_molecule_pairs() -> tuple[tuple[str | None, str | None], ...]:
+    """Read all distinct latest-quarter (product, molecule) payload pairs once."""
     mart_db = quote_identifier(config.db_name)
-    return db.fetch_all(
+    rows = db.fetch_all(
         f"""
         SELECT DISTINCT
           JSON_UNQUOTE(JSON_EXTRACT(payload, %s)) AS product_code,
@@ -48,10 +62,10 @@ def _fetch_raw_molecules(product_codes: tuple[str, ...]) -> list[JsonMap]:
             FROM {mart_db}.`iqvia_nsa_quarterly_raw`
             WHERE period_yyyy = (SELECT MAX(period_yyyy) FROM {mart_db}.`iqvia_nsa_quarterly_raw`)
           )
-          AND JSON_UNQUOTE(JSON_EXTRACT(payload, %s)) IN ({placeholders})
         """,
-        (GENERAL_RAW_PRODUCT_PATH, GENERAL_RAW_MOLECULE_PATH, GENERAL_RAW_PRODUCT_PATH, *product_codes),
+        (GENERAL_RAW_PRODUCT_PATH, GENERAL_RAW_MOLECULE_PATH),
     )
+    return tuple((row.get("product_code"), row.get("molecule")) for row in rows)
 
 
 def _chunks(values: tuple[str, ...], *, size: int) -> tuple[tuple[str, ...], ...]:
