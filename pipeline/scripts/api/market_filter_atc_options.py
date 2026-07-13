@@ -93,7 +93,7 @@ def _resolve_market_id(*, brand: str, view: str, source: str) -> str | None:
 
 def _load_brand_atc4_values(*, brand: str, view: str, source: str, market_id: str | None) -> tuple[str, ...]:
     if view == "general":
-        return general_brand_atc4_values(brand=brand, source=source)
+        return _general_brand_atc4_source_values(brand=brand, source=source)
 
     where = [
         "source = %s",
@@ -119,18 +119,33 @@ def _load_brand_atc4_values(*, brand: str, view: str, source: str, market_id: st
 def general_brand_atc4_values(*, brand: str, source: str) -> tuple[str, ...]:
     """Return one brand's canonical general-view memberships in stable catalog order."""
 
+    return canonical_atc4_values(_general_brand_atc4_source_values(brand=brand, source=source))
+
+
+def _general_brand_atc4_source_values(*, brand: str, source: str) -> tuple[str, ...]:
+    display_brand = get_display_brand(brand)
+    aliases = display_brand.layer3_aliases if display_brand is not None else ()
+    alias_predicates = "".join(
+        " OR brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))"
+        for _ in aliases
+    )
+    params: list[object] = [source, brand, brand, brand]
+    for alias in aliases:
+        params.extend((alias, alias, alias))
+
     rows = db.fetch_all(
         f"""
         SELECT DISTINCT atc4_code
         FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
         WHERE source = %s
           AND measure = 'sales'
-          AND (brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))
+          AND (brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')){alias_predicates})
         ORDER BY atc4_code
         """,
-        [source, brand, brand, brand],
+        params,
     )
-    return canonical_atc4_values(row.get("atc4_code") for row in rows)
+    values = _raw_unique_atc4(row.get("atc4_code") for row in rows)
+    return values if source == "ubist" else canonical_atc4_values(values)
 
 
 def canonical_atc4_values(values: Iterable[Any]) -> tuple[str, ...]:
@@ -166,7 +181,19 @@ def _load_atc_rows(*, view: str, source: str, market_id: str | None) -> tuple[st
         """,
         [source],
     )
-    return _unique_atc4(row.get("atc4_code") for row in rows)
+    values = _raw_unique_atc4(row.get("atc4_code") for row in rows)
+    return values if source == "ubist" else canonical_atc4_values(values)
+
+
+def _raw_unique_atc4(values: Iterable[Any]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        item = str(value or "").strip().upper()
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return tuple(result)
 
 
 def _unique_atc4(values: Iterable[Any]) -> tuple[str, ...]:

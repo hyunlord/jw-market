@@ -53,7 +53,15 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
             assert params == ["iqvia_nsa", "가드렛", "가드렛", "가드렛"]
             return [{"atc4_code": "A10X9"}]
         if "FROM `jw_mart`.mart_general_brand_metric" in sql and "brand_key" in sql:
-            assert params == ["iqvia_nsa", "가드렛", "가드렛", "가드렛"]
+            assert params == [
+                "iqvia_nsa",
+                "가드렛",
+                "가드렛",
+                "가드렛",
+                "ANAGLIPTIN",
+                "ANAGLIPTIN",
+                "ANAGLIPTIN",
+            ]
             return [{"atc4_code": "A10X9"}]
         if "FROM `jw_mart`.mart_general_brand_metric" in sql:
             assert params == ["iqvia_nsa"]
@@ -115,6 +123,42 @@ def test_market_filter_atc_options_defaults_to_general_universe(monkeypatch) -> 
     payload = response.json()
     assert payload["view"] == "general"
     assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
+
+
+def test_market_filter_atc_options_general_preserves_ubist_source_codes(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert params == ["ubist"]
+        return [{"atc4_code": "A2B2"}, {"atc4_code": "C10C"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    response = TestClient(app).get(
+        "/api/market-filter/atc-options",
+        params={"source": "ubist"},
+    )
+
+    assert response.status_code == 200
+    assert [option["key"] for option in response.json()["atc"]["atc4"]] == ["A2B2", "C10C"]
+
+
+def test_market_filter_atc_options_uses_existing_display_brand_aliases(monkeypatch) -> None:
+    calls: list[list[object]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append(params)
+        if "brand_key" in sql:
+            assert "위너프에이플러스" in params
+            return [{"atc4_code": "K01D2"}]
+        return [{"atc4_code": "K01D2"}, {"atc4_code": "K01E"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    payload = build_market_filter_atc_options(brand_name="위너프A+", view="general", source="iqvia")
+
+    assert payload["market_id"] == "K01D2"
+    assert payload["flagged_atc4"] == ["K01D2"]
+    assert calls
 
 
 @pytest.mark.parametrize(
