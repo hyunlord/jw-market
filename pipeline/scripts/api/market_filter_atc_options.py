@@ -15,26 +15,29 @@ ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
 PUBLIC_SOURCES = {"ubist", "iqvia"}
 
 
-def build_market_filter_atc_options(*, brand_name: str, view: str, source: str) -> dict[str, object]:
+def build_market_filter_atc_options(*, brand_name: str | None, view: str, source: str) -> dict[str, object]:
     """Return ATC1~4 key-only option lists for market filter step 1.
 
     The public contract accepts and echoes only ``ubist`` or ``iqvia``; IQVIA's
     internal ``iqvia_nsa`` source value is resolved behind this boundary.
     """
 
-    normalized_brand = brand_name.strip()
-    if not normalized_brand:
-        raise DynamicMarketInputError("brand_name is required")
+    normalized_brand = (brand_name or "").strip()
     normalized_view = normalize_view(view)
+    if not normalized_brand and normalized_view != "general":
+        raise DynamicMarketInputError("brand_name is required")
     public_source = normalize_public_source(source)
     normalized_source = normalize_source(public_source)
-    market_id = _resolve_market_id(brand=normalized_brand, view=normalized_view, source=normalized_source)
-    flagged_atc4 = _load_brand_atc4_values(
-        brand=normalized_brand,
-        view=normalized_view,
-        source=normalized_source,
-        market_id=market_id,
-    )
+    market_id = None
+    flagged_atc4: tuple[str, ...] = ()
+    if normalized_brand:
+        market_id = _resolve_market_id(brand=normalized_brand, view=normalized_view, source=normalized_source)
+        flagged_atc4 = _load_brand_atc4_values(
+            brand=normalized_brand,
+            view=normalized_view,
+            source=normalized_source,
+            market_id=market_id,
+        )
     atc_rows = _load_atc_rows(view=normalized_view, source=normalized_source, market_id=market_id)
     return {
         "brand_name": normalized_brand,
