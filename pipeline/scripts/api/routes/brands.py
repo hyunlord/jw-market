@@ -99,7 +99,7 @@ def _context_options_for_brand(brand: str) -> tuple[list[dict[str, Any]], list[s
             available = list(exc.available_contexts)
         for context in available:
             source = str(context.get("source") or "").strip()
-            if source:
+            if source and bool(context.get("has_market_data")):
                 context_sources.add(source)
             public = {
                 "view_kind": context.get("view_kind"),

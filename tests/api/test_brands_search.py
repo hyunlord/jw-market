@@ -94,6 +94,44 @@ def test_search_uses_shared_context_resolver_and_deduplicates_sources(monkeypatc
     assert item["sources"] == ["UBIST", "IQVIA"]
 
 
+def test_search_sources_exclude_contexts_without_market_data(monkeypatch) -> None:
+    monkeypatch.setattr(brands, "_default_brands", lambda: DEFAULT_PAYLOAD)
+    monkeypatch.setattr(
+        brands,
+        "_search_brand_candidates",
+        lambda _query: [{"brand_key": "마운자로", "brand_name": "마운자로", "market_size": 1}],
+    )
+
+    def fake_resolve(*, brand: str, view_kind: str, market_id, source):
+        raise DeepAnalysisContextError(
+            status_code=409,
+            error="ambiguous_source_context",
+            message="choose",
+            available_contexts=(
+                {
+                    "view_kind": view_kind,
+                    "market_id": "A10S0",
+                    "market_name": "GLP-1",
+                    "source": "ubist",
+                    "has_market_data": False,
+                },
+                {
+                    "view_kind": view_kind,
+                    "market_id": "A10S0",
+                    "market_name": "GLP-1",
+                    "source": "iqvia",
+                    "has_market_data": True,
+                },
+            ),
+        )
+
+    monkeypatch.setattr(brands, "resolve_deep_analysis_context", fake_resolve)
+
+    item = TestClient(app).get("/api/brands?q=마운자로").json()[0]
+
+    assert item["sources"] == ["IQVIA"]
+
+
 def test_search_keeps_known_brand_without_context(monkeypatch) -> None:
     monkeypatch.setattr(brands, "_default_brands", lambda: DEFAULT_PAYLOAD)
     monkeypatch.setattr(
