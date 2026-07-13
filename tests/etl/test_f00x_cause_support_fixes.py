@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from pipeline.scripts.etl import build_cache_cause as cause
@@ -261,3 +263,7 @@ def test_catalog_manifest_records_source_provenance() -> None:
 def test_market_status_builder_uses_slim_safe_company_mapping() -> None:
     assert market_status.MARKET_STATUS_COMPANY_BY_BRAND["리바로"] == "일동제약"
     assert len(market_status.MARKET_STATUS_COMPANY_BY_BRAND) == 25
+
+
+def test_market_status_manifest_preserves_drop_false_catalog_index() -> None:
+    assert "ml_market.reset_index()" not in inspect.getsource(market_status.main)

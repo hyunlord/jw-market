@@ -496,7 +496,7 @@ def main() -> None:
             "payload_size": payload_size(payload),
             "build_sha": current_build_sha(),
             "input_manifest_json": catalog_input_manifest({
-                "ml_market": ml_market.reset_index().to_dict("records"),
+                "ml_market": ml_market,
                 "strategic_brand": strategic_brand,
             }),
         }],
