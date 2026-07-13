@@ -38,6 +38,8 @@ def enforce_market_answer_contract(
     relevant_calls = _calls_matching_question(question, calls)
     contracted = _status_answer(question, calls)
     if not contracted:
+        contracted = _unresolved_entity_answer(question, answer, calls)
+    if not contracted:
         contracted = _restrained_interpretation_answer(question, relevant_calls)
     if not contracted:
         contracted = _strategy_market_answer(question, relevant_calls)
@@ -69,8 +71,6 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
         return "현재 지원되지 않는 시장 매핑입니다. 브랜드 또는 ATC4 시장을 지정해 주세요."
     if re.fullmatch(r"매출\s*(?:알려\s*줘|알려주세요)?[?.!]?", compact):
         return "브랜드·시장·기간을 지정해 주세요."
-    if not calls and "매출" in compact:
-        return "브랜드 목록에서 일치 항목을 찾지 못했습니다."
 
     statuses = {
         str(_render_data(call).get("status") or "").lower()
@@ -91,6 +91,19 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if available_years and max(requested_years) > max(available_years):
         requested = max(requested_years)
         return f"보유 데이터는 {available_to}까지이며 {requested}년 실적은 없습니다."
+    return ""
+
+
+def _unresolved_entity_answer(
+    question: str,
+    answer: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> str:
+    if calls or "매출" not in question:
+        return ""
+    unavailable_markers = ("보유하고 있지", "지원 대상이 아니", "확인이 불가능")
+    if any(marker in answer for marker in unavailable_markers):
+        return "브랜드 목록에서 일치 항목을 찾지 못했습니다."
     return ""
 
 

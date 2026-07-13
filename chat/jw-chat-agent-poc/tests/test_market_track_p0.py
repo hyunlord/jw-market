@@ -467,7 +467,9 @@ def test_specialty_answer_excludes_unfiltered_market_rows() -> None:
 def test_unavailable_states_are_not_conflated() -> None:
     mapping = enforce_market_answer_contract("고지혈증 시장 규모", "원천 없음", [])
     entity = enforce_market_answer_contract(
-        "가상브랜드XYZ 매출", "확인 불가", [{"tool": "get_brand_metric", "render_data": {"status": "not_found"}}]
+        "가상브랜드XYZ 매출",
+        "가상브랜드XYZ의 매출 데이터는 현재 시스템에서 보유하고 있지 않아 확인이 불가능합니다.",
+        [],
     )
     technical = enforce_market_answer_contract(
         "리바로 매출", "확인 불가", [{"tool": "get_brand_metric", "render_data": {"status": "query_failed"}}]
