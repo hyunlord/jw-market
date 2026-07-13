@@ -6,6 +6,7 @@ from src import main, weaviate_ops
 def test_requested_page_number_is_parsed_without_confusing_years() -> None:
     assert main._requested_page_number("31페이지 KOL 인용을 알려줘") == 31
     assert main._requested_page_number("page 10 표를 요약해줘") == 10
+    assert main._requested_page_number("27번 슬라이드의 브랜드 표를 알려줘") == 27
     assert main._requested_page_number("2023년부터 2043년까지 환자수") is None
 
 

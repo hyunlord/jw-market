@@ -1908,7 +1908,7 @@ def _join_file_contexts(wiki_context: str, vdb_context: str) -> str:
 
 
 _PAGE_REFERENCE_RE = re.compile(
-    r"(?:(?P<ko>\d{1,4})\s*페이지|(?:page|p\.)\s*(?P<en>\d{1,4}))",
+    r"(?:(?P<ko>\d{1,4})\s*(?:페이지|번\s*슬라이드)|(?:page|p\.)\s*(?P<en>\d{1,4}))",
     re.IGNORECASE,
 )
 _KEYWORD_EVIDENCE_RE = re.compile(
