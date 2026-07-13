@@ -41,6 +41,7 @@ class ActivityRows:
     totals: dict[str, float]
     by_product: dict[str, dict[str, float]]
     by_company: dict[str, dict[str, float]]
+    companies_by_product: dict[str, set[str]]
 
 
 def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
@@ -82,7 +83,11 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
     activity = _activity_rows(rows, activity_months, all_months)
     selected_key = _selected_entity_key(request.entity_level, request.selected_brand, selected_meta, brand_set)
     entity_keys = _entity_keys(request, selected_key, brand_set)
-    rank_source = activity.by_company if request.entity_level == "company" else _brand_activity_by_key(brand_set, activity)
+    rank_source = (
+        _company_activity_by_key(brand_set, activity)
+        if request.entity_level == "company"
+        else _brand_activity_by_key(brand_set, activity)
+    )
     ranks = _ranks_by_period(rank_source, activity_months)
     values = rank_source
     return {
@@ -123,6 +128,7 @@ def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tup
     totals = {month: 0.0 for month in months}
     by_product: dict[str, dict[str, float]] = {}
     by_company: dict[str, dict[str, float]] = {}
+    companies_by_product: dict[str, set[str]] = {}
     for row in rows:
         month = str(row["period_ym"])
         if month not in all_months or month not in totals:
@@ -132,8 +138,16 @@ def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tup
         value = float_value(row.get("value"))
         _add_value(by_product, product, month, value)
         _add_value(by_company, company, month, value)
+        companies_by_product.setdefault(product, set()).add(company)
         totals[month] += value
-    return ActivityRows(months=months, all_months=all_months, totals=totals, by_product=by_product, by_company=by_company)
+    return ActivityRows(
+        months=months,
+        all_months=all_months,
+        totals=totals,
+        by_product=by_product,
+        by_company=by_company,
+        companies_by_product=companies_by_product,
+    )
 
 
 def _entity_keys(request: ParsedCsdActivityRequest, selected_key: str, brand_set: BrandSetResolution) -> tuple[str, ...]:
@@ -162,6 +176,22 @@ def _brand_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRows
     return values
 
 
+def _company_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRows) -> dict[str, dict[str, float]]:
+    labels_by_source: dict[str, set[str]] = {}
+    for brand_key, meta in brand_set.brand_meta.items():
+        label = _company_for_brand(brand_key, brand_set)
+        for product in meta.product_codes:
+            for source_company in activity.companies_by_product.get(normalize_iqvia_en(product), set()):
+                labels_by_source.setdefault(source_company, set()).add(label)
+    values: dict[str, dict[str, float]] = {}
+    for source_company, series in activity.by_company.items():
+        labels = labels_by_source.get(source_company, set())
+        company = next(iter(labels)) if len(labels) == 1 else "미분류"
+        for period, value in series.items():
+            _add_value(values, company, period, value)
+    return values
+
+
 def _selected_entity_key(entity_level: CsdEntityLevel, selected_brand: str, selected_meta: BrandMeta, brand_set: BrandSetResolution) -> str:
     if entity_level == "company":
         return _company_for_brand(selected_brand, brand_set)
@@ -171,7 +201,7 @@ def _selected_entity_key(entity_level: CsdEntityLevel, selected_brand: str, sele
 def _company_for_brand(brand_key: str, brand_set: BrandSetResolution) -> str:
     row = next((item for item in brand_set.brand_rows if str(item.get("brand_key")) == brand_key), {})
     company = text(json_map(row.get("by_dimension")).get("company")) or text(json_map(row.get("by_dimension")).get("manufacturer"))
-    return company or brand_key
+    return company or "미분류"
 
 
 def _entity_payload(key: str, selected_key: str, values: dict[str, float], totals: dict[str, float], ranks: dict[str, dict[str, int]], months: tuple[str, ...], brand_set: BrandSetResolution) -> JsonMap:
