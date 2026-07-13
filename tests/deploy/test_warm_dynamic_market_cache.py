@@ -37,7 +37,7 @@ def test_warm_requests_posts_canonical_requests_and_streams_response_body() -> N
     seen = []
     responses: list[FakeResponse] = []
 
-    def open_request(request, timeout):
+    def open_request(request, *, timeout):
         seen.append((request, timeout))
         response = FakeResponse()
         responses.append(response)
@@ -67,7 +67,8 @@ def test_warm_requests_posts_canonical_requests_and_streams_response_body() -> N
 def test_warm_requests_uses_three_workers() -> None:
     barrier = threading.Barrier(3)
 
-    def open_request(_request, _timeout):
+    def open_request(_request, *, timeout):
+        assert timeout == 90
         barrier.wait(timeout=1.0)
         return FakeResponse()
 

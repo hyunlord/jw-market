@@ -53,7 +53,7 @@ def _warm_one(
         method="POST",
     )
     byte_count = 0
-    with open_request(request, timeout_seconds) as response:
+    with open_request(request, timeout=timeout_seconds) as response:
         while True:
             chunk = response.read(65_536)
             if not chunk:
