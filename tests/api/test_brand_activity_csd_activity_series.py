@@ -65,8 +65,8 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
     selected = payload["entities"][0]
     assert selected["key"] == "JW"
     assert selected["is_selected"] is True
-    assert {"period": "2025-10", "value": 130.0} in selected["activity"]["absolute"]
-    assert {"period": "2025-10", "value": 38.23529411764706} in selected["activity"]["share_pct"]
+    assert {"period": "2025-10", "value": 80.0} in selected["activity"]["absolute"]
+    assert {"period": "2025-10", "value": 23.52941176470588} in selected["activity"]["share_pct"]
     assert {"period": "2025-10", "value": 2} in selected["activity"]["rank"]
     assert {"period": "2025-11", "value": 0.0} in selected["activity"]["absolute"]
 
@@ -117,20 +117,67 @@ def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypat
     assert all(_point(entity, "rank", "2025-10") is not None for entity in company_payload["entities"])
 
 
-def test_company_axis_keeps_ambiguous_source_company_in_unclassified_bucket() -> None:
-    brand_set = _brand_set_with_korean_companies()
+def test_company_axis_keeps_missing_mart_company_in_visible_unclassified_bucket(monkeypatch) -> None:
+    base = _brand_set_with_korean_companies()
+    brand_set = BrandSetResolution(
+        view_name=base.view_name,
+        market_id=base.market_id,
+        selected_brand=base.selected_brand,
+        view=base.view,
+        market_row=base.market_row,
+        brand_rows=tuple(
+            {**row, "by_dimension": {}}
+            if row["brand_key"] == "A"
+            else row
+            for row in base.brand_rows
+        ),
+        brand_meta=base.brand_meta,
+        choices=base.choices,
+        candidates=base.candidates,
+        ranking_quarter=base.ranking_quarter,
+        applied_filter=base.applied_filter,
+    )
     activity = service._activity_rows(
         [
-            {"period_ym": "2025-01", "master_product": "A", "representing_company": "SHARED", "value": 10.0},
-            {"period_ym": "2025-01", "master_product": "B", "representing_company": "SHARED", "value": 20.0},
+            {"period_ym": "2025-01", "master_product": "A", "representing_company": "UNKNOWN", "value": 10.0},
+            {"period_ym": "2025-01", "master_product": "B", "representing_company": "KNOWN", "value": 20.0},
         ],
         ("2025-01",),
         ("2025-01",),
     )
 
-    values = service._company_activity_by_key(brand_set, activity)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: brand_set)
+    monkeypatch.setattr(
+        service,
+        "resolve_csd_market",
+        lambda **_kwargs: service.CsdCrosswalk("LIVALO Market", "LIVALO Market", ("A", "B"), 2),
+    )
+    monkeypatch.setattr(
+        service,
+        "_fetch_activity_rows",
+        lambda *_args: [
+            {"period_ym": "2025-01", "master_product": "A", "representing_company": "UNKNOWN", "value": 10.0},
+            {"period_ym": "2025-01", "master_product": "B", "representing_company": "KNOWN", "value": 20.0},
+        ],
+    )
+    monkeypatch.setattr(
+        db,
+        "fetch_all",
+        lambda sql, _params=None: [{"period_ym": month} for month in ("2025-01", "2025-02", "2025-03")]
+        if "SELECT DISTINCT period_ym" in sql
+        else [],
+    )
 
-    assert values == {"미분류": {"2025-01": 30.0}}
+    values = service._company_activity_by_key(brand_set, activity)
+    payload = service.get_csd_activity_series(
+        {"view": "general", "selected_brand": "LIVALO", "filters": {"atc4": ["C10A1"]}, "entity_level": "company"}
+    )
+
+    assert values["미분류"] == {"2025-01": 10.0}
+    assert payload is not None
+    unclassified = next(entity for entity in payload["entities"] if entity["key"] == "미분류")
+    assert unclassified["activity"]["absolute"][0] == {"period": "2025-01", "value": 10.0}
+    assert all(point["value"] == 0.0 for point in unclassified["activity"]["absolute"][1:])
 
 
 def test_activity_series_rejects_unknown_channel() -> None:

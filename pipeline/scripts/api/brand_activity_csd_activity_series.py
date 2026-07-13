@@ -41,7 +41,6 @@ class ActivityRows:
     totals: dict[str, float]
     by_product: dict[str, dict[str, float]]
     by_company: dict[str, dict[str, float]]
-    companies_by_product: dict[str, set[str]]
 
 
 def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
@@ -128,7 +127,6 @@ def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tup
     totals = {month: 0.0 for month in months}
     by_product: dict[str, dict[str, float]] = {}
     by_company: dict[str, dict[str, float]] = {}
-    companies_by_product: dict[str, set[str]] = {}
     for row in rows:
         month = str(row["period_ym"])
         if month not in all_months or month not in totals:
@@ -138,7 +136,6 @@ def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tup
         value = float_value(row.get("value"))
         _add_value(by_product, product, month, value)
         _add_value(by_company, company, month, value)
-        companies_by_product.setdefault(product, set()).add(company)
         totals[month] += value
     return ActivityRows(
         months=months,
@@ -146,7 +143,6 @@ def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tup
         totals=totals,
         by_product=by_product,
         by_company=by_company,
-        companies_by_product=companies_by_product,
     )
 
 
@@ -177,17 +173,11 @@ def _brand_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRows
 
 
 def _company_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRows) -> dict[str, dict[str, float]]:
-    labels_by_source: dict[str, set[str]] = {}
-    for brand_key, meta in brand_set.brand_meta.items():
-        label = _company_for_brand(brand_key, brand_set)
-        for product in meta.product_codes:
-            for source_company in activity.companies_by_product.get(normalize_iqvia_en(product), set()):
-                labels_by_source.setdefault(source_company, set()).add(label)
+    brand_values = _brand_activity_by_key(brand_set, activity)
     values: dict[str, dict[str, float]] = {}
-    for source_company, series in activity.by_company.items():
-        labels = labels_by_source.get(source_company, set())
-        company = next(iter(labels)) if len(labels) == 1 else "미분류"
-        for period, value in series.items():
+    for choice in brand_set.choices:
+        company = _company_for_brand(choice.brand_key, brand_set)
+        for period, value in brand_values.get(choice.brand_key, {}).items():
             _add_value(values, company, period, value)
     return values
 

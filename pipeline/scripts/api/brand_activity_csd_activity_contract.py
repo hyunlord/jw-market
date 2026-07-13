@@ -65,7 +65,10 @@ class CsdActivitySeriesRequest(BaseModel):
         description="시장·차원 필터. nested ATC4와 IQVIA 분석레벨·audit_code 구조를 명시합니다.",
     )
     filter: MarketFilter = Field(default_factory=MarketFilter, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
-    entity_level: str = Field(default="brand", description="brand 또는 company. company면 representing_company 단위로 활동량을 합산합니다.")
+    entity_level: str = Field(
+        default="brand",
+        description="brand 또는 company. company면 선택 브랜드 활동량을 IQVIA mart 회사 기준으로 합산합니다.",
+    )
     csd_channel: str = Field(default="TOTAL", description="CSD 원본 jw_channel 값. TOTAL/GH/SHPPI/CPPI/GH+SHPPI.")
     selected_entities: list[str] = Field(default_factory=list, max_length=MAX_ENTITIES, description="사용자 지정 브랜드/회사 최대 6개. 미지정 시 선택 + top5.")
     period: CsdActivitySeriesPeriod | None = Field(default=None, description="분기 window. 미지정 시 최신 1년, 최대 3년으로 제한.")
