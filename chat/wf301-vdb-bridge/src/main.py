@@ -1575,13 +1575,47 @@ def upload(
                     if upload_adapter.requires_external_preprocessor(item)
                 ]
                 if external_preprocessor_documents:
-                    upload_adapter.run_preprocessor(
-                        client,
-                        temp_vdb_index=temp_vdb.temp_vdb_index,
-                        config=config,
-                        saved_documents=external_preprocessor_documents,
-                        user_id=user_id,
-                    )
+                    try:
+                        upload_adapter.run_preprocessor(
+                            client,
+                            temp_vdb_index=temp_vdb.temp_vdb_index,
+                            config=config,
+                            saved_documents=external_preprocessor_documents,
+                            user_id=user_id,
+                        )
+                    except upload_adapter.PreprocessorRunError as exc:
+                        # fail-closed: facade가 200으로 감싼 전처리 실패를 조용한 성공으로
+                        # 커밋하지 않는다. temp 문서를 정리하고 명시 실패를 반환한다.
+                        # (bounded 재시도는 별건 — worker 크래시루프 시 무력하므로 여기선 하지 않음)
+                        failure_blocks = upload_adapter.preprocessor_failure_blocks(
+                            exc, external_preprocessor_documents
+                        )
+                        upload_adapter.cleanup_saved_documents(saved_documents)
+                        upload_adapter.deactivate_temp_documents(
+                            conn, temp_document_ids=temp_document_ids
+                        )
+                        conn.commit()
+                        safe_log(
+                            "upload_preprocess_failed",
+                            request_id=uuid.uuid4().hex,
+                            principal_hash=_audit_hash(user_id),
+                            session_hash=_UPLOAD_OWNERSHIP.session_hash(session_value),
+                            temp_document_ids=temp_document_ids,
+                            decision="preprocess_failed",
+                            workflow_id=workflow_id,
+                            reason=exc.reason,
+                        )
+                        return UploadResponse(
+                            target_vdb_id=vdb_id,
+                            workflow_id=workflow_id,
+                            app_session_id=app_session_value,
+                            session_id=session_value,
+                            temp_vdb_index_id=temp_vdb.temp_vdb_index_id,
+                            temp_vdb_index=temp_vdb.temp_vdb_index,
+                            quota=quota,
+                            blocked_uploads=_blocked_upload_models(failure_blocks),
+                            errors=[block.route_reason for block in failure_blocks],
+                        )
             conn.commit()
         except (OSError, RuntimeError, httpx.HTTPError):
             conn.rollback()

@@ -36,10 +36,13 @@ class UploadedTempDocument(BaseModel):
 
 class BlockedUpload(BaseModel):
     file_name: str = Field(description="차단된 업로드 파일명입니다.")
-    route: Literal["blocked_oversized"] = Field(
-        description="업로드 라우팅 판정입니다. 현재는 oversized 차단만 사용합니다."
+    route: Literal["blocked_oversized", "preprocess_failed"] = Field(
+        description=(
+            "업로드 라우팅 판정입니다. blocked_oversized=위임 전 크기/페이지 차단, "
+            "preprocess_failed=facade 위임 후 전처리 실패(조용한 성공 차단)."
+        )
     )
-    route_reason: str = Field(description="preprocessor-64 위임 전에 차단한 근거입니다.")
+    route_reason: str = Field(description="preprocessor 위임 차단 또는 실패 근거입니다.")
     file_size_bytes: int = Field(default=0, description="차단된 파일의 크기 byte입니다.")
 
 
