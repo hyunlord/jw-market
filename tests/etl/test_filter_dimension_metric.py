@@ -6,12 +6,12 @@ from pipeline.etl.io.mart import filter_dimension_metric as sidecar
 from pipeline.etl.io.mart.filter_dimension_load import filter_dimension_table_ddl
 
 
-def test_ubist_registry_exposes_enabled_dimensions_and_keeps_molecule_disabled() -> None:
+def test_ubist_registry_exposes_raw_molecule_dimension() -> None:
     enabled = sidecar.enabled_dimension_specs("ubist")
     names = {spec.dimension_type for spec in enabled}
 
-    assert names == {"atc3", "atc4", "seller", "molecule_strength", "form", "route", "reimbursement"}
-    assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is False
+    assert names == {"atc3", "atc4", "seller", "molecule", "molecule_strength", "form", "route", "reimbursement"}
+    assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is True
 
 
 def test_iqvia_registry_exposes_enabled_dimensions_and_excludes_pack() -> None:
@@ -42,6 +42,7 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
                 "period_yyyymm": "2025-01",
                 "raw_value": 100.0,
                 "company": "Seller A",
+                "ubist_molecule_raw": "  metformin / sitagliptin  ",
                 "ubist_molecule_strength": "10mg",
                 "ubist_form": "정제",
                 "ubist_route": "경구",
@@ -57,6 +58,7 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
                 "period_yyyymm": "2025-01",
                 "raw_value": 900.0,
                 "company": "Seller A",
+                "ubist_molecule_raw": "vitamin B12",
                 "ubist_molecule_strength": "20mg",
                 "ubist_form": "캡슐",
                 "ubist_route": "경구",
@@ -73,11 +75,43 @@ def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
     )
     atc3 = next(row for row in rows if row["dimension_type"] == "atc3" and row["product_code"] == "P1")
     atc4 = next(row for row in rows if row["dimension_type"] == "atc4" and row["product_code"] == "P1")
+    compound = next(row for row in rows if row["dimension_type"] == "molecule" and row["product_code"] == "P1")
 
     assert tablet["product_code"] == "P1"
     assert tablet["raw_value_history"] == {"2025-01": 100.0}
     assert atc3["dimension_value_norm"] == "A10X"
     assert atc4["dimension_value_norm"] == "A10X0"
+    assert compound["dimension_value"] == "metformin / sitagliptin"
+    assert compound["dimension_value_norm"] == "metformin / sitagliptin"
+    assert compound["raw_value_history"] == {"2025-01": 100.0}
+    assert len([row for row in rows if row["dimension_type"] == "molecule" and row["product_code"] == "P1"]) == 1
+
+
+def test_build_filter_dimension_rows_can_rebuild_only_raw_ubist_molecule() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "atc4_code": "A10N1",
+                "brand_key": "brand-a",
+                "brand_name": "브랜드A",
+                "product_code": "p1",
+                "period_yyyymm": "202601",
+                "raw_value": 10.0,
+                "ubist_molecule_raw": "  vitamin B12 / folate  ",
+                "ubist_molecule_strength": "B12 1MG",
+            }
+        ]
+    )
+
+    rows = sidecar.build_filter_dimension_rows(
+        "ubist",
+        "sales",
+        frame,
+        dimension_types={"molecule"},
+    )
+
+    assert [row["dimension_type"] for row in rows] == ["molecule"]
+    assert rows[0]["dimension_value"] == "vitamin B12 / folate"
 
 
 def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:

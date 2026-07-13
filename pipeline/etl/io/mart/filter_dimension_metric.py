@@ -75,9 +75,9 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             dimension_type="molecule",
             display_name="성분",
             source_columns=("ubist_molecule_raw",),
-            enabled=False,
+            enabled=True,
             source="ubist",
-            notes="PL 결정으로 MVP 동적 필터에서 제외한다. raw provenance만 보존한다.",
+            notes="원천 molecule 값을 분해하지 않고 양끝 공백만 제거해 하나의 성분 값으로 보존한다.",
         ),
         "molecule_strength": DimensionSpec(
             dimension_type="molecule_strength",
@@ -186,7 +186,13 @@ def normalize_dimension_value(value: object) -> str | None:
     return normalized
 
 
-def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) -> list[dict[str, Any]]:
+def build_filter_dimension_rows(
+    source: str,
+    measure: str,
+    frame: pd.DataFrame,
+    *,
+    dimension_types: set[str] | None = None,
+) -> list[dict[str, Any]]:
     if measure not in MEASURES_BY_SOURCE.get(source, ()):
         raise ValueError(f"unsupported measure for {source}: {measure}")
     if frame.empty:
@@ -200,11 +206,18 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
     working = frame.loc[frame["raw_value"].notna() & (frame["raw_value"] > 0)].copy()
     working["source"] = source
     working["measure"] = measure
-    for spec in enabled_dimension_specs(source):
+    specs = enabled_dimension_specs(source)
+    if dimension_types is not None:
+        enabled_types = {spec.dimension_type for spec in specs}
+        unknown = dimension_types.difference(enabled_types)
+        if unknown:
+            raise ValueError(f"unsupported enabled dimensions for {source}: {sorted(unknown)}")
+        specs = tuple(spec for spec in specs if spec.dimension_type in dimension_types)
+    for spec in specs:
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
         working[label_col] = _dimension_display_series(working, spec)
-        working[norm_col] = working[label_col].map(normalize_dimension_value)
+        working[norm_col] = working[label_col].map(lambda value: _normalize_spec_value(value, spec))
         dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
             continue
@@ -274,11 +287,25 @@ def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Se
     for column in spec.source_columns:
         if column not in frame:
             continue
-        values = frame[column].map(normalize_dimension_value)
+        values = frame[column].map(lambda value: _normalize_spec_value(value, spec))
         if spec.dimension_type == "atc3":
             values = values.map(_atc3_from_atc4)
         result = result.where(result.notna(), values)
     return result
+
+
+def _normalize_spec_value(value: object, spec: DimensionSpec) -> str | None:
+    if spec.source == "ubist" and spec.dimension_type == "molecule":
+        if value is None:
+            return None
+        try:
+            if value != value:
+                return None
+        except TypeError:
+            pass
+        trimmed = str(value).strip()
+        return None if trimmed.lower() in EMPTY_DIMENSION_VALUES else trimmed
+    return normalize_dimension_value(value)
 
 
 def _atc3_from_atc4(value: str | None) -> str | None:
