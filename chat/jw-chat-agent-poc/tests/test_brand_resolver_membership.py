@@ -91,3 +91,30 @@ def test_mart_membership_brand_uses_query_layer_for_simple_metric() -> None:
 
     assert call["source"] == "UBIST"
     assert call["render_data"]["brand"] == "피타틴"
+
+
+def test_past_period_metric_uses_query_layer_without_split_market_structure() -> None:
+    class Catalog:
+        market_structure: dict[str, str] = {}
+
+    class QueryLayer:
+        def catalog_for_brand(self, _brand: str) -> Catalog:
+            return Catalog()
+
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, object]:
+            return {
+                "source": "UBIST",
+                "tool": "get_brand_metric",
+                "render_data": {"brand": brand, "metric": metric, "period": period, "sales_억원": 83.18},
+            }
+
+    class CacheMetrics:
+        def get_brand_metric(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("an explicit historical period must not read the latest cache card")
+
+    agent = ChatAgent(metrics=CacheMetrics(), query_layer=QueryLayer())
+
+    call = agent._metric_call("리바로", metric="sales", filter_entries=(("period_month", "2025-04"),))
+
+    assert call["render_data"]["period"] == "2025-04"
+    assert call["render_data"]["sales_억원"] == 83.18

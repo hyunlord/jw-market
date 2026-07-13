@@ -137,7 +137,17 @@ def _yoy_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | Non
 
 def _average_share_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_average_share(question):
-        return StrictQueryPlan(specs=(_spec("product", metric="share", derive=("average",), filters={"brand": brand, "periods": "6"}),))
+        return StrictQueryPlan(
+            specs=(
+                _spec(
+                    "product",
+                    source="",
+                    metric="share",
+                    derive=("average",),
+                    filters={"brand": brand, "periods": "6"},
+                ),
+            )
+        )
     return None
 
 

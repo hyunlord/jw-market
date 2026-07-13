@@ -248,6 +248,13 @@ def test_iqvia_average_share_converts_six_months_to_two_quarters() -> None:
     assert data["window_grain"] == "quarter"
 
 
+def test_average_share_plan_leaves_source_to_brand_availability() -> None:
+    plan = strict_query_plan("마운자로의 최근 6개월 시장점유율 평균은?", "마운자로")
+
+    assert plan is not None
+    assert plan.specs[0]["source"] == ""
+
+
 def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:
     """Given a split-market brand, simple metric routing still carries the registry basis."""
 

@@ -442,13 +442,13 @@ class ChatAgent:
     ) -> dict[str, Any]:
         if self.query_layer is not None:
             try:
+                period = _metric_filter_period(filter_entries)
+                if period is not None:
+                    return self.query_layer.brand_metric(brand, metric, period)
                 if prefer_mart and not filter_entries:
                     return self.query_layer.brand_metric(brand, metric, "latest")
                 catalog = self.query_layer.catalog_for_brand(brand)
                 if catalog.market_structure:
-                    period = _metric_filter_period(filter_entries)
-                    if period is not None:
-                        return self.query_layer.brand_metric(brand, metric, period)
                     if not filter_entries:
                         return self.query_layer.brand_metric(brand, metric, "latest")
             except (LookupError, TypeError, ValueError):
