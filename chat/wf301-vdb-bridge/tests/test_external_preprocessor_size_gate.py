@@ -23,7 +23,8 @@ def test_external_preprocessor_upload_gate_blocks_large_pdf_before_delegation(mo
     assert len(blocked) == 1
     assert blocked[0].file_name == "large.pdf"
     assert blocked[0].route == "blocked_oversized"
-    assert "exceeds PDF/PPTX preprocessor limit" in blocked[0].route_reason
+    assert blocked[0].route_reason == "PDF·PPTX 파일은 최대 20MB까지 지원됩니다."
+    assert "preprocessor" not in blocked[0].route_reason
 
 
 def test_external_preprocessor_upload_gate_allows_safe_pdf_and_ignores_xlsx(monkeypatch) -> None:
@@ -50,7 +51,7 @@ def test_saved_document_gate_blocks_pdf_page_count_without_preprocessor_call(
 
     assert len(blocked) == 1
     assert blocked[0].file_name == "many-pages.pdf"
-    assert "page_count=251" in blocked[0].route_reason
+    assert blocked[0].route_reason == "PDF는 최대 250페이지까지 지원됩니다."
 
 
 def test_saved_document_gate_blocks_pptx_slide_count_without_preprocessor_call(
@@ -69,4 +70,4 @@ def test_saved_document_gate_blocks_pptx_slide_count_without_preprocessor_call(
 
     assert len(blocked) == 1
     assert blocked[0].file_name == "many-slides.pptx"
-    assert "slide_count=121" in blocked[0].route_reason
+    assert blocked[0].route_reason == "PPTX는 최대 120슬라이드까지 지원됩니다."

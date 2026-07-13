@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+import pytest
+
 from src import settings, upload_adapter
 
 
@@ -51,6 +54,70 @@ def test_run_preprocessor_uses_dedicated_timeout(monkeypatch) -> None:
     )
 
     assert client.timeouts == [45.0]
+
+
+class _TimeoutClient:
+    def __init__(self, error_type: type[httpx.TimeoutException]) -> None:
+        self.error_type = error_type
+
+    def post(self, url: str, **_kwargs: Any) -> _Response:
+        request = httpx.Request("POST", url)
+        raise self.error_type("internal timeout details", request=request)
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [httpx.ReadTimeout, httpx.ConnectTimeout, httpx.WriteTimeout, httpx.PoolTimeout],
+)
+def test_run_preprocessor_converts_http_timeout_to_safe_failure(
+    error_type: type[httpx.TimeoutException],
+) -> None:
+    document = upload_adapter.SavedTempDocument(
+        temp_document_id=1,
+        file_name="large-report.pdf",
+        file_path="/private/path/large-report.pdf",
+    )
+
+    with pytest.raises(upload_adapter.PreprocessorRunError) as caught:
+        upload_adapter.run_preprocessor(
+            _TimeoutClient(error_type),
+            temp_vdb_index="control-index",
+            config=_config(),
+            saved_documents=[document],
+            user_id=None,
+        )
+
+    assert caught.value.file_names == ["large-report.pdf"]
+    assert caught.value.reason == (
+        "문서가 커서 처리 시간이 초과되었습니다. 파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
+    )
+    assert "ReadTimeout" not in caught.value.reason
+    assert "/private/path" not in caught.value.reason
+
+
+def test_failure_envelope_keeps_internal_reason_out_of_user_message() -> None:
+    class _FailureResponse(_Response):
+        def json(self) -> dict[str, Any]:
+            return {"code": 1, "errMsg": "worker failed at /private/path/document.pdf"}
+
+    class _FailureClient:
+        def post(self, _url: str, **_kwargs: Any) -> _FailureResponse:
+            return _FailureResponse()
+
+    with pytest.raises(upload_adapter.PreprocessorRunError) as caught:
+        upload_adapter.run_preprocessor(
+            _FailureClient(),
+            temp_vdb_index="control-index",
+            config=_config(),
+            saved_documents=[],
+            user_id=None,
+        )
+
+    assert "/private/path" in caught.value.reason
+    assert caught.value.user_message == (
+        "문서 전처리에 실패했습니다. 파일 형식이나 내용을 확인한 뒤 다시 시도해 주세요."
+    )
+    assert "/private/path" not in caught.value.user_message
 
 
 def test_temp_vdb_call_keeps_global_http_timeout(monkeypatch) -> None:
