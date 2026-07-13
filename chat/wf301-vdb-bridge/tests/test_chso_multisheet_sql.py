@@ -28,6 +28,26 @@ def _profile(index: int, name: str, *, columns: int = 8) -> SheetSqlProfile:
     )
 
 
+def _compact_profile(
+    index: int,
+    name: str,
+    *,
+    rows: int,
+    columns: int,
+    used_cells: int,
+) -> SheetSqlProfile:
+    return SheetSqlProfile(
+        sheet_index=index,
+        sheet_name=name,
+        sheet_path=f"xl/worksheets/sheet{index}.xml",
+        row_count=rows,
+        column_count=columns,
+        used_cell_count=used_cells,
+        formula_cell_count=0,
+        merged_range_count=0,
+    )
+
+
 def _config() -> FileSqlRouteConfig:
     return FileSqlRouteConfig(
         enabled=True,
@@ -48,6 +68,23 @@ def test_chso_eight_column_dense_sheet_is_sql_candidate() -> None:
 
     assert decision.route == "sql"
     assert [sheet.sheet_name for sheet in decision.selected_sheets] == ["LIVALO Market"]
+
+
+def test_compact_tabular_sheets_are_sql_candidates_but_prose_sheet_stays_vdb() -> None:
+    decision = classify_workbook_profiles(
+        (
+            _compact_profile(1, "Questions", rows=15, columns=10, used_cells=141),
+            _compact_profile(2, "Coverage", rows=27, columns=5, used_cells=135),
+            _compact_profile(3, "Notes", rows=27, columns=1, used_cells=22),
+        ),
+        _config(),
+    )
+
+    assert decision.route == "sql"
+    assert [sheet.sheet_name for sheet in decision.selected_sheets] == [
+        "Questions",
+        "Coverage",
+    ]
 
 
 def test_default_column_floor_is_eight(monkeypatch) -> None:

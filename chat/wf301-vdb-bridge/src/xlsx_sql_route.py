@@ -170,7 +170,12 @@ def classify_workbook_profiles(
             selected_sheets=(),
         )
 
-    selected = tuple(profile for profile in profiles if _is_sql_candidate(profile, config))
+    selected = tuple(
+        profile
+        for profile in profiles
+        if _is_sql_candidate(profile, config)
+        or _is_compact_sql_candidate(profile, config)
+    )
     if not selected:
         return WorkbookSqlDecision(
             route="vdb",
@@ -193,6 +198,21 @@ def classify_workbook_profiles(
         ),
         profiles=profiles,
         selected_sheets=selected,
+    )
+
+
+def _is_compact_sql_candidate(
+    profile: SheetSqlProfile,
+    config: FileSqlRouteConfig,
+) -> bool:
+    """Keep small rectangular tables queryable without routing prose sheets to SQL."""
+    return (
+        profile.row_count >= 2
+        and profile.row_count < config.min_rows
+        and profile.column_count >= 2
+        and profile.used_cell_count >= 4
+        and profile.density >= 0.5
+        and profile.merged_range_count == 0
     )
 
 

@@ -39,6 +39,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     append_deterministic_source_block,
     cleanup_markdown_answer,
     ensure_file_absence_statement,
+    ensure_file_page_evidence,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
     replace_internal_fact_dump,
@@ -1180,27 +1181,37 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
-    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
+    if not file_context_fact:
+        safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
+    if not file_context_fact:
+        safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
+    safe_answer = ensure_file_page_evidence(
+        question,
+        safe_answer,
+        str(result.get("file_context") or ""),
+    )
     safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
-    safe_answer = apply_common_unavailable_response(
-        question,
-        safe_answer,
-        markdown_response,
-        tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
-    )
+    if not file_context_fact:
+        safe_answer = apply_common_unavailable_response(
+            question,
+            safe_answer,
+            markdown_response,
+            tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        )
     safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
-    safe_answer = apply_requested_source_trap_gate(question, safe_answer)
+    if not file_context_fact:
+        safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
-    safe_answer = enforce_market_answer_contract(
-        question,
-        safe_answer,
-        result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
-    )
+    if not file_context_fact:
+        safe_answer = enforce_market_answer_contract(
+            question,
+            safe_answer,
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        )
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
     # notice/source appenders above so no path bypasses terminology scrubbing.
     safe_answer = scrub_internal_terminology(safe_answer)

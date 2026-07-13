@@ -134,6 +134,39 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
     return cleanup_markdown_answer(f"{lines}\n\n{answer}")
 
 
+_PAGE_DIRECTED_CONTEXT_MARKER = "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회"
+_PAGE_NUMERIC_REQUEST_RE = re.compile(r"(?:수치|환자\s*수|값|금액|비율|각각|몇\s*(?:명|개|건))")
+_PAGE_NUMERIC_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])\d[\d,]*(?:\.\d+)?(?:%|[mb])?", re.IGNORECASE)
+
+
+def ensure_file_page_evidence(question: str, answer: str, file_context: str) -> str:
+    """Append bounded exact-page evidence when a numeric page answer drops source values."""
+
+    context = (file_context or "").strip()
+    if _PAGE_DIRECTED_CONTEXT_MARKER not in context or not _PAGE_NUMERIC_REQUEST_RE.search(question):
+        return answer
+    question_tokens = set(_PAGE_NUMERIC_TOKEN_RE.findall(question))
+    answer_tokens = set(_PAGE_NUMERIC_TOKEN_RE.findall(answer))
+    missing_tokens = {
+        token
+        for token in _PAGE_NUMERIC_TOKEN_RE.findall(context)
+        if token not in question_tokens and token not in answer_tokens
+    }
+    if not missing_tokens:
+        return answer
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", context) if block.strip()]
+    evidence = [
+        block
+        for block in blocks
+        if block != _PAGE_DIRECTED_CONTEXT_MARKER
+        and any(token in block for token in missing_tokens)
+    ][:2]
+    if not evidence:
+        return answer
+    excerpt = "\n\n".join(block[:1800] for block in evidence)
+    return cleanup_markdown_answer(f"{answer}\n\n### 지정 페이지 원문 근거\n{excerpt}")
+
+
 def fallback_fact_answer(markdown_response: Any) -> str:
     """Build a non-empty deterministic answer from verified fact markdown."""
     if not isinstance(markdown_response, dict):
