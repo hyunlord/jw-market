@@ -246,6 +246,21 @@ def test_market_status_applies_round_down_only_at_api_boundary() -> None:
     assert deep_format_numbers(payload)["ms_recent_pct"] == 41.1522
 
 
+def test_market_status_kpi_total_uses_order_independent_decimal_sum() -> None:
+    assert market_status._exact_numeric_sum([0.1, 0.2, 0.3]) == 0.6
+
+    rows = [
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "metric_history": {"2026-05": {"raw_value": value}},
+        }
+        for value in (1e16, 1.0, -1e16)
+    ]
+
+    assert market_status.build_kpi("UBIST", rows)["total_sales_recent_krw"] == 1.0
+
+
 def test_catalog_manifest_records_source_provenance() -> None:
     manifest = cache_build_common.decode_json(cache_build_common.catalog_input_manifest({
         "ml_market": [{

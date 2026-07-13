@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal
 import sys
 from typing import Any
 
@@ -42,6 +43,10 @@ from pipeline.etl.io.cache.archive_services_shim import MARKET_STATUS_COMPANY_BY
 
 
 BRAND_META_BY_NAME = {meta.brand: meta for meta in BRAND_METADATA}
+
+
+def _exact_numeric_sum(values: list[float]) -> float:
+    return float(sum((Decimal(str(value)) for value in values), Decimal("0")))
 
 
 def _history_number(item: object) -> float | None:
@@ -406,7 +411,7 @@ def build_kpi(source: str, rows: list[dict]) -> dict:
             ms_change_yoy = ms_change_yoy_from_history(history, row["source"])
         if ms_change_yoy is not None:
             ms_change_yoy_values.append(ms_change_yoy)
-    total = sum(latest_values)
+    total = _exact_numeric_sum(latest_values)
     rising = sum(1 for value in movement_values if value >= 0)
     declining = sum(1 for value in movement_values if value < 0)
     return {
