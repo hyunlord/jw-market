@@ -223,6 +223,13 @@ def _four_stage_unavailable_gate(
             replace_internal_fact_dump,
         )
 
+        question_fold = question.casefold()
+        if "CSD aggregate 콜수" in fact_md and any(
+            token in question_fold for token in ("영업", "활동", "콜", "impact", "csd")
+        ):
+            activity_answer = replace_internal_fact_dump(question, fact_md, {"fact_md": fact_md})
+            if activity_answer != fact_md:
+                return _cleanup(activity_answer)
         public_answer = replace_internal_fact_dump(question, answer, {"fact_md": fact_md})
         if public_answer != answer:
             return _cleanup(public_answer)

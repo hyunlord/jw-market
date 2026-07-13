@@ -519,6 +519,31 @@ def test_unavailable_gate_never_surfaces_internal_fact_markdown_for_mixed_tool_r
     assert "| 항목 | 값 |" not in revised
 
 
+def test_unavailable_gate_keeps_csd_activity_ahead_of_colocated_market_facts() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    revised = apply_common_unavailable_response(
+        "리바로 영업활동 추이 어때?",
+        "요청한 일부 지표는 현재 확인 불가합니다.",
+        {"fact_md": fact_md},
+        tool_calls=[
+            {"tool": "csd_activity_trend", "render_data": {"status": "ok"}},
+            {"tool": "get_brand_metric", "render_data": {"status": "ok"}},
+        ],
+    )
+
+    assert "2025-06 1,775건" in revised
+    assert "2026-05 1,769건" in revised
+    assert "로수젯이 선두" not in revised
+    assert "반드시 반영할 내용" not in revised
+
+
 def test_unavailable_gate_marks_missing_required_tool_as_unverified_not_absent() -> None:
     revised = apply_common_unavailable_response(
         "리바로 시장의 브랜드 집중도는 어때",
