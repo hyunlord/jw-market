@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from jw_chat_agent_poc.tools.general_view_membership import normalize_general_brand, normalize_general_source
@@ -10,6 +11,7 @@ from jw_chat_agent_poc.tools.general_view_membership import normalize_general_br
 TARGET_TABLE = "chat_general_brand_membership"
 BUILD_TABLE = f"{TARGET_TABLE}_build"
 OLD_TABLE = f"{TARGET_TABLE}_old"
+SAFE_SCHEMA = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +64,16 @@ def create_table_sql(table: str = TARGET_TABLE) -> str:
     """
 
 
+def source_membership_sql(schema: str) -> str:
+    if not SAFE_SCHEMA.fullmatch(schema):
+        raise ValueError("invalid general mart schema")
+    return f"""
+        SELECT brand_key, brand_name, atc4_code, atc4_desc, source
+        FROM `{schema}`.`mart_general_brand_metric`
+        ORDER BY brand_key, atc4_code, source
+    """
+
+
 def load_memberships() -> tuple[int, int, int]:
     import pymysql
 
@@ -77,13 +89,11 @@ def load_memberships() -> tuple[int, int, int]:
     }
     with pymysql.connect(**connection_args) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT brand_key, brand_name, atc4_code, atc4_desc, source
-                FROM mart_general_brand_metric
-                ORDER BY brand_key, atc4_code, source
-                """
+            source_schema = os.environ.get(
+                "CHAT_GENERAL_MART_SCHEMA",
+                os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart"),
             )
+            cursor.execute(source_membership_sql(source_schema))
             memberships = build_membership_rows(cursor.fetchall())
             cursor.execute(f"DROP TABLE IF EXISTS `{BUILD_TABLE}`")
             cursor.execute(create_table_sql(BUILD_TABLE))

@@ -5,6 +5,7 @@ from scripts.build_general_view_membership import (
     TARGET_TABLE,
     build_membership_rows,
     create_table_sql,
+    source_membership_sql,
 )
 
 
@@ -33,3 +34,18 @@ def test_membership_table_has_exact_lookup_and_atc4_indexes() -> None:
 def test_membership_loader_uses_distinct_shadow_table_names() -> None:
     assert BUILD_TABLE != TARGET_TABLE
     assert BUILD_TABLE.startswith(TARGET_TABLE)
+
+
+def test_membership_loader_reads_from_the_authoritative_general_mart_schema() -> None:
+    sql = source_membership_sql("jw_mart_d2_stage_20260630_r2")
+
+    assert "FROM `jw_mart_d2_stage_20260630_r2`.`mart_general_brand_metric`" in sql
+
+
+def test_membership_loader_rejects_an_unsafe_general_mart_schema() -> None:
+    try:
+        source_membership_sql("d2`; DROP TABLE cache_brands; --")
+    except ValueError as exc:
+        assert "schema" in str(exc)
+    else:
+        raise AssertionError("unsafe schema must be rejected")
