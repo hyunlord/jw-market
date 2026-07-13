@@ -95,6 +95,48 @@ def _should_reestablish_revision(
     return enabled and old.workflow_rev != workflow_rev
 
 
+def _classify_workflow_call(
+    old: ExistingAgent3SourceState | None,
+    workflow_rev: int,
+    *,
+    content_matches: bool,
+) -> str:
+    """Classify why a wf316 call was issued for one source unit.
+
+    - calls_new: no prior row (genuine first generation).
+    - calls_revision_change: prior row exists but on a stale workflow_rev.
+    - calls_input_change: same rev, but canonical content changed (mart moved).
+    - calls_unexplained: same rev AND identical canonical content, yet the stored
+      hash missed the skip gate. This is the wasteful stale-hash re-call the
+      idempotency gate must drive to zero.
+    """
+    if old is None:
+        return "calls_new"
+    if old.workflow_rev != workflow_rev:
+        return "calls_revision_change"
+    if content_matches:
+        return "calls_unexplained"
+    return "calls_input_change"
+
+
+def evaluate_idempotency_gate(counts: dict[str, Any]) -> dict[str, Any]:
+    """LLM idempotency gate: only unexplained wf316 calls fail the gate.
+
+    New units, revision bumps, and genuine input changes are legitimate call
+    reasons and never fail the gate; deterministic zero-update behaviour is
+    unaffected (this only reads the call-reason counters).
+    """
+    unexplained = int(counts.get("calls_unexplained", 0))
+    return {
+        "status": "green" if unexplained == 0 else "red",
+        "calls_new": int(counts.get("calls_new", 0)),
+        "calls_revision_change": int(counts.get("calls_revision_change", 0)),
+        "calls_input_change": int(counts.get("calls_input_change", 0)),
+        "calls_unexplained": unexplained,
+        "workflow_calls": int(counts.get("workflow_calls", 0)),
+    }
+
+
 def run_source(
     *,
     brand_source: BrandSource,
@@ -147,6 +189,10 @@ def run_source(
         "revision_reestablished": 0,
         "source_units": 0,
         "workflow_errors": 0,
+        "calls_new": 0,
+        "calls_revision_change": 0,
+        "calls_input_change": 0,
+        "calls_unexplained": 0,
     }
     consecutive_workflow_errors = 0
     for identity, general_rows, strategic_rows, molecule_rows, market_rows, existing_states in _iter_identity_inputs(
@@ -158,6 +204,7 @@ def run_source(
         available_sources = set(available_sources_from_general_rows(general_rows))
         for source in (item for item in _selected_sources(source_selection) if item in available_sources):
             old = dict(existing_states).get(source)
+            called_workflow = False
             counts["source_units"] += 1
             print(f"[agent3-source] {identity.brand_key} {identity.brand_name} source={source}", file=sys.stderr, flush=True)
             profile = build_source_profile(
@@ -189,6 +236,7 @@ def run_source(
                 continue
             stored_candidates = primary_candidates
             if mode == "full" and primary_candidates:
+                called_workflow = True
                 try:
                     workflow_result = _run_workflow_with_validation(
                         client=client,
@@ -283,7 +331,10 @@ def run_source(
                 workflow_rev=workflow_rev,
                 hash_candidates=primary_candidates,
             )
-            if old is not None and canonical_content_matches(old, record):
+            content_matches = old is not None and canonical_content_matches(old, record)
+            if called_workflow:
+                counts[_classify_workflow_call(old, workflow_rev, content_matches=content_matches)] += 1
+            if content_matches:
                 if _should_reestablish_revision(
                     old,
                     workflow_rev=workflow_rev,
@@ -339,6 +390,7 @@ def run_source(
         "affected": affected,
         **counts,
         "estimated_cost_krw": counts["workflow_calls"] * 3.39,
+        "idempotency_gate": evaluate_idempotency_gate(counts),
         "records": records,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
