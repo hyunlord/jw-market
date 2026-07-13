@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 import threading
@@ -38,6 +39,40 @@ def test_worker_process_limits_inner_math_threads(monkeypatch: pytest.MonkeyPatc
 
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         assert preprocessor.os.environ[name] == "1"
+
+
+def test_ocr_candidate_passes_configured_english_and_korean_languages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    class FakePage:
+        def get_text(self, mode: str) -> str:
+            assert mode == "text"
+            return ""
+
+    class FakeDocument:
+        def __getitem__(self, page: int) -> FakePage:
+            assert page == 0
+            return FakePage()
+
+    class FakePymupdf4llm:
+        @staticmethod
+        def to_markdown(document: object, **kwargs: object) -> list[dict[str, str]]:
+            observed.append(kwargs)
+            return [{"text": "recognized"}]
+
+    monkeypatch.setattr(preprocessor, "PDF_OCR_LANGUAGES", "eng+kor", raising=False)
+
+    items, used_ocr = preprocessor._page_markdown_items(
+        FakePymupdf4llm,
+        FakeDocument(),
+        0,
+    )
+
+    assert used_ocr is True
+    assert items == [{"text": "recognized"}]
+    assert observed[0]["ocr_language"] == "eng+kor"
 
 
 def test_ordered_page_results_restore_source_order() -> None:
@@ -140,13 +175,16 @@ def test_deployment_contract_reserves_parallel_resources() -> None:
     manifest = (Path(__file__).parents[1] / "deploy" / "preprocessor-91-patch.yaml").read_text(
         encoding="utf-8"
     )
+    source = (Path(__file__).parents[1] / "src" / "preprocessor.py").read_bytes()
+    source_sha256 = hashlib.sha256(source).hexdigest()
 
-    assert 'name: PREPROC_PAGE_WORKERS\n              value: "2"' in manifest
+    assert 'name: PREPROC_PAGE_WORKERS\n              value: "8"' in manifest
     assert "name: PREPROC_LARGE_PDF_MIN_PAGES" in manifest
     assert "name: PREPROC_LARGE_PDF_MIN_BYTES" in manifest
-    assert 'name: PREPROC_PAGE_WORKER_THREADS\n              value: "2"' in manifest
+    assert 'name: PREPROC_PAGE_WORKER_THREADS\n              value: "1"' in manifest
+    assert 'name: PDF_OCR_LANGUAGES\n              value: "eng+kor"' in manifest
     assert 'value: "50"' in manifest
     assert 'value: "5242880"' in manifest
-    assert 'cpu: "4"' in manifest
+    assert 'cpu: "8"' in manifest
     assert "memory: 16Gi" in manifest
-    assert "jw-market/source-sha256: f153ae7228efab072e53c26480762df18552719842c7f8e54becb14847597b45" in manifest
+    assert f"jw-market/source-sha256: {source_sha256}" in manifest

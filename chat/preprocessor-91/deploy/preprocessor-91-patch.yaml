@@ -7,15 +7,17 @@ spec:
   template:
     metadata:
       annotations:
-        jw-market/source-sha256: f153ae7228efab072e53c26480762df18552719842c7f8e54becb14847597b45
+        jw-market/source-sha256: c1dd23204fd5425b24225e18f0f4b692da9203fb9aa2679ac562aa07c1cd8ab9
     spec:
       containers:
         - name: preprocessor-91
           env:
             - name: PREPROC_PAGE_WORKERS
-              value: "2"
+              value: "8"
             - name: PREPROC_PAGE_WORKER_THREADS
-              value: "2"
+              value: "1"
+            - name: PDF_OCR_LANGUAGES
+              value: "eng+kor"
             - name: PREPROC_LARGE_PDF_MIN_PAGES
               value: "50"
             - name: PREPROC_LARGE_PDF_MIN_BYTES
@@ -24,8 +26,8 @@ spec:
               value: /tmp/preprocessor-91-large-pdf.lock
           resources:
             requests:
-              cpu: "4"
+              cpu: "8"
               memory: 16Gi
             limits:
-              cpu: "4"
+              cpu: "8"
               memory: 16Gi

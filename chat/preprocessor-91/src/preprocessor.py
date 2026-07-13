@@ -70,6 +70,7 @@ PDF_BBOX_MIN_LEN = 4           # 검색 후보로 쓸 최소 문자열 길이
 PDF_GRAPHICS_LIMIT = 20000     # 페이지당 벡터 그래픽 상한 (초과 시 그래픽 분석 스킵 — 병적 페이지 방어)
 PDF_PROGRESS_EVERY = 10        # N페이지마다 진행 로그 + gc
 PDF_OCR_TEXT_MIN_NONSPACE = max(int(os.environ.get("PDF_OCR_TEXT_MIN_NONSPACE", "20")), 0)
+PDF_OCR_LANGUAGES = os.environ.get("PDF_OCR_LANGUAGES", "eng+kor").strip() or "eng+kor"
 PDF_MARKDOWN_CHUNK_SIZE = max(int(os.environ.get("PDF_MARKDOWN_CHUNK_SIZE", "2400")), 200)
 PDF_MARKDOWN_CHUNK_OVERLAP = max(int(os.environ.get("PDF_MARKDOWN_CHUNK_OVERLAP", "100")), 0)
 PREPROC_LARGE_PDF_MIN_PAGES = max(int(os.environ.get("PREPROC_LARGE_PDF_MIN_PAGES", "50")), 1)
@@ -243,10 +244,10 @@ def _page_markdown_items(pymupdf4llm, doc, pno: int, hdr_info=None) -> Tuple[lis
     use_ocr = len("".join(native_text.split())) < PDF_OCR_TEXT_MIN_NONSPACE
     kwargs_try = [
         {"page_chunks": True, "graphics_limit": PDF_GRAPHICS_LIMIT,
-         "show_progress": False, "use_ocr": use_ocr},
+         "show_progress": False, "use_ocr": use_ocr, "ocr_language": PDF_OCR_LANGUAGES},
         {"page_chunks": True, "graphics_limit": PDF_GRAPHICS_LIMIT,
-         "use_ocr": use_ocr},
-        {"page_chunks": True, "use_ocr": use_ocr},
+         "use_ocr": use_ocr, "ocr_language": PDF_OCR_LANGUAGES},
+        {"page_chunks": True, "use_ocr": use_ocr, "ocr_language": PDF_OCR_LANGUAGES},
     ]
     for kwargs in kwargs_try:
         if hdr_info is not None:
@@ -256,7 +257,11 @@ def _page_markdown_items(pymupdf4llm, doc, pno: int, hdr_info=None) -> Tuple[lis
         except TypeError:
             continue
     return pymupdf4llm.to_markdown(
-        doc, pages=[pno], page_chunks=True, use_ocr=use_ocr,
+        doc,
+        pages=[pno],
+        page_chunks=True,
+        use_ocr=use_ocr,
+        ocr_language=PDF_OCR_LANGUAGES,
     ), use_ocr
 
 
