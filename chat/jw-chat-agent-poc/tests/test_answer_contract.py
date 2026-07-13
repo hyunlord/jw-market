@@ -478,7 +478,7 @@ def test_unavailable_gate_surfaces_owned_fact_instead_of_false_absence() -> None
         ],
     )
 
-    assert revised.startswith("요청한 값은 현재 조회 결과에 존재합니다.")
+    assert "요청한 값은 현재 조회 결과에 존재합니다." not in revised
     assert "84.93억원" in revised
     assert "원천에 없음" not in revised
 

@@ -304,3 +304,12 @@ def test_news_answers_are_treated_as_deterministic_cache_outputs() -> None:
     }
 
     assert "".join(GenosClient(token="dummy-token").stream_answer("리바로 뉴스", agent_result)) == agent_result["answer"]
+
+
+def test_news_mode_does_not_inherit_metrics_mode(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_METRICS_MODE", "cache")
+    monkeypatch.delenv("CHAT_DEEP_NEWS_MODE", raising=False)
+
+    tool = DeepAnalysisNewsTool()
+
+    assert tool._mode == "fixture"

@@ -17,3 +17,5 @@ spec:
               value: jw_mart_d2_stage_20260630_r2
             - name: CHAT_CD_MART_SCHEMA
               value: jw_mart_d2_stage_20260630_r2
+            - name: CHAT_DEEP_NEWS_MODE
+              value: cache

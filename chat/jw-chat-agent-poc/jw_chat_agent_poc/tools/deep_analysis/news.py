@@ -147,7 +147,7 @@ class DeepAnalysisNewsTool:
         reader: DeepAnalysisNewsReader | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
-        self._mode = mode or os.environ.get("CHAT_DEEP_NEWS_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
+        self._mode = mode or os.environ.get("CHAT_DEEP_NEWS_MODE", "fixture")
         resolved_reader = reader or (MariaDbDeepAnalysisNewsReader() if self._mode == "cache" else FixtureDeepAnalysisNewsReader())
         ttl = ttl_seconds or int(os.environ.get("CHAT_DEEP_NEWS_TTL_SECONDS", "300"))
         self._cache = TtlDeepAnalysisNewsCache(resolved_reader, ttl_seconds=ttl)

@@ -1130,6 +1130,54 @@ def test_market_scope_includes_latest_hhi_for_concentration_answers() -> None:
     assert call["render_data"]["period"] == "2026-04"
 
 
+def test_query_layer_computes_derived_metrics_from_one_mart_snapshot() -> None:
+    periods = tuple(f"{year}-{month:02d}" for year in range(2020, 2026) for month in range(1, 13))
+    anchor_values = tuple((100.0 + index) * 100_000_000 for index in range(len(periods)))
+    peer_values = tuple((200.0 + index * 0.5) * 100_000_000 for index in range(len(periods)))
+    totals = [anchor_values[index] + peer_values[index] for index in range(len(periods))]
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_market("ml_006", "리바로", anchor_values, periods, totals),
+                _record_with_market("ml_006", "경쟁브랜드", peer_values, periods, totals),
+            )
+        )
+    )
+
+    hhi = layer.brand_derived_metric("리바로", "hhi")
+    momentum = layer.brand_derived_metric("리바로", "momentum")
+    ei = layer.brand_derived_metric("리바로", "ei")
+    contribution = layer.brand_derived_metric("리바로", "growth_contribution")
+
+    assert hhi["source"] == "UBIST"
+    assert hhi["render_data"]["hhi_recent"] > 0
+    assert hhi["render_data"]["hhi_series_5y"]
+    assert hhi["render_data"]["hhi_series_5y"][-1]["hhi"] == 5142.5753
+    assert momentum["render_data"]["momentum_score"] is not None
+    assert ei["render_data"]["ei_basis"].startswith("endpoint_")
+    assert ei["render_data"]["ei"] is not None
+    assert contribution["render_data"]["growth_contribution_basis"] == "year_over_year_absolute_growth"
+    assert contribution["render_data"]["growth_contribution"] is not None
+
+
+def test_chat_agent_query_failure_never_calls_legacy_metrics_fallback() -> None:
+    class BrokenLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
+            raise LookupError(f"missing {brand} {metric} {period}")
+
+        def catalog_for_brand(self, brand: str | None):
+            raise LookupError(f"missing catalog {brand}")
+
+    class LegacyFallbackBomb:
+        def get_brand_metric(self, *args, **kwargs):
+            raise AssertionError("legacy metric fallback must not run")
+
+    agent = ChatAgent(metrics=LegacyFallbackBomb(), query_layer=BrokenLayer())
+
+    with pytest.raises(LookupError, match="missing"):
+        agent._metric_call("리바로", metric="sales", filter_entries=())
+
+
 def _portfolio_query_layer() -> StrategicQueryLayer:
     return StrategicQueryLayer(reader=StaticStrategicMartReader(_portfolio_records()))
 

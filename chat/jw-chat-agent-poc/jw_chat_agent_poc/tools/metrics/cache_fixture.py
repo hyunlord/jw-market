@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jw_chat_agent_poc.agentic import FilterEntry, validate_metric_filters
 from jw_chat_agent_poc.tools.metrics.cache_cause_metrics import CauseMetricMixin
@@ -27,6 +27,9 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     shared_metrics_cache,
 )
 
+if TYPE_CHECKING:
+    from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+
 
 class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
     def __init__(
@@ -37,11 +40,14 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         cause_reader: CausePayloadReader | None = None,
         csd_activity_reader: CsdActivityReader | None = None,
         csd_activity_target_reader: CsdActivityTargetReader | None = None,
+        query_layer: StrategicQueryLayer | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
         self._mode = mode or os.environ.get("CHAT_METRICS_MODE", "fixture")
         path = fixture_path or Path(__file__).resolve().parents[2] / "fixtures" / "metrics_cache.json"
         self._data = json.loads(path.read_text(encoding="utf-8"))
+        self._query_layer = query_layer
+        self._legacy_cache_injected = cache_reader is not None or cause_reader is not None
         ttl = ttl_seconds or int(os.environ.get("CHAT_METRICS_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
         cause_ttl = int(os.environ.get("CHAT_CAUSE_TTL_SECONDS", str(ttl)))
@@ -92,6 +98,35 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         filter_entries: tuple[FilterEntry, ...] = (),
     ) -> dict:
         if self._mode == "cache":
+            if self._query_layer is not None:
+                if filter_entries:
+                    plan = validate_metric_filters(filter_entries)
+                    if plan.blocks_results:
+                        return self._unsupported(brand, metric, "요청 필터는 d2 query-layer에서 지원하지 않습니다.")
+                    if plan.channel is not None:
+                        return self._query_layer.dimension_breakdown(
+                            brand,
+                            "channel",
+                            source=plan.source or "",
+                            period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                        )
+                    if plan.level is not None:
+                        dimension = "product" if plan.level == "Brand" else plan.level.casefold().replace(" ", "_")
+                        return self._query_layer.dimension_breakdown(
+                            brand,
+                            dimension,
+                            source=plan.source or "",
+                            period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                        )
+                if self._is_cause_metric(metric):
+                    kind = self._cause_metric_kind(metric)
+                    if kind in {"hhi", "momentum", "ei"}:
+                        return self._query_layer.brand_derived_metric(brand, kind)
+                if metric.casefold() == "growth_contribution":
+                    return self._query_layer.brand_derived_metric(brand, "growth_contribution")
+                return self._query_layer.brand_metric(brand, metric, period)
+            if not self._legacy_cache_injected:
+                raise LookupError("d2 query-layer is unavailable")
             return self._get_brand_card_metric(brand, metric, period, filter_entries)
         item = self._data["brands"].get(brand)
         if not item:

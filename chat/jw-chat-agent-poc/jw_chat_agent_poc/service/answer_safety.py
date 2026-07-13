@@ -146,7 +146,7 @@ def fallback_fact_answer(markdown_response: Any) -> str:
     if csd_answer:
         return csd_answer
     body = "\n".join(lines) if lines else "- 표시할 검증 fact가 제한적입니다."
-    parts = ["확정 데이터 기준으로 정리하면 다음과 같습니다.", body]
+    parts = ["조회된 수치로 요약하면 다음과 같습니다.", body]
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))

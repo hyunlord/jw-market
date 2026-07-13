@@ -426,7 +426,9 @@ class ChatAgent:
             try:
                 return self.query_layer.brand_metric(brand, "sales", "latest")
             except (LookupError, TypeError, ValueError):
-                pass
+                return None
+        if self.metrics._mode == "cache" and not self.metrics._legacy_cache_injected:
+            return None
         try:
             return self.metrics.get_brand_metric(brand, metric="sales")
         except (LookupError, TypeError, ValueError):
@@ -441,18 +443,29 @@ class ChatAgent:
         prefer_mart: bool = False,
     ) -> dict[str, Any]:
         if self.query_layer is not None:
-            try:
-                period = _metric_filter_period(filter_entries)
-                if period is not None:
-                    return self.query_layer.brand_metric(brand, metric, period)
-                if prefer_mart and not filter_entries:
-                    return self.query_layer.brand_metric(brand, metric, "latest")
-                catalog = self.query_layer.catalog_for_brand(brand)
-                if catalog.market_structure:
-                    if not filter_entries:
-                        return self.query_layer.brand_metric(brand, metric, "latest")
-            except (LookupError, TypeError, ValueError):
-                pass
+            period = _metric_filter_period(filter_entries)
+            if period is not None:
+                return self.query_layer.brand_metric(brand, metric, period)
+            if not filter_entries:
+                return self.query_layer.brand_metric(brand, metric, "latest")
+            plan = validate_metric_filters(filter_entries)
+            if plan.blocks_results:
+                raise LookupError("d2 query-layer rejected the requested filters")
+            dimension = ""
+            if plan.channel is not None:
+                dimension = "channel"
+            elif plan.level is not None:
+                dimension = "product" if plan.level == "Brand" else plan.level.casefold().replace(" ", "_")
+            if dimension:
+                return self.query_layer.dimension_breakdown(
+                    brand,
+                    dimension,
+                    source=plan.source or "",
+                    period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                )
+            raise LookupError(f"d2 query-layer route does not support filters: {filter_entries!r}")
+        if self.metrics._mode == "cache" and not self.metrics._legacy_cache_injected:
+            raise LookupError("d2 query-layer is unavailable")
         return self.metrics.get_brand_metric(brand, metric=metric, filter_entries=filter_entries)
 
 

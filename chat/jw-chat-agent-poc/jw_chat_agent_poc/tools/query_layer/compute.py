@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+import math
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.tools.query_layer.render import level_segments, metric_name, source_label
@@ -40,6 +42,155 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
     if structure:
         data["market_structure"] = structure
     return data
+
+
+def derived_metric_render_data(
+    snapshot: MartSnapshot,
+    market: str,
+    source: str,
+    record: MartRecord,
+    metric: str,
+) -> dict[str, Any]:
+    periods = snapshot.periods(market, source)
+    if not periods:
+        raise LookupError(f"mart periods missing: market={market} source={source}")
+    latest = periods[-1]
+    data = metric_render_data(snapshot, market, source, record, metric, latest)
+    metric_key = metric.casefold()
+    if metric_key == "hhi":
+        series = _annual_hhi_series(snapshot, market, source)
+        if not series:
+            raise LookupError(f"complete annual HHI history missing: market={market} source={source}")
+        data["hhi_series_5y"] = series
+    elif metric_key == "momentum":
+        momentum = _momentum(snapshot, market, source, record, periods)
+        if momentum is None:
+            raise LookupError(f"four-point momentum history missing: market={market} source={source} brand={record.brand_name}")
+        data["momentum_score"] = momentum
+    elif metric_key == "ei":
+        endpoint = _ei_metrics(snapshot, market, source, record, periods)
+        if endpoint is None:
+            raise LookupError(f"3y/5y endpoint history missing: market={market} source={source} brand={record.brand_name}")
+        data.update(endpoint)
+    elif metric_key == "growth_contribution":
+        contribution = _growth_contribution(snapshot, market, source, record, periods)
+        if contribution is None:
+            raise LookupError(f"year-over-year growth history missing: market={market} source={source} brand={record.brand_name}")
+        data.update(contribution)
+    else:
+        raise LookupError(f"unsupported derived metric: {metric}")
+    return data
+
+
+def _annual_hhi_series(snapshot: MartSnapshot, market: str, source: str) -> list[dict[str, Any]]:
+    annual: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    periods_by_year: dict[int, set[str]] = defaultdict(set)
+    for record in snapshot.market_records(market, source):
+        for period in snapshot.periods(market, source):
+            year = _period_year(period)
+            value = snapshot.value_or_none(record, period)
+            if year is None or value is None:
+                continue
+            annual[year][record.brand_name] += value
+            periods_by_year[year].add(period)
+    expected = 4 if source == "iqvia_nsa" else 12
+    complete = sorted(year for year, periods in periods_by_year.items() if len(periods) >= expected)[-5:]
+    points: list[dict[str, Any]] = []
+    for year in complete:
+        values = annual[year].values()
+        total = sum(values)
+        if total <= 0:
+            continue
+        shares = [round(value / total * 100.0, 4) for value in annual[year].values()]
+        hhi = sum(share**2 for share in shares)
+        points.append({"period": str(year), "period_full": str(year), "year": year, "hhi": round(hhi, 4)})
+    return points
+
+
+def _momentum(
+    snapshot: MartSnapshot,
+    market: str,
+    source: str,
+    record: MartRecord,
+    periods: tuple[str, ...],
+) -> float | None:
+    shares = [snapshot.share_or_none(market, record, period, source) for period in periods[-4:]]
+    if len(shares) < 4 or any(value is None or not math.isfinite(float(value)) for value in shares):
+        return None
+    ys = [float(value) for value in shares if value is not None]
+    return (4 * sum(x * y for x, y in zip((1, 2, 3, 4), ys, strict=True)) - 10 * sum(ys)) / 20
+
+
+def _ei_metrics(
+    snapshot: MartSnapshot,
+    market: str,
+    source: str,
+    record: MartRecord,
+    periods: tuple[str, ...],
+) -> dict[str, Any] | None:
+    latest = periods[-1]
+    for years in (5, 3):
+        start = _period_years_before(latest, years)
+        if start not in periods:
+            continue
+        brand_start = snapshot.value_or_none(record, start)
+        brand_end = snapshot.value_or_none(record, latest)
+        market_start = snapshot.market_value_or_none(market, start, source)
+        market_end = snapshot.market_value_or_none(market, latest, source)
+        if not all(value is not None and value > 0 for value in (brand_start, brand_end, market_start, market_end)):
+            continue
+        brand_cagr = ((float(brand_end) / float(brand_start)) ** (1 / years) - 1) * 100
+        market_cagr = ((float(market_end) / float(market_start)) ** (1 / years) - 1) * 100
+        if market_cagr == 0:
+            continue
+        return {
+            "ei": round(brand_cagr / market_cagr * 100, 4),
+            "ei_basis": f"endpoint_{years}y",
+            "ei_period_years": years,
+            "brand_cagr_pct": round(brand_cagr, 4),
+            "market_cagr_pct": round(market_cagr, 4),
+        }
+    return None
+
+
+def _growth_contribution(
+    snapshot: MartSnapshot,
+    market: str,
+    source: str,
+    record: MartRecord,
+    periods: tuple[str, ...],
+) -> dict[str, Any] | None:
+    latest = periods[-1]
+    previous = _period_years_before(latest, 1)
+    if previous not in periods:
+        return None
+    brand_latest = snapshot.value_or_none(record, latest)
+    brand_previous = snapshot.value_or_none(record, previous)
+    market_latest = snapshot.market_value_or_none(market, latest, source)
+    market_previous = snapshot.market_value_or_none(market, previous, source)
+    if any(value is None for value in (brand_latest, brand_previous, market_latest, market_previous)):
+        return None
+    market_growth = float(market_latest) - float(market_previous)
+    if abs(market_growth) <= 10_000:
+        return None
+    contribution = (float(brand_latest) - float(brand_previous)) / market_growth * 100
+    return {
+        "growth_contribution": round(contribution, 4),
+        "growth_contribution_pct": round(contribution, 4),
+        "growth_contribution_basis": "year_over_year_absolute_growth",
+        "growth_contribution_period_start": previous,
+        "growth_contribution_period_end": latest,
+    }
+
+
+def _period_year(period: str) -> int | None:
+    prefix = period[:4]
+    return int(prefix) if len(prefix) == 4 and prefix.isdigit() else None
+
+
+def _period_years_before(period: str, years: int) -> str:
+    year = _period_year(period)
+    return f"{year - years}{period[4:]}" if year is not None else ""
 
 
 def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anchor_brand: str, limit: int = 5) -> list[dict[str, Any]]:
