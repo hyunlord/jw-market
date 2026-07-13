@@ -666,15 +666,17 @@ class GenosClient:
                 with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
                     answer = _apply_final_claim_controls(question, fast_answer, fact_md)
                     answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
-                    answer = apply_common_unavailable_response(
-                        question,
-                        answer,
-                        markdown_response,
-                        tool_calls=verified_calls,
-                    )
-                    answer = apply_requested_source_trap_gate(question, answer)
+                    if not file_context:
+                        answer = apply_common_unavailable_response(
+                            question,
+                            answer,
+                            markdown_response,
+                            tool_calls=verified_calls,
+                        )
+                        answer = apply_requested_source_trap_gate(question, answer)
                     answer = ensure_file_absence_statement(question, answer, file_context)
-                    answer = enforce_market_answer_contract(question, answer, verified_calls)
+                    if not file_context:
+                        answer = enforce_market_answer_contract(question, answer, verified_calls)
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             yield from chunk_text(
@@ -819,12 +821,14 @@ class GenosClient:
         answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = dedupe_brand_metric_sentence(answer, fact_md)
         answer = replace_internal_fact_dump(question, answer, markdown_response)
-        answer = _apply_final_claim_controls(question, answer, fact_md)
+        if not file_context:
+            answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
-        answer = apply_common_unavailable_response(question, answer, markdown_response)
-        answer = apply_requested_source_trap_gate(question, answer)
+        if not file_context:
+            answer = apply_common_unavailable_response(question, answer, markdown_response)
+            answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
         return _append_web_search_section(answer, tool_calls)
