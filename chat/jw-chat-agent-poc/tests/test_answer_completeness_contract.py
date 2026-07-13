@@ -95,6 +95,46 @@ def test_brand_compare_repairs_both_brand_series() -> None:
     assert "리바로젯 | 2025-11 | 108.09억원 | 2026-04 | 120.09억원 | +12.00억원 | +11.10%" in revised
 
 
+def test_brand_compare_without_metric_requires_each_named_brand() -> None:
+    question = "리바로와 리바로젯을 비교해줘"
+
+    revised = enforce_answer_contract(question, "리바로젯은 증가했습니다.", {"fact_md": PAIR_FACT})
+    status = evaluate_answer_contract(question, revised, {"fact_md": PAIR_FACT})
+
+    assert status["intent"] == "brand_compare"
+    assert status["status"] == "pass"
+    assert "리바로 | 2025-11 | 80.00억원" in revised
+    assert "리바로젯 | 2025-11 | 108.09억원" in revised
+    assert "리바로 | 3.50% | 3.76%" in revised
+    assert "리바로젯 | 4.79% | 5.32%" in revised
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로와 리바로젯을 비교해줘",
+        "리바로 vs 리바로젯",
+        "리바로, 리바로젯 각각 비교",
+        "리바로 대비 리바로젯 비교",
+    ),
+)
+def test_brand_compare_intent_does_not_require_metric_token(question: str) -> None:
+    assert completeness_intent(question, PAIR_FACT) == "brand_compare"
+
+
+def test_brand_compare_partial_fact_fails_closed_without_partial_numbers() -> None:
+    question = "리바로와 리바로젯을 비교해줘"
+    partial_fact = PAIR_FACT.split("### 리바로젯", 1)[0]
+
+    revised = enforce_answer_contract(question, "리바로는 84.93억원입니다.", {"fact_md": partial_fact})
+    status = evaluate_answer_contract(question, revised, {"fact_md": partial_fact})
+
+    assert status["intent"] == "brand_compare"
+    assert status["status"] == "missing_required_fact"
+    assert "비교를 완결하지 못했습니다" in revised
+    assert "84.93억원" not in revised
+
+
 def test_share_delta_compare_repairs_each_requested_brand() -> None:
     revised = enforce_answer_contract("상위 3개 브랜드 점유율 변화를 비교해줘", "로수젯은 상승했습니다.", {"fact_md": TOP_FACT})
     assert "로수젯 | 2025-07 9.10% | 2026-04 9.17% | +0.07%p | 상승" in revised

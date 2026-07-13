@@ -47,7 +47,7 @@ class TargetInputs:
     market: float
 
 
-def completeness_intent(question: str) -> str | None:
+def completeness_intent(question: str, fact_md: str = "") -> str | None:
     """Classify only the six deterministic completeness question families."""
 
     text = question.lower()
@@ -65,6 +65,8 @@ def completeness_intent(question: str) -> str | None:
         return "share_delta_compare"
     if "매출" in text and any(token in text for token in ("비교", "각각")):
         return "brand_compare"
+    if _is_explicit_brand_compare(question, fact_md):
+        return "brand_compare"
     if "채널" in text and any(token in text for token in _CHANNELS):
         return "channel_provenance"
     return None
@@ -74,6 +76,8 @@ def repair_completeness(intent: str, question: str, answer: str, fact_md: str) -
     """Append a deterministic completion only when all required facts parse."""
 
     block = _completion_block(intent, question, fact_md)
+    if intent == "brand_compare" and not block:
+        return _brand_compare_unavailable()
     if not block or _surface_complete(intent, answer, block):
         return answer
     if intent == "top_n_share_sum":
@@ -92,7 +96,9 @@ def completeness_status(intent: str, question: str, answer: str, fact_md: str) -
 
 def _completion_block(intent: str, question: str, fact_md: str) -> str:
     if intent == "brand_compare":
-        return _brand_compare_block(_brand_series(fact_md))
+        series = _brand_series(fact_md)
+        requested = tuple(item for item in series if item.brand in question)
+        return _brand_compare_block(requested if requested else series)
     if intent == "share_delta_compare":
         return _share_delta_block(_share_trends(fact_md), _requested_top_n(question))
     if intent == "top_n_share_sum":
@@ -190,8 +196,56 @@ def _brand_compare_block(series: tuple[BrandSeries, ...]) -> str:
         rate = delta / first.sales * 100 if first.sales else 0.0
         lines.append(f"| {item.brand} | {first.period} | {first.sales_text} | {last.period} | {last.sales_text} | {_signed(delta)}억원 | {_signed(rate)}% |")
         directions.append(f"{item.brand}는 {'상승' if delta >= 0 else '하락'}")
+    lines.extend(("", "## 브랜드 점유율 비교", "| 브랜드 | 시작 점유율 | 최신 점유율 |", "| --- | --- | --- |"))
+    for item in series:
+        first, last = item.points[0], item.points[-1]
+        lines.append(f"| {item.brand} | {first.share_text} | {last.share_text} |")
     lines.append("\n" + ", ".join(directions) + "했습니다.")
     return "\n".join(lines)
+
+
+def _brand_compare_unavailable() -> str:
+    return (
+        "요청한 브랜드 중 일부의 지표 조회가 완료되지 않아 비교를 완결하지 못했습니다. "
+        "확인되지 않은 브랜드의 수치는 추정하지 않습니다."
+    )
+
+
+def _is_explicit_brand_compare(question: str, fact_md: str) -> bool:
+    text = question.lower()
+    if not any(token in text for token in ("비교", "각각", " vs ", "대비")):
+        return False
+    named_facts = tuple(item.brand for item in _brand_series(fact_md) if item.brand in question)
+    if len(named_facts) >= 2:
+        return True
+    if "대비" in text and not any(token in text for token in ("비교", "각각", " vs ")):
+        return False
+    return len(_comparison_subjects(question)) >= 2
+
+
+def _comparison_subjects(question: str) -> tuple[str, ...]:
+    text = re.sub(r"[?!.]", " ", question).strip()
+    patterns = (
+        r"^(.+?)(?:와|과|랑|하고)\s*(.+?)(?:비교|각각|대비)",
+        r"^(.+?)\s+vs\.?\s+(.+)$",
+        r"^(.+?),\s*(.+?)\s+(?:각각|비교)",
+        r"^(.+?)\s+대비\s+(.+?)(?:\s+비교|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        subjects = tuple(_clean_comparison_subject(group) for group in match.groups())
+        if all(subjects):
+            return subjects
+    return ()
+
+
+def _clean_comparison_subject(value: str) -> str:
+    text = value.strip()
+    text = re.sub(r"(?:을|를|은|는|이|가)$", "", text)
+    text = re.sub(r"\s+(?:\d+\s*(?:개월|달|년)\s*)?(?:매출|점유율).*$", "", text)
+    return text.strip()
 
 
 def _share_delta_block(rows: tuple[ShareTrend, ...], count: int) -> str:

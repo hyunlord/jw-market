@@ -167,8 +167,8 @@ def enforce_answer_contract(
 ) -> str:
     """Repair final-model omissions when required facts already exist."""
 
-    intent = _intent(question)
     fact_md = _fact_markdown(markdown_response)
+    intent = _intent(question, fact_md)
     repaired = answer
     if intent is not None and fact_md:
         rule = ANSWER_CONTRACT[intent]
@@ -189,7 +189,8 @@ def enforce_answer_contract(
 def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return the contract status for trace metadata without mutating the answer."""
 
-    intent = _intent(question)
+    fact_md = _fact_markdown(markdown_response)
+    intent = _intent(question, fact_md)
     structural = _structural_contract_type(question)
     if intent is None:
         return {
@@ -198,7 +199,6 @@ def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapp
             "status": "pass" if structural and _structural_contract_present(answer, structural) else "not_applicable",
         }
     rule = ANSWER_CONTRACT[intent]
-    fact_md = _fact_markdown(markdown_response)
     if not fact_md:
         return {"intent": intent, "status": "missing_fact_set", "required_facts": rule.required_facts}
     if intent == "ranking":
@@ -304,8 +304,8 @@ class ClinicalEvidenceRow:
     source: str
 
 
-def _intent(question: str) -> str | None:
-    completeness = completeness_intent(question)
+def _intent(question: str, fact_md: str = "") -> str | None:
+    completeness = completeness_intent(question, fact_md)
     if completeness is not None:
         return completeness
     if _ranking_question(question):
