@@ -16,7 +16,7 @@ from jw_chat_agent_poc.service.conversation import (
 _FIRST_RANK_RE = re.compile(r"그중\s*1위(?:\s*브랜드)?")
 _ANCHOR_RE = re.compile(r"그\s*브랜드")
 _PERIOD_RE = re.compile(r"같은\s*기간")
-_MARKET_RE = re.compile(r"방금\s*시장")
+_MARKET_RE = re.compile(r"(?:방금|이|해당|그)\s*시장")
 _REFERENCE_RES = (_FIRST_RANK_RE, _ANCHOR_RE, _PERIOD_RE, _MARKET_RE)
 
 
@@ -100,7 +100,8 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
     if _MARKET_RE.search(resolved):
         if not slots.market:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-        resolved = _MARKET_RE.sub(slots.market, resolved)
+        market_hint = f"{slots.anchor_brand} 시장" if slots.anchor_brand else slots.market
+        resolved = _MARKET_RE.sub(market_hint, resolved)
     return AnaphoraResolution(resolved_question=resolved, brand=brand, reusable_ranked=reusable)
 
 

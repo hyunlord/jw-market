@@ -88,6 +88,27 @@ def test_resolve_anaphora_uses_anchor_market_for_ranked_brand_requery() -> None:
     assert resolved.reusable_ranked is None
 
 
+def test_resolve_anaphora_inherits_market_for_common_market_pronouns() -> None:
+    previous = ConversationTurn(
+        question="리바로와 로수젯 비교",
+        answer="두 브랜드를 비교했습니다.",
+        slots=ConversationSlots(
+            anchor_brand="리바로",
+            market="ml_006",
+            market_definition="Statin 시장",
+        ),
+    )
+
+    for question in (
+        "이 시장 상위 5개 브랜드 점유율과 합계",
+        "해당 시장 집중도는 어때?",
+        "그 시장의 HHI는?",
+    ):
+        resolved = resolve_anaphora(question, previous)
+        assert resolved.resolved_question.startswith("리바로 시장")
+        assert resolved.unresolved_reference is False
+
+
 def test_reused_context_result_contains_verified_series_without_backend_call() -> None:
     result = reused_context_result(
         "그중 1위 브랜드 점유율 추이는?",
