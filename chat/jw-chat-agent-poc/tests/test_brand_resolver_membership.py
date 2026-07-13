@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
-from jw_chat_agent_poc.orchestrator.agent import ChatAgent
+from jw_chat_agent_poc.orchestrator.agent import ChatAgent, _prefer_mart_metric
 from jw_chat_agent_poc.resolver.brand_resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 
@@ -76,6 +76,18 @@ def test_factory_wires_catalog_as_membership_reader(monkeypatch: pytest.MonkeyPa
     assert dependencies.resolver._membership_reader.__class__.__name__ == "TtlCatalogMembershipReader"
 
 
+@pytest.mark.parametrize(
+    "support_source",
+    ("catalog_membership", "mart_membership", "cache_brands", "cache_brands+fixture_sidecar"),
+)
+def test_serving_resolver_sources_prefer_current_mart_metrics(support_source: str) -> None:
+    assert _prefer_mart_metric(support_source) is True
+
+
+def test_fixture_source_keeps_fixture_metric_path() -> None:
+    assert _prefer_mart_metric("fixture") is False
+
+
 def test_mart_membership_brand_uses_query_layer_for_simple_metric() -> None:
     class QueryLayer:
         def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, object]:
@@ -91,6 +103,48 @@ def test_mart_membership_brand_uses_query_layer_for_simple_metric() -> None:
 
     assert call["source"] == "UBIST"
     assert call["render_data"]["brand"] == "피타틴"
+
+
+def test_catalog_membership_brand_uses_query_layer_for_latest_metric() -> None:
+    class QueryLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, object]:
+            return {
+                "source": "IQVIA",
+                "tool": "get_brand_metric",
+                "render_data": {"brand": brand, "metric": metric, "period": period},
+            }
+
+    class CacheMetrics:
+        def get_brand_metric(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("catalog membership must not fall through to the JW25 cache")
+
+    agent = ChatAgent(metrics=CacheMetrics(), query_layer=QueryLayer())
+
+    call = agent._metric_call("마운자로", metric="sales", filter_entries=(), prefer_mart=True)
+
+    assert call["source"] == "IQVIA"
+    assert call["render_data"]["period"] == "latest"
+
+
+def test_cache_brand_latest_metric_prefers_current_query_layer_snapshot() -> None:
+    class QueryLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, object]:
+            return {
+                "source": "UBIST",
+                "tool": "get_brand_metric",
+                "render_data": {"brand": brand, "metric": metric, "period": "2026-05", "sales_억원": 80.385988},
+            }
+
+    class CacheMetrics:
+        def get_brand_metric(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("latest metrics must not read the stale 2026-04 cache card")
+
+    agent = ChatAgent(metrics=CacheMetrics(), query_layer=QueryLayer())
+
+    call = agent._metric_call("리바로", metric="sales", filter_entries=(), prefer_mart=True)
+
+    assert call["render_data"]["period"] == "2026-05"
+    assert call["render_data"]["sales_억원"] == 80.385988
 
 
 def test_past_period_metric_uses_query_layer_without_split_market_structure() -> None:

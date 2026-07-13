@@ -125,7 +125,7 @@ class ChatAgent:
                     resolution.canonical_brand,
                     metric=metric,
                     filter_entries=effective_filters,
-                    prefer_mart=resolution.support_source == "mart_membership",
+                    prefer_mart=_prefer_mart_metric(resolution.support_source),
                 )
             metric_calls = [brand_metric_call]
             scope = _answer_scope(question)
@@ -138,7 +138,7 @@ class ChatAgent:
                         continue
                     data["answer_scope"] = scope
             if (
-                resolution.support_source != "mart_membership"
+                self.query_layer is None
                 and not effective_filters
                 and metric not in {"hhi", "series", "trend", "momentum", "ei"}
             ):
@@ -474,6 +474,15 @@ def _metric_filter_period(filter_entries: tuple[FilterEntry, ...]) -> str | None
     if plan.period_year is not None:
         return str(plan.period_year)
     return None
+
+
+def _prefer_mart_metric(support_source: str) -> bool:
+    return support_source in {
+        "catalog_membership",
+        "mart_membership",
+        "cache_brands",
+        "cache_brands+fixture_sidecar",
+    }
 
 
 def _single_brand_focus_question(question: str) -> bool:
