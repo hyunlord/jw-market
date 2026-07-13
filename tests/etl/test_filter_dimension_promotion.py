@@ -11,11 +11,18 @@ from pipeline.scripts.etl.build_filter_dimension_metric import _source_epoch
 
 
 class _Cursor:
-    def __init__(self, expected_rows: int = 1) -> None:
+    def __init__(self, expected_rows: int | list[int] = 1) -> None:
         self.expected_rows = expected_rows
         self.calls: list[tuple[str, object]] = []
         self.rows: list[dict[str, object]] = []
         self.rowcount = 0
+
+    def _next_expected_rows(self) -> int:
+        if isinstance(self.expected_rows, list):
+            if len(self.expected_rows) > 1:
+                return self.expected_rows.pop(0)
+            return self.expected_rows[0]
+        return self.expected_rows
 
     def __enter__(self):
         return self
@@ -26,7 +33,7 @@ class _Cursor:
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
         if "SELECT COUNT(*) AS n" in sql:
-            self.rows = [{"n": self.expected_rows}]
+            self.rows = [{"n": self._next_expected_rows()}]
         elif "SELECT id," in sql:
             self.rows = [
                 {
@@ -60,7 +67,7 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, expected_rows: int = 1) -> None:
+    def __init__(self, expected_rows: int | list[int] = 1) -> None:
         self.cursor_instance = _Cursor(expected_rows)
         self.commits = 0
 
@@ -174,6 +181,45 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
     assert "ON DUPLICATE KEY UPDATE" in sql
     assert "source=%s AND dimension_type=%s" in sql
     assert result["expected_rows"] == 1
+    assert result["promoted_rows"] == 1
+
+
+def test_promote_filter_dimension_rows_waits_for_committed_marker_visibility(monkeypatch) -> None:
+    from pipeline.etl.io.mart import filter_dimension_promote as promotion
+
+    conn = _Connection(expected_rows=[0, 1])
+    monkeypatch.setattr(promotion.time, "sleep", lambda _seconds: None)
+    rows = [
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "atc4_code": "A10N1",
+            "brand_key": "brand-a",
+            "brand_name": "브랜드A",
+            "product_code": "p1",
+            "dimension_type": "molecule",
+            "dimension_value": "A / B",
+            "dimension_value_norm": "A / B",
+            "raw_value_history": {"202601": 1},
+        }
+    ]
+
+    result = promote_filter_dimension_rows(
+        conn,
+        rows,
+        target_db="jw_mart_d2_stage_20260630_r2",
+        source="ubist",
+        dimension_type="molecule",
+        build_marker="2026-07-13 22:30:00",
+        batch_size=10,
+        allow_shared_serving_target=True,
+    )
+
+    marker_checks = [
+        sql for sql, _params in conn.cursor_instance.calls
+        if "computed_at=%s" in sql
+    ]
+    assert len(marker_checks) == 2
     assert result["promoted_rows"] == 1
 
 

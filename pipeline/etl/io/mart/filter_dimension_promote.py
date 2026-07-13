@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import hashlib
+import time
 from typing import Any
 
 import pymysql
@@ -288,13 +289,20 @@ def _require_complete_promotion(
     expected: int,
     promoted: int,
 ) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT COUNT(*) AS n FROM {target_table} "
-            "WHERE source=%s AND dimension_type=%s AND computed_at=%s",
-            (source, dimension_type, build_marker),
-        )
-        marked = int(cur.fetchone()["n"])
+    marked = 0
+    if promoted == expected:
+        for attempt in range(30):
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT COUNT(*) AS n FROM {target_table} "
+                    "WHERE source=%s AND dimension_type=%s AND computed_at=%s",
+                    (source, dimension_type, build_marker),
+                )
+                marked = int(cur.fetchone()["n"])
+            if marked == expected:
+                return
+            if attempt < 29:
+                time.sleep(1)
     if promoted != expected or marked != expected:
         raise RuntimeError(
             f"sidecar promotion incomplete: promoted={promoted} marked={marked} expected={expected}"
