@@ -131,7 +131,8 @@ class ToolUseAgent:
         else:
             status = "budget_exceeded"
             notices.append("agent loop step 예산을 초과해 확인된 도구 결과만 표시했습니다.")
-        brand = base_allowed_brands[0] if base_allowed_brands else _answer_brand(question, self.resolver)
+        observed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
+        brand = observed_brands[0] if observed_brands else _answer_brand(question, self.resolver)
         with stage(timing, "strict_query_plan", "population-sensitive spec mapping"):
             strict_calls = _strict_query_calls(
                 question,

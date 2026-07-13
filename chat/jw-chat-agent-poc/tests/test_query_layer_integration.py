@@ -678,6 +678,30 @@ def test_completion_uses_query_layer_for_unsupported_comparison_brand() -> None:
     assert comparison_calls[0]["render_data"]["metric"] == "market_member_series"
 
 
+def test_concentration_backfill_uses_observed_brand_for_market_anaphora() -> None:
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        name="get_metric",
+                        arguments={"brand": "리바로", "measure": "sales", "period": "latest"},
+                        reason="이전 시장 anchor의 브랜드 지표",
+                    ),
+                )
+            ),
+            AgentDecision(final_answer="done"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, query_layer=_query_layer())
+
+    result = agent.answer("이 시장 집중도는 어때?")
+
+    market_scope = next(call for call in result["tool_calls"] if call.get("tool") == "get_market_landscape")
+    assert market_scope["render_data"]["anchor_brand"] == "리바로"
+    assert market_scope["render_data"]["hhi_recent"] is not None
+
+
 def test_share_comparison_completion_uses_query_layer_for_market_member() -> None:
     """Given a share trend comparison, unsupported comparison terms are completed from mart."""
 
