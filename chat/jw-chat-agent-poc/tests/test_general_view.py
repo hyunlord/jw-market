@@ -314,6 +314,7 @@ def test_route_matrix_has_no_human_loop() -> None:
 
     assert service.route("리바로 ATC4 기준 점유율") is GeneralRoute.GENERAL_ONLY
     assert service.route("리바로 전략뷰 시장 점유율") is GeneralRoute.EXISTING
+    assert service.route("ml_006 2025-04 시장규모") is GeneralRoute.EXISTING
     assert service.route("리바로 시장 점유율은?") is GeneralRoute.DUAL
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
 

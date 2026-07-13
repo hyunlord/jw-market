@@ -217,6 +217,85 @@ def test_trend_question_surfaces_full_monthly_series_instead_of_average() -> Non
     assert "평균은 3.81%" not in answer
 
 
+def test_sales_trend_selects_sales_values_instead_of_share_values() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 최근 매출 추이",
+        answer="최근 점유율 추이입니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "unit": "%",
+                    "brand_value_series_10pt": [
+                        {
+                            "period": f"2026-{month:02d}",
+                            "ms_recent_pct": 3.7 + month / 100,
+                            "value_억원": 70 + month,
+                        }
+                        for month in range(1, 7)
+                    ],
+                },
+            }
+        ],
+    )
+
+    assert "| 2026-01 | 71.00억원 |" in answer
+    assert "3.71%" not in answer
+
+
+def test_ambiguous_trend_preserves_share_unit_selected_from_series() -> None:
+    answer = enforce_market_answer_contract(
+        question="그중 1위 브랜드의 월별 추이는?",
+        answer="월별 추이입니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "로수젯",
+                    "brand_value_series_10pt": [
+                        {"period": f"2026-{month:02d}", "ms_recent_pct": 9 + month / 100}
+                        for month in range(1, 7)
+                    ],
+                },
+            }
+        ],
+    )
+
+    assert "| 2026-01 | 9.01% |" in answer
+    assert "9.01억원" not in answer
+
+
+def test_historical_sales_uses_structured_value_without_llm_interpretation() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 2025년 4월 매출",
+        answer="시장 장악력에 따른 압박을 보여주는 83.18억원입니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "period": "2025-04",
+                    "sales_억원": 83.184115,
+                    "market_name": "해당 전략 시장",
+                    "view_type": "market_landscape",
+                    "rank_denominator": 555,
+                },
+            }
+        ],
+    )
+
+    assert answer.startswith("2025-04 리바로 매출은 83.184115억원입니다.")
+    assert "장악력" not in answer
+    assert "| 억원 |" in answer
+
+
 def test_csd_trend_surfaces_every_month_and_csd_provenance() -> None:
     answer = enforce_market_answer_contract(
         question="리바로 영업활동 추이",

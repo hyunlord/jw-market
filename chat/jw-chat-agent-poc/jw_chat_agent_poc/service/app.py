@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -783,6 +784,14 @@ def _answer_existing_without_pending(
     *,
     use_direct_agent_loop: bool = False,
 ) -> dict:
+    explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
+    if explicit_market is not None and "시장" in question:
+        requested_period = re.search(r"(?<!\d)(20\d{2}-(?:0[1-9]|1[0-2]))(?!\d)", question)
+        return market_scope_resolver.answer_market_id(
+            question,
+            market_id=explicit_market.group(1).lower(),
+            period=requested_period.group(1) if requested_period is not None else "latest",
+        )
     if requested_unavailable_source(question) is not None and not documents:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)

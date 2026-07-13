@@ -46,13 +46,15 @@ def enforce_market_answer_contract(
     if not contracted:
         contracted = _brand_comparison_answer(question, relevant_calls)
     if not contracted:
+        contracted = _historical_brand_metric_answer(question, relevant_calls)
+    if not contracted:
         contracted = _hira_trend_answer(question, relevant_calls)
     if not contracted:
         contracted = _trend_answer(question, relevant_calls)
     if not contracted:
         contracted = answer
     contracted = _public_language(question, contracted)
-    return _replace_provenance(contracted, relevant_calls, status_only=bool(_status_answer(question, calls)))
+    return _replace_provenance(question, contracted, relevant_calls, status_only=bool(_status_answer(question, calls)))
 
 
 def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
@@ -192,6 +194,24 @@ def _brand_comparison_answer(question: str, calls: Sequence[Mapping[str, Any]]) 
     return "\n".join(rendered)
 
 
+def _historical_brand_metric_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if "매출" not in question or not re.search(r"20\d{2}(?:년|-)\s*(?:0?[1-9]|1[0-2])(?:월)?", question):
+        return ""
+    for call in calls:
+        data = _render_data(call)
+        brand = str(data.get("brand") or "").strip()
+        period = str(data.get("period") or data.get("requested_period") or "").strip()
+        if not brand or not period:
+            continue
+        value = _decimal(data.get("sales_억원") or data.get("value_억원"))
+        if value is None:
+            value = _krw_to_eok(data.get("sales_krw") or data.get("value_krw") or data.get("value"))
+        if value is None:
+            continue
+        return f"{period} {brand} 매출은 {value:,.6f}억원입니다."
+    return ""
+
+
 def _hira_trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if "추이" not in question:
         return ""
@@ -232,7 +252,7 @@ def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if "추이" not in question:
         return ""
     for call in calls:
-        rows = _series_rows(call)
+        rows = _series_rows(call, question)
         if len(rows) < 3:
             continue
         subject = str(_render_data(call).get("brand") or "요청 지표")
@@ -241,39 +261,37 @@ def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
             f"## {subject} 추이",
             "| 기간 | 값 |",
             "| --- | --- |",
-            *(f"| {period} | {_format_series_value(value, unit)} |" for period, value in rows),
+            *(f"| {period} | {_format_series_value(value, unit)} |" for period, value, _ in rows),
         ]
         return "\n".join(rendered)
     return ""
 
 
-def _series_rows(call: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+def _series_rows(call: Mapping[str, Any], question: str) -> tuple[tuple[str, Any, str], ...]:
     data = _render_data(call)
-    rows: list[tuple[str, Any]] = []
+    rows: list[tuple[str, Any, str]] = []
+    keys = _series_value_keys(question)
     for raw in _series_candidates(data):
         for item in raw:
             if not isinstance(item, Mapping):
                 continue
             period = str(item.get("period") or item.get("year") or "").strip()
-            value = _first_present(
-                item,
-                (
-                    "ms_recent_pct",
-                    "ms_pct",
-                    "product_details",
-                    "ptntCnt",
-                    "value_억원",
-                    "value",
-                    "sales_억원",
-                    "sales_krw",
-                    "value_krw",
-                ),
-            )
+            key, value = _first_present_with_key(item, keys)
             if period and value not in (None, ""):
-                rows.append((period, value))
+                rows.append((period, value, key))
         if len(rows) >= 3:
             break
     return tuple(dict.fromkeys(rows))
+
+
+def _series_value_keys(question: str) -> tuple[str, ...]:
+    sales = ("value_억원", "sales_억원", "sales_krw", "value_krw", "value")
+    share = ("ms_recent_pct", "ms_pct")
+    if "매출" in question:
+        return (*sales, *share, "product_details", "ptntCnt")
+    if "점유율" in question:
+        return (*share, *sales, "product_details", "ptntCnt")
+    return (*share, "product_details", "ptntCnt", *sales)
 
 
 def _series_candidates(data: Mapping[str, Any]) -> tuple[Sequence[Any], ...]:
@@ -290,14 +308,23 @@ def _series_candidates(data: Mapping[str, Any]) -> tuple[Sequence[Any], ...]:
     return tuple(candidates)
 
 
-def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any]]) -> str:
+def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any, str]]) -> str:
     data = _render_data(call)
+    selected_key = rows[0][2] if rows else ""
+    if selected_key in {"ms_recent_pct", "ms_pct"}:
+        return "%"
+    if selected_key == "ptntCnt":
+        return "명"
+    tool = str(call.get("tool") or "")
+    if tool == "csd_activity_trend" or selected_key == "product_details":
+        return "건"
+    if selected_key in {"sales_krw", "value_krw"}:
+        return "KRW"
+    if selected_key in {"sales_억원", "value_억원", "value"}:
+        return "억원"
     explicit = str(data.get("unit") or data.get("unit_label") or "")
     if explicit:
         return explicit
-    tool = str(call.get("tool") or "")
-    if tool == "csd_activity_trend":
-        return "건"
     metric = str(data.get("metric") or "").lower()
     if "share" in metric or any("ms_" in str(key) for key in data):
         return "%"
@@ -339,6 +366,7 @@ def _public_language(question: str, answer: str) -> str:
 
 
 def _replace_provenance(
+    question: str,
     answer: str,
     calls: Sequence[Mapping[str, Any]],
     *,
@@ -347,7 +375,7 @@ def _replace_provenance(
     if not calls and not status_only:
         return answer
     raw_rows = _provenance_rows(calls) if calls else (ProvenanceRow(),)
-    rows = tuple(_complete_row(row) for row in raw_rows)
+    rows = tuple(_complete_row(row, unit=_requested_unit(question, answer)) for row in raw_rows)
     block = render_provenance_table("## 출처", rows).replace("## 출처\n|", "## 출처\n\n|")
     match = _SOURCE_HEADING_RE.search(answer)
     head = answer[: match.start()].rstrip() if match else answer.rstrip()
@@ -380,13 +408,29 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
     return provenance_rows_from_calls(calls, ())
 
 
-def _complete_row(row: ProvenanceRow) -> ProvenanceRow:
+def _complete_row(row: ProvenanceRow, *, unit: str | None = None) -> ProvenanceRow:
     values = tuple("해당 없음" if value == MISSING_LABEL else value for value in row.as_tuple())
     if values[2].startswith("전략뷰"):
         values = (*values[:2], "전략뷰", *values[3:])
     elif values[2].startswith("일반뷰"):
         values = (*values[:2], "일반뷰", *values[3:])
+    if unit:
+        values = (*values[:6], unit)
     return ProvenanceRow(*values)
+
+
+def _requested_unit(question: str, answer: str) -> str | None:
+    if "환자" in question:
+        return "명"
+    if "영업활동" in question:
+        return "건"
+    if any(token in question for token in ("점유율", "CR")) or re.search(r"\d[\d,.]*%", answer):
+        return "%"
+    if "HHI" in question and "CR" not in question:
+        return "지수"
+    if any(token in question for token in ("매출", "시장규모", "규모")):
+        return "억원"
+    return None
 
 
 def _find_hhi(calls: Sequence[Mapping[str, Any]]) -> Decimal | None:
@@ -473,11 +517,11 @@ def _is_file_tool(call: Mapping[str, Any]) -> bool:
     )
 
 
-def _first_present(container: Mapping[str, Any], keys: Sequence[str]) -> Any:
+def _first_present_with_key(container: Mapping[str, Any], keys: Sequence[str]) -> tuple[str, Any]:
     for key in keys:
         if container.get(key) not in (None, ""):
-            return container[key]
-    return None
+            return key, container[key]
+    return "", None
 
 
 def _render_data(call: Mapping[str, Any]) -> Mapping[str, Any]:

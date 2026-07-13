@@ -17,6 +17,7 @@ from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
+from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
@@ -50,6 +51,38 @@ def _market_scope_resolver() -> MarketScopeResolver:
         }
     )
     return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader)
+
+
+def test_market_scope_queries_explicit_strategy_id_without_brand_fallback() -> None:
+    def record(brand: str, value: float) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={"2025-04": {"raw_value": value}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(
+                (record("리바로", 8_318_411_500.0), record("리바로젯", 9_781_370_500.0))
+            )
+        ),
+    )
+
+    result = resolver.answer_market_id("ml_006 2025-04 시장규모", market_id="ml_006", period="2025-04")
+
+    data = result["tool_calls"][0]["render_data"]
+    assert data["market_id"] == "ml_006"
+    assert data["period"] == "2025-04"
+    assert data["market_size_recent_krw"] == 18_099_782_000.0
+    assert data["market_size_억원"] == 180.99782
 
 
 def _reconstruct_answer_from_sse(sse: str) -> str:
