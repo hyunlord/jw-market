@@ -28,6 +28,7 @@ from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
@@ -1102,6 +1103,11 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             markdown_response,
             result.get("general_view_contract"),
         )
+        answer = enforce_market_answer_contract(
+            question,
+            answer,
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        )
         trace = trace_envelope(
             question=question,
             result=result,
@@ -1181,6 +1187,11 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
     safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
+    safe_answer = enforce_market_answer_contract(
+        question,
+        safe_answer,
+        result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+    )
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
     # notice/source appenders above so no path bypasses terminology scrubbing.
     safe_answer = scrub_internal_terminology(safe_answer)

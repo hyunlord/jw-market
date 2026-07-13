@@ -1,0 +1,497 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
+import re
+from typing import Any, Final
+
+from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
+from jw_chat_agent_poc.orchestrator.provenance_model import (
+    MISSING_LABEL,
+    ProvenanceRow,
+    render_provenance_table,
+)
+
+
+_INTERNAL_LABEL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9_])(?:ml|cd|strategy|competitive)_\d+(?![A-Za-z0-9_])"
+    r"|\b(?:market_landscape|competitive_dynamics|nedrug_mcp|query_spec|tool_call_\d+)\b",
+    re.IGNORECASE,
+)
+_SOURCE_HEADING_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^##\s+출처\s*$")
+_YEAR_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
+_CAUSAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?P<claim>[^\n.!?]*(?:때문|이므로|따라서)[^\n.!?]*[.!?]?)"
+)
+
+
+def enforce_market_answer_contract(
+    question: str,
+    answer: str,
+    tool_calls: Sequence[Mapping[str, Any]],
+) -> str:
+    """Validate market answers against requested slots and structured tool facts."""
+
+    calls = tuple(call for call in tool_calls if isinstance(call, Mapping))
+    if calls and all(_is_file_tool(call) for call in calls):
+        return answer
+    relevant_calls = _calls_matching_question(question, calls)
+    contracted = _status_answer(question, calls)
+    if not contracted:
+        contracted = _strategy_market_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _concentration_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _channel_ranking_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _brand_comparison_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _hira_trend_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _trend_answer(question, relevant_calls)
+    if not contracted:
+        contracted = answer
+    contracted = _public_language(question, contracted)
+    return _replace_provenance(contracted, relevant_calls, status_only=bool(_status_answer(question, calls)))
+
+
+def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    compact = re.sub(r"\s+", " ", question).strip()
+    if "지역" in compact and "재구매율" in compact:
+        return "현재 DB는 지역별 재구매율을 지원하지 않습니다."
+    if "시장" in compact and any(token in compact for token in ("고지혈증", "이상지질혈증", "당뇨", "빈혈")):
+        return "현재 지원되지 않는 시장 매핑입니다. 브랜드 또는 ATC4 시장을 지정해 주세요."
+    if re.fullmatch(r"매출\s*(?:알려\s*줘|알려주세요)?[?.!]?", compact):
+        return "브랜드·시장·기간을 지정해 주세요."
+
+    statuses = {
+        str(_render_data(call).get("status") or "").lower()
+        for call in calls
+    }
+    if statuses & {"error", "query_failed", "timeout", "failed"}:
+        return "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다."
+    if statuses & {"not_found", "mapping_failed"}:
+        return "브랜드 목록에서 일치 항목을 찾지 못했습니다."
+
+    requested_years = [int(value) for value in _YEAR_RE.findall(compact)]
+    if not requested_years:
+        return ""
+    available_to = _first_nested_value(calls, "available_to")
+    if not available_to:
+        return ""
+    available_years = [int(value) for value in _YEAR_RE.findall(str(available_to))]
+    if available_years and max(requested_years) > max(available_years):
+        requested = max(requested_years)
+        return f"보유 데이터는 {available_to}까지이며 {requested}년 실적은 없습니다."
+    return ""
+
+
+def _strategy_market_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if not re.search(r"\bml_\d+\b", question, re.IGNORECASE):
+        return ""
+    for call in calls:
+        data = _render_data(call)
+        market_id = str(data.get("market_id") or data.get("market") or "")
+        view = str(data.get("view_type") or data.get("view") or "").lower()
+        if not (market_id.lower().startswith("ml_") or "market_landscape" in view):
+            continue
+        value = data.get("market_size_억원")
+        if value is None:
+            value = _krw_to_eok(data.get("market_size_recent_krw"))
+        amount = _decimal(value)
+        if amount is None:
+            continue
+        name = str(data.get("market_name") or "해당 시장").strip()
+        period = str(data.get("period") or data.get("requested_period") or "").strip()
+        prefix = f"{period} " if period else ""
+        return f"{prefix}{name}의 전략뷰 시장규모는 {amount:,.6f}억원입니다."
+    return ""
+
+
+def _concentration_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if not any(token in question for token in ("집중도", "HHI", "CR")):
+        return ""
+    hhi = _find_hhi(calls)
+    shares = _top_shares(calls, 5)
+    if hhi is None or len(shares) < 5:
+        return ""
+    cr5 = sum(shares, Decimal("0"))
+    return (
+        "## 시장 집중도\n"
+        f"HHI {hhi:.2f}, CR5 {cr5:.2f}%입니다. "
+        "두 지표는 동일한 최신 시장 범위의 원시 점유율로 계산했습니다."
+    )
+
+
+def _channel_ranking_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    channel = _requested_channel(question)
+    if not channel or not any(token in question for token in ("상위", "순위")):
+        return ""
+    for call in calls:
+        data = _render_data(call)
+        segments = data.get("level_segments")
+        if not isinstance(segments, Sequence) or isinstance(segments, str | bytes):
+            continue
+        rows: list[str] = []
+        for item in segments:
+            if not isinstance(item, Mapping):
+                continue
+            rank = item.get("rank")
+            brand = str(item.get("brand") or item.get("name") or "").strip()
+            share = _decimal(item.get("ms_recent_pct"))
+            if rank in (None, "") or not brand:
+                continue
+            share_text = f"{share:.2f}%" if share is not None else "해당 없음"
+            rows.append(f"| {rank}위 | {brand} | {share_text} |")
+        if rows:
+            return "\n".join(
+                (
+                    f"## {channel} 채널 내 상위 브랜드",
+                    "| 순위 | 브랜드 | 점유율 |",
+                    "| --- | --- | --- |",
+                    *rows,
+                )
+            )
+    return ""
+
+
+def _brand_comparison_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if "비교" not in question:
+        return ""
+    rows: dict[str, tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
+    for call in calls:
+        data = _render_data(call)
+        brand = str(data.get("brand") or "").strip()
+        series = data.get("brand_value_series_10pt")
+        if not brand or brand in rows or not isinstance(series, Sequence) or isinstance(series, str | bytes):
+            continue
+        points = tuple(item for item in series if isinstance(item, Mapping) and item.get("period"))
+        if len(points) >= 2:
+            rows[brand] = (points[0], points[-1])
+    requested = tuple(brand for brand in rows if brand in question)
+    selected = requested if len(requested) >= 2 else tuple(rows)[:2]
+    if len(selected) < 2:
+        return ""
+    rendered = [
+        "## 브랜드 비교",
+        "| 브랜드 | 시작 점유율 | 최신 점유율 | 방향 | 시작 매출 | 최신 매출 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for brand in selected:
+        start, latest = rows[brand]
+        start_share = _decimal(start.get("ms_pct") or start.get("ms_recent_pct"))
+        latest_share = _decimal(latest.get("ms_pct") or latest.get("ms_recent_pct"))
+        if start_share is None or latest_share is None:
+            return ""
+        direction = "상승" if latest_share > start_share else "하락" if latest_share < start_share else "보합"
+        rendered.append(
+            "| "
+            f"{brand} | {start['period']} {start_share:.2f}% | {latest['period']} {latest_share:.2f}% | {direction} | "
+            f"{_sales_point(start)} | {_sales_point(latest)} |"
+        )
+    return "\n".join(rendered)
+
+
+def _hira_trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if "추이" not in question:
+        return ""
+    yearly: dict[str, Decimal] = {}
+    disease = "해당 질환"
+    for call in calls:
+        if call.get("tool") != "hira_disease_hospitalization_outpatient_stats":
+            continue
+        data = _render_data(call)
+        request = data.get("request")
+        year = str(request.get("year") or "").strip() if isinstance(request, Mapping) else ""
+        disease = str(data.get("mapping_disease_name") or disease)
+        items = data.get("items")
+        if not year or not isinstance(items, Sequence) or isinstance(items, str | bytes):
+            continue
+        outpatient = next(
+            (
+                _decimal(item.get("ptntCnt"))
+                for item in items
+                if isinstance(item, Mapping) and item.get("inpatOpat") == "외래"
+            ),
+            None,
+        )
+        if outpatient is not None:
+            yearly[year] = outpatient
+    if len(yearly) < 3:
+        return ""
+    lines = [
+        f"## {disease} 외래 환자수 추이",
+        "| 연도 | 환자수 |",
+        "| --- | --- |",
+        *(f"| {year} | {yearly[year]:,.0f}명 |" for year in sorted(yearly)),
+    ]
+    return "\n".join(lines)
+
+
+def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if "추이" not in question:
+        return ""
+    for call in calls:
+        rows = _series_rows(call)
+        if len(rows) < 3:
+            continue
+        subject = str(_render_data(call).get("brand") or "요청 지표")
+        unit = _series_unit(call, rows)
+        rendered = [
+            f"## {subject} 추이",
+            "| 기간 | 값 |",
+            "| --- | --- |",
+            *(f"| {period} | {_format_series_value(value, unit)} |" for period, value in rows),
+        ]
+        return "\n".join(rendered)
+    return ""
+
+
+def _series_rows(call: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+    data = _render_data(call)
+    rows: list[tuple[str, Any]] = []
+    for raw in _series_candidates(data):
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            period = str(item.get("period") or item.get("year") or "").strip()
+            value = _first_present(
+                item,
+                (
+                    "ms_recent_pct",
+                    "ms_pct",
+                    "product_details",
+                    "ptntCnt",
+                    "value_억원",
+                    "value",
+                    "sales_억원",
+                    "sales_krw",
+                    "value_krw",
+                ),
+            )
+            if period and value not in (None, ""):
+                rows.append((period, value))
+        if len(rows) >= 3:
+            break
+    return tuple(dict.fromkeys(rows))
+
+
+def _series_candidates(data: Mapping[str, Any]) -> tuple[Sequence[Any], ...]:
+    candidates: list[Sequence[Any]] = []
+    for key in ("series", "brand_value_series_10pt", "market_size_series", "items"):
+        value = data.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            candidates.append(value)
+    nested_calls = data.get("calls")
+    if isinstance(nested_calls, Sequence) and not isinstance(nested_calls, str | bytes):
+        for nested in nested_calls:
+            if isinstance(nested, Mapping):
+                candidates.extend(_series_candidates(_render_data(nested)))
+    return tuple(candidates)
+
+
+def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any]]) -> str:
+    data = _render_data(call)
+    explicit = str(data.get("unit") or data.get("unit_label") or "")
+    if explicit:
+        return explicit
+    tool = str(call.get("tool") or "")
+    if tool == "csd_activity_trend":
+        return "건"
+    metric = str(data.get("metric") or "").lower()
+    if "share" in metric or any("ms_" in str(key) for key in data):
+        return "%"
+    if "patient" in metric or tool.startswith("hira_disease"):
+        return "명"
+    return "억원"
+
+
+def _sales_point(point: Mapping[str, Any]) -> str:
+    value = _decimal(point.get("value_억원"))
+    if value is None:
+        value = _krw_to_eok(point.get("value_krw") or point.get("value"))
+    return f"{value:,.2f}억원" if value is not None else "해당 없음"
+
+
+def _format_series_value(value: Any, unit: str) -> str:
+    number = _decimal(value)
+    if number is None:
+        return str(value)
+    if unit in {"건", "명"}:
+        return f"{number:,.0f}{unit}"
+    if unit == "%":
+        return f"{number:.2f}%"
+    if "KRW" in unit.upper() or abs(number) >= Decimal("100000000"):
+        number /= Decimal("100000000")
+    return f"{number:,.2f}억원"
+
+
+def _public_language(question: str, answer: str) -> str:
+    cleaned = _INTERNAL_LABEL_RE.sub("", answer)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    if any(token in question for token in ("왜", "원인", "전망", "위협")) and _CAUSAL_RE.search(cleaned):
+        cleaned = _CAUSAL_RE.sub("", cleaned).strip()
+        cleaned = (
+            f"{cleaned}\n\n관찰된 수치만으로 원인으로 확정할 수 없습니다. "
+            "가능성을 검토하려면 처방 전환, 환자 구성, 채널별 활동 자료를 추가 확인해야 합니다."
+        ).strip()
+    return cleaned
+
+
+def _replace_provenance(
+    answer: str,
+    calls: Sequence[Mapping[str, Any]],
+    *,
+    status_only: bool = False,
+) -> str:
+    if not calls and not status_only:
+        return answer
+    raw_rows = _provenance_rows(calls) if calls else (ProvenanceRow(),)
+    rows = tuple(_complete_row(row) for row in raw_rows)
+    block = render_provenance_table("## 출처", rows).replace("## 출처\n|", "## 출처\n\n|")
+    match = _SOURCE_HEADING_RE.search(answer)
+    head = answer[: match.start()].rstrip() if match else answer.rstrip()
+    return f"{head}\n\n{block}" if head else block
+
+
+def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow, ...]:
+    hira_years = sorted(
+        {
+            str(request.get("year"))
+            for call in calls
+            if call.get("tool") == "hira_disease_hospitalization_outpatient_stats"
+            for request in (_render_data(call).get("request"),)
+            if isinstance(request, Mapping) and request.get("year")
+        }
+    )
+    if len(hira_years) >= 3:
+        period = hira_years[0] if len(hira_years) == 1 else f"{hira_years[0]}~{hira_years[-1]}"
+        return (
+            ProvenanceRow(
+                "HIRA 질병정보서비스",
+                period,
+                MISSING_LABEL,
+                MISSING_LABEL,
+                MISSING_LABEL,
+                "전체",
+                "명",
+            ),
+        )
+    return provenance_rows_from_calls(calls, ())
+
+
+def _complete_row(row: ProvenanceRow) -> ProvenanceRow:
+    values = tuple("해당 없음" if value == MISSING_LABEL else value for value in row.as_tuple())
+    if values[2].startswith("전략뷰"):
+        values = (*values[:2], "전략뷰", *values[3:])
+    elif values[2].startswith("일반뷰"):
+        values = (*values[:2], "일반뷰", *values[3:])
+    return ProvenanceRow(*values)
+
+
+def _find_hhi(calls: Sequence[Mapping[str, Any]]) -> Decimal | None:
+    for call in calls:
+        data = _render_data(call)
+        for key in ("hhi", "hhi_recent"):
+            value = _decimal(data.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _top_shares(calls: Sequence[Mapping[str, Any]], count: int) -> tuple[Decimal, ...]:
+    for call in calls:
+        data = _render_data(call)
+        segments = data.get("level_segments")
+        if not isinstance(segments, Sequence) or isinstance(segments, str | bytes):
+            continue
+        shares: list[Decimal] = []
+        for item in segments[:count]:
+            if not isinstance(item, Mapping):
+                break
+            share = _decimal(item.get("ms_recent_pct"))
+            if share is None:
+                break
+            shares.append(share)
+        if len(shares) == count:
+            return tuple(shares)
+    return ()
+
+
+def _first_nested_value(calls: Sequence[Mapping[str, Any]], key: str) -> Any:
+    for call in calls:
+        data = _render_data(call)
+        if data.get(key) not in (None, ""):
+            return data[key]
+    return ""
+
+
+def _calls_matching_question(
+    question: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    channel = _requested_channel(question)
+    if channel:
+        matched = tuple(call for call in calls if channel in _call_channels(call))
+        return matched
+    if re.search(r"\bml_\d+\b", question, re.IGNORECASE):
+        matched = tuple(
+            call
+            for call in calls
+            if str(_render_data(call).get("market_id") or "").lower().startswith("ml_")
+            or "market_landscape" in str(_render_data(call).get("view_type") or "").lower()
+        )
+        return matched
+    return tuple(calls)
+
+
+def _requested_channel(question: str) -> str:
+    for channel in ("상급종합병원", "상급종병", "종합병원", "종병", "병원", "의원", "약국"):
+        if channel in question:
+            return channel
+    return ""
+
+
+def _call_channels(call: Mapping[str, Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    for candidate in (call.get("applied_filters"), _render_data(call).get("applied_filters")):
+        if not isinstance(candidate, Mapping):
+            continue
+        value = candidate.get("channel") or candidate.get("visit_location")
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            values.extend(str(item) for item in value)
+        elif value not in (None, ""):
+            values.append(str(value))
+    return tuple(values)
+
+
+def _is_file_tool(call: Mapping[str, Any]) -> bool:
+    tool = str(call.get("tool") or "")
+    source = str(call.get("source") or "")
+    return tool.startswith(("query_uploaded_sql", "search_uploaded_file", "file_")) or source.startswith(
+        ("uploaded_file", "file_sql")
+    )
+
+
+def _first_present(container: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        if container.get(key) not in (None, ""):
+            return container[key]
+    return None
+
+
+def _render_data(call: Mapping[str, Any]) -> Mapping[str, Any]:
+    data = call.get("render_data")
+    return data if isinstance(data, Mapping) else {}
+
+
+def _decimal(value: Any) -> Decimal | None:
+    try:
+        return Decimal(str(value)) if value not in (None, "") else None
+    except InvalidOperation:
+        return None
+
+
+def _krw_to_eok(value: Any) -> Decimal | None:
+    amount = _decimal(value)
+    return amount / Decimal("100000000") if amount is not None else None

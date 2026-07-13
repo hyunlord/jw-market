@@ -1,0 +1,367 @@
+from __future__ import annotations
+
+from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+
+
+TOP_FACT = """### 상위 브랜드 점유율 추이 fact
+| 최신 순위 | 브랜드 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 로수젯 | 2025-08 9.00% | 2026-05 9.13% | +0.13%p | 195.24억원 | +2.00억원 |
+| 2 | 리피토 | 2025-08 6.30% | 2026-05 6.13% | -0.17%p | 131.09억원 | -3.00억원 |
+| 3 | 리바로젯 | 2025-08 5.00% | 2026-05 5.12% | +0.12%p | 109.46억원 | +2.00억원 |
+| 4 | 아토젯 | 2025-08 4.80% | 2026-05 4.95% | +0.15%p | 105.87억원 | +3.00억원 |
+| 5 | 로수바미브 | 2025-08 4.10% | 2026-05 4.20% | +0.10%p | 89.76억원 | +2.00억원 |
+
+### provenance fact
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-05 | 전략뷰 | 스타틴 시장 | 555 | 전체 | % |
+"""
+
+
+def _top_call() -> dict:
+    rows = (
+        (1, "로수젯", 9.1264939920, 19_523_856_225.95),
+        (2, "리피토", 6.1277726065, 13_108_840_203.03),
+        (3, "리바로젯", 5.1167179108, 10_945_941_007.16),
+        (4, "아토젯", 4.9487627406, 10_586_642_836.56),
+        (5, "로수바미브", 4.1960520158, 8_976_406_092.54),
+    )
+    return {
+        "tool": "get_brand_metric",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_top_brands",
+            "period": "2026-05",
+            "market_id": "ml_006",
+            "market_name": "스타틴 시장",
+            "total_brands_in_market": 555,
+            "level_segments": [
+                {
+                    "rank": rank,
+                    "brand": brand,
+                    "ms_recent_pct": share,
+                    "value": sales,
+                    "value_억원": sales / 100_000_000,
+                }
+                for rank, brand, share, sales in rows
+            ],
+        },
+    }
+
+
+def test_top5_sum_uses_raw_shares_before_final_rounding() -> None:
+    answer = deterministic_top_n_share_answer(
+        "리바로 시장 상위 5개 브랜드 점유율과 합계를 알려줘",
+        TOP_FACT,
+        [_top_call()],
+    )
+
+    assert answer.startswith("상위 5개 합계 시장점유율은 29.52%입니다.")
+    assert "29.53%" not in answer
+
+
+def test_concentration_requires_hhi_and_raw_cr5() -> None:
+    answer = enforce_market_answer_contract(
+        question="이 시장 집중도는 어때? HHI와 CR5를 알려줘",
+        answer="HHI는 253.62입니다.",
+        tool_calls=[_top_call(), {"tool": "get_brand_metric", "render_data": {"status": "ok", "metric": "hhi", "hhi": 253.62}}],
+    )
+
+    assert "HHI 253.62" in answer
+    assert "CR5 29.52%" in answer
+
+
+def test_strategy_identifier_keeps_strategy_view_and_public_name() -> None:
+    call = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_006",
+            "market_name": "리바로·리바로젯 시장",
+            "view_type": "market_landscape",
+            "period": "2025-04",
+            "market_size_억원": 2106.71557456,
+            "total_brands_in_market": 470,
+        },
+    }
+
+    answer = enforce_market_answer_contract(
+        question="ml_006 2025-04 시장규모",
+        answer="일반뷰 후보를 찾지 못했습니다.",
+        tool_calls=[call],
+    )
+
+    assert "전략뷰" in answer
+    assert "2,106.715575억원" in answer
+    assert "ml_006" not in answer
+    assert "market_landscape" not in answer
+
+
+def test_unsupported_region_repurchase_never_falls_back_to_market_totals() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 지역별 재구매율을 알려줘",
+        answer="전체 시장 상위 브랜드는 로수젯이며 점유율은 9.13%입니다.",
+        tool_calls=[_top_call()],
+    )
+
+    assert answer.startswith("현재 DB는 지역별 재구매율을 지원하지 않습니다.")
+    assert "로수젯" not in answer
+    assert "9.13%" not in answer
+
+
+def test_missing_subject_is_not_reported_as_missing_data() -> None:
+    answer = enforce_market_answer_contract(
+        question="매출 알려줘",
+        answer="매출 데이터가 확보되지 않았습니다.",
+        tool_calls=[],
+    )
+
+    assert answer.startswith("브랜드·시장·기간을 지정해 주세요.")
+
+
+def test_future_period_reports_owned_range_without_fake_range() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 2030년 매출",
+        answer="기준기간은 2026-05~2030이며 데이터가 없습니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "unsupported",
+                    "brand": "리바로",
+                    "requested_period": "2030",
+                    "available_to": "2026-05",
+                },
+            }
+        ],
+    )
+
+    assert "보유 데이터는 2026-05까지이며 2030년 실적은 없습니다." in answer
+    assert "2026-05~2030" not in answer
+
+
+def test_internal_identifiers_and_causal_assertion_are_removed() -> None:
+    answer = enforce_market_answer_contract(
+        question="왜 리바로 점유율이 하락했나?",
+        answer=(
+            "market_landscape의 query_spec과 nedrug_mcp를 보면 복합제 성장 압력 때문에 하락했습니다."
+        ),
+        tool_calls=[],
+    )
+
+    assert "market_landscape" not in answer
+    assert "query_spec" not in answer
+    assert "nedrug_mcp" not in answer
+    assert "때문" not in answer
+    assert "원인으로 확정할 수 없습니다" in answer
+    assert "추가 확인" in answer
+
+
+def test_provenance_is_rebuilt_with_seven_public_nonempty_fields() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 상급종병 채널 매출",
+        answer="상급종병 채널 매출입니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "applied_filters": {"channel": "상급종병"},
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "metric": "sales",
+                    "period": "2026-05",
+                    "market_name": "리바로·리바로젯 시장",
+                    "view_type": "market_landscape",
+                    "rank_denominator": 555,
+                    "sales_억원": 12.3,
+                },
+            }
+        ],
+    )
+
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in answer
+    assert "| UBIST | 2026-05 | 전략뷰 | 리바로·리바로젯 시장 | 555 | 상급종병 | 억원 |" in answer
+    assert "—" not in answer
+
+
+def test_trend_question_surfaces_full_monthly_series_instead_of_average() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 최근 6개월 점유율 추이",
+        answer="최근 6개월 평균은 3.81%입니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "metric": "series",
+                    "unit": "%",
+                    "series": [
+                        {"period": f"2026-{month:02d}", "ms_recent_pct": value}
+                        for month, value in enumerate((3.72, 3.78, 3.81, 3.93, 3.84, 3.76), 1)
+                    ],
+                },
+            }
+        ],
+    )
+
+    assert len([line for line in answer.splitlines() if line.startswith("| 2026-") and line.count("|") == 3]) == 6
+    assert "평균은 3.81%" not in answer
+
+
+def test_csd_trend_surfaces_every_month_and_csd_provenance() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 영업활동 추이",
+        answer="2025-06 1,775건에서 2026-05 1,769건입니다.",
+        tool_calls=[
+            {
+                "tool": "csd_activity_trend",
+                "source": "CSD ChannelDynamics",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "source_label": "CSD ChannelDynamics",
+                    "series": [
+                        {"period": "2025-06", "product_details": 1775},
+                        {"period": "2025-07", "product_details": 1801},
+                        {"period": "2026-05", "product_details": 1769},
+                    ],
+                },
+            }
+        ],
+    )
+
+    assert len([line for line in answer.splitlines() if line.startswith("| 20") and line.count("|") == 3]) == 3
+    assert "| CSD ChannelDynamics |" in answer
+    assert "| 건 |" in answer
+
+
+def test_hira_trend_uses_every_requested_year_instead_of_latest_snapshot() -> None:
+    calls = [
+        {
+            "tool": "hira_disease_hospitalization_outpatient_stats",
+            "source": "hira_disease",
+            "render_data": {
+                "status": "live",
+                "request": {"sickCd": "E78", "year": str(year)},
+                "mapping_disease_name": "지질단백질대사장애 및 기타 지질증",
+                "items": [
+                    {"inpatOpat": "입원", "ptntCnt": 3_000 + year},
+                    {"inpatOpat": "외래", "ptntCnt": count},
+                ],
+            },
+        }
+        for year, count in ((2020, 900_000), (2021, 980_000), (2022, 1_080_000), (2023, 1_190_000), (2024, 1_305_727))
+    ]
+
+    answer = enforce_market_answer_contract(
+        question="고지혈증 환자수 추이를 알려줘 (HIRA)",
+        answer="2024년 외래 환자수는 1,305,727명입니다.",
+        tool_calls=calls,
+    )
+
+    assert len([line for line in answer.splitlines() if line.startswith("| 20") and line.count("|") == 3]) == 5
+    assert "| 2020 | 900,000명 |" in answer
+    assert "| 2024 | 1,305,727명 |" in answer
+    assert "| HIRA" in answer
+    assert "| 2020~2024 |" in answer
+
+
+def test_brand_comparison_deduplicates_calls_and_computes_share_direction() -> None:
+    def call(brand: str, start: float, latest: float, start_sales: float, latest_sales: float) -> dict:
+        return {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "brand": brand,
+                "period": "2026-05",
+                "market_name": "리바로·리바로젯 시장",
+                "view_type": "market_landscape",
+                "rank_denominator": 555,
+                "brand_value_series_10pt": [
+                    {"period": "2025-08", "value_krw": start_sales, "ms_pct": start},
+                    {"period": "2026-05", "value_krw": latest_sales, "ms_pct": latest},
+                ],
+            },
+        }
+
+    livaro = call("리바로", 3.93, 3.76, 7_963_000_000, 8_039_000_000)
+    rosuzet = call("로수젯", 9.10, 9.13, 18_459_000_000, 19_524_000_000)
+    answer = enforce_market_answer_contract(
+        question="리바로와 로수젯을 비교해줘",
+        answer="리바로는 상승, 리바로는 상승, 로수젯은 상승했습니다.",
+        tool_calls=[livaro, livaro, rosuzet, rosuzet, rosuzet],
+    )
+
+    assert answer.count("| 리바로 |") == 1
+    assert answer.count("| 로수젯 |") == 1
+    assert "| 리바로 | 2025-08 3.93% | 2026-05 3.76% | 하락 |" in answer
+    assert "| 로수젯 | 2025-08 9.10% | 2026-05 9.13% | 상승 |" in answer
+
+
+def test_channel_ranking_uses_only_channel_filtered_rows() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 시장에서 상급종합병원 채널 내 상위 브랜드",
+        answer="전체시장 1위 로수젯입니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "applied_filters": {"channel": "상급종합병원"},
+                "render_data": {
+                    "metric": "market_top_brands",
+                    "period": "2026-05",
+                    "level_segments": [
+                        {"rank": 1, "brand": "채널브랜드A", "ms_recent_pct": 12.345},
+                        {"rank": 2, "brand": "채널브랜드B", "ms_recent_pct": 10.111},
+                    ],
+                },
+            },
+            _top_call(),
+        ],
+    )
+
+    assert "채널브랜드A" in answer
+    assert "채널브랜드B" in answer
+    assert "로수젯" not in answer
+
+
+def test_unavailable_states_are_not_conflated() -> None:
+    mapping = enforce_market_answer_contract("고지혈증 시장 규모", "원천 없음", [])
+    entity = enforce_market_answer_contract(
+        "가상브랜드XYZ 매출", "확인 불가", [{"tool": "get_brand_metric", "render_data": {"status": "not_found"}}]
+    )
+    technical = enforce_market_answer_contract(
+        "리바로 매출", "확인 불가", [{"tool": "get_brand_metric", "render_data": {"status": "query_failed"}}]
+    )
+
+    assert mapping.startswith("현재 지원되지 않는 시장 매핑입니다.")
+    assert entity.startswith("브랜드 목록에서 일치 항목을 찾지 못했습니다.")
+    assert technical.startswith("데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.")
+
+
+def test_file_sql_only_answer_is_outside_market_contract() -> None:
+    original = "업로드 파일 집계 결과는 690건, 2,679,529입니다."
+
+    answer = enforce_market_answer_contract(
+        question="이 파일의 BPI를 집계해줘",
+        answer=original,
+        tool_calls=[
+            {
+                "tool": "query_uploaded_sql",
+                "source": "uploaded_file_sql",
+                "render_data": {"status": "ok", "rows": [{"count": 690, "sum": 2_679_529}]},
+            }
+        ],
+    )
+
+    assert answer == original

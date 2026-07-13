@@ -20,6 +20,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, sou
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
@@ -673,6 +674,7 @@ class GenosClient:
                     )
                     answer = apply_requested_source_trap_gate(question, answer)
                     answer = ensure_file_absence_statement(question, answer, file_context)
+                    answer = enforce_market_answer_contract(question, answer, verified_calls)
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             yield from chunk_text(

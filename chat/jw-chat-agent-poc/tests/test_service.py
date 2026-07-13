@@ -1286,7 +1286,7 @@ def test_stream_endpoint_handles_same_market_default_before_agent_fallback() -> 
     assert "event: conversation\ndata: conv-market\n\n" in response.text
     assert "전략뷰 기준" in response.text
     assert "competitive_dynamics" not in response.text
-    assert "전략뷰 (market_landscape)" in response.text
+    assert "| 전략뷰 |" in response.text
     assert "## 주의" not in response.text
     assert "2,256.77억원" in response.text
     assert "84.93억원" not in response.text
@@ -1323,7 +1323,7 @@ def test_stream_endpoint_answers_strong_view_question_instead_of_deferring() -> 
     assert "어느 기준으로 볼까요" not in response.text
     assert "전략뷰 기준" in response.text
     assert "competitive_dynamics" not in response.text
-    assert "전략뷰 (market_landscape)" in response.text
+    assert "| 전략뷰 |" in response.text
     assert "## 주의" not in response.text
     assert "2,256.77억원" in response.text
     assert FakeAgent.calls == []
