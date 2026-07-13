@@ -182,6 +182,13 @@ def test_aggregate_intent_covers_natural_language_sum_comparison() -> None:
     assert file_sql_query._is_aggregate_question(question) is True
 
 
+def test_named_column_sum_is_not_misclassified_as_schema_inspection() -> None:
+    question = "VALUES LC SI PRICE 1/2026 컬럼의 전체 합계를 계산해줘."
+
+    assert file_sql_query._is_aggregate_question(question) is True
+    assert file_sql_query._is_schema_question(question) is False
+
+
 def test_wide_schema_keeps_identity_columns_before_keyword_matches() -> None:
     schema = {
         "logical_name": SQL_SOURCE.logical_name,

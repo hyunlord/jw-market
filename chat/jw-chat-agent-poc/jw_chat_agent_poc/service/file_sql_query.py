@@ -128,6 +128,8 @@ def _source_items(sources: Sequence[SqlFileSource]) -> tuple[dict[str, Any], ...
 
 
 def _is_schema_question(question: str) -> bool:
+    if _is_aggregate_question(question):
+        return False
     return bool(
         re.search(
             r"(?:열\s*목록|컬럼|스키마|헤더|(?:파일|문서|엑셀|시트)\s*구조|시트\s*수|행\s*수|마지막\s*(?:월|기간)|월별\s*(?:value|값)\s*열)",
