@@ -398,3 +398,110 @@ class SearchResponse(BaseModel):
         ),
     )
     errors: list[str] = Field(default_factory=list)
+
+
+class PublicUploadedTempDocument(BaseModel):
+    """User-visible metadata for a staged upload."""
+
+    file_name: str
+
+
+class PublicBlockedUpload(BaseModel):
+    """User-visible upload rejection without internal diagnostics."""
+
+    file_name: str
+    route: Literal["blocked_oversized", "preprocess_failed"]
+
+
+class PublicSqlTableMetadata(BaseModel):
+    """The SQL routing contract required by the chat consumer."""
+
+    logical_name: str
+    sheet_name: str
+    row_count: int
+    column_count: int
+
+
+class PublicCommitDocumentResult(BaseModel):
+    """A committed document with only user and query-routing metadata."""
+
+    file_name: str
+    chunk_count: int
+    route: Literal["vdb", "vdb_large", "blocked_oversized", "sql"]
+    status: str
+    sql_tables: list[PublicSqlTableMetadata] = Field(default_factory=list)
+
+
+class PublicCommitResponse(BaseModel):
+    """Public commit result projected from the internal ledger response."""
+
+    mode: str = "commit"
+    documents: list[PublicCommitDocumentResult]
+    committed_count: int = 0
+    skipped_duplicate_count: int = 0
+    file_only_ready: bool = False
+
+
+class PublicUploadResponse(BaseModel):
+    """Public upload result that excludes topology and ownership identifiers."""
+
+    mode: str = "upload"
+    temp_documents: list[PublicUploadedTempDocument] = Field(default_factory=list)
+    commit: PublicCommitResponse | None = None
+    blocked_uploads: list[PublicBlockedUpload] = Field(default_factory=list)
+
+
+class PublicSessionDocument(BaseModel):
+    """A user asset without ledger identifiers or storage topology."""
+
+    file_name: str
+    uploaded_at: str
+    expires_at: str | None = None
+    file_size_bytes: int = 0
+    chunk_count: int = 0
+    is_expired: bool = False
+    storage_route: Literal["vdb", "sql", "hybrid"] = "vdb"
+    route_reason: str = ""
+    sql_tables: list[PublicSqlTableMetadata] = Field(default_factory=list)
+
+
+class PublicDocumentsResponse(BaseModel):
+    """Session assets projected without session and document identifiers."""
+
+    documents: list[PublicSessionDocument]
+
+
+class PublicFileSource(BaseModel):
+    """User-facing provenance for one retrieved file passage."""
+
+    file_name: str
+    i_page: int | None = None
+    source_channel: str = "native_text"
+    visual_model: str | None = None
+
+
+class PublicEmptyPageSource(BaseModel):
+    """User-facing state for an empty source page."""
+
+    file_name: str
+    i_page: int | None = None
+    status: str
+
+
+class PublicFileSqlSource(PublicSqlTableMetadata):
+    """Session-scoped logical SQL source consumed by chat."""
+
+    file_name: str
+
+
+class PublicSearchResponse(BaseModel):
+    """Search response projected for answer assembly and provenance display."""
+
+    question: str
+    document_count: int
+    result_count: int
+    file_context: str
+    file_sources: list[PublicFileSource]
+    sql_available: bool = False
+    sql_sources: list[PublicFileSqlSource] = Field(default_factory=list)
+    empty_page_sources: list[PublicEmptyPageSource] = Field(default_factory=list)
