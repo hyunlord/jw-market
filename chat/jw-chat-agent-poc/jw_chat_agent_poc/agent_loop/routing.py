@@ -5,7 +5,20 @@ from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 
 
 _CSD_ACTIVITY_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
-_METRIC_TOKENS = ("매출", "점유율", "순위", "시장", "경쟁사", "경쟁", "상위", "위협", *_CSD_ACTIVITY_TOKENS)
+_METRIC_TOKENS = (
+    "매출",
+    "점유율",
+    "순위",
+    "시장",
+    "집중",
+    "HHI",
+    "hhi",
+    "경쟁사",
+    "경쟁",
+    "상위",
+    "위협",
+    *_CSD_ACTIVITY_TOKENS,
+)
 _EXTERNAL_TOKENS = (
     "뉴스",
     "이슈",
@@ -53,6 +66,10 @@ _COMPLEX_TOKENS = (
     "오르는",
     "동안",
     "상위",
+    "집중",
+    "분산",
+    "HHI",
+    "hhi",
 )
 
 

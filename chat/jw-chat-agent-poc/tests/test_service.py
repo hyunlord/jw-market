@@ -12,7 +12,7 @@ from jw_chat_agent_poc.service.answer_safety import chunk_text
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, compute_final_answer, create_app
-from jw_chat_agent_poc.service.conversation import PendingClarification
+from jw_chat_agent_poc.service.conversation import ConversationSlots, PendingClarification
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
@@ -1363,6 +1363,54 @@ def test_answer_question_reuses_previous_ranked_brand_series_for_anaphora() -> N
     assert calls == ["리바로 시장 상위 3개 브랜드 점유율"]
     assert second["result"]["context_fact_reused"] is True
     assert second["result"]["tool_calls"][0]["render_data"]["brand"] == "로수젯"
+
+
+def test_answer_question_routes_market_concentration_anaphora_to_direct_agent_loop(monkeypatch) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "conv-concentration",
+        "리바로와 로수젯을 비교해줘",
+        "두 브랜드를 비교했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006", market_definition="Statin 시장"),
+    )
+    captured: list[str] = []
+
+    def direct_loop(question: str, _external_mode: str) -> dict:
+        captured.append(question)
+        return {
+            "answer": "HHI 253.6207",
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_market_landscape",
+                    "source": "UBIST",
+                    "render_data": {
+                        "anchor_brand": "리바로",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "hhi_recent": 253.6207,
+                    },
+                }
+            ],
+        }
+
+    def fail_factory(*, external_mode: str = "live"):
+        raise AssertionError(f"legacy agent must not handle concentration: {external_mode}")
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        fail_factory,
+        "이 시장 집중도는 어때?",
+        "live",
+        "conv-concentration",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 시장 집중도는 어때?"]
+    assert item["result"]["tool_calls"][0]["render_data"]["hhi_recent"] == 253.6207
 
 
 def test_answer_question_does_not_guess_unbound_anaphora() -> None:

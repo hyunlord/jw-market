@@ -71,6 +71,10 @@ def test_news_sales_impact_is_not_rejected_before_fact_backfill() -> None:
     assert should_use_agent_loop(question) is True
 
 
+def test_market_concentration_uses_deterministic_agent_loop() -> None:
+    assert should_use_agent_loop("리바로 시장 집중도는 어때?") is True
+
+
 def _snapshot(
     key: str,
     question: str,
