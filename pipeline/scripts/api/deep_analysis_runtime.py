@@ -68,19 +68,25 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
     events_payload = _event_payload(matched_brand)
     events = builder._events_spec_list(builder._dedup_cut_a_events(events_payload))
     brand_key = str(base.get("brand_key") or matched_brand)
-    blocks = [
-        block
-        for source in sorted({str(row.get("source") or "") for row in selected_brand_rows})
-        if source
-        and (
-            block := load_forecast_block_by_key(
-                brand_key=brand_key,
-                source=source,
-                market_id=ml_id,
-            )
+    blocks: list[ForecastBlock] = []
+    missing_combos: list[str] = []
+    for source in sorted({str(row.get("source") or "") for row in selected_brand_rows}):
+        if not source:
+            continue
+        block = load_forecast_block_by_key(
+            brand_key=brand_key,
+            source=source,
+            market_id=ml_id,
         )
-    ]
-    forecast, simulation = _merge_block_payloads(blocks)
+        if block is not None:
+            blocks.append(block)
+            continue
+        missing_combos.extend(
+            f"{builder.api_source(source)}.{row.get('measure')}"
+            for row in selected_brand_rows
+            if str(row.get("source") or "") == source and row.get("measure")
+        )
+    forecast, simulation = _merge_block_payloads(blocks, tuple(sorted(set(missing_combos))))
     available_combos = sorted(_section_by_combo(forecast))
 
     sources = builder.source_list(market.get("data_source"))
@@ -126,21 +132,43 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
     }
 
 
-def _merge_block_payloads(blocks: list[ForecastBlock]) -> tuple[object, object]:
+def _merge_block_payloads(
+    blocks: list[ForecastBlock],
+    missing_combos: tuple[str, ...] = (),
+) -> tuple[object, object]:
     forecast = _merge_block_sections(blocks, "forecast")
     simulation = _merge_block_sections(blocks, "simulation")
-    simulation_by_combo = _section_by_combo(simulation)
-    if not simulation_by_combo:
+    if not blocks:
         return forecast, simulation
 
-    merged_simulation = dict(simulation)
-    merged_simulation_by_combo = dict(simulation_by_combo)
+    if missing_combos:
+        merged_forecast = dict(forecast) if isinstance(forecast, dict) else {}
+        merged_forecast_by_combo = dict(_section_by_combo(forecast))
+        for combo in missing_combos:
+            merged_forecast_by_combo[combo] = {"available": False, "reason": "not_generated"}
+        merged_forecast["by_combo"] = merged_forecast_by_combo
+        forecast = merged_forecast
+
+    if len(blocks) == 1 and not missing_combos:
+        return forecast, simulation
+
+    available_simulations = [
+        block.simulation for block in blocks if _section_by_combo(block.simulation)
+    ]
+    merged_simulation = dict(available_simulations[0]) if available_simulations else {}
+    merged_simulation_by_combo = {
+        combo: value
+        for section in available_simulations
+        for combo, value in _section_by_combo(section).items()
+    }
     for block in blocks:
         unavailable = block.simulation
         if not isinstance(unavailable, dict) or unavailable.get("available") is not False:
             continue
         for combo in _section_by_combo(block.forecast):
             merged_simulation_by_combo.setdefault(combo, dict(unavailable))
+    for combo in missing_combos:
+        merged_simulation_by_combo[combo] = {"available": False, "reason": "not_generated"}
     merged_simulation["by_combo"] = merged_simulation_by_combo
     return forecast, merged_simulation
 

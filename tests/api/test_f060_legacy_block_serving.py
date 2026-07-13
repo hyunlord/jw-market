@@ -167,6 +167,94 @@ def test_dual_source_merge_preserves_unavailable_simulation_per_combo() -> None:
     }
 
 
+def test_dual_source_merge_preserves_distinct_unavailable_reasons() -> None:
+    iqvia_row = _block_row(simulation_available=0)
+    iqvia_row["simulation_json"] = None
+    iqvia_row["generation_status"] = "no_history"
+    iqvia = deep_analysis_serving.parse_forecast_block(iqvia_row)
+    ubist_row = _block_row(simulation_available=0)
+    ubist_row.update(
+        {
+            "source": "ubist",
+            "forecast_json": json.dumps(
+                {"by_combo": {"UBIST.sales": {"forecast_periods": ["2026-05"]}}}
+            ),
+            "simulation_json": None,
+            "generation_status": "not_generated",
+            "no_history_fallback": None,
+        }
+    )
+    ubist = deep_analysis_serving.parse_forecast_block(ubist_row)
+
+    _, simulation = deep_analysis_runtime._merge_block_payloads([iqvia, ubist])
+
+    assert simulation["by_combo"] == {
+        "IQVIA.sales": {"available": False, "reason": "no_history"},
+        "UBIST.sales": {"available": False, "reason": "not_generated"},
+    }
+
+
+def test_legacy_runtime_preserves_missing_source_as_not_generated(monkeypatch) -> None:
+    brand_rows = [
+        {
+            "brand_name": "가드렛",
+            "brand_key": "가드렛",
+            "ml_id": "ml_003",
+            "source": "iqvia_nsa",
+            "measure": "sales",
+            "is_jw": 1,
+            "is_target": 1,
+            "computed_at": None,
+        },
+        {
+            "brand_name": "가드렛",
+            "brand_key": "가드렛",
+            "ml_id": "ml_003",
+            "source": "ubist",
+            "measure": "sales",
+            "is_jw": 1,
+            "is_target": 1,
+            "computed_at": None,
+        },
+    ]
+    iqvia = deep_analysis_serving.parse_forecast_block(_block_row())
+    monkeypatch.setattr(deep_analysis_runtime, "_brand_rows", lambda _brand: brand_rows)
+    monkeypatch.setattr(
+        deep_analysis_runtime,
+        "_market_catalog",
+        lambda _ml_id: {"name": "당뇨 OAD", "data_source": "both"},
+    )
+    monkeypatch.setattr(
+        deep_analysis_runtime,
+        "_event_payload",
+        lambda _brand: {"cut_a": [], "cut_b": []},
+    )
+    monkeypatch.setattr(
+        deep_analysis_runtime.builder,
+        "atc_codes_from_market_catalog",
+        lambda _market: ["A10N1"],
+    )
+    monkeypatch.setattr(deep_analysis_runtime.builder, "source_list", lambda _source: ["UBIST", "IQVIA"])
+    monkeypatch.setattr(
+        deep_analysis_runtime,
+        "load_forecast_block_by_key",
+        lambda **kwargs: iqvia if kwargs["source"] == "iqvia_nsa" else None,
+    )
+
+    row = deep_analysis_runtime.build_strategic_row("가드렛")
+
+    assert row is not None
+    data = json.loads(row["response_json"])["data"]
+    assert data["forecast"]["by_combo"]["UBIST.sales"] == {
+        "available": False,
+        "reason": "not_generated",
+    }
+    assert data["simulation"]["by_combo"]["UBIST.sales"] == {
+        "available": False,
+        "reason": "not_generated",
+    }
+
+
 def test_legacy_factor_resolution_reuses_formal_context_and_does_not_self_fallback(
     monkeypatch,
     caplog: pytest.LogCaptureFixture,
