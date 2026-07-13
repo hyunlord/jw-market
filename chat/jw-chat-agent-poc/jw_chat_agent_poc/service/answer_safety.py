@@ -185,7 +185,7 @@ def replace_internal_fact_dump(question: str, answer: str, markdown_response: An
     markers = ("## 확정 데이터", "반드시 반영할 내용", "CSD 세부 미지원")
     if "CSD aggregate 콜수" not in answer or sum(marker in answer for marker in markers) < 2:
         return answer
-    return finalized_fallback_fact_answer(question, markdown_response)
+    return cleanup_markdown_answer(fallback_fact_answer(markdown_response))
 
 
 def answer_has_only_fact_numbers(answer: str, fact_numbers: tuple[str, ...]) -> bool:

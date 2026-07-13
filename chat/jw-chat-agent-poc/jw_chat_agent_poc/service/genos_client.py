@@ -664,7 +664,10 @@ class GenosClient:
             )
             return
         if self._is_cache_only(agent_result) or not self.token:
-            yield from chunk_text(cleanup_markdown_answer(str(agent_result["answer"])))
+            answer = str(agent_result["answer"])
+            if isinstance(markdown_response, dict):
+                answer = replace_internal_fact_dump(question, answer, markdown_response)
+            yield from chunk_text(cleanup_markdown_answer(answer))
             return
         policy_notice = self._policy_notice_block(agent_result)
         messages = [
