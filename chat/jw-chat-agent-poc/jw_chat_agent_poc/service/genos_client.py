@@ -649,7 +649,9 @@ class GenosClient:
         if self.token and isinstance(markdown_response, dict):
             tool_calls = agent_result.get("tool_calls")
             if _requires_deterministic_external_relay(tool_calls if isinstance(tool_calls, list) else None):
-                yield from chunk_text(cleanup_markdown_answer(_deterministic_external_relay_answer(markdown_response)))
+                answer = _deterministic_external_relay_answer(markdown_response)
+                answer = replace_internal_fact_dump(question, answer, markdown_response)
+                yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             yield from chunk_text(
                 cleanup_markdown_answer(

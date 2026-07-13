@@ -183,7 +183,8 @@ def finalized_fallback_fact_answer(question: str, markdown_response: Any) -> str
 def replace_internal_fact_dump(question: str, answer: str, markdown_response: Any) -> str:
     """Replace a leaked CSD fact prompt with the deterministic user-facing answer."""
     markers = ("## 확정 데이터", "반드시 반영할 내용", "CSD 세부 미지원")
-    if "CSD aggregate 콜수" not in answer or sum(marker in answer for marker in markers) < 2:
+    marker_count = sum(marker in answer for marker in markers)
+    if "CSD aggregate 콜수" not in answer or (marker_count < 2 and "CSD 세부 미지원" not in answer):
         return answer
     return cleanup_markdown_answer(fallback_fact_answer(markdown_response))
 

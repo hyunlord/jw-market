@@ -4880,6 +4880,33 @@ def test_cache_only_csd_answer_applies_internal_fact_dump_boundary() -> None:
     assert "CSD 세부 미지원" not in answer
 
 
+def test_external_relay_csd_answer_applies_internal_fact_dump_boundary() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    answer = "".join(
+        GenosClient(token="test-token").stream_answer(
+            "리바로 영업활동 추이 어때?",
+            {
+                "markdown_response": {"fact_md": fact_md},
+                "tool_calls": [{"tool": "search_drug_info"}, {"tool": "csd_activity_trend"}],
+            },
+        )
+    )
+
+    assert "2026-03 120건" in answer
+    assert "2026-04 135건" in answer
+    assert "영업활동" in answer
+    assert "확정 데이터" not in answer
+    assert "반드시 반영할 내용" not in answer
+    assert "CSD aggregate 콜수" not in answer
+    assert "CSD 세부 미지원" not in answer
+
+
 def test_causal_structure_does_not_append_generic_block_to_existing_analysis() -> None:
     fact_md = "\n".join(
         [
