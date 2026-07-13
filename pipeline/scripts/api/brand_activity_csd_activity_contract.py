@@ -58,7 +58,7 @@ class CsdActivitySeriesRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
+    view: str = Field(description="분석 뷰. general, strategic_ml 또는 strategic_cd.")
     selected_brand: str | list[str] = Field(description="강조/시장 결정 브랜드. 문자열 또는 BFF 호환 문자열 배열.")
     filters: MarketFilter = Field(
         default_factory=MarketFilter,
@@ -76,7 +76,7 @@ class CsdActivitySeriesRequest(BaseModel):
 
 def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityRequest:
     view = text(payload.get("view"))
-    if view not in {"general", "strategic_ml"}:
+    if view not in {"general", "strategic_ml", "strategic_cd"}:
         raise CsdActivitySeriesInputError(f"unsupported view: {view}")
     filter_payload = _filter_payload(payload)
     market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else None

@@ -72,6 +72,7 @@ def test_csd_activity_request_documents_nested_filter_fields() -> None:
     schema = app.openapi()["components"]["schemas"]["CsdActivitySeriesRequest"]
 
     assert schema["properties"]["filters"]["$ref"] == "#/components/schemas/MarketFilter"
+    assert "strategic_cd" in schema["properties"]["view"]["description"]
     operation_text = str(app.openapi()["paths"]["/api/brand-activity/csd-activity-series"]["post"]["requestBody"])
     for field in ("atc4", "mfr_name_kor", "molecule_desc", "audit_code", "market_scope"):
         assert field in operation_text

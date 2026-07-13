@@ -761,7 +761,7 @@ BRAND_ACTIVITY_SCOPE_SCHEMA: Final = {
     "type": "object",
     "description": "요청 view/시장/필터를 서버가 해석한 결과입니다. 화면의 적용 필터 칩과 차트 캡션에 사용합니다.",
     "properties": {
-        "view": {"type": "string", "description": "general 또는 strategic_ml. 현재 CSD 서비스는 strategic_cd를 런타임에서 지원하지 않습니다."},
+        "view": {"type": "string", "description": "general, strategic_ml 또는 strategic_cd."},
         "market_id": {"type": "string", "description": "해석된 시장 id. 일반뷰는 ATC4, 전략뷰는 ml_id입니다."},
         "market_name": {"type": "string", "description": "시장 표시명."},
         "resolved_market": {"type": "object", "description": "type/market_id/market_label/source로 구성된 resolved market echo."},
