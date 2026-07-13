@@ -151,6 +151,7 @@ class StrategicQueryLayer:
             "member_brands": tuple(row["brand"] for row in ranked),
             "market_size_recent_krw": snapshot.market_value(market, latest, source),
             "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
+            "hhi_recent": round(snapshot.hhi(market, latest, source), 4),
             "level_segments": level_segments(rows),
             "source_label": source_label(source),
             "query_result_id": result_id,

@@ -1099,6 +1099,13 @@ def _query_layer() -> StrategicQueryLayer:
     return StrategicQueryLayer(reader=StaticStrategicMartReader(_records()))
 
 
+def test_market_scope_includes_latest_hhi_for_concentration_answers() -> None:
+    call = _query_layer().market_scope("리바로")
+
+    assert call["render_data"]["hhi_recent"] > 0
+    assert call["render_data"]["period"] == "2026-04"
+
+
 def _portfolio_query_layer() -> StrategicQueryLayer:
     return StrategicQueryLayer(reader=StaticStrategicMartReader(_portfolio_records()))
 
