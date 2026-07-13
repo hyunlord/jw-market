@@ -277,6 +277,38 @@ def _market(atc4: str, brand_value: float) -> GeneralMarket:
     return replace(parsed, brand_value=brand_value)
 
 
+def test_recent_one_year_market_size_uses_twelve_month_sum_and_names_window() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("리바로", "ubist")] = (AtcCandidate("C10A1", "지질조절제"),)
+    market = _market("C10A1", 8_000_000_000.0)
+    monthly = tuple((f"2025-{month:02d}", float(month) * 100_000_000) for month in range(1, 13))
+    backend.market_map["C10A1"] = replace(
+        market,
+        period="2025-12",
+        market_size=1_200_000_000.0,
+        market_size_series=monthly,
+    )
+    service = GeneralViewService(backend, StrategicMembership(set()), enabled=True)
+
+    result = service.answer("리바로 C10A1 시장의 최근 1년 규모", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["period"] == "최근 12개월 합계 2025-01~2025-12"
+    assert "78.0억원" in result["answer"]
+    assert "1.2억원" not in result["answer"]
+
+
+def test_unspecified_market_period_keeps_latest_single_period() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("리바로", "ubist")] = (AtcCandidate("C10A1", "지질조절제"),)
+    backend.market_map["C10A1"] = _market("C10A1", 8_000_000_000.0)
+    service = GeneralViewService(backend, StrategicMembership(set()), enabled=True)
+
+    result = service.answer("리바로 C10A1 시장 규모", compact=False, dual=False)
+
+    assert "시장 규모 (2026-04)" in result["answer"]
+
+
 def test_route_matrix_has_no_human_loop() -> None:
     service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
 

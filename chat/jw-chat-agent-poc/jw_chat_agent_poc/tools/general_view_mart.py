@@ -162,6 +162,7 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         brand_share_pct=_as_float(metric.get("ms")),
         brand_rank=_as_int(metric.get("rank")),
         top_brands=top_brands,
+        market_size_series=tuple(sorted(rows.market_size_series.items())),
     )
 
 

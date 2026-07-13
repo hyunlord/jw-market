@@ -122,7 +122,7 @@ class GeneralViewService:
                 for candidate in candidates
                 if candidate.code != selected.atc4_code
             ]
-            contract = _contract(selected, other_candidates=others, compact=compact, dual=dual)
+            contract = _contract(selected, other_candidates=others, compact=compact, dual=dual, question=question)
             return _result(question, selected, contract)
         except GeneralViewBackendError as exc:
             return _unavailable_result(question, str(exc), dual=dual)
@@ -170,8 +170,10 @@ def _contract(
     other_candidates: list[str],
     compact: bool,
     dual: bool,
+    question: str,
 ) -> dict[str, Any]:
-    section = _render_section(market, other_candidates=other_candidates, compact=compact)
+    window = _requested_market_window(question, market)
+    section = _render_section(market, other_candidates=other_candidates, compact=compact, window=window)
     return {
         "mode": "dual" if dual else "general_only",
         "view_type": "general_view",
@@ -181,7 +183,7 @@ def _contract(
         "source": market.source,
         "measure": market.measure,
         "unit": market.unit,
-        "period": market.period,
+        "period": window[0] if window else market.period,
         "share_denominator": f"ATC4 {market.atc4_code} 시장 전체 {market.measure}",
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
@@ -239,10 +241,19 @@ def _unavailable_result(question: str, reason: str, *, dual: bool) -> dict[str, 
     }
 
 
-def _render_section(market: GeneralMarket, *, other_candidates: list[str], compact: bool) -> str:
+def _render_section(
+    market: GeneralMarket,
+    *,
+    other_candidates: list[str],
+    compact: bool,
+    window: tuple[str, float] | None,
+) -> str:
     lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {market.atc4_description}"]
-    if market.market_size is not None:
-        lines.append(f"- 시장 규모: {_format_value(market.market_size, market.unit)}")
+    if window is not None:
+        label, value = window
+        lines.append(f"- 시장 규모 ({label}): {_format_value(value, market.unit)}")
+    elif market.market_size is not None:
+        lines.append(f"- 시장 규모 ({market.period}): {_format_value(market.market_size, market.unit)}")
     if market.brand:
         metrics = []
         if market.brand_share_pct is not None:
@@ -264,6 +275,16 @@ def _render_section(market: GeneralMarket, *, other_candidates: list[str], compa
     if not compact:
         lines.extend(("", f"점유율 분모: ATC4 {market.atc4_code} 시장 전체 {market.measure}"))
     return "\n".join(lines)
+
+
+def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str, float] | None:
+    if not re.search(r"최근\s*(?:1년|12\s*개월)", question):
+        return None
+    points = tuple((period, value) for period, value in market.market_size_series if re.fullmatch(r"\d{4}-\d{2}", period))
+    if len(points) < 12:
+        raise GeneralViewBackendError("최근 12개월 시장 규모를 계산할 월별 데이터가 부족합니다")
+    selected = points[-12:]
+    return f"최근 12개월 합계 {selected[0][0]}~{selected[-1][0]}", sum(value for _, value in selected)
 
 
 def _format_value(value: float, unit: str) -> str:

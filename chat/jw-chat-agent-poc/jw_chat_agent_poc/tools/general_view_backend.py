@@ -48,6 +48,7 @@ class GeneralMarket:
     brand_share_pct: float | None
     brand_rank: int | None
     top_brands: tuple[TopBrand, ...]
+    market_size_series: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(slots=True)
@@ -264,6 +265,13 @@ def parse_general_market_response(
         ),
         brand_rank=requested_row.rank if requested_row else _as_int(kpi.get("target_rank")),
         top_brands=top_brands,
+        market_size_series=tuple(
+            (str(item.get("period")), float(item.get("value")))
+            for item in source_data.get("market_size_series", [])
+            if isinstance(item, dict)
+            and item.get("period")
+            and isinstance(item.get("value"), int | float)
+        ),
     )
 
 
