@@ -396,18 +396,57 @@ def test_forecast_adapter_uses_composite_key_and_horizon_fallback(monkeypatch) -
     def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
         calls.append((sql, params))
         if "deep_forecast_horizon" in sql:
-            return {"forecast_horizon_json": json.dumps({"by_combo": {"UBIST.sales": {"series": [1]}}})}
+            measure = params[-1]
+            return {
+                "measure": measure,
+                "forecast_horizon_json": json.dumps({"series": [measure]}),
+            }
         return None
 
     monkeypatch.setattr(deep_analysis_serving.db, "fetch_one", fake_fetch_one)
 
     forecast, simulation = deep_analysis._load_formal_forecast_sections(_context())
 
-    assert forecast == {"by_combo": {"UBIST.sales": {"series": [1]}}}
+    assert forecast == {
+        "by_combo": {
+            "UBIST.sales": {"series": ["sales"]},
+            "UBIST.volume": {"series": ["volume"]},
+        }
+    }
     assert simulation is None
-    assert ["deep_forecast_block" in sql for sql, _params in calls] == [True, False]
-    assert ["deep_forecast_horizon" in sql for sql, _params in calls] == [False, True]
-    assert all(params == ["선택브랜드", "ubist", "ml_003", "strategic_ml"] for _sql, params in calls)
+    block_calls = [(sql, params) for sql, params in calls if "deep_forecast_block" in sql]
+    horizon_calls = [(sql, params) for sql, params in calls if "deep_forecast_horizon" in sql]
+    assert len(block_calls) == 1
+    assert "brand_key = %s AND source = %s AND market_id = %s" in block_calls[0][0]
+    assert "view_kind" not in block_calls[0][0]
+    assert block_calls[0][1] == ["선택브랜드", "ubist", "ml_003"]
+    assert len(horizon_calls) == 2
+    assert all("brand_key" not in sql for sql, _params in horizon_calls)
+    assert all("market_id = %s AND source = %s AND measure = %s" in sql for sql, _params in horizon_calls)
+    assert [params for _sql, params in horizon_calls] == [
+        ["ml_003", "ubist", "sales"],
+        ["ml_003", "ubist", "volume"],
+    ]
+
+
+def test_forecast_adapter_uses_db_source_for_iqvia_natural_keys(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
+        calls.append((sql, params))
+        return None
+
+    monkeypatch.setattr(deep_analysis_serving.db, "fetch_one", fake_fetch_one)
+    context = replace(_context(), source="iqvia", db_source="iqvia_nsa")
+
+    assert deep_analysis_serving.load_forecast_records(context) == (None, None)
+    assert calls[0][1] == ["선택브랜드", "iqvia_nsa", "ml_003"]
+    assert [params for _sql, params in calls[1:]] == [
+        ["ml_003", "iqvia_nsa", "counting_unit"],
+        ["ml_003", "iqvia_nsa", "dosage_unit"],
+        ["ml_003", "iqvia_nsa", "sales"],
+        ["ml_003", "iqvia_nsa", "unit"],
+    ]
 
 
 def test_missing_future_strength_table_is_an_optional_section(monkeypatch) -> None:
