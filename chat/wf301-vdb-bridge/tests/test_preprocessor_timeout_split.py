@@ -23,9 +23,11 @@ class _Response:
 @dataclass
 class _RecordingClient:
     timeouts: list[float] = field(default_factory=list)
+    bodies: list[dict[str, Any]] = field(default_factory=list)
 
     def post(self, _url: str, **kwargs: Any) -> _Response:
         self.timeouts.append(float(kwargs["timeout"]))
+        self.bodies.append(kwargs["json"])
         return _Response()
 
 
@@ -54,6 +56,36 @@ def test_run_preprocessor_uses_dedicated_timeout(monkeypatch) -> None:
     )
 
     assert client.timeouts == [45.0]
+
+
+def test_run_preprocessor_uses_index_batch_override(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "VDB_INDEX_BATCH_SIZE", 256, raising=False)
+    client = _RecordingClient()
+
+    upload_adapter.run_preprocessor(
+        client,
+        temp_vdb_index="control-index",
+        config=_config(),
+        saved_documents=[],
+        user_id=None,
+    )
+
+    assert client.bodies[0]["batch_size"] == 256
+
+
+def test_run_preprocessor_keeps_workflow_batch_when_override_is_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "VDB_INDEX_BATCH_SIZE", 0, raising=False)
+    client = _RecordingClient()
+
+    upload_adapter.run_preprocessor(
+        client,
+        temp_vdb_index="control-index",
+        config=_config(),
+        saved_documents=[],
+        user_id=None,
+    )
+
+    assert client.bodies[0]["batch_size"] == 64
 
 
 class _TimeoutClient:

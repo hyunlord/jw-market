@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -77,58 +78,90 @@ def _clipped_area(bbox: tuple[float, float, float, float], page_rect: fitz.Rect)
     return max(0.0, rect.width) * max(0.0, rect.height)
 
 
+def _page_decision(page: fitz.Page, index: int, page_count: int) -> PageDecision:
+    page_area = max(1.0, page.rect.width * page.rect.height)
+    text = page.get_text("text") or ""
+    nonspace = sum(not char.isspace() for char in text)
+    image_info = page.get_image_info(xrefs=False)
+    image_areas = [_clipped_area(tuple(item["bbox"]), page.rect) for item in image_info]
+    largest = max(image_areas, default=0.0) / page_area
+    summed = min(page_area, sum(image_areas)) / page_area
+    drawings = len(page.get_drawings())
+    is_empty = not nonspace and not image_info and not drawings
+    tier_a = (
+        bool(image_info)
+        and largest >= settings.PDF_VLM_IMAGE_COVERAGE_MIN
+        and nonspace < settings.PDF_VLM_NATIVE_CHAR_MAX
+    )
+    normalized_text = " ".join(text.lower().split())
+    is_cover = index == 0 and any(
+        marker in normalized_text
+        for marker in ("cover", "disease analysis", "kol insights", "standards of care")
+    )
+    is_end_template = index == page_count - 1 and any(
+        marker in normalized_text for marker in ("citeline powers", "listen now")
+    )
+    if is_empty:
+        decision, reason = "native_only", "empty_page"
+    elif tier_a and (is_cover or is_end_template):
+        decision, reason = "native_only", "cover_suppressed"
+    elif tier_a:
+        decision, reason = "visual_required", "tier_a_mixed_large_raster"
+    else:
+        decision, reason = "native_only", "native_text"
+    return PageDecision(
+        page_number=index + 1,
+        decision=decision,
+        reason=reason,
+        native_nonspace_chars=nonspace,
+        image_count=len(image_info),
+        largest_image_coverage=round(largest, 6),
+        summed_image_coverage=round(summed, 6),
+        drawing_count=drawings,
+    )
+
+
+def _scan_page_range(path: Path, start: int, stop: int, page_count: int) -> list[PageDecision]:
+    with fitz.open(path) as document:
+        return [_page_decision(document[index], index, page_count) for index in range(start, stop)]
+
+
+def _page_ranges(page_count: int, worker_count: int) -> list[tuple[int, int]]:
+    workers = min(max(worker_count, 1), page_count)
+    width, remainder = divmod(page_count, workers)
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    for worker_index in range(workers):
+        stop = start + width + (1 if worker_index < remainder else 0)
+        ranges.append((start, stop))
+        start = stop
+    return ranges
+
+
 def scan_pdf(path: Path) -> PdfScan:
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(block)
     digest = hasher.hexdigest()
-    pages: list[PageDecision] = []
     with fitz.open(path) as document:
         page_count = len(document)
-        for index, page in enumerate(document):
-            page_area = max(1.0, page.rect.width * page.rect.height)
-            text = page.get_text("text") or ""
-            nonspace = sum(not char.isspace() for char in text)
-            image_info = page.get_image_info(xrefs=False)
-            image_areas = [_clipped_area(tuple(item["bbox"]), page.rect) for item in image_info]
-            largest = max(image_areas, default=0.0) / page_area
-            summed = min(page_area, sum(image_areas)) / page_area
-            drawings = len(page.get_drawings())
-            is_empty = not nonspace and not image_info and not drawings
-            tier_a = bool(image_info) and largest >= settings.PDF_VLM_IMAGE_COVERAGE_MIN and nonspace < settings.PDF_VLM_NATIVE_CHAR_MAX
-            normalized_text = " ".join(text.lower().split())
-            is_cover = index == 0 and any(
-                marker in normalized_text
-                for marker in ("cover", "disease analysis", "kol insights", "standards of care")
-            )
-            is_end_template = index == page_count - 1 and any(
-                marker in normalized_text for marker in ("citeline powers", "listen now")
-            )
-            if is_empty:
-                decision, reason = "native_only", "empty_page"
-            elif tier_a and (is_cover or is_end_template):
-                decision, reason = "native_only", "cover_suppressed"
-            elif tier_a:
-                decision, reason = "visual_required", "tier_a_mixed_large_raster"
-            else:
-                decision, reason = "native_only", "native_text"
-            pages.append(
-                PageDecision(
-                    page_number=index + 1,
-                    decision=decision,
-                    reason=reason,
-                    native_nonspace_chars=nonspace,
-                    image_count=len(image_info),
-                    largest_image_coverage=round(largest, 6),
-                    summed_image_coverage=round(summed, 6),
-                    drawing_count=drawings,
-                )
-            )
+    ranges = _page_ranges(page_count, settings.PDF_VLM_SCAN_WORKERS) if page_count else []
+    if len(ranges) <= 1:
+        pages = _scan_page_range(path, 0, page_count, page_count)
+    else:
+        with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+            futures = [
+                executor.submit(_scan_page_range, path, start, stop, page_count)
+                for start, stop in ranges
+            ]
+            pages = [page for future in futures for page in future.result()]
+        pages.sort(key=lambda page: page.page_number)
     safe_log(
         "pdf_vlm_scan_done",
         file_sha256=digest,
         pages=page_count,
+        scan_workers=len(ranges),
         detector_version=DETECTOR_VERSION,
         decisions=[
             {

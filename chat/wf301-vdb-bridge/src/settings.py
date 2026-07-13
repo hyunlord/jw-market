@@ -53,6 +53,7 @@ PDF_VLM_RETRY_BACKOFF_S = float(os.environ.get("PDF_VLM_RETRY_BACKOFF_S", "0.5")
 PDF_VLM_MAX_IMAGE_BYTES = int(os.environ.get("PDF_VLM_MAX_IMAGE_BYTES", str(7 * 1024 * 1024)))
 PDF_VLM_IMAGE_COVERAGE_MIN = float(os.environ.get("PDF_VLM_IMAGE_COVERAGE_MIN", "0.28"))
 PDF_VLM_NATIVE_CHAR_MAX = int(os.environ.get("PDF_VLM_NATIVE_CHAR_MAX", "1200"))
+PDF_VLM_SCAN_WORKERS = max(int(os.environ.get("PDF_VLM_SCAN_WORKERS", "1")), 1)
 TEMP_DOCUMENT_DIR = os.environ.get("TEMP_DOCUMENT_DIR", "/nfs-root/temp-document")
 SEARCH_LIMIT = int(os.environ.get("SEARCH_LIMIT", "5"))
 SEARCH_CONTEXT_CHAR_LIMIT = int(os.environ.get("SEARCH_CONTEXT_CHAR_LIMIT", "8000"))
@@ -111,6 +112,9 @@ PREPROCESSOR_ID = int(os.environ.get("PREPROCESSOR_ID", "64"))
 EMBEDDING_SERVING_ID = int(os.environ.get("EMBEDDING_SERVING_ID", "25"))
 EMBEDDING_SERVING_REV_ID = int(os.environ.get("EMBEDDING_SERVING_REV_ID", "31"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "64"))
+# Overrides only the external preprocessor's temporary-vector indexing batch.
+# Zero preserves the workflow-provided batch size.
+VDB_INDEX_BATCH_SIZE = max(int(os.environ.get("VDB_INDEX_BATCH_SIZE", "0")), 0)
 DEFAULT_USER_ID = int(os.environ.get("DEFAULT_USER_ID", "7"))
 
 JS_COMPLETE = "JS0003"

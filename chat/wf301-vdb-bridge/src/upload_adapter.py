@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ import pymysql
 from fastapi import UploadFile
 
 from . import settings
+from .logging_utils import safe_log
 
 FILE_UPLOAD_PLUGIN_CODE = "WP01"
 LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
@@ -510,12 +512,14 @@ def run_preprocessor(
     saved_documents: list[SavedTempDocument],
     user_id: int | None,
 ) -> dict[str, Any]:
+    started = time.monotonic()
+    batch_size = settings.VDB_INDEX_BATCH_SIZE or config.batch_size
     headers = {"x-user-id": str(user_id)} if user_id is not None else {}
     body = {
         "temp_vdb_index": temp_vdb_index,
         "serving_id": config.serving_id,
         "preprocessor_id": config.preprocessor_id,
-        "batch_size": config.batch_size,
+        "batch_size": batch_size,
         "params": config.preprocessor_params,
         "files": [
             {"name": item.file_name, "path": item.file_path}
@@ -538,6 +542,12 @@ def run_preprocessor(
     response.raise_for_status()
     payload = response.json()
     payload = payload if isinstance(payload, dict) else {"raw": payload}
+    safe_log(
+        "preprocessor_run_done",
+        file_count=len(saved_documents),
+        batch_size=batch_size,
+        elapsed_s=round(time.monotonic() - started, 3),
+    )
     # fail-closed: facade는 HTTP 200으로 실패를 감싸므로 envelope code를 반드시 검사한다.
     # code가 없으면(비-GenOS 응답) 오탐 방지를 위해 성공으로 두고, code가 있고 성공값이
     # 아닐 때만 실패로 올린다.
