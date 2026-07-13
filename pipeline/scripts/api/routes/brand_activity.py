@@ -28,6 +28,7 @@ from pipeline.scripts.api.brand_activity_interest_rx_matrix import (
     InterestRxMatrixInputError,
     get_interest_rx_matrix,
 )
+from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
 from pipeline.scripts.api.brand_activity_topic_matrix import (
     TopicRequestError,
     get_topic_brand_payload,
@@ -393,6 +394,11 @@ def _normalize_market_filter(value: dict[str, JsonValue]) -> dict[str, JsonValue
         for key in ("atc4",):
             if key not in normalized and atc.get(key) not in ({}, [], None):
                 normalized[key] = atc[key]
+
+    atc4 = normalized.get("atc4")
+    if isinstance(atc4, list):
+        # ATC filters are a set; stable ordering keeps every Brand Activity route order-independent.
+        normalized["atc4"] = sorted(canonical_atc4_values(atc4))
 
     audit_codes = _analysis_level_audit_codes(value)
     if not audit_codes:

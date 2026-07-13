@@ -157,6 +157,22 @@ def test_strategic_market_id_is_preserved_for_context_disambiguation() -> None:
     assert normalized is True
 
 
+def test_atc4_filter_order_is_canonical_for_every_brand_activity_route() -> None:
+    payloads = (
+        {"atc4": ["A10C1", "A10N1", "C10A1"]},
+        {"atc4": ["C10A1", "A10C1", "A10N1"]},
+        {"atc": {"atc4": ["A10N1", "C10A1", "A10C1"]}},
+    )
+
+    normalized = [brand_activity._normalize_market_filter(payload) for payload in payloads]
+
+    assert normalized == [
+        {"atc4": ["A10C1", "A10N1", "C10A1"]},
+        {"atc4": ["A10C1", "A10N1", "C10A1"]},
+        {"atc4": ["A10C1", "A10N1", "C10A1"]},
+    ]
+
+
 @pytest.mark.parametrize(("route", "getter_name"), ROUTE_GETTERS)
 def test_portal_strategic_ml_payload_reaches_all_three_services(
     monkeypatch: pytest.MonkeyPatch,
