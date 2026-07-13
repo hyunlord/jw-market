@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -14,12 +15,15 @@ from jw_chat_agent_poc.genos_config import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True, slots=True)
 class SqlFileSource:
     logical_name: str
     file_name: str
     sheet_name: str
-    document_id: int
+    document_id: int | None = None
     row_count: int | None = None
     column_count: int | None = None
 
@@ -65,17 +69,21 @@ def query_uploaded_sql(
             {},
         )
         context = _render_result(source, result, schema)
+        source_item: dict[str, Any] = {"file_name": source.file_name}
+        if source.document_id is not None:
+            source_item["document_id"] = source.document_id
         return SqlQueryOutcome(
             file_context=context,
-            file_source_items=(
-                {
-                    "file_name": source.file_name,
-                    "document_id": source.document_id,
-                },
-            ),
+            file_source_items=(source_item,),
             errors=(),
         )
-    except (requests.RequestException, ValueError, TypeError, KeyError, RuntimeError):
+    except (requests.RequestException, ValueError, TypeError, KeyError, RuntimeError) as exc:
+        logger.exception(
+            "file SQL query failed conversation_id=%s logical_names=%s reason=%s",
+            conversation_id,
+            [source.logical_name for source in sources],
+            exc,
+        )
         return SqlQueryOutcome(
             file_context=(
                 "## 업로드 파일 SQL 결과\n"

@@ -6,6 +6,7 @@ from jw_chat_agent_poc.orchestrator.provenance_facts import (
     provenance_row_from_file_context,
 )
 from jw_chat_agent_poc.service import file_sql_query
+from jw_chat_agent_poc.service import file_search_client
 from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
 from jw_chat_agent_poc.service.file_sql_query import SqlFileSource
 
@@ -16,6 +17,14 @@ SQL_SOURCE = SqlFileSource(
     sheet_name="Numeric",
     document_id=91,
 )
+
+PUBLIC_FILE_SQL_SOURCE = {
+    "logical_name": "doc-91:sheet-1",
+    "sheet_name": "Numeric",
+    "row_count": 12269,
+    "column_count": 252,
+    "file_name": "survey_raw.xlsx",
+}
 
 
 def test_sql_source_is_queried_and_rendered_as_file_context(monkeypatch) -> None:
@@ -155,7 +164,7 @@ def test_zero_rows_are_explicit_not_silent(monkeypatch) -> None:
     assert "시장" not in outcome.file_context
 
 
-def test_sql_failure_is_fail_closed_with_explicit_unavailable(monkeypatch) -> None:
+def test_sql_failure_is_fail_closed_with_explicit_unavailable(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
         file_sql_query,
         "_fetch_schema",
@@ -166,6 +175,29 @@ def test_sql_failure_is_fail_closed_with_explicit_unavailable(monkeypatch) -> No
 
     assert "확인할 수 없습니다" in outcome.file_context
     assert outcome.errors == ("file SQL query unavailable",)
+    assert "file SQL query failed" in caplog.text
+    assert "down" in caplog.text
+
+
+def test_public_file_sql_source_contract_does_not_require_document_id() -> None:
+    sources = file_search_client._sql_sources([PUBLIC_FILE_SQL_SOURCE])
+
+    assert len(sources) == 1
+    assert sources[0].logical_name == PUBLIC_FILE_SQL_SOURCE["logical_name"]
+    assert sources[0].document_id is None
+
+
+def test_invalid_sql_source_is_logged_without_discarding_valid_sources(caplog) -> None:
+    sources = file_search_client._sql_sources(
+        [
+            {"file_name": "broken.xlsx"},
+            PUBLIC_FILE_SQL_SOURCE,
+        ]
+    )
+
+    assert len(sources) == 1
+    assert "discarding invalid file SQL source" in caplog.text
+    assert "logical_name" in caplog.text
 
 
 def test_file_search_client_delegates_sql_sources_without_market_tools(monkeypatch) -> None:
@@ -174,14 +206,7 @@ def test_file_search_client_delegates_sql_sources_without_market_tools(monkeypat
         "document_count": 1,
         "file_sources": [],
         "sql_available": True,
-        "sql_sources": [
-            {
-                "logical_name": SQL_SOURCE.logical_name,
-                "file_name": SQL_SOURCE.file_name,
-                "sheet_name": SQL_SOURCE.sheet_name,
-                "document_id": SQL_SOURCE.document_id,
-            }
-        ],
+        "sql_sources": [PUBLIC_FILE_SQL_SOURCE],
         "errors": [],
     }
     monkeypatch.setattr(
@@ -191,15 +216,21 @@ def test_file_search_client_delegates_sql_sources_without_market_tools(monkeypat
             json=lambda: body,
         ),
     )
-    monkeypatch.setattr(
-        "jw_chat_agent_poc.service.file_search_client.query_uploaded_sql",
-        lambda *args, **kwargs: file_sql_query.SqlQueryOutcome(
+    captured_sources = []
+
+    def fake_query_uploaded_sql(question, conversation_id, sources):
+        captured_sources.extend(sources)
+        return file_sql_query.SqlQueryOutcome(
             file_context="## 업로드 파일 SQL 결과\n파일: survey_raw.xlsx\n| total |\n| --- |\n| 37 |",
             file_source_items=(
-                {"file_name": "survey_raw.xlsx", "document_id": 91},
+                {"file_name": "survey_raw.xlsx"},
             ),
             errors=(),
-        ),
+        )
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.query_uploaded_sql",
+        fake_query_uploaded_sql,
     )
 
     result = search_uploaded_files("합계", "conversation-1")
@@ -207,8 +238,10 @@ def test_file_search_client_delegates_sql_sources_without_market_tools(monkeypat
     assert result is not None
     assert "SQL 결과" in result.file_context
     assert result.file_source_items == (
-        {"file_name": "survey_raw.xlsx", "document_id": 91},
+        {"file_name": "survey_raw.xlsx"},
     )
+    assert len(captured_sources) == 1
+    assert captured_sources[0].document_id is None
 
 
 def test_sql_provenance_uses_uploaded_filename_and_missing_public_labels() -> None:

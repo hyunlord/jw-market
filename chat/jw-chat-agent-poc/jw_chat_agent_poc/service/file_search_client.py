@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,9 @@ from jw_chat_agent_poc.service.file_sql_query import (
     SqlFileSource,
     query_uploaded_sql,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,21 +102,31 @@ def _sql_sources(raw_sources: Any) -> tuple[SqlFileSource, ...]:
     if not isinstance(raw_sources, list):
         return ()
     sources: list[SqlFileSource] = []
-    for raw in raw_sources:
+    for index, raw in enumerate(raw_sources):
         if not isinstance(raw, dict):
+            logger.warning(
+                "discarding invalid file SQL source index=%d reason=source is not an object",
+                index,
+            )
             continue
         try:
+            document_id = raw.get("document_id")
             sources.append(
                 SqlFileSource(
                     logical_name=str(raw["logical_name"]),
                     file_name=str(raw["file_name"]),
                     sheet_name=str(raw["sheet_name"]),
-                    document_id=int(raw["document_id"]),
+                    document_id=int(document_id) if document_id is not None else None,
                     row_count=int(raw["row_count"]) if raw.get("row_count") is not None else None,
                     column_count=int(raw["column_count"]) if raw.get("column_count") is not None else None,
                 )
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "discarding invalid file SQL source index=%d reason=%s",
+                index,
+                exc,
+            )
             continue
     return tuple(sources)
 
