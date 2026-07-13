@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import json
 from typing import Any
@@ -316,7 +317,7 @@ def test_formal_no_market_data_response_is_200_with_source_context(monkeypatch) 
     monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])
     monkeypatch.setattr(
         deep_analysis,
-        "_load_ai_analysis_variants",
+        "_load_canonical_ai_analysis_variants",
         lambda _brand: ({"available": False, "reason": "not_generated"}, {"available": False, "reason": "not_generated"}),
     )
     monkeypatch.setattr(deep_analysis, "_formal_brand_factors", lambda _brand, _context: {"iqvia": [], "ubist": []})
@@ -363,7 +364,7 @@ def test_formal_cd_context_returns_200_when_native_sections_are_not_generated(mo
     monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])
     monkeypatch.setattr(
         deep_analysis,
-        "_load_ai_analysis_variants",
+        "_load_canonical_ai_analysis_variants",
         lambda _brand: ({"available": False, "reason": "not_generated"}, {"available": False, "reason": "not_generated"}),
     )
     monkeypatch.setattr(deep_analysis, "_formal_brand_factors", lambda _brand, _context: {"iqvia": [], "ubist": []})
@@ -441,7 +442,53 @@ def test_market_strength_adapter_uses_source_market_and_view(monkeypatch) -> Non
     sql, params = calls[0]
     assert "agent3_brand_strength_market" in sql
     assert "source = %s AND market_id = %s AND view_kind = %s" in sql
-    assert params == ["선택브랜드", "ubist", "ml_003", "strategic_ml"]
+    assert params == ["선택브랜드", "ubist", "ml_003", "market_landscape"]
+
+
+def test_market_strength_adapter_maps_competitive_dynamics_view(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        deep_analysis_serving.db,
+        "fetch_all",
+        lambda _sql, params: calls.append(params) or [],
+    )
+    context = replace(_context(), view_kind="strategic_cd", market_id="cd_007")
+
+    assert deep_analysis._load_market_strength(["선택브랜드"], context) == {}
+    assert calls == [["선택브랜드", "ubist", "cd_007", "competitive_dynamics"]]
+
+
+def test_general_strength_adapter_keeps_source_scoped_table(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        return []
+
+    monkeypatch.setattr(deep_analysis_serving.db, "fetch_all", fake_fetch_all)
+    context = replace(_context(), view_kind="general", market_id="C10A1")
+
+    assert deep_analysis._load_market_strength(["선택브랜드"], context) == {}
+    sql, params = calls[0]
+    assert "agent3_brand_strength_source" in sql
+    assert "market_id" not in sql
+    assert params == ["선택브랜드", "ubist"]
+
+
+def test_formal_strategy_never_falls_back_to_general_strength(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        calls.append(sql)
+        return []
+
+    monkeypatch.setattr(deep_analysis_serving.db, "fetch_all", fake_fetch_all)
+
+    assert deep_analysis._load_market_strength(["선택브랜드"], _context()) == {}
+    assert len(calls) == 1
+    assert "agent3_brand_strength_market" in calls[0]
+    assert "agent3_brand_strength_source" not in calls[0]
 
 
 def test_formal_contract_does_not_read_legacy_ai_variant(monkeypatch) -> None:
@@ -468,7 +515,7 @@ def test_formal_contract_does_not_read_legacy_ai_variant(monkeypatch) -> None:
     monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])
     monkeypatch.setattr(
         deep_analysis,
-        "_load_ai_analysis_variants",
+        "_load_canonical_ai_analysis_variants",
         lambda _brand: ({"headline": "short"}, {"headline": "long"}),
     )
     monkeypatch.setattr(deep_analysis, "_formal_brand_factors", lambda _brand, _context: {"iqvia": [], "ubist": []})
