@@ -57,6 +57,8 @@ _INTERNAL_ID_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
 _INTERNAL_FACT_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*\bfact\b")
 # Exact internal phrases, longest/most-specific first.
 _INTERNAL_PHRASES: Final[tuple[tuple[str, str], ...]] = (
+    ("확정 데이터 기준으로 정리하면 다음과 같습니다.", ""),
+    ("반드시 반영할 내용", "내용"),
     ("확정 fact set", "확정 데이터"),
     ("필수 답변 fact", "핵심 데이터"),
     ("provenance fact", "출처 요약"),

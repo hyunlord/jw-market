@@ -4802,6 +4802,24 @@ def test_fallback_top_brand_answer_keeps_insight_shape() -> None:
     assert "경쟁 압력의 근거" in answer
 
 
+def test_csd_fallback_renders_user_prose_instead_of_internal_fact_rows() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    answer = fallback_fact_answer({"fact_md": fact_md})
+
+    assert "2026-03 120건" in answer
+    assert "2026-04 135건" in answer
+    assert "영업활동" in answer
+    assert "반드시 반영할 내용" not in answer
+    assert "CSD aggregate 콜수" not in answer
+    assert "확정 데이터 기준으로 정리하면" not in answer
+
+
 def test_causal_structure_does_not_append_generic_block_to_existing_analysis() -> None:
     fact_md = "\n".join(
         [

@@ -142,11 +142,26 @@ def fallback_fact_answer(markdown_response: Any) -> str:
     top_brand_answer = _top_brand_fallback_answer(lines, fact_md, source_line)
     if top_brand_answer:
         return top_brand_answer
+    csd_answer = _csd_activity_fallback_answer(lines, source_line)
+    if csd_answer:
+        return csd_answer
     body = "\n".join(lines) if lines else "- 표시할 검증 fact가 제한적입니다."
     parts = ["확정 데이터 기준으로 정리하면 다음과 같습니다.", body]
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))
+    if source_line:
+        parts.append(source_line)
+    return "\n\n".join(parts)
+
+
+def _csd_activity_fallback_answer(lines: list[str], source_line: str) -> str:
+    activity = next((line for line in lines if "CSD aggregate 콜수" in line), "")
+    if not activity:
+        return ""
+    detail = activity.split("CSD aggregate 콜수", 1)[-1].lstrip(" :|-—")
+    detail = detail.replace("CSD ChannelDynamics aggregate 콜수/활동량", "월별 영업활동량")
+    parts = [f"확인된 월별 영업활동 추이는 {detail}입니다."]
     if source_line:
         parts.append(source_line)
     return "\n\n".join(parts)
