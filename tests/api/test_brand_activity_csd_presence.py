@@ -22,6 +22,13 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
+def test_response_typed_dict_supports_python_311_pydantic() -> None:
+    """FastAPI on Python 3.11 requires TypedDict from typing_extensions."""
+
+    typed_dict_factory = service.CsdPresence.__orig_bases__[0]
+    assert typed_dict_factory.__module__ == "typing_extensions"
+
+
 def test_presence_uses_the_same_product_overlap_as_csd_market_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

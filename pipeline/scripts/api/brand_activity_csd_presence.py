@@ -5,7 +5,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Final, TypedDict
+from typing import Final
+
+from typing_extensions import TypedDict
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
