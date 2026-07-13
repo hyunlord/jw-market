@@ -172,6 +172,8 @@ def resolve_brand_set(
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
     brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
+    if view_name == "general":
+        resolved_selected_brand = _resolve_general_selected_brand_key(resolved_selected_brand, brand_meta)
     if resolved_selected_brand not in brand_meta:
         return None
     effective_filter_payload = _filter_payload_for_effective_market(raw_filter_payload, resolved_market_id, market_scope_market_id is not None)
@@ -233,6 +235,25 @@ def _resolve_general_market_id(
         if membership in requested_set:
             return membership
     return requested_market_id
+
+
+def _resolve_general_selected_brand_key(selected_brand: str, brand_meta: Mapping[str, BrandMeta]) -> str:
+    if selected_brand in brand_meta:
+        return selected_brand
+    display_brand = get_display_brand(selected_brand)
+    if display_brand is None:
+        return selected_brand
+    aliases = {_compact_brand_name(value) for value in display_brand.layer3_aliases}
+    matches = [
+        brand_key
+        for brand_key, meta in brand_meta.items()
+        if _compact_brand_name(brand_key) in aliases or _compact_brand_name(meta.brand_name) in aliases
+    ]
+    return matches[0] if len(matches) == 1 else selected_brand
+
+
+def _compact_brand_name(value: str) -> str:
+    return value.replace(" ", "").lower()
 
 
 def _market_scope_market_id(

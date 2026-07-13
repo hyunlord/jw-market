@@ -97,6 +97,39 @@ def test_general_market_resolution_preserves_first_candidate_for_all_misses(monk
     assert market_id == "A10C1"
 
 
+def test_general_brand_set_resolves_display_alias_to_mart_brand_key(monkeypatch) -> None:
+    monkeypatch.setattr(resolver, "_resolve_general_market_id", lambda **_kwargs: "K01D2")
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_brand_rows",
+        lambda *_args, **_kwargs: (
+            {
+                "brand_key": "위너프에이플러스",
+                "brand_name": "위너프에이플러스",
+                "by_dimension": {"products": []},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_market_row",
+        lambda *_args, **_kwargs: {"atc4_code": "K01D2", "brand_ranking": {}},
+    )
+    monkeypatch.setattr(resolver, "_brand_candidates", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(resolver, "_select_choices", lambda *_args, **_kwargs: ())
+
+    result = resolve_brand_set(
+        view_name="general",
+        market_id="K01D1",
+        selected_brand="위너프A+",
+        filter_payload={"atc4": ["K01D1", "K01D2"]},
+    )
+
+    assert result is not None
+    assert result.market_id == "K01D2"
+    assert result.selected_brand == "위너프에이플러스"
+
+
 def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> None:
     payload = {
         "analysis_level": {
