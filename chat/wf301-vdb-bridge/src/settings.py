@@ -82,9 +82,22 @@ QUOTA_MAX_FILE_MB = int(os.environ.get("QUOTA_MAX_FILE_MB", "100"))
 QUOTA_MAX_SESSION_MB = int(os.environ.get("QUOTA_MAX_SESSION_MB", "100"))
 ROUTE_SOFT_CHUNK_LIMIT = int(os.environ.get("ROUTE_SOFT_CHUNK_LIMIT", "100000"))
 ROUTE_HARD_CHUNK_LIMIT = int(os.environ.get("ROUTE_HARD_CHUNK_LIMIT", "200000"))
-EXTERNAL_PREPROCESSOR_MAX_FILE_MB = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_FILE_MB", "20"))
-EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES", "250"))
+EXTERNAL_PREPROCESSOR_MAX_FILE_MB = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_FILE_MB", "100"))
+# Optional absolute emergency cap. PDF admission normally follows the measured time budget below.
+EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES", "0"))
 EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES = int(os.environ.get("EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES", "120"))
+PDF_TEXT_LAYER_MIN_CHARS = max(
+    int(
+        os.environ.get(
+            "PDF_TEXT_LAYER_MIN_CHARS",
+            os.environ.get("PDF_OCR_TEXT_MIN_NONSPACE", "20"),
+        )
+    ),
+    0,
+)
+PDF_TEXT_PAGE_SECONDS = max(float(os.environ.get("PDF_TEXT_PAGE_SECONDS", "0.38")), 0.0)
+PDF_OCR_PAGE_SECONDS = max(float(os.environ.get("PDF_OCR_PAGE_SECONDS", "3.91")), 0.0)
+PDF_MAX_ESTIMATED_SECONDS = max(float(os.environ.get("PDF_MAX_ESTIMATED_SECONDS", "300")), 0.0)
 
 # 로컬 XLSX 전처리(청킹+임베딩+139 복사)의 fail-closed 타임아웃 게이트.
 # XLSX_EMBED_CHUNKS_PER_SEC 근거: 2026-07-11 실측 — crosstab.xlsx 3,166청크가 약 158초

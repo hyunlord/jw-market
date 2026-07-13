@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import re
 import shutil
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+import fitz
 import pymysql
 from fastapi import UploadFile
 
@@ -22,7 +25,6 @@ LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
 # 로컬 XLSX 전처리 경로가 직접 처리하는 확장자. .xlsm은 매크로를 무시하고 데이터 시트만 색인한다.
 LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
 GATED_EXTERNAL_PREPROCESSOR_EXTENSIONS = frozenset({"pdf", "pptx"})
-PDF_PAGE_MARKER = re.compile(rb"/Type\s*/Page\b")
 PPTX_SLIDE_NAME = re.compile(r"^ppt/slides/slide\d+\.xml$")
 PREPROCESSOR_TIMEOUT_MESSAGE = (
     "문서가 커서 처리 시간이 초과되었습니다. "
@@ -31,6 +33,7 @@ PREPROCESSOR_TIMEOUT_MESSAGE = (
 PREPROCESSOR_FAILURE_MESSAGE = (
     "문서 전처리에 실패했습니다. 파일 형식이나 내용을 확인한 뒤 다시 시도해 주세요."
 )
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +66,14 @@ class PreprocessorGateBlock:
     route_reason: str
     file_size_bytes: int
     user_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PdfProcessingEstimate:
+    page_count: int
+    text_layer_pages: int
+    ocr_candidate_pages: int
+    estimated_seconds: float
 
 
 class PreprocessorRunError(RuntimeError):
@@ -212,12 +223,41 @@ def _size_gate_block(file_name: str, size_bytes: int) -> PreprocessorGateBlock |
     )
 
 
-def _pdf_page_count(path: Path) -> int | None:
+def _pdf_processing_estimate(path: Path) -> PdfProcessingEstimate | None:
     try:
-        data = path.read_bytes()
-    except OSError:
+        with fitz.open(path) as document:
+            page_count = len(document)
+            text_layer_pages = 0
+            for page in document:
+                native_text = page.get_text("text") or ""
+                nonspace_chars = len("".join(native_text.split()))
+                if nonspace_chars >= settings.PDF_TEXT_LAYER_MIN_CHARS:
+                    text_layer_pages += 1
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("PDF admission profile failed for %s: %s", path.name, exc)
         return None
-    return len(PDF_PAGE_MARKER.findall(data))
+
+    ocr_candidate_pages = page_count - text_layer_pages
+    estimated_seconds = (
+        text_layer_pages * settings.PDF_TEXT_PAGE_SECONDS
+        + ocr_candidate_pages * settings.PDF_OCR_PAGE_SECONDS
+    )
+    estimate = PdfProcessingEstimate(
+        page_count=page_count,
+        text_layer_pages=text_layer_pages,
+        ocr_candidate_pages=ocr_candidate_pages,
+        estimated_seconds=estimated_seconds,
+    )
+    logger.info(
+        "PDF admission profile file=%s pages=%d text_layer_pages=%d "
+        "ocr_candidate_pages=%d estimated_seconds=%.2f",
+        path.name,
+        page_count,
+        text_layer_pages,
+        ocr_candidate_pages,
+        estimated_seconds,
+    )
+    return estimate
 
 
 def _pptx_slide_count(path: Path) -> int | None:
@@ -237,9 +277,42 @@ def _metadata_gate_block(
     extension = _extension(file_name)
     path = Path(file_path)
     if extension == "pdf":
-        page_count = _pdf_page_count(path)
-        if page_count is not None and page_count > settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES:
+        estimate = _pdf_processing_estimate(path)
+        if estimate is None:
+            reason = (
+                "PDF 페이지와 텍스트 레이어를 확인할 수 없습니다. "
+                "파일이 손상되었거나 암호화되었는지 확인해 주세요."
+            )
+            return PreprocessorGateBlock(
+                file_name=file_name,
+                route="preprocess_failed",
+                route_reason=reason,
+                file_size_bytes=file_size_bytes,
+                user_message=reason,
+            )
+        if (
+            settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES > 0
+            and estimate.page_count > settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES
+        ):
             reason = f"PDF는 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES}페이지까지 지원됩니다."
+            return PreprocessorGateBlock(
+                file_name=file_name,
+                route="blocked_oversized",
+                route_reason=reason,
+                file_size_bytes=file_size_bytes,
+                user_message=reason,
+            )
+        if (
+            estimate.estimated_seconds > settings.PDF_MAX_ESTIMATED_SECONDS
+        ):
+            estimated_seconds = math.ceil(estimate.estimated_seconds)
+            time_budget = math.floor(settings.PDF_MAX_ESTIMATED_SECONDS)
+            reason = (
+                f"이 문서는 {estimate.page_count}페이지 중 OCR 예상 "
+                f"{estimate.ocr_candidate_pages}페이지로 예상 처리 시간 "
+                f"{estimated_seconds}초가 {time_budget}초 한도를 초과합니다. "
+                "파일을 나누거나 스캔 페이지 수를 줄여 다시 시도해 주세요."
+            )
             return PreprocessorGateBlock(
                 file_name=file_name,
                 route="blocked_oversized",
