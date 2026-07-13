@@ -22,6 +22,7 @@ class HiraUnsuitable(TypedDict):
 
 
 HiraMappingEntry: TypeAlias = HiraMapping | tuple[HiraMapping, ...]
+HIRA_TREND_YEARS = tuple(str(year) for year in range(2020, 2025))
 
 
 def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
@@ -168,15 +169,25 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
                 },
             )
         )
-        for call in (
-            external.hira_disease_name_code(sick_cd),
-            external.hira_disease_hospitalization_outpatient_stats(sick_cd),
-            external.hira_disease_gender_age_stats(sick_cd),
-            external.hira_disease_institution_class_stats(sick_cd),
-            external.hira_disease_area_stats(sick_cd),
-        ):
+        external_calls = _hira_external_calls(question, external, sick_cd)
+        for call in external_calls:
             calls.append(_with_hira_mapping_context(call, resolution.canonical_brand, mapping, index, total))
     return calls
+
+
+def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
+    if "추이" in question:
+        return (
+            external.hira_disease_name_code(sick_cd),
+            *(external.hira_disease_hospitalization_outpatient_stats(sick_cd, year) for year in HIRA_TREND_YEARS),
+        )
+    return (
+        external.hira_disease_name_code(sick_cd),
+        external.hira_disease_hospitalization_outpatient_stats(sick_cd),
+        external.hira_disease_gender_age_stats(sick_cd),
+        external.hira_disease_institution_class_stats(sick_cd),
+        external.hira_disease_area_stats(sick_cd),
+    )
 
 
 def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMapping, ...] | None:

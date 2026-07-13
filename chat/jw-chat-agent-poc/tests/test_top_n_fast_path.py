@@ -66,10 +66,10 @@ def _markdown_response(fact_md: str = TOP_FACT) -> dict:
     return {"fact_md": fact_md, "data_md": fact_md, "allowed_numbers": ()}
 
 
-def test_top_n_share_fast_path_renders_verified_table_and_display_sum() -> None:
+def test_top_n_share_fast_path_renders_verified_table_and_raw_sum() -> None:
     answer = deterministic_top_n_share_answer(QUESTION, TOP_FACT, [_top_call()])
 
-    assert answer.startswith("상위 5개 합계 시장점유율은 29.53%입니다.")
+    assert answer.startswith("상위 5개 합계 시장점유율은 29.52%입니다.")
     assert "| 순위 | 브랜드 | 점유율 | 매출 |" in answer
     assert "| 1위 | 로수젯 | 9.13% | 195.24억원 |" in answer
     assert "| 5위 | 로수바미브 | 4.20% | 89.76억원 |" in answer
@@ -94,7 +94,7 @@ def test_stream_answer_bypasses_final_llm_and_emits_fast_path_marker(monkeypatch
         )
     )
 
-    assert answer.startswith("상위 5개 합계 시장점유율은 29.53%입니다.")
+    assert answer.startswith("상위 5개 합계 시장점유율은 29.52%입니다.")
     assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in answer
     assert [item["name"] for item in timing["stages"]] == ["final_deterministic_fast_path"]
 

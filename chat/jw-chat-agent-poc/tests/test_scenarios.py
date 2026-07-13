@@ -51,6 +51,18 @@ def test_hira_disease_question_routes_to_external_disease_stats_without_metrics(
     assert "지질단백질대사장애" in result["answer"]
 
 
+def test_hira_disease_trend_requests_five_distinct_years() -> None:
+    result = ChatAgent().answer("고지혈증 환자수 추이")
+
+    calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "hira_disease_hospitalization_outpatient_stats"
+    ]
+    assert [call["render_data"]["request"]["year"] for call in calls] == ["2020", "2021", "2022", "2023", "2024"]
+    assert all(call.get("tool") != "hira_disease_gender_age_stats" for call in result["tool_calls"])
+
+
 @pytest.mark.parametrize("question", ["이상지질혈증 환자통계", "이상지질혈증 환자분포"])
 def test_hira_disease_question_accepts_compact_patient_stat_spacing(question):
     result = ChatAgent().answer(question)

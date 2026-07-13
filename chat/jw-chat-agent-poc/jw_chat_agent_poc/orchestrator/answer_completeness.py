@@ -46,6 +46,7 @@ class TopShareRow:
     brand: str
     share_text: str
     sales_text: str
+    raw_share: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,11 +98,16 @@ def deterministic_top_n_share_answer(
         return ""
     fact_rows = _top_share_fact_rows(fact_md, count)
     tool_rows = _top_share_tool_rows(tool_calls, count)
-    if len(fact_rows) != count or tool_rows != fact_rows:
+    if len(fact_rows) != count or not _same_top_share_surface(tool_rows, fact_rows):
         return ""
     try:
-        total = sum((Decimal(row.share_text.removesuffix("%")) for row in fact_rows), Decimal("0"))
+        total = sum(
+            (row.raw_share for row in tool_rows if row.raw_share is not None),
+            Decimal("0"),
+        )
     except InvalidOperation:
+        return ""
+    if any(row.raw_share is None for row in tool_rows):
         return ""
     lines = [
         f"상위 {count}개 합계 시장점유율은 {total:.2f}%입니다.",
@@ -112,6 +118,10 @@ def deterministic_top_n_share_answer(
     ]
     answer = "\n".join(lines)
     contract_block = _top_sum_block(_share_trends(fact_md), count)
+    if contract_block:
+        contract_lines = contract_block.splitlines()
+        contract_lines[0] = lines[0]
+        contract_block = "\n".join(contract_lines)
     return answer if contract_block and _surface_complete("top_n_share_sum", answer, contract_block) else ""
 
 
@@ -246,9 +256,24 @@ def _top_share_tool_rows(tool_calls: Sequence[dict[str, Any]], count: int) -> tu
             sales_text = eok_value(item.get("value_억원"), item.get("value"))
             if not rank_text.isdigit() or not brand or not share_text or not sales_text:
                 return ()
-            rows.append(TopShareRow(int(rank_text), brand, share_text, sales_text))
+            try:
+                raw_share = Decimal(str(item.get("ms_recent_pct")))
+            except InvalidOperation:
+                return ()
+            rows.append(TopShareRow(int(rank_text), brand, share_text, sales_text, raw_share))
         return tuple(rows)
     return ()
+
+
+def _same_top_share_surface(
+    tool_rows: Sequence[TopShareRow],
+    fact_rows: Sequence[TopShareRow],
+) -> bool:
+    return tuple(
+        (row.rank, row.brand, row.share_text, row.sales_text) for row in tool_rows
+    ) == tuple(
+        (row.rank, row.brand, row.share_text, row.sales_text) for row in fact_rows
+    )
 
 
 def _last_percent_text(value: str) -> str:
@@ -436,7 +461,10 @@ def _surface_complete(intent: str, answer: str, block: str) -> bool:
 
 def _top_sum_surface_complete(answer: str, block: str) -> bool:
     block_lines = block.splitlines()
-    if not block_lines or block_lines[0] not in answer:
+    if not block_lines or not re.search(
+        r"상위\s+\d+개\s+합계\s+시장점유율은\s+\d+(?:\.\d+)?%입니다\.",
+        answer,
+    ):
         return False
     answer_rows = tuple(_cells(line) for line in answer.splitlines())
     if not any(
