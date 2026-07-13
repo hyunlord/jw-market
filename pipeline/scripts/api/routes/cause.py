@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_measure, normalize_source
-from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError
+from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, PersistenceScheduler
 from pipeline.scripts.api.dynamic_market.runtime_cache import dynamic_response_cache
 from pipeline.scripts.api.dynamic_market.strategic_cause import get_strategic_payload
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
@@ -43,6 +43,8 @@ def _fetch_cause_rows(
     source: str,
     measure: str,
     market_id: str | None = None,
+    *,
+    persistence_scheduler: PersistenceScheduler | None = None,
 ) -> list[dict]:
     mart_source = normalize_source(source)
     mart_measure = normalize_measure(mart_source, measure)
@@ -89,6 +91,7 @@ def _fetch_cause_rows(
             source=source,
             measure=measure,
             analysis_level=empty_analysis_level,
+            persistence_scheduler=persistence_scheduler,
         )
         rows.append({"market_id": response_market_id, "response_json": payload})
     return rows
@@ -107,6 +110,7 @@ def _fetch_cause_rows(
 )
 def cause(
     brand_name: str,
+    background_tasks: BackgroundTasks,
     view: str | None = Query("market_landscape", description="조회 뷰. market_landscape 또는 competitive_dynamics.", examples=["market_landscape"]),
     source: str | None = Query("UBIST", description="데이터 소스. UBIST 또는 IQVIA.", examples=["UBIST"]),
     measure: str | None = Query("sales", description="지표. sales 또는 qty.", examples=["sales"]),
@@ -116,7 +120,14 @@ def cause(
     brand = unquote(brand_name)
     requested_market_id = to_strategy_id(market_id) if market_id else None
     try:
-        rows = _fetch_cause_rows(brand, view, source, measure, requested_market_id)
+        rows = _fetch_cause_rows(
+            brand,
+            view,
+            source,
+            measure,
+            requested_market_id,
+            persistence_scheduler=background_tasks.add_task,
+        )
     except DynamicMarketOverloadedError as exc:
         raise HTTPException(
             status_code=429,

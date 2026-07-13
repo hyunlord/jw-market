@@ -138,6 +138,114 @@ def test_response_cache_releases_lease_when_persistence_fails() -> None:
     assert row["last_error"] == "DynamicResponseCacheUnavailable: write failed"
 
 
+def test_response_cache_can_defer_persistence_until_after_response() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    scheduled: list[object] = []
+
+    result = cache.get_or_build(
+        {"source": "ubist"},
+        lambda: {"status": "SUCCESS"},
+        persistence_scheduler=scheduled.append,
+    )
+
+    assert result == {"status": "SUCCESS"}
+    assert len(scheduled) == 1
+    row = next(iter(store.rows.values()))
+    assert row["state"] == "building"
+
+    scheduled[0]()
+
+    assert row is not next(iter(store.rows.values()))
+    assert next(iter(store.rows.values()))["state"] == "ready"
+
+
+def test_response_cache_deferred_persistence_failure_releases_lease(caplog: pytest.LogCaptureFixture) -> None:
+    class FailingStore(MemoryStore):
+        def complete(self, *, cache_key: str, lease_owner: str, source_epoch: str, response_json: str) -> None:
+            raise DynamicResponseCacheUnavailable("write failed")
+
+    store = FailingStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    scheduled: list[object] = []
+
+    result = cache.get_or_build(
+        {"source": "ubist"},
+        lambda: {"status": "SUCCESS"},
+        persistence_scheduler=scheduled.append,
+    )
+
+    assert result == {"status": "SUCCESS"}
+    assert next(iter(store.rows.values()))["state"] == "building"
+
+    scheduled[0]()
+
+    row = next(iter(store.rows.values()))
+    assert row["state"] == "failed"
+    assert row["failure_reason"] == "persistence_error"
+    assert row["last_error"] == "DynamicResponseCacheUnavailable: write failed"
+    assert "dynamic_response_cache_store_failed" in caplog.text
+
+
+def test_response_cache_deferred_persistence_keeps_identical_requests_single_flight() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    scheduled: list[object] = []
+    builds = 0
+
+    def build() -> dict[str, object]:
+        nonlocal builds
+        builds += 1
+        return {"status": "SUCCESS"}
+
+    first = cache.get_or_build(
+        {"source": "ubist"},
+        build,
+        persistence_scheduler=scheduled.append,
+    )
+    results: list[dict[str, object]] = []
+    waiter = threading.Thread(target=lambda: results.append(cache.get_or_build({"source": "ubist"}, build)))
+    waiter.start()
+    time.sleep(0.01)
+
+    assert waiter.is_alive()
+    scheduled[0]()
+    waiter.join(timeout=1.0)
+
+    assert first == {"status": "SUCCESS"}
+    assert results == [first]
+    assert builds == 1
+
+
+def test_response_cache_does_not_hide_unexpected_sync_persistence_bug() -> None:
+    class BuggyStore(MemoryStore):
+        def complete(self, *, cache_key: str, lease_owner: str, source_epoch: str, response_json: str) -> None:
+            raise AssertionError("cache invariant broken")
+
+    store = BuggyStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+
+    with pytest.raises(AssertionError, match="cache invariant broken"):
+        cache.get_or_build({"source": "ubist"}, lambda: {"status": "SUCCESS"})
+
+
+def test_response_cache_falls_back_to_sync_persistence_when_scheduling_fails() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+
+    def reject_schedule(_task: object) -> None:
+        raise RuntimeError("scheduler unavailable")
+
+    result = cache.get_or_build(
+        {"source": "ubist"},
+        lambda: {"status": "SUCCESS"},
+        persistence_scheduler=reject_schedule,
+    )
+
+    assert result == {"status": "SUCCESS"}
+    assert next(iter(store.rows.values()))["state"] == "ready"
+
+
 def test_response_cache_single_flight_builds_same_key_once() -> None:
     store = MemoryStore()
     cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=2.0)

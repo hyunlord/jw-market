@@ -7,6 +7,7 @@ from typing import Any
 from pipeline.scripts.api.dynamic_market.response_cache import (
     DynamicResponseCache,
     DynamicResponseCacheUnavailable,
+    PersistenceScheduler,
 )
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
@@ -42,6 +43,7 @@ def get_strategic_payload(
     source: str,
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
+    persistence_scheduler: PersistenceScheduler | None = None,
 ) -> dict[str, Any]:
     request = strategic_cache_request(
         ml_id=ml_id,
@@ -64,6 +66,6 @@ def get_strategic_payload(
         )
 
     try:
-        return cache.get_or_build(request, build)
+        return cache.get_or_build(request, build, persistence_scheduler=persistence_scheduler)
     except DynamicResponseCacheUnavailable:
         return build()

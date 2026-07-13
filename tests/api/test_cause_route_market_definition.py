@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from fastapi import BackgroundTasks
+
 from pipeline.scripts.api.routes import cause as cause_route
 
 
@@ -9,6 +11,7 @@ def test_cause_returns_explicit_empty_state_for_unmapped_mart_brand(monkeypatch)
 
     payload = cause_route.cause(
         "비JW브랜드",
+        background_tasks=BackgroundTasks(),
         view="market_landscape",
         source="UBIST",
         measure="sales",
@@ -49,6 +52,7 @@ def test_cause_route_adds_cd_market_definition(monkeypatch) -> None:
     # When: the portal-facing cause route serves the payload.
     payload = cause_route.cause(
         "리바로하이",
+        background_tasks=BackgroundTasks(),
         view="competitive_dynamics",
         source="UBIST",
         measure="sales",
@@ -62,3 +66,34 @@ def test_cause_route_adds_cd_market_definition(monkeypatch) -> None:
     )
     assert payload["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
     assert payload["market_meta"]["atc_count"] == 1
+
+
+def test_cause_route_schedules_cache_persistence_after_response(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch(
+        _brand: str,
+        _view: str,
+        _source: str,
+        _measure: str,
+        _market_id: str | None,
+        *,
+        persistence_scheduler=None,
+    ) -> list[dict[str, object]]:
+        captured["scheduler"] = persistence_scheduler
+        return []
+
+    monkeypatch.setattr(cause_route, "_fetch_cause_rows", fake_fetch)
+    monkeypatch.setattr(cause_route, "_brand_exists", lambda _brand: True)
+    background_tasks = BackgroundTasks()
+
+    cause_route.cause(
+        "비JW브랜드",
+        background_tasks=background_tasks,
+        view="market_landscape",
+        source="UBIST",
+        measure="sales",
+        market_id=None,
+    )
+
+    assert captured["scheduler"] == background_tasks.add_task

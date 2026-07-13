@@ -37,6 +37,7 @@ DEFAULT_MAX_ENTRY_BYTES = 8 * 1024 * 1024
 DEFAULT_HIGH_WATER_RATIO = 0.90
 DEFAULT_LOW_WATER_RATIO = 0.75
 _BUILD_SEMAPHORE = threading.BoundedSemaphore(3)
+PersistenceScheduler = Callable[[Callable[[], None]], None]
 
 
 class DynamicMarketOverloadedError(RuntimeError):
@@ -179,7 +180,13 @@ class DynamicResponseCache:
         self._wait_timeout_seconds = wait_timeout_seconds
         self._max_entry_bytes = max_entry_bytes
 
-    def get_or_build(self, request: Mapping[str, Any], builder: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    def get_or_build(
+        self,
+        request: Mapping[str, Any],
+        builder: Callable[[], dict[str, Any]],
+        *,
+        persistence_scheduler: PersistenceScheduler | None = None,
+    ) -> dict[str, Any]:
         request_json = canonical_request_json(request)
         source_epoch = self._store.source_epoch()
         cache_key = hashlib.sha256(
@@ -204,6 +211,7 @@ class DynamicResponseCache:
                     source_epoch=source_epoch,
                     lease_owner=claim.lease_owner,
                     builder=builder,
+                    persistence_scheduler=persistence_scheduler,
                 )
             if time.monotonic() >= deadline:
                 raise DynamicMarketOverloadedError("timed out waiting for an identical dynamic-market request")
@@ -217,6 +225,7 @@ class DynamicResponseCache:
         source_epoch: str,
         lease_owner: str,
         builder: Callable[[], dict[str, Any]],
+        persistence_scheduler: PersistenceScheduler | None,
     ) -> dict[str, Any]:
         if not self._build_semaphore.acquire(blocking=False):
             self._store.fail(
@@ -254,21 +263,44 @@ class DynamicResponseCache:
                     self._max_entry_bytes,
                 )
                 return payload
-            try:
-                self._store.complete(
-                    cache_key=cache_key,
-                    lease_owner=lease_owner,
-                    source_epoch=source_epoch,
-                    response_json=stored_response,
-                )
-            except DynamicResponseCacheUnavailable as exc:
-                self._store.fail(
-                    cache_key=cache_key,
-                    lease_owner=lease_owner,
-                    failure_reason="persistence_error",
-                    last_error=_error_summary(exc),
-                )
-                logger.warning("dynamic_response_cache_store_failed", exc_info=True)
+            def persist() -> None:
+                try:
+                    self._store.complete(
+                        cache_key=cache_key,
+                        lease_owner=lease_owner,
+                        source_epoch=source_epoch,
+                        response_json=stored_response,
+                    )
+                except DynamicResponseCacheUnavailable as exc:
+                    self._store.fail(
+                        cache_key=cache_key,
+                        lease_owner=lease_owner,
+                        failure_reason="persistence_error",
+                        last_error=_error_summary(exc),
+                    )
+                    logger.warning("dynamic_response_cache_store_failed", exc_info=True)
+
+            def persist_deferred() -> None:
+                try:
+                    persist()
+                except Exception as exc:
+                    self._store.fail(
+                        cache_key=cache_key,
+                        lease_owner=lease_owner,
+                        failure_reason="persistence_bug",
+                        last_error=_error_summary(exc),
+                    )
+                    logger.exception("dynamic_response_cache_store_bug")
+                    raise
+
+            if persistence_scheduler is None:
+                persist()
+            else:
+                try:
+                    persistence_scheduler(persist_deferred)
+                except Exception:
+                    logger.warning("dynamic_response_cache_schedule_failed", exc_info=True)
+                    persist()
             return payload
         except Exception as exc:
             self._store.fail(
