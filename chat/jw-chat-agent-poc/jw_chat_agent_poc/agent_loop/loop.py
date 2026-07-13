@@ -14,6 +14,7 @@ from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_completeness import completeness_intent
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -693,7 +694,8 @@ def _answer_contract_calls(
     query_layer: StrategicQueryLayer | None,
 ) -> list[dict[str, Any]]:
     plans = answer_contract_backfill_tool_calls(question, brand, calls)
-    if not plans:
+    compare_brands = metric_brands if completeness_intent(question) == "brand_compare" else ()
+    if not plans and not compare_brands:
         return []
     facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, metric_brands, observations)
     completed: list[dict[str, Any]] = []
@@ -703,6 +705,15 @@ def _answer_contract_calls(
         data = call.setdefault("render_data", {})
         if isinstance(data, dict):
             data["completion_reason"] = "answer_contract_requires_ranking_facts"
+        completed.append(call)
+    for compare_brand in compare_brands:
+        if _has_sales_series(calls + completed, compare_brand):
+            continue
+        execution = facade.execute("get_metric", {"brand": compare_brand, "measure": "series", "period": "latest"})
+        call = dict(execution.call)
+        data = call.setdefault("render_data", {})
+        if isinstance(data, dict):
+            data["completion_reason"] = "brand_compare_requires_each_series"
         completed.append(call)
     return completed
 
