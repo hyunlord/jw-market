@@ -67,12 +67,12 @@ class StrategicQueryLayer:
             self._store = shared_strategic_mart_store(ttl_seconds)
         self._results = result_store or QueryResultStore()
 
-    def catalog_for_brand(self, brand: str | None) -> QueryCatalog:
+    def catalog_for_brand(self, brand: str | None, market: str | None = None) -> QueryCatalog:
         snapshot = self._snapshot()
-        market = snapshot.market_id_for_brand(brand or "")
-        if market is None:
+        selected_market = _required_market(snapshot, brand or "", market) if brand else market
+        if selected_market is None:
             return default_catalog()
-        return QueryCatalog.from_snapshot(snapshot, market, snapshot.source_for_market(market))
+        return QueryCatalog.from_snapshot(snapshot, selected_market, snapshot.source_for_market(selected_market))
 
     def brand_memberships(self) -> tuple[dict[str, str], ...]:
         """Return exact brand-market memberships from the shared mart snapshot."""
@@ -87,13 +87,13 @@ class StrategicQueryLayer:
             for brand, market_id in sorted(memberships)
         )
 
-    def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
+    def brand_metric(self, brand: str, metric: str, period: str, market: str | None = None) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
+        market = _required_market(snapshot, brand, market)
         source = _default_source_for_metric(snapshot, market, brand, period)
         record = snapshot.record(market, brand, source)
         if metric.casefold() in {"hhi", "momentum", "ei", "growth_contribution"}:
-            return self.brand_derived_metric(brand, metric)
+            return self.brand_derived_metric(brand, metric, market=market)
         requested_period = _actual_period(snapshot, market, source, period)
         actual_period = _display_period(snapshot, record, requested_period, period)
         structure = market_structure(snapshot, market, source)
@@ -134,9 +134,9 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
-    def brand_derived_metric(self, brand: str, metric: str) -> dict[str, Any]:
+    def brand_derived_metric(self, brand: str, metric: str, market: str | None = None) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
+        market = _required_market(snapshot, brand, market)
         source = _default_source_for_metric(snapshot, market, brand, "latest")
         record = snapshot.record(market, brand, source)
         data = derived_metric_render_data(snapshot, market, source, record, metric)
@@ -156,9 +156,9 @@ class StrategicQueryLayer:
             "render_data": data,
         }
 
-    def market_scope(self, brand: str) -> dict[str, Any]:
+    def market_scope(self, brand: str, market: str | None = None) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
+        market = _required_market(snapshot, brand, market)
         brand_sources = snapshot.sources_for_brand(market, brand)
         source = brand_sources[0] if len(brand_sources) == 1 else snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
@@ -244,9 +244,9 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
-    def market_member_metric(self, anchor_brand: str, member_brand: str) -> dict[str, Any]:
+    def market_member_metric(self, anchor_brand: str, member_brand: str, market: str | None = None) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, anchor_brand)
+        market = _required_market(snapshot, anchor_brand, market)
         source = snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         record = snapshot.record(market, member_brand, source)
@@ -263,9 +263,9 @@ class StrategicQueryLayer:
             "render_data": data,
         }
 
-    def top_brands(self, brand: str, limit: int = 5) -> dict[str, Any]:
+    def top_brands(self, brand: str, limit: int = 5, market: str | None = None) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
+        market = _required_market(snapshot, brand, market)
         source = snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         ranked = snapshot.ranked_brands(market, latest, source)[: max(1, min(limit, 20))]
@@ -289,9 +289,18 @@ class StrategicQueryLayer:
         data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
-    def dimension_breakdown(self, brand: str, dimension: str, *, source: str = "", period: str = "latest", limit: int = 10) -> dict[str, Any]:
+    def dimension_breakdown(
+        self,
+        brand: str,
+        dimension: str,
+        *,
+        source: str = "",
+        period: str = "latest",
+        limit: int = 10,
+        market: str | None = None,
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
+        market = _required_market(snapshot, brand, market)
         selected_source = source or snapshot.source_for_market(market)
         selected_period = _actual_period(snapshot, market, selected_source, period)
         spec = {
@@ -381,7 +390,9 @@ class StrategicQueryLayer:
     def query(self, raw_spec: str | Mapping[str, Any], fallback_brand: str) -> dict[str, Any]:
         spec = parse_spec(raw_spec)
         snapshot = self._snapshot()
-        market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or default_catalog().market)
+        market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or "")
+        if not market:
+            raise LookupError(f"market is unresolved for {fallback_brand}")
         source = _default_source_for_query(snapshot, market, spec, fallback_brand)
         catalog = QueryCatalog.from_snapshot(snapshot, market, source)
         validate_spec(spec, catalog)
@@ -556,11 +567,17 @@ def _failed_metric_call(
     }
 
 
-def _required_market(snapshot: MartSnapshot, brand: str) -> str:
-    market = snapshot.market_id_for_brand(brand)
-    if market is None:
+def _required_market(snapshot: MartSnapshot, brand: str, requested_market: str | None = None) -> str:
+    markets = snapshot.market_ids_for_brand(brand)
+    if requested_market:
+        if requested_market not in markets:
+            raise LookupError(f"brand is not a member of requested market: brand={brand} market={requested_market}")
+        return requested_market
+    if not markets:
         raise LookupError(f"strategic mart has no market for brand: {brand}")
-    return market
+    if len(markets) > 1:
+        raise LookupError(f"brand belongs to multiple markets: brand={brand} markets={','.join(markets)}")
+    return markets[0]
 
 
 def _portfolio_decline_row(

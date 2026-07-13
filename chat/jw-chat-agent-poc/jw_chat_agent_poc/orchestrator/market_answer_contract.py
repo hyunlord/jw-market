@@ -71,6 +71,13 @@ def enforce_market_answer_contract(
     )
 
 
+def market_ambiguity_message(brand: str, markets: Sequence[str]) -> str:
+    """Render the shared fail-closed response for a 1:N market membership."""
+
+    labels = "·".join(dict.fromkeys(str(market) for market in markets if market))
+    return f"{brand}는 {labels} 여러 시장에 속합니다. 어느 시장 기준으로 볼지 지정해 주세요."
+
+
 def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     compact = re.sub(r"\s+", " ", question).strip()
     if "지역" in compact and "재구매율" in compact:

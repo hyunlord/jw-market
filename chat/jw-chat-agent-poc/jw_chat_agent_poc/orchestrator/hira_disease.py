@@ -95,6 +95,22 @@ HIRA_DISEASE_TEXT_MAPPINGS: dict[str, HiraMappingEntry] = {
     "류마티스": HIRA_DISEASE_MAPPINGS["악템라"],
 }
 
+HIRA_DISEASE_TEXT_BRANDS: dict[str, str] = {
+    "이상지질": "리바로",
+    "고지혈": "리바로",
+    "지질단백질": "리바로",
+    "당뇨": "가드메트",
+    "혈우": "헴리브라",
+    "빈혈": "페린젝트",
+    "류마티스": "악템라",
+}
+
+
+def hira_disease_anchor_brand(question: str) -> str | None:
+    """Resolve a disease-only question through the explicit HIRA mapping."""
+
+    return next((brand for token, brand in HIRA_DISEASE_TEXT_BRANDS.items() if token in question), None)
+
 
 def is_hira_disease_question(question: str) -> bool:
     return any(

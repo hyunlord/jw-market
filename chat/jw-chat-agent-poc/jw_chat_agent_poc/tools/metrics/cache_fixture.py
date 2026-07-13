@@ -132,7 +132,9 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         if not item:
             raise LookupError(f"Unknown brand fixture: {brand}")
         if metric in {"hhi", "series", "trend"}:
-            market_id = "ml_006" if brand in {"리바로", "리바로젯"} else "mock_market"
+            market_id = str(item.get("market_id") or "")
+            if not market_id:
+                raise LookupError(f"Fixture market is unresolved for {brand}")
             market = self._data["markets"].get(market_id, {})
             hhi = market.get("hhi")
             return {

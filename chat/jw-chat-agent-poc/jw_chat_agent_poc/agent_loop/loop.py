@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import math
 from typing import Any
@@ -17,6 +17,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOO
 from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
@@ -41,7 +42,13 @@ class ToolUseAgent:
         timing = new_timing()
         planner = self.planner or GenosToolPlanner(fallback=HeuristicToolPlanner())
         with stage(timing, "agent_pre_resolve", "brand and period grounding"):
-            base_allowed_brands = _pre_resolved_brands(question, self.resolver)
+            resolutions = _pre_resolutions(question, self.resolver)
+            base_allowed_brands = tuple(item.canonical_brand for item in resolutions)
+            market_by_brand = {
+                item.canonical_brand: item.market_id
+                for item in resolutions
+                if item.market_id is not None
+            }
             period_grounding = build_period_grounding(question, self.current_month)
         portfolio_call = _portfolio_decline_call(question, self.resolver, self.query_layer)
         if portfolio_call is not None:
@@ -63,6 +70,25 @@ class ToolUseAgent:
                 "answer": markdown.markdown,
                 "markdown_response": markdown.to_dict(),
                 "sources": [portfolio_call.get("source") or "cache"],
+                "timing": timing,
+            }
+        ambiguous = next((item for item in resolutions if item.requires_market_clarification), None)
+        if ambiguous is not None:
+            message = market_ambiguity_message(
+                ambiguous.canonical_brand,
+                ambiguous.market_names or ambiguous.market_ids,
+            )
+            return {
+                "question": question,
+                "resolution": asdict(ambiguous),
+                "decomposition": [{"intent": "market_clarification", "status": "needs_clarification", "max_steps": 0}],
+                "router_diagnostics": {"mode": "agent_loop", "deterministic_execution": True, "scope": "market_ambiguity"},
+                "agent_trace": [],
+                "agent_loop_metrics": {"status": "needs_clarification", "steps": 0, "tool_calls": 0, "selected_tools": []},
+                "tool_calls": [],
+                "answer": message,
+                "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+                "sources": [],
                 "timing": timing,
             }
         observations: list[AgentObservation] = []
@@ -88,6 +114,7 @@ class ToolUseAgent:
                 news=self.news,
                 external=self.external,
                 query_layer=self.query_layer,
+                market_by_brand=market_by_brand,
             )
             with stage(timing, "market_snapshot", "tool catalog and market snapshot"):
                 tool_schemas = facade.schemas(planner_allowed_brands)
@@ -667,6 +694,7 @@ def _completion_facade(
     observations: list[AgentObservation],
 ) -> AgentToolFacade:
     allowed_brands = _step_allowed_brands(metric_brands, tuple(observations))
+    market_by_brand = _observed_market_by_brand(observations)
     return AgentToolFacade(
         metrics=metrics,
         resolver=resolver,
@@ -676,7 +704,21 @@ def _completion_facade(
         news=news,
         external=external,
         query_layer=query_layer,
+        market_by_brand=market_by_brand,
     )
+
+
+def _observed_market_by_brand(observations: list[AgentObservation]) -> dict[str, str]:
+    selected: dict[str, str] = {}
+    for observation in observations:
+        data = observation.call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        brand = str(data.get("brand") or observation.arguments.get("brand") or "")
+        market = str(data.get("market_id") or data.get("market") or "")
+        if brand and market:
+            selected[brand] = market
+    return selected
 
 
 def _answer_contract_calls(
@@ -1551,8 +1593,12 @@ def _answer_brand(question: str, resolver: BrandResolver) -> str:
 
 
 def _pre_resolved_brands(question: str, resolver: BrandResolver) -> tuple[str, ...]:
+    return tuple(item.canonical_brand for item in _pre_resolutions(question, resolver))
+
+
+def _pre_resolutions(question: str, resolver: BrandResolver):
     try:
-        return tuple(item.canonical_brand for item in resolver.resolve_many(question, allow_default=False))
+        return resolver.resolve_many(question, allow_default=False)
     except UnsupportedBrandError:
         return ()
 

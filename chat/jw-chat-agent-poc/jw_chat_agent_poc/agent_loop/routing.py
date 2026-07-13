@@ -75,7 +75,7 @@ def should_use_agent_loop(question: str) -> bool:
         return True
     if completeness_intent(question) == "brand_compare":
         return True
-    if strict_query_plan(question, "리바로") is not None:
+    if strict_query_plan(question, "") is not None:
         return True
     if not any(token in question for token in (*_METRIC_TOKENS, *_EXTERNAL_TOKENS, *_DRUG_INFO_TOKENS)):
         return False

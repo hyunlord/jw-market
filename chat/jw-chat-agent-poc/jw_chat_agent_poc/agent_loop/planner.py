@@ -547,9 +547,18 @@ def _json_tool_call(raw: Mapping[str, Any]) -> ToolCallPlan:
 
 
 def _brand(question: str, allowed_brands: tuple[str, ...]) -> str:
-    if allowed_brands:
-        return allowed_brands[0]
-    return "리바로젯" if "리바로젯" in question else "리바로"
+    matches = _brands(question, allowed_brands)
+    if len(matches) == 1:
+        return matches[0]
+    if len(allowed_brands) == 1:
+        return next(iter(allowed_brands))
+    if len(matches) > 1:
+        raise LookupError(f"brand is unresolved: multiple brands matched ({', '.join(matches)})")
+    raise LookupError("brand is unresolved: ask the user to specify a brand")
+
+
+def _brands(question: str, allowed_brands: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(brand for brand in allowed_brands if brand and brand in question)
 
 
 def _brand_hint(allowed_brands: tuple[str, ...]) -> str:
@@ -584,37 +593,41 @@ def _needs_expanded_tools(question: str) -> bool:
 
 
 def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...]) -> tuple[ToolCallPlan, ...]:
-    brand = _brand(question, allowed_brands)
+    brands = _brands(question, allowed_brands)
+    if not brands and len(allowed_brands) == 1:
+        brands = (next(iter(allowed_brands)),)
+    if not brands:
+        raise LookupError("brand is unresolved: ask the user to specify a brand")
     calls: list[ToolCallPlan] = []
     if any(token in question for token in ("뉴스", "이슈")):
-        calls.append(ToolCallPlan("search_news", {"brand": brand, "query": _news_query(question)}, "뉴스/이슈 확인"))
+        calls.extend(ToolCallPlan("search_news", {"brand": brand, "query": _news_query(question)}, "뉴스/이슈 확인") for brand in brands)
     if any(token in question for token in ("환자", "질병", "질환", "HIRA")):
-        calls.append(ToolCallPlan("get_disease_stats", {"brand": brand}, "HIRA 질병 통계 확인"))
+        calls.extend(ToolCallPlan("get_disease_stats", {"brand": brand}, "HIRA 질병 통계 확인") for brand in brands)
     if _asks_hira_procedure(question):
-        calls.append(ToolCallPlan("get_procedure_stats", {"brand": brand, "query": question}, "HIRA 진료행위 통계 확인"))
+        calls.extend(ToolCallPlan("get_procedure_stats", {"brand": brand, "query": question}, "HIRA 진료행위 통계 확인") for brand in brands)
     if _asks_clinical(question):
-        calls.append(ToolCallPlan("search_clinical", {"brand": brand}, "임상 근거 확인"))
+        calls.extend(ToolCallPlan("search_clinical", {"brand": brand}, "임상 근거 확인") for brand in brands)
     if _asks_drug_info(question):
-        calls.append(ToolCallPlan("search_drug_info", {"brand": brand}, "식약처 허가정보 확인"))
+        calls.extend(ToolCallPlan("search_drug_info", {"brand": brand}, "식약처 허가정보 확인") for brand in brands)
     if _asks_patent(question):
         patent_args = {"query": question}
         ingredient = resolve_patent_ingredient_query(question)
         if ingredient and not any(allowed_brand in question for allowed_brand in allowed_brands):
             patent_args["ingredient"] = ingredient
         else:
-            patent_args["brand"] = brand
+            patent_args["brand"] = _brand(question, allowed_brands)
         calls.append(ToolCallPlan("search_patent", patent_args, "특허/라벨 근거 확인"))
     if _asks_web_search(question):
-        calls.append(ToolCallPlan("web_search", {"brand": brand, "query": question}, "웹 검색 결과 확인"))
+        calls.extend(ToolCallPlan("web_search", {"brand": brand, "query": question}, "웹 검색 결과 확인") for brand in brands)
     if _asks_csd_activity(question):
-        calls.append(ToolCallPlan("csd_activity_trend", {"brand": brand}, "CSD aggregate 콜수/활동량 확인"))
+        calls.extend(ToolCallPlan("csd_activity_trend", {"brand": brand}, "CSD aggregate 콜수/활동량 확인") for brand in brands)
     if _asks_series_metric(question) or any(token in question for token in ("매출", "점유율", "순위", "시장")):
         measure = (
             "series"
             if _asks_series_metric(question) or _asks_patient_sales_context(question)
             else ("market_share" if any(token in question for token in ("점유율", "순위")) else "sales")
         )
-        calls.append(ToolCallPlan("get_metric", {"brand": brand, "measure": measure, "period": "latest"}, "지표 확인"))
+        calls.extend(ToolCallPlan("get_metric", {"brand": brand, "measure": measure, "period": "latest"}, "지표 확인") for brand in brands)
     return tuple(calls)
 
 

@@ -262,14 +262,13 @@ def test_no_data_boundary_for_sales_impact():
     assert "84.93" in result["answer"]
 
 
-def test_mixed_structured_and_document_sources_are_separated():
+def test_mixed_structured_and_document_sources_require_explicit_market_anchor():
     result = ChatAgent().answer(
         "업로드한 시장 전망이랑 실제 우리 점유율 비교",
         documents=[FIXTURE_DIR / "datamonitor_mock.txt"],
     )
-    assert {"cache", "document"}.issubset(set(result["sources"]))
-    assert any(call.get("tool") == "get_brand_metric" for call in result["tool_calls"])
-    assert any(call.get("tool") == "document_rag" for call in result["tool_calls"])
+    assert result["tool_calls"] == []
+    assert "브랜드 또는 시장을 지정" in result["answer"]
 
 
 def test_structured_upload_guard_rejects_csv(tmp_path):

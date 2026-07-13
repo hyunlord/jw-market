@@ -1153,6 +1153,25 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             sources=tuple(result.get("sources", ())),
             conversation_id=conversation_id,
         )
+    if _is_market_clarification_result(result):
+        timing_payload = finish(timing)
+        answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=[],
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=[],
+            timing=timing_payload,
+            trace=trace,
+            sources=tuple(result.get("sources", ())),
+            conversation_id=conversation_id,
+        )
     file_context_fact = _file_context_fact(result)
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "").strip()
     if deterministic_file_answer:
@@ -1231,6 +1250,18 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         sources=tuple(result.get("sources", ())),
         conversation_id=conversation_id,
         file_sources=_file_source_items(result),
+    )
+
+
+def _is_market_clarification_result(result: dict) -> bool:
+    decomposition = result.get("decomposition")
+    if not isinstance(decomposition, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("intent") == "market_clarification"
+        and item.get("status") == "needs_clarification"
+        for item in decomposition
     )
 
 

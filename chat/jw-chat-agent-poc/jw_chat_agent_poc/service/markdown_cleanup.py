@@ -35,6 +35,10 @@ _INTERNAL_TOOL_LABELS: Final[dict[str, str]] = {
     "get_brand_channel_breakdown": "채널별 조회",
     "get_brand_specialty_breakdown": "진료과별 조회",
 }
+_INTERNAL_AXIS_LABELS: Final[dict[str, str]] = {
+    "class_1": "Class 1",
+    "class_2": "Class 2",
+}
 # Longest tokens first so get_csd_activity_trend wins over csd_activity_trend, etc.
 _TOOL_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9_])("
@@ -85,6 +89,8 @@ def scrub_internal_terminology(text: str) -> str:
     for pattern, replacement in _INTERNAL_ID_PATTERNS:
         result = pattern.sub(replacement, result)
     result = _TOOL_TOKEN_RE.sub(lambda match: _INTERNAL_TOOL_LABELS[match.group(1)], result)
+    for internal, public in _INTERNAL_AXIS_LABELS.items():
+        result = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(internal)}(?![A-Za-z0-9_])", public, result)
     result = _INTERNAL_FACT_MARKER_RE.sub("", result)
     # Tidy only spaces created by removals; never touch line-leading indentation.
     result = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", result)

@@ -43,6 +43,7 @@ class AgentToolFacade:
         news: DeepAnalysisNewsTool | None = None,
         external: ExternalApiClient | None = None,
         query_layer: StrategicQueryLayer | None = None,
+        market_by_brand: Mapping[str, str] | None = None,
     ) -> None:
         self._metrics = metrics
         self._resolver = resolver
@@ -52,6 +53,7 @@ class AgentToolFacade:
         self._news = news or DeepAnalysisNewsTool()
         self._external = external or ExternalApiClient()
         self._query_layer = query_layer
+        self._market_by_brand = dict(market_by_brand or {})
 
     def schemas(self, planner_allowed_brands: tuple[str, ...] | None = None) -> tuple[dict[str, Any], ...]:
         schema_brands = self._allowed_brands if planner_allowed_brands is None else planner_allowed_brands
@@ -136,8 +138,6 @@ class AgentToolFacade:
             period = require_available_period(grounded.get("period"), self._periods)
             if period is not None:
                 grounded["period"] = period
-        if name == "query" and "brand" not in grounded and self._allowed_brands:
-            grounded["brand"] = self._allowed_brands[0]
         return grounded
 
     def _metric(self, arguments: Mapping[str, str]) -> ToolExecution:
@@ -146,7 +146,7 @@ class AgentToolFacade:
         period_arg = arguments.get("period")
         if self._query_layer is not None:
             try:
-                call = self._query_layer.brand_metric(brand, measure, period_arg or "latest")
+                call = self._query_layer.brand_metric(brand, measure, period_arg or "latest", market=self._market(brand))
             except (LookupError, TypeError, ValueError) as exc:
                 return _tool_error(
                     "get_metric",
@@ -171,7 +171,7 @@ class AgentToolFacade:
         brand = self._brand(arguments)
         if self._query_layer is not None:
             try:
-                call = self._query_layer.market_scope(brand)
+                call = self._query_layer.market_scope(brand, market=self._market(brand))
             except (LookupError, TypeError, ValueError) as exc:
                 return _tool_error(
                     "get_market_scope",
@@ -206,7 +206,10 @@ class AgentToolFacade:
         )
 
     def _fixture_market_scope(self, brand: str, arguments: Mapping[str, str]) -> ToolExecution:
-        market_id = "ml_006" if brand in {"리바로", "리바로젯"} else "mock_market"
+        resolution = self._resolver.resolve(brand, allow_default=False)
+        market_id = resolution.market_id
+        if market_id is None:
+            raise LookupError(f"market is unresolved for {brand}")
         call = self._metrics.get_market_landscape(market_id, view_type=arguments.get("view", "market_landscape"))
         data = call.setdefault("render_data", {})
         data["anchor_brand"] = brand
@@ -300,28 +303,36 @@ class AgentToolFacade:
     def _query_metric(self, arguments: Mapping[str, str], metric: str) -> ToolExecution:
         brand = self._brand(arguments)
         period = arguments.get("period") or "latest"
-        result = brand_metric(self._query_layer, brand, metric, period)
+        result = brand_metric(self._query_layer, brand, metric, period, self._market(brand))
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _compare_brands_series(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        result = compare_series(self._query_layer, brand, arguments.get("comparison_brand", ""))
+        result = compare_series(self._query_layer, brand, arguments.get("comparison_brand", ""), self._market(brand))
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _top_brands(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        result = top_brands(self._query_layer, brand, arguments.get("limit"))
+        result = top_brands(self._query_layer, brand, arguments.get("limit"), self._market(brand))
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _dimension_breakdown(self, arguments: Mapping[str, str], dimension: str) -> ToolExecution:
         brand = self._brand(arguments)
-        result = dimension_breakdown(self._query_layer, brand, dimension, arguments)
+        result = dimension_breakdown(self._query_layer, brand, dimension, arguments, self._market(brand))
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _query_spec(self, arguments: Mapping[str, str]) -> ToolExecution:
-        fallback_brand = arguments.get("brand") or (self._allowed_brands[0] if self._allowed_brands else "")
-        result = query_spec(self._query_layer, arguments, fallback_brand)
+        fallback_brand = arguments.get("brand", "")
+        query_arguments = dict(arguments)
+        if fallback_brand and self._market(fallback_brand):
+            spec = parse_spec(arguments.get("spec", ""))
+            spec.setdefault("market", self._market(fallback_brand))
+            query_arguments["spec"] = spec
+        result = query_spec(self._query_layer, query_arguments, fallback_brand)
         return ToolExecution("ok", result.preview, result.call, arguments)
+
+    def _market(self, brand: str) -> str | None:
+        return self._market_by_brand.get(brand)
 
     def _brand(self, arguments: Mapping[str, str]) -> str:
         raw = arguments.get("brand", "")
@@ -339,8 +350,8 @@ class AgentToolFacade:
         raise UnsupportedBrandError(f"Brand argument '{canonical}' is outside the allowed canonical brand enum: {', '.join(self._allowed_brands)}.")
 
     def _query_catalog(self):
-        brand = self._allowed_brands[0] if self._allowed_brands else None
-        return catalog_for(self._query_layer, brand)
+        brand = next(iter(self._allowed_brands)) if len(self._allowed_brands) == 1 else None
+        return catalog_for(self._query_layer, brand, self._market(brand) if brand else None)
 
     def _error_render_context(self, name: str, arguments: Mapping[str, str]) -> dict[str, Any]:
         if name != "query":

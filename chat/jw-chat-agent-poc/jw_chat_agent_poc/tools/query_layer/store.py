@@ -81,10 +81,11 @@ class MartSnapshot:
     loaded_at: float
 
     def market_id_for_brand(self, brand: str) -> str | None:
-        for record in self.records:
-            if record.brand_name == brand:
-                return record.ml_id
-        return None
+        markets = self.market_ids_for_brand(brand)
+        return markets[0] if len(markets) == 1 else None
+
+    def market_ids_for_brand(self, brand: str) -> tuple[str, ...]:
+        return tuple(sorted({record.ml_id for record in self.records if record.brand_name == brand}))
 
     def source_for_market(self, market_id: str) -> str:
         sources = self.sources_for_market(market_id)

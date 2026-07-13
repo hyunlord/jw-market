@@ -41,10 +41,6 @@ CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_BY_ID: Final[dict[str, str]] = {
     **{f"strategy_{idx:03d}": f"ml_{idx:03d}" for idx in range(1, 17)},
     **{f"ml_{idx:03d}": f"strategy_{idx:03d}" for idx in range(1, 17)},
 }
-CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID: Final[dict[str, int]] = {
-    "strategy_006": 470,
-    "ml_006": 516,
-}
 VIEW_NAME_BY_INTERNAL_LABEL: Final[dict[str, str]] = {
     "market_landscape": "market_landscape",
     "strategic_ml": "market_landscape",
@@ -2244,13 +2240,7 @@ def _market_landscape_denominator_note(
         if not rank or denominator in (None, "") or str(denominator) == str(primary_denominator):
             continue
         return f"참고: {market} 기준 순위는 {rank}/{denominator}으로 표시될 수 있음"
-    fallback_denominator = CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID.get(primary_market)
-    if fallback_denominator in (None, "") or str(fallback_denominator) == str(primary_denominator):
-        return ""
-    rank = next((_rank_position(spec.get("rank")) for spec in query_specs if str(spec.get("market") or spec.get("market_id") or "") == primary_market and spec.get("rank")), "")
-    if not rank:
-        return ""
-    return f"참고: {counterpart_market} 기준 순위는 {rank}/{fallback_denominator}으로 표시될 수 있음"
+    return ""
 
 
 def _rank_position(rank: Any) -> str:
