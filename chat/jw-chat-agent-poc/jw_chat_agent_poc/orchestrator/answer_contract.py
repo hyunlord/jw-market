@@ -381,7 +381,15 @@ def _has_csd_activity_fact(calls: list[dict[str, Any]], brand: str) -> bool:
 
 
 def _has_market_scope_fact(calls: list[dict[str, Any]]) -> bool:
-    return any(call.get("tool") == "get_market_landscape" for call in calls)
+    for call in calls:
+        if call.get("tool") != "get_market_landscape":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("hhi_recent") is not None or data.get("hhi") is not None:
+            return True
+    return False
 
 
 def _ranking_fact(fact_md: str) -> RankingFact | None:

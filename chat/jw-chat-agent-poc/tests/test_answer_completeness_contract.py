@@ -194,6 +194,33 @@ def test_concentration_backfills_market_scope_when_planner_only_fetched_metric()
     assert plans[0].arguments == {"brand": "리바로", "view": "market_landscape"}
 
 
+def test_concentration_refreshes_market_scope_without_hhi() -> None:
+    calls = [
+        {
+            "tool": "get_market_landscape",
+            "render_data": {"market_id": "ml_006", "period": "2026-04", "market_size_억원": 2256.77},
+        }
+    ]
+
+    plans = answer_contract_backfill_tool_calls("이 시장 집중도는 어때", "리바로", calls)
+
+    assert len(plans) == 1
+    assert plans[0].name == "get_market_scope"
+
+
+def test_concentration_reuses_market_scope_with_hhi() -> None:
+    calls = [
+        {
+            "tool": "get_market_landscape",
+            "render_data": {"market_id": "ml_006", "period": "2026-05", "hhi_recent": 253.6207},
+        }
+    ]
+
+    plans = answer_contract_backfill_tool_calls("이 시장 집중도는 어때", "리바로", calls)
+
+    assert plans == ()
+
+
 @pytest.mark.parametrize(
     "question",
     (
