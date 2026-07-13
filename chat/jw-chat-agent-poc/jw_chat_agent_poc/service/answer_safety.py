@@ -394,7 +394,10 @@ def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str)
     ]
     for row in rows:
         table.append(f"| {row['rank']}위 | {row['brand']} | {row['share']}% | {row['sales']}억원 |")
-    parts = [intro, "\n".join(table)]
+    verified_values = ", ".join(
+        f"{row['brand']} 시장점유율 {row['share']}%, 매출 {row['sales']}억원" for row in rows
+    )
+    parts = [intro, f"확인된 값은 {verified_values}입니다.", "\n".join(table)]
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))
