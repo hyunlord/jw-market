@@ -52,9 +52,22 @@ class SavedTempDocument:
 @dataclass(frozen=True, slots=True)
 class PreprocessorGateBlock:
     file_name: str
-    route: Literal["blocked_oversized"]
+    route: Literal["blocked_oversized", "preprocess_failed"]
     route_reason: str
     file_size_bytes: int
+
+
+class PreprocessorRunError(RuntimeError):
+    """facade가 200으로 감싼 전처리 실패(envelope code != 0)를 명시 실패로 올린다.
+
+    facade(preprocess-api)는 worker 5xx/OOM에도 HTTP 200 + {"code":1,...}을 반환하므로
+    HTTP status만으로는 실패를 알 수 없다. 이 예외로 조용한 성공(빈 temp 커밋)을 차단한다.
+    """
+
+    def __init__(self, reason: str, *, file_names: list[str] | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.file_names = list(file_names or [])
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -438,4 +451,43 @@ def run_preprocessor(
     )
     response.raise_for_status()
     payload = response.json()
-    return payload if isinstance(payload, dict) else {"raw": payload}
+    payload = payload if isinstance(payload, dict) else {"raw": payload}
+    # fail-closed: facade는 HTTP 200으로 실패를 감싸므로 envelope code를 반드시 검사한다.
+    # code가 없으면(비-GenOS 응답) 오탐 방지를 위해 성공으로 두고, code가 있고 성공값이
+    # 아닐 때만 실패로 올린다.
+    code = payload.get("code")
+    if code is not None and int(code) != settings.PREPROCESSOR_ENVELOPE_SUCCESS_CODE:
+        reason = str(payload.get("errMsg") or payload.get("error") or "preprocessor returned failure envelope")
+        raise PreprocessorRunError(
+            reason,
+            file_names=[item.file_name for item in saved_documents],
+        )
+    return payload
+
+
+def preprocessor_failure_blocks(
+    error: PreprocessorRunError,
+    saved_documents: list[SavedTempDocument],
+) -> list[PreprocessorGateBlock]:
+    """전처리 실패를 blocked_oversized와 일관된 blocked_uploads 형식으로 변환한다."""
+    names = error.file_names or [item.file_name for item in saved_documents]
+    reason = f"preprocessor delegation failed: {error.reason}"
+    sizes = {item.file_name: item.file_path for item in saved_documents}
+    blocks: list[PreprocessorGateBlock] = []
+    for name in names:
+        size_bytes = 0
+        path = sizes.get(name)
+        if path:
+            try:
+                size_bytes = Path(path).stat().st_size
+            except OSError:
+                size_bytes = 0
+        blocks.append(
+            PreprocessorGateBlock(
+                file_name=name,
+                route="preprocess_failed",
+                route_reason=reason,
+                file_size_bytes=size_bytes,
+            )
+        )
+    return blocks

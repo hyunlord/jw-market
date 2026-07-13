@@ -32,6 +32,14 @@ TEMP_VDB_INDEX_API_BASE = os.environ.get(
 PREPROCESSOR_API_BASE = os.environ.get(
     "PREPROCESSOR_API_BASE", "http://llmops-preprocess-api-service:8080"
 )
+# fail-closed: preprocess-api(facade)는 downstream worker가 5xx/OOM으로 죽어도 예외를 삼켜
+# HTTP 200 + {"code":1,"errMsg":...,"data":null} 응답을 돌려준다. 성공 envelope는 code==0.
+# facade는 GenOS 공용이라 수정하지 않고, 235가 code를 검사해 조용한 실패를 명시 실패로 바꾼다.
+PREPROCESSOR_ENVELOPE_SUCCESS_CODE = int(
+    os.environ.get("PREPROCESSOR_ENVELOPE_SUCCESS_CODE", "0")
+)
+# blocked_uploads route는 스키마 Literal("preprocess_failed", blocked_oversized와 동형)이라
+# chat ⑤ 3-상태에서 "확인 불가"로 매핑되며, 사유(reason)는 facade errMsg를 그대로 전달한다.
 PDF_VLM_BASE = os.environ.get(
     "PDF_VLM_BASE", "http://llmops-gateway-api-service:8080/rep/serving/163"
 )
