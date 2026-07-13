@@ -201,6 +201,23 @@ def test_agent_loop_backfills_each_brand_for_metric_free_comparison() -> None:
     assert "### 리바로젯 매출 시계열 fact" in result["markdown_response"]["fact_md"]
 
 
+def test_agent_loop_recovers_each_comparison_subject_when_pre_resolution_is_partial() -> None:
+    class PartialManyResolver(BrandResolver):
+        def resolve_many(self, question_or_brands: str, allow_default: bool = True):
+            resolved = super().resolve_many(question_or_brands, allow_default=allow_default)
+            return resolved[:1]
+
+    planner = ScriptedPlanner((AgentDecision(final_answer="두 브랜드를 비교합니다."),))
+    metrics = _metrics_tool()
+    agent = ToolUseAgent(metrics=metrics, resolver=PartialManyResolver(), planner=planner)
+
+    result = agent.answer("리바로와 리바로젯을 비교해줘")
+
+    metric_calls = [call for call in result["tool_calls"] if call["tool"] == "get_brand_metric"]
+    assert [call["render_data"]["brand"] for call in metric_calls] == ["리바로", "리바로젯"]
+    assert result["markdown_response"]["verification"]["status"] == "pass"
+
+
 def test_agent_loop_corrects_invalid_llm_brand_to_pre_resolved_canonical() -> None:
     # Given: a planner emits the spike failure brand typo even though the question says 리바로.
     planner = ScriptedPlanner(

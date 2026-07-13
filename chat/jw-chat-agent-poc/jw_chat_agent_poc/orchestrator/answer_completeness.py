@@ -72,6 +72,12 @@ def completeness_intent(question: str, fact_md: str = "") -> str | None:
     return None
 
 
+def comparison_subjects(question: str) -> tuple[str, ...]:
+    """Return the explicit operands of a brand-comparison question."""
+
+    return _comparison_subjects(question)
+
+
 def repair_completeness(intent: str, question: str, answer: str, fact_md: str) -> str:
     """Append a deterministic completion only when all required facts parse."""
 
