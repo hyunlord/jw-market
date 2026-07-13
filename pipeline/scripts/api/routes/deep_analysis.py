@@ -25,6 +25,7 @@ from pipeline.scripts.api.deep_analysis_brand_elements import (
 from pipeline.scripts.api.deep_analysis_context import (
     DeepAnalysisContext,
     DeepAnalysisContextError,
+    public_source_labels,
     resolve_deep_analysis_context,
 )
 from pipeline.scripts.api.deep_analysis_serving import (
@@ -1069,7 +1070,7 @@ def _empty_formal_payload(context: DeepAnalysisContext) -> dict:
 
 
 def _formal_market_meta(context: DeepAnalysisContext) -> dict:
-    return {
+    meta = {
         "market_id": context.market_id,
         "market_name": context.market_name,
         "view_kind": context.view_kind,
@@ -1081,6 +1082,17 @@ def _formal_market_meta(context: DeepAnalysisContext) -> dict:
         "in_catalog": context.in_catalog,
         "has_market_data": context.has_market_data,
     }
+    if (
+        not context.has_market_data
+        and context.db_source not in context.brand_available_sources
+        and context.brand_available_sources
+    ):
+        meta.update(
+            available=False,
+            reason="brand_not_in_source",
+            available_sources=public_source_labels(context.brand_available_sources),
+        )
+    return meta
 
 
 def _scope_formal_payload(payload: dict, context: DeepAnalysisContext) -> None:

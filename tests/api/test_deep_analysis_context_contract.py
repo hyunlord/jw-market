@@ -343,6 +343,9 @@ def test_formal_no_market_data_response_is_200_with_source_context(monkeypatch) 
         "brand_available_sources": ["iqvia_nsa"],
         "in_catalog": True,
     }
+    assert response.json()["market_meta"]["available"] is False
+    assert response.json()["market_meta"]["reason"] == "brand_not_in_source"
+    assert response.json()["market_meta"]["available_sources"] == ["IQVIA"]
 
 
 def test_formal_cd_context_returns_200_when_native_sections_are_not_generated(monkeypatch) -> None:
