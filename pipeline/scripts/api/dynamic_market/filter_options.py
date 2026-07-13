@@ -1214,7 +1214,10 @@ def _mark_atc_state(
             key = str(option.get("key") or "")
             option["default"] = key in default_values
             option["selected"] = key in selected_by_level[level] or key in default_values
-            option["flag"] = key in brand_by_level[level]
+            if view == "general" and level != "atc4":
+                option.pop("flag", None)
+            else:
+                option["flag"] = key in brand_by_level[level]
     return defaults
 
 

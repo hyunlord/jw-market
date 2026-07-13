@@ -148,6 +148,41 @@ def test_general_filter_options_keeps_full_atc_universe_and_flags_all_brand_mark
     assert payload["brand_matched"]["atc4"] == list(brand_atc4)
 
 
+def test_general_filter_options_exposes_brand_flag_only_on_atc4(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+
+    monkeypatch.setattr(
+        filter_options.db,
+        "fetch_all",
+        lambda _sql, _params: [{"atc4_code": "C10A1"}],
+    )
+    monkeypatch.setattr(
+        filter_options,
+        "_build_filter_options_uncached",
+        lambda **kwargs: filter_options.build_filter_option_payload(
+            view="general",
+            source="ubist",
+            market_id=kwargs["market_id"],
+            dimensions=(),
+            atc_rows=({"atc4_code": "C10A1"}, {"atc4_code": "C10C0"}),
+        ),
+    )
+    monkeypatch.setattr(filter_options, "_load_brand_dimension_matches", lambda **_kwargs: {})
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        brand="리바로",
+    )
+
+    for level in ("atc1", "atc2", "atc3"):
+        assert all("flag" not in option for option in payload["atc"][level])
+    assert [option["key"] for option in payload["atc"]["atc4"] if option["flag"]] == ["C10A1"]
+    assert [option["key"] for option in payload["atc"]["atc4"] if not option["flag"]] == ["C10C0"]
+
+
 def test_general_filter_options_unknown_brand_keeps_full_universe_without_flags(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     all_atc4 = ("A01A1", "C10A1")
@@ -177,6 +212,35 @@ def test_general_filter_options_unknown_brand_keeps_full_universe_without_flags(
     assert [item["key"] for item in payload["atc"]["atc4"]] == list(all_atc4)
     assert not any(item["flag"] for item in payload["atc"]["atc4"])
     assert payload["brand_matched"] == {"atc4": []}
+
+
+def test_general_filter_options_treats_empty_atc4_codes_as_unscoped(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+    captured: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        filter_options,
+        "_build_filter_options_uncached",
+        lambda **kwargs: captured.append(tuple(kwargs["atc4_codes"]))
+        or filter_options.build_filter_option_payload(
+            view="general",
+            source="ubist",
+            market_id=kwargs["market_id"],
+            dimensions=(),
+            atc_rows=({"atc4_code": "A01A1"}, {"atc4_code": "C10A1"}),
+        ),
+    )
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        atc4_codes=[],
+    )
+
+    assert captured == [()]
+    assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
 
 
 def test_build_filter_options_uses_resolved_market_id_for_payload_and_brand_match(monkeypatch) -> None:
@@ -487,6 +551,11 @@ def test_strategic_filter_options_exposes_only_atc_hierarchy(monkeypatch) -> Non
     assert payload["brand_matched"] == {}
     assert payload["atc"]["atc4"][0]["default"] is True
     assert payload["atc"]["atc4"][0]["selected"] is True
+    assert all(
+        option["flag"] is False
+        for level in ("atc1", "atc2", "atc3", "atc4")
+        for option in payload["atc"][level]
+    )
     assert payload["default_selections"] == {
         "atc1": ["C"],
         "atc2": ["C10"],
