@@ -9,6 +9,7 @@ import pytest
 from pipeline.scripts.api import brand_activity_brand_molecules as molecules
 from pipeline.scripts.api import brand_activity_brand_resolver as resolver
 from pipeline.scripts.api import deep_analysis_context
+from pipeline.scripts.api import deep_analysis_runtime
 from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContext
 
 
@@ -164,3 +165,40 @@ def test_fetch_raw_molecules_loads_latest_quarter_once(monkeypatch) -> None:
     finally:
         molecules._fetch_raw_molecules.cache_clear()
         molecules._latest_quarter_molecule_pairs.cache_clear()
+
+
+def test_strategic_section_cache_hit_skips_full_market_rows(monkeypatch) -> None:
+    brand_row = {
+        "brand_name": "리바로",
+        "ml_id": "ml_006",
+        "source": "ubist",
+        "measure": "sales",
+        "is_jw": 1,
+        "is_target": 1,
+    }
+    cached_sections = {
+        "forecast_by_combo": {"UBIST.sales": {"brand": "리바로"}},
+        "simulation_by_combo": {},
+    }
+
+    monkeypatch.setattr(deep_analysis_runtime, "_brand_rows", lambda _brand: [brand_row])
+    monkeypatch.setattr(deep_analysis_runtime, "_market_catalog", lambda _ml_id: {"name": "지질", "data_source": "ubist"})
+    monkeypatch.setattr(deep_analysis_runtime, "_event_payload", lambda _brand: {"cut_a": [], "cut_b": []})
+    monkeypatch.setattr(deep_analysis_runtime.builder, "atc_codes_from_market_catalog", lambda _market: ["C10A1"])
+    monkeypatch.setattr(deep_analysis_runtime.builder, "available_combos_for_market", lambda _market: ["UBIST.sales"])
+    monkeypatch.setattr(deep_analysis_runtime.builder, "source_list", lambda _source: ["UBIST"])
+    monkeypatch.setattr(
+        deep_analysis_runtime.deep_section_cache,
+        "get_or_build",
+        lambda _request, _builder: cached_sections,
+    )
+
+    def forbidden_market_rows(_ml_id: str) -> list[dict[str, Any]]:
+        raise AssertionError("section-cache hits must not read full market rows")
+
+    monkeypatch.setattr(deep_analysis_runtime, "_market_rows", forbidden_market_rows)
+
+    row = deep_analysis_runtime.build_strategic_row("리바로")
+
+    assert row is not None
+    assert row["market_id"] == "strategy_006"
