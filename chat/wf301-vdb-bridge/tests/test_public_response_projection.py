@@ -94,6 +94,40 @@ def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> Non
     assert document["sql_tables"][0]["logical_name"] == "data_abc"
 
 
+def test_upload_projection_exposes_only_safe_block_message() -> None:
+    raw = {
+        "mode": "upload",
+        "blocked_uploads": [{
+            "file_name": "large-report.pdf",
+            "route": "preprocess_failed",
+            "message": (
+                "문서가 커서 처리 시간이 초과되었습니다. "
+                "파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
+            ),
+            "route_reason": (
+                "문서가 커서 처리 시간이 초과되었습니다. "
+                "파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
+            ),
+            "file_size_bytes": 123,
+        }],
+        "errors": ["httpx.ReadTimeout at /private/path"],
+    }
+
+    projected = models.PublicUploadResponse.model_validate(raw).model_dump()
+
+    assert projected["blocked_uploads"] == [{
+        "file_name": "large-report.pdf",
+        "route": "preprocess_failed",
+        "message": (
+            "문서가 커서 처리 시간이 초과되었습니다. "
+            "파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
+        ),
+    }]
+    encoded = json.dumps(projected, ensure_ascii=False)
+    assert "ReadTimeout" not in encoded
+    assert "/private/path" not in encoded
+
+
 def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> None:
     raw = {
         "target_vdb_id": 139,

@@ -44,6 +44,7 @@ class BlockedUpload(BaseModel):
     )
     route_reason: str = Field(description="preprocessor 위임 차단 또는 실패 근거입니다.")
     file_size_bytes: int = Field(default=0, description="차단된 파일의 크기 byte입니다.")
+    message: str = Field(description="사용자에게 표시할 수 있는 안전한 실패 사유입니다.")
 
 
 class BridgeRequest(BaseModel):
@@ -411,6 +412,7 @@ class PublicBlockedUpload(BaseModel):
 
     file_name: str
     route: Literal["blocked_oversized", "preprocess_failed"]
+    message: str
 
 
 class PublicSqlTableMetadata(BaseModel):

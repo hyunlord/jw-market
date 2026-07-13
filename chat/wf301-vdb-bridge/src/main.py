@@ -133,6 +133,7 @@ def _blocked_upload_models(
             route=block.route,
             route_reason=block.route_reason,
             file_size_bytes=block.file_size_bytes,
+            message=block.user_message,
         )
         for block in blocks
     ]
