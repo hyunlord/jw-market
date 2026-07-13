@@ -4958,6 +4958,8 @@ def test_raw_top_brand_retry_dump_is_rewritten_to_insight() -> None:
     answer = ensure_judgment_insight("리바로 경쟁 구도 변화는 어때", raw, fact_md)
 
     assert "Brand 상위:" not in answer
+    assert "확정 데이터" not in answer
+    assert "조회 결과에서 로수젯이 선두" in answer
     assert "로수젯이 선두" in answer
     assert "| 순위 | 브랜드 | 점유율 | 매출 |" in answer
 

@@ -382,7 +382,7 @@ def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str)
     trend_sentence = _top_trend_sentence(trend_rows)
     insight_sentence = _competitive_insight_sentence(lines)
     intro = (
-        f"확정 데이터상 {_subject_with_particle(leader)} 선두이고"
+        f"조회 결과에서 {_subject_with_particle(leader)} 선두이고"
         + (f", {followers} 등이 뒤따르는 경쟁 구도입니다." if followers else " 경쟁 구도를 형성합니다.")
         + (f" {trend_sentence}" if trend_sentence else "")
         + (f" {insight_sentence}" if insight_sentence else "")
