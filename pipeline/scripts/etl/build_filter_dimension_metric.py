@@ -110,7 +110,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             _guard_local_serving_target(conn, args.target_db)
         if _schema_exists(conn, args.target_db) and not args.allow_local_serving_target:
             raise RuntimeError(f"target schema already exists: {args.target_db}")
-        before_live = _general_table_counts(conn, "jw_mart")
+        serving_guard_schema = _serving_guard_schema(args)
+        before_live = _general_table_counts(conn, serving_guard_schema)
         create_filter_dimension_table(
             conn,
             args.target_db,
@@ -165,7 +166,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 )
 
         manifest["target"] = _target_summary(conn, args.target_db)
-        manifest["live_after"] = _general_table_counts(conn, "jw_mart")
+        manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)
         if args.promote_to:
@@ -190,6 +191,12 @@ def _selected_sources(source: str) -> tuple[str, ...]:
     if source == "all":
         return ("ubist", "iqvia_nsa")
     return (source,)
+
+
+def _serving_guard_schema(args: argparse.Namespace) -> str:
+    """Check the schema that this run is allowed to affect."""
+
+    return args.promote_to or "jw_mart"
 
 
 def _load_source_rows(

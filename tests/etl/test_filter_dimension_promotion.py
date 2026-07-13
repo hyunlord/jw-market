@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from argparse import Namespace
+
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
+from pipeline.scripts.etl.build_filter_dimension_metric import _serving_guard_schema
 
 
 class _Cursor:
@@ -62,6 +65,14 @@ class _Connection:
 
     def commit(self):
         self.commits += 1
+
+
+def test_shared_promotion_checks_the_approved_serving_schema() -> None:
+    assert (
+        _serving_guard_schema(Namespace(promote_to="jw_mart_d2_stage_20260630_r2"))
+        == "jw_mart_d2_stage_20260630_r2"
+    )
+    assert _serving_guard_schema(Namespace(promote_to=None)) == "jw_mart"
 
 
 def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:
