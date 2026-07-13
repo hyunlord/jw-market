@@ -1141,6 +1141,10 @@ def test_simple_sales_question_stays_single_shot() -> None:
     assert not should_use_agent_loop("리바로 매출")
 
 
+def test_metric_free_brand_comparison_enters_agent_loop() -> None:
+    assert should_use_agent_loop("리바로와 로수젯을 비교해줘")
+
+
 def _query_layer() -> StrategicQueryLayer:
     return StrategicQueryLayer(reader=StaticStrategicMartReader(_records()))
 
