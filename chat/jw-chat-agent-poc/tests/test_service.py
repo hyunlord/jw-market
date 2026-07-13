@@ -152,6 +152,47 @@ def test_compute_final_answer_replaces_internal_csd_facts_for_general_view_ready
     assert "CSD 세부 미지원" not in final.text
 
 
+def test_compute_final_answer_replaces_internal_csd_facts_after_agent_loop(monkeypatch) -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+    leaked = """요청한 값은 현재 조회 결과에 존재합니다.
+
+## 확정 데이터
+
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        yield leaked
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    final = compute_final_answer(
+        "리바로 영업활동 추이 어때?",
+        {
+            "answer": "",
+            "markdown_response": {"fact_md": fact_md},
+            "tool_calls": [
+                {"tool": "csd_activity_trend", "render_data": {"status": "ok"}},
+                {"tool": "get_brand_metric", "render_data": {"status": "ok"}},
+            ],
+            "sources": ["CSD ChannelDynamics"],
+        },
+        "test-conversation",
+    )
+
+    assert "2025-06 1,775건" in final.text
+    assert "2026-05 1,769건" in final.text
+    assert "영업활동" in final.text
+    assert "확정 데이터" not in final.text
+    assert "CSD aggregate 콜수" not in final.text
+    assert "CSD 세부 미지원" not in final.text
+
+
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

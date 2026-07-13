@@ -1145,6 +1145,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         markdown_response,
         tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
     )
+    safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
     safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
