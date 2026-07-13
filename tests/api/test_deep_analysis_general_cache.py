@@ -47,7 +47,13 @@ def _stub_auxiliary(monkeypatch) -> None:
     monkeypatch.setattr(
         deep_analysis,
         "_resolve_brand_factor_choices",
-        lambda row, requested_brand, atc4, selected_factors: {"iqvia": (), "ubist": ()},
+        lambda row, requested_brand, atc4, selected_factors: (
+            {"iqvia": (), "ubist": ()},
+            {
+                "iqvia": {"available": True, "reason": None},
+                "ubist": {"available": True, "reason": None},
+            },
+        ),
     )
 
 

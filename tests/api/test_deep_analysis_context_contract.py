@@ -312,8 +312,8 @@ def test_formal_general_source_filter_marks_empty_forecast_not_generated() -> No
 
     deep_analysis._scope_formal_payload(payload, context)
 
-    assert payload["data"]["forecast"] == []
-    assert payload["data"]["simulation"] == []
+    assert payload["data"]["forecast"] == {"available": False, "reason": "not_generated"}
+    assert payload["data"]["simulation"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["forecast_meta"]["status"] == "not_generated"
     assert payload["market_meta"]["market_id"] == "N02B2"
 
@@ -334,8 +334,8 @@ def test_formal_no_market_data_response_is_200_with_source_context(monkeypatch) 
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["forecast"] == []
-    assert data["simulation"] == []
+    assert data["forecast"] == {"available": False, "reason": "no_market_data"}
+    assert data["simulation"] == {"available": False, "reason": "no_market_data"}
     assert data["events"] == []
     assert data["events_meta"] == {
         "status": "no_news",
@@ -401,7 +401,7 @@ def test_formal_cd_context_returns_200_when_native_sections_are_not_generated(mo
     payload = response.json()
     assert payload["view_kind"] == "strategic_cd"
     assert payload["market_id"] == "cd_007"
-    assert payload["data"]["forecast"] == []
+    assert payload["data"]["forecast"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["forecast_meta"]["status"] == "not_generated"
 
 
@@ -414,29 +414,18 @@ def test_missing_future_forecast_table_is_an_optional_section(monkeypatch) -> No
     assert deep_analysis._load_formal_forecast_sections(_context()) == (None, None)
 
 
-def test_forecast_adapter_uses_composite_key_and_horizon_fallback(monkeypatch) -> None:
+def test_forecast_adapter_uses_block_composite_key_without_horizon_fallback(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
 
     def fake_fetch_one(sql: str, params: list[str]) -> dict[str, Any] | None:
         calls.append((sql, params))
-        if "deep_forecast_horizon" in sql:
-            measure = params[-1]
-            return {
-                "measure": measure,
-                "forecast_horizon_json": json.dumps({"series": [measure]}),
-            }
         return None
 
     monkeypatch.setattr(deep_analysis_serving.db, "fetch_one", fake_fetch_one)
 
     forecast, simulation = deep_analysis._load_formal_forecast_sections(_context())
 
-    assert forecast == {
-        "by_combo": {
-            "UBIST.sales": {"series": ["sales"]},
-            "UBIST.volume": {"series": ["volume"]},
-        }
-    }
+    assert forecast is None
     assert simulation is None
     block_calls = [(sql, params) for sql, params in calls if "deep_forecast_block" in sql]
     horizon_calls = [(sql, params) for sql, params in calls if "deep_forecast_horizon" in sql]
@@ -444,13 +433,7 @@ def test_forecast_adapter_uses_composite_key_and_horizon_fallback(monkeypatch) -
     assert "brand_key = %s AND source = %s AND market_id = %s" in block_calls[0][0]
     assert "view_kind" not in block_calls[0][0]
     assert block_calls[0][1] == ["선택브랜드", "ubist", "ml_003"]
-    assert len(horizon_calls) == 2
-    assert all("brand_key" not in sql for sql, _params in horizon_calls)
-    assert all("market_id = %s AND source = %s AND measure = %s" in sql for sql, _params in horizon_calls)
-    assert [params for _sql, params in horizon_calls] == [
-        ["ml_003", "ubist", "sales"],
-        ["ml_003", "ubist", "volume"],
-    ]
+    assert horizon_calls == []
 
 
 def test_forecast_adapter_uses_db_source_for_iqvia_natural_keys(monkeypatch) -> None:
@@ -463,14 +446,9 @@ def test_forecast_adapter_uses_db_source_for_iqvia_natural_keys(monkeypatch) -> 
     monkeypatch.setattr(deep_analysis_serving.db, "fetch_one", fake_fetch_one)
     context = replace(_context(), source="iqvia", db_source="iqvia_nsa")
 
-    assert deep_analysis_serving.load_forecast_records(context) == (None, None)
+    assert deep_analysis_serving.load_forecast_block(context) is None
     assert calls[0][1] == ["선택브랜드", "iqvia_nsa", "ml_003"]
-    assert [params for _sql, params in calls[1:]] == [
-        ["ml_003", "iqvia_nsa", "counting_unit"],
-        ["ml_003", "iqvia_nsa", "dosage_unit"],
-        ["ml_003", "iqvia_nsa", "sales"],
-        ["ml_003", "iqvia_nsa", "unit"],
-    ]
+    assert len(calls) == 1
 
 
 def test_missing_future_strength_table_is_an_optional_section(monkeypatch) -> None:
