@@ -4964,6 +4964,32 @@ def test_raw_top_brand_retry_dump_is_rewritten_to_insight() -> None:
     assert "| 순위 | 브랜드 | 점유율 | 매출 |" in answer
 
 
+def test_partial_raw_top_brand_lines_are_rewritten_to_verified_table() -> None:
+    fact_md = "\n".join(
+        [
+            "### 필수 답변 fact",
+            "| 구분 | 값 |",
+            "| --- | --- |",
+            "| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |",
+            "| Brand 상위 | 2위 리피토 시장점유율 6.13% 매출 131.09억원 |",
+            "| Brand 상위 | 3위 리바로젯 시장점유율 5.12% 매출 109.46억원 |",
+        ]
+    )
+    raw = "\n".join(
+        [
+            "리바로의 최신 실적을 확인했습니다.",
+            "- Brand 상위: 1위 로수젯 시장점유율 9.13% 매출 195.24억원",
+            "- Brand 상위: 3위 리바로젯 시장점유율 5.12% 매출 109.46억원",
+        ]
+    )
+
+    answer = ensure_judgment_insight("리바로와 로수젯을 비교해줘", raw, fact_md)
+
+    assert "Brand 상위:" not in answer
+    assert "조회 결과에서 로수젯이 선두" in answer
+    assert "| 2위 | 리피토 | 6.13% | 131.09억원 |" in answer
+
+
 def test_competitive_movement_analysis_preserves_perioded_gain_loss_conclusion_without_ratio() -> None:
     fact_md = "\n".join(
         [

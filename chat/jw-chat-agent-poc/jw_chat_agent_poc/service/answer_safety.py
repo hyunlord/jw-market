@@ -681,9 +681,7 @@ def _subject_with_particle(value: str) -> str:
 
 
 def _needs_top_brand_insight(question: str, answer: str) -> bool:
-    if not any(token in question for token in ("경쟁", "구도", "상위", "브랜드")):
-        return False
-    return answer.count("Brand 상위:") >= 3
+    return "Brand 상위:" in answer
 
 
 def needs_safe_news_summary(question: str, answer: str, fact_md: str) -> bool:
