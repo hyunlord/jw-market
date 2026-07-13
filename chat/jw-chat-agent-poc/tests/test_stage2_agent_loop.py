@@ -185,6 +185,22 @@ def test_agent_loop_backfills_ranking_metric_when_planner_returns_no_tool_calls(
     assert result["agent_loop_metrics"]["tool_selection_accuracy"] == 1.0
 
 
+def test_agent_loop_backfills_each_brand_for_metric_free_comparison() -> None:
+    planner = ScriptedPlanner((AgentDecision(final_answer="두 브랜드를 비교합니다."),))
+    metrics = _metrics_tool()
+    agent = ToolUseAgent(metrics=metrics, resolver=BrandResolver(), planner=planner)
+
+    result = agent.answer("리바로와 리바로젯을 비교해줘")
+
+    metric_calls = [call for call in result["tool_calls"] if call["tool"] == "get_brand_metric"]
+    assert [call["render_data"]["brand"] for call in metric_calls] == ["리바로", "리바로젯"]
+    assert all(call["render_data"]["completion_reason"] == "brand_compare_requires_each_series" for call in metric_calls)
+    assert "리바로" in result["answer"]
+    assert "리바로젯" in result["answer"]
+    assert "### 리바로 매출 시계열 fact" in result["markdown_response"]["fact_md"]
+    assert "### 리바로젯 매출 시계열 fact" in result["markdown_response"]["fact_md"]
+
+
 def test_agent_loop_corrects_invalid_llm_brand_to_pre_resolved_canonical() -> None:
     # Given: a planner emits the spike failure brand typo even though the question says 리바로.
     planner = ScriptedPlanner(
