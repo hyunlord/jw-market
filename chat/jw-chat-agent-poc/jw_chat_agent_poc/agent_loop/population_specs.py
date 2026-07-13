@@ -157,6 +157,21 @@ def _channel_molecule_plan(question: str, _brand: str, channel: str) -> StrictQu
     return None
 
 
+def _channel_top_brand_plan(question: str, _brand: str, channel: str) -> StrictQueryPlan | None:
+    if not channel or "상위" not in question or "브랜드" not in question:
+        return None
+    return StrictQueryPlan(
+        specs=(
+            _spec(
+                "product",
+                metric="share",
+                filters={"channel": channel},
+                limit=5,
+            ),
+        ),
+    )
+
+
 def _specific_channel_metric_plan(question: str, brand: str, channel: str) -> StrictQueryPlan | None:
     if not channel or any(token in question for token in ("채널별", "채널 별")):
         return None
@@ -242,6 +257,7 @@ STRICT_QUERY_RULES: Final[tuple[StrictQueryRule, ...]] = (
     StrictQueryRule("yoy_product_growth", _yoy_plan),
     StrictQueryRule("average_product_share", _average_share_plan),
     StrictQueryRule("channel_molecule_share", _channel_molecule_plan),
+    StrictQueryRule("channel_top_brands", _channel_top_brand_plan),
     StrictQueryRule("specific_channel_metric", _specific_channel_metric_plan),
     StrictQueryRule("unknown_specific_channel", _unknown_specific_channel_plan),
     StrictQueryRule("channel_share", _channel_share_plan),

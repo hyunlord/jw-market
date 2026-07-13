@@ -36,13 +36,22 @@ def enforce_market_answer_contract(
     if calls and all(_is_file_tool(call) for call in calls):
         return answer
     relevant_calls = _calls_matching_question(question, calls)
-    contracted = _status_answer(question, calls)
+    status_answer = _status_answer(question, calls)
+    contracted = status_answer
+    unresolved_answer = ""
+    if not contracted:
+        unresolved_answer = _unresolved_entity_answer(question, answer, calls)
+        contracted = unresolved_answer
+    if not contracted:
+        contracted = _restrained_interpretation_answer(question, relevant_calls)
     if not contracted:
         contracted = _strategy_market_answer(question, relevant_calls)
     if not contracted:
         contracted = _concentration_answer(question, relevant_calls)
     if not contracted:
         contracted = _channel_ranking_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _dimension_answer(question, relevant_calls)
     if not contracted:
         contracted = _brand_comparison_answer(question, relevant_calls)
     if not contracted:
@@ -54,7 +63,12 @@ def enforce_market_answer_contract(
     if not contracted:
         contracted = answer
     contracted = _public_language(question, contracted)
-    return _replace_provenance(question, contracted, relevant_calls, status_only=bool(_status_answer(question, calls)))
+    return _replace_provenance(
+        question,
+        contracted,
+        relevant_calls,
+        status_only=bool(status_answer or unresolved_answer),
+    )
 
 
 def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
@@ -78,7 +92,7 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     requested_years = [int(value) for value in _YEAR_RE.findall(compact)]
     if not requested_years:
         return ""
-    available_to = _first_nested_value(calls, "available_to")
+    available_to = _first_nested_value(calls, "available_to") or _latest_call_period(calls)
     if not available_to:
         return ""
     available_years = [int(value) for value in _YEAR_RE.findall(str(available_to))]
@@ -86,6 +100,79 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
         requested = max(requested_years)
         return f"보유 데이터는 {available_to}까지이며 {requested}년 실적은 없습니다."
     return ""
+
+
+def _unresolved_entity_answer(
+    question: str,
+    answer: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> str:
+    if calls or "매출" not in question:
+        return ""
+    unavailable_markers = (
+        "보유하고 있지",
+        "지원 대상이 아니",
+        "확인이 불가능",
+        "존재하지 않아",
+        "존재하지 않",
+    )
+    if any(marker in answer for marker in unavailable_markers):
+        return "브랜드 목록에서 일치 항목을 찾지 못했습니다."
+    return ""
+
+
+def _restrained_interpretation_answer(
+    question: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> str:
+    mode = next((token for token in ("왜", "원인", "전망", "위협") if token in question), "")
+    if not mode:
+        return ""
+    observation = _brand_share_observation(question, calls)
+    if not observation:
+        return ""
+    if mode in {"왜", "원인"}:
+        limitation = (
+            "이 변화의 직접 원인으로 확정할 수 없습니다. "
+            "처방 전환, 환자 구성, 채널별 활동 자료를 추가 확인해야 합니다."
+        )
+    elif mode == "전망":
+        limitation = (
+            "현재 추세가 계속된다고 단정할 수 없습니다. 전망하려면 처방 전환, 신제품 출시, "
+            "환자 구성과 채널별 활동 자료를 추가 확인해야 합니다."
+        )
+    else:
+        limitation = (
+            "점유율 변화는 경쟁 구도를 보여주는 관찰값이며 위협의 원인이나 지속성을 확정하지 않습니다. "
+            "처방 전환, 신제품 출시와 채널별 활동 자료를 추가 확인해야 합니다."
+        )
+    return f"## 관찰\n{observation}\n\n## 가설과 한계\n{limitation}"
+
+
+def _brand_share_observation(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    candidates: list[tuple[str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for call in calls:
+        data = _render_data(call)
+        brand = str(data.get("brand") or "").strip()
+        series = data.get("brand_value_series_10pt")
+        if not brand or not isinstance(series, Sequence) or isinstance(series, str | bytes):
+            continue
+        points = tuple(item for item in series if isinstance(item, Mapping) and item.get("period"))
+        if len(points) >= 2:
+            candidates.append((brand, points[0], points[-1]))
+    selected = next((item for item in candidates if item[0] in question), candidates[0] if candidates else None)
+    if selected is None:
+        return ""
+    brand, start, latest = selected
+    start_share = _decimal(start.get("ms_pct") or start.get("ms_recent_pct"))
+    latest_share = _decimal(latest.get("ms_pct") or latest.get("ms_recent_pct"))
+    if start_share is None or latest_share is None:
+        return ""
+    direction = "상승" if latest_share > start_share else "하락" if latest_share < start_share else "보합"
+    return (
+        f"{brand} 점유율은 {start['period']} {start_share:.2f}%에서 "
+        f"{latest['period']} {latest_share:.2f}%로 {direction}했습니다."
+    )
 
 
 def _strategy_market_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
@@ -157,6 +244,46 @@ def _channel_ranking_answer(question: str, calls: Sequence[Mapping[str, Any]]) -
     return ""
 
 
+def _dimension_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    dimension = "channel" if any(token in question for token in ("채널별", "채널 별")) else ""
+    if "진료과" in question:
+        dimension = "specialty"
+    if not dimension:
+        return ""
+    label = "채널" if dimension == "channel" else "진료과"
+    for call in calls:
+        data = _render_data(call)
+        if _call_dimension(call) != dimension:
+            continue
+        segments = data.get("level_segments")
+        if not isinstance(segments, Sequence) or isinstance(segments, str | bytes):
+            continue
+        rows: list[str] = []
+        for item in segments:
+            if not isinstance(item, Mapping):
+                continue
+            name = str(item.get("name") or item.get("brand") or "").strip()
+            if not name:
+                continue
+            sales = _decimal(item.get("value_억원"))
+            if sales is None:
+                sales = _krw_to_eok(item.get("value") or item.get("value_krw"))
+            share = _decimal(item.get("ms_recent_pct"))
+            sales_text = f"{sales:,.2f}억원" if sales is not None else "해당 없음"
+            share_text = f"{share:.2f}%" if share is not None else "해당 없음"
+            rows.append(f"| {name} | {sales_text} | {share_text} |")
+        if rows:
+            return "\n".join(
+                (
+                    f"## {label}별 분포",
+                    f"| {label} | 매출 | 점유율 |",
+                    "| --- | --- | --- |",
+                    *rows,
+                )
+            )
+    return ""
+
+
 def _brand_comparison_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if "비교" not in question:
         return ""
@@ -208,7 +335,7 @@ def _historical_brand_metric_answer(question: str, calls: Sequence[Mapping[str, 
             value = _krw_to_eok(data.get("sales_krw") or data.get("value_krw") or data.get("value"))
         if value is None:
             continue
-        return f"{period} {brand} 매출은 {value:,.6f}억원입니다."
+        return f"{period} {brand} 매출은 {value:,.2f}억원입니다."
     return ""
 
 
@@ -354,8 +481,17 @@ def _format_series_value(value: Any, unit: str) -> str:
 
 
 def _public_language(question: str, answer: str) -> str:
+    original = answer
     cleaned = _INTERNAL_LABEL_RE.sub("", answer)
+    cleaned = re.sub(r"(?m)(전략뷰|일반뷰)\s*\(\s*\)", r"\1", cleaned)
+    cleaned = _drop_unsupported_interpretation_lines(cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    asks_for_cause = any(token in question for token in ("왜", "원인"))
+    if asks_for_cause and "## 가설과 한계" not in cleaned and (_CAUSAL_RE.search(original) or not cleaned.strip()):
+        cleaned = (
+            f"{cleaned.strip()}\n\n관찰된 수치만으로 원인으로 확정할 수 없습니다. "
+            "가능성을 검토하려면 처방 전환, 환자 구성, 채널별 활동 자료를 추가 확인해야 합니다."
+        ).strip()
     if any(token in question for token in ("왜", "원인", "전망", "위협")) and _CAUSAL_RE.search(cleaned):
         cleaned = _CAUSAL_RE.sub("", cleaned).strip()
         cleaned = (
@@ -363,6 +499,15 @@ def _public_language(question: str, answer: str) -> str:
             "가능성을 검토하려면 처방 전환, 환자 구성, 채널별 활동 자료를 추가 확인해야 합니다."
         ).strip()
     return cleaned
+
+
+def _drop_unsupported_interpretation_lines(answer: str) -> str:
+    unsupported = re.compile(
+        r"(?:시장의?\s*중심.*이동|강력한 .*압력|시장 장악력|침투 수준|경쟁 방어 과제|"
+        r"시장 재편의 방향|경쟁 압력의 근거|(?:때문|이므로|따라서).*(?:압력|하락|상승|이동))"
+    )
+    lines = [line for line in answer.splitlines() if not unsupported.search(line)]
+    return "\n".join(lines)
 
 
 def _replace_provenance(
@@ -375,7 +520,10 @@ def _replace_provenance(
     if not calls and not status_only:
         return answer
     raw_rows = _provenance_rows(calls) if calls else (ProvenanceRow(),)
-    rows = tuple(_complete_row(row, unit=_requested_unit(question, answer)) for row in raw_rows)
+    rows = tuple(
+        _complete_row(row, question=question, answer=answer, unit=_requested_unit(question, answer))
+        for row in raw_rows
+    )
     block = render_provenance_table("## 출처", rows).replace("## 출처\n|", "## 출처\n\n|")
     match = _SOURCE_HEADING_RE.search(answer)
     head = answer[: match.start()].rstrip() if match else answer.rstrip()
@@ -405,15 +553,35 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
                 "명",
             ),
         )
-    return provenance_rows_from_calls(calls, ())
+    primary_calls = tuple(call for call in calls if call.get("tool") != "agent_calculation")
+    return provenance_rows_from_calls(primary_calls or calls, ())
 
 
-def _complete_row(row: ProvenanceRow, *, unit: str | None = None) -> ProvenanceRow:
+def _complete_row(
+    row: ProvenanceRow,
+    *,
+    question: str,
+    answer: str,
+    unit: str | None = None,
+) -> ProvenanceRow:
     values = tuple("해당 없음" if value == MISSING_LABEL else value for value in row.as_tuple())
     if values[2].startswith("전략뷰"):
         values = (*values[:2], "전략뷰", *values[3:])
     elif values[2].startswith("일반뷰"):
         values = (*values[:2], "일반뷰", *values[3:])
+    market_match = re.search(r"(?m)^- 시장:\s*(.+?)\s*$", answer)
+    denominator_match = re.search(r"(?m)^점유율 분모:\s*(.+?)\s*$", answer)
+    if values[3] == "해당 없음" and market_match is not None:
+        values = (*values[:3], market_match.group(1).strip(), *values[4:])
+    if values[4] == "해당 없음" and denominator_match is not None:
+        values = (*values[:4], denominator_match.group(1).strip(), *values[5:])
+    if values[3] == "해당 없음" and values[2] == "전략뷰":
+        values = (*values[:3], "요청 브랜드의 전략 시장", *values[4:])
+    requested_channel = _requested_channel(question)
+    if any(token in question for token in ("채널별", "채널 별")):
+        values = (*values[:5], "채널별", values[6])
+    elif requested_channel:
+        values = (*values[:5], requested_channel, values[6])
     if unit:
         values = (*values[:6], unit)
     return ProvenanceRow(*values)
@@ -424,12 +592,12 @@ def _requested_unit(question: str, answer: str) -> str | None:
         return "명"
     if "영업활동" in question:
         return "건"
+    if any(token in question for token in ("매출", "시장규모", "규모")):
+        return "억원"
     if any(token in question for token in ("점유율", "CR")) or re.search(r"\d[\d,.]*%", answer):
         return "%"
     if "HHI" in question and "CR" not in question:
         return "지수"
-    if any(token in question for token in ("매출", "시장규모", "규모")):
-        return "억원"
     return None
 
 
@@ -474,6 +642,12 @@ def _calls_matching_question(
     question: str,
     calls: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any], ...]:
+    if "영업활동" in question:
+        return tuple(call for call in calls if call.get("tool") == "csd_activity_trend")
+    if any(token in question for token in ("채널별", "채널 별")):
+        return tuple(call for call in calls if _call_dimension(call) == "channel")
+    if "진료과" in question:
+        return tuple(call for call in calls if _call_dimension(call) == "specialty")
     channel = _requested_channel(question)
     if channel:
         matched = tuple(call for call in calls if channel in _call_channels(call))
@@ -490,8 +664,17 @@ def _calls_matching_question(
 
 
 def _requested_channel(question: str) -> str:
-    for channel in ("상급종합병원", "상급종병", "종합병원", "종병", "병원", "의원", "약국"):
-        if channel in question:
+    aliases = (
+        ("상급종합병원", "상급종병"),
+        ("상급종병", "상급종병"),
+        ("종합병원", "종병"),
+        ("종병", "종병"),
+        ("병원", "병원"),
+        ("의원", "의원"),
+        ("약국", "약국"),
+    )
+    for alias, channel in aliases:
+        if alias in question:
             return channel
     return ""
 
@@ -503,10 +686,52 @@ def _call_channels(call: Mapping[str, Any]) -> tuple[str, ...]:
             continue
         value = candidate.get("channel") or candidate.get("visit_location")
         if isinstance(value, Sequence) and not isinstance(value, str | bytes):
-            values.extend(str(item) for item in value)
+            values.extend(_canonical_channel(str(item)) for item in value)
         elif value not in (None, ""):
-            values.append(str(value))
+            values.append(_canonical_channel(str(value)))
     return tuple(values)
+
+
+def _canonical_channel(value: str) -> str:
+    aliases = {
+        "상급종합병원": "상급종병",
+        "상급종병": "상급종병",
+        "종합병원": "종병",
+        "종병": "종병",
+    }
+    return aliases.get(value.strip(), value.strip())
+
+
+def _latest_call_period(calls: Sequence[Mapping[str, Any]]) -> str:
+    periods: list[str] = []
+    for call in calls:
+        data = _render_data(call)
+        for candidate in (data.get("period"), data.get("available_to")):
+            if candidate not in (None, ""):
+                periods.append(str(candidate))
+        for series in _series_candidates(data):
+            periods.extend(
+                str(item.get("period"))
+                for item in series
+                if isinstance(item, Mapping) and item.get("period")
+            )
+    return max(periods) if periods else ""
+
+
+def _call_dimension(call: Mapping[str, Any]) -> str:
+    data = _render_data(call)
+    explicit = str(data.get("requested_dimension") or data.get("level") or "").lower()
+    if explicit in {"channel", "specialty"}:
+        return explicit
+    for candidate in (data.get("query_spec"), call.get("query_spec")):
+        if not isinstance(candidate, Mapping):
+            continue
+        dimensions = candidate.get("dimensions") or candidate.get("group_by")
+        if isinstance(dimensions, Sequence) and not isinstance(dimensions, str | bytes):
+            for dimension in dimensions:
+                if str(dimension).lower() in {"channel", "specialty"}:
+                    return str(dimension).lower()
+    return ""
 
 
 def _is_file_tool(call: Mapping[str, Any]) -> bool:

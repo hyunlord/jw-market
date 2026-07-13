@@ -177,6 +177,7 @@ class StrategicQueryLayer:
             "period": latest,
             "anchor_brand": brand,
             "member_brands": tuple(row["brand"] for row in ranked),
+            "total_brands_in_market": len(ranked),
             "market_size_recent_krw": snapshot.market_value(market, latest, source),
             "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
             "hhi_recent": round(snapshot.hhi(market, latest, source), 4),
