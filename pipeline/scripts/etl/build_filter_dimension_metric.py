@@ -301,9 +301,9 @@ def _build_direct_source_rows(
 
 def _source_epoch() -> str | None:
     try:
-        from pipeline.scripts.api.dynamic_market import response_cache
+        from pipeline.scripts.api.dynamic_market.runtime_cache import dynamic_response_cache
 
-        return response_cache._store.source_epoch()
+        return dynamic_response_cache._store.source_epoch()
     except Exception as exc:
         if os.environ.get("REQUIRE_SOURCE_EPOCH") == "1":
             raise RuntimeError("source epoch is required for this build") from exc

@@ -5,6 +5,7 @@ from argparse import Namespace
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.scripts.etl.build_filter_dimension_metric import _serving_guard_schema
+from pipeline.scripts.etl.build_filter_dimension_metric import _source_epoch
 
 
 class _Cursor:
@@ -207,3 +208,16 @@ def test_promote_filter_dimension_rows_refuses_mixed_slice_before_write() -> Non
         raise AssertionError("mixed sidecar rows must be rejected")
 
     assert conn.cursor_instance.calls == []
+
+
+def test_source_epoch_uses_configured_runtime_cache_store(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import runtime_cache
+
+    class _Store:
+        @staticmethod
+        def source_epoch() -> str:
+            return "epoch-from-runtime-store"
+
+    monkeypatch.setattr(runtime_cache.dynamic_response_cache, "_store", _Store())
+
+    assert _source_epoch() == "epoch-from-runtime-store"
