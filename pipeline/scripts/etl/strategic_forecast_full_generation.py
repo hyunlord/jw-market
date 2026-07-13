@@ -39,6 +39,7 @@ from pipeline.scripts.etl import build_cache_deep_analysis_general as general_bu
 from pipeline.scripts.etl.build_cache_deep_analysis import ALL_COMBOS, FORECAST_DISCLOSURE, FORECAST_METHOD, top6_rows
 from pipeline.scripts.etl.cache_build_common import api_source, dump_payload, mariadb_connect
 from pipeline.scripts.etl.general_forecast_payload import optimize_and_mark_payload, validate_payload_contract
+from pipeline.scripts.forecast import forecast_runner
 from pipeline.scripts.forecast.forecast_runner import (
     build_forecast_brand_entry,
     build_market_forecast,
@@ -156,10 +157,14 @@ def load_market_scope(conn: Any, scope_key: ScopeKey) -> list[dict[str, Any]]:
     """
     view_kind, market_id, mart_source = scope_key
     table, market_column = _table_spec(view_kind)
+    # ml/cd 테이블은 auto-increment id 공간이 겹치므로, forecast_runner의 row-id 기반
+    # 메모이제이션 키가 테이블을 넘어 충돌하지 않도록 id를 시장 네임스페이스로 한정한다.
+    id_prefix = "ml" if view_kind == "market_landscape" else "cd"
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, {market_column} AS atc4_code, brand_key, brand_name, source, measure,
+            SELECT CONCAT('{id_prefix}:', id) AS id, {market_column} AS atc4_code,
+                   brand_key, brand_name, source, measure,
                    unit_label, is_jw, metric_history, computed_at
             FROM {general_builder.quote_ident(table)}
             WHERE {market_column} = %s AND source = %s
@@ -168,6 +173,9 @@ def load_market_scope(conn: Any, scope_key: ScopeKey) -> list[dict[str, Any]]:
             (market_id, mart_source),
         )
         rows = list(cur.fetchall())
+    # 스코프 간 캐시 이월을 차단해 산출물이 프로세스 내 처리 이력과 무관하게 결정되도록 한다.
+    forecast_runner._FORECAST_ENTRY_CACHE.clear()
+    forecast_runner._MARKET_FORECAST_CACHE.clear()
     if not rows:
         raise RuntimeError(f"empty strategic native scope: {scope_key!r}")
     for row in rows:
