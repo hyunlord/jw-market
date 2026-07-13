@@ -293,6 +293,8 @@ def test_run_source_replaces_candidate_zero_with_market_position(monkeypatch, tm
         output=tmp_path / "result.json",
         top_n=5,
         workflow_rev=5692,
+        expected_workflow_rev=5692,
+        environment_mode=None,
     )
 
     assert result["profile_only"] == 0
@@ -408,6 +410,8 @@ def test_run_source_replaces_validation_isolation_with_market_position(
         output=tmp_path / "result.json",
         top_n=5,
         workflow_rev=5692,
+        expected_workflow_rev=5692,
+        environment_mode=None,
     )
 
     assert result["affected"] == 1

@@ -61,11 +61,9 @@ spec:
             - name: WF316_DIRECT_RUN_URL
               value: http://workflow-316.llmops.svc.cluster.local:8080/run/v2
             - name: AGENT3_WORKFLOW_REV
-              value: "5365"
+              value: "5692"
             - name: AGENT3_BRAND_SOURCE
               value: general_all
-            - name: AGENT3_MODE
-              value: dry-run
             - name: AGENT3_CHUNK_INDEX
               value: "0"
             - name: AGENT3_CHUNK_SIZE
@@ -81,5 +79,6 @@ spec:
                 --brand-source "${AGENT3_BRAND_SOURCE}" \
                 --mode full \
                 --source all \
+                --expected-workflow-rev 5692 \
                 --output "${AGENT3_OUTPUT}"
               cat "${AGENT3_OUTPUT}"

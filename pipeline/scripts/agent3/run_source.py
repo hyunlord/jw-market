@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Literal
@@ -42,6 +43,10 @@ MIN_SOURCE_UNITS = 35_521
 MIN_BRANDS = 24_789
 
 
+class ExecutionContractError(RuntimeError):
+    """Raised before I/O when the declared Agent3 execution contract is inconsistent."""
+
+
 @dataclass(frozen=True, slots=True)
 class SourceCoverage:
     source_units: int
@@ -62,6 +67,76 @@ def validate_source_coverage(coverage: SourceCoverage) -> None:
         )
 
 
+def _validate_execution_contract(
+    *,
+    workflow_rev: int,
+    expected_workflow_rev: int,
+    cli_mode: RunMode,
+    environment_mode: str | None,
+) -> None:
+    if workflow_rev != expected_workflow_rev:
+        raise ExecutionContractError(
+            "Agent3 workflow revision mismatch: "
+            f"execution={workflow_rev}, expected={expected_workflow_rev}"
+        )
+    if environment_mode is not None:
+        raise ExecutionContractError(
+            "AGENT3_MODE must be unset when --mode is supplied; "
+            f"cli={cli_mode!r}, environment={environment_mode!r}"
+        )
+
+
+def _should_reestablish_revision(
+    old: ExistingAgent3SourceState,
+    *,
+    workflow_rev: int,
+    enabled: bool,
+) -> bool:
+    return enabled and old.workflow_rev != workflow_rev
+
+
+def _classify_workflow_call(
+    old: ExistingAgent3SourceState | None,
+    workflow_rev: int,
+    *,
+    content_matches: bool,
+) -> str:
+    """Classify why a wf316 call was issued for one source unit.
+
+    - calls_new: no prior row (genuine first generation).
+    - calls_revision_change: prior row exists but on a stale workflow_rev.
+    - calls_input_change: same rev, but canonical content changed (mart moved).
+    - calls_unexplained: same rev AND identical canonical content, yet the stored
+      hash missed the skip gate. This is the wasteful stale-hash re-call the
+      idempotency gate must drive to zero.
+    """
+    if old is None:
+        return "calls_new"
+    if old.workflow_rev != workflow_rev:
+        return "calls_revision_change"
+    if content_matches:
+        return "calls_unexplained"
+    return "calls_input_change"
+
+
+def evaluate_idempotency_gate(counts: dict[str, Any]) -> dict[str, Any]:
+    """LLM idempotency gate: only unexplained wf316 calls fail the gate.
+
+    New units, revision bumps, and genuine input changes are legitimate call
+    reasons and never fail the gate; deterministic zero-update behaviour is
+    unaffected (this only reads the call-reason counters).
+    """
+    unexplained = int(counts.get("calls_unexplained", 0))
+    return {
+        "status": "green" if unexplained == 0 else "red",
+        "calls_new": int(counts.get("calls_new", 0)),
+        "calls_revision_change": int(counts.get("calls_revision_change", 0)),
+        "calls_input_change": int(counts.get("calls_input_change", 0)),
+        "calls_unexplained": unexplained,
+        "workflow_calls": int(counts.get("workflow_calls", 0)),
+    }
+
+
 def run_source(
     *,
     brand_source: BrandSource,
@@ -71,7 +146,23 @@ def run_source(
     output: Path,
     top_n: int,
     workflow_rev: int,
+    expected_workflow_rev: int,
+    environment_mode: str | None,
+    reestablish_revision: bool = False,
 ) -> dict[str, Any]:
+    _validate_execution_contract(
+        workflow_rev=workflow_rev,
+        expected_workflow_rev=expected_workflow_rev,
+        cli_mode=mode,
+        environment_mode=environment_mode,
+    )
+    print(
+        "[agent3-preflight] "
+        f"workflow_rev={workflow_rev} expected_workflow_rev={expected_workflow_rev} "
+        f"mode={mode} environment_mode=unset",
+        file=sys.stderr,
+        flush=True,
+    )
     repo = Agent3Repository(DbConfig.from_env())
     loader = Agent3SourceLoader(DbConfig.from_env())
     if mode == "verify-existing":
@@ -95,8 +186,13 @@ def run_source(
         "skipped_same_hash": 0,
         "skipped_same_content": 0,
         "canonical_mismatch": 0,
+        "revision_reestablished": 0,
         "source_units": 0,
         "workflow_errors": 0,
+        "calls_new": 0,
+        "calls_revision_change": 0,
+        "calls_input_change": 0,
+        "calls_unexplained": 0,
     }
     consecutive_workflow_errors = 0
     for identity, general_rows, strategic_rows, molecule_rows, market_rows, existing_states in _iter_identity_inputs(
@@ -108,6 +204,7 @@ def run_source(
         available_sources = set(available_sources_from_general_rows(general_rows))
         for source in (item for item in _selected_sources(source_selection) if item in available_sources):
             old = dict(existing_states).get(source)
+            called_workflow = False
             counts["source_units"] += 1
             print(f"[agent3-source] {identity.brand_key} {identity.brand_name} source={source}", file=sys.stderr, flush=True)
             profile = build_source_profile(
@@ -139,6 +236,7 @@ def run_source(
                 continue
             stored_candidates = primary_candidates
             if mode == "full" and primary_candidates:
+                called_workflow = True
                 try:
                     workflow_result = _run_workflow_with_validation(
                         client=client,
@@ -233,7 +331,29 @@ def run_source(
                 workflow_rev=workflow_rev,
                 hash_candidates=primary_candidates,
             )
-            if old is not None and canonical_content_matches(old, record):
+            content_matches = old is not None and canonical_content_matches(old, record)
+            if called_workflow:
+                counts[_classify_workflow_call(old, workflow_rev, content_matches=content_matches)] += 1
+            if content_matches:
+                if _should_reestablish_revision(
+                    old,
+                    workflow_rev=workflow_rev,
+                    enabled=reestablish_revision,
+                ):
+                    counts["revision_reestablished"] += 1
+                    if mode == "full":
+                        pending_records.append(record)
+                    records.append(
+                        _record_summary(
+                            identity.brand_key,
+                            identity.brand_name,
+                            source,
+                            stored_candidates,
+                            record.input_hash,
+                            "revision_reestablished",
+                        )
+                    )
+                    continue
                 counts["skipped_same_content"] += 1
                 records.append(
                     _record_summary(
@@ -270,6 +390,7 @@ def run_source(
         "affected": affected,
         **counts,
         "estimated_cost_krw": counts["workflow_calls"] * 3.39,
+        "idempotency_gate": evaluate_idempotency_gate(counts),
         "records": records,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -412,6 +533,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("/tmp/agent3_source.json"))
     parser.add_argument("--top-n", type=int, default=5)
     parser.add_argument("--workflow-rev", type=int, help="wf316 revision id to record in source input_hash/idempotency.")
+    parser.add_argument(
+        "--expected-workflow-rev",
+        type=int,
+        required=True,
+        help="Required deployment pin; execution aborts before I/O when it differs from --workflow-rev/AGENT3_WORKFLOW_REV.",
+    )
+    parser.add_argument(
+        "--reestablish-revision",
+        action="store_true",
+        help="For an explicitly bounded repair, persist validated canonical-equal output when stored lineage is stale.",
+    )
     return parser.parse_args()
 
 
@@ -434,6 +566,9 @@ def main() -> int:
         output=args.output,
         top_n=args.top_n,
         workflow_rev=resolve_workflow_rev(args.workflow_rev),
+        expected_workflow_rev=args.expected_workflow_rev,
+        environment_mode=os.environ.get("AGENT3_MODE"),
+        reestablish_revision=args.reestablish_revision,
     )
     print(json.dumps({key: value for key, value in result.items() if key != "records"}, ensure_ascii=False, sort_keys=True))
     return 0
