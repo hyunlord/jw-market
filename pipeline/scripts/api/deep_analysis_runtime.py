@@ -76,7 +76,6 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
     matched_brand = str(base.get("brand_name") or brand)
     ml_id = str(base.get("ml_id") or "")
     selected_brand_rows = [row for row in brand_rows if str(row.get("ml_id") or "") == ml_id]
-    market_rows = _market_rows(ml_id)
     market = _market_catalog(ml_id)
     market_atc_codes = builder.atc_codes_from_market_catalog(market)
     available_combos = builder.available_combos_for_market(market)
@@ -88,12 +87,15 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
         f"{builder.api_source(row['source'])}.{row['measure']}": row
         for row in selected_brand_rows
     }
-    market_rows_by_combo: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in market_rows:
-        key = (str(row.get("source") or ""), str(row.get("measure") or ""))
-        market_rows_by_combo.setdefault(key, []).append(row)
 
     def build_expensive_sections() -> dict[str, Any]:
+        # F-055: the full-market row read is only consumed here; fetching it
+        # eagerly made every section-cache hit pay a multi-second scan of the
+        # market's large JSON columns for nothing.
+        market_rows_by_combo: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in _market_rows(ml_id):
+            key = (str(row.get("source") or ""), str(row.get("measure") or ""))
+            market_rows_by_combo.setdefault(key, []).append(row)
         by_combo: dict[str, dict[str, Any]] = {}
         simulation_by_combo: dict[str, dict[str, Any]] = {}
         for source, measure in builder.ALL_COMBOS:
