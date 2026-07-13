@@ -71,6 +71,68 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
     assert {"period": "2025-11", "value": 0.0} in selected["activity"]["absolute"]
 
 
+def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": period} for period in _months()]
+        if "GROUP BY market, master_product" in sql:
+            return [{"market": "LIVALO Market", "master_product": product} for product in ("LIVALO", "A", "B", "C")]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            source_companies = {
+                "LIVALO": "JW PHARMACEUTICAL",
+                "A": "VIATRIS",
+                "B": "ASTRAZENECA KOREA",
+                "C": "YUHAN CO.",
+            }
+            return [
+                {
+                    **row,
+                    "representing_company": source_companies.get(
+                        str(row["master_product"]), str(row["representing_company"])
+                    ),
+                }
+                for row in _activity_rows()
+            ]
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set_with_korean_companies())
+
+    brand_payload = service.get_csd_activity_series(
+        {**_request(period={"start": "2025-Q4", "end": "2025-Q4"}), "entity_level": "brand"}
+    )
+    company_payload = service.get_csd_activity_series(
+        {**_request(period={"start": "2025-Q4", "end": "2025-Q4"}), "entity_level": "company"}
+    )
+
+    assert brand_payload is not None
+    assert company_payload is not None
+    assert [entity["key"] for entity in company_payload["entities"]] == ["JW중외제약", "비아트리스", "아스트라제네카", "유한양행"]
+    for month in company_payload["period"]["months"]:
+        brand_total = sum(_point(entity, "absolute", month) for entity in brand_payload["entities"])
+        company_total = sum(_point(entity, "absolute", month) for entity in company_payload["entities"])
+        assert company_total == brand_total
+    assert any(_point(entity, "absolute", "2025-10") > 0 for entity in company_payload["entities"])
+    assert sum(_point(entity, "share_pct", "2025-10") for entity in company_payload["entities"]) > 0
+    assert all(_point(entity, "rank", "2025-10") is not None for entity in company_payload["entities"])
+
+
+def test_company_axis_keeps_ambiguous_source_company_in_unclassified_bucket() -> None:
+    brand_set = _brand_set_with_korean_companies()
+    activity = service._activity_rows(
+        [
+            {"period_ym": "2025-01", "master_product": "A", "representing_company": "SHARED", "value": 10.0},
+            {"period_ym": "2025-01", "master_product": "B", "representing_company": "SHARED", "value": 20.0},
+        ],
+        ("2025-01",),
+        ("2025-01",),
+    )
+
+    values = service._company_activity_by_key(brand_set, activity)
+
+    assert values == {"미분류": {"2025-01": 30.0}}
+
+
 def test_activity_series_rejects_unknown_channel() -> None:
     try:
         service.get_csd_activity_series(
@@ -353,6 +415,40 @@ def _brand_set() -> BrandSetResolution:
         ranking_quarter="2025-Q4",
         applied_filter={"atc4": ["C10A1"]},
     )
+
+
+def _brand_set_with_korean_companies() -> BrandSetResolution:
+    base = _brand_set()
+    companies = {
+        "LIVALO": "JW중외제약",
+        "A": "비아트리스",
+        "B": "아스트라제네카",
+        "C": "유한양행",
+    }
+    return BrandSetResolution(
+        view_name=base.view_name,
+        market_id=base.market_id,
+        selected_brand=base.selected_brand,
+        view=base.view,
+        market_row=base.market_row,
+        brand_rows=tuple(
+            {
+                "brand_key": row["brand_key"],
+                "brand_name": row["brand_name"],
+                "by_dimension": {"company": companies[str(row["brand_key"])]},
+            }
+            for row in base.brand_rows
+        ),
+        brand_meta=base.brand_meta,
+        choices=base.choices,
+        candidates=base.candidates,
+        ranking_quarter=base.ranking_quarter,
+        applied_filter=base.applied_filter,
+    )
+
+
+def _point(entity: dict[str, Any], metric: str, period: str) -> float | int | None:
+    return next(item["value"] for item in entity["activity"][metric] if item["period"] == period)
 
 
 def _months() -> list[str]:
