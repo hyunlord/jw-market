@@ -449,6 +449,88 @@ def test_deterministic_file_aggregate_bypasses_final_llm(monkeypatch) -> None:
     assert "적용 행 수: 12,269" in final.text
 
 
+def test_file_page_answer_is_not_rewritten_as_market_brand_compare(monkeypatch) -> None:
+    answer = (
+        "2페이지 기준 2023년 골다공증 51.8 million, 골감소증 139.1 million이며, "
+        "2043년에는 각각 63.7 million과 168.2 million입니다."
+    )
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args, **_kwargs: iter((answer,)))
+
+    final = compute_final_answer(
+        "2페이지에서 2023년과 2043년 골다공증·골감소증 환자 수를 각각 알려줘.",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": (
+                "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (2페이지)\n"
+                "2023 51.8 million 139.1 million; 2043 63.7 million 168.2 million"
+            ),
+            "context_scope": "FILE",
+        },
+        "file-page",
+    )
+
+    assert all(value in final.text for value in ("51.8", "139.1", "63.7", "168.2"))
+    assert "표에 포함된 확정 데이터만" not in final.text
+
+
+def test_file_page_answer_backfills_requested_numeric_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: iter(("지정 페이지의 핵심 내용을 확인했습니다.",)),
+    )
+
+    final = compute_final_answer(
+        "2페이지에서 2023년과 2043년 환자 수를 각각 알려줘.",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": (
+                "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (2페이지)\n\n"
+                "[1] F3.pdf | p.2\n"
+                "In 2023 there were 51.8 million and 139.1 million patients. "
+                "By 2043 the totals rise to 63.7 million and 168.2 million."
+            ),
+            "context_scope": "FILE",
+        },
+        "file-page-numeric",
+    )
+
+    assert all(value in final.text for value in ("51.8", "139.1", "63.7", "168.2"))
+    assert "지정 페이지 원문 근거" in final.text
+
+
+def test_file_kol_answer_is_not_rewritten_as_unconnected_market_source(monkeypatch) -> None:
+    answer = "31페이지 KOL은 anabolic 치료 후 Prolia 같은 antiresorptive 치료가 필요하다고 설명합니다."
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args, **_kwargs: iter((answer,)))
+
+    final = compute_final_answer(
+        "31페이지 KOL Insights의 anabolic 치료와 Prolia 중단 의견을 요약해줘.",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": (
+                "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (31페이지)\n"
+                "KOL Insights: anabolic treatment should be followed by an antiresorptive; "
+                "Prolia discontinuation needs transition therapy."
+            ),
+            "context_scope": "FILE",
+        },
+        "file-kol",
+    )
+
+    assert "anabolic" in final.text
+    assert "Prolia" in final.text
+    assert "운영 데이터에 미보유" not in final.text
+
+
 def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(monkeypatch) -> None:
     class Resolver:
         def resolve(self, _question: str, *, allow_default: bool = False):
