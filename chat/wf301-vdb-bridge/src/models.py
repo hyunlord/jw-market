@@ -229,9 +229,12 @@ class SessionDocument(BaseModel):
     file_size_bytes: int = Field(default=0, description="파일 크기 byte입니다.")
     chunk_count: int = Field(default=0, description="등록된 청크 수입니다.")
     is_expired: bool = Field(default=False, description="현재 시각 기준 TTL이 만료되었는지 여부입니다.")
-    storage_route: Literal["vdb", "sql"] = Field(
+    storage_route: Literal["vdb", "sql", "hybrid"] = Field(
         default="vdb",
-        description="문서의 실제 검색 경로입니다. 기존 문서는 vdb로 간주합니다.",
+        description=(
+            "문서의 실제 검색 경로입니다. hybrid는 SQL 후보 시트와 잔여 VDB 시트를 "
+            "함께 보존하며, 기존 문서는 vdb로 간주합니다."
+        ),
     )
     route_reason: str = Field(default="", description="결정론적 라우팅 판정 근거입니다.")
     sql_tables: list["SqlTableMetadata"] = Field(default_factory=list)

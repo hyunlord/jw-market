@@ -73,6 +73,8 @@ from .xlsx_sql_route import (
     WorkbookSqlDecision,
     inspect_xlsx_for_sql,
     load_sql_sheet,
+    logical_names_for_profiles,
+    workbook_storage_route,
 )
 
 WORKFLOW_ID_EXAMPLE = 301
@@ -602,12 +604,19 @@ def _sql_table_metadata(
 ) -> list[SqlTableMetadata]:
     return [
         SqlTableMetadata(
-            logical_name=f"doc-{temp_doc.temp_document_id}:sheet-{profile.sheet_index}",
+            logical_name=logical_name,
             sheet_name=profile.sheet_name,
             row_count=profile.row_count,
             column_count=profile.column_count,
         )
-        for profile in decision.selected_sheets
+        for profile, logical_name in zip(
+            decision.selected_sheets,
+            logical_names_for_profiles(
+                decision.selected_sheets,
+                scope_prefix=f"doc_{temp_doc.temp_document_id}",
+            ),
+            strict=True,
+        )
     ]
 
 
@@ -770,6 +779,8 @@ def _load_local_xlsx_chunks(
 
 def _load_local_xlsx_texts(
     temp_doc: TempDocument,
+    *,
+    exclude_sheet_names: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str], list[str], int] | None:
     if not temp_doc.file_name.lower().endswith(LOCAL_XLSX_SUFFIXES) or not temp_doc.file_path:
         return None
@@ -778,13 +789,29 @@ def _load_local_xlsx_texts(
         return None
     try:
         if should_stream_xlsx_chunks(path):
-            texts = list(iter_xlsx_chunks(path))
+            texts = list(
+                iter_xlsx_chunks(
+                    path,
+                    exclude_sheet_names=exclude_sheet_names,
+                    allow_empty=bool(exclude_sheet_names),
+                )
+            )
             notes = ["xlsx 스트리밍 전처리 적용: 대형 flat 시트 청킹"]
         else:
             skip_report: list[SheetSkip] = []
-            texts = extract_xlsx_chunks(path, skip_report=skip_report)
+            texts = extract_xlsx_chunks(
+                path,
+                skip_report=skip_report,
+                exclude_sheet_names=exclude_sheet_names,
+                allow_empty=bool(exclude_sheet_names),
+            )
             notes = ["xlsx 전용 전처리 적용: 헤더-값 보존 청킹"]
             notes.extend(skip.note() for skip in skip_report)
+        if exclude_sheet_names:
+            notes.append(
+                "SQL 시트 제외 후 VDB 잔여 청킹: "
+                + ", ".join(sorted(exclude_sheet_names))
+            )
     except XlsxPreprocessError as exc:
         return ("local_xlsx_preprocessor_failed", [], [f"xlsx 전용 전처리 실패: {exc}"], 0)
     file_size = path.stat().st_size
@@ -907,18 +934,30 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
                 if sql_decision is not None and sql_decision.route == "sql"
                 else []
             )
-            local_xlsx = None if sql_tables else _load_local_xlsx_texts(temp_doc)
+            selected_sheet_names = frozenset(
+                profile.sheet_name
+                for profile in (sql_decision.selected_sheets if sql_decision else ())
+            )
+            local_xlsx = _load_local_xlsx_texts(
+                temp_doc,
+                exclude_sheet_names=selected_sheet_names,
+            )
             if sql_tables:
                 collection = "session_sqlite"
+                residual_texts: list[str] = []
+                residual_notes: list[str] = []
+                if local_xlsx is not None:
+                    _xlsx_collection, residual_texts, residual_notes, _xlsx_size = local_xlsx
                 notes = [
                     sql_decision.reason,
                     *(
                         json.dumps(profile.audit_dict(), ensure_ascii=False)
                         for profile in sql_decision.profiles
                     ),
+                    *residual_notes,
                 ]
                 file_size_bytes = Path(temp_doc.file_path or "").stat().st_size
-                chunk_count = 0
+                chunk_count = len(residual_texts)
                 vector_dim = None
             elif local_xlsx is not None:
                 collection, texts, notes, file_size_bytes = local_xlsx
@@ -947,7 +986,10 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
                     source_collection=collection,
                     expires_at=_expires_at(),
                     file_size_bytes=file_size_bytes,
-                    storage_route="sql" if sql_tables else "vdb",
+                    storage_route=workbook_storage_route(
+                        has_sql=bool(sql_tables),
+                        vdb_chunk_count=chunk_count,
+                    ),
                     route_reason=route_reason,
                     sql_tables=[table.model_dump() for table in sql_tables],
                 ),
@@ -965,7 +1007,7 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
                 planned_upsert = PlannedUpsertRow(
                     vdb_id=req.vdb_id,
                     doc_id_placeholder="<document.id at commit>",
-                    n_vectors=0 if sql_tables else chunk_count,
+                    n_vectors=chunk_count,
                 )
             plans.append(
                 DocumentPlan(
@@ -982,7 +1024,7 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
                     planned_document=planned_doc,
                     planned_upsert=planned_upsert,
                     planned_vector_ids=0,
-                    planned_139_objects=0 if sql_tables else chunk_count,
+                    planned_139_objects=chunk_count,
                     notes=notes,
                 )
             )
@@ -1082,19 +1124,31 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                 if sql_decision is not None and sql_decision.route == "sql"
                 else []
             )
-            local_xlsx = None if sql_tables else _load_local_xlsx_texts(temp_doc)
+            selected_sheet_names = frozenset(
+                profile.sheet_name
+                for profile in (sql_decision.selected_sheets if sql_decision else ())
+            )
+            local_xlsx = _load_local_xlsx_texts(
+                temp_doc,
+                exclude_sheet_names=selected_sheet_names,
+            )
             local_xlsx_texts: list[str] | None = None
             if sql_tables:
                 collection = "session_sqlite"
+                local_xlsx_texts = []
+                residual_notes: list[str] = []
+                if local_xlsx is not None:
+                    _xlsx_collection, local_xlsx_texts, residual_notes, _xlsx_size = local_xlsx
                 notes = [
                     sql_decision.reason,
                     *(
                         json.dumps(profile.audit_dict(), ensure_ascii=False)
                         for profile in sql_decision.profiles
                     ),
+                    *residual_notes,
                 ]
                 chunks = []
-                chunk_count = 0
+                chunk_count = len(local_xlsx_texts)
                 vector_dim = None
                 file_size_bytes = Path(temp_doc.file_path or "").stat().st_size
             elif local_xlsx is not None:
@@ -1265,7 +1319,10 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                     source_collection=collection,
                     expires_at=_expires_at(),
                     file_size_bytes=file_size_bytes,
-                    storage_route="sql" if sql_tables else "vdb",
+                    storage_route=workbook_storage_route(
+                        has_sql=bool(sql_tables),
+                        vdb_chunk_count=chunk_count,
+                    ),
                     route_reason=route_reason,
                     sql_tables=[table.model_dump() for table in sql_tables],
                 )
@@ -1278,12 +1335,10 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                 upsert_id = ledger.insert_document_upsert(
                     conn,
                     document_id=document_id,
-                    chunk_count=0 if sql_tables else chunk_count,
+                    chunk_count=chunk_count,
                     user_id=user_id,
                 )
-                if sql_tables:
-                    object_ids = []
-                elif local_xlsx_texts is not None:
+                if local_xlsx_texts:
                     object_ids, vector_dim = weaviate_ops.copy_texts_to_target(
                         client,
                         local_xlsx_texts,
@@ -1293,7 +1348,7 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                         file_size=file_size_bytes,
                         idempotency_key=idempotency_key,
                     )
-                else:
+                elif chunks:
                     object_ids = weaviate_ops.copy_chunks_to_target(
                         client,
                         chunks,
@@ -1301,7 +1356,9 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                         file_name=temp_doc.file_name,
                         idempotency_key=idempotency_key,
                     )
-                if not sql_tables:
+                else:
+                    object_ids = []
+                if chunk_count:
                     session_wiki.mark_pages_stale(conn, req.workflow_id, session_id)
                 conn.commit()
             except Exception:
@@ -1315,7 +1372,13 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
 
             write_count += 2 + len(object_ids)
             committed_count += 1
-            if sql_tables:
+            if sql_tables and object_ids:
+                rollback.append(
+                    f"document_id={document_id}: set document/document_upsert is_active=0, "
+                    f"drop session SQL tables {provisioned_logical_names}, "
+                    f"and delete Weaviate object ids {object_ids}"
+                )
+            elif sql_tables:
                 rollback.append(
                     f"document_id={document_id}: set document/document_upsert is_active=0 "
                     f"and drop session SQL tables {provisioned_logical_names}"
@@ -1338,7 +1401,13 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                     route_reason=route_reason,
                     vector_dim=vector_dim,
                     weaviate_object_ids=object_ids,
-                    status="committed_sql" if sql_tables else "committed",
+                    status=(
+                        "committed_hybrid"
+                        if sql_tables and object_ids
+                        else "committed_sql"
+                        if sql_tables
+                        else "committed"
+                    ),
                     notes=notes,
                     sql_tables=sql_tables,
                 )
@@ -1934,7 +2003,7 @@ def _join_file_contexts(wiki_context: str, vdb_context: str) -> str:
 def _sql_sources_from_rows(rows: list[dict[str, Any]]) -> list[FileSqlSource]:
     sources: list[FileSqlSource] = []
     for row in rows:
-        if row.get("storage_route") != "sql":
+        if row.get("storage_route") not in {"sql", "hybrid"}:
             continue
         for raw_table in row.get("sql_tables") or []:
             if not isinstance(raw_table, dict):
