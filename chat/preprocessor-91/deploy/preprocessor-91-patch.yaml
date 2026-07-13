@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preprocessor-91
+  namespace: llmops
+spec:
+  template:
+    spec:
+      containers:
+        - name: preprocessor-91
+          env:
+            - name: PREPROC_PAGE_WORKERS
+              value: "2"
+            - name: PREPROC_PAGE_WORKER_THREADS
+              value: "2"
+            - name: PREPROC_LARGE_PDF_MIN_PAGES
+              value: "50"
+            - name: PREPROC_LARGE_PDF_MIN_BYTES
+              value: "5242880"
+            - name: PREPROC_LARGE_PDF_LOCK_PATH
+              value: /tmp/preprocessor-91-large-pdf.lock
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
