@@ -172,3 +172,66 @@ def test_past_period_metric_uses_query_layer_without_split_market_structure() ->
 
     assert call["render_data"]["period"] == "2025-04"
     assert call["render_data"]["sales_억원"] == 83.18
+
+
+@pytest.mark.parametrize(
+    ("relative_range", "expected_months"),
+    (("최근 3개월", 3), ("최근 12개월", 12), ("최근 1년", 12)),
+)
+def test_relative_range_uses_query_layer_trend_without_cache_fallback(
+    relative_range: str,
+    expected_months: int,
+) -> None:
+    class QueryLayer:
+        def query(self, spec: dict[str, object], fallback_brand: str) -> dict[str, object]:
+            return {
+                "source": "UBIST",
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "brand": fallback_brand,
+                    "period": "2025-12→2026-05",
+                    "query_spec": spec,
+                    "level_top5_trend_series": [{"brand": fallback_brand, "series": [{"period": "2026-05"}]}],
+                },
+            }
+
+    class CacheMetrics:
+        def get_brand_metric(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("relative ranges must never fall back to the stale cache")
+
+    agent = ChatAgent(metrics=CacheMetrics(), query_layer=QueryLayer())
+
+    call = agent._metric_call(
+        "리바로",
+        metric="market_share",
+        filter_entries=(("relative_range", relative_range),),
+    )
+
+    spec = call["render_data"]["query_spec"]
+    assert spec["derive"] == ["average"]
+    assert spec["filters"] == {"brand": "리바로", "periods": expected_months}
+    assert "2026-04" not in str(call)
+    assert "84.93" not in str(call)
+
+
+def test_query_layer_failure_returns_query_failed_instead_of_cache_or_exception() -> None:
+    class QueryLayer:
+        def query(self, spec: dict[str, object], fallback_brand: str) -> dict[str, object]:
+            raise LookupError("simulated query-layer route failure")
+
+    class CacheMetrics:
+        def get_brand_metric(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("query failures must not be hidden by cache fallback")
+
+    agent = ChatAgent(metrics=CacheMetrics(), query_layer=QueryLayer())
+
+    call = agent._metric_call(
+        "리바로",
+        metric="market_share",
+        filter_entries=(("relative_range", "최근 6개월"),),
+    )
+
+    assert call["tool"] == "query_failed"
+    assert call["render_data"]["status"] == "query_failed"
+    assert call["render_data"]["requested_filters"] == {"relative_range": "최근 6개월"}
+    assert call["source"] != "cache"

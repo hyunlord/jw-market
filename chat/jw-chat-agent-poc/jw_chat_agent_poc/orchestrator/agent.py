@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import re
 from typing import Any
 
 from jw_chat_agent_poc.agent_loop import ToolUseAgent, should_use_agent_loop
@@ -443,27 +444,50 @@ class ChatAgent:
         prefer_mart: bool = False,
     ) -> dict[str, Any]:
         if self.query_layer is not None:
-            period = _metric_filter_period(filter_entries)
-            if period is not None:
-                return self.query_layer.brand_metric(brand, metric, period)
-            if not filter_entries:
-                return self.query_layer.brand_metric(brand, metric, "latest")
-            plan = validate_metric_filters(filter_entries)
-            if plan.blocks_results:
-                raise LookupError("d2 query-layer rejected the requested filters")
-            dimension = ""
-            if plan.channel is not None:
-                dimension = "channel"
-            elif plan.level is not None:
-                dimension = "product" if plan.level == "Brand" else plan.level.casefold().replace(" ", "_")
-            if dimension:
-                return self.query_layer.dimension_breakdown(
-                    brand,
-                    dimension,
-                    source=plan.source or "",
-                    period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
-                )
-            raise LookupError(f"d2 query-layer route does not support filters: {filter_entries!r}")
+            try:
+                period = _metric_filter_period(filter_entries)
+                if period is not None:
+                    return self.query_layer.brand_metric(brand, metric, period)
+                if not filter_entries:
+                    return self.query_layer.brand_metric(brand, metric, "latest")
+                plan = validate_metric_filters(filter_entries)
+                if plan.blocks_results:
+                    raise LookupError("d2 query-layer rejected the requested filters")
+                if plan.relative_range is not None:
+                    months = _relative_range_months(plan.relative_range)
+                    if metric in {"market_share", "share"}:
+                        return self.query_layer.query(
+                            {
+                                "metrics": ["share"],
+                                "derive": ["average"],
+                                "filters": {"brand": brand, "periods": months},
+                            },
+                            fallback_brand=brand,
+                        )
+                    return self.query_layer.query(
+                        {
+                            "group_by": ["product", "period"],
+                            "metrics": ["sales"],
+                            "derive": ["trend"],
+                            "filters": {"brand": brand, "periods": months},
+                        },
+                        fallback_brand=brand,
+                    )
+                dimension = ""
+                if plan.channel is not None:
+                    dimension = "channel"
+                elif plan.level is not None:
+                    dimension = "product" if plan.level == "Brand" else plan.level.casefold().replace(" ", "_")
+                if dimension:
+                    return self.query_layer.dimension_breakdown(
+                        brand,
+                        dimension,
+                        source=plan.source or "",
+                        period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                    )
+                raise LookupError(f"d2 query-layer route does not support filters: {filter_entries!r}")
+            except (LookupError, TypeError, ValueError) as exc:
+                return _query_failed_metric_call(brand, metric, filter_entries, exc)
         if self.metrics._mode == "cache" and not self.metrics._legacy_cache_injected:
             raise LookupError("d2 query-layer is unavailable")
         return self.metrics.get_brand_metric(brand, metric=metric, filter_entries=filter_entries)
@@ -487,6 +511,39 @@ def _metric_filter_period(filter_entries: tuple[FilterEntry, ...]) -> str | None
     if plan.period_year is not None:
         return str(plan.period_year)
     return None
+
+
+def _relative_range_months(value: str) -> int:
+    match = re.fullmatch(r"\s*최근\s*(\d{1,2})\s*(개월|달|년)\s*", value)
+    if match is None:
+        raise ValueError(f"unsupported relative range: {value}")
+    amount = int(match.group(1))
+    months = amount * 12 if match.group(2) == "년" else amount
+    if not 1 <= months <= 50:
+        raise ValueError(f"relative range is outside the supported window: {value}")
+    return months
+
+
+def _query_failed_metric_call(
+    brand: str,
+    metric: str,
+    filter_entries: tuple[FilterEntry, ...],
+    error: BaseException,
+) -> dict[str, Any]:
+    message = "요청한 기간의 지표 조회에 실패했습니다. 데이터가 없다는 뜻은 아니며, 확인되지 않은 수치를 추정하지 않습니다."
+    return {
+        "source": "strategic_mart",
+        "tool": "query_failed",
+        "summary_text": message,
+        "render_data": {
+            "brand": brand,
+            "metric": metric,
+            "status": "query_failed",
+            "message": message,
+            "error_type": type(error).__name__,
+            "requested_filters": dict(filter_entries),
+        },
+    }
 
 
 def _prefer_mart_metric(support_source: str) -> bool:

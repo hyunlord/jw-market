@@ -95,6 +95,9 @@ def _unsupported_temporal_entries(question: str) -> tuple[FilterEntry, ...]:
     recent_months = re.search(r"최근\s*(\d{1,2})\s*(?:달|개월)", question)
     if recent_months:
         entries.append(("relative_range", f"최근 {int(recent_months.group(1))}개월"))
+    recent_years = re.search(r"최근\s*(\d{1,2})\s*년", question)
+    if recent_years:
+        entries.append(("relative_range", f"최근 {int(recent_years.group(1))}년"))
     return tuple(entries)
 
 

@@ -591,6 +591,28 @@ def test_query_spec_builds_dimension_trend_for_period_grouping() -> None:
     assert first["to_ms_pct"] == first["series"][-1]["ms_pct"]
 
 
+def test_query_spec_brand_trend_keeps_market_share_and_rank_population() -> None:
+    call = _query_layer().query(
+        {
+            "market": "ml_006",
+            "source": "ubist",
+            "group_by": ["product", "period"],
+            "metrics": ["sales"],
+            "derive": ["trend"],
+            "filters": {"brand": "리바로", "periods": 3},
+        },
+        fallback_brand="리바로",
+    )
+
+    trend = call["render_data"]["level_top5_trend_series"][0]
+    expected = _query_layer().brand_metric("리바로", "sales", "latest")["render_data"]
+
+    assert trend["brand"] == "리바로"
+    assert trend["rank"] == expected["rank"]
+    assert trend["ms_recent_pct"] == pytest.approx(expected["ms_recent_pct"])
+    assert trend["ms_recent_pct"] != 100.0
+
+
 def test_query_spec_groups_class2_for_split_market() -> None:
     """Given a split market, query(spec) can group the exposed Class 2 population."""
 
