@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 
+from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.scripts.etl.build_filter_dimension_metric import _serving_guard_schema
 
@@ -135,3 +136,74 @@ def test_promote_filter_dimension_slice_refuses_empty_stage_before_delete() -> N
         raise AssertionError("empty stage must not replace the serving molecule slice")
 
     assert all("DELETE FROM" not in sql for sql, _params in conn.cursor_instance.calls)
+
+
+def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
+    conn = _Connection()
+    rows = [
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "atc4_code": "A10N1",
+            "brand_key": "brand-a",
+            "brand_name": "브랜드A",
+            "product_code": "p1",
+            "dimension_type": "molecule",
+            "dimension_value": "A / B",
+            "dimension_value_norm": "A / B",
+            "raw_value_history": {"202601": 1},
+        }
+    ]
+
+    result = promote_filter_dimension_rows(
+        conn,
+        rows,
+        target_db="jw_mart_d2_stage_20260630_r2",
+        source="ubist",
+        dimension_type="molecule",
+        build_marker="2026-07-13 22:30:00",
+        batch_size=10,
+        allow_shared_serving_target=True,
+    )
+
+    sql = "\n".join(call[0] for call in conn.cursor_instance.calls)
+    assert "CREATE DATABASE" not in sql
+    assert "ON DUPLICATE KEY UPDATE" in sql
+    assert "source=%s AND dimension_type=%s" in sql
+    assert result["expected_rows"] == 1
+    assert result["promoted_rows"] == 1
+
+
+def test_promote_filter_dimension_rows_refuses_mixed_slice_before_write() -> None:
+    conn = _Connection()
+    rows = [
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "atc4_code": "A10N1",
+            "brand_key": "brand-a",
+            "brand_name": "브랜드A",
+            "product_code": "p1",
+            "dimension_type": "form",
+            "dimension_value": "tablet",
+            "dimension_value_norm": "tablet",
+            "raw_value_history": {"202601": 1},
+        }
+    ]
+
+    try:
+        promote_filter_dimension_rows(
+            conn,
+            rows,
+            target_db="jw_mart_d2_stage_20260630_r2",
+            source="ubist",
+            dimension_type="molecule",
+            build_marker="2026-07-13 22:30:00",
+            allow_shared_serving_target=True,
+        )
+    except ValueError as exc:
+        assert "mixed or out-of-scope" in str(exc)
+    else:
+        raise AssertionError("mixed sidecar rows must be rejected")
+
+    assert conn.cursor_instance.calls == []

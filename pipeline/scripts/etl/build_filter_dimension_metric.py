@@ -32,6 +32,7 @@ from pipeline.etl.io.mart.filter_dimension_metric import build_filter_dimension_
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
 from pipeline.etl.io.mart.filter_dimension_metric import summarize_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
+from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
 from pipeline.etl.io.mart.general_config import first_existing
 from pipeline.etl.io.mart.general_config import load_env
@@ -86,6 +87,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Explicit PL gate for promoting only the ubist/molecule slice into --promote-to.",
     )
+    parser.add_argument(
+        "--direct-shared-promotion",
+        action="store_true",
+        help="Compute the approved ubist/molecule slice fully before bounded direct promotion; creates no staging schema.",
+    )
     parser.add_argument("--build-sha", default=os.environ.get("BUILD_GIT_SHA"), help="Code SHA recorded in provenance.")
     return parser.parse_args()
 
@@ -102,21 +108,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("shared promotion requires --dimension-type molecule and explicit approval")
     if args.promote_to and not args.build_sha:
         raise ValueError("--build-sha is required for shared promotion provenance")
+    if args.direct_shared_promotion and not args.promote_to:
+        raise ValueError("--direct-shared-promotion requires --promote-to")
 
     started = time.perf_counter()
     conn = _connect_admin()
     try:
         if args.allow_local_serving_target:
             _guard_local_serving_target(conn, args.target_db)
-        if _schema_exists(conn, args.target_db) and not args.allow_local_serving_target:
+        if (
+            not args.direct_shared_promotion
+            and _schema_exists(conn, args.target_db)
+            and not args.allow_local_serving_target
+        ):
             raise RuntimeError(f"target schema already exists: {args.target_db}")
         serving_guard_schema = _serving_guard_schema(args)
         before_live = _general_table_counts(conn, serving_guard_schema)
-        create_filter_dimension_table(
-            conn,
-            args.target_db,
-            allow_local_serving_target=args.allow_local_serving_target,
-        )
+        if not args.direct_shared_promotion:
+            create_filter_dimension_table(
+                conn,
+                args.target_db,
+                allow_local_serving_target=args.allow_local_serving_target,
+            )
 
         manifest: dict[str, Any] = {
             "target_db": args.target_db,
@@ -131,6 +144,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "ubist_molecule_dimension": "enabled_raw_unsplit",
                 "pack_desc": "disabled",
                 "grain": "product_level",
+                "direct_shared_promotion": bool(args.direct_shared_promotion),
             },
             "provenance": {
                 "code_sha": args.build_sha,
@@ -140,7 +154,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "sources": {},
             "live_before": before_live,
         }
+        computed_rows: list[dict[str, Any]] = []
         for source in _selected_sources(args.source):
+            if args.direct_shared_promotion:
+                source_manifest, rows = _build_direct_source_rows(
+                    source,
+                    max_rows=args.max_rows,
+                    dimension_types={args.dimension_type} if args.dimension_type else None,
+                )
+                manifest["sources"][source] = source_manifest
+                computed_rows.extend(rows)
+                continue
             if args.copy_all_from:
                 manifest["sources"][source] = _copy_source_rows(
                     conn,
@@ -165,22 +189,40 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     dimension_types={args.dimension_type} if args.dimension_type else None,
                 )
 
-        manifest["target"] = _target_summary(conn, args.target_db)
+        if args.direct_shared_promotion:
+            manifest["target"] = {
+                "row_count": len(computed_rows),
+                "storage": "computed_before_direct_promotion",
+            }
+        else:
+            manifest["target"] = _target_summary(conn, args.target_db)
+        if args.promote_to:
+            build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            if args.direct_shared_promotion:
+                manifest["promotion"] = promote_filter_dimension_rows(
+                    conn,
+                    computed_rows,
+                    target_db=args.promote_to,
+                    source="ubist",
+                    dimension_type="molecule",
+                    build_marker=build_marker,
+                    batch_size=args.batch_size,
+                    allow_shared_serving_target=args.allow_shared_serving_target,
+                )
+            else:
+                manifest["promotion"] = promote_filter_dimension_slice(
+                    conn,
+                    source_db=args.target_db,
+                    target_db=args.promote_to,
+                    source="ubist",
+                    dimension_type="molecule",
+                    build_marker=build_marker,
+                    batch_size=args.batch_size,
+                    allow_shared_serving_target=args.allow_shared_serving_target,
+                )
         manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        if args.promote_to:
-            build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-            manifest["promotion"] = promote_filter_dimension_slice(
-                conn,
-                source_db=args.target_db,
-                target_db=args.promote_to,
-                source="ubist",
-                dimension_type="molecule",
-                build_marker=build_marker,
-                batch_size=args.batch_size,
-                allow_shared_serving_target=args.allow_shared_serving_target,
-            )
         _write_json(args.manifest_path, manifest)
         return manifest
     finally:
@@ -230,6 +272,31 @@ def _load_source_rows(
             "sidecar": summarize_dimension_rows(rows),
         }
     return source_manifest
+
+
+def _build_direct_source_rows(
+    source: str,
+    *,
+    max_rows: int | None,
+    dimension_types: set[str] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if source != "ubist":
+        raise ValueError("direct shared promotion is restricted to UBIST")
+    base = load_ubist_base_frame(max_rows=max_rows)
+    source_manifest: dict[str, Any] = {
+        "source_rows": int(len(base)),
+        "measures": {},
+    }
+    computed_rows: list[dict[str, Any]] = []
+    for measure in MEASURES_BY_SOURCE[source]:
+        frame = ubist_measure_frame(base, measure)
+        rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
+        computed_rows.extend(rows)
+        source_manifest["measures"][measure] = {
+            "input_rows": int(len(frame)),
+            "sidecar": summarize_dimension_rows(rows),
+        }
+    return source_manifest, computed_rows
 
 
 def _source_epoch() -> str | None:

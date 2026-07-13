@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+import hashlib
 from typing import Any
 
 import pymysql
 
 from pipeline.etl.io.mart.filter_dimension_load import quote_id
+from pipeline.etl.io.mart.general_json import dumps
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
 
@@ -24,6 +27,85 @@ _PROMOTION_COLUMNS = (
 )
 
 
+def promote_filter_dimension_rows(
+    conn: pymysql.connections.Connection,
+    rows: Sequence[dict[str, Any]],
+    target_db: str,
+    *,
+    source: str,
+    dimension_type: str,
+    build_marker: str,
+    batch_size: int = 200,
+    allow_shared_serving_target: bool = False,
+) -> dict[str, Any]:
+    """Promote a fully computed in-memory slice when staging DDL is unavailable."""
+
+    _validate_promotion_target(
+        target_db,
+        source=source,
+        dimension_type=dimension_type,
+        batch_size=batch_size,
+        allow_shared_serving_target=allow_shared_serving_target,
+    )
+    if not rows:
+        raise RuntimeError("refusing to replace ubist/molecule with an empty computed slice")
+    if any(row.get("source") != source or row.get("dimension_type") != dimension_type for row in rows):
+        raise ValueError("computed rows contain a mixed or out-of-scope sidecar slice")
+
+    payloads = [_promotion_payload(row, build_marker) for row in rows]
+    unique_keys = {
+        (
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+            payload[5],
+            payload[6],
+            payload[9],
+        )
+        for payload in payloads
+    }
+    if len(unique_keys) != len(payloads):
+        raise ValueError("computed ubist/molecule slice contains duplicate serving keys")
+
+    target_table = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
+    promoted = _upsert_payloads(
+        conn,
+        target_table=target_table,
+        payloads=payloads,
+        batch_size=batch_size,
+    )
+    expected = len(payloads)
+    _require_complete_promotion(
+        conn,
+        target_table=target_table,
+        source=source,
+        dimension_type=dimension_type,
+        build_marker=build_marker,
+        expected=expected,
+        promoted=promoted,
+    )
+    stale_deleted = _delete_stale_slice(
+        conn,
+        target_table=target_table,
+        source=source,
+        dimension_type=dimension_type,
+        build_marker=build_marker,
+        batch_size=batch_size,
+    )
+    return {
+        "source_db": None,
+        "target_db": target_db,
+        "source": source,
+        "dimension_type": dimension_type,
+        "build_marker": build_marker,
+        "expected_rows": expected,
+        "promoted_rows": promoted,
+        "stale_rows_deleted": stale_deleted,
+        "mode": "computed_rows_direct",
+    }
+
+
 def promote_filter_dimension_slice(
     conn: pymysql.connections.Connection,
     source_db: str,
@@ -38,14 +120,13 @@ def promote_filter_dimension_slice(
     """Promote one verified sidecar slice without touching adjacent dimensions."""
 
     guard_dimension_stage_target(source_db)
-    if not allow_shared_serving_target:
-        raise ValueError("shared serving target promotion requires explicit approval")
-    if source != "ubist" or dimension_type != "molecule":
-        raise ValueError("this promotion path is restricted to the ubist/molecule slice")
-    if batch_size < 1 or batch_size > 200:
-        raise ValueError("batch_size must be between 1 and 200")
-    if "`" in target_db or not target_db.replace("_", "").isalnum():
-        raise ValueError(f"unsafe target schema name: {target_db}")
+    _validate_promotion_target(
+        target_db,
+        source=source,
+        dimension_type=dimension_type,
+        batch_size=batch_size,
+        allow_shared_serving_target=allow_shared_serving_target,
+    )
 
     source_table = f"{quote_id(source_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
     target_table = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
@@ -141,6 +222,60 @@ def _upsert_slice(
         conn.commit()
         promoted += len(rows)
         last_id = int(rows[-1]["id"])
+
+
+def _validate_promotion_target(
+    target_db: str,
+    *,
+    source: str,
+    dimension_type: str,
+    batch_size: int,
+    allow_shared_serving_target: bool,
+) -> None:
+    if not allow_shared_serving_target:
+        raise ValueError("shared serving target promotion requires explicit approval")
+    if source != "ubist" or dimension_type != "molecule":
+        raise ValueError("this promotion path is restricted to the ubist/molecule slice")
+    if batch_size < 1 or batch_size > 200:
+        raise ValueError("batch_size must be between 1 and 200")
+    if "`" in target_db or not target_db.replace("_", "").isalnum():
+        raise ValueError(f"unsafe target schema name: {target_db}")
+
+
+def _promotion_payload(row: dict[str, Any], build_marker: str) -> tuple[Any, ...]:
+    normalized = str(row["dimension_value_norm"])
+    values = {
+        **row,
+        "dimension_value_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        "raw_value_history": dumps(row["raw_value_history"]),
+    }
+    return tuple(values[column] for column in _PROMOTION_COLUMNS) + (build_marker,)
+
+
+def _upsert_payloads(
+    conn: pymysql.connections.Connection,
+    *,
+    target_table: str,
+    payloads: Sequence[tuple[Any, ...]],
+    batch_size: int,
+) -> int:
+    select_columns = ", ".join(quote_id(column) for column in _PROMOTION_COLUMNS)
+    placeholders = ",".join(["%s"] * len(_PROMOTION_COLUMNS))
+    upsert = (
+        f"INSERT INTO {target_table} ({select_columns}, computed_at) VALUES ({placeholders}, %s) "
+        "ON DUPLICATE KEY UPDATE "
+        "brand_name=VALUES(brand_name), dimension_value=VALUES(dimension_value), "
+        "dimension_value_norm=VALUES(dimension_value_norm), raw_value_history=VALUES(raw_value_history), "
+        "computed_at=VALUES(computed_at)"
+    )
+    promoted = 0
+    for start in range(0, len(payloads), batch_size):
+        batch = payloads[start : start + batch_size]
+        with conn.cursor() as cur:
+            cur.executemany(upsert, batch)
+        conn.commit()
+        promoted += len(batch)
+    return promoted
 
 
 def _require_complete_promotion(
