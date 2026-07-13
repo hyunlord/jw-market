@@ -11,7 +11,7 @@ from pipeline.scripts.etl.ops_forecast_builder import (
     stride_order,
 )
 from pipeline.scripts.etl.ops_forecast_scope import Scope, row_cache_id
-from pipeline.scripts.etl.ops_forecast_store import epoch_is_current
+from pipeline.scripts.etl.ops_forecast_store import contamination_count, epoch_is_current
 
 
 @dataclass
@@ -110,3 +110,18 @@ def test_runtime_pin_gate_accepts_the_reproducible_contract() -> None:
 
     # When the pre-I/O runtime gate executes
     assert_runtime_pins(environment)
+
+
+def test_contamination_gate_normalizes_json_table_brand_collation() -> None:
+    # Given MariaDB returns JSON_TABLE strings under its default utf8mb4 collation
+    connection = _Connection(
+        rows=[{"invalid_count": 0}],
+        executed=[],
+    )
+
+    # When the native-scope contamination gate builds its SQL
+    assert contamination_count(connection, "deep_forecast_block_stage") == 0
+
+    # Then the JSON-derived brand is explicitly normalized to the mart collation
+    sql = connection.executed[0][0]
+    assert "payload_brand.brand_name COLLATE utf8mb4_unicode_ci" in sql

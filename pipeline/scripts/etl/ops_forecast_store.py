@@ -143,7 +143,8 @@ def contamination_count(connection: Any, block_table: str) -> int:
         ) payload_brand
         LEFT JOIN native_brands native
           ON native.view_kind = block_row.view_kind AND native.market_id = block_row.market_id
-         AND native.source = block_row.source AND native.brand_name = payload_brand.brand_name
+         AND native.source = block_row.source
+         AND native.brand_name = payload_brand.brand_name COLLATE utf8mb4_unicode_ci
         WHERE native.brand_name IS NULL
     """
     with connection.cursor() as cursor:
