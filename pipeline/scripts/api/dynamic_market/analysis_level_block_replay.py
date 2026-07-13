@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 from pymysql.err import MySQLError
@@ -17,6 +18,32 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
 
 
 logger = logging.getLogger(__name__)
+_REPLAY_STATS_LOCK = threading.Lock()
+_REPLAY_STATS = {"hit": 0, "miss": 0, "fallback": 0}
+
+
+def _record_replay_outcome(outcome: str) -> None:
+    with _REPLAY_STATS_LOCK:
+        _REPLAY_STATS[outcome] += 1
+        outcome_count = _REPLAY_STATS[outcome]
+        hits = _REPLAY_STATS["hit"]
+        misses = _REPLAY_STATS["miss"]
+        fallbacks = _REPLAY_STATS["fallback"]
+        total = hits + misses + fallbacks
+    if outcome_count == 1 or total % 100 == 0:
+        logger.info(
+            "analysis_level_block_replay_stats hits=%d misses=%d fallbacks=%d hit_rate=%.4f",
+            hits,
+            misses,
+            fallbacks,
+            hits / total,
+        )
+
+
+def reset_analysis_level_replay_stats_for_test() -> None:
+    with _REPLAY_STATS_LOCK:
+        for outcome in _REPLAY_STATS:
+            _REPLAY_STATS[outcome] = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,13 +106,17 @@ def load_analysis_level_block(
             ),
         )
         if not row:
+            _record_replay_outcome("miss")
             return None
         levels = json.loads(str(row["analysis_levels_json"]))
         status = json.loads(str(row["analysis_level_market_status_json"]))
         if not isinstance(levels, dict) or not isinstance(status, dict):
+            _record_replay_outcome("fallback")
             return None
+        _record_replay_outcome("hit")
         logger.info("analysis_level_block_hit key=%s", key)
         return AnalysisLevelBlock(levels, status)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, MySQLError):
+        _record_replay_outcome("fallback")
         logger.warning("analysis_level_block_fallback key=%s", key, exc_info=True)
         return None

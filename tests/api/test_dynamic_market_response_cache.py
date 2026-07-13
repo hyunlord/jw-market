@@ -320,31 +320,73 @@ def test_response_cache_records_builder_failure_and_clears_it_after_retry() -> N
     assert ready["attempt_count"] == 2
 
 
-def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monkeypatch) -> None:
-    calls: list[str] = []
-
+def _explicit_version_fetcher(
+    calls: list[str],
+    *,
+    metric_timestamp: str = "2026-07-14 00:00:00",
+    event_timestamp: str = "2026-07-14 01:00:00",
+):
     def fake_fetch_all(sql: str, _params: object) -> list[dict[str, object]]:
         calls.append(sql)
-        if "information_schema.TABLES" in sql:
+        if "computation_version" in sql:
+            table_name = next(
+                name
+                for name in (
+                    "mart_general_brand_metric",
+                    "mart_general_market_metric",
+                    "mart_strategic_ml_brand_metric",
+                    "mart_strategic_ml_market_metric",
+                    "mart_strategic_cd_brand_metric",
+                    "mart_strategic_cd_market_metric",
+                )
+                if name in sql
+            )
+            return [{"table_name": table_name, "computation_version": "v3", "computed_at": metric_timestamp}]
+        if "d.source, d.dimension_type" in sql:
+            table_name = (
+                "mart_general_filter_dimension_metric"
+                if "mart_general_filter_dimension_metric" in sql
+                else "mart_strategic_filter_dimension_metric"
+            )
             return [
                 {
-                    "TABLE_SCHEMA": "mart",
-                    "TABLE_NAME": "catalog_ml_market",
-                    "CREATE_TIME": "t1",
-                    "UPDATE_TIME": "t2",
-                    "TABLE_ROWS": 15,
+                    "table_name": table_name,
+                    "source": "ubist",
+                    "dimension_type": "molecule",
+                    "computed_at": "2026-07-13 17:08:13",
                 }
             ]
         if "catalog_manifest_hash" in sql:
-            return [{"table_name": "catalog_ml_market", "catalog_manifest_hash": "manifest-1"}]
-        table_name = next(name for name in (
-            "mart_general_market_metric",
-            "mart_strategic_ml_market_metric",
-            "mart_strategic_cd_market_metric",
-        ) if name in sql)
-        return [{"table_name": table_name, "source": "ubist", "measure": "sales", "computed_at": "t1", "period_count": 12}]
+            return [
+                {
+                    "table_name": table_name,
+                    "source_file_version": "mi-v1",
+                    "ingested_at": "2026-07-01 00:00:00",
+                    "catalog_manifest_hash": "manifest-1",
+                }
+                for table_name in ("catalog_ml_market", "catalog_cd_market", "catalog_strategic_brand")
+            ]
+        if "event_brand_scores" in sql:
+            return [
+                {
+                    "table_name": "event_brand_scores",
+                    "workflow_id": 5674,
+                    "catalog_version": "mi-v1",
+                    "generated_at": event_timestamp,
+                }
+            ]
+        raise AssertionError(f"unexpected source epoch query: {sql}")
 
-    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all", fake_fetch_all)
+    return fake_fetch_all
+
+
+def test_source_epoch_uses_only_explicit_data_versions(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls),
+    )
     store = MySQLDynamicResponseCacheStore(
         mart_db="mart",
         general_dimension_db="general_dimension",
@@ -367,34 +409,61 @@ def test_source_epoch_covers_general_strategic_dimension_and_catalog_reads(monke
         "mart_strategic_filter_dimension_metric",
     ):
         assert table_name in combined
-    assert "UPDATE_TIME" in combined
-    assert "TABLE_ROWS" in combined
+    for unstable_input in (
+        "information_schema.TABLES",
+        "CREATE_TIME",
+        "UPDATE_TIME",
+        "TABLE_ROWS",
+        "DATA_LENGTH",
+        "INDEX_LENGTH",
+    ):
+        assert unstable_input not in combined
+    assert "computation_version" in combined
+    assert combined.count("FORCE INDEX") == 2
     assert "MAX(catalog_manifest_hash)" in combined
-    assert combined.count("MAX(computed_at)") == 3
-    assert "`general_dimension`.`mart_general_filter_dimension_metric`" not in combined
-    assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" not in combined
+    assert "`general_dimension`.`mart_general_filter_dimension_metric`" in combined
+    assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" in combined
+
+
+def test_source_epoch_is_stable_until_an_explicit_version_changes(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls, metric_timestamp="2026-07-14 00:00:00"),
+    )
+    baseline = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    ).source_epoch()
+
+    calls.clear()
+    same = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    ).source_epoch()
+    assert same == baseline
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls, metric_timestamp="2026-07-14 00:00:01"),
+    )
+    changed = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    ).source_epoch()
+    assert changed != baseline
 
 
 def test_deep_section_epoch_includes_event_scores_and_namespace(monkeypatch) -> None:
-    calls: list[tuple[str, object]] = []
+    calls: list[str] = []
 
-    def fake_fetch_all(sql: str, params: object) -> list[dict[str, object]]:
-        calls.append((sql, params))
-        if "information_schema.TABLES" in sql:
-            return [
-                {
-                    "TABLE_SCHEMA": "mart",
-                    "TABLE_NAME": "event_brand_scores" if params == ("mart",) else "catalog_ml_market",
-                    "CREATE_TIME": "t1",
-                    "UPDATE_TIME": "t2",
-                    "TABLE_ROWS": 1,
-                }
-            ]
-        if "catalog_manifest_hash" in sql:
-            return [{"table_name": "catalog_ml_market", "catalog_manifest_hash": "manifest-1"}]
-        return [{"table_name": "mart", "source": "ubist", "measure": "sales", "computed_at": "t1", "period_count": 12}]
-
-    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all", fake_fetch_all)
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls),
+    )
     store = MySQLDynamicResponseCacheStore(
         mart_db="mart",
         general_dimension_db="general_dimension",
@@ -403,4 +472,8 @@ def test_deep_section_epoch_includes_event_scores_and_namespace(monkeypatch) -> 
     )
 
     assert len(store.source_epoch()) == 64
-    assert any(params == ("mart",) and "event_brand_scores" in sql for sql, params in calls)
+    event_sql = next(sql for sql in calls if "event_brand_scores" in sql)
+    assert "generated_at" in event_sql
+    assert "workflow_id" in event_sql
+    assert "catalog_version" in event_sql
+    assert "information_schema" not in event_sql

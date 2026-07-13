@@ -27,7 +27,7 @@ from pipeline.scripts.api import db
 logger = logging.getLogger(__name__)
 
 CACHE_SCHEMA_VERSION = "dynamic-market-response-v2-mart-direct"
-CACHE_SOURCE_POLICY_VERSION = "cause-build-response-20260713-f046-molecule-v1"
+CACHE_SOURCE_POLICY_VERSION = "cause-build-response-20260714-f062-explicit-data-version-v1"
 CACHE_ENCODING = "zlib-base64"
 DEFAULT_TTL_SECONDS = 86_400
 DEFAULT_LEASE_SECONDS = 120
@@ -342,99 +342,110 @@ class MySQLDynamicResponseCacheStore:
             if self._epoch_cached is not None and time.monotonic() - self._epoch_cached[0] < 5.0:
                 return self._epoch_cached[1]
         try:
-            tables = db.fetch_all(
-                """
-                SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS
-                FROM information_schema.TABLES
-                WHERE (TABLE_SCHEMA = %s AND TABLE_NAME IN (
-                         'mart_general_brand_metric', 'mart_general_market_metric',
-                         'mart_strategic_ml_brand_metric', 'mart_strategic_ml_market_metric',
-                         'mart_strategic_cd_brand_metric', 'mart_strategic_cd_market_metric',
-                         'catalog_ml_market', 'catalog_cd_market', 'catalog_strategic_brand'
-                       ))
-                   OR (TABLE_SCHEMA = %s AND TABLE_NAME = 'mart_general_filter_dimension_metric')
-                   OR (TABLE_SCHEMA = %s AND TABLE_NAME = 'mart_strategic_filter_dimension_metric')
-                ORDER BY TABLE_SCHEMA, TABLE_NAME
-                """,
-                (self._mart_db, self._general_dimension_db, self._strategic_dimension_db),
-            )
-            periods: list[dict[str, Any]] = []
+            mart_versions: list[dict[str, Any]] = []
             for table_name in (
+                "mart_general_brand_metric",
                 "mart_general_market_metric",
+                "mart_strategic_ml_brand_metric",
                 "mart_strategic_ml_market_metric",
+                "mart_strategic_cd_brand_metric",
                 "mart_strategic_cd_market_metric",
             ):
-                periods.extend(
+                mart_versions.extend(
                     db.fetch_all(
                         f"""
-                        SELECT %s AS table_name, source, measure,
-                               MAX(computed_at) AS computed_at,
-                               MAX(JSON_LENGTH(market_size_series)) AS period_count
+                        SELECT %s AS table_name, computation_version, computed_at
                         FROM `{self._mart_db}`.`{table_name}`
-                        GROUP BY source, measure
-                        ORDER BY source, measure
+                        ORDER BY id DESC
+                        LIMIT 1
                         """,
                         (table_name,),
                     )
                 )
+            dimension_versions: list[dict[str, Any]] = []
+            for schema, table_name, index_name in (
+                (self._general_dimension_db, "mart_general_filter_dimension_metric", "idx_filter_option"),
+                (self._strategic_dimension_db, "mart_strategic_filter_dimension_metric", "idx_options"),
+            ):
+                rows = db.fetch_all(
+                    f"""
+                    SELECT %s AS table_name, d.source, d.dimension_type,
+                           (SELECT f.computed_at
+                            FROM `{schema}`.`{table_name}` f FORCE INDEX (`{index_name}`)
+                            WHERE f.source = d.source
+                              AND f.dimension_type = d.dimension_type
+                            ORDER BY f.dimension_value_hash
+                            LIMIT 1) AS computed_at
+                    FROM (
+                        SELECT DISTINCT source, dimension_type
+                        FROM `{schema}`.`{table_name}`
+                    ) d
+                    ORDER BY d.source, d.dimension_type
+                    """,
+                    (table_name,),
+                )
+                if not rows:
+                    raise DynamicResponseCacheUnavailable(
+                        f"filter dimension explicit data version is missing: {table_name}"
+                    )
+                dimension_versions.extend(rows)
             catalogs = db.fetch_all(
                 f"""
-                SELECT 'catalog_ml_market' AS table_name, COUNT(*) AS row_count,
-                       MAX(source_file_version) AS source_file_version,
+                SELECT 'catalog_ml_market' AS table_name, MAX(source_file_version) AS source_file_version,
                        MAX(ingested_at) AS ingested_at,
                        MAX(catalog_manifest_hash) AS catalog_manifest_hash
                 FROM `{self._mart_db}`.`catalog_ml_market`
                 UNION ALL
-                SELECT 'catalog_cd_market', COUNT(*), MAX(source_file_version),
+                SELECT 'catalog_cd_market', MAX(source_file_version),
                        MAX(ingested_at), MAX(catalog_manifest_hash)
                 FROM `{self._mart_db}`.`catalog_cd_market`
                 UNION ALL
-                SELECT 'catalog_strategic_brand', COUNT(*), MAX(source_file_version),
+                SELECT 'catalog_strategic_brand', MAX(source_file_version),
                        MAX(ingested_at), MAX(catalog_manifest_hash)
                 FROM `{self._mart_db}`.`catalog_strategic_brand`
                 """,
                 (),
             )
-            event_tables = (
+            event_versions = (
                 db.fetch_all(
-                    """
-                    SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS
-                    FROM information_schema.TABLES
-                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'event_brand_scores'
+                    f"""
+                    SELECT 'event_brand_scores' AS table_name,
+                           workflow_id, catalog_version, generated_at
+                    FROM `{self._mart_db}`.`event_brand_scores`
+                    ORDER BY id DESC
+                    LIMIT 1
                     """,
-                    (self._mart_db,),
+                    (),
                 )
                 if self._namespace == "deep_expensive"
                 else []
             )
         except MySQLError as exc:
             raise DynamicResponseCacheUnavailable("cannot read dynamic mart fingerprint") from exc
+        if len(mart_versions) != 6 or len(catalogs) != 3:
+            raise DynamicResponseCacheUnavailable("dynamic mart explicit data versions are incomplete")
+        if self._namespace == "deep_expensive" and len(event_versions) != 1:
+            raise DynamicResponseCacheUnavailable("deep event explicit data version is missing")
         fingerprint = [
             [
-                str(row.get("TABLE_SCHEMA") or ""),
-                str(row.get("TABLE_NAME") or ""),
-                str(row.get("CREATE_TIME") or ""),
-                str(row.get("UPDATE_TIME") or ""),
-                str(row.get("TABLE_ROWS") or ""),
+                str(row.get("table_name") or ""),
+                str(row.get("computation_version") or ""),
+                str(row.get("computed_at") or ""),
             ]
-            for row in tables
+            for row in mart_versions
         ]
-        if not fingerprint:
-            raise DynamicResponseCacheUnavailable("dynamic mart fingerprint tables are missing")
         fingerprint.extend(
             [
                 str(row.get("table_name") or ""),
                 str(row.get("source") or ""),
-                str(row.get("measure") or ""),
+                str(row.get("dimension_type") or ""),
                 str(row.get("computed_at") or ""),
-                str(row.get("period_count") or ""),
             ]
-            for row in periods
+            for row in dimension_versions
         )
         fingerprint.extend(
             [
                 str(row.get("table_name") or ""),
-                str(row.get("row_count") or ""),
                 str(row.get("source_file_version") or ""),
                 str(row.get("ingested_at") or ""),
                 str(row.get("catalog_manifest_hash") or ""),
@@ -443,13 +454,12 @@ class MySQLDynamicResponseCacheStore:
         )
         fingerprint.extend(
             [
-                str(row.get("TABLE_SCHEMA") or ""),
-                str(row.get("TABLE_NAME") or ""),
-                str(row.get("CREATE_TIME") or ""),
-                str(row.get("UPDATE_TIME") or ""),
-                str(row.get("TABLE_ROWS") or ""),
+                str(row.get("table_name") or ""),
+                str(row.get("workflow_id") or ""),
+                str(row.get("catalog_version") or ""),
+                str(row.get("generated_at") or ""),
             ]
-            for row in event_tables
+            for row in event_versions
         )
         fingerprint.append(["namespace", self._namespace])
         fingerprint.append(["policy", CACHE_SOURCE_POLICY_VERSION])

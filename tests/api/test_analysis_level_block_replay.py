@@ -7,6 +7,7 @@ from pymysql.err import OperationalError
 from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     AnalysisLevelBlockKey,
     load_analysis_level_block,
+    reset_analysis_level_replay_stats_for_test,
 )
 
 
@@ -96,3 +97,29 @@ def test_stored_sections_keep_canonical_bytes(monkeypatch) -> None:
     assert block is not None
     assert json.dumps(block.analysis_levels, ensure_ascii=False, separators=(",", ":")) == levels
     assert json.dumps(block.analysis_level_market_status, ensure_ascii=False, separators=(",", ":")) == status
+
+
+def test_replay_logs_hit_rate_for_hits_and_misses(monkeypatch, caplog) -> None:
+    reset_analysis_level_replay_stats_for_test()
+    rows = iter(
+        (
+            None,
+            {
+                "analysis_levels_json": "{}",
+                "analysis_level_market_status_json": "{}",
+            },
+        )
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.analysis_level_block_replay.db.fetch_one",
+        lambda *_args, **_kwargs: next(rows),
+    )
+    key = AnalysisLevelBlockKey("general", "C10A1", "UBIST", "sales")
+
+    with caplog.at_level("INFO"):
+        assert load_analysis_level_block(key=key, source_epoch="epoch") is None
+        assert load_analysis_level_block(key=key, source_epoch="epoch") is not None
+
+    stats = [record.message for record in caplog.records if "analysis_level_block_replay_stats" in record.message]
+    assert any("hits=0 misses=1 fallbacks=0 hit_rate=0.0000" in message for message in stats)
+    assert any("hits=1 misses=1 fallbacks=0 hit_rate=0.5000" in message for message in stats)
