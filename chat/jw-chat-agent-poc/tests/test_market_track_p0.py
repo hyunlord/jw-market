@@ -191,6 +191,28 @@ def test_provenance_is_rebuilt_with_seven_public_nonempty_fields() -> None:
     assert "—" not in answer
 
 
+def test_market_size_provenance_uses_amount_unit_and_visible_market_definition() -> None:
+    answer = enforce_market_answer_contract(
+        question="C10A1 시장 규모를 알려줘",
+        answer=(
+            "## 일반뷰 (ATC4)\n\n"
+            "- 시장: [C10A1] 스타틴류\n"
+            "- 시장 규모 (2026-05): 870.2억원\n"
+            "- Top 5: 리피토 (15.06%)\n\n"
+            "점유율 분모: ATC4 C10A1 시장 전체 sales"
+        ),
+        tool_calls=[
+            {
+                "tool": "general_view_dynamic_market",
+                "source": "UBIST",
+                "render_data": {"period": "2026-05", "view_type": "general_view"},
+            }
+        ],
+    )
+
+    assert "| UBIST | 2026-05 | 일반뷰 | [C10A1] 스타틴류 | ATC4 C10A1 시장 전체 sales | 전체 | 억원 |" in answer
+
+
 def test_trend_question_surfaces_full_monthly_series_instead_of_average() -> None:
     answer = enforce_market_answer_contract(
         question="리바로 최근 6개월 점유율 추이",
@@ -291,7 +313,7 @@ def test_historical_sales_uses_structured_value_without_llm_interpretation() -> 
         ],
     )
 
-    assert answer.startswith("2025-04 리바로 매출은 83.184115억원입니다.")
+    assert answer.startswith("2025-04 리바로 매출은 83.18억원입니다.")
     assert "장악력" not in answer
     assert "| 억원 |" in answer
 
@@ -414,6 +436,34 @@ def test_channel_ranking_uses_only_channel_filtered_rows() -> None:
     assert "로수젯" not in answer
 
 
+def test_specialty_answer_excludes_unfiltered_market_rows() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 진료과별 분포를 알려줘",
+        answer="전체시장 1위 로수젯과 진료과별 결과입니다.",
+        tool_calls=[
+            _top_call(),
+            {
+                "tool": "query_spec",
+                "source": "UBIST",
+                "render_data": {
+                    "requested_dimension": "specialty",
+                    "period": "2026-05",
+                    "brand": "리바로",
+                    "level_segments": [
+                        {"rank": 1, "name": "순환기", "value_억원": 9.55, "ms_recent_pct": 2.90},
+                        {"rank": 2, "name": "내분비", "value_억원": 9.54, "ms_recent_pct": 8.74},
+                    ],
+                },
+            },
+        ],
+    )
+
+    assert "## 진료과별 분포" in answer
+    assert "순환기" in answer
+    assert "내분비" in answer
+    assert "로수젯" not in answer
+
+
 def test_unavailable_states_are_not_conflated() -> None:
     mapping = enforce_market_answer_contract("고지혈증 시장 규모", "원천 없음", [])
     entity = enforce_market_answer_contract(
@@ -426,6 +476,61 @@ def test_unavailable_states_are_not_conflated() -> None:
     assert mapping.startswith("현재 지원되지 않는 시장 매핑입니다.")
     assert entity.startswith("브랜드 목록에서 일치 항목을 찾지 못했습니다.")
     assert technical.startswith("데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.")
+
+
+def test_causal_question_separates_observation_from_unverified_hypothesis() -> None:
+    answer = enforce_market_answer_contract(
+        question="왜 리바로 점유율이 하락했나?",
+        answer="복합제의 강력한 성장 압력 때문에 리바로 점유율이 하락했습니다.",
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "리바로",
+                    "period": "2026-05",
+                    "brand_value_series_10pt": [
+                        {"period": "2025-08", "ms_pct": 3.93},
+                        {"period": "2026-05", "ms_pct": 3.76},
+                    ],
+                },
+            }
+        ],
+    )
+
+    assert "## 관찰" in answer
+    assert "3.93%" in answer and "3.76%" in answer
+    assert "## 가설과 한계" in answer
+    assert "원인으로 확정할 수 없습니다" in answer
+    assert "때문" not in answer
+
+
+def test_internal_identifiers_leave_no_empty_user_facing_labels() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 시장 규모",
+        answer="## 전략뷰 (ml_006)\nmarket_landscape query_spec 결과입니다.",
+        tool_calls=[],
+    )
+
+    assert "ml_006" not in answer
+    assert "market_landscape" not in answer
+    assert "query_spec" not in answer
+    assert "전략뷰 ()" not in answer
+
+
+def test_news_answer_drops_unsupported_causal_interpretation_but_keeps_news() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 관련 최근 이슈 뭐 있어?",
+        answer=(
+            "- 뉴스: 신제품 출시 사실이 확인됐습니다.\n"
+            "시장 중심이 복합제로 이동했기 때문에 경쟁 압력이 커졌습니다."
+        ),
+        tool_calls=[{"tool": "news_search", "source": "뉴스/이슈", "render_data": {"status": "ok"}}],
+    )
+
+    assert "신제품 출시 사실" in answer
+    assert "시장 중심" not in answer
+    assert "때문" not in answer
 
 
 def test_file_sql_only_answer_is_outside_market_contract() -> None:
