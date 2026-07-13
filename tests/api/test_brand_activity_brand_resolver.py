@@ -10,6 +10,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     resolve_brand_set,
     validate_audit_code_axis,
 )
+from pipeline.scripts.api import brand_activity_brand_resolver as resolver
 from pipeline.scripts.api.brand_activity_channel_axis import (
     audit_code_sales_value,
     parse_audit_code_axis,
@@ -36,6 +37,64 @@ def test_brand_filter_uses_or_within_dimension_and_and_across_dimensions() -> No
 
 def test_general_default_filter_applies_market_atc4() -> None:
     assert applied_brand_filter("general", "c10a1", {}) == {"atc4": ["C10A1"]}
+
+
+def test_general_market_resolution_uses_matching_membership_not_first_requested_atc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_brand_atc4_values",
+        lambda **_kwargs: ("A10N1",),
+        raising=False,
+    )
+
+    market_id = resolver._resolve_general_market_id(
+        selected_brand="가드렛",
+        requested_market_id="A10C1",
+        filter_payload={"atc4": ["A10C1", "A10C2", "A10N1"]},
+        source="iqvia_nsa",
+    )
+
+    assert market_id == "A10N1"
+
+
+def test_general_market_resolution_is_independent_of_requested_atc_order(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_brand_atc4_values",
+        lambda **_kwargs: ("A10N1", "A10N3"),
+        raising=False,
+    )
+
+    results = {
+        resolver._resolve_general_market_id(
+            selected_brand="가드렛",
+            requested_market_id=values[0],
+            filter_payload={"atc4": list(values)},
+            source="iqvia_nsa",
+        )
+        for values in (
+            ("A10C1", "A10N3", "A10N1"),
+            ("A10N3", "A10C1", "A10N1"),
+            ("A10N1", "A10N3", "A10C1"),
+        )
+    }
+
+    assert results == {"A10N1"}
+
+
+def test_general_market_resolution_preserves_first_candidate_for_all_misses(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.api.brand_activity_brand_resolver.general_brand_atc4_values",
+        lambda **_kwargs: ("A10N1",),
+        raising=False,
+    )
+
+    market_id = resolver._resolve_general_market_id(
+        selected_brand="가드렛",
+        requested_market_id="A10C1",
+        filter_payload={"atc4": ["A10C1", "A10C2"]},
+        source="iqvia_nsa",
+    )
+
+    assert market_id == "A10C1"
 
 
 def test_applied_filter_echoes_audit_code_and_ignores_ubist_channel_axis() -> None:

@@ -93,18 +93,7 @@ def _resolve_market_id(*, brand: str, view: str, source: str) -> str | None:
 
 def _load_brand_atc4_values(*, brand: str, view: str, source: str, market_id: str | None) -> tuple[str, ...]:
     if view == "general":
-        rows = db.fetch_all(
-            f"""
-            SELECT DISTINCT atc4_code
-            FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
-            WHERE source = %s
-              AND measure = 'sales'
-              AND (brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))
-            ORDER BY atc4_code
-            """,
-            [source, brand, brand, brand],
-        )
-        return _unique_atc4(row.get("atc4_code") for row in rows)
+        return general_brand_atc4_values(brand=brand, source=source)
 
     where = [
         "source = %s",
@@ -125,6 +114,29 @@ def _load_brand_atc4_values(*, brand: str, view: str, source: str, market_id: st
         params,
     )
     return _unique_atc4(row.get("atc4_code") for row in rows)
+
+
+def general_brand_atc4_values(*, brand: str, source: str) -> tuple[str, ...]:
+    """Return one brand's canonical general-view memberships in stable catalog order."""
+
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT atc4_code
+        FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
+        WHERE source = %s
+          AND measure = 'sales'
+          AND (brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))
+        ORDER BY atc4_code
+        """,
+        [source, brand, brand, brand],
+    )
+    return canonical_atc4_values(row.get("atc4_code") for row in rows)
+
+
+def canonical_atc4_values(values: Iterable[Any]) -> tuple[str, ...]:
+    """Canonicalize an unordered ATC4 collection using the public filter contract."""
+
+    return _unique_atc4(values)
 
 
 def _load_atc_rows(*, view: str, source: str, market_id: str | None) -> tuple[str, ...]:

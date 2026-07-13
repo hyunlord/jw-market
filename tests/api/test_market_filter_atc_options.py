@@ -97,6 +97,26 @@ def test_market_filter_atc_options_general_without_brand_returns_unflagged_sourc
     assert all(option["flag"] is False for level in payload["atc"].values() for option in level)
 
 
+def test_market_filter_atc_options_defaults_to_general_universe(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert "mart_strategic_ml_brand_metric" not in sql
+        assert params == ["ubist"]
+        return [{"atc4_code": "A01A1"}, {"atc4_code": "C10A1"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    response = TestClient(app).get(
+        "/api/market-filter/atc-options",
+        params={"source": "ubist"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["view"] == "general"
+    assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
+
+
 @pytest.mark.parametrize(
     ("brand_name", "brand_atc4"),
     [

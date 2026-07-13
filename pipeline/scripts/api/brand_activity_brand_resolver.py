@@ -37,6 +37,7 @@ from pipeline.scripts.api.deep_analysis_context import (
 )
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values, general_brand_atc4_values
 from pipeline.scripts.api.market_scope.catalog import MarketScopeCatalog
 from pipeline.scripts.api.market_scope.types import MarketScopeOption, OptionType, ViewFamily
 
@@ -131,6 +132,13 @@ def resolve_brand_set(
     resolved_market_id = market_scope_market_id or market_id
     resolved_selected_brand = selected_brand
     resolved_source = source
+    if view_name == "general" and market_scope_market_id is None:
+        resolved_market_id = _resolve_general_market_id(
+            selected_brand=selected_brand,
+            requested_market_id=market_id,
+            filter_payload=raw_filter_payload,
+            source=source,
+        )
     if view_name in {"strategic_ml", "strategic_cd"}:
         if resolved_context is not None:
             # F-055: the caller already resolved this exact strategic context;
@@ -199,6 +207,32 @@ def resolve_brand_set(
         applied_filter=applied_filter,
         channel_axis=channel_axis,
     )
+
+
+def _resolve_general_market_id(
+    *,
+    selected_brand: str,
+    requested_market_id: str | None,
+    filter_payload: Mapping[str, Any],
+    source: str,
+) -> str | None:
+    """Resolve an unordered ATC list against the selected brand's memberships."""
+
+    raw_values = filter_payload.get("atc4")
+    values = (
+        raw_values
+        if isinstance(raw_values, Sequence) and not isinstance(raw_values, str | bytes)
+        else (raw_values,)
+    )
+    requested = canonical_atc4_values(value for value in values if value is not None)
+    if len(requested) <= 1:
+        return requested_market_id
+
+    requested_set = set(requested)
+    for membership in general_brand_atc4_values(brand=selected_brand, source=source):
+        if membership in requested_set:
+            return membership
+    return requested_market_id
 
 
 def _market_scope_market_id(

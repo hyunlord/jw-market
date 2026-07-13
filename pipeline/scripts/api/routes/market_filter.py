@@ -31,7 +31,7 @@ def market_filter_atc_options_get(
         description="[입력] 선택 브랜드명. general에서는 생략할 수 있으며, 생략 시 전체 ATC universe를 반환합니다.",
         examples=["리바로"],
     ),
-    view: MarketFilterView = Query("strategic", description="[입력] general 또는 strategic", examples=["strategic"]),
+    view: MarketFilterView = Query("general", description="[입력] general 또는 strategic", examples=["general"]),
     source: MarketFilterSource = Query("ubist", description="[입력] ubist 또는 iqvia. 내부 iqvia_nsa 값은 노출하지 않습니다.", examples=["ubist"]),
 ) -> dict[str, object]:
     try:
