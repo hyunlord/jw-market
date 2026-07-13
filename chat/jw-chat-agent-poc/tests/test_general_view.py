@@ -11,6 +11,7 @@ from jw_chat_agent_poc.service.general_view_routing import (
     GeneralRoute,
     GeneralViewService,
     _atc4_code,
+    _brand_hint,
     _source,
 )
 from jw_chat_agent_poc.tools.general_view_backend import (
@@ -26,6 +27,12 @@ from jw_chat_agent_poc.tools.general_view_membership import (
     StaticGeneralMembershipReader,
     TtlGeneralMembershipCache,
 )
+from jw_chat_agent_poc.resolver.catalog_membership import (
+    StaticCatalogMembershipReader,
+    TtlCatalogMembershipReader,
+)
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
 
 def _payload(*, atc4: str = "C10A1", source: str = "ubist", measure: str = "sales") -> dict:
@@ -277,6 +284,71 @@ def test_route_matrix_has_no_human_loop() -> None:
     assert service.route("리바로 전략뷰 시장 점유율") is GeneralRoute.EXISTING
     assert service.route("리바로 시장 점유율은?") is GeneralRoute.DUAL
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
+
+
+@pytest.mark.parametrize("brand", ("가나톤", "가나릴", "가나텍", "가네골드"))
+def test_brand_hint_preserves_brand_names_starting_with_korean_particle_characters(brand: str) -> None:
+    assert _brand_hint(f"일반뷰 ATC4 기준 {brand} 시장점유율") == brand
+
+
+@pytest.mark.parametrize("particle", ("은", "는", "이", "가", "을", "를"))
+def test_brand_hint_removes_only_a_trailing_korean_particle(particle: str) -> None:
+    assert _brand_hint(f"일반뷰 기준 리바로{particle} 시장점유율") == "리바로"
+
+
+def test_unqualified_brand_uses_its_only_available_membership_source() -> None:
+    memberships = (
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["A10S0"] = _market("A10S0", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembership({"마운자로"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("마운자로 시장점유율은?", compact=True, dual=True)
+
+    assert backend.market_calls == [("A10S0", "마운자로", "iqvia", "sales")]
+    assert result["general_view_contract"]["atc4_code"] == "A10S0"
+
+
+def test_explicit_source_does_not_fallback_to_another_membership_source() -> None:
+    memberships = (
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        StrategicMembership({"마운자로"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("UBIST 마운자로 시장점유율은?", compact=True, dual=True)
+
+    assert backend.market_calls == []
+    assert result["general_view_contract"]["unavailable"] is True
+
+
+def test_market_scope_dual_route_uses_catalog_membership_beyond_jw25(monkeypatch) -> None:
+    monkeypatch.setenv("GENERAL_VIEW_ENABLED", "true")
+    memberships = TtlCatalogMembershipReader(
+        StaticCatalogMembershipReader(
+            ({"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨 시장"},)
+        ),
+        ttl_seconds=300,
+    )
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        membership_reader=memberships,
+    )
+
+    assert resolver.general_route("마운자로 시장점유율은?") is GeneralRoute.DUAL
 
 
 @pytest.mark.parametrize("suffix", ("에서", "의", "는", "를", "시장", "기준"))

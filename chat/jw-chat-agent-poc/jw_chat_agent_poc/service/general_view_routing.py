@@ -95,7 +95,8 @@ class GeneralViewService:
         return GeneralRoute.DUAL
 
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
-        source = _source(question)
+        requested_source = _requested_source(question)
+        source = requested_source or "ubist"
         measure = "sales"
         brand = _brand_hint(question)
         explicit_atc4 = _atc4_code(question)
@@ -104,6 +105,11 @@ class GeneralViewService:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
             elif brand:
                 candidates = self._membership_candidates(brand, source)
+                if not candidates and requested_source is None:
+                    alternate_source = "iqvia" if source == "ubist" else "ubist"
+                    candidates = self._membership_candidates(brand, alternate_source)
+                    if candidates:
+                        source = alternate_source
             else:
                 candidates = ()
             if not candidates:
@@ -313,7 +319,15 @@ def _has_existing_analytic_signal(normalized: str) -> bool:
 
 
 def _source(question: str) -> str:
-    return "iqvia" if _IQVIA_SOURCE_PATTERN.search(question) else "ubist"
+    return _requested_source(question) or "ubist"
+
+
+def _requested_source(question: str) -> str | None:
+    if _IQVIA_SOURCE_PATTERN.search(question):
+        return "iqvia"
+    if _SOURCE_PATTERN.search(question):
+        return "ubist"
+    return None
 
 
 def _atc4_code(question: str) -> str | None:
@@ -326,4 +340,5 @@ def _brand_hint(question: str) -> str:
     text = _ATC4_PATTERN.sub(" ", text)
     text = re.split(r"시장|점유율|매출|순위|규모|top\s*\d*", text, maxsplit=1, flags=re.IGNORECASE)[0]
     text = re.sub(r"일반뷰|전략뷰|ATC4?|기준|으로|에서|의", " ", text, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", text).strip(" ?은는이가을를")
+    hint = re.sub(r"\s+", " ", text).strip(" ?")
+    return re.sub(r"(?:은|는|이|가|을|를)$", "", hint)

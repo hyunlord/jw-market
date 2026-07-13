@@ -6,6 +6,8 @@ from typing import Any
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver.brand_resolver import BrandMembershipReader
+from jw_chat_agent_poc.resolver.catalog_membership import shared_catalog_membership_reader
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadKey,
@@ -47,6 +49,7 @@ class MarketScopeResolver:
         cd_mart_reader: CdMartReader | None = None,
         ttl_seconds: int | None = None,
         general_view_service: GeneralViewService | None = None,
+        membership_reader: BrandMembershipReader | None = None,
     ) -> None:
         ttl = ttl_seconds or int(os.environ.get("CHAT_MARKET_SCOPE_TTL_SECONDS", "300"))
         self._reader = cache_reader or MariaDbMetricsCacheReader()
@@ -57,7 +60,15 @@ class MarketScopeResolver:
             else shared_cause_payload_cache(ttl)
         )
         self._cd_mart_cache = TtlCdMartCache(cd_mart_reader or MariaDbCdMartReader(), ttl_seconds=ttl)
-        self._resolver = BrandResolver(mode="cache", brand_reader=cache_reader, ttl_seconds=ttl)
+        catalog_membership = membership_reader
+        if catalog_membership is None and os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
+            catalog_membership = shared_catalog_membership_reader(ttl)
+        self._resolver = BrandResolver(
+            mode="cache",
+            brand_reader=cache_reader,
+            membership_reader=catalog_membership,
+            ttl_seconds=ttl,
+        )
         self._general_view = general_view_service or GeneralViewService.from_env(self._resolver)
 
     def general_route(self, question: str) -> GeneralRoute:
