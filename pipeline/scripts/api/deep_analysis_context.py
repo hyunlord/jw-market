@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import re
 from typing import Any, Final, Literal, TypeAlias, cast
@@ -20,12 +21,13 @@ DB_TO_SOURCE: Final[dict[str, DeepAnalysisSource]] = {value: key for key, value 
 PUBLIC_SOURCE_ORDER: Final[tuple[tuple[str, str], ...]] = (("ubist", "UBIST"), ("iqvia", "IQVIA"))
 
 
-def public_source_labels(values: Any) -> list[str]:
+def public_source_labels(values: Iterable[object] | str) -> list[str]:
     """Return stable public labels for resolver and mart source vocabulary."""
 
+    source_values = (values,) if isinstance(values, str) else values
     normalized = {
         DB_TO_SOURCE.get(str(value).strip().lower(), str(value).strip().lower())
-        for value in values
+        for value in source_values
         if str(value).strip()
     }
     return [label for source, label in PUBLIC_SOURCE_ORDER if source in normalized]

@@ -15,6 +15,7 @@ from pipeline.scripts.api import deep_analysis_context, deep_analysis_serving
 from pipeline.scripts.api.deep_analysis_context import (
     DeepAnalysisContext,
     DeepAnalysisContextError,
+    public_source_labels,
     resolve_deep_analysis_context,
 )
 
@@ -49,6 +50,11 @@ def _context(*, has_market_data: bool = True) -> DeepAnalysisContext:
         market_allowed_sources=("ubist",),
         brand_available_sources=("iqvia_nsa",),
     )
+
+
+def test_public_source_labels_accepts_one_source_and_keeps_preferred_order() -> None:
+    assert public_source_labels("iqvia_nsa") == ["IQVIA"]
+    assert public_source_labels(("IQVIA", "ubist")) == ["UBIST", "IQVIA"]
 
 
 def test_strategic_ml_context_filters_excluded_catalog_memberships(monkeypatch) -> None:
@@ -346,6 +352,21 @@ def test_formal_no_market_data_response_is_200_with_source_context(monkeypatch) 
     assert response.json()["market_meta"]["available"] is False
     assert response.json()["market_meta"]["reason"] == "brand_not_in_source"
     assert response.json()["market_meta"]["available_sources"] == ["IQVIA"]
+
+
+def test_formal_no_market_data_does_not_claim_source_mismatch_when_source_exists() -> None:
+    context = replace(
+        _context(has_market_data=False),
+        source="iqvia",
+        db_source="iqvia_nsa",
+        brand_available_sources=("iqvia_nsa",),
+    )
+
+    market_meta = deep_analysis._formal_market_meta(context)
+
+    assert "available" not in market_meta
+    assert "reason" not in market_meta
+    assert "available_sources" not in market_meta
 
 
 def test_formal_cd_context_returns_200_when_native_sections_are_not_generated(monkeypatch) -> None:
