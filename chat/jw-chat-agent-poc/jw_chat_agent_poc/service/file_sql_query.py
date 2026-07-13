@@ -265,7 +265,7 @@ def _render_aggregate_answer(
             )
             + " |"
         )
-    if re.search(r"(?:비교|대비|어느|큰가|더\s*큰)", question) and len(rows) >= 2:
+    if re.search(r"(?:비교|대비|어느|어디|큰가|더\s*크)", question) and len(rows) >= 2:
         value_index = next(
             (
                 index for index, name in enumerate(columns)

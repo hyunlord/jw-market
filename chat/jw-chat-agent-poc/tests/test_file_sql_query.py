@@ -125,6 +125,54 @@ def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monk
     assert "동화약품" in outcome.answer_md and "더 큽니다" in outcome.answer_md
 
 
+def test_aggregate_comparison_concludes_when_question_asks_which_is_larger(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *args, **kwargs: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c2", "source_name": "MFR NAME KOR"},
+                {"query_name": "c72", "source_name": "VALUES LC SI PRICE 1/2026"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda question, schemas: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "sql": (
+                "SELECT c2, SUM(c72) AS total_value, COUNT(*) AS applied_rows "
+                "FROM data WHERE c2 IN ('동아제약','동화약품') GROUP BY c2"
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *args, **kwargs: {
+            "columns": ["c2", "total_value", "applied_rows"],
+            "rows": [
+                ["동아제약", 21978584141, 348],
+                ["동화약품", 15188575523, 208],
+            ],
+        },
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        (
+            "2026년 1월 VALUES LC SI PRICE를 제조사별로 합산했을 때 "
+            "동아제약과 동화약품 중 어디가 더 크고 각각 얼마야?"
+        ),
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "비교 결론: 동아제약" in outcome.answer_md
+    assert "6,790,008,618" in outcome.answer_md
+
+
 def test_aggregate_intent_covers_natural_language_sum_comparison() -> None:
     question = (
         "2026년 1월 VALUES LC SI PRICE를 제조사별로 합산했을 때 "
