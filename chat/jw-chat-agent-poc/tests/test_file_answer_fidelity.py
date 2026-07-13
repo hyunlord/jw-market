@@ -75,7 +75,7 @@ def test_markdown_messages_file_instruction_is_conditional() -> None:
     with_file = GenosClient._markdown_messages("질문", {"fact_md": ""}, "", DOCX_FILE_CONTEXT)
     without_file = GenosClient._markdown_messages("질문", {"fact_md": ""}, "", "")
     assert "원문 표기 그대로" in with_file[0]["content"]
-    assert "찾을 수 없습니다" in with_file[0]["content"]
+    assert "부분 검색 컨텍스트만으로 정보가 없다고 단정하지 않는다" in with_file[0]["content"]
     assert "원문 표기 그대로" not in without_file[0]["content"]
     assert "업로드 파일 컨텍스트" in with_file[1]["content"]
 
@@ -95,9 +95,17 @@ def test_warn_dropped_file_tokens_logs_warning(caplog) -> None:
 def test_absence_statement_assembled_when_target_missing_everywhere() -> None:
     question = "업로드 자료에 가상 브랜드 NOVA-ZETA-404의 매출이 있나? 없으면 자료에 없다고 명확히 답해."
     listing_only = "| 브랜드명 | 매출 |\n| --- | --- |\n| TESTROVA | 123.45 |"
-    out = ensure_file_absence_statement(question, listing_only, DOCX_FILE_CONTEXT)
+    exhaustive_context = "검색 범위: 문서 전체 키워드 검색 + 벡터 검색\n\n" + DOCX_FILE_CONTEXT
+    out = ensure_file_absence_statement(question, listing_only, exhaustive_context)
     assert out.startswith("업로드 문서에서 NOVA-ZETA-404을(를) 찾을 수 없습니다.")
     assert "TESTROVA" in out
+
+
+def test_absence_statement_is_not_invented_from_partial_vector_context() -> None:
+    question = "업로드 보고서에 31페이지 KOL 인용이 있나?"
+    answer = "검색된 문단에는 시장 개요가 포함되어 있습니다."
+
+    assert ensure_file_absence_statement(question, answer, DOCX_FILE_CONTEXT) == answer
 
 
 def test_absence_statement_not_added_when_target_addressed_or_present() -> None:

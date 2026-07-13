@@ -457,9 +457,12 @@ def _answer_question(
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         state = store.conversations.get_or_create(conversation_id)
-        delegated_file_context, file_source_items, has_active_upload = _delegated_file_context(
-            question, state.conversation_id, file_context
-        )
+        (
+            delegated_file_context,
+            file_source_items,
+            has_active_upload,
+            deterministic_file_answer,
+        ) = _delegated_file_context(question, state.conversation_id, file_context)
         has_file = _has_file_signal(documents, delegated_file_context) or has_active_upload
         context_scope = resolve_context_scope(
             question,
@@ -482,6 +485,9 @@ def _answer_question(
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
+        result = _enforce_file_scope_isolation(result, question, context_scope)
+        if deterministic_file_answer and context_scope is ContextScope.FILE:
+            result = {**result, "deterministic_file_answer": deterministic_file_answer}
         result = _attach_file_context(result, delegated_file_context, file_source_items)
         result = _annotate_context_scope(result, context_scope)
         store.conversations.record_exchange(
@@ -496,11 +502,12 @@ def _answer_question(
 
 def _delegated_file_context(
     question: str, conversation_id: str | None, file_context: str | None
-) -> tuple[str | None, tuple[dict[str, Any], ...], bool]:
+) -> tuple[str | None, tuple[dict[str, Any], ...], bool, str]:
     contexts: list[str] = []
     file_source_items: tuple[dict[str, Any], ...] = ()
     uploaded = search_uploaded_files(question, conversation_id)
     has_active_upload = bool(uploaded and uploaded.has_active_file)
+    deterministic_answer = uploaded.deterministic_answer if uploaded is not None else ""
     if uploaded is not None and uploaded.file_context.strip():
         contexts.append(uploaded.file_context.strip())
         file_source_items = uploaded.file_source_items
@@ -508,8 +515,8 @@ def _delegated_file_context(
     if provided:
         contexts.append(provided)
     if not contexts:
-        return None, (), has_active_upload
-    return "\n\n".join(dict.fromkeys(contexts)), file_source_items, has_active_upload
+        return None, (), has_active_upload, deterministic_answer
+    return "\n\n".join(dict.fromkeys(contexts)), file_source_items, has_active_upload, deterministic_answer
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
@@ -531,6 +538,28 @@ def _file_scoped_result(question: str) -> dict:
         "router_diagnostics": {"mode": "file_context_scope_lock", "deterministic_execution": True},
         "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
     }
+
+
+def _enforce_file_scope_isolation(result: dict, question: str, scope: ContextScope) -> dict:
+    if scope is not ContextScope.FILE:
+        return result
+    market_tools = {
+        "get_brand_metric",
+        "get_brand_series",
+        "get_market_scope",
+        "get_market_top_brands",
+        "general_view_unavailable",
+    }
+    calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+    contaminated = any(
+        str(call.get("tool") or "") in market_tools
+        for call in calls
+        if isinstance(call, dict)
+    )
+    sources = {str(value) for value in result.get("sources", ()) if value}
+    if contaminated or any(value not in {"document", "file_upload"} for value in sources):
+        return _file_scoped_result(question)
+    return result
 
 
 def _annotate_context_scope(result: dict, scope: ContextScope) -> dict:
@@ -1109,11 +1138,15 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             conversation_id=conversation_id,
         )
     file_context_fact = _file_context_fact(result)
-    try:
-        with stage(timing, "answer_generation_total", "GenOS expression plus safety"):
-            generated_answer = "".join(client.stream_answer(question, result))
-    except requests.RequestException:
-        generated_answer = finalized_fallback_fact_answer(question, result.get("markdown_response"))
+    deterministic_file_answer = str(result.get("deterministic_file_answer") or "").strip()
+    if deterministic_file_answer:
+        generated_answer = deterministic_file_answer
+    else:
+        try:
+            with stage(timing, "answer_generation_total", "GenOS expression plus safety"):
+                generated_answer = "".join(client.stream_answer(question, result))
+        except requests.RequestException:
+            generated_answer = finalized_fallback_fact_answer(question, result.get("markdown_response"))
     for call in client.token_usage_calls:
         record_token_usage(timing, call)
     with stage(timing, "answer_cleanup", "markdown cleanup"):

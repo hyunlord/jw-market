@@ -45,15 +45,18 @@ def test_sql_source_is_queried_and_rendered_as_file_context(monkeypatch) -> None
         "_generate_select",
         lambda question, schemas: {
             "logical_name": "doc-91:sheet-1",
-            "sql": "SELECT c1, SUM(c2) AS total FROM data GROUP BY c1 ORDER BY c1",
+            "sql": (
+                "SELECT c1, SUM(c2) AS total, COUNT(*) AS applied_rows "
+                "FROM data GROUP BY c1 ORDER BY c1"
+            ),
         },
     )
     monkeypatch.setattr(
         file_sql_query,
         "_run_query",
         lambda *args, **kwargs: {
-            "columns": ["c1", "total"],
-            "rows": [["A", 30], ["B", 7]],
+            "columns": ["c1", "total", "applied_rows"],
+            "rows": [["A", 30, 2], ["B", 7, 1]],
         },
     )
 
@@ -68,6 +71,143 @@ def test_sql_source_is_queried_and_rendered_as_file_context(monkeypatch) -> None
     assert "파일: survey_raw.xlsx" in outcome.file_context
     assert "시트: Numeric" in outcome.file_context
     assert "| A | 30 |" in outcome.file_context
+
+
+def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *args, **kwargs: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {"query_name": "c72", "source_name": "1/2026 VALUES LC SI PRICE"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda question, schemas: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "sql": (
+                "SELECT c1, SUM(c72) AS total_value, COUNT(*) AS applied_rows "
+                "FROM data WHERE c1 IN ('동화약품','동아제약') GROUP BY c1 ORDER BY c1"
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *args, **kwargs: {
+            "columns": ["c1", "total_value", "applied_rows"],
+            "rows": [
+                ["동화약품", 3853883875, 120],
+                ["동아제약", 3315233364, 98],
+            ],
+        },
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "ATC4 조건에서 동화약품과 동아제약을 비교해줘",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert outcome.answer_md
+    assert "필터 조건" in outcome.answer_md
+    assert "사용 열" in outcome.answer_md
+    assert "SUM" in outcome.answer_md
+    assert "적용 행 수" in outcome.answer_md
+    assert "3,853,883,875" in outcome.answer_md
+    assert "3,315,233,364" in outcome.answer_md
+    assert "538,650,511" in outcome.answer_md
+    assert "동화약품" in outcome.answer_md and "더 큽니다" in outcome.answer_md
+
+
+def test_aggregate_without_applied_rows_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *args, **kwargs: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [{"query_name": "c72", "source_name": "sales"}],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda question, schemas: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "sql": "SELECT SUM(c72) AS total FROM data",
+        },
+    )
+
+    outcome = file_sql_query.query_uploaded_sql("총 합계", "conversation-1", (SQL_SOURCE,))
+
+    assert outcome.errors == ("file SQL aggregate contract unavailable",)
+    assert "확인할 수 없습니다" in outcome.answer_md
+
+
+def test_schema_question_uses_measured_schema_without_planner(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *args, **kwargs: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {"query_name": "c2", "source_name": "ATC 4"},
+                {"query_name": "c71", "source_name": "12/2025 VALUES LC SI PRICE"},
+                {"query_name": "c72", "source_name": "1/2026 VALUES LC SI PRICE"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("planner must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "제조사, ATC4, 월별 value 열과 마지막 월을 알려줘",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "MFR NAME KOR" in outcome.answer_md
+    assert "ATC 4" in outcome.answer_md
+    assert "1/2026 VALUES LC SI PRICE" in outcome.answer_md
+    assert "마지막 월: 1/2026" in outcome.answer_md
+    assert "2/2026 열: 없음" in outcome.answer_md
+
+
+def test_workbook_structure_uses_only_measured_sheet_and_row_counts(monkeypatch) -> None:
+    sources = (
+        SqlFileSource("doc:questions", "questions.xlsx", "질문", row_count=14, column_count=4),
+        SqlFileSource("doc:sources", "questions.xlsx", "Sources", row_count=26, column_count=3),
+        SqlFileSource("doc:criteria", "questions.xlsx", "평가기준", row_count=8, column_count=6),
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda source, conversation_id: {
+            "logical_name": source.logical_name,
+            "columns": [{"query_name": "c1", "source_name": "기준값 384"}],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("planner must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql("이 엑셀 파일 구조를 요약해줘", "conversation-1", sources)
+
+    assert "시트 수: 3개" in outcome.answer_md
+    assert "질문 수: 14개" in outcome.answer_md
+    assert "출처 수: 26개" in outcome.answer_md
+    assert "384행" not in outcome.answer_md
 
 
 def test_query_headers_use_original_source_column_names(monkeypatch) -> None:
@@ -87,21 +227,24 @@ def test_query_headers_use_original_source_column_names(monkeypatch) -> None:
         "_generate_select",
         lambda question, schemas: {
             "logical_name": SQL_SOURCE.logical_name,
-            "sql": "SELECT c2, COUNT(*), SUM(c1) FROM data GROUP BY c2",
+            "sql": (
+                "SELECT c2, COUNT(*) AS row_count, SUM(c1), "
+                "COUNT(*) AS applied_rows FROM data GROUP BY c2"
+            ),
         },
     )
     monkeypatch.setattr(
         file_sql_query,
         "_run_query",
         lambda *args, **kwargs: {
-            "columns": ["c2", "COUNT(*)", "SUM(c1)"],
-            "rows": [["1.0", 690, 2679529]],
+            "columns": ["c2", "COUNT(*)", "SUM(c1)", "applied_rows"],
+            "rows": [["1.0", 690, 2679529, 690]],
         },
     )
 
     outcome = file_sql_query.query_uploaded_sql("q1별 응답 수와 no 합계", "conversation-1", (SQL_SOURCE,))
 
-    assert "| q1 | COUNT(*) | SUM(no) |" in outcome.file_context
+    assert "| q1 | COUNT(*) | SUM(no) | applied_rows |" in outcome.file_context
     assert "| c2 |" not in outcome.file_context
 
 

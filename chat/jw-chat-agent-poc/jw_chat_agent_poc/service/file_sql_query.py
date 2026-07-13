@@ -33,6 +33,7 @@ class SqlQueryOutcome:
     file_context: str
     file_source_items: tuple[dict[str, Any], ...]
     errors: tuple[str, ...]
+    answer_md: str = ""
 
 
 def query_uploaded_sql(
@@ -49,6 +50,14 @@ def query_uploaded_sql(
             _fetch_schema(source, conversation_id)
             for source in sources[: _max_schema_tables()]
         )
+        if _is_schema_question(question):
+            answer = _render_schema_answer(question, sources, schemas)
+            return SqlQueryOutcome(
+                file_context=answer,
+                file_source_items=_source_items(sources[: len(schemas)]),
+                errors=(),
+                answer_md=answer,
+            )
         plan = _generate_select(question, schemas)
         if not plan:
             return SqlQueryOutcome("", (), ())
@@ -60,6 +69,9 @@ def query_uploaded_sql(
         )
         if source is None or not _is_select_only_candidate(sql):
             raise ValueError("planner returned an invalid scoped file query")
+        aggregate = _is_aggregate_question(question)
+        if aggregate and not _has_aggregate_contract(sql):
+            return _aggregate_contract_failure()
         result = _run_query(conversation_id, logical_name, sql)
         schema = next(
             (
@@ -69,6 +81,11 @@ def query_uploaded_sql(
             {},
         )
         context = _render_result(source, result, schema)
+        answer = ""
+        if aggregate:
+            answer = _render_aggregate_answer(question, source, sql, result, schema)
+            if not answer:
+                return _aggregate_contract_failure()
         source_item: dict[str, Any] = {"file_name": source.file_name}
         if source.document_id is not None:
             source_item["document_id"] = source.document_id
@@ -76,6 +93,7 @@ def query_uploaded_sql(
             file_context=context,
             file_source_items=(source_item,),
             errors=(),
+            answer_md=answer,
         )
     except (requests.RequestException, ValueError, TypeError, KeyError, RuntimeError) as exc:
         logger.exception(
@@ -92,7 +110,215 @@ def query_uploaded_sql(
             ),
             file_source_items=(),
             errors=("file SQL query unavailable",),
+            answer_md=(
+                "업로드 파일 집계 결과를 확인할 수 없습니다. "
+                "파일 SQL 조회가 완료되지 않았습니다."
+            ),
         )
+
+
+def _source_items(sources: Sequence[SqlFileSource]) -> tuple[dict[str, Any], ...]:
+    items: list[dict[str, Any]] = []
+    for source in sources:
+        item: dict[str, Any] = {"file_name": source.file_name}
+        if source.document_id is not None:
+            item["document_id"] = source.document_id
+        items.append(item)
+    return tuple(items)
+
+
+def _is_schema_question(question: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:열\s*목록|컬럼|스키마|헤더|(?:파일|문서|엑셀|시트)\s*구조|시트\s*수|행\s*수|마지막\s*(?:월|기간)|월별\s*(?:value|값)\s*열)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_aggregate_question(question: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:합계|총계|평균|개수|건수|몇\s*개|집계|비교|대비|COUNT|SUM|AVG)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_aggregate_contract(sql: str) -> bool:
+    return bool(re.search(r"\b(?:COUNT|SUM|AVG)\s*\(", sql, re.IGNORECASE)) and bool(
+        re.search(r"\bapplied_rows\b", sql, re.IGNORECASE)
+    )
+
+
+def _aggregate_contract_failure() -> SqlQueryOutcome:
+    answer = (
+        "업로드 파일 집계 결과를 확인할 수 없습니다. "
+        "필터, 집계 함수, 결과값, 적용 행 수를 모두 검증하지 못했습니다."
+    )
+    return SqlQueryOutcome(
+        file_context="## 업로드 파일 SQL 결과\n상태: 확인불가\n" + answer,
+        file_source_items=(),
+        errors=("file SQL aggregate contract unavailable",),
+        answer_md=answer,
+    )
+
+
+def _render_schema_answer(
+    question: str,
+    sources: Sequence[SqlFileSource],
+    schemas: Sequence[Mapping[str, Any]],
+) -> str:
+    lines = ["## 업로드 파일 구조", f"시트 수: {len(schemas)}개"]
+    observed_months: list[tuple[int, int, str]] = []
+    all_column_names: list[str] = []
+    for index, schema in enumerate(schemas):
+        source = sources[index]
+        raw_columns = schema.get("columns")
+        columns = raw_columns if isinstance(raw_columns, list) else []
+        names = [
+            str(item.get("source_name") or "").strip()
+            for item in columns
+            if isinstance(item, dict) and str(item.get("source_name") or "").strip()
+        ]
+        all_column_names.extend(names)
+        lines.extend(
+            [
+                f"### {source.sheet_name}",
+                f"파일: {source.file_name}",
+                f"행 수: {_format_number(source.row_count) if source.row_count is not None else '확인되지 않음'}",
+                f"열 수: {len(names)}개",
+                "열 목록: " + (", ".join(names) if names else "확인되지 않음"),
+            ]
+        )
+        for name in names:
+            for month, year in re.findall(r"(?<!\d)(1[0-2]|[1-9])/(20\d{2})(?!\d)", name):
+                observed_months.append((int(year), int(month), f"{int(month)}/{year}"))
+    if observed_months:
+        latest = max(observed_months)
+        lines.append(f"마지막 월: {latest[2]}")
+        next_year, next_month = (latest[0] + 1, 1) if latest[1] == 12 else (latest[0], latest[1] + 1)
+        next_label = f"{next_month}/{next_year}"
+        present = any(next_label.casefold() in name.casefold() for name in all_column_names)
+        lines.append(f"{next_label} 열: {'있음' if present else '없음'}")
+    for source in sources[: len(schemas)]:
+        normalized_sheet = source.sheet_name.casefold()
+        if source.row_count is not None and re.search(r"(?:질문|question)", normalized_sheet, re.IGNORECASE):
+            lines.append(f"질문 수: {_format_number(source.row_count)}개 (SQL 스키마 실측)")
+        if source.row_count is not None and re.search(r"(?:출처|source)", normalized_sheet, re.IGNORECASE):
+            lines.append(f"출처 수: {_format_number(source.row_count)}개 (SQL 스키마 실측)")
+    return "\n".join(lines)
+
+
+def _render_aggregate_answer(
+    question: str,
+    source: SqlFileSource,
+    sql: str,
+    result: Mapping[str, Any],
+    schema: Mapping[str, Any],
+) -> str:
+    raw_columns = result.get("columns")
+    raw_rows = result.get("rows")
+    if not isinstance(raw_columns, list) or not isinstance(raw_rows, list) or not raw_rows:
+        return ""
+    columns = [str(value) for value in raw_columns]
+    applied_index = next((index for index, name in enumerate(columns) if name.casefold() == "applied_rows"), None)
+    if applied_index is None:
+        return ""
+    rows = [row for row in raw_rows if isinstance(row, list)]
+    if not rows or any(applied_index >= len(row) or not _is_number(row[applied_index]) for row in rows):
+        return ""
+    where_match = re.search(
+        r"\bWHERE\b(.+?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|$)",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    filter_text = "전체 행" if where_match is None else " ".join(where_match.group(1).split())
+    aggregate_functions = list(
+        dict.fromkeys(
+            value.upper()
+            for value in re.findall(r"\b(COUNT|SUM|AVG)\s*\(", sql, re.IGNORECASE)
+        )
+    )
+    used_columns = _used_source_columns(sql, schema)
+    labels = _source_column_labels(columns, schema)
+    total_applied = sum(float(row[applied_index]) for row in rows)
+    lines = [
+        "## 업로드 파일 집계 결과",
+        f"파일: {source.file_name}",
+        f"시트·테이블명: {source.sheet_name} / data",
+        f"필터 조건: {filter_text}",
+        "사용 열: " + (", ".join(used_columns) if used_columns else "집계 결과 열"),
+        "집계 함수: " + ", ".join(aggregate_functions),
+        f"적용 행 수: {_format_number(total_applied)}",
+        "| " + " | ".join(labels) + " |",
+        "| " + " | ".join("---" for _ in labels) + " |",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                _format_number(value) if _is_number(value) else _markdown_cell(value)
+                for value in row[: len(labels)]
+            )
+            + " |"
+        )
+    if re.search(r"(?:비교|대비|어느|큰가|더\s*큰)", question) and len(rows) >= 2:
+        value_index = next(
+            (
+                index for index, name in enumerate(columns)
+                if index != applied_index
+                and re.search(
+                    r"(?:total|sum|avg|value|amount|sales|금액|합계)",
+                    name,
+                    re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        label_index = next((index for index in range(len(columns)) if index not in {applied_index, value_index}), None)
+        if (
+            value_index is not None
+            and label_index is not None
+            and all(
+                value_index < len(row) and _is_number(row[value_index])
+                for row in rows[:2]
+            )
+        ):
+            left, right = rows[0], rows[1]
+            left_value, right_value = float(left[value_index]), float(right[value_index])
+            winner = left if left_value >= right_value else right
+            lines.append(
+                f"비교 결론: {winner[label_index]}이(가) {_format_number(abs(left_value - right_value))}만큼 더 큽니다."
+            )
+    return "\n".join(lines)
+
+
+def _used_source_columns(sql: str, schema: Mapping[str, Any]) -> list[str]:
+    raw_columns = schema.get("columns")
+    columns = raw_columns if isinstance(raw_columns, list) else []
+    return [
+        str(item.get("source_name") or "")
+        for item in columns
+        if isinstance(item, dict)
+        and str(item.get("query_name") or "")
+        and re.search(rf"(?<![A-Za-z0-9_]){re.escape(str(item.get('query_name')))}(?![A-Za-z0-9_])", sql)
+    ]
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _format_number(value: int | float | None) -> str:
+    if value is None:
+        return "—"
+    numeric = float(value)
+    if numeric.is_integer():
+        return f"{int(numeric):,}"
+    return f"{numeric:,.6f}".rstrip("0").rstrip(".")
 
 
 def _fetch_schema(source: SqlFileSource, conversation_id: str) -> dict[str, Any]:
@@ -340,8 +566,11 @@ def _planner_system_prompt() -> str:
             "source_name explains their meaning. Uploaded cell values are stored with TEXT "
             "affinity: compare categorical values with quoted string literals, and use "
             "SUM and AVG directly for numeric aggregates. Never use CAST because the scoped "
-            "SQL policy rejects it. Never access system tables, attach "
-            "databases, PRAGMA, operational marts, or other files. Return JSON only as "
+            "SQL policy rejects it. Never access system tables, attach databases, PRAGMA, "
+            "operational marts, or other files. "
+            "For every COUNT, SUM, AVG, grouped aggregate, or comparison query, also select "
+            "COUNT(*) AS applied_rows so the result can be completeness-checked. "
+            "Return JSON only as "
             '{"logical_name":"...","sql":"SELECT ... FROM data ..."}. '
             "If the question cannot be answered from these uploaded-file schemas, return "
             '{"logical_name":"","sql":""}.'

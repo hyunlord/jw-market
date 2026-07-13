@@ -117,16 +117,17 @@ def test_file_scope_stays_locked_when_search_context_times_out(monkeypatch) -> N
     assert "리바로 시장 꼬리" not in item["result"]["answer"]
 
 
-def test_file_session_market_question_keeps_market_path() -> None:
-    # Given: a file exists, but the question explicitly asks for the market and does not reference the file.
-    question = "리바로 시장점유율과 매출을 알려줘"
+def test_file_session_market_terms_stay_in_file_scope_without_explicit_comparison() -> None:
+    # Given: a file exists and its columns contain market-like ATC/brand terms.
+    question = "ATC4와 제조사별 매출 합계를 알려줘"
     # When: the request is answered.
     item = service_app._answer_question(
         SessionStore(), _resolver(), _factory, question, "live", None, file_context=FILE_CONTEXT
     )
 
-    # Then: MARKET behavior is unchanged.
-    assert [call["tool"] for call in item["result"]["tool_calls"]] == ["get_brand_metric"]
+    # Then: market-looking file columns cannot open the market tool boundary.
+    assert item["result"]["context_scope"] == "FILE"
+    assert item["result"]["tool_calls"] == []
 
 
 def test_explicit_mixed_question_keeps_both_sources_and_scope() -> None:
@@ -172,7 +173,7 @@ def test_question_without_file_context_is_unchanged() -> None:
         ("엑셀 시트 구조", True, False, True, ContextScope.FILE),
         ("처리율은?", True, True, True, ContextScope.FILE),
         ("처리율은?", True, False, False, ContextScope.FILE),
-        ("리바로 시장점유율", True, False, True, ContextScope.MARKET),
+        ("ATC4와 제조사별 매출 합계", True, False, True, ContextScope.FILE),
         ("파일 값을 시장 평균과 비교", True, False, True, ContextScope.MIXED),
         ("문서 결과를 시장 데이터와 대비", True, False, True, ContextScope.MIXED),
         ("PDF 결과를 시장 기준으로 비교", True, False, True, ContextScope.MIXED),

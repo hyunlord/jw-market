@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1906,6 +1907,89 @@ def _join_file_contexts(wiki_context: str, vdb_context: str) -> str:
     return wiki_context or vdb_context
 
 
+_PAGE_REFERENCE_RE = re.compile(
+    r"(?:(?P<ko>\d{1,4})\s*페이지|(?:page|p\.)\s*(?P<en>\d{1,4}))",
+    re.IGNORECASE,
+)
+_KEYWORD_EVIDENCE_RE = re.compile(
+    r"(?:KOL|guideline|가이드라인|table|표\s*(?:내용|수치)?|figure|그림|인용)",
+    re.IGNORECASE,
+)
+
+
+def _requested_page_number(question: str) -> int | None:
+    match = _PAGE_REFERENCE_RE.search(question)
+    if match is None:
+        return None
+    return int(match.group("ko") or match.group("en"))
+
+
+def _search_document_hits(
+    client: httpx.Client,
+    question: str,
+    doc_ids: list[int],
+    limit: int,
+) -> list[dict[str, Any]]:
+    page_number = _requested_page_number(question)
+    if page_number is not None:
+        page_hits = weaviate_ops.read_target_page_chunks(
+            client,
+            doc_ids=doc_ids,
+            page_number=page_number,
+            limit=max(limit, 100),
+        )
+        keyword_hits = weaviate_ops.search_target_keyword_chunks(
+            client,
+            query=question,
+            doc_ids=doc_ids,
+            limit=max(limit, 100),
+        )
+        return _unique_hits([*page_hits, *keyword_hits])
+
+    hits: list[dict[str, Any]] = []
+    if _KEYWORD_EVIDENCE_RE.search(question):
+        hits.extend(
+            weaviate_ops.search_target_keyword_chunks(
+                client,
+                query=question,
+                doc_ids=doc_ids,
+                limit=max(limit, 100),
+            )
+        )
+    vector = weaviate_ops.embed_text(client, question)
+    hits.extend(
+        weaviate_ops.search_target_chunks(
+            client,
+            vector=vector,
+            doc_ids=doc_ids,
+            limit=limit,
+        )
+    )
+    return _unique_hits(hits)
+
+
+def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for hit in hits:
+        identity = str((hit.get("_additional") or {}).get("id") or "")
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        unique.append(hit)
+    return unique
+
+
+def _retrieval_scope_marker(question: str) -> str:
+    page_number = _requested_page_number(question)
+    if page_number is not None:
+        return f"검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 ({page_number}페이지)"
+    if _KEYWORD_EVIDENCE_RE.search(question):
+        return "검색 범위: 문서 전체 키워드 검색 + 벡터 검색"
+    return ""
+
+
 def _sql_sources_from_rows(rows: list[dict[str, Any]]) -> list[FileSqlSource]:
     sources: list[FileSqlSource] = []
     for row in rows:
@@ -2004,6 +2088,8 @@ def search(req: SearchRequest) -> SearchResponse:
             file_sources=[],
             errors=errors,
         )
+    requested_page = _requested_page_number(req.question)
+    directed_retrieval = requested_page is not None or bool(_KEYWORD_EVIDENCE_RE.search(req.question))
     wiki_context = ""
     wiki_sources: list[FileSource] = []
     with ledger.ledger_connection() as conn:
@@ -2013,7 +2099,7 @@ def search(req: SearchRequest) -> SearchResponse:
             session_id=session_id,
         )
         vdb_rows = [row for row in rows if row.get("storage_route") != "sql"]
-        if settings.WIKI_ENABLED and vdb_rows:
+        if settings.WIKI_ENABLED and vdb_rows and not directed_retrieval:
             pages = session_wiki.read_ready_pages(
                 conn, req.workflow_id, session_id, vdb_rows
             )
@@ -2057,16 +2143,18 @@ def search(req: SearchRequest) -> SearchResponse:
             sql_sources=sql_sources,
         )
     with httpx.Client() as client:
-        vector = weaviate_ops.embed_text(client, req.question)
-        hits = weaviate_ops.search_target_chunks(
+        hits = _search_document_hits(
             client,
-            vector=vector,
-            doc_ids=doc_ids,
-            limit=req.limit or settings.SEARCH_LIMIT,
+            req.question,
+            doc_ids,
+            req.limit or settings.SEARCH_LIMIT,
         )
     remaining_chars = max(settings.SEARCH_CONTEXT_CHAR_LIMIT - len(wiki_context) - (2 if wiki_context else 0), 0)
     vdb_context, vdb_sources, empty_page_sources = _context_from_hits(hits, remaining_chars)
     file_context = _join_file_contexts(wiki_context, vdb_context)
+    scope_marker = _retrieval_scope_marker(req.question)
+    if scope_marker:
+        file_context = _join_file_contexts(scope_marker, file_context)
     file_sources = [*wiki_sources, *vdb_sources]
     return SearchResponse(
         target_vdb_id=req.vdb_id,

@@ -112,6 +112,13 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
     context = (file_context or "").strip()
     if not context:
         return answer
+    exhaustive = (
+        "검색 범위: 문서 전체 키워드 검색" in context
+        or "검색 범위: 지정 페이지 직접 조회" in context
+        or "## 업로드 파일 SQL 결과" in context
+    )
+    if not exhaustive:
+        return answer
     if "## 업로드 파일 SQL 결과" in context and "상태: 확인됨" in context:
         return answer
     context_fold = context.casefold()

@@ -416,6 +416,39 @@ def test_genos_final_answer_uses_uploaded_file_context_numbers(monkeypatch) -> N
     assert "CodexA 값 123.45" in messages[1]["content"]
 
 
+def test_deterministic_file_aggregate_bypasses_final_llm(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("LLM must not run")),
+    )
+    answer = (
+        "## 업로드 파일 집계 결과\n"
+        "파일: CHSO.xlsx\n"
+        "시트·테이블명: Basic / data\n"
+        "필터 조건: 전체 행\n"
+        "사용 열: 1/2026 VALUES LC SI PRICE\n"
+        "집계 함수: SUM, COUNT\n"
+        "적용 행 수: 12,269\n"
+        "결과값: 386,933,825,518"
+    )
+    final = compute_final_answer(
+        "2026년 1월 총 sell-out 금액은?",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": "## 업로드 파일 SQL 결과\n상태: 확인됨\n386933825518",
+            "deterministic_file_answer": answer,
+        },
+        "file-aggregate",
+    )
+
+    assert "386,933,825,518" in final.text
+    assert "적용 행 수: 12,269" in final.text
+
+
 def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(monkeypatch) -> None:
     class Resolver:
         def resolve(self, _question: str, *, allow_default: bool = False):

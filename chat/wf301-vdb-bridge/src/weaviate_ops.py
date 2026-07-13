@@ -542,6 +542,59 @@ def search_target_chunks(
     return (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
 
 
+def _post_target_search(client: httpx.Client, query: str, error_label: str) -> list[dict[str, Any]]:
+    response = client.post(
+        f"{settings.WEAVIATE_BASE}/v1/graphql",
+        json={"query": query},
+        timeout=settings.HTTP_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("errors"):
+        raise RuntimeError(f"weaviate {error_label} errors: {body['errors'][:1]}")
+    return (body.get("data", {}).get("Get", {}) or {}).get(settings.TARGET_VDB_COLLECTION) or []
+
+
+def read_target_page_chunks(
+    client: httpx.Client,
+    *,
+    doc_ids: list[int],
+    page_number: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not doc_ids:
+        return []
+    where = (
+        "{operator:And,operands:[%s,{path:[\"i_page\"],operator:Equal,valueNumber:%d}]}"
+        % (_doc_id_where(doc_ids), page_number)
+    )
+    query = (
+        "{ Get { %s(where:%s, limit:%d, sort:[{path:[\"i_chunk_on_doc\"],order:asc}])"
+        "{ text summary doc_id file_name i_page i_chunk_on_doc _additional { id } } } }"
+        % (settings.TARGET_VDB_COLLECTION, where, limit)
+    )
+    return _post_target_search(client, query, "page read")
+
+
+def search_target_keyword_chunks(
+    client: httpx.Client,
+    *,
+    query: str,
+    doc_ids: list[int],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not doc_ids:
+        return []
+    query_literal = json.dumps(query, ensure_ascii=False)
+    where = _doc_id_where(doc_ids)
+    graphql = (
+        "{ Get { %s(bm25:{query:%s,properties:[\"text\"]}, where:%s, limit:%d)"
+        "{ text summary doc_id file_name i_page i_chunk_on_doc _additional { id score } } } }"
+        % (settings.TARGET_VDB_COLLECTION, query_literal, where, limit)
+    )
+    return _post_target_search(client, graphql, "keyword search")
+
+
 def _target_object_ids_query(document_id: int, *, limit: int) -> dict[str, str]:
     return {
         "query": (
