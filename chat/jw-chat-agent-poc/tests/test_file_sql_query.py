@@ -125,6 +125,41 @@ def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monk
     assert "동화약품" in outcome.answer_md and "더 큽니다" in outcome.answer_md
 
 
+def test_aggregate_intent_covers_natural_language_sum_comparison() -> None:
+    question = (
+        "2026년 1월 VALUES LC SI PRICE를 제조사별로 합산했을 때 "
+        "동아제약과 동화약품 중 어디가 더 크고 각각 얼마야?"
+    )
+
+    assert file_sql_query._is_aggregate_question(question) is True
+
+
+def test_wide_schema_keeps_identity_columns_before_keyword_matches() -> None:
+    schema = {
+        "logical_name": SQL_SOURCE.logical_name,
+        "file_name": SQL_SOURCE.file_name,
+        "sheet_name": SQL_SOURCE.sheet_name,
+        "columns": [
+            {"query_name": f"c{index}", "source_name": f"VALUES LC SI PRICE {index}/2026"}
+            for index in range(1, 253)
+        ],
+    }
+    schema["columns"][1] = {"query_name": "c2", "source_name": "MFR NAME KOR"}
+    schema["columns"][11] = {"query_name": "c12", "source_name": "ATC 4"}
+    schema["columns"][71] = {"query_name": "c72", "source_name": "VALUES LC SI PRICE 1/2026"}
+
+    compact = file_sql_query._compact_schema(
+        (
+            "2026년 1월 ATC 4가 R05A0_COLD PREPARATIONS인 행 중 "
+            "동화약품과 동아제약의 VALUES LC SI PRICE 합계를 각각 비교해줘."
+        ),
+        schema,
+    )
+
+    names = {column["query_name"] for column in compact["columns"]}
+    assert {"c2", "c12", "c72"} <= names
+
+
 def test_aggregate_without_applied_rows_is_rejected(monkeypatch) -> None:
     monkeypatch.setattr(
         file_sql_query,

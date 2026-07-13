@@ -140,7 +140,7 @@ def _is_schema_question(question: str) -> bool:
 def _is_aggregate_question(question: str) -> bool:
     return bool(
         re.search(
-            r"(?:합계|총계|평균|개수|건수|몇\s*개|집계|비교|대비|COUNT|SUM|AVG)",
+            r"(?:합계|총계|합산|평균|개수|건수|몇\s*개|집계|비교|대비|COUNT|SUM|AVG)",
             question,
             re.IGNORECASE,
         )
@@ -418,7 +418,7 @@ def _compact_schema(question: str, schema: Mapping[str, Any]) -> dict[str, Any]:
         identity = columns[: min(_identity_column_count(), cap)]
         selected: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for item in [*matched, *identity]:
+        for item in [*identity, *matched]:
             query_name = str(item.get("query_name") or "")
             if query_name and query_name not in seen:
                 seen.add(query_name)
