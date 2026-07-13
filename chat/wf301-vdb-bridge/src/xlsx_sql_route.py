@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -58,7 +59,7 @@ class FileSqlRouteConfig:
             enabled=os.environ.get("FILE_SQL_ENABLED", "false").lower()
             in {"1", "true", "yes", "on"},
             min_rows=_env_int("FILE_SQL_ROUTE_MIN_ROWS", 1_000),
-            min_columns=_env_int("FILE_SQL_ROUTE_MIN_COLUMNS", 20),
+            min_columns=_env_int("FILE_SQL_ROUTE_MIN_COLUMNS", 8),
             max_columns=_env_int("FILE_SQL_ROUTE_MAX_COLUMNS", 1_900),
             min_used_cells=_env_int("FILE_SQL_ROUTE_MIN_USED_CELLS", 20_000),
             min_density=_env_float("FILE_SQL_ROUTE_MIN_DENSITY", 0.10),
@@ -127,6 +128,34 @@ class SqlSheetData:
                 if len(values) < len(self.columns):
                     values.extend("" for _ in range(len(self.columns) - len(values)))
                 yield tuple(value if value != "" else None for value in values)
+
+
+def logical_names_for_profiles(
+    profiles: tuple[SheetSqlProfile, ...],
+    *,
+    scope_prefix: str = "",
+) -> tuple[str, ...]:
+    """Return deterministic, readable, workbook-local SQL table names."""
+    seen: dict[str, int] = {}
+    names: list[str] = []
+    for profile in profiles:
+        base = re.sub(r"[^\w]+", "_", profile.sheet_name.casefold()).strip("_")
+        if not base:
+            base = f"sheet_{profile.sheet_index}"
+        occurrence = seen.get(base, 0) + 1
+        seen[base] = occurrence
+        unique_name = base if occurrence == 1 else f"{base}_{occurrence}"
+        names.append(f"{scope_prefix}_{unique_name}" if scope_prefix else unique_name)
+    return tuple(names)
+
+
+def workbook_storage_route(*, has_sql: bool, vdb_chunk_count: int) -> str:
+    """Describe the internal storage paths without changing the public route enum."""
+    if has_sql and vdb_chunk_count > 0:
+        return "hybrid"
+    if has_sql:
+        return "sql"
+    return "vdb"
 
 
 def classify_workbook_profiles(

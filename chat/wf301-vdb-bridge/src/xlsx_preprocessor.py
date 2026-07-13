@@ -195,6 +195,8 @@ def extract_xlsx_chunks(
     *,
     chunk_char_limit: int = DEFAULT_CHUNK_CHAR_LIMIT,
     skip_report: list[SheetSkip] | None = None,
+    exclude_sheet_names: frozenset[str] = frozenset(),
+    allow_empty: bool = False,
 ) -> list[str]:
     """Return header-value-preserving chunks from an XLSX workbook.
 
@@ -218,6 +220,8 @@ def extract_xlsx_chunks(
             apply_sheet_filter = _is_datamonitor_model_workbook(sheet_name for sheet_name, _path in sheet_paths)
             chunks: list[str] = []
             for sheet_name, sheet_path in sheet_paths:
+                if sheet_name in exclude_sheet_names:
+                    continue
                 sheet_xml = archive.read(sheet_path)
                 if apply_crosstable_split and sheet_name in {"Table", "FREQ"}:
                     rows_with_numbers = _sheet_rows_with_numbers(sheet_xml, shared_strings, style_formats)
@@ -265,7 +269,7 @@ def extract_xlsx_chunks(
                 chunks.extend(_chunks_for_sheet(sheet_name, rows, chunk_char_limit))
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError) as exc:
         raise XlsxPreprocessError(f"xlsx preprocessing failed: {exc}") from exc
-    if not chunks:
+    if not chunks and not allow_empty:
         raise XlsxPreprocessError("xlsx preprocessing produced no chunks")
     return chunks
 
@@ -293,6 +297,8 @@ def iter_xlsx_chunks(
     path: Path,
     *,
     chunk_char_limit: int = DEFAULT_CHUNK_CHAR_LIMIT,
+    exclude_sheet_names: frozenset[str] = frozenset(),
+    allow_empty: bool = False,
 ) -> Iterator[str]:
     """Yield header-value-preserving chunks from a large flat XLSX workbook."""
     if chunk_char_limit < 80:
@@ -304,6 +310,8 @@ def iter_xlsx_chunks(
             style_formats = _style_formats(archive)
             sheet_paths = _sheet_paths(archive)
             for sheet_name, sheet_path in sheet_paths:
+                if sheet_name in exclude_sheet_names:
+                    continue
                 for chunk in iter_chunks_for_sheet_streaming(
                     sheet_name,
                     iter_sheet_rows_streaming(archive, sheet_path, shared_strings, style_formats),
@@ -313,7 +321,7 @@ def iter_xlsx_chunks(
                     yield chunk
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError) as exc:
         raise XlsxPreprocessError(f"xlsx streaming preprocessing failed: {exc}") from exc
-    if not produced:
+    if not produced and not allow_empty:
         raise XlsxPreprocessError("xlsx streaming preprocessing produced no chunks")
 
 
