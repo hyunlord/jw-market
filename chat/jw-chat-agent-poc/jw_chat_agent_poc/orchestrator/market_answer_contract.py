@@ -232,7 +232,7 @@ def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if "추이" not in question:
         return ""
     for call in calls:
-        rows = _series_rows(call)
+        rows = _series_rows(call, question)
         if len(rows) < 3:
             continue
         subject = str(_render_data(call).get("brand") or "요청 지표")
@@ -241,39 +241,37 @@ def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
             f"## {subject} 추이",
             "| 기간 | 값 |",
             "| --- | --- |",
-            *(f"| {period} | {_format_series_value(value, unit)} |" for period, value in rows),
+            *(f"| {period} | {_format_series_value(value, unit)} |" for period, value, _ in rows),
         ]
         return "\n".join(rendered)
     return ""
 
 
-def _series_rows(call: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+def _series_rows(call: Mapping[str, Any], question: str) -> tuple[tuple[str, Any, str], ...]:
     data = _render_data(call)
-    rows: list[tuple[str, Any]] = []
+    rows: list[tuple[str, Any, str]] = []
+    keys = _series_value_keys(question)
     for raw in _series_candidates(data):
         for item in raw:
             if not isinstance(item, Mapping):
                 continue
             period = str(item.get("period") or item.get("year") or "").strip()
-            value = _first_present(
-                item,
-                (
-                    "ms_recent_pct",
-                    "ms_pct",
-                    "product_details",
-                    "ptntCnt",
-                    "value_억원",
-                    "value",
-                    "sales_억원",
-                    "sales_krw",
-                    "value_krw",
-                ),
-            )
+            key, value = _first_present_with_key(item, keys)
             if period and value not in (None, ""):
-                rows.append((period, value))
+                rows.append((period, value, key))
         if len(rows) >= 3:
             break
     return tuple(dict.fromkeys(rows))
+
+
+def _series_value_keys(question: str) -> tuple[str, ...]:
+    sales = ("value_억원", "sales_억원", "sales_krw", "value_krw", "value")
+    share = ("ms_recent_pct", "ms_pct")
+    if "매출" in question:
+        return (*sales, *share, "product_details", "ptntCnt")
+    if "점유율" in question:
+        return (*share, *sales, "product_details", "ptntCnt")
+    return (*share, "product_details", "ptntCnt", *sales)
 
 
 def _series_candidates(data: Mapping[str, Any]) -> tuple[Sequence[Any], ...]:
@@ -290,14 +288,21 @@ def _series_candidates(data: Mapping[str, Any]) -> tuple[Sequence[Any], ...]:
     return tuple(candidates)
 
 
-def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any]]) -> str:
+def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any, str]]) -> str:
     data = _render_data(call)
     explicit = str(data.get("unit") or data.get("unit_label") or "")
     if explicit:
         return explicit
+    selected_key = rows[0][2] if rows else ""
+    if selected_key in {"ms_recent_pct", "ms_pct"}:
+        return "%"
+    if selected_key == "ptntCnt":
+        return "명"
     tool = str(call.get("tool") or "")
-    if tool == "csd_activity_trend":
+    if tool == "csd_activity_trend" or selected_key == "product_details":
         return "건"
+    if selected_key in {"sales_krw", "value_krw"}:
+        return "KRW"
     metric = str(data.get("metric") or "").lower()
     if "share" in metric or any("ms_" in str(key) for key in data):
         return "%"
@@ -473,11 +478,11 @@ def _is_file_tool(call: Mapping[str, Any]) -> bool:
     )
 
 
-def _first_present(container: Mapping[str, Any], keys: Sequence[str]) -> Any:
+def _first_present_with_key(container: Mapping[str, Any], keys: Sequence[str]) -> tuple[str, Any]:
     for key in keys:
         if container.get(key) not in (None, ""):
-            return container[key]
-    return None
+            return key, container[key]
+    return "", None
 
 
 def _render_data(call: Mapping[str, Any]) -> Mapping[str, Any]:

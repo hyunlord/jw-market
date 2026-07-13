@@ -33,6 +33,7 @@ _SOURCE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:IQVIA|NSA|UBIST)(?![A-Za-z0-9])|아이큐비아|유비스트",
     re.IGNORECASE,
 )
+_STRATEGIC_MARKET_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9_])ml_\d+(?![A-Za-z0-9_])", re.IGNORECASE)
 
 
 class GeneralRoute(Enum):
@@ -304,7 +305,7 @@ def _has_explicit_general_signal(normalized: str) -> bool:
 
 
 def _has_explicit_strategic_signal(normalized: str) -> bool:
-    return any(
+    return bool(_STRATEGIC_MARKET_ID_PATTERN.search(normalized)) or any(
         token in normalized
         for token in ("전략뷰", "전략view", "시장조망", "market_landscape", "경쟁군", "경쟁시장", "competitive_dynamics", "cd기준")
     )
