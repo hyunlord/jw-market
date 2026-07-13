@@ -4,6 +4,7 @@ import threading
 import time
 import json
 import math
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 from typing import Any
@@ -21,7 +22,7 @@ from pipeline.scripts.api.dynamic_market.response_cache import (
     MySQLDynamicResponseCacheStore,
     canonical_request_json,
     normalize_json_value,
-    select_eviction_keys,
+    select_prune_keys,
 )
 
 
@@ -321,62 +322,164 @@ def test_response_cache_normalizes_non_finite_values_before_strict_serialization
     assert "Infinity" not in stored
 
 
-def test_select_eviction_keys_expires_first_then_uses_lfu_lru() -> None:
+def test_select_prune_keys_removes_expired_then_reduces_capacity_to_low_water() -> None:
     rows = [
-        {"cache_key": "expired", "payload_size": 30, "expired": True, "hit_count": 100, "last_used": 9},
-        {"cache_key": "least-used-old", "payload_size": 40, "expired": False, "hit_count": 0, "last_used": 1},
-        {"cache_key": "least-used-new", "payload_size": 40, "expired": False, "hit_count": 0, "last_used": 2},
-        {"cache_key": "popular", "payload_size": 40, "expired": False, "hit_count": 5, "last_used": 0},
+        {"cache_key": "expired", "state": "ready", "payload_size": 30, "expired": True, "hit_count": 100, "last_used": 9},
+        {"cache_key": "least-used-old", "state": "ready", "payload_size": 40, "expired": False, "hit_count": 0, "last_used": 1},
+        {"cache_key": "least-used-new", "state": "ready", "payload_size": 40, "expired": False, "hit_count": 0, "last_used": 2},
+        {"cache_key": "popular", "state": "ready", "payload_size": 50, "expired": False, "hit_count": 5, "last_used": 0},
     ]
 
-    assert select_eviction_keys(
+    assert select_prune_keys(
         rows,
-        incoming_size=40,
+        total_rows=4,
+        total_bytes=160,
         max_rows=5,
         max_bytes=160,
+        batch_limit=100,
         high_water_ratio=0.9,
         low_water_ratio=0.75,
-    ) == [
-        "expired",
-        "least-used-old",
-    ]
+    ) == ["expired", "least-used-old"]
 
 
-def test_select_eviction_keys_orders_expired_rows_by_age_before_hit_count() -> None:
+def test_select_prune_keys_always_cleans_expired_rows_but_never_building_rows() -> None:
     rows = [
-        {"cache_key": "expired-old-hit", "payload_size": 50, "expired": True, "hit_count": 9, "last_used": 1},
-        {"cache_key": "expired-new-never-hit", "payload_size": 50, "expired": True, "hit_count": 0, "last_used": 2},
-        {"cache_key": "ready-never-hit", "payload_size": 50, "expired": False, "hit_count": 0, "last_used": 0},
+        {"cache_key": "active", "state": "building", "payload_size": 100, "expired": True, "hit_count": 0, "last_used": 0},
+        {"cache_key": "expired", "state": "ready", "payload_size": 10, "expired": True, "hit_count": 1, "last_used": 1},
+        {"cache_key": "fresh", "state": "ready", "payload_size": 10, "expired": False, "hit_count": 0, "last_used": 2},
     ]
 
-    assert select_eviction_keys(
+    selected = select_prune_keys(
         rows,
-        incoming_size=50,
-        max_rows=4,
-        max_bytes=200,
-        high_water_ratio=0.9,
-        low_water_ratio=0.75,
-    ) == ["expired-old-hit"]
-
-
-def test_select_eviction_keys_counts_but_never_selects_active_builds() -> None:
-    rows = [
-        {"cache_key": "active", "state": "building", "payload_size": 0, "hit_count": 0, "last_used": 0},
-        {"cache_key": "ready-old", "state": "ready", "payload_size": 50, "hit_count": 0, "last_used": 1},
-        {"cache_key": "ready-new", "state": "ready", "payload_size": 50, "hit_count": 0, "last_used": 2},
-    ]
-
-    selected = select_eviction_keys(
-        rows,
-        incoming_size=50,
-        max_rows=4,
-        max_bytes=200,
-        high_water_ratio=0.9,
-        low_water_ratio=0.75,
+        total_rows=3,
+        total_bytes=120,
+        max_rows=100,
+        max_bytes=1_000,
+        batch_limit=100,
     )
 
-    assert selected == ["ready-old"]
+    assert selected == ["expired"]
     assert "active" not in selected
+
+
+class _RecordingCursor:
+    def __init__(self, *, summary: dict[str, Any] | None = None, candidates: list[dict[str, Any]] | None = None) -> None:
+        self.summary = summary or {}
+        self.candidates = candidates or []
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+        self.rowcount = 0
+        self._result_kind = ""
+
+    def __enter__(self) -> "_RecordingCursor":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[Any, ...]) -> int:
+        normalized = " ".join(sql.split())
+        self.statements.append((normalized, params))
+        if "COUNT(*) AS total_rows" in normalized:
+            self._result_kind = "summary"
+            self.rowcount = 1
+        elif normalized.startswith("SELECT cache_key"):
+            self._result_kind = "candidates"
+            self.rowcount = len(self.candidates)
+        elif normalized.startswith("DELETE") or normalized.startswith("UPDATE"):
+            self._result_kind = "write"
+            self.rowcount = 1
+        return self.rowcount
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self.summary if self._result_kind == "summary" else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self.candidates if self._result_kind == "candidates" else []
+
+
+class _RecordingConnection:
+    def __init__(self, cursor: _RecordingCursor) -> None:
+        self._cursor = cursor
+        self.commits = 0
+
+    def __enter__(self) -> "_RecordingConnection":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def cursor(self) -> _RecordingCursor:
+        return self._cursor
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+def test_mysql_complete_updates_only_the_claimed_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = _RecordingCursor()
+    connection = _RecordingConnection(cursor)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.response_cache.db.connect", lambda: connection)
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general",
+        strategic_dimension_db="strategic",
+    )
+
+    store.complete(cache_key="key", lease_owner="owner", source_epoch="epoch", response_json='{"ok":true}')
+
+    sql = "\n".join(statement for statement, _ in cursor.statements)
+    assert len(cursor.statements) == 1
+    assert cursor.statements[0][0].startswith("UPDATE cache_dynamic_market_response")
+    assert "SELECT" not in sql
+    assert "DELETE" not in sql
+    assert "FOR UPDATE" not in sql
+    assert connection.commits == 1
+
+
+def test_mysql_prune_uses_bounded_candidates_and_observed_value_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 7, 14, 6, 0, 0)
+    updated_at = now - timedelta(hours=1)
+    candidates = [
+        {
+            "cache_key": "expired",
+            "state": "ready",
+            "payload_size": 30,
+            "hit_count": 0,
+            "last_hit_at": None,
+            "expires_at": now - timedelta(minutes=1),
+            "updated_at": updated_at,
+            "expired": True,
+            "last_used": updated_at,
+        }
+    ]
+    cursor = _RecordingCursor(summary={"total_rows": 1, "total_bytes": 30}, candidates=candidates)
+    connection = _RecordingConnection(cursor)
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.response_cache.db.connect", lambda: connection)
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general",
+        strategic_dimension_db="strategic",
+    )
+
+    result = store.prune(now=now, grace_seconds=300, batch_limit=100)
+
+    sql = "\n".join(statement for statement, _ in cursor.statements)
+    candidate_sql, candidate_params = cursor.statements[1]
+    delete_sql, delete_params = cursor.statements[2]
+    assert result.selected == 1
+    assert result.deleted == 1
+    assert result.deleted_bytes == 30
+    assert "FOR UPDATE" not in sql
+    assert "state <> 'building'" in candidate_sql
+    assert "updated_at <= %s" in candidate_sql
+    assert candidate_params[-1] == 100
+    assert "state = %s" in delete_sql
+    assert "updated_at = %s" in delete_sql
+    assert "hit_count = %s" in delete_sql
+    assert "last_hit_at <=> %s" in delete_sql
+    assert delete_params == ("expired", "dynamic", "ready", updated_at, 0, None)
+    assert connection.commits == 1
+
 
 def test_normalize_json_value_reports_nested_non_finite_paths() -> None:
     paths: list[str] = []

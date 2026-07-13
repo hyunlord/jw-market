@@ -36,6 +36,8 @@ DEFAULT_MAX_BYTES = 1_073_741_824
 DEFAULT_MAX_ENTRY_BYTES = 8 * 1024 * 1024
 DEFAULT_HIGH_WATER_RATIO = 0.90
 DEFAULT_LOW_WATER_RATIO = 0.75
+DEFAULT_PRUNE_GRACE_SECONDS = 300
+DEFAULT_PRUNE_BATCH_LIMIT = 100
 _BUILD_SEMAPHORE = threading.BoundedSemaphore(3)
 PersistenceScheduler = Callable[[Callable[[], None]], None]
 
@@ -65,6 +67,16 @@ class CacheClaim:
     @classmethod
     def build(cls, lease_owner: str) -> "CacheClaim":
         return cls("build", lease_owner=lease_owner)
+
+
+@dataclass(frozen=True, slots=True)
+class CachePruneResult:
+    total_rows: int
+    total_bytes: int
+    candidates: int
+    selected: int
+    deleted: int
+    deleted_bytes: int
 
 
 class DynamicResponseCacheStore(Protocol):
@@ -114,26 +126,22 @@ def normalize_json_value(
     return candidate
 
 
-def select_eviction_keys(
+def select_prune_keys(
     rows: list[dict[str, Any]],
     *,
-    incoming_size: int,
+    total_rows: int,
+    total_bytes: int,
     max_rows: int,
     max_bytes: int,
+    batch_limit: int,
     high_water_ratio: float = DEFAULT_HIGH_WATER_RATIO,
     low_water_ratio: float = DEFAULT_LOW_WATER_RATIO,
 ) -> list[str]:
-    """When the high-water mark is crossed, select victims down to the low-water mark."""
+    """Select a bounded prune batch without locking the cache namespace."""
 
-    remaining_count = len(rows)
-    remaining_bytes = sum(int(row.get("payload_size") or 0) for row in rows)
-    projected_count = remaining_count + 1
-    projected_bytes = remaining_bytes + incoming_size
-    if projected_count <= int(max_rows * high_water_ratio) and projected_bytes <= int(max_bytes * high_water_ratio):
-        return []
-    target_rows = int(max_rows * low_water_ratio)
-    target_bytes = int(max_bytes * low_water_ratio)
-    def eviction_priority(row: dict[str, Any]) -> tuple[Any, ...]:
+    eligible = [row for row in rows if row.get("state") != "building"]
+
+    def prune_priority(row: dict[str, Any]) -> tuple[Any, ...]:
         last_used = row.get("last_used")
         if last_used is None:
             last_used = datetime.min
@@ -144,13 +152,41 @@ def select_eviction_keys(
             return (1, last_used, str(row.get("cache_key") or ""))
         return (2, last_used, hit_count, str(row.get("cache_key") or ""))
 
-    ordered = sorted((row for row in rows if row.get("state") != "building"), key=eviction_priority)
+    ordered = sorted(eligible, key=prune_priority)
     selected: list[str] = []
+    remaining_rows = total_rows
+    remaining_bytes = total_bytes
+
     for row in ordered:
-        if remaining_count + 1 <= target_rows and remaining_bytes + incoming_size <= target_bytes:
+        if len(selected) >= batch_limit:
             break
+        if not (row.get("expired") or row.get("state") == "failed"):
+            continue
         selected.append(str(row["cache_key"]))
-        remaining_count -= 1
+        remaining_rows -= 1
+        remaining_bytes -= int(row.get("payload_size") or 0)
+
+    above_high_water = (
+        total_rows > int(max_rows * high_water_ratio)
+        or total_bytes > int(max_bytes * high_water_ratio)
+    )
+    if not above_high_water:
+        return selected
+
+    target_rows = int(max_rows * low_water_ratio)
+    target_bytes = int(max_bytes * low_water_ratio)
+    already_selected = set(selected)
+    for row in ordered:
+        if len(selected) >= batch_limit:
+            break
+        if remaining_rows <= target_rows and remaining_bytes <= target_bytes:
+            break
+        cache_key = str(row["cache_key"])
+        if cache_key in already_selected:
+            continue
+        selected.append(cache_key)
+        already_selected.add(cache_key)
+        remaining_rows -= 1
         remaining_bytes -= int(row.get("payload_size") or 0)
     return selected
 
@@ -595,29 +631,6 @@ class MySQLDynamicResponseCacheStore:
             with db.connect() as conn, conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT cache_key, state, payload_size, hit_count,
-                           expires_at <= %s AS expired,
-                           COALESCE(last_hit_at, updated_at) AS last_used
-                    FROM cache_dynamic_market_response
-                    WHERE cache_key <> %s AND namespace = %s
-                    FOR UPDATE
-                    """,
-                    (now, cache_key, self._namespace),
-                )
-                eviction_keys = select_eviction_keys(
-                    list(cur.fetchall()),
-                    incoming_size=payload_size,
-                    max_rows=self._max_rows,
-                    max_bytes=self._max_bytes,
-                )
-                if eviction_keys:
-                    placeholders = ",".join(["%s"] * len(eviction_keys))
-                    cur.execute(
-                        f"DELETE FROM cache_dynamic_market_response WHERE cache_key IN ({placeholders})",
-                        tuple(eviction_keys),
-                    )
-                cur.execute(
-                    """
                     UPDATE cache_dynamic_market_response
                     SET state = 'ready', source_epoch = %s, response_json = %s,
                         response_sha256 = %s, payload_size = %s, expires_at = %s,
@@ -642,6 +655,95 @@ class MySQLDynamicResponseCacheStore:
                 conn.commit()
         except MySQLError as exc:
             raise DynamicResponseCacheUnavailable("cannot store dynamic response cache entry") from exc
+
+    def prune(
+        self,
+        *,
+        now: datetime | None = None,
+        grace_seconds: int = DEFAULT_PRUNE_GRACE_SECONDS,
+        batch_limit: int = DEFAULT_PRUNE_BATCH_LIMIT,
+    ) -> CachePruneResult:
+        prune_time = now or datetime.now()
+        grace_cutoff = prune_time - timedelta(seconds=grace_seconds)
+        try:
+            with db.connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_rows,
+                           COALESCE(SUM(payload_size), 0) AS total_bytes
+                    FROM cache_dynamic_market_response
+                    WHERE namespace = %s
+                    """,
+                    (self._namespace,),
+                )
+                summary = cur.fetchone() or {}
+                total_rows = int(summary.get("total_rows") or 0)
+                total_bytes = int(summary.get("total_bytes") or 0)
+                cur.execute(
+                    """
+                    SELECT cache_key, state, payload_size, hit_count, last_hit_at,
+                           expires_at, updated_at,
+                           expires_at <= %s AS expired,
+                           COALESCE(last_hit_at, updated_at) AS last_used
+                    FROM cache_dynamic_market_response
+                    WHERE namespace = %s
+                      AND state <> 'building'
+                      AND updated_at <= %s
+                    ORDER BY
+                      CASE
+                        WHEN state = 'failed' OR expires_at <= %s THEN 0
+                        WHEN hit_count = 0 THEN 1
+                        ELSE 2
+                      END,
+                      COALESCE(last_hit_at, updated_at), hit_count, cache_key
+                    LIMIT %s
+                    """,
+                    (prune_time, self._namespace, grace_cutoff, prune_time, batch_limit),
+                )
+                candidates = list(cur.fetchall())
+                selected_keys = select_prune_keys(
+                    candidates,
+                    total_rows=total_rows,
+                    total_bytes=total_bytes,
+                    max_rows=self._max_rows,
+                    max_bytes=self._max_bytes,
+                    batch_limit=batch_limit,
+                )
+                candidates_by_key = {str(row["cache_key"]): row for row in candidates}
+                deleted = 0
+                deleted_bytes = 0
+                for cache_key in selected_keys:
+                    observed = candidates_by_key[cache_key]
+                    cur.execute(
+                        """
+                        DELETE FROM cache_dynamic_market_response
+                        WHERE cache_key = %s AND namespace = %s AND state = %s
+                          AND updated_at = %s AND hit_count = %s
+                          AND last_hit_at <=> %s
+                        """,
+                        (
+                            cache_key,
+                            self._namespace,
+                            observed.get("state"),
+                            observed.get("updated_at"),
+                            int(observed.get("hit_count") or 0),
+                            observed.get("last_hit_at"),
+                        ),
+                    )
+                    if cur.rowcount == 1:
+                        deleted += 1
+                        deleted_bytes += int(observed.get("payload_size") or 0)
+                conn.commit()
+                return CachePruneResult(
+                    total_rows=total_rows,
+                    total_bytes=total_bytes,
+                    candidates=len(candidates),
+                    selected=len(selected_keys),
+                    deleted=deleted,
+                    deleted_bytes=deleted_bytes,
+                )
+        except MySQLError as exc:
+            raise DynamicResponseCacheUnavailable("cannot prune dynamic response cache") from exc
 
     def fail(
         self,
