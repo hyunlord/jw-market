@@ -40,6 +40,7 @@ from pipeline.etl.io.mart.general_config import MEASURES_BY_SOURCE
 from pipeline.etl.io.mart.general_iqvia import iqvia_measure_frame
 from pipeline.etl.io.mart.general_iqvia import load_iqvia_base_frame
 from pipeline.etl.io.mart.general_ubist import load_ubist_base_frame
+from pipeline.etl.io.mart.general_ubist import iter_ubist_base_frames
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
 
 
@@ -75,6 +76,7 @@ def parse_args() -> argparse.Namespace:
         help="Permit target-db=jw_mart only when the connection host is localhost.",
     )
     parser.add_argument("--ubist-dir", type=Path, help="Raw UBIST parquet root. Defaults to S4_UBIST_DIR/output/ubist")
+    parser.add_argument("--spool-dir", type=Path, help="PVC-backed spill directory for bounded raw UBIST aggregation")
     parser.add_argument("--max-rows", type=int, default=None, help="Fast validation only; do not use for production evidence")
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument(
@@ -161,6 +163,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     source,
                     max_rows=args.max_rows,
                     dimension_types={args.dimension_type} if args.dimension_type else None,
+                    spool_dir=args.spool_dir,
                 )
                 manifest["sources"][source] = source_manifest
                 computed_rows.extend(rows)
@@ -279,22 +282,31 @@ def _build_direct_source_rows(
     *,
     max_rows: int | None,
     dimension_types: set[str] | None,
+    spool_dir: Path | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if source != "ubist":
         raise ValueError("direct shared promotion is restricted to UBIST")
-    base = load_ubist_base_frame(max_rows=max_rows)
     source_manifest: dict[str, Any] = {
-        "source_rows": int(len(base)),
+        "source_rows": 0,
         "measures": {},
     }
     computed_rows: list[dict[str, Any]] = []
+    input_rows = {measure: 0 for measure in MEASURES_BY_SOURCE[source]}
+    rows_by_measure: dict[str, list[dict[str, Any]]] = {
+        measure: [] for measure in MEASURES_BY_SOURCE[source]
+    }
+    for base in iter_ubist_base_frames(max_rows=max_rows, spool_dir=spool_dir):
+        source_manifest["source_rows"] += int(len(base))
+        for measure in MEASURES_BY_SOURCE[source]:
+            frame = ubist_measure_frame(base, measure)
+            rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
+            input_rows[measure] += int(len(frame))
+            rows_by_measure[measure].extend(rows)
+            computed_rows.extend(rows)
     for measure in MEASURES_BY_SOURCE[source]:
-        frame = ubist_measure_frame(base, measure)
-        rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
-        computed_rows.extend(rows)
         source_manifest["measures"][measure] = {
-            "input_rows": int(len(frame)),
-            "sidecar": summarize_dimension_rows(rows),
+            "input_rows": input_rows[measure],
+            "sidecar": summarize_dimension_rows(rows_by_measure[measure]),
         }
     return source_manifest, computed_rows
 

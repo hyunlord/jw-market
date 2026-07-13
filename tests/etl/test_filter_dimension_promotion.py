@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from argparse import Namespace
 
+import pandas as pd
+
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.scripts.etl.build_filter_dimension_metric import _serving_guard_schema
@@ -221,3 +223,45 @@ def test_source_epoch_uses_configured_runtime_cache_store(monkeypatch) -> None:
     monkeypatch.setattr(runtime_cache.dynamic_response_cache, "_store", _Store())
 
     assert _source_epoch() == "epoch-from-runtime-store"
+
+
+def test_direct_promotion_builds_from_bounded_ubist_partitions(monkeypatch) -> None:
+    from pipeline.scripts.etl import build_filter_dimension_metric as cli
+
+    def _frame(product_code: str, molecule: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "atc4_code": "C10A1",
+                    "brand_key": f"brand-{product_code}",
+                    "brand_name": f"Brand {product_code}",
+                    "product_code": product_code,
+                    "period_yyyymm": "202601",
+                    "raw_sales": 10.0,
+                    "raw_volume": 2.0,
+                    "ubist_molecule_raw": molecule,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "iter_ubist_base_frames",
+        lambda **_kwargs: iter((_frame("p1", "A / B"), _frame("p2", "Vitamin B12"))),
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_ubist_base_frame",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("bulk UBIST frame must not be materialized")),
+    )
+
+    manifest, rows = cli._build_direct_source_rows(
+        "ubist",
+        max_rows=None,
+        dimension_types={"molecule"},
+        spool_dir=None,
+    )
+
+    assert manifest["source_rows"] == 2
+    assert {row["dimension_value"] for row in rows} == {"A / B", "Vitamin B12"}
+    assert {row["measure"] for row in rows} == {"sales", "volume"}
