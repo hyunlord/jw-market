@@ -300,6 +300,9 @@ def test_legacy_factor_resolution_reuses_formal_context_and_does_not_self_fallba
     assert set_calls[0]["market_id"] == "ml_003"
     assert all(call["market_id"] == "ml_003" for call in context_calls)
     assert "deep_analysis_brand_factor_market_resolve_failed" in caplog.text
+    assert "view=strategic_ml" in caplog.text
+    assert "error=source_not_available" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_legacy_factor_resolution_logs_empty_strategic_result(

@@ -652,10 +652,20 @@ def _resolve_brand_factor_choices(
                 choices = resolution.choices if resolution and resolution.choices else fallback
             else:
                 choices = fallback
+        except DeepAnalysisContextError as exc:
+            logger.warning(
+                "deep_analysis_brand_factor_market_resolve_failed "
+                "brand=%s market_id=%s source=%s view=%s error=%s",
+                selected_brand_key,
+                strategic_market_id or market_atc4,
+                response_source,
+                "strategic_ml" if strategic_market_id else "general",
+                exc.error,
+            )
+            choices = () if strategic_market_id else fallback
         except (
             BrandSetInputError,
             BrandSetResolutionError,
-            DeepAnalysisContextError,
             KeyError,
             ValueError,
             IndexError,
