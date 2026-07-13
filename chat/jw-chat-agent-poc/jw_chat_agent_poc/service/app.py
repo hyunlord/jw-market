@@ -39,6 +39,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_file_absence_statement,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
+    replace_internal_fact_dump,
 )
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
@@ -1060,10 +1061,16 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     timing = ensure_timing(result)
     if result.get("general_view_ready"):
         timing_payload = finish(timing)
-        answer = enforce_answer_contract(
+        markdown_response = result.get("markdown_response")
+        answer = replace_internal_fact_dump(
             question,
             cleanup_markdown_answer(str(result.get("answer") or "")),
-            None,
+            markdown_response,
+        )
+        answer = enforce_answer_contract(
+            question,
+            answer,
+            markdown_response,
             result.get("general_view_contract"),
         )
         trace = trace_envelope(

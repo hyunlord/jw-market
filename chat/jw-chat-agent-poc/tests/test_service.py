@@ -116,6 +116,42 @@ def test_compute_final_answer_appends_blocked_metric_notice(monkeypatch) -> None
     assert "23/26" not in final.text
 
 
+def test_compute_final_answer_replaces_internal_csd_facts_for_general_view_ready() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+    leaked = """요청한 값은 현재 조회 결과에 존재합니다.
+
+## 확정 데이터
+
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    final = compute_final_answer(
+        "리바로 영업활동 추이 어때?",
+        {
+            "general_view_ready": True,
+            "answer": leaked,
+            "markdown_response": {"fact_md": fact_md},
+            "sources": ["cache"],
+        },
+        "test-conversation",
+    )
+
+    assert "2026-03 120건" in final.text
+    assert "2026-04 135건" in final.text
+    assert "영업활동" in final.text
+    assert "확정 데이터" not in final.text
+    assert "반드시 반영할 내용" not in final.text
+    assert "CSD 세부 미지원" not in final.text
+
+
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
