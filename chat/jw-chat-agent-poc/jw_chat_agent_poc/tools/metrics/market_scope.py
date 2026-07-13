@@ -140,6 +140,34 @@ class MarketScopeResolver:
             "sources": ["cache"],
         }
 
+    def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
+        if self._query_layer is None:
+            return self._unsupported("전략 시장 조회 계층을 사용할 수 없습니다.", question, "market_id", market_id)
+        try:
+            call = self._query_layer.market_scope_by_id(market_id, period)
+        except (LookupError, TypeError, ValueError) as exc:
+            return self._unsupported(str(exc), question, "market_id", market_id)
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "market_id", market_id)
+        source = str(data.get("source_label") or call.get("source") or "")
+        markdown = MarkdownResponseBuilder().build(
+            brand="해당 전략 시장",
+            calls=[call],
+            sources=[source],
+            notices=market_view_notices("market_landscape"),
+        )
+        return {
+            "question": question,
+            "resolution": {"market_id": market_id},
+            "decomposition": [{"intent": "market_size", "view_type": "market_landscape", "period": period}],
+            "router_diagnostics": {"deterministic": True, "explicit_market_id": True},
+            "tool_calls": [call],
+            "answer": markdown.markdown,
+            "markdown_response": markdown.to_dict(),
+            "sources": [source],
+        }
+
     def _query_layer_answer(self, question: str, brand: str, view_type: MarketView) -> dict[str, Any]:
         assert self._query_layer is not None
         try:

@@ -197,6 +197,52 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
+    def market_scope_by_id(self, market: str, period: str = "latest") -> dict[str, Any]:
+        snapshot = self._snapshot()
+        if market not in {record.ml_id for record in snapshot.records}:
+            raise LookupError(f"mart market not found: market={market}")
+        source = snapshot.source_for_market(market)
+        selected_period = _actual_period(snapshot, market, source, period)
+        ranked = snapshot.ranked_brands(market, selected_period, source)
+        if not ranked:
+            raise LookupError(f"mart market period not found: market={market} period={selected_period}")
+        rows = ranked[:10]
+        market_value = snapshot.market_value(market, selected_period, source)
+        structure = market_structure(snapshot, market, source)
+        render_data: dict[str, Any] = {
+            "market": market,
+            "market_id": market,
+            "market_name": "해당 전략 시장",
+            "scope": "market",
+            "scope_label": "시장 전체",
+            "level": "Brand",
+            "view_type": "market_landscape",
+            "period": selected_period,
+            "member_brands": tuple(row["brand"] for row in ranked),
+            "market_size_recent_krw": market_value,
+            "market_size_억원": market_value / 100_000_000,
+            "hhi_recent": snapshot.hhi(market, selected_period, source),
+            "level_segments": level_segments(rows),
+            "source_label": source_label(source),
+            "query_result_id": self._results.put(rows),
+            "query_spec": {
+                "source": source,
+                "view": "market_landscape",
+                "market": market,
+                "filters": {"period": selected_period},
+                "group_by": ["product"],
+                "sort": "sales_desc",
+            },
+        }
+        if structure:
+            render_data["market_structure"] = structure
+        return {
+            "source": source_label(source),
+            "tool": "get_market_landscape",
+            "summary_text": f"요청한 전략 시장의 {selected_period} 규모를 전략 mart에서 조회했습니다.",
+            "render_data": render_data,
+        }
+
     def market_member_metric(self, anchor_brand: str, member_brand: str) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, anchor_brand)
