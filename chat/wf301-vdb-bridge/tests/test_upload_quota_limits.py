@@ -114,8 +114,10 @@ def test_openapi_advertises_runtime_quota_without_stale_50mb_examples() -> None:
     assert settings.QUOTA_MAX_SESSION_MB == 100
 
 
-def test_embedding_and_preprocessor_budgets_are_not_raised_with_upload_quota() -> None:
-    assert settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB == 20
+def test_embedding_and_preprocessor_time_budgets_remain_bounded() -> None:
+    assert settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB == 100
+    assert settings.PDF_MAX_ESTIMATED_SECONDS == 300
+    assert settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES == 0
     assert settings.ROUTE_SOFT_CHUNK_LIMIT == 100_000
     assert settings.ROUTE_HARD_CHUNK_LIMIT == 200_000
     assert settings.WIKI_MAX_CHUNKS == 80

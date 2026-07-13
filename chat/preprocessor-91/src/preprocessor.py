@@ -69,7 +69,17 @@ PDF_BBOX_SEARCH_TRUNC = 60     # search_for에 사용할 라인 최대 길이 (�
 PDF_BBOX_MIN_LEN = 4           # 검색 후보로 쓸 최소 문자열 길이
 PDF_GRAPHICS_LIMIT = 20000     # 페이지당 벡터 그래픽 상한 (초과 시 그래픽 분석 스킵 — 병적 페이지 방어)
 PDF_PROGRESS_EVERY = 10        # N페이지마다 진행 로그 + gc
-PDF_OCR_TEXT_MIN_NONSPACE = max(int(os.environ.get("PDF_OCR_TEXT_MIN_NONSPACE", "20")), 0)
+PDF_TEXT_LAYER_MIN_CHARS = max(
+    int(
+        os.environ.get(
+            "PDF_TEXT_LAYER_MIN_CHARS",
+            os.environ.get("PDF_OCR_TEXT_MIN_NONSPACE", "20"),
+        )
+    ),
+    0,
+)
+# Backward-compatible name for deployments that still carry the old setting.
+PDF_OCR_TEXT_MIN_NONSPACE = PDF_TEXT_LAYER_MIN_CHARS
 PDF_OCR_LANGUAGES = os.environ.get("PDF_OCR_LANGUAGES", "eng+kor").strip() or "eng+kor"
 PDF_MARKDOWN_CHUNK_SIZE = max(int(os.environ.get("PDF_MARKDOWN_CHUNK_SIZE", "2400")), 200)
 PDF_MARKDOWN_CHUNK_OVERLAP = max(int(os.environ.get("PDF_MARKDOWN_CHUNK_OVERLAP", "100")), 0)
@@ -239,9 +249,13 @@ def _page_worker_init(file_path: str) -> None:
         _PAGE_WORKER_HDR_INFO = None
 
 
+def _should_ocr_page(native_text: str) -> bool:
+    return len("".join(native_text.split())) < PDF_TEXT_LAYER_MIN_CHARS
+
+
 def _page_markdown_items(pymupdf4llm, doc, pno: int, hdr_info=None) -> Tuple[list, bool]:
     native_text = doc[pno].get_text("text") or ""
-    use_ocr = len("".join(native_text.split())) < PDF_OCR_TEXT_MIN_NONSPACE
+    use_ocr = _should_ocr_page(native_text)
     kwargs_try = [
         {"page_chunks": True, "graphics_limit": PDF_GRAPHICS_LIMIT,
          "show_progress": False, "use_ocr": use_ocr, "ocr_language": PDF_OCR_LANGUAGES},

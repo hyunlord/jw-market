@@ -75,6 +75,16 @@ def test_ocr_candidate_passes_configured_english_and_korean_languages(
     assert observed[0]["ocr_language"] == "eng+kor"
 
 
+def test_page_with_usable_text_layer_skips_ocr() -> None:
+    assert preprocessor._should_ocr_page("embedded text layer with enough useful characters") is False
+
+
+def test_mixed_document_selects_ocr_per_page() -> None:
+    page_text = ["native text on this page is long enough", "", "short"]
+
+    assert [preprocessor._should_ocr_page(text) for text in page_text] == [False, True, True]
+
+
 def test_ordered_page_results_restore_source_order() -> None:
     results = [
         preprocessor.PdfPageResult(2, "page-3", False, 0.3),
@@ -183,6 +193,7 @@ def test_deployment_contract_reserves_parallel_resources() -> None:
     assert "name: PREPROC_LARGE_PDF_MIN_BYTES" in manifest
     assert 'name: PREPROC_PAGE_WORKER_THREADS\n              value: "1"' in manifest
     assert 'name: PDF_OCR_LANGUAGES\n              value: "eng+kor"' in manifest
+    assert 'name: PDF_TEXT_LAYER_MIN_CHARS\n              value: "20"' in manifest
     assert 'value: "50"' in manifest
     assert 'value: "5242880"' in manifest
     assert 'cpu: "8"' in manifest
