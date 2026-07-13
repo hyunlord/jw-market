@@ -117,6 +117,38 @@ def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypat
     assert all(_point(entity, "rank", "2025-10") is not None for entity in company_payload["entities"])
 
 
+def test_activity_series_uses_resolved_brand_identity_for_entity_axes(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": period} for period in _months()]
+        if "GROUP BY market, master_product" in sql:
+            return [{"market": "LIVALO Market", "master_product": product} for product in ("LIVALO", "A", "B", "C")]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            return _activity_rows()
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+
+    brand_payload = service.get_csd_activity_series(
+        {**_request(period={"start": "2025-Q4", "end": "2025-Q4"}), "selected_brand": "LIVALO DISPLAY"}
+    )
+    company_payload = service.get_csd_activity_series(
+        {
+            **_request(period={"start": "2025-Q4", "end": "2025-Q4"}),
+            "selected_brand": "LIVALO DISPLAY",
+            "entity_level": "company",
+        }
+    )
+
+    assert brand_payload is not None
+    assert company_payload is not None
+    assert brand_payload["entities"][0]["key"] == "LIVALO"
+    assert brand_payload["entities"][0]["is_selected"] is True
+    assert company_payload["entities"][0]["key"] == "JW"
+    assert company_payload["entities"][0]["is_selected"] is True
+
+
 def test_company_axis_keeps_missing_mart_company_in_visible_unclassified_bucket(monkeypatch) -> None:
     base = _brand_set_with_korean_companies()
     brand_set = BrandSetResolution(

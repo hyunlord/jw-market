@@ -80,7 +80,7 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
     )
     rows = _fetch_activity_rows(crosswalk, request.csd_channel)
     activity = _activity_rows(rows, activity_months, all_months)
-    selected_key = _selected_entity_key(request.entity_level, request.selected_brand, selected_meta, brand_set)
+    selected_key = _selected_entity_key(request.entity_level, selected_meta, brand_set)
     entity_keys = _entity_keys(request, selected_key, brand_set)
     rank_source = (
         _company_activity_by_key(brand_set, activity)
@@ -182,7 +182,8 @@ def _company_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRo
     return values
 
 
-def _selected_entity_key(entity_level: CsdEntityLevel, selected_brand: str, selected_meta: BrandMeta, brand_set: BrandSetResolution) -> str:
+def _selected_entity_key(entity_level: CsdEntityLevel, selected_meta: BrandMeta, brand_set: BrandSetResolution) -> str:
+    selected_brand = brand_set.selected_brand
     if entity_level == "company":
         return _company_for_brand(selected_brand, brand_set)
     return selected_brand or normalize_iqvia_en(selected_meta.product_codes[0])
