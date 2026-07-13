@@ -24,6 +24,13 @@ LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
 GATED_EXTERNAL_PREPROCESSOR_EXTENSIONS = frozenset({"pdf", "pptx"})
 PDF_PAGE_MARKER = re.compile(rb"/Type\s*/Page\b")
 PPTX_SLIDE_NAME = re.compile(r"^ppt/slides/slide\d+\.xml$")
+PREPROCESSOR_TIMEOUT_MESSAGE = (
+    "문서가 커서 처리 시간이 초과되었습니다. "
+    "파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
+)
+PREPROCESSOR_FAILURE_MESSAGE = (
+    "문서 전처리에 실패했습니다. 파일 형식이나 내용을 확인한 뒤 다시 시도해 주세요."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,7 @@ class PreprocessorGateBlock:
     route: Literal["blocked_oversized", "preprocess_failed"]
     route_reason: str
     file_size_bytes: int
+    user_message: str
 
 
 class PreprocessorRunError(RuntimeError):
@@ -64,10 +72,17 @@ class PreprocessorRunError(RuntimeError):
     HTTP status만으로는 실패를 알 수 없다. 이 예외로 조용한 성공(빈 temp 커밋)을 차단한다.
     """
 
-    def __init__(self, reason: str, *, file_names: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        file_names: list[str] | None = None,
+        user_message: str = PREPROCESSOR_FAILURE_MESSAGE,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.file_names = list(file_names or [])
+        self.user_message = user_message
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -187,16 +202,13 @@ def _size_gate_block(file_name: str, size_bytes: int) -> PreprocessorGateBlock |
     limit_bytes = _external_preprocessor_limit_bytes()
     if size_bytes <= limit_bytes:
         return None
-    reason = (
-        f"file_size_bytes={size_bytes} exceeds PDF/PPTX preprocessor limit "
-        f"{limit_bytes} bytes ({settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB} MiB); "
-        "preprocessor-64 delegation is blocked to avoid shared-service OOM."
-    )
+    reason = f"PDF·PPTX 파일은 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB}MB까지 지원됩니다."
     return PreprocessorGateBlock(
         file_name=file_name,
         route="blocked_oversized",
         route_reason=reason,
         file_size_bytes=size_bytes,
+        user_message=reason,
     )
 
 
@@ -227,30 +239,24 @@ def _metadata_gate_block(
     if extension == "pdf":
         page_count = _pdf_page_count(path)
         if page_count is not None and page_count > settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES:
-            reason = (
-                f"page_count={page_count} exceeds PDF preprocessor limit "
-                f"{settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES}; "
-                "preprocessor-64 delegation is blocked to avoid shared-service OOM."
-            )
+            reason = f"PDF는 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES}페이지까지 지원됩니다."
             return PreprocessorGateBlock(
                 file_name=file_name,
                 route="blocked_oversized",
                 route_reason=reason,
                 file_size_bytes=file_size_bytes,
+                user_message=reason,
             )
     if extension == "pptx":
         slide_count = _pptx_slide_count(path)
         if slide_count is not None and slide_count > settings.EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES:
-            reason = (
-                f"slide_count={slide_count} exceeds PPTX preprocessor limit "
-                f"{settings.EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES}; "
-                "preprocessor-64 delegation is blocked to avoid shared-service OOM."
-            )
+            reason = f"PPTX는 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES}슬라이드까지 지원됩니다."
             return PreprocessorGateBlock(
                 file_name=file_name,
                 route="blocked_oversized",
                 route_reason=reason,
                 file_size_bytes=file_size_bytes,
+                user_message=reason,
             )
     return None
 
@@ -443,12 +449,19 @@ def run_preprocessor(
             for item in saved_documents
         ],
     }
-    response = client.post(
-        f"{settings.PREPROCESSOR_API_BASE.rstrip('/')}/temp/run",
-        json=body,
-        headers=headers,
-        timeout=settings.PREPROCESSOR_TIMEOUT_S,
-    )
+    try:
+        response = client.post(
+            f"{settings.PREPROCESSOR_API_BASE.rstrip('/')}/temp/run",
+            json=body,
+            headers=headers,
+            timeout=settings.PREPROCESSOR_TIMEOUT_S,
+        )
+    except httpx.TimeoutException as exc:
+        raise PreprocessorRunError(
+            PREPROCESSOR_TIMEOUT_MESSAGE,
+            file_names=[item.file_name for item in saved_documents],
+            user_message=PREPROCESSOR_TIMEOUT_MESSAGE,
+        ) from exc
     response.raise_for_status()
     payload = response.json()
     payload = payload if isinstance(payload, dict) else {"raw": payload}
@@ -461,6 +474,7 @@ def run_preprocessor(
         raise PreprocessorRunError(
             reason,
             file_names=[item.file_name for item in saved_documents],
+            user_message=PREPROCESSOR_FAILURE_MESSAGE,
         )
     return payload
 
@@ -488,6 +502,7 @@ def preprocessor_failure_blocks(
                 route="preprocess_failed",
                 route_reason=reason,
                 file_size_bytes=size_bytes,
+                user_message=error.user_message,
             )
         )
     return blocks
