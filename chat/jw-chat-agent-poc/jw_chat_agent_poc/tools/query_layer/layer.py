@@ -348,8 +348,16 @@ class StrategicQueryLayer:
         if kind == "yoy":
             data = brand_yoy_data(snapshot, market, source, brand)
         else:
-            count = bounded_limit(filters.get("periods"), 6)
-            data = brand_average_share_data(snapshot, market, source, brand, count)
+            requested_months = bounded_limit(filters.get("periods"), 6)
+            observation_count = max(1, (requested_months + 2) // 3) if source == "iqvia_nsa" else requested_months
+            data = brand_average_share_data(snapshot, market, source, brand, observation_count)
+            data.update(
+                {
+                    "requested_window_months": requested_months,
+                    "observation_count": observation_count,
+                    "window_grain": "quarter" if source == "iqvia_nsa" else "month",
+                }
+            )
         data.update(
             {
                 "market_id": market,

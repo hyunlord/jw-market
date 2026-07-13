@@ -146,9 +146,15 @@ class AgentToolFacade:
         period_arg = arguments.get("period")
         if self._query_layer is not None:
             try:
-                call = self._query_layer.brand_metric(brand, measure, display_period(period_arg, self._periods))
-            except (LookupError, TypeError, ValueError):
-                pass
+                call = self._query_layer.brand_metric(brand, measure, period_arg or "latest")
+            except (LookupError, TypeError, ValueError) as exc:
+                return _tool_error(
+                    "get_metric",
+                    arguments,
+                    _query_failed_message(),
+                    status=QUERY_FAILED_STATUS,
+                    error=exc,
+                )
             else:
                 return ToolExecution("ok", f"{brand} {measure} query-layer", call, arguments)
         call = self._metrics.get_brand_metric(brand, metric=measure, period=display_period(period_arg, self._periods), filter_entries=period_filters(period_arg))
@@ -279,7 +285,7 @@ class AgentToolFacade:
 
     def _query_metric(self, arguments: Mapping[str, str], metric: str) -> ToolExecution:
         brand = self._brand(arguments)
-        period = display_period(arguments.get("period"), self._periods)
+        period = arguments.get("period") or "latest"
         result = brand_metric(self._query_layer, brand, metric, period)
         return ToolExecution("ok", result.preview, result.call, arguments)
 

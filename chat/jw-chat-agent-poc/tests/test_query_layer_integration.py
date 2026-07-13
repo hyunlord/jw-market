@@ -145,6 +145,56 @@ def test_brand_metric_uses_the_source_that_contains_an_iqvia_only_brand() -> Non
     assert call["render_data"]["brand"] == "마운자로"
 
 
+def test_brand_series_keeps_latest_alias_until_iqvia_source_is_selected() -> None:
+    """The facade must not turn ``latest`` into a monthly period before source selection."""
+
+    periods = ("2025-Q4", "2026-Q1")
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(_record_with_market("ml_003", "UBIST브랜드", (100.0, 110.0), periods, [100.0, 110.0]), source="ubist"),
+                replace(_record_with_market("ml_003", "마운자로", (180.0, 200.0), periods, [180.0, 200.0]), source="iqvia_nsa"),
+            )
+        )
+    )
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("마운자로",),
+        query_layer=layer,
+    )
+
+    execution = facade.execute("get_brand_series", {"brand": "마운자로", "period": "latest"})
+
+    assert execution.status == "ok"
+    assert execution.call["source"] == "IQVIA"
+    assert execution.call["tool"] == "get_brand_metric"
+    assert execution.call["render_data"]["period"] == "2026-Q1"
+
+
+def test_metric_query_failure_does_not_fall_through_to_fixture_zero() -> None:
+    class BrokenLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
+            raise LookupError(f"missing {brand} {metric} {period}")
+
+        def catalog_for_brand(self, brand: str | None):
+            return None
+
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=BrokenLayer(),  # type: ignore[arg-type]
+    )
+
+    execution = facade.execute("get_metric", {"brand": "리바로", "measure": "sales", "period": "2025-04"})
+
+    assert execution.status == "error"
+    assert execution.call["tool"] == "query_failed"
+    assert execution.call["render_data"]["status"] == "query_failed"
+    assert "sales_억원" not in execution.call["render_data"]
+
+
 def test_query_uses_the_source_that_contains_an_iqvia_only_fallback_brand() -> None:
     """Given no explicit source, a filtered query follows the fallback brand's available source."""
 
@@ -165,6 +215,37 @@ def test_query_uses_the_source_that_contains_an_iqvia_only_fallback_brand() -> N
 
     assert call["source"] == "IQVIA"
     assert call["render_data"]["source_label"] == "IQVIA"
+
+
+def test_iqvia_average_share_converts_six_months_to_two_quarters() -> None:
+    periods = ("2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1")
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(
+                    _record_with_market("ml_003", "마운자로", (100.0, 120.0, 140.0, 160.0, 200.0), periods, [100.0, 120.0, 140.0, 160.0, 200.0]),
+                    source="iqvia_nsa",
+                ),
+            )
+        )
+    )
+
+    call = layer.query(
+        {
+            "market": "ml_003",
+            "source": "iqvia_nsa",
+            "metrics": ["share"],
+            "derive": ["average"],
+            "filters": {"brand": "마운자로", "periods": "6"},
+        },
+        fallback_brand="마운자로",
+    )
+
+    data = call["render_data"]
+    assert [row["period"] for row in data["brand_value_series_10pt"]] == ["2025-Q4", "2026-Q1"]
+    assert data["requested_window_months"] == 6
+    assert data["observation_count"] == 2
+    assert data["window_grain"] == "quarter"
 
 
 def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:
