@@ -52,6 +52,10 @@ from .models import (
     QuotaCheckResponse,
     QuotaLimits,
     QuotaSnapshot,
+    PublicCommitResponse,
+    PublicDocumentsResponse,
+    PublicSearchResponse,
+    PublicUploadResponse,
     SearchRequest,
     SearchResponse,
     SessionDocument,
@@ -1042,7 +1046,7 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
 
 @app.post(
     "/commit",
-    response_model=CommitResponse,
+    response_model=PublicCommitResponse,
     summary="임시 문서를 공용 VDB 139에 정식 등록",
     description=COMMIT_DESCRIPTION,
 )
@@ -1475,7 +1479,7 @@ def _session_request(
 
 @app.post(
     "/upload",
-    response_model=UploadResponse,
+    response_model=PublicUploadResponse,
     summary="파일을 세션 임시 VDB에 업로드",
     description=UPLOAD_DESCRIPTION,
 )
@@ -1747,7 +1751,7 @@ def upload(
 
 @app.get(
     "/documents",
-    response_model=DocumentsResponse,
+    response_model=PublicDocumentsResponse,
     summary="세션에 등록된 검색 가능 문서 목록 조회",
     description=DOCUMENTS_DESCRIPTION,
 )
@@ -2078,7 +2082,7 @@ def file_sql_query(req: FileSqlQueryRequest) -> FileSqlQueryResponse:
 
 @app.post(
     "/search",
-    response_model=SearchResponse,
+    response_model=PublicSearchResponse,
     summary="세션 등록 문서 벡터 검색",
     description=SEARCH_DESCRIPTION,
 )
