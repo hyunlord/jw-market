@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from typing import Never
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdTimeseriesAmbiguousMarketError,
     CsdTimeseriesInputError,
     CsdTimeseriesNoMappingError,
     get_csd_timeseries,
+)
+from pipeline.scripts.api.brand_activity_csd_presence import (
+    CsdPresence,
+    get_csd_presence,
+    get_csd_presences,
 )
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError
 from pipeline.scripts.api.brand_activity_csd_activity_series import (
@@ -56,6 +61,33 @@ router = APIRouter()
 
 # Internal diagnostic/storage endpoints. The portal-facing Brand Activity contract is the POST matrix route below.
 TOPIC_DEBUG_INCLUDE_IN_SCHEMA = False
+
+
+@router.get(
+    "/api/brand-activity/csd-presence",
+    tags=[BRAND_ACTIVITY_TAG],
+    summary="브랜드 CSD 원천 존재 여부",
+)
+def brand_activity_csd_presence(
+    brand: str | None = Query(None, description="확인할 브랜드명."),
+    brands: str | None = Query(None, description="쉼표로 구분한 브랜드명. 최대 50개."),
+) -> CsdPresence | list[CsdPresence]:
+    """Return CSD product-code mapping presence without building activity payloads."""
+
+    if (brand is None) == (brands is None):
+        raise HTTPException(status_code=422, detail={"error": "exactly_one_of_brand_or_brands_required"})
+    if brand is not None:
+        requested = brand.strip()
+        if not requested:
+            raise HTTPException(status_code=422, detail={"error": "brand_is_empty"})
+        return get_csd_presence(requested)
+
+    requested_brands = [item.strip() for item in (brands or "").split(",") if item.strip()]
+    if not requested_brands:
+        raise HTTPException(status_code=422, detail={"error": "brands_is_empty"})
+    if len(requested_brands) > 50:
+        raise HTTPException(status_code=422, detail={"error": "too_many_brands", "limit": 50})
+    return get_csd_presences(tuple(requested_brands))
 
 
 @router.get("/api/brand-activity/topics", include_in_schema=TOPIC_DEBUG_INCLUDE_IN_SCHEMA)

@@ -14,6 +14,7 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
 
     assert sorted(schema["paths"]) == [
         "/api/brand-activity/csd-activity-series",
+        "/api/brand-activity/csd-presence",
         "/api/brand-activity/csd-timeseries",
         "/api/brand-activity/interest-rx-matrix",
         "/api/brand-activity/topics",
