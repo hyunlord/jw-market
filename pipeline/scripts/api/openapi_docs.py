@@ -1502,7 +1502,8 @@ DEEP_ANALYSIS_RESPONSES: Final = {
             "가용 컨텍스트가 하나일 때만 생략할 수 있으며, 모호하면 가용 컨텍스트와 함께 409를 반환합니다. "
             "기존 `view=general|strategic` 호출은 SI 전환 기간 동안 유지됩니다. `atc4` query parameter는 "
             "지원하지 않으며 general의 ATC4는 `market_id`로 전달합니다. optional 섹션이 없거나 catalog에는 "
-            "있지만 mart 데이터가 없으면 전체 요청을 실패시키지 않고 빈 섹션과 상태 meta를 반환합니다."
+            "있지만 mart 데이터가 없으면 전체 요청을 실패시키지 않고 "
+            "`{available:false, reason:not_generated|no_history}` 섹션과 상태 meta를 반환합니다."
         ),
         "content": {
             "application/json": {
@@ -1529,6 +1530,22 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                                 "forecast_meta": {
                                     "type": "object",
                                     "description": "선택 시장 컨텍스트의 forecast 생성/가용 상태입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "forecast": {
+                                    "type": "object",
+                                    "description": (
+                                        "deep_forecast_block의 정본 forecast입니다. 미생성 시 "
+                                        "available=false와 not_generated 또는 no_history reason을 반환합니다."
+                                    ),
+                                    "additionalProperties": True,
+                                },
+                                "simulation": {
+                                    "type": "object",
+                                    "description": (
+                                        "forecast와 동일한 deep_forecast_block의 simulation입니다. 미생성 시 "
+                                        "available=false와 not_generated 또는 no_history reason을 반환합니다."
+                                    ),
                                     "additionalProperties": True,
                                 },
                                 "strength_meta": {

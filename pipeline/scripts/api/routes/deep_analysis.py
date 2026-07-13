@@ -29,7 +29,7 @@ from pipeline.scripts.api.deep_analysis_context import (
     resolve_deep_analysis_context,
 )
 from pipeline.scripts.api.deep_analysis_serving import (
-    load_forecast_records,
+    load_forecast_block,
     load_market_strength_records,
 )
 from pipeline.scripts.api.deep_analysis_runtime import build_strategic_row, load_events
@@ -44,8 +44,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
-FORECAST_HORIZON_QUARTERS = 20
-FORECAST_HORIZON_MONTHS = 60
 GENERAL_CACHE_TTL_DAYS: Final[int] = 35
 BRAND_ELEMENTS_CACHE_TTL_DAYS: Final[int] = 35
 SOURCE_BRAND_STRENGTH_TABLE: Final[str] = "agent3_brand_strength_source"
@@ -618,47 +616,88 @@ def _resolve_brand_factor_choices(
     requested_brand: str,
     atc4: str | None,
     selected_factors: dict,
-) -> dict[str, tuple]:
+) -> tuple[dict[str, tuple], dict[str, dict[str, object]]]:
     matched_brand = str(row.get("brand") or row.get("brand_key") or requested_brand)
     selected_brand_key = str(row.get("brand_key") or matched_brand)
     market_atc4 = str(row.get("atc4_code") or atc4 or _first_factor_atc4(selected_factors)).strip()
     strategic_market_id = _strategic_ml_id(str(row.get("market_id") or "").strip())
     fallback = fallback_brand_choices(selected_brand_key or matched_brand, matched_brand)
     if not selected_brand_key:
-        return {source: fallback for source in BRAND_FACTOR_DB_SOURCES}
-    if not market_atc4 and not strategic_market_id and "brand_key" not in row:
-        return {source: fallback for source in BRAND_FACTOR_DB_SOURCES}
+        return (
+            {source: fallback for source in BRAND_FACTOR_DB_SOURCES},
+            {source: {"available": True, "reason": None} for source in BRAND_FACTOR_DB_SOURCES},
+        )
 
     choices_by_source: dict[str, tuple] = {}
-    for response_source, db_source in BRAND_FACTOR_DB_SOURCES.items():
+    meta_by_source: dict[str, dict[str, object]] = {}
+    for response_source in BRAND_FACTOR_DB_SOURCES:
         try:
-            if "brand_key" in row and market_atc4:
+            if strategic_market_id:
+                context = resolve_deep_analysis_context(
+                    brand=selected_brand_key,
+                    view_kind="strategic_ml",
+                    market_id=strategic_market_id,
+                    source=response_source,
+                )
+                choices = _resolve_context_brand_choices(context)
+            elif market_atc4:
                 resolution = resolve_brand_set(
                     view_name="general",
                     market_id=market_atc4,
                     selected_brand=selected_brand_key,
                     filter_payload={"atc4": [market_atc4]},
-                    source=db_source,
+                    source=BRAND_FACTOR_DB_SOURCES[response_source],
                     rank_by_latest_period=True,
                 )
+                choices = resolution.choices if resolution and resolution.choices else fallback
             else:
-                resolution = resolve_brand_set(
-                    view_name="strategic_ml",
-                    market_id=strategic_market_id or None,
-                    selected_brand=selected_brand_key,
-                    filter_payload={},
-                    source=db_source,
-                    rank_by_latest_period=True,
-                )
-        except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
-            logger.info(
-                "deep-analysis source market resolver fell back to selected brand only: source=%s",
+                choices = fallback
+        except (
+            BrandSetInputError,
+            BrandSetResolutionError,
+            DeepAnalysisContextError,
+            KeyError,
+            ValueError,
+            IndexError,
+            pymysql.MySQLError,
+        ):
+            logger.warning(
+                "deep_analysis_brand_factor_market_resolve_failed brand=%s market_id=%s source=%s",
+                selected_brand_key,
+                strategic_market_id or market_atc4,
                 response_source,
                 exc_info=True,
             )
-            resolution = None
-        choices_by_source[response_source] = resolution.choices if resolution and resolution.choices else fallback
-    return choices_by_source
+            choices = () if strategic_market_id else fallback
+        if choices:
+            choices_by_source[response_source] = choices
+            meta_by_source[response_source] = {"available": True, "reason": None}
+        elif strategic_market_id:
+            logger.warning(
+                "deep_analysis_brand_factor_market_resolve_failed brand=%s market_id=%s source=%s reason=no_choices",
+                selected_brand_key,
+                strategic_market_id,
+                response_source,
+            )
+            choices_by_source[response_source] = ()
+            meta_by_source[response_source] = {"available": False, "reason": "market_resolve_failed"}
+        else:
+            choices_by_source[response_source] = fallback
+            meta_by_source[response_source] = {"available": True, "reason": None}
+    return choices_by_source, meta_by_source
+
+
+def _resolve_context_brand_choices(context: DeepAnalysisContext) -> tuple:
+    resolution = resolve_brand_set(
+        view_name=context.view_kind,
+        market_id=context.market_id,
+        selected_brand=context.brand_key,
+        filter_payload={"atc4": [context.market_id]} if context.view_kind == "general" else {},
+        source=context.db_source,
+        rank_by_latest_period=True,
+        resolved_context=context,
+    )
+    return resolution.choices if resolution and resolution.choices else ()
 
 
 def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dict | None:
@@ -1031,7 +1070,11 @@ def _compose_formal_context_payload(
         data = payload["data"]
         if forecast is not None:
             data["forecast"] = forecast
-            data["forecast_meta"] = {"status": "available", "reason": None}
+            if _section_has_payload(forecast):
+                data["forecast_meta"] = {"status": "available", "reason": None}
+            else:
+                reason = forecast.get("reason") if isinstance(forecast, dict) else "not_generated"
+                data["forecast_meta"] = {"status": reason, "reason": reason}
         if simulation is not None:
             data["simulation"] = simulation
     return payload, row
@@ -1045,8 +1088,8 @@ def _empty_formal_payload(context: DeepAnalysisContext) -> dict:
         else "해당 시장 컨텍스트의 예측 데이터가 아직 생성되지 않음"
     )
     data: dict[str, Any] = {
-        "forecast": [],
-        "simulation": [],
+        "forecast": {"available": False, "reason": status},
+        "simulation": {"available": False, "reason": status},
         "events": [],
         "forecast_meta": {"status": status, "reason": reason},
         "strength_meta": {
@@ -1121,13 +1164,17 @@ def _scope_formal_payload(payload: dict, context: DeepAnalysisContext) -> None:
     if _section_has_payload(data.get("forecast")):
         data["forecast_meta"] = {"status": "available", "reason": None}
     else:
-        data["forecast"] = []
+        unavailable = data.get("forecast")
+        reason = (unavailable.get("reason") if isinstance(unavailable, dict) else None) or "not_generated"
+        data["forecast"] = {"available": False, "reason": reason}
         data["forecast_meta"] = {
-            "status": "not_generated",
+            "status": reason,
             "reason": "해당 시장 컨텍스트의 예측 데이터가 아직 생성되지 않음",
         }
     if not _section_has_payload(data.get("simulation")):
-        data["simulation"] = []
+        unavailable = data.get("simulation")
+        reason = (unavailable.get("reason") if isinstance(unavailable, dict) else None) or "not_generated"
+        data["simulation"] = {"available": False, "reason": reason}
     data.setdefault(
         "strength_meta",
         {"status": "not_generated", "reason": "해당 시장 컨텍스트의 강점 데이터가 아직 생성되지 않음"},
@@ -1142,6 +1189,8 @@ def _section_has_payload(value: object) -> bool:
     if isinstance(value, list):
         return bool(value)
     if not isinstance(value, dict):
+        return False
+    if value.get("available") is False:
         return False
     by_combo = value.get("by_combo")
     return bool(by_combo) if isinstance(by_combo, dict) else bool(value)
@@ -1168,39 +1217,10 @@ def _no_market_data_meta(context: DeepAnalysisContext) -> dict:
 
 
 def _load_formal_forecast_sections(context: DeepAnalysisContext) -> tuple[object | None, object | None]:
-    block_row, horizon_row = load_forecast_records(context)
-    forecast = _section_from_serving_row(block_row or {}, "forecast")
-    if forecast is None:
-        forecast = _section_from_serving_row(horizon_row or {}, "forecast")
-    simulation = _section_from_serving_row(block_row or {}, "simulation")
-    return forecast, simulation
-
-
-def _section_from_serving_row(row: dict, section_name: str) -> object | None:
-    for key in (
-        section_name,
-        f"{section_name}_json",
-        f"{section_name}_block_json",
-        f"{section_name}_horizon_json",
-        "block_json",
-        "horizon_json",
-        "payload_json",
-        "response_json",
-    ):
-        value = row.get(key)
-        if value is None:
-            continue
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError:
-                continue
-        if key in {"payload_json", "response_json"} and isinstance(value, dict):
-            data = value.get("data") if isinstance(value.get("data"), dict) else value
-            value = data.get(section_name) if isinstance(data, dict) else None
-        if isinstance(value, (dict, list)):
-            return value
-    return None
+    block = load_forecast_block(context)
+    if block is None:
+        return None, None
+    return block.forecast, block.simulation
 
 
 def _load_cached_brand_elements_read_only(brand_keys: list[str]) -> dict[str, dict]:
@@ -1245,19 +1265,12 @@ def _load_market_strength(
 def _formal_brand_factors(brand: str, context: DeepAnalysisContext) -> dict[str, list[dict]]:
     fallback = fallback_brand_choices(context.brand_key, context.brand_name)
     try:
-        resolution = resolve_brand_set(
-            view_name=context.view_kind,
-            market_id=context.market_id,
-            selected_brand=context.brand_key,
-            filter_payload={"atc4": [context.market_id]} if context.view_kind == "general" else {},
-            source=context.db_source,
-            rank_by_latest_period=True,
-            resolved_context=context,
-        )
+        choices = _resolve_context_brand_choices(context)
     except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
         logger.info("formal deep-analysis brand-factor resolver unavailable", exc_info=True)
-        resolution = None
-    choices = resolution.choices if resolution and resolution.choices else fallback
+        choices = fallback
+    if not choices:
+        choices = fallback
     brand_keys = [choice.brand_key for choice in choices]
     cached = _load_cached_brand_elements_read_only(brand_keys)
     strengths = _load_market_strength(brand_keys, context)
@@ -1309,79 +1322,13 @@ def _format_generated_at(value: object) -> str:
     return generated_at.isoformat(timespec="seconds")
 
 
-def _forecast_horizon_for_combo(combo: dict) -> int | None:
-    period_unit = combo.get("period_unit")
-    if period_unit == "분기":
-        return FORECAST_HORIZON_QUARTERS
-    if period_unit == "월":
-        return FORECAST_HORIZON_MONTHS
-    return None
-
-
-def _slice_forecast_intervals(forecast_intervals: object, horizon: int) -> None:
-    if not isinstance(forecast_intervals, dict):
-        return
-    for key, value in forecast_intervals.items():
-        if isinstance(value, list):
-            forecast_intervals[key] = value[:horizon]
-
-
-def _slice_forecast_combo(combo: object) -> None:
-    if not isinstance(combo, dict):
-        return
-    horizon = _forecast_horizon_for_combo(combo)
-    if horizon is None:
-        return
-
-    forecast_periods = combo.get("forecast_periods")
-    if isinstance(forecast_periods, list):
-        combo["forecast_periods"] = forecast_periods[:horizon]
-
-    forecast_values = combo.get("forecast_values")
-    if isinstance(forecast_values, list):
-        combo["forecast_values"] = forecast_values[:horizon]
-    forecast_ms_pct = combo.get("forecast_ms_pct")
-    if isinstance(forecast_ms_pct, list):
-        combo["forecast_ms_pct"] = forecast_ms_pct[:horizon]
-    _slice_forecast_intervals(combo.get("forecast_intervals"), horizon)
-
-    brands = combo.get("brands")
-    if not isinstance(brands, list):
-        return
-    for brand in brands:
-        if not isinstance(brand, dict):
-            continue
-        forecast_values = brand.get("forecast_values")
-        if isinstance(forecast_values, list):
-            brand["forecast_values"] = forecast_values[:horizon]
-        forecast_ms_pct = brand.get("forecast_ms_pct")
-        if isinstance(forecast_ms_pct, list):
-            brand["forecast_ms_pct"] = forecast_ms_pct[:horizon]
-        _slice_forecast_intervals(brand.get("forecast_intervals"), horizon)
-
-
-def _slice_forecast_horizon(payload: dict) -> None:
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return
-    forecast = data.get("forecast")
-    if not isinstance(forecast, dict):
-        return
-    by_combo = forecast.get("by_combo")
-    if not isinstance(by_combo, dict):
-        return
-    for combo in by_combo.values():
-        _slice_forecast_combo(combo)
-
-
 @router.get(
     "/api/deep-analysis/{brand_name}",
     tags=[PORTAL_CORE_TAG],
     summary="포탈 심층분석 조회",
     description=(
         "view_kind, market_id, source로 검증한 mart/catalog 컨텍스트에서 심층분석 payload를 반환합니다. "
-        "기존 view 호출은 전환 기간 동안 유지하며, 월/분기 forecast horizon은 "
-        "화면 계약에 맞게 잘라서 제공합니다."
+        "기존 view 호출은 전환 기간 동안 유지하며 예측과 시뮬레이션은 동일한 사전 계산 block을 사용합니다."
     ),
     response_model=None,
     responses=DEEP_ANALYSIS_RESPONSES,
@@ -1452,7 +1399,6 @@ def deep_analysis(
     except CompactBrandLookupAmbiguous as exc:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand}) from exc
     payload["generated_at"] = _format_generated_at(row.get("updated_at"))
-    _slice_forecast_horizon(payload)
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
@@ -1506,7 +1452,21 @@ def deep_analysis(
                     "reason": "해당 시장 컨텍스트의 강점 데이터가 아직 생성되지 않음",
                 }
         else:
-            brand_choices_by_source = _resolve_brand_factor_choices(row, brand, None, selected_factors)
+            brand_choices_by_source, brand_factor_meta = _resolve_brand_factor_choices(
+                row,
+                brand,
+                None,
+                selected_factors,
+            )
+            unavailable_factor_sources = {
+                source_name: meta
+                for source_name, meta in brand_factor_meta.items()
+                if meta.get("available") is False
+            }
+            if unavailable_factor_sources:
+                data["brand_factors_meta"] = unavailable_factor_sources
+            else:
+                data.pop("brand_factors_meta", None)
             brand_keys = sorted(
                 {
                     choice.brand_key

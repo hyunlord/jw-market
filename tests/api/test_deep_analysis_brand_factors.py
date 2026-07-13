@@ -78,6 +78,23 @@ def test_deep_analysis_route_serves_source_scoped_brand_factors(monkeypatch) -> 
         return type("Resolution", (), {"choices": choices})()
 
     monkeypatch.setattr(deep_analysis, "resolve_brand_set", fake_resolve_brand_set)
+    monkeypatch.setattr(
+        deep_analysis,
+        "resolve_deep_analysis_context",
+        lambda **kwargs: deep_analysis.DeepAnalysisContext(
+            brand_key="리바로",
+            brand_name="리바로",
+            view_kind="general",
+            market_id="C10A1",
+            market_name="지질",
+            source=kwargs["source"],
+            db_source="iqvia_nsa" if kwargs["source"] == "iqvia" else "ubist",
+            in_catalog=True,
+            has_market_data=True,
+            market_allowed_sources=("iqvia", "ubist"),
+            brand_available_sources=("iqvia_nsa", "ubist"),
+        ),
+    )
 
     response = TestClient(app).get("/api/deep-analysis/%EB%A6%AC%EB%B0%94%EB%A1%9C")
 
@@ -112,6 +129,21 @@ def test_deep_analysis_route_serves_source_scoped_brand_factors(monkeypatch) -> 
 def test_strategic_brand_factor_choices_use_ml_id_and_fallback_per_missing_source(monkeypatch) -> None:
     calls: list[dict] = []
 
+    def fake_context(**kwargs):
+        return deep_analysis.DeepAnalysisContext(
+            brand_key="리바로",
+            brand_name="리바로",
+            view_kind="strategic_ml",
+            market_id="ml_006",
+            market_name="지질",
+            source=kwargs["source"],
+            db_source="iqvia_nsa" if kwargs["source"] == "iqvia" else "ubist",
+            in_catalog=True,
+            has_market_data=True,
+            market_allowed_sources=(kwargs["source"],),
+            brand_available_sources=("ubist", "iqvia_nsa"),
+        )
+
     def fake_resolve_brand_set(**kwargs):
         calls.append(kwargs)
         if kwargs["source"] == "ubist":
@@ -123,8 +155,9 @@ def test_strategic_brand_factor_choices_use_ml_id_and_fallback_per_missing_sourc
         )()
 
     monkeypatch.setattr(deep_analysis, "resolve_brand_set", fake_resolve_brand_set)
+    monkeypatch.setattr(deep_analysis, "resolve_deep_analysis_context", fake_context)
 
-    choices = deep_analysis._resolve_brand_factor_choices(
+    choices, meta = deep_analysis._resolve_brand_factor_choices(
         {"brand": "리바로", "market_id": "strategy_006"},
         "리바로",
         None,
@@ -132,10 +165,12 @@ def test_strategic_brand_factor_choices_use_ml_id_and_fallback_per_missing_sourc
     )
 
     assert choices["iqvia"][0].sales_rank == 3
-    assert choices["ubist"][0].sales_rank is None
+    assert choices["ubist"] == ()
+    assert meta["ubist"] == {"available": False, "reason": "market_resolve_failed"}
     assert {call["market_id"] for call in calls} == {"ml_006"}
     assert {call["source"] for call in calls} == {"iqvia_nsa", "ubist"}
     assert all(call["view_name"] == "strategic_ml" for call in calls)
+    assert all(call["resolved_context"].market_id == "ml_006" for call in calls)
 
 
 def test_deep_analysis_openapi_documents_source_scoped_brand_factors() -> None:

@@ -10,8 +10,7 @@ from typing import Any
 import pymysql
 
 from pipeline.scripts.api import db
-from pipeline.scripts.api.deep_analysis_section_cache import deep_section_cache
-from pipeline.scripts.api.dynamic_market.response_cache import DynamicResponseCacheUnavailable
+from pipeline.scripts.api.deep_analysis_serving import ForecastBlock, load_forecast_block_by_key
 from pipeline.scripts.etl import build_cache_deep_analysis as builder
 from pipeline.scripts.etl.phase29_events import build_events_for_cache
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
@@ -52,18 +51,6 @@ def _brand_rows(brand: str) -> list[dict[str, Any]]:
     return candidates if len(names) == 1 else []
 
 
-def _market_rows(ml_id: str) -> list[dict[str, Any]]:
-    return db.fetch_all(
-        """
-        SELECT *
-        FROM mart_strategic_ml_brand_metric
-        WHERE ml_id = %s
-        ORDER BY source, measure, brand_name
-        """,
-        [ml_id],
-    )
-
-
 def _market_catalog(ml_id: str) -> dict[str, Any]:
     return db.fetch_one("SELECT * FROM catalog_ml_market WHERE ml_id = %s LIMIT 1", [ml_id]) or {}
 
@@ -78,70 +65,23 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
     selected_brand_rows = [row for row in brand_rows if str(row.get("ml_id") or "") == ml_id]
     market = _market_catalog(ml_id)
     market_atc_codes = builder.atc_codes_from_market_catalog(market)
-    available_combos = builder.available_combos_for_market(market)
-    phase30_enabled = matched_brand in builder.CANONICAL_25
     events_payload = _event_payload(matched_brand)
     events = builder._events_spec_list(builder._dedup_cut_a_events(events_payload))
-
-    rows_by_combo = {
-        f"{builder.api_source(row['source'])}.{row['measure']}": row
-        for row in selected_brand_rows
-    }
-
-    def build_expensive_sections() -> dict[str, Any]:
-        # F-055: the full-market row read is only consumed here; fetching it
-        # eagerly made every section-cache hit pay a multi-second scan of the
-        # market's large JSON columns for nothing.
-        market_rows_by_combo: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for row in _market_rows(ml_id):
-            key = (str(row.get("source") or ""), str(row.get("measure") or ""))
-            market_rows_by_combo.setdefault(key, []).append(row)
-        by_combo: dict[str, dict[str, Any]] = {}
-        simulation_by_combo: dict[str, dict[str, Any]] = {}
-        for source, measure in builder.ALL_COMBOS:
-            combo = f"{source}.{measure}"
-            if combo not in available_combos:
-                continue
-            row = rows_by_combo.get(combo)
-            if row is None:
-                by_combo[combo] = builder.empty_combo_payload(source, measure, matched_brand, base)
-                continue
-            internal_source = builder.SOURCE_TO_INTERNAL[source]
-            combo_market_rows = market_rows_by_combo.get((internal_source, measure), [])
-            combo_payload = builder.combo_payload(
-                row,
-                market_rows=combo_market_rows,
-                target_brand=matched_brand,
-                combo_source=source,
-                phase30=phase30_enabled,
+    brand_key = str(base.get("brand_key") or matched_brand)
+    blocks = [
+        block
+        for source in sorted({str(row.get("source") or "") for row in selected_brand_rows})
+        if source
+        and (
+            block := load_forecast_block_by_key(
+                brand_key=brand_key,
+                source=source,
+                market_id=ml_id,
             )
-            if phase30_enabled and builder.build_phase30_simulation_combo is not None:
-                market_forecast = combo_payload.pop("_phase30_market_forecast", None)
-                if market_forecast is not None:
-                    simulation_by_combo[combo] = builder.build_phase30_simulation_combo(
-                        combo=combo,
-                        source=source,
-                        measure=measure,
-                        unit_label=combo_payload.get("unit_label"),
-                        forecast_combo=combo_payload,
-                        market_forecast=market_forecast,
-                        cut_b_events=events_payload.get("cut_b") or [],
-                    )
-            by_combo[combo] = combo_payload
-        return {"forecast_by_combo": by_combo, "simulation_by_combo": simulation_by_combo}
-
-    cache_request = {
-        "contract": "deep-expensive-sections-v1",
-        "view": "strategic",
-        "brand": matched_brand,
-        "market_id": ml_id,
-    }
-    try:
-        expensive = deep_section_cache.get_or_build(cache_request, build_expensive_sections)
-    except DynamicResponseCacheUnavailable:
-        expensive = build_expensive_sections()
-    by_combo = expensive.get("forecast_by_combo") if isinstance(expensive.get("forecast_by_combo"), dict) else {}
-    simulation_by_combo = expensive.get("simulation_by_combo") if isinstance(expensive.get("simulation_by_combo"), dict) else {}
+        )
+    ]
+    forecast, simulation = _merge_block_payloads(blocks)
+    available_combos = sorted(_section_by_combo(forecast))
 
     sources = builder.source_list(market.get("data_source"))
     brand_metadata = builder.BRAND_METADATA_BY_NAME.get(matched_brand)
@@ -152,16 +92,8 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
         "market_name": market.get("name"),
         "available_combos": available_combos,
         "data": {
-            "forecast": {
-                "method": builder.FORECAST_METHOD,
-                "disclaimer": builder.FORECAST_DISCLOSURE,
-                "is_statistical_model": True,
-                "backtest_available": True,
-                "event_regressor_enabled": False,
-                "phase29_poc": None,
-                "by_combo": by_combo,
-            },
-            "simulation": {"by_combo": simulation_by_combo},
+            "forecast": forecast,
+            "simulation": simulation,
             "events": events,
         },
         "market_meta": {
@@ -178,16 +110,62 @@ def build_strategic_row(brand: str) -> dict[str, Any] | None:
             "is_target": bool(base.get("is_target")),
         },
     }
-    computed_values = [row.get("computed_at") for row in selected_brand_rows if isinstance(row.get("computed_at"), datetime)]
+    computed_values = [
+        row.get("computed_at")
+        for row in selected_brand_rows
+        if isinstance(row.get("computed_at"), datetime)
+    ]
     return {
         "brand": matched_brand,
-        "brand_key": matched_brand,
+        "brand_key": brand_key,
         "market_id": builder.ml_to_strategy(ml_id),
         "response_json": json.dumps(payload, ensure_ascii=False),
         "brand_factors": json.dumps({"atc": market_atc_codes, "ubist": {}, "iqvia": {}}, ensure_ascii=False),
         "updated_at": max(computed_values, default=None),
         "_events": events,
     }
+
+
+def _merge_block_payloads(blocks: list[ForecastBlock]) -> tuple[object, object]:
+    forecast = _merge_block_sections(blocks, "forecast")
+    simulation = _merge_block_sections(blocks, "simulation")
+    simulation_by_combo = _section_by_combo(simulation)
+    if not simulation_by_combo:
+        return forecast, simulation
+
+    merged_simulation = dict(simulation)
+    merged_simulation_by_combo = dict(simulation_by_combo)
+    for block in blocks:
+        unavailable = block.simulation
+        if not isinstance(unavailable, dict) or unavailable.get("available") is not False:
+            continue
+        for combo in _section_by_combo(block.forecast):
+            merged_simulation_by_combo.setdefault(combo, dict(unavailable))
+    merged_simulation["by_combo"] = merged_simulation_by_combo
+    return forecast, merged_simulation
+
+
+def _merge_block_sections(blocks: list[ForecastBlock], name: str) -> object:
+    if not blocks:
+        return {"available": False, "reason": "not_generated"}
+    sections = [getattr(block, name) for block in blocks]
+    available = [section for section in sections if _section_by_combo(section)]
+    if not available:
+        return sections[0]
+    merged = dict(available[0])
+    merged["by_combo"] = {
+        combo: value
+        for section in available
+        for combo, value in _section_by_combo(section).items()
+    }
+    return merged
+
+
+def _section_by_combo(section: object) -> dict[str, Any]:
+    if not isinstance(section, dict):
+        return {}
+    by_combo = section.get("by_combo")
+    return by_combo if isinstance(by_combo, dict) else {}
 
 
 def _event_payload(brand: str) -> dict[str, Any]:
