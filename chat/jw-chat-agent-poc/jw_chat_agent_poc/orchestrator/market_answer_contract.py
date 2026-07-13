@@ -519,7 +519,11 @@ def _replace_provenance(
 ) -> str:
     if not calls and not status_only:
         return answer
-    raw_rows = _provenance_rows(calls) if calls else (ProvenanceRow(),)
+    raw_rows = (
+        (_status_provenance_row(question, answer, calls),)
+        if status_only
+        else _provenance_rows(calls)
+    )
     rows = tuple(
         _complete_row(row, question=question, answer=answer, unit=_requested_unit(question, answer))
         for row in raw_rows
@@ -528,6 +532,27 @@ def _replace_provenance(
     match = _SOURCE_HEADING_RE.search(answer)
     head = answer[: match.start()].rstrip() if match else answer.rstrip()
     return f"{head}\n\n{block}" if head else block
+
+
+def _status_provenance_row(
+    question: str,
+    answer: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> ProvenanceRow:
+    if "지역" in question and "재구매율" in question:
+        return ProvenanceRow(source="지원 범위", unit="%")
+    if answer.startswith("현재 지원되지 않는 시장 매핑입니다."):
+        return ProvenanceRow(source="시장 매핑")
+    if answer.startswith("브랜드·시장·기간을 지정해 주세요."):
+        return ProvenanceRow(source="질문 조건")
+    if answer.startswith("브랜드 목록에서 일치 항목을 찾지 못했습니다."):
+        return ProvenanceRow(source="브랜드 카탈로그")
+    if answer.startswith("데이터 존재 여부를 확인하지 못했습니다."):
+        return ProvenanceRow(source="조회 상태")
+    if answer.startswith("보유 데이터는"):
+        available_to = _first_nested_value(calls, "available_to") or _latest_call_period(calls)
+        return ProvenanceRow(source="보유 범위", period=str(available_to or MISSING_LABEL))
+    return ProvenanceRow(source="지원 상태")
 
 
 def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow, ...]:

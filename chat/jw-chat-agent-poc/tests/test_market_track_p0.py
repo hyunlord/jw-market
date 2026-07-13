@@ -144,6 +144,41 @@ def test_future_period_reports_owned_range_without_fake_range() -> None:
 
     assert "보유 데이터는 2026-05까지이며 2030년 실적은 없습니다." in answer
     assert "2026-05~2030" not in answer
+    assert "| 보유 범위 | 2026-05 | 해당 없음 | 해당 없음 | 해당 없음 | 전체 | 억원 |" in answer
+    assert "| UBIST |" not in answer
+
+
+def test_unsupported_metric_provenance_does_not_reuse_market_axes() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 지역별 재구매율을 알려줘",
+        answer="전체 시장 상위 브랜드는 로수젯이며 점유율은 9.13%입니다.",
+        tool_calls=[_top_call()],
+    )
+
+    assert "| 지원 범위 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 전체 | % |" in answer
+    assert "| UBIST |" not in answer
+    assert "555" not in answer
+
+
+def test_patent_provenance_uses_public_source_name() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 특허 만료일을 알려줘",
+        answer="리바로의 국내 특허 만료일은 2027-01-15입니다.",
+        tool_calls=[
+            {
+                "tool": "get_patent_expiry",
+                "source": "nedrug_mcp",
+                "render_data": {
+                    "status": "ok",
+                    "source": "nedrug_mcp",
+                    "period": "2027-01",
+                },
+            }
+        ],
+    )
+
+    assert "nedrug_mcp" not in answer
+    assert "| 식약처 의약품 특허 정보 |" in answer
 
 
 def test_internal_identifiers_and_causal_assertion_are_removed() -> None:
@@ -613,7 +648,7 @@ def test_unknown_brand_uses_entity_status_and_complete_public_provenance() -> No
 
     assert answer.startswith("브랜드 목록에서 일치 항목을 찾지 못했습니다.")
     assert "—" not in answer
-    assert "| 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 전체 | 억원 |" in answer
+    assert "| 브랜드 카탈로그 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 전체 | 억원 |" in answer
 
 
 def test_derived_calculation_does_not_add_a_hollow_provenance_row() -> None:
