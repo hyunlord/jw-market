@@ -483,6 +483,42 @@ def test_unavailable_gate_surfaces_owned_fact_instead_of_false_absence() -> None
     assert "원천에 없음" not in revised
 
 
+def test_unavailable_gate_never_surfaces_internal_fact_markdown_for_mixed_tool_results() -> None:
+    fact_md = """## 확정 데이터
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | 리바로 2026-04 매출 84.93억원 시장점유율 3.76% 순위 6/516 |
+
+### 시장 지표
+| 항목 | 값 |
+| --- | --- |
+| 시장규모 | 2,256.77억원 |
+"""
+
+    revised = apply_common_unavailable_response(
+        "리바로와 로수젯을 비교해줘",
+        "요청한 값은 현재 확인 불가합니다.",
+        {"fact_md": fact_md},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "ok", "brand": "리바로", "sales_억원": 84.93},
+            },
+            {
+                "tool": "mfds_permission_search",
+                "render_data": {"status": "error", "message": "upstream timeout"},
+            },
+        ],
+    )
+
+    assert "84.93억원" in revised
+    assert "## 확정 데이터" not in revised
+    assert "반드시 반영할 내용" not in revised
+    assert "| 항목 | 값 |" not in revised
+
+
 def test_unavailable_gate_marks_missing_required_tool_as_unverified_not_absent() -> None:
     revised = apply_common_unavailable_response(
         "리바로 시장의 브랜드 집중도는 어때",

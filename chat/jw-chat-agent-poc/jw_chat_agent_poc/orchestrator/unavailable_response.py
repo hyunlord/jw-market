@@ -218,7 +218,22 @@ def _four_stage_unavailable_gate(
     if not question_has_unavailable_signal and _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
         if _completed_answer_contract(question, answer, fact_md):
             return _cleanup(answer)
-        return _cleanup("\n\n".join(("요청한 값은 현재 조회 결과에 존재합니다.", sanitize_internal_diagnostics(fact_md))))
+        from jw_chat_agent_poc.service.answer_safety import (
+            finalized_fallback_fact_answer,
+            replace_internal_fact_dump,
+        )
+
+        public_answer = replace_internal_fact_dump(question, answer, {"fact_md": fact_md})
+        if public_answer != answer:
+            return _cleanup(public_answer)
+        return _cleanup(
+            "\n\n".join(
+                (
+                    "요청한 값은 현재 조회 결과에 존재합니다.",
+                    finalized_fallback_fact_answer(question, {"fact_md": fact_md}),
+                )
+            )
+        )
 
     required = _required_tools(question)
     attempted = {_public_tool_name(call) for call in calls}
