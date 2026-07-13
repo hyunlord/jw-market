@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
-from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_presence import brand_exists
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
@@ -32,7 +32,6 @@ from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketScopeTooBroadError,
     MarketDefinition,
     PeriodRange,
-    quote_identifier,
 )
 from pipeline.scripts.api.models.dynamic_market import (
     DynamicMarketAnalysisLevel,
@@ -162,20 +161,7 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
 
 
 def _brand_exists(brand: str | None) -> bool:
-    normalized = (brand or "").strip()
-    if not normalized:
-        return False
-    return bool(
-        db.fetch_one(
-            f"""
-            SELECT 1
-            FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
-            WHERE brand_key = %s OR brand_name = %s
-            LIMIT 1
-            """,
-            (normalized, normalized),
-        )
-    )
+    return brand_exists(brand)
 
 
 def _empty_strategic_response(payload: DynamicMarketRequest, view: str) -> dict[str, Any]:

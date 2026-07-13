@@ -5,6 +5,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_presence import brand_exists, missing_brand_cache
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_measure, normalize_source
@@ -21,20 +22,11 @@ from pipeline.scripts.api.validators.query_params import UNIT_LABELS, validate_c
 
 
 router = APIRouter()
+_missing_brand_cache = missing_brand_cache
 
 
 def _brand_exists(brand: str) -> bool:
-    return bool(
-        db.fetch_one(
-            f"""
-            SELECT 1
-            FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
-            WHERE brand_key = %s OR brand_name = %s
-            LIMIT 1
-            """,
-            [brand, brand],
-        )
-    )
+    return brand_exists(brand)
 
 
 def _fetch_cause_rows(
@@ -119,6 +111,8 @@ def cause(
     view, source, measure = validate_cause_query(view, source, measure)
     brand = unquote(brand_name)
     requested_market_id = to_strategy_id(market_id) if market_id else None
+    if _missing_brand_cache.contains(brand):
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
     try:
         rows = _fetch_cause_rows(
             brand,
@@ -136,7 +130,9 @@ def cause(
         ) from exc
     if not rows:
         if not _brand_exists(brand):
+            _missing_brand_cache.remember(brand)
             raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand})
+        _missing_brand_cache.discard(brand)
         return {
             "brand": brand,
             "market_id": requested_market_id,
@@ -149,6 +145,8 @@ def cause(
             "market_meta": None,
             "markets": [],
         }
+
+    _missing_brand_cache.discard(brand)
 
     display_brand = get_display_brand(brand)
     preferred_market_id = requested_market_id or (display_brand.market_id if display_brand else None)

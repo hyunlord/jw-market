@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi import BackgroundTasks
+from fastapi import HTTPException
 
+from pipeline.scripts.api.brand_presence import NegativeBrandCache
 from pipeline.scripts.api.routes import cause as cause_route
 
 
@@ -97,3 +99,38 @@ def test_cause_route_schedules_cache_persistence_after_response(monkeypatch) -> 
     )
 
     assert captured["scheduler"] == background_tasks.add_task
+
+
+def test_cause_route_negative_caches_only_confirmed_missing_brand(monkeypatch) -> None:
+    cache = NegativeBrandCache(ttl_seconds=60.0, max_entries=8)
+    monkeypatch.setattr(cause_route, "_missing_brand_cache", cache)
+    calls = {"fetch": 0, "exists": 0}
+
+    def fake_fetch(*_args, **_kwargs) -> list[dict[str, object]]:
+        calls["fetch"] += 1
+        return []
+
+    def fake_exists(_brand: str) -> bool:
+        calls["exists"] += 1
+        return False
+
+    monkeypatch.setattr(cause_route, "_fetch_cause_rows", fake_fetch)
+    monkeypatch.setattr(cause_route, "_brand_exists", fake_exists)
+
+    for _attempt in range(2):
+        try:
+            cause_route.cause(
+                "F063없는브랜드",
+                background_tasks=BackgroundTasks(),
+                view="market_landscape",
+                source="UBIST",
+                measure="sales",
+                market_id=None,
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 404
+            assert exc.detail == {"error": "brand_not_found", "brand": "F063없는브랜드"}
+        else:
+            raise AssertionError("missing brand must return 404")
+
+    assert calls == {"fetch": 1, "exists": 1}
