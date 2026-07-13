@@ -1196,8 +1196,13 @@ def test_chat_agent_query_failure_never_calls_legacy_metrics_fallback() -> None:
 
     agent = ChatAgent(metrics=LegacyFallbackBomb(), query_layer=BrokenLayer())
 
-    with pytest.raises(LookupError, match="missing"):
-        agent._metric_call("리바로", metric="sales", filter_entries=())
+    call = agent._metric_call("리바로", metric="sales", filter_entries=())
+
+    render = call["render_data"]
+    assert call["tool"] == "query_failed"
+    assert render["status"] == "query_failed"
+    assert render["error_type"] == "LookupError"
+    assert "추정하지 않습니다" in call["summary_text"]
 
 
 def _portfolio_query_layer() -> StrategicQueryLayer:

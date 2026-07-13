@@ -727,3 +727,27 @@ def test_csd_activity_target_catalog_failure_keeps_legacy_fallback() -> None:
     assert livalo["status"] == "ok"
     assert livalo["render_data"]["master_product"] == "LIVALO"
     assert guardlet["status"] == "unsupported"
+
+
+def test_brand_metric_prefers_d2_layer_over_stale_legacy_card() -> None:
+    """세대 혼재 회귀 게이트: stale 2026-04 legacy card가 있어도 d2 최신 세대가 답한다."""
+
+    class D2Layer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict:
+            assert brand == "리바로"
+            return {
+                "source": "UBIST",
+                "tool": "get_brand_metric",
+                "summary_text": "리바로 2026-05 매출 80.39억원",
+                "render_data": {"period": "2026-05", "value_억원": 80.39, "rank_denominator": 555},
+            }
+
+    reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    tool = MetricsTool(mode="cache", cache_reader=reader, query_layer=D2Layer())
+
+    call = tool.get_brand_metric("리바로", metric="sales")
+
+    assert call["render_data"]["period"] == "2026-05"
+    assert call["render_data"]["value_억원"] == 80.39
+    assert "2026-04" not in str(call)
+    assert "84.93" not in str(call)
