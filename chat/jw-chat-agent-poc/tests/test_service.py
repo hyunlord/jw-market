@@ -156,6 +156,7 @@ def test_compute_final_answer_replaces_internal_csd_facts_after_agent_loop(monke
     fact_md = """### 필수 답변 fact
 | 구분 | 반드시 반영할 내용 |
 | --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
 | CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
 | CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
 """

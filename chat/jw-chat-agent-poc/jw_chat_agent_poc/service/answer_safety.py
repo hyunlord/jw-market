@@ -186,6 +186,13 @@ def replace_internal_fact_dump(question: str, answer: str, markdown_response: An
     marker_count = sum(marker in answer for marker in markers)
     if "CSD aggregate 콜수" not in answer or (marker_count < 2 and "CSD 세부 미지원" not in answer):
         return answer
+    fact_md = ""
+    if isinstance(markdown_response, dict):
+        fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    lines = list(dict.fromkeys(mandatory_fact_lines(fact_md)))
+    csd_answer = _csd_activity_fallback_answer(lines, _source_line(fact_md))
+    if csd_answer:
+        return cleanup_markdown_answer(csd_answer)
     return cleanup_markdown_answer(fallback_fact_answer(markdown_response))
 
 
