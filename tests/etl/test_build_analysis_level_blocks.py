@@ -9,6 +9,8 @@ from pipeline.scripts.etl.build_analysis_level_blocks import (
     batch_blocks,
     framed_payload_sha256,
     current_keys,
+    scoped_keys,
+    stride_order,
     sharded_keys,
     profile_signature,
     variant_keys,
@@ -129,6 +131,25 @@ def test_sharded_keys_partition_all_keys(monkeypatch) -> None:
 
     assert sorted(item.market_id for item in partitions) == sorted(item.market_id for item in keys)
     assert len({item.market_id for item in partitions}) == 3138
+
+
+def test_scoped_keys_selects_only_general_ubist_rebuild_rows() -> None:
+    keys = [BlockKey("general", str(index), "UBIST", "sales") for index in range(746)]
+    keys.extend(BlockKey("general", str(index), "IQVIA", "sales") for index in range(2392))
+
+    selected = scoped_keys(keys, "general_ubist")
+
+    assert len(selected) == 746
+    assert {(key.view, key.source) for key in selected} == {("general", "UBIST")}
+
+
+def test_stride_order_visits_every_key_in_a_different_order() -> None:
+    keys = [BlockKey("general", str(index), "UBIST", "sales") for index in range(10)]
+
+    ordered = stride_order(keys, 3)
+
+    assert ordered != keys
+    assert sorted(key.market_id for key in ordered) == sorted(key.market_id for key in keys)
 
 
 def test_current_keys_is_scoped_to_epoch_and_build(monkeypatch) -> None:

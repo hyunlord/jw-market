@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 import os
 import struct
 import time
@@ -411,6 +412,8 @@ def current_keys(*, source_epoch: str, build_version: str) -> set[BlockKey]:
 
 def run_parity() -> None:
     keys = sharded_keys(enumerate_keys())
+    stride = int(os.environ.get("MALB_PARITY_STRIDE", "1"))
+    keys = stride_order(keys, stride)
     epoch = source_epoch()
     mismatches: list[dict[str, str]] = []
     for index, key in enumerate(keys, start=1):
@@ -435,11 +438,31 @@ def run_parity() -> None:
 def sharded_keys(keys: list[BlockKey]) -> list[BlockKey]:
     if len(keys) != 3138:
         raise RuntimeError(f"expected 3138 keys, found {len(keys)}")
+    keys = scoped_keys(keys, os.environ.get("MALB_SCOPE", "all"))
     count = int(os.environ.get("MALB_SHARD_COUNT", "1"))
     index = int(os.environ.get("MALB_SHARD_INDEX", "0"))
     if count < 1 or index < 0 or index >= count:
         raise RuntimeError(f"invalid shard {index}/{count}")
     return [key for position, key in enumerate(keys) if position % count == index]
+
+
+def scoped_keys(keys: list[BlockKey], scope: str) -> list[BlockKey]:
+    if scope == "all":
+        return keys
+    if scope != "general_ubist":
+        raise RuntimeError(f"unsupported MALB_SCOPE: {scope}")
+    selected = [key for key in keys if key.view == "general" and key.source == "UBIST"]
+    if len(keys) == 3138 and len(selected) != 746:
+        raise RuntimeError(f"expected 746 general UBIST keys, found {len(selected)}")
+    return selected
+
+
+def stride_order(keys: list[BlockKey], stride: int) -> list[BlockKey]:
+    if not keys or stride == 1:
+        return keys
+    if stride < 1 or math.gcd(len(keys), stride) != 1:
+        raise RuntimeError(f"parity stride must be positive and coprime with {len(keys)}: {stride}")
+    return [keys[(position * stride) % len(keys)] for position in range(len(keys))]
 
 
 if __name__ == "__main__":
