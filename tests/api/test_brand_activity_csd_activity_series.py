@@ -371,6 +371,19 @@ def test_activity_series_parse_accepts_general_market_scope_without_atc4() -> No
     assert parsed.filter_payload["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
 
 
+def test_activity_series_parse_accepts_strategic_cd() -> None:
+    parsed = service.parse_activity_request(
+        {
+            "view": "strategic_cd",
+            "selected_brand": "가드렛",
+            "filters": {"market_scope": {"market_id": "cd_003"}},
+        }
+    )
+
+    assert parsed.view == "strategic_cd"
+    assert parsed.market_id is None
+
+
 def test_activity_series_selected_brand_list_matches_string_response(monkeypatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
         if "SELECT DISTINCT period_ym" in sql:
