@@ -9,6 +9,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.deep_analysis_context import (
     DeepAnalysisContextError,
+    public_source_labels,
     resolve_deep_analysis_context,
 )
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
@@ -82,8 +83,9 @@ def _latest_value(value: object) -> float:
         return 0.0
 
 
-def _contexts_for_brand(brand: str) -> list[dict[str, Any]]:
+def _context_options_for_brand(brand: str) -> tuple[list[dict[str, Any]], list[str]]:
     contexts: list[dict[str, Any]] = []
+    context_sources: set[str] = set()
     for view_kind in ("general", "strategic_ml", "strategic_cd"):
         try:
             resolved = resolve_deep_analysis_context(
@@ -96,6 +98,9 @@ def _contexts_for_brand(brand: str) -> list[dict[str, Any]]:
         except DeepAnalysisContextError as exc:
             available = list(exc.available_contexts)
         for context in available:
+            source = str(context.get("source") or "").strip()
+            if source:
+                context_sources.add(source)
             public = {
                 "view_kind": context.get("view_kind"),
                 "market_id": context.get("market_id"),
@@ -104,7 +109,7 @@ def _contexts_for_brand(brand: str) -> list[dict[str, Any]]:
             }
             if public["market_id"] and public not in contexts:
                 contexts.append(public)
-    return contexts
+    return contexts, public_source_labels(context_sources)
 
 
 def _match_rank(candidate: dict[str, Any], query: str) -> tuple[int, float, str]:
@@ -128,9 +133,10 @@ def _search_results(query: str, limit: int) -> tuple[list[dict[str, Any]], int]:
     jw_targets = {str(item.get("brand") or "") for item in _default_brands()}
     for candidate in candidates[:limit]:
         brand = str(candidate.get("brand_name") or candidate.get("brand_key") or "")
-        contexts = _contexts_for_brand(brand)
+        contexts, sources = _context_options_for_brand(brand)
         result: dict[str, Any] = {
             "brand": brand,
+            "sources": sources,
             "contexts": contexts,
             "is_jw_target": brand in jw_targets,
         }

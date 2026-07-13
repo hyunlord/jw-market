@@ -35,7 +35,7 @@ def test_search_ranks_exact_prefix_then_substring_and_reports_more(monkeypatch) 
             {"brand_key": "마운자로", "brand_name": "마운자로", "market_size": 100},
         ],
     )
-    monkeypatch.setattr(brands, "_contexts_for_brand", lambda _brand: [])
+    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], []))
 
     response = TestClient(app).get("/api/brands?q=마운자로&limit=2")
 
@@ -91,6 +91,7 @@ def test_search_uses_shared_context_resolver_and_deduplicates_sources(monkeypatc
         "market_name": "당뇨병 치료제",
         "has_market_data": True,
     }
+    assert item["sources"] == ["UBIST", "IQVIA"]
 
 
 def test_search_keeps_known_brand_without_context(monkeypatch) -> None:
@@ -100,11 +101,12 @@ def test_search_keeps_known_brand_without_context(monkeypatch) -> None:
         "_search_brand_candidates",
         lambda _query: [{"brand_key": "휴면브랜드", "brand_name": "휴면브랜드", "market_size": 0}],
     )
-    monkeypatch.setattr(brands, "_contexts_for_brand", lambda _brand: [])
+    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], []))
 
     item = TestClient(app).get("/api/brands?q=휴면").json()[0]
 
     assert item["contexts"] == []
+    assert item["sources"] == []
     assert item["context_reason"] == "analysis_context_not_available"
 
 
@@ -121,7 +123,7 @@ def test_query_alias_is_supported_and_conflicts_fail_closed(monkeypatch) -> None
         "_search_brand_candidates",
         lambda query: [{"brand_key": query, "brand_name": query, "market_size": 1}],
     )
-    monkeypatch.setattr(brands, "_contexts_for_brand", lambda _brand: [])
+    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], []))
 
     assert TestClient(app).get("/api/brands?query=마운자로").json()[0]["brand"] == "마운자로"
     assert TestClient(app).get("/api/brands?q=리바로&query=마운자로").status_code == 422

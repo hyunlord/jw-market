@@ -17,6 +17,18 @@ VIEW_KINDS: Final[tuple[DeepAnalysisViewKind, ...]] = ("general", "strategic_ml"
 SOURCES: Final[tuple[DeepAnalysisSource, ...]] = ("ubist", "iqvia")
 SOURCE_TO_DB: Final[dict[DeepAnalysisSource, str]] = {"ubist": "ubist", "iqvia": "iqvia_nsa"}
 DB_TO_SOURCE: Final[dict[str, DeepAnalysisSource]] = {value: key for key, value in SOURCE_TO_DB.items()}
+PUBLIC_SOURCE_ORDER: Final[tuple[tuple[str, str], ...]] = (("ubist", "UBIST"), ("iqvia", "IQVIA"))
+
+
+def public_source_labels(values: Any) -> list[str]:
+    """Return stable public labels for resolver and mart source vocabulary."""
+
+    normalized = {
+        DB_TO_SOURCE.get(str(value).strip().lower(), str(value).strip().lower())
+        for value in values
+        if str(value).strip()
+    }
+    return [label for source, label in PUBLIC_SOURCE_ORDER if source in normalized]
 
 
 @dataclass(frozen=True, slots=True)
