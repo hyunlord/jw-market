@@ -422,8 +422,18 @@ def run_parity() -> None:
             """
             SELECT payload_sha256 FROM mart_analysis_level_block
             WHERE view=%s AND market_id=%s AND source=%s AND measure=%s AND profile_sig=%s AND trim_mode=%s
+              AND build_version=%s AND source_epoch=%s
             """,
-            (key.view, key.market_id, key.source, key.measure, key.profile_sig, key.trim_mode),
+            (
+                key.view,
+                key.market_id,
+                key.source,
+                key.measure,
+                key.profile_sig,
+                key.trim_mode,
+                ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
+                epoch,
+            ),
         )
         stored = str((row or {}).get("payload_sha256") or "")
         if stored != live.payload_sha256:

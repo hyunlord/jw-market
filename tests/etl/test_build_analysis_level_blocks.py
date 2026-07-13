@@ -13,6 +13,7 @@ from pipeline.scripts.etl.build_analysis_level_blocks import (
     stride_order,
     sharded_keys,
     profile_signature,
+    run_parity,
     variant_keys,
     _general_data,
     _upsert_params,
@@ -23,7 +24,7 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
 
 
 def test_schema_version_is_independent_from_app_version() -> None:
-    assert ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION == "analysis-level-block-v3-ordered-profile"
+    assert ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION == "analysis-level-block-v4-filter-complete"
 
 
 def test_framed_payload_sha256_uses_unambiguous_lengths() -> None:
@@ -121,6 +122,7 @@ def test_general_data_places_focus_in_filters(monkeypatch) -> None:
 
     assert captured["request"].filters.focus_brand_key == "brand-a"
 
+
 def test_sharded_keys_partition_all_keys(monkeypatch) -> None:
     keys = [BlockKey("general", str(index), "UBIST", "sales") for index in range(3138)]
     partitions = []
@@ -168,6 +170,48 @@ def test_current_keys_is_scoped_to_epoch_and_build(monkeypatch) -> None:
     assert captured["params"] == ("epoch", "build")
     assert "source_epoch = %s" in captured["sql"]
     assert "profile_sig" in captured["sql"]
+
+
+def test_run_parity_reads_only_current_build_and_epoch(monkeypatch) -> None:
+    captured = {}
+    key = BlockKey("general", "A10N1", "UBIST", "sales")
+    payload = BlockPayload.for_test(market_id=key.market_id, payload_size=2)
+
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.build_analysis_level_blocks.enumerate_keys",
+        lambda: [key],
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.build_analysis_level_blocks.sharded_keys",
+        lambda keys: keys,
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.build_analysis_level_blocks.source_epoch",
+        lambda: "current-epoch",
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.build_analysis_level_blocks.build_block",
+        lambda _key, *, source_epoch: payload,
+    )
+
+    def fake_fetch_one(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return {"payload_sha256": payload.payload_sha256}
+
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.build_analysis_level_blocks.db.fetch_one",
+        fake_fetch_one,
+    )
+
+    run_parity()
+
+    assert "build_version=%s" in captured["sql"]
+    assert "source_epoch=%s" in captured["sql"]
+    assert captured["params"][-2:] == (
+        ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
+        "current-epoch",
+    )
 
 
 def test_upsert_params_include_source_epoch() -> None:

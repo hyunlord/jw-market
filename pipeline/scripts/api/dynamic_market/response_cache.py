@@ -27,7 +27,7 @@ from pipeline.scripts.api import db
 logger = logging.getLogger(__name__)
 
 CACHE_SCHEMA_VERSION = "dynamic-market-response-v2-mart-direct"
-CACHE_SOURCE_POLICY_VERSION = "cause-build-response-20260714-f062-explicit-data-version-v1"
+CACHE_SOURCE_POLICY_VERSION = "cause-build-response-20260714-f064-filter-complete-v2"
 CACHE_ENCODING = "zlib-base64"
 DEFAULT_TTL_SECONDS = 86_400
 DEFAULT_LEASE_SECONDS = 120

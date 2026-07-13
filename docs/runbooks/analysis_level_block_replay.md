@@ -33,7 +33,12 @@ PYTHONPATH=. MALB_MODE=parity MALB_PARITY_STRIDE=3137 \
 
 The complete build must report exactly 3,138 keys. Before promotion, verify
 that all rows match the runtime `source_epoch` and
-`analysis-level-block-v3-ordered-profile` build version.
+`analysis-level-block-v4-filter-complete` build version.
+
+General-view row filters are part of the replay identity. The bounded sidecar
+contains only unfiltered market profiles, so filtered requests deliberately
+miss and use mart-direct calculation unless that exact profile is baked. Never
+reuse an unfiltered block for a request containing an analysis-level filter.
 
 ## Monitoring
 

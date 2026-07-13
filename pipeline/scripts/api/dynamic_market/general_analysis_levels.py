@@ -11,7 +11,10 @@ from typing import Any
 from pymysql.err import MySQLError
 
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import build_analysis_rows
-from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import channel_profile_signature
+from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
+    analysis_level_profile_signature,
+    channel_profile_signature,
+)
 from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     AnalysisLevelBlock,
     AnalysisLevelBlockKey,
@@ -178,7 +181,14 @@ def _load_precomputed_general_block(
     epoch = current_analysis_level_source_epoch()
     if len(atc4_codes) != 1 or epoch is None:
         return None
-    profile_sig = channel_profile_signature(status_channels) if source == "UBIST" else ""
+    base_profile = channel_profile_signature(status_channels) if source == "UBIST" else ""
+    profile_sig = analysis_level_profile_signature(
+        base_profile=base_profile,
+        dimension_filters=tuple(
+            (item.dimension_type, item.values)
+            for item in definition.dimension_filters
+        ),
+    )
     return load_analysis_level_block(
         key=AnalysisLevelBlockKey(
             view="general",

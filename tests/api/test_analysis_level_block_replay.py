@@ -2,12 +2,37 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from pymysql.err import OperationalError
 
+from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
+    analysis_level_profile_signature,
+    channel_profile_signature,
+)
 from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     AnalysisLevelBlockKey,
     load_analysis_level_block,
     reset_analysis_level_replay_stats_for_test,
+)
+from pipeline.scripts.api.dynamic_market.general_analysis_levels import _load_precomputed_general_block
+from pipeline.scripts.api.dynamic_market.types import DimensionFilter, MarketDefinition
+
+
+GENERAL_ROW_FILTERS = (
+    pytest.param("ubist", "seller", id="ubist-seller"),
+    pytest.param("ubist", "molecule", id="ubist-molecule"),
+    pytest.param("ubist", "molecule_strength", id="ubist-molecule-strength"),
+    pytest.param("ubist", "form", id="ubist-form"),
+    pytest.param("ubist", "route", id="ubist-route"),
+    pytest.param("ubist", "reimbursement", id="ubist-reimbursement"),
+    pytest.param("ubist", "atc3", id="ubist-atc3"),
+    pytest.param("ubist", "atc4", id="ubist-atc4"),
+    pytest.param("iqvia_nsa", "mfr", id="iqvia-mfr"),
+    pytest.param("iqvia_nsa", "molecule_type", id="iqvia-molecule-type"),
+    pytest.param("iqvia_nsa", "molecule_desc", id="iqvia-molecule-desc"),
+    pytest.param("iqvia_nsa", "pack", id="iqvia-pack"),
+    pytest.param("iqvia_nsa", "strength", id="iqvia-strength"),
+    pytest.param("iqvia_nsa", "nhi", id="iqvia-nhi"),
 )
 
 
@@ -42,7 +67,7 @@ def test_load_analysis_level_block_requires_six_tuple_build_and_epoch(monkeypatc
         "sales",
         "profile",
         "full",
-        "analysis-level-block-v3-ordered-profile",
+        "analysis-level-block-v4-filter-complete",
         "epoch",
     )
     assert "build_version = %s" in captured["sql"]
@@ -123,3 +148,67 @@ def test_replay_logs_hit_rate_for_hits_and_misses(monkeypatch, caplog) -> None:
     stats = [record.message for record in caplog.records if "analysis_level_block_replay_stats" in record.message]
     assert any("hits=0 misses=1 fallbacks=0 hit_rate=0.0000" in message for message in stats)
     assert any("hits=1 misses=1 fallbacks=0 hit_rate=0.5000" in message for message in stats)
+
+
+@pytest.mark.parametrize(("source", "dimension_type"), GENERAL_ROW_FILTERS)
+def test_general_replay_key_never_reuses_unfiltered_block_for_row_filter(
+    monkeypatch,
+    source,
+    dimension_type,
+) -> None:
+    captured: dict[str, AnalysisLevelBlockKey] = {}
+    channels = ["전체", "의원"]
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"atc4": ["C10A1"]},
+        source=source,
+        measure="sales",
+        dimension_filters=(DimensionFilter(dimension_type, ("selected-value",)),),
+    )
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.general_analysis_levels.current_analysis_level_source_epoch",
+        lambda: "epoch",
+    )
+
+    def fake_load(*, key, source_epoch):
+        assert source_epoch == "epoch"
+        captured["key"] = key
+        return None
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.general_analysis_levels.load_analysis_level_block",
+        fake_load,
+    )
+
+    _load_precomputed_general_block(
+        definition=definition,
+        source="UBIST" if source == "ubist" else "IQVIA",
+        measure="sales",
+        status_channels=channels,
+    )
+
+    unfiltered_profile = channel_profile_signature(channels) if source == "ubist" else ""
+    assert captured["key"].profile_sig != unfiltered_profile, (
+        f"{dimension_type} request reused the unfiltered replay identity"
+    )
+
+
+def test_analysis_level_profile_signature_canonicalizes_filter_order() -> None:
+    left = analysis_level_profile_signature(
+        base_profile="base",
+        dimension_filters=(
+            ("seller", ("B", "A")),
+            ("molecule", ("M",)),
+        ),
+    )
+    right = analysis_level_profile_signature(
+        base_profile="base",
+        dimension_filters=(
+            ("molecule", ("M",)),
+            ("seller", ("A", "B")),
+        ),
+    )
+
+    assert left == right
+    assert analysis_level_profile_signature(base_profile="base", dimension_filters=()) == "base"
