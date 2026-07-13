@@ -151,7 +151,7 @@ def _preprocessor_gate_block_for_temp_doc(
     blocks = upload_adapter.blocked_saved_external_preprocessor_documents([document])
     return blocks[0] if blocks else None
 
-API_DESCRIPTION = """
+API_DESCRIPTION = f"""
 wf301 파일 업로드와 세션별 문서 검색을 연결하는 code-serving-235 브리지 API입니다.
 
 이 서비스는 파일을 임시 VDB에 먼저 올린 뒤, 같은 `/upload` 요청 안에서 공용 VDB 139와 GenOS 문서 원장 등록까지 이어서 수행합니다. 표준 호출 흐름은 `POST /upload` -> `POST /search` -> `/documents/delete` 순서입니다. `/upload` 응답에 포함된 `commit` 결과가 성공이고 `file_only_ready=true`이면 `/search`와 `/documents`에서 바로 확인되는 등록 문서가 됩니다. `/commit` endpoint는 기존 클라이언트의 재시도와 하위호환을 위한 안전망으로 유지됩니다.
@@ -161,8 +161,9 @@ wf301 파일 업로드와 세션별 문서 검색을 연결하는 code-serving-2
 - `vdb_id`는 등록 대상 공용 VDB인 `139`가 기본값이며, 다른 값은 거부됩니다.
 - 세션 키는 `chat_id`가 있으면 `chat_id`, 없으면 `app_session_id`를 사용합니다. 같은 파일 묶음은 업로드, 커밋, 검색, 삭제까지 같은 세션 키를 계속 사용해야 합니다.
 - 임시 VDB 계층은 세션 키를 36자 컬럼에 저장합니다. 37자 이상은 temp-vdb-index 계층에서 `09040008` 오류가 발생할 수 있습니다. 영문, 숫자, 하이픈, 언더스코어 조합과 36자 UUID 문자열을 권장합니다.
-- 기본 쿼터는 세션당 10개, 요청당 10개, 파일당 50MB, 세션당 총 50MB입니다.
-- 등록 문서 TTL은 7일입니다.
+- 기본 쿼터는 세션당 {settings.QUOTA_MAX_FILES}개, 요청당 {settings.QUOTA_MAX_PER_REQUEST}개,
+  파일당 {settings.QUOTA_MAX_FILE_MB}MB, 세션당 총 {settings.QUOTA_MAX_SESSION_MB}MB입니다.
+- 등록 문서 TTL은 {settings.TTL_DAYS}일입니다.
 """
 
 HEALTH_DESCRIPTION = """
@@ -1387,7 +1388,8 @@ def upload(
         ...,
         description=(
             "업로드할 파일 목록입니다. 한 요청에 최대 10개까지 권장하며, "
-            "각 파일은 workflow 301 파일 업로드 플러그인의 허용 확장자와 파일당 50MB 한도를 따릅니다."
+            "각 파일은 workflow 301 파일 업로드 플러그인의 허용 확장자와 "
+            f"파일당 {settings.QUOTA_MAX_FILE_MB}MB 한도를 따릅니다."
         ),
     ),
     workflow_id: int = Form(
