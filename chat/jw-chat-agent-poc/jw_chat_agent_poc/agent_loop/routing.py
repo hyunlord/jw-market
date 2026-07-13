@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
+from jw_chat_agent_poc.orchestrator.answer_completeness import completeness_intent
 
 
 _CSD_ACTIVITY_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
@@ -71,6 +72,8 @@ _COMPLEX_TOKENS = (
 
 def should_use_agent_loop(question: str) -> bool:
     if is_portfolio_decline_question(question):
+        return True
+    if completeness_intent(question) == "brand_compare":
         return True
     if strict_query_plan(question, "리바로") is not None:
         return True
