@@ -13,7 +13,7 @@ from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_b
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 
-GENERATION_ATTEMPTS = int(os.environ.get("GENOS_GENERATION_ATTEMPTS", "3"))
+GENERATION_ATTEMPTS = int(os.environ.get("GENOS_GENERATION_ATTEMPTS", "2"))
 FAIL_CLOSED_TEXT = "- 표에 포함된 확정 데이터만 기준으로 해석합니다."
 _UNSUPPORTED_SERIES_RE = re.compile(r"(미지원|미보유|확인\s*안\s*됨|확인되지|데이터\s*없음|지원하지)")
 _NEGATED_UNSUPPORTED_RE = re.compile(r"(아니|아님|아닙)")

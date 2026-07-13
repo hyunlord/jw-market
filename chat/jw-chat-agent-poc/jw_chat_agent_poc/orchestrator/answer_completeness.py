@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 import re
-from typing import Final
+from typing import Any, Final, Sequence
+
+from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value, pct_value, rank_value
 
 
 COMPLETENESS_INTENTS: Final[tuple[str, ...]] = (
@@ -38,6 +41,14 @@ class ShareTrend:
 
 
 @dataclass(frozen=True, slots=True)
+class TopShareRow:
+    rank: int
+    brand: str
+    share_text: str
+    sales_text: str
+
+
+@dataclass(frozen=True, slots=True)
 class TargetInputs:
     period: str
     sales_text: str
@@ -70,6 +81,38 @@ def completeness_intent(question: str, fact_md: str = "") -> str | None:
     if "채널" in text and any(token in text for token in _CHANNELS):
         return "channel_provenance"
     return None
+
+
+def deterministic_top_n_share_answer(
+    question: str,
+    fact_md: str,
+    tool_calls: Sequence[dict[str, Any]],
+) -> str:
+    """Render top-N shares only when tool rows and verified facts agree."""
+
+    if completeness_intent(question, fact_md) != "top_n_share_sum":
+        return ""
+    count = _requested_top_n(question)
+    if not 1 <= count <= 20:
+        return ""
+    fact_rows = _top_share_fact_rows(fact_md, count)
+    tool_rows = _top_share_tool_rows(tool_calls, count)
+    if len(fact_rows) != count or tool_rows != fact_rows:
+        return ""
+    try:
+        total = sum((Decimal(row.share_text.removesuffix("%")) for row in fact_rows), Decimal("0"))
+    except InvalidOperation:
+        return ""
+    lines = [
+        f"상위 {count}개 합계 시장점유율은 {total:.2f}%입니다.",
+        "",
+        "| 순위 | 브랜드 | 점유율 | 매출 |",
+        "| --- | --- | --- | --- |",
+        *(f"| {row.rank}위 | {row.brand} | {row.share_text} | {row.sales_text} |" for row in fact_rows),
+    ]
+    answer = "\n".join(lines)
+    contract_block = _top_sum_block(_share_trends(fact_md), count)
+    return answer if contract_block and _surface_complete("top_n_share_sum", answer, contract_block) else ""
 
 
 def comparison_subjects(question: str) -> tuple[str, ...]:
@@ -152,6 +195,70 @@ def _share_trends(fact_md: str) -> tuple[ShareTrend, ...]:
         if len(cells) >= 5 and cells[0].isdigit():
             result.append(ShareTrend(cells[1], cells[2], cells[3], cells[4]))
     return tuple(result)
+
+
+def _top_share_fact_rows(fact_md: str, count: int) -> tuple[TopShareRow, ...]:
+    rows: list[TopShareRow] = []
+    active = False
+    for line in fact_md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            active = "상위" in stripped and "점유율 추이 fact" in stripped
+            continue
+        if not active:
+            continue
+        cells = _cells(stripped)
+        if len(cells) < 6 or not cells[0].isdigit():
+            continue
+        share_text = _last_percent_text(cells[3])
+        sales_text = _eok_text(cells[5])
+        if not share_text or not sales_text:
+            return ()
+        rows.append(TopShareRow(int(cells[0]), cells[1], share_text, sales_text))
+        if len(rows) == count:
+            break
+    expected_ranks = tuple(range(1, count + 1))
+    if tuple(row.rank for row in rows) != expected_ranks or len({row.brand for row in rows}) != count:
+        return ()
+    return tuple(rows)
+
+
+def _top_share_tool_rows(tool_calls: Sequence[dict[str, Any]], count: int) -> tuple[TopShareRow, ...]:
+    failed_statuses = {"error", "query_failed", "unsupported", "mapping_failed", "missing"}
+    for call in tool_calls:
+        if str(call.get("tool") or "") != "get_brand_metric":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict) or str(data.get("metric") or "") != "market_top_brands":
+            continue
+        if str(data.get("status") or "ok").lower() in failed_statuses:
+            continue
+        segments = data.get("level_segments")
+        if not isinstance(segments, list) or len(segments) < count:
+            continue
+        rows: list[TopShareRow] = []
+        for item in segments[:count]:
+            if not isinstance(item, dict):
+                return ()
+            rank_text = rank_value(item.get("rank"), None)
+            brand = str(item.get("name") or item.get("brand") or "").strip()
+            share_text = pct_value(item.get("ms_recent_pct"))
+            sales_text = eok_value(item.get("value_억원"), item.get("value"))
+            if not rank_text.isdigit() or not brand or not share_text or not sales_text:
+                return ()
+            rows.append(TopShareRow(int(rank_text), brand, share_text, sales_text))
+        return tuple(rows)
+    return ()
+
+
+def _last_percent_text(value: str) -> str:
+    matches = re.findall(r"([+-]?\d[\d,]*(?:\.\d+)?)\s*%(?!p)", value)
+    return f"{matches[-1]}%" if matches else ""
+
+
+def _eok_text(value: str) -> str:
+    match = re.fullmatch(r"([+-]?\d[\d,]*(?:\.\d+)?)\s*억원", value.strip())
+    return f"{match.group(1)}억원" if match else ""
 
 
 def _target_inputs(fact_md: str) -> TargetInputs | None:
@@ -320,12 +427,42 @@ def _channel_block(question: str, fact_md: str) -> str:
 
 def _surface_complete(intent: str, answer: str, block: str) -> bool:
     if intent == "top_n_share_sum":
-        required = (block.splitlines()[0], *(line for line in block.splitlines() if line.startswith("| ") and "---" not in line))
-        return all(item in answer for item in required)
+        return _top_sum_surface_complete(answer, block)
     required_lines = tuple(line for line in block.splitlines() if line.startswith("| ") and "---" not in line)
     if required_lines:
         return all(line in answer for line in required_lines)
     return all(token in answer for token in _required_tokens(block))
+
+
+def _top_sum_surface_complete(answer: str, block: str) -> bool:
+    block_lines = block.splitlines()
+    if not block_lines or block_lines[0] not in answer:
+        return False
+    answer_rows = tuple(_cells(line) for line in answer.splitlines())
+    if not any(
+        len(cells) >= 3
+        and cells[0] == "순위"
+        and cells[1] == "브랜드"
+        and any("점유율" in cell for cell in cells[2:])
+        for cells in answer_rows
+    ):
+        return False
+    expected_rows = tuple(
+        cells
+        for line in block_lines
+        if (cells := _cells(line)) and cells[0].isdigit()
+    )
+    for rank, brand, expected_share, *_rest in expected_rows:
+        share_text = _last_percent_text(expected_share)
+        if not any(
+            len(cells) >= 3
+            and cells[0].removesuffix("위") == rank
+            and cells[1] == brand
+            and any(_last_percent_text(cell) == share_text for cell in cells[2:])
+            for cells in answer_rows
+        ):
+            return False
+    return bool(expected_rows)
 
 
 def _required_tokens(block: str) -> tuple[str, ...]:

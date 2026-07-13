@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +19,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers a
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels, table
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
@@ -68,6 +71,7 @@ from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
 LOGGER = logging.getLogger(__name__)
+_FINAL_GENERATION_DEADLINE: ContextVar[float | None] = ContextVar("final_generation_deadline", default=None)
 
 _FILE_QUOTE_INSTRUCTION = (
     "업로드 파일 컨텍스트가 있고 질문이 파일의 값·비율·식별코드·고유 토큰·문구를 요구하면, "
@@ -639,7 +643,8 @@ def _is_web_search_only(tool_calls: list[dict[str, Any]] | None) -> bool:
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
     token: str | None = field(default_factory=resolve_final_genos_token)
-    timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TIMEOUT_S", "70")))
+    timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TIMEOUT_S", "50")))
+    total_budget_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TOTAL_BUDGET_S", "100")))
     token_usage_calls: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def stream_answer(self, question: str, agent_result: dict[str, Any]) -> Iterator[str]:
@@ -648,9 +653,26 @@ class GenosClient:
         file_context = _uploaded_file_context(agent_result)
         if self.token and isinstance(markdown_response, dict):
             tool_calls = agent_result.get("tool_calls")
-            if _requires_deterministic_external_relay(tool_calls if isinstance(tool_calls, list) else None):
+            verified_calls = tool_calls if isinstance(tool_calls, list) else []
+            if _requires_deterministic_external_relay(verified_calls):
                 answer = _deterministic_external_relay_answer(markdown_response)
                 answer = replace_internal_fact_dump(question, answer, markdown_response)
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            fast_answer = deterministic_top_n_share_answer(question, fact_md, verified_calls)
+            if fast_answer:
+                with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
+                    answer = _apply_final_claim_controls(question, fast_answer, fact_md)
+                    answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
+                    answer = apply_common_unavailable_response(
+                        question,
+                        answer,
+                        markdown_response,
+                        tool_calls=verified_calls,
+                    )
+                    answer = apply_requested_source_trap_gate(question, answer)
+                    answer = ensure_file_absence_statement(question, answer, file_context)
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             yield from chunk_text(
@@ -659,7 +681,7 @@ class GenosClient:
                         question,
                         markdown_response,
                         timing,
-                        tool_calls if isinstance(tool_calls, list) else None,
+                        verified_calls,
                         file_context,
                     )
                 )
@@ -882,14 +904,21 @@ class GenosClient:
 
     def _chat_text(self, messages: list[dict[str, str]]) -> str:
         last_error: requests.RequestException | None = None
-        for _attempt in range(generation_attempts()):
-            try:
-                text = "".join(self._stream_chat(messages)).strip()
-            except requests.RequestException as exc:
-                last_error = exc
-                continue
-            if text:
-                return text
+        deadline = time.monotonic() + max(1, self.total_budget_s)
+        token = _FINAL_GENERATION_DEADLINE.set(deadline)
+        try:
+            for _attempt in range(generation_attempts()):
+                if deadline - time.monotonic() <= 0:
+                    break
+                try:
+                    text = "".join(self._stream_chat(messages)).strip()
+                except requests.RequestException as exc:
+                    last_error = exc
+                    continue
+                if text:
+                    return text
+        finally:
+            _FINAL_GENERATION_DEADLINE.reset(token)
         if last_error is not None:
             raise last_error
         return ""
@@ -923,16 +952,23 @@ class GenosClient:
         ]
 
     def _stream_chat(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        deadline = _FINAL_GENERATION_DEADLINE.get()
+        remaining = deadline - time.monotonic() if deadline is not None else float(self.timeout_s)
+        if remaining <= 0:
+            raise requests.Timeout("final generation deadline exceeded")
         response = requests.post(
             f"{self.base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.token}"},
             json={"messages": messages, "stream": True, "temperature": 0.0, "stream_options": {"include_usage": True}},
             stream=True,
-            timeout=self.timeout_s,
+            timeout=min(float(self.timeout_s), remaining),
         )
         response.raise_for_status()
         usage_call: dict[str, Any] | None = None
         for raw_line in response.iter_lines(decode_unicode=True):
+            if deadline is not None and time.monotonic() >= deadline:
+                response.close()
+                raise requests.Timeout("final generation deadline exceeded")
             if not raw_line or not raw_line.startswith("data:"):
                 continue
             payload = raw_line.removeprefix("data:").strip()
