@@ -256,3 +256,8 @@ def test_catalog_manifest_records_source_provenance() -> None:
     assert manifest["inputs"]["ml_market"]["row_count"] == 1
     assert manifest["inputs"]["ml_market"]["catalog_manifest_hashes"] == ["a" * 64]
     assert len(manifest["manifest_sha256"]) == 64
+
+
+def test_market_status_builder_uses_slim_safe_company_mapping() -> None:
+    assert market_status.MARKET_STATUS_COMPANY_BY_BRAND["리바로"] == "일동제약"
+    assert len(market_status.MARKET_STATUS_COMPANY_BY_BRAND) == 25

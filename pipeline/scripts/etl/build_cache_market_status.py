@@ -38,7 +38,7 @@ from cache_build_common import (
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline.scripts.api.metadata import BRAND_METADATA
-from pipeline.scripts.api.services import MARKET_STATUS_COMPANY_BY_BRAND
+from pipeline.etl.io.cache.archive_services_shim import MARKET_STATUS_COMPANY_BY_BRAND
 
 
 BRAND_META_BY_NAME = {meta.brand: meta for meta in BRAND_METADATA}
