@@ -97,6 +97,13 @@ def test_cache_cronjobs_maintain_then_warm_the_expected_service() -> None:
         assert maintenance < warm
         assert "--workers 3" in manifest
         assert "activeDeadlineSeconds: 1800" in manifest
+        assert "name: DB_HOST" in manifest
+        assert "llmops-mariadb-service.llmops.svc.cluster.local" in manifest
+        assert "name: DB_PASSWORD" in manifest
+        assert "name: galera-mariadb-galera" in manifest
+        assert "key: mariadb-password" in manifest
+        assert "name: DB_NAME" in manifest
+        assert "jw_mart_d2_stage_20260630_r2" in manifest
 
 
 def test_catalog_warm_set_covers_all_25_brands_and_168_strategic_variants() -> None:
