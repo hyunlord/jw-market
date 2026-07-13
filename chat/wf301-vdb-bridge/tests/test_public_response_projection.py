@@ -165,3 +165,27 @@ def test_openapi_public_responses_exclude_internal_fields_and_keep_capacity() ->
     assert '"status"' in encoded
     assert "document_id" not in schemas["PublicFileSqlSource"]["properties"]
     assert "current_bytes" in schemas["QuotaSnapshot"]["properties"]
+
+
+def test_openapi_public_route_descriptions_do_not_publish_internal_topology() -> None:
+    spec = app.openapi()
+    operations = {
+        "/upload": "post",
+        "/commit": "post",
+        "/search": "post",
+        "/documents": "get",
+    }
+    encoded = json.dumps(
+        {path: spec["paths"][path][method] for path, method in operations.items()}
+    ).lower()
+
+    for forbidden in (
+        "document_upsert",
+        "file_path",
+        "rollback",
+        "source_collection",
+        "target_collection",
+        "temp_vdb_index",
+        "weaviate",
+    ):
+        assert forbidden not in encoded

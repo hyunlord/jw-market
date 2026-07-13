@@ -217,102 +217,24 @@ DRY_RUN_DESCRIPTION = """
 """
 
 COMMIT_DESCRIPTION = """
-`/upload`로 만들어진 임시 문서를 공용 VDB 139와 GenOS 문서 원장에 정식 등록합니다.
+업로드된 파일의 등록을 확정합니다. 표준 `/upload`는 이 단계를 자동으로 수행하므로,
+이 endpoint는 기존 클라이언트의 재시도와 하위 호환을 위해 사용합니다.
 
-내부 단계:
-1. `workflow_id=301`, `vdb_id=139`, 세션 키를 검증합니다.
-2. 같은 세션의 기존 등록 문서와 신규 파일 크기를 기준으로 쿼터를 계산합니다.
-3. 각 `temp_document_id`의 임시 청크를 읽고, 이미 같은 `source_doc_key`로 등록된 문서는 중복으로 보고 건너뜁니다.
-4. 신규 문서는 GenOS `document`와 `document_upsert` 원장 row를 만들고, 청크를 공용 VDB 139 컬렉션으로 복사합니다.
-5. 성공한 문서 수, 건너뛴 중복 수, rollback 참고 정보, 세션 문서 수를 반환합니다.
-
-언제 사용하나요:
-- 기존 클라이언트가 `/upload` 응답의 `temp_documents`를 별도 확정 등록할 때
-- `/upload` 내부 commit 단계가 실패한 뒤 같은 임시 문서를 재시도할 때
-- 운영자가 idempotency/dedup 안전망을 확인하며 수동으로 정식 등록할 때
-
-중요:
-- 표준 `/upload`는 내부에서 이 commit 로직을 자동 실행합니다. 정상 클라이언트는 `/upload` 한 번만 호출하면 됩니다.
-- 이 endpoint는 하위호환/재시도용으로 유지됩니다. 이미 등록된 `source_doc_key`는 중복으로 보고 `skipped_duplicate` 처리됩니다.
-- 같은 세션 키를 계속 사용해야 `/documents`, `/quota/check`, `/search`, `/documents/delete`가 같은 문서 묶음을 봅니다.
-- `commit_enabled=false`이면 쓰기를 하지 않고 `commit stage is disabled` 오류를 반환합니다.
+응답에는 파일명, 처리 상태, 청크 수와 SQL 라우팅에 필요한 논리 테이블 메타데이터만 포함됩니다.
 """
 
 UPLOAD_DESCRIPTION = """
-파일을 세션 전용 임시 VDB에 업로드하고, 전처리 성공 후 같은 요청 안에서 공용 VDB 139 정식 등록까지 실행합니다.
+파일을 업로드하고 전처리와 등록을 수행해 같은 채팅 세션에서 검색할 수 있게 합니다.
 
-내부 단계:
-1. multipart form의 파일 목록과 `workflow_id`, 세션 키, `vdb_id`를 검증합니다.
-2. workflow 301의 파일 업로드 플러그인 설정에서 허용 확장자, 전처리기, embedding serving, batch size, TTL을 읽습니다.
-3. 현재 세션에 이미 commit된 문서 수와 업로드하려는 파일 크기로 쿼터를 계산합니다.
-4. temp-vdb-index를 만들고 `temp_document` row와 로컬 임시 파일을 생성합니다.
-5. 전처리기를 호출해 임시 VDB 청크를 생성합니다.
-6. 기존 `/commit`과 같은 등록 로직으로 GenOS `document`/`document_upsert` 원장과 공용 VDB 139 객체를 생성합니다.
-7. 성공 시 `temp_documents`와 함께 내부 commit 결과를 `commit` 필드로 반환합니다.
-
-언제 사용하나요:
-- 파일 업로드 한 번으로 wf301 채팅 검색 컨텍스트에 바로 사용할 문서를 등록할 때
-- 업로드 직후 같은 세션에서 `/search`, `/documents`, `/documents/delete`를 이어서 사용할 때
-
-중요:
-- `/upload` 응답이 돌아왔을 때 `commit.errors`가 비어 있고 `commit.file_only_ready=true`이면 검색 가능한 상태입니다.
-- 내부 commit이 quota/청크 없음 등으로 실패하면 `errors`와 `commit.errors`에 사유가 들어가며, 그 응답은 검색 가능 완료로 취급하면 안 됩니다.
-- `/commit` endpoint는 하위호환과 재시도용으로 남아 있습니다. 같은 `temp_documents`로 다시 호출하면 기존 `source_doc_key` 중복은 `skipped_duplicate`로 처리됩니다.
-- `commit_enabled=false`이면 임시 리소스를 만들기 전에 실패 응답을 반환합니다.
-- 세션 키는 `chat_id`가 있으면 `chat_id`, 없으면 `app_session_id`입니다. 두 값을 섞어 쓰면 이후 목록/검색/삭제에서 다른 세션으로 인식될 수 있습니다.
-- 세션 키는 36자 이하를 권장합니다. 37자 이상은 temp-vdb-index 계층에서 `09040008` 오류가 발생할 수 있습니다.
-
-multipart 요청 예시:
-```text
-files=@market.txt
-workflow_id=301
-app_session_id=550e8400-e29b-41d4-a716-446655440000
-vdb_id=139
-```
-
-응답 예시:
-```json
-{
-  "mode": "upload",
-  "target_vdb_id": 139,
-  "workflow_id": 301,
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "temp_documents": [
-    {"temp_document_id": 901, "file_name": "market.txt", "file_path": "/tmp/TEMP_DOCUMENT_901.txt"}
-  ],
-  "commit": {
-    "mode": "commit",
-    "committed_count": 1,
-    "file_only_ready": true,
-    "errors": []
-  },
-  "errors": []
-}
-```
+응답에는 파일명, 공개 처리 상태와 SQL 라우팅에 필요한 논리 테이블 메타데이터만 포함됩니다.
+파일별 크기와 세션 한도는 `/documents`와 `/quota/check`에서 확인할 수 있습니다.
 """
 
 DOCUMENTS_DESCRIPTION = """
-같은 세션 키로 `/upload` 내부 commit 또는 별도 `/commit`까지 완료된 활성 문서 목록을 조회합니다.
+현재 세션에서 검색 가능한 파일 목록을 조회합니다.
 
-내부적으로 GenOS 문서 원장의 description JSON에서 `workflow_id`와 세션 키가 일치하는 문서를 찾고, TTL 만료 여부, 파일 크기, 청크 수, 원본 temp 문서 ID를 함께 반환합니다. 내부 commit 또는 별도 `/commit`이 실패한 임시 문서는 이 목록에 나오지 않습니다.
-
-언제 사용하나요:
-- 채팅 화면에서 현재 세션에 등록되어 검색 가능한 파일 목록을 보여줄 때
-- `/documents/delete` 전에 삭제 대상 `document_id` 또는 `temp_document_id`를 찾을 때
-- `/commit` 이후 실제 등록 여부를 확인할 때
-
-응답 예시:
-```json
-{
-  "target_vdb_id": 139,
-  "workflow_id": 301,
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "documents": [
-    {"document_id": 1234, "file_name": "market.txt", "temp_document_id": 901, "is_expired": false}
-  ],
-  "errors": []
-}
-```
+각 항목에는 파일명, 업로드 및 만료 시각, 파일 크기, 청크 수, 저장 경로 유형과
+SQL 라우팅에 필요한 논리 테이블 메타데이터가 포함됩니다.
 """
 
 DELETE_DESCRIPTION = """
@@ -370,33 +292,10 @@ QUOTA_DESCRIPTION = """
 """
 
 SEARCH_DESCRIPTION = """
-같은 세션에 commit된 문서만 대상으로 벡터 검색을 수행하고, wf301 채팅에 주입할 `file_context`와 출처 목록을 반환합니다.
+현재 세션에 등록된 파일에서 질문과 관련된 내용을 검색합니다.
 
-내부 단계:
-1. `workflow_id`, `vdb_id`, 세션 키를 검증합니다.
-2. GenOS 문서 원장에서 같은 세션의 활성 문서 ID를 조회합니다.
-3. 문서가 없으면 빈 `file_context`와 `result_count=0`을 반환합니다.
-4. 질문을 embedding하고 VDB 139에서 해당 문서 ID들로 제한한 벡터 검색을 실행합니다.
-5. 검색 청크를 문자 수 제한 안에서 합쳐 `file_context`를 만들고, 각 청크의 `document_id`, `file_name`, page/chunk 정보, distance를 `file_sources`로 반환합니다.
-
-언제 사용하나요:
-- `/commit`이 끝난 파일들을 기반으로 채팅 답변용 근거 컨텍스트를 만들 때
-- 화면에서 “이 질문에 대해 업로드 파일 중 어떤 부분이 검색됐는지”를 확인할 때
-
-중요:
-- `/upload`만 된 파일은 검색되지 않습니다. `/commit` 성공 후 같은 세션 키로 호출해야 합니다.
-- `limit`을 생략하면 서비스 기본 검색 개수를 사용합니다.
-
-요청 예시:
-```json
-{
-  "workflow_id": 301,
-  "vdb_id": 139,
-  "app_session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "question": "리바로 2026년 1월 매출은?",
-  "limit": 5
-}
-```
+응답에는 답변 조립용 파일 컨텍스트, 파일명과 페이지 기반 출처, 그리고 사용할 수 있는
+SQL 논리 테이블 메타데이터가 포함됩니다. 등록된 파일이 없으면 빈 검색 결과를 반환합니다.
 """
 
 app = FastAPI(
