@@ -137,6 +137,16 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
 _PAGE_DIRECTED_CONTEXT_MARKER = "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회"
 _PAGE_NUMERIC_REQUEST_RE = re.compile(r"(?:수치|환자\s*수|값|금액|비율|각각|몇\s*(?:명|개|건))")
 _PAGE_NUMERIC_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])\d[\d,]*(?:\.\d+)?(?:%|[mb])?", re.IGNORECASE)
+_PAGE_SOURCE_METADATA_RE = re.compile(
+    r"^(?:\[\d+\]\s|\[DA\]\s|섹션:|검색 범위:)|document_id=|TEMP_DOCUMENT_|\|\s*p\.\d+",
+    re.IGNORECASE,
+)
+
+
+def _page_evidence_content(block: str) -> str:
+    return "\n".join(
+        line for line in block.splitlines() if not _PAGE_SOURCE_METADATA_RE.search(line)
+    ).strip()
 
 
 def ensure_file_page_evidence(question: str, answer: str, file_context: str) -> str:
@@ -156,10 +166,10 @@ def ensure_file_page_evidence(question: str, answer: str, file_context: str) -> 
         return answer
     blocks = [block.strip() for block in re.split(r"\n\s*\n", context) if block.strip()]
     evidence = [
-        block
+        content
         for block in blocks
-        if block != _PAGE_DIRECTED_CONTEXT_MARKER
-        and any(token in block for token in missing_tokens)
+        if (content := _page_evidence_content(block))
+        and any(token in content for token in missing_tokens)
     ][:2]
     if not evidence:
         return answer

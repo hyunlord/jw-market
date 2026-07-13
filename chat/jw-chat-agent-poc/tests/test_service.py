@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.service.answer_safety import chunk_text
+from jw_chat_agent_poc.service.answer_safety import chunk_text, ensure_file_page_evidence
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, compute_final_answer, create_app
@@ -538,6 +538,22 @@ def test_file_page_answer_backfills_requested_numeric_evidence(monkeypatch) -> N
     assert "지정 페이지 원문 근거" in final.text
 
 
+def test_file_page_evidence_ignores_source_metadata_numbers() -> None:
+    answer = ensure_file_page_evidence(
+        "2페이지에서 2023년과 2043년 환자 수를 각각 알려줘.",
+        "지정 페이지의 핵심 내용을 확인했습니다.",
+        (
+            "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (2페이지)\n\n"
+            "[1] F3.pdf (document_id=113292)\n[DA] TEMP_DOCUMENT_1845.pdf | p.2\n\n"
+            "[2] F3.pdf (document_id=113292)\n[DA] TEMP_DOCUMENT_1845.pdf | p.2\n\n"
+            "In 2023 there were 51.8 million and 139.1 million patients. "
+            "By 2043 the totals rise to 63.7 million and 168.2 million."
+        ),
+    )
+
+    assert all(value in answer for value in ("51.8", "139.1", "63.7", "168.2"))
+
+
 def test_file_kol_answer_is_not_rewritten_as_unconnected_market_source(monkeypatch) -> None:
     answer = "31페이지 KOL은 anabolic 치료 후 Prolia 같은 antiresorptive 치료가 필요하다고 설명합니다."
     monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args, **_kwargs: iter((answer,)))
@@ -562,6 +578,38 @@ def test_file_kol_answer_is_not_rewritten_as_unconnected_market_source(monkeypat
     assert "anabolic" in final.text
     assert "Prolia" in final.text
     assert "운영 데이터에 미보유" not in final.text
+
+
+def test_genos_markdown_file_kol_skips_market_source_trap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "_chat_text",
+        lambda *_args, **_kwargs: (
+            "31페이지 KOL은 anabolic 치료 후 Prolia 중단 시 전환 치료가 필요하다고 설명합니다."
+        ),
+    )
+    result = {
+        "answer": "",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"fact_md": "", "allowed_numbers": ()},
+        "file_context": (
+            "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (31페이지)\n"
+            "KOL Insights: anabolic treatment should be followed by an antiresorptive; "
+            "Prolia discontinuation needs transition therapy."
+        ),
+    }
+
+    answer = "".join(
+        GenosClient(base_url="http://unused", token="token").stream_answer(
+            "31페이지 KOL Insights의 anabolic 치료와 Prolia 중단 의견을 요약해줘.",
+            result,
+        )
+    )
+
+    assert "anabolic" in answer
+    assert "Prolia" in answer
+    assert "운영 데이터에 미보유" not in answer
 
 
 def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(monkeypatch) -> None:
