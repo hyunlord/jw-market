@@ -30,6 +30,7 @@ from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.deep_analysis_context import (
+    SOURCE_TO_DB,
     DeepAnalysisContext,
     DeepAnalysisContextError,
     resolve_deep_analysis_context,
@@ -116,6 +117,7 @@ def resolve_brand_set(
     ranking_quarters: Sequence[str] | None = None,
     source: str = SOURCE,
     rank_by_latest_period: bool = False,
+    resolved_context: DeepAnalysisContext | None = None,
 ) -> BrandSetResolution | None:
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
@@ -130,14 +132,27 @@ def resolve_brand_set(
     resolved_selected_brand = selected_brand
     resolved_source = source
     if view_name in {"strategic_ml", "strategic_cd"}:
-        context = _resolve_strategic_brand_context(
-            selected_brand,
-            view_name=view_name,
-            market_id=resolved_market_id,
-        )
-        resolved_market_id = context.market_id
-        resolved_selected_brand = context.brand_key
-        resolved_source = context.db_source
+        if resolved_context is not None:
+            # F-055: the caller already resolved this exact strategic context;
+            # re-resolving here repeated the expensive mart scans per request.
+            # Mirror _resolve_strategic_brand_context's source rule exactly:
+            # a multi-source market resolves through the iqvia retry branch.
+            resolved_market_id = resolved_context.market_id
+            resolved_selected_brand = resolved_context.brand_key
+            resolved_source = (
+                SOURCE_TO_DB["iqvia"]
+                if len(resolved_context.market_allowed_sources) > 1
+                else resolved_context.db_source
+            )
+        else:
+            context = _resolve_strategic_brand_context(
+                selected_brand,
+                view_name=view_name,
+                market_id=resolved_market_id,
+            )
+            resolved_market_id = context.market_id
+            resolved_selected_brand = context.brand_key
+            resolved_source = context.db_source
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
