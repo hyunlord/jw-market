@@ -74,6 +74,59 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
     assert any("SELECT DISTINCT atc4_code" in sql and "brand_key" not in sql for sql, _ in calls)
 
 
+def test_market_filter_atc_options_general_without_brand_returns_unflagged_source_universe(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert "brand_key" not in sql
+        assert params == ["ubist"]
+        return [{"atc4_code": "A01A1"}, {"atc4_code": "C10A1"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    response = TestClient(app).get(
+        "/api/market-filter/atc-options",
+        params={"view": "general", "source": "ubist"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["brand_name"] == ""
+    assert payload["market_id"] is None
+    assert payload["flagged_atc4"] == []
+    assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
+    assert all(option["flag"] is False for level in payload["atc"].values() for option in level)
+
+
+@pytest.mark.parametrize(
+    ("brand_name", "brand_atc4"),
+    [
+        ("리바로", ("C10A1",)),
+        ("포도당 대한", ("K01B3", "K01C1", "K04B1", "K04B2", "K04C0")),
+        ("없는 브랜드", ()),
+    ],
+)
+def test_market_filter_atc_options_general_brand_never_restricts_source_universe(
+    monkeypatch,
+    brand_name: str,
+    brand_atc4: tuple[str, ...],
+) -> None:
+    universe = ("A01A1", "C10A1", "K01B3", "K01C1", "K04B1", "K04B2", "K04C0")
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        if "brand_key" in sql:
+            assert params == ["ubist", brand_name, brand_name, brand_name]
+            return [{"atc4_code": code} for code in brand_atc4]
+        assert params == ["ubist"]
+        return [{"atc4_code": code} for code in universe]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    payload = build_market_filter_atc_options(brand_name=brand_name, view="general", source="ubist")
+
+    assert [option["key"] for option in payload["atc"]["atc4"]] == list(universe)
+    assert payload["flagged_atc4"] == list(brand_atc4)
+
+
 def test_market_filter_atc_options_is_get_only_and_exposed_in_openapi() -> None:
     schema = app.openapi()
 
