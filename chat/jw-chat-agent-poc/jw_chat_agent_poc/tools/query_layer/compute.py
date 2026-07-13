@@ -224,6 +224,8 @@ def _share_denominator(
     label: str,
     grouped: Mapping[str, float],
 ) -> float:
+    if key in {"product", "brand"} and filters.get("brand"):
+        return snapshot.market_value(market, period, source)
     if key == "channel" and filters.get("brand"):
         return sum(_period_value(_nested(record.channel_data, label), period) for record in snapshot.market_records(market, source))
     if key == "specialty" and filters.get("brand"):
@@ -253,7 +255,8 @@ def _series_for_group(
         if row is None:
             continue
         value = float(row.get("value") or 0.0)
-        out.append({"period": period, "value_krw": value, "value_억원": round(value / 100_000_000, 2), "ms_pct": row.get("ms_recent_pct"), "rank": row.get("rank")})
+        rank = snapshot.rank(market, label, period, source) if key in {"product", "brand"} else row.get("rank")
+        out.append({"period": period, "value_krw": value, "value_억원": round(value / 100_000_000, 2), "ms_pct": row.get("ms_recent_pct"), "rank": rank})
     return out
 
 
