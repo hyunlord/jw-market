@@ -7,6 +7,7 @@ from jw_chat_agent_poc.tools.query_layer.catalog import QueryCatalog, default_ca
 from jw_chat_agent_poc.tools.query_layer.compute import (
     brand_average_share_data,
     brand_yoy_data,
+    derived_metric_render_data,
     grouped_rows,
     grouped_trends,
     metric_render_data,
@@ -91,6 +92,8 @@ class StrategicQueryLayer:
         market = _required_market(snapshot, brand)
         source = _default_source_for_metric(snapshot, market, brand, period)
         record = snapshot.record(market, brand, source)
+        if metric.casefold() in {"hhi", "momentum", "ei", "growth_contribution"}:
+            return self.brand_derived_metric(brand, metric)
         requested_period = _actual_period(snapshot, market, source, period)
         actual_period = _display_period(snapshot, record, requested_period, period)
         structure = market_structure(snapshot, market, source)
@@ -131,10 +134,33 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
+    def brand_derived_metric(self, brand: str, metric: str) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        market = _required_market(snapshot, brand)
+        source = _default_source_for_metric(snapshot, market, brand, "latest")
+        record = snapshot.record(market, brand, source)
+        data = derived_metric_render_data(snapshot, market, source, record, metric)
+        data["query_result_id"] = self._results.put(result_rows_from_render_data(data))
+        data["query_spec"] = {
+            "source": source,
+            "view": "market_landscape",
+            "market": market,
+            "filters": {"brand": brand},
+            "metrics": [metric],
+        }
+        label = source_label(source)
+        return {
+            "source": label,
+            "tool": "get_brand_metric",
+            "summary_text": metric_summary(brand, data, label),
+            "render_data": data,
+        }
+
     def market_scope(self, brand: str) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand)
-        source = snapshot.source_for_market(market)
+        brand_sources = snapshot.sources_for_brand(market, brand)
+        source = brand_sources[0] if len(brand_sources) == 1 else snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         ranked = snapshot.ranked_brands(market, latest, source)
         rows = ranked[:10]
@@ -144,6 +170,8 @@ class StrategicQueryLayer:
             "market": market,
             "market_id": market,
             "market_name": market,
+            "scope": "market",
+            "scope_label": "시장 전체",
             "level": "Brand",
             "view_type": "market_landscape",
             "period": latest,
@@ -157,6 +185,9 @@ class StrategicQueryLayer:
             "query_result_id": result_id,
             "query_spec": {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc"},
         }
+        anchor_row = next((row for row in ranked if row.get("brand") == brand), None)
+        if anchor_row is not None:
+            render_data["brand_sales_krw"] = anchor_row.get("value")
         if structure:
             render_data["market_structure"] = structure
         return {

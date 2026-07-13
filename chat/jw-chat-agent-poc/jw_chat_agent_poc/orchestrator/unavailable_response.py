@@ -233,14 +233,7 @@ def _four_stage_unavailable_gate(
         public_answer = replace_internal_fact_dump(question, answer, {"fact_md": fact_md})
         if public_answer != answer:
             return _cleanup(public_answer)
-        return _cleanup(
-            "\n\n".join(
-                (
-                    "요청한 값은 현재 조회 결과에 존재합니다.",
-                    finalized_fallback_fact_answer(question, {"fact_md": fact_md}),
-                )
-            )
-        )
+        return _cleanup(finalized_fallback_fact_answer(question, {"fact_md": fact_md}))
 
     required = _required_tools(question)
     attempted = {_public_tool_name(call) for call in calls}

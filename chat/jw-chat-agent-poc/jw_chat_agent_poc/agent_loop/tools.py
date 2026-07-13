@@ -172,8 +172,14 @@ class AgentToolFacade:
         if self._query_layer is not None:
             try:
                 call = self._query_layer.market_scope(brand)
-            except (LookupError, TypeError, ValueError):
-                pass
+            except (LookupError, TypeError, ValueError) as exc:
+                return _tool_error(
+                    "get_market_scope",
+                    arguments,
+                    _query_failed_message(),
+                    status=QUERY_FAILED_STATUS,
+                    error=exc,
+                )
             else:
                 data = call.setdefault("render_data", {})
                 if isinstance(data, dict):
@@ -181,15 +187,23 @@ class AgentToolFacade:
                 return ToolExecution("ok", f"{brand} query-layer market scope", call, arguments)
         if self._metrics._mode != "cache":
             return self._fixture_market_scope(brand, arguments)
-        snapshot = self._metrics._cache.snapshot()
-        bridge = self._metrics._find_brand_bridge(snapshot.cache_brands, brand)
-        market_id = str(bridge.get("market_id") or "")
-        call = self._metrics.get_market_landscape(market_id, view_type=arguments.get("view", "market_landscape"))
-        members = market_members(snapshot.cache_brands, market_id)
-        data = call.setdefault("render_data", {})
-        data["anchor_brand"] = brand
-        data["member_brands"] = members
-        return ToolExecution("ok", f"{brand} market={market_id} members={','.join(members)}", call, arguments)
+        if self._metrics._legacy_cache_injected:
+            snapshot = self._metrics._cache.snapshot()
+            bridge = self._metrics._find_brand_bridge(snapshot.cache_brands, brand)
+            market_id = str(bridge.get("market_id") or "")
+            call = self._metrics.get_market_landscape(market_id, view_type=arguments.get("view", "market_landscape"))
+            members = market_members(snapshot.cache_brands, market_id)
+            data = call.setdefault("render_data", {})
+            data["anchor_brand"] = brand
+            data["member_brands"] = members
+            return ToolExecution("ok", f"{brand} market={market_id} members={','.join(members)}", call, arguments)
+        return _tool_error(
+            "get_market_scope",
+            arguments,
+            _query_failed_message(),
+            status=QUERY_FAILED_STATUS,
+            error=LookupError("d2 query-layer is unavailable"),
+        )
 
     def _fixture_market_scope(self, brand: str, arguments: Mapping[str, str]) -> ToolExecution:
         market_id = "ml_006" if brand in {"리바로", "리바로젯"} else "mock_market"

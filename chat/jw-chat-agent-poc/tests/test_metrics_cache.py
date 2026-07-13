@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agentic import MetricFilterPlan
@@ -10,11 +11,23 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadKey,
     CsdActivityTarget,
     CsdActivityTargetLoadError,
+    MariaDbMetricsCacheReader,
     StaticCausePayloadReader,
     StaticCsdActivityReader,
     StaticCsdActivityTargetReader,
     StaticMetricsCacheReader,
 )
+
+
+def test_brands_reader_uses_query_database_without_changing_cache_database(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
+    monkeypatch.setenv("CHAT_QUERY_DB_NAME", "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.delenv("CHAT_BRANDS_DB_NAME", raising=False)
+
+    reader = MariaDbMetricsCacheReader()
+
+    assert reader.database == "jw_mart_d2_stage_20260630_r2"
+    assert os.environ["CHAT_CACHE_DB_NAME"] == "jw_mart"
 from jw_chat_agent_poc.tools.metrics.sales_filtering import filtered_metric_result
 
 

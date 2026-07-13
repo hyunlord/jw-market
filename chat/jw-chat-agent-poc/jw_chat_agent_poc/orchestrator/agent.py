@@ -427,7 +427,9 @@ class ChatAgent:
             try:
                 return self.query_layer.brand_metric(brand, "sales", "latest")
             except (LookupError, TypeError, ValueError):
-                pass
+                return None
+        if self.metrics._mode == "cache" and not self.metrics._legacy_cache_injected:
+            return None
         try:
             return self.metrics.get_brand_metric(brand, metric="sales")
         except (LookupError, TypeError, ValueError):

@@ -9,6 +9,8 @@ spec:
       containers:
         - name: app
           env:
+            - name: CHAT_DEEP_NEWS_MODE
+              value: cache
             - name: CHAT_QUERY_DB_NAME
               value: jw_mart_d2_stage_20260630_r2
             - name: CHAT_CATALOG_DB_NAME

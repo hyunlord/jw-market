@@ -59,7 +59,7 @@ class ChatAgentDependencyOverrides:
 def build_agent_loop_dependencies(external_mode: str = "fixture") -> AgentLoopDependencies:
     query_layer = default_query_layer()
     return AgentLoopDependencies(
-        metrics=MetricsTool(),
+        metrics=MetricsTool(query_layer=query_layer),
         resolver=BrandResolver(membership_reader=default_catalog_membership_reader()),
         news=DeepAnalysisNewsTool(),
         external=ExternalApiClient(mode=external_mode),
@@ -77,7 +77,7 @@ def build_chat_agent_dependencies(
     return ChatAgentDependencies(
         router=values.router or LLMFirstBQRouter(),
         resolver=values.resolver or BrandResolver(membership_reader=default_catalog_membership_reader()),
-        metrics=values.metrics or MetricsTool(),
+        metrics=values.metrics or MetricsTool(query_layer=query_layer),
         external=values.external or ExternalApiClient(mode=external_mode),
         news=values.news or DeepAnalysisNewsTool(),
         rag=values.rag or LocalDocumentRag(),

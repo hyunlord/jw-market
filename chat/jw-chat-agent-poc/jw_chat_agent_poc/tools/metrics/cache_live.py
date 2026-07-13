@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import re
@@ -223,13 +223,13 @@ class MariaDbCsdActivityTargetReader:
 
 @dataclass(frozen=True, slots=True)
 class MariaDbMetricsCacheReader:
-    host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
-    port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
-    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
-    user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
-    password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
-    connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))
-    read_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_READ_TIMEOUT_S", "5"))
+    host: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_HOST") or os.environ.get("CHAT_QUERY_DB_HOST") or os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local"))
+    port: int = field(default_factory=lambda: int(os.environ.get("CHAT_BRANDS_DB_PORT") or os.environ.get("CHAT_QUERY_DB_PORT") or os.environ.get("CHAT_CACHE_DB_PORT", "3306")))
+    database: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_NAME") or os.environ.get("CHAT_QUERY_DB_NAME") or os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart"))
+    user: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_USER") or os.environ.get("CHAT_QUERY_DB_USER") or os.environ.get("CHAT_CACHE_DB_USER", "llmops"))
+    password: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_PASSWORD") or os.environ.get("CHAT_QUERY_DB_PASSWORD") or os.environ.get("CHAT_CACHE_DB_PASSWORD", ""))
+    connect_timeout_s: int = field(default_factory=lambda: int(os.environ.get("CHAT_BRANDS_DB_CONNECT_TIMEOUT_S") or os.environ.get("CHAT_QUERY_DB_CONNECT_TIMEOUT_S") or os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3")))
+    read_timeout_s: int = field(default_factory=lambda: int(os.environ.get("CHAT_BRANDS_DB_READ_TIMEOUT_S") or os.environ.get("CHAT_QUERY_DB_READ_TIMEOUT_S") or os.environ.get("CHAT_CACHE_DB_READ_TIMEOUT_S", "5")))
 
     def load(self) -> CacheSnapshot:
         import pymysql
@@ -250,71 +250,23 @@ class MariaDbMetricsCacheReader:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT response_json FROM cache_brands WHERE query_key=%s LIMIT 1", ("default",))
                 brands_row = cursor.fetchone()
-                cursor.execute("SELECT response_json FROM cache_market_status WHERE query_key=%s LIMIT 1", ("default",))
-                status_row = cursor.fetchone()
 
-        if not brands_row or not status_row:
-            raise LookupError("cache_brands/cache_market_status default rows are missing")
+        if not brands_row:
+            raise LookupError("cache_brands default row is missing")
 
         brands = json.loads(str(brands_row["response_json"]))
-        status = json.loads(str(status_row["response_json"]))
         if not isinstance(brands, list):
             raise TypeError("cache_brands.response_json must be a JSON list")
-        if not isinstance(status, dict):
-            raise TypeError("cache_market_status.response_json must be a JSON object")
 
-        return CacheSnapshot(cache_brands=brands, market_status=status, loaded_at=time.monotonic())
+        return CacheSnapshot(cache_brands=brands, market_status={}, loaded_at=time.monotonic())
 
 
 @dataclass(frozen=True, slots=True)
-class MariaDbCausePayloadReader:
-    host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
-    port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
-    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
-    user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
-    password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
-    connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))
-    read_timeout_s: int = int(os.environ.get("CHAT_CAUSE_DB_READ_TIMEOUT_S", "15"))
+class UnavailableCausePayloadReader:
+    """Compatibility reader that prevents legacy cause payload SQL reads."""
 
     def load(self, key: CausePayloadKey) -> CausePayload:
-        import pymysql
-
-        with pymysql.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.database,
-            connect_timeout=self.connect_timeout_s,
-            read_timeout=self.read_timeout_s,
-            write_timeout=self.read_timeout_s,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-        ) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT response_json
-                    FROM cache_cause
-                    WHERE brand=%s
-                      AND view_type=%s
-                      AND source=%s
-                      AND measure=%s
-                      AND market_id=%s
-                    LIMIT 1
-                    """,
-                    (key.brand, key.view_type, key.source, key.measure, key.market_id),
-                )
-                row = cursor.fetchone()
-
-        if not row:
-            raise LookupError(f"cache_cause row is missing: {key}")
-
-        payload = json.loads(str(row["response_json"]))
-        if not isinstance(payload, dict):
-            raise TypeError("cache_cause.response_json must be a JSON object")
-        return CausePayload(key=key, payload=payload, loaded_at=time.monotonic())
+        raise LookupError(f"legacy cause payloads are disabled: {key}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,11 +460,11 @@ def shared_metrics_cache(ttl_seconds: int) -> TtlMetricsCache:
 
 
 def shared_cause_payload_cache(ttl_seconds: int) -> TtlCausePayloadCache:
-    """Process-wide cause payload cache: single-flight loads plus bounded LRU retention."""
+    """Compatibility cache that fails closed instead of querying legacy payloads."""
     with _SHARED_CACHE_LOCK:
         cache = _SHARED_CAUSE_PAYLOAD_CACHES.get(ttl_seconds)
         if cache is None:
-            cache = TtlCausePayloadCache(MariaDbCausePayloadReader(), ttl_seconds=ttl_seconds)
+            cache = TtlCausePayloadCache(UnavailableCausePayloadReader(), ttl_seconds=ttl_seconds)
             _SHARED_CAUSE_PAYLOAD_CACHES[ttl_seconds] = cache
         return cache
 
