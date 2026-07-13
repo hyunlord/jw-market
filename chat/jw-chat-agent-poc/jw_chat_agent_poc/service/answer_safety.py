@@ -180,6 +180,14 @@ def finalized_fallback_fact_answer(question: str, markdown_response: Any) -> str
     return append_deterministic_source_block(answer, fact_md)
 
 
+def replace_internal_fact_dump(question: str, answer: str, markdown_response: Any) -> str:
+    """Replace a leaked CSD fact prompt with the deterministic user-facing answer."""
+    markers = ("## 확정 데이터", "반드시 반영할 내용", "CSD 세부 미지원")
+    if "CSD aggregate 콜수" not in answer or sum(marker in answer for marker in markers) < 2:
+        return answer
+    return finalized_fallback_fact_answer(question, markdown_response)
+
+
 def answer_has_only_fact_numbers(answer: str, fact_numbers: tuple[str, ...]) -> bool:
     """Return whether every final answer number is present in the verified fact set."""
     allowed = set(fact_numbers)

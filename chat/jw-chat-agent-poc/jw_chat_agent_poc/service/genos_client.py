@@ -42,6 +42,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     fact_token_allowed,
     fallback_fact_answer,
     finalized_fallback_fact_answer,
+    replace_internal_fact_dump,
     generation_attempts,
     has_mandatory_numeric_mismatch,
     mandatory_fact_block,
@@ -788,6 +789,7 @@ class GenosClient:
         answer = ensure_top_brand_trend_table(answer, fact_md)
         answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = dedupe_brand_metric_sentence(answer, fact_md)
+        answer = replace_internal_fact_dump(question, answer, markdown_response)
         answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)

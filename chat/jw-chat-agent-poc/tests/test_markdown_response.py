@@ -26,6 +26,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_hira_sales_link_analysis,
     ensure_issue_question_quant_analysis,
     fallback_fact_answer,
+    replace_internal_fact_dump,
     ensure_single_brand_trend_analysis,
     ensure_top_brand_trend_table,
     mandatory_fact_lines,
@@ -4818,6 +4819,34 @@ def test_csd_fallback_renders_user_prose_instead_of_internal_fact_rows() -> None
     assert "반드시 반영할 내용" not in answer
     assert "CSD aggregate 콜수" not in answer
     assert "확정 데이터 기준으로 정리하면" not in answer
+
+
+def test_generated_csd_internal_fact_dump_is_replaced_with_user_prose() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+    generated = """요청한 값은 현재 조회 결과에 존재합니다.
+
+## 확정 데이터
+
+### 핵심 데이터
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    answer = replace_internal_fact_dump("리바로 영업활동 추이 어때?", generated, {"fact_md": fact_md})
+
+    assert "2026-03 120건" in answer
+    assert "2026-04 135건" in answer
+    assert "영업활동" in answer
+    assert "확정 데이터" not in answer
+    assert "반드시 반영할 내용" not in answer
+    assert "CSD 세부 미지원" not in answer
 
 
 def test_causal_structure_does_not_append_generic_block_to_existing_analysis() -> None:
