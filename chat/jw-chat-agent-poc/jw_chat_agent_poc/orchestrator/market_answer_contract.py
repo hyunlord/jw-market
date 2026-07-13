@@ -36,9 +36,12 @@ def enforce_market_answer_contract(
     if calls and all(_is_file_tool(call) for call in calls):
         return answer
     relevant_calls = _calls_matching_question(question, calls)
-    contracted = _status_answer(question, calls)
+    status_answer = _status_answer(question, calls)
+    contracted = status_answer
+    unresolved_answer = ""
     if not contracted:
-        contracted = _unresolved_entity_answer(question, answer, calls)
+        unresolved_answer = _unresolved_entity_answer(question, answer, calls)
+        contracted = unresolved_answer
     if not contracted:
         contracted = _restrained_interpretation_answer(question, relevant_calls)
     if not contracted:
@@ -60,7 +63,12 @@ def enforce_market_answer_contract(
     if not contracted:
         contracted = answer
     contracted = _public_language(question, contracted)
-    return _replace_provenance(question, contracted, relevant_calls, status_only=bool(_status_answer(question, calls)))
+    return _replace_provenance(
+        question,
+        contracted,
+        relevant_calls,
+        status_only=bool(status_answer or unresolved_answer),
+    )
 
 
 def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
@@ -101,7 +109,13 @@ def _unresolved_entity_answer(
 ) -> str:
     if calls or "매출" not in question:
         return ""
-    unavailable_markers = ("보유하고 있지", "지원 대상이 아니", "확인이 불가능")
+    unavailable_markers = (
+        "보유하고 있지",
+        "지원 대상이 아니",
+        "확인이 불가능",
+        "존재하지 않아",
+        "존재하지 않",
+    )
     if any(marker in answer for marker in unavailable_markers):
         return "브랜드 목록에서 일치 항목을 찾지 못했습니다."
     return ""
@@ -489,7 +503,7 @@ def _public_language(question: str, answer: str) -> str:
 
 def _drop_unsupported_interpretation_lines(answer: str) -> str:
     unsupported = re.compile(
-        r"(?:시장 중심.*이동|강력한 .*압력|시장 장악력|침투 수준|경쟁 방어 과제|"
+        r"(?:시장의?\s*중심.*이동|강력한 .*압력|시장 장악력|침투 수준|경쟁 방어 과제|"
         r"시장 재편의 방향|경쟁 압력의 근거|(?:때문|이므로|따라서).*(?:압력|하락|상승|이동))"
     )
     lines = [line for line in answer.splitlines() if not unsupported.search(line)]
@@ -539,7 +553,8 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
                 "명",
             ),
         )
-    return provenance_rows_from_calls(calls, ())
+    primary_calls = tuple(call for call in calls if call.get("tool") != "agent_calculation")
+    return provenance_rows_from_calls(primary_calls or calls, ())
 
 
 def _complete_row(
@@ -563,10 +578,10 @@ def _complete_row(
     if values[3] == "해당 없음" and values[2] == "전략뷰":
         values = (*values[:3], "요청 브랜드의 전략 시장", *values[4:])
     requested_channel = _requested_channel(question)
-    if requested_channel:
-        values = (*values[:5], requested_channel, values[6])
-    elif any(token in question for token in ("채널별", "채널 별")):
+    if any(token in question for token in ("채널별", "채널 별")):
         values = (*values[:5], "채널별", values[6])
+    elif requested_channel:
+        values = (*values[:5], requested_channel, values[6])
     if unit:
         values = (*values[:6], unit)
     return ProvenanceRow(*values)
@@ -627,6 +642,8 @@ def _calls_matching_question(
     question: str,
     calls: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any], ...]:
+    if "영업활동" in question:
+        return tuple(call for call in calls if call.get("tool") == "csd_activity_trend")
     if any(token in question for token in ("채널별", "채널 별")):
         return tuple(call for call in calls if _call_dimension(call) == "channel")
     if "진료과" in question:
