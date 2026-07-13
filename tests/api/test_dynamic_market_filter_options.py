@@ -38,6 +38,37 @@ def test_build_filter_option_payload_includes_iqvia_molecule_desc_dimension() ->
     assert molecule_desc["values"] == [{"key": "carteolol", "value": "CARTEOLOL", "row_count": 2}]
 
 
+def test_build_filter_option_payload_labels_ubist_molecule_as_ingredient() -> None:
+    payload = filter_options.build_filter_option_payload(
+        view="general",
+        source="ubist",
+        market_id=None,
+        dimensions=(
+            filter_options.DimensionOptionRow(
+                "molecule",
+                "metformin / sitagliptin",
+                "metformin / sitagliptin",
+                4,
+            ),
+        ),
+        atc_rows=({"atc4_code": "A10N1"},),
+    )
+
+    assert payload["dimensions"] == [
+        {
+            "dimension_type": "molecule",
+            "label": "성분",
+            "values": [
+                {
+                    "key": "metformin / sitagliptin",
+                    "value": "metformin / sitagliptin",
+                    "row_count": 4,
+                }
+            ],
+        }
+    ]
+
+
 def test_filter_options_openapi_documents_key_value_request_contract() -> None:
     app.openapi_schema = None
     schema = app.openapi()

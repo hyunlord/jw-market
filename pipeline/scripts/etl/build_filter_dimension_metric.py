@@ -31,6 +31,7 @@ from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.filter_dimension_metric import build_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
 from pipeline.etl.io.mart.filter_dimension_metric import summarize_dimension_rows
+from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
 from pipeline.etl.io.mart.general_config import first_existing
 from pipeline.etl.io.mart.general_config import load_env
@@ -75,6 +76,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ubist-dir", type=Path, help="Raw UBIST parquet root. Defaults to S4_UBIST_DIR/output/ubist")
     parser.add_argument("--max-rows", type=int, default=None, help="Fast validation only; do not use for production evidence")
     parser.add_argument("--batch-size", type=int, default=200)
+    parser.add_argument(
+        "--dimension-type",
+        help="Build one enabled dimension only. F-046 uses molecule for the bounded UBIST rebuild.",
+    )
+    parser.add_argument("--promote-to", help="Approved shared serving schema for the bounded ubist/molecule promotion.")
+    parser.add_argument(
+        "--allow-shared-serving-target",
+        action="store_true",
+        help="Explicit PL gate for promoting only the ubist/molecule slice into --promote-to.",
+    )
+    parser.add_argument("--build-sha", default=os.environ.get("BUILD_GIT_SHA"), help="Code SHA recorded in provenance.")
     return parser.parse_args()
 
 
@@ -84,6 +96,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--batch-size must be <= 200 for Galera writeset safety")
     if args.ubist_dir:
         os.environ["S4_UBIST_DIR"] = str(args.ubist_dir)
+    if args.dimension_type and args.source != "ubist":
+        raise ValueError("--dimension-type is currently restricted to --source ubist")
+    if args.promote_to and not (args.allow_shared_serving_target and args.dimension_type == "molecule"):
+        raise ValueError("shared promotion requires --dimension-type molecule and explicit approval")
+    if args.promote_to and not args.build_sha:
+        raise ValueError("--build-sha is required for shared promotion provenance")
 
     started = time.perf_counter()
     conn = _connect_admin()
@@ -109,9 +127,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "local_serving_target_allowed": bool(args.allow_local_serving_target),
                 "batch_size": args.batch_size,
                 "iqvia_molecule_desc_dimension": "enabled",
-                "ubist_molecule_dimension": "disabled",
+                "ubist_molecule_dimension": "enabled_raw_unsplit",
                 "pack_desc": "disabled",
                 "grain": "product_level",
+            },
+            "provenance": {
+                "code_sha": args.build_sha,
+                "source_epoch": _source_epoch(),
+                "ubist_dir": str(args.ubist_dir or os.environ.get("S4_UBIST_DIR") or ""),
             },
             "sources": {},
             "live_before": before_live,
@@ -138,12 +161,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     source,
                     max_rows=args.max_rows,
                     batch_size=args.batch_size,
+                    dimension_types={args.dimension_type} if args.dimension_type else None,
                 )
 
         manifest["target"] = _target_summary(conn, args.target_db)
         manifest["live_after"] = _general_table_counts(conn, "jw_mart")
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+        if args.promote_to:
+            build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            manifest["promotion"] = promote_filter_dimension_slice(
+                conn,
+                source_db=args.target_db,
+                target_db=args.promote_to,
+                source="ubist",
+                dimension_type="molecule",
+                build_marker=build_marker,
+                batch_size=args.batch_size,
+                allow_shared_serving_target=args.allow_shared_serving_target,
+            )
         _write_json(args.manifest_path, manifest)
         return manifest
     finally:
@@ -163,6 +199,7 @@ def _load_source_rows(
     *,
     max_rows: int | None,
     batch_size: int,
+    dimension_types: set[str] | None = None,
 ) -> dict[str, Any]:
     if source == "ubist":
         base = load_ubist_base_frame(max_rows=max_rows)
@@ -179,13 +216,24 @@ def _load_source_rows(
     }
     for measure in MEASURES_BY_SOURCE[source]:
         frame = measure_frame(base, measure)
-        rows = build_filter_dimension_rows(source, measure, frame)
+        rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
         insert_filter_dimension_rows(conn, target_db, rows, batch_size=batch_size)
         source_manifest["measures"][measure] = {
             "input_rows": int(len(frame)),
             "sidecar": summarize_dimension_rows(rows),
         }
     return source_manifest
+
+
+def _source_epoch() -> str | None:
+    try:
+        from pipeline.scripts.api.dynamic_market import response_cache
+
+        return response_cache._store.source_epoch()
+    except Exception as exc:
+        if os.environ.get("REQUIRE_SOURCE_EPOCH") == "1":
+            raise RuntimeError("source epoch is required for this build") from exc
+        return None
 
 
 def _copy_source_rows(

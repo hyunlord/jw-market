@@ -22,7 +22,11 @@ class UbistAnalysisLevel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     seller: list[str] = Field(default_factory=list, description="판매사 필터. 값 목록 안에서는 OR로 결합합니다.", examples=[["JW중외제약"]])
-    molecule: list[str] = Field(default_factory=list, description="성분 필터. 값 목록 안에서는 OR로 결합합니다.", examples=[["PITAVASTATIN"]])
+    molecule: list[str] = Field(
+        default_factory=list,
+        description="UBIST 원천 성분 문자열 필터. 복합 성분도 분해하지 않고 원문 한 값으로 취급하며 값 목록 안에서는 OR로 결합합니다.",
+        examples=[["PITAVASTATIN / EZETIMIBE"]],
+    )
     molecule_strength: list[str] = Field(default_factory=list, description="성분용량 필터.", examples=[["PITAVASTATIN 2MG"]])
     form: list[str] = Field(default_factory=list, description="제형 필터.", examples=[["정제"]])
     route: list[str] = Field(default_factory=list, description="투여경로 필터.", examples=[["경구"]])

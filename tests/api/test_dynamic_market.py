@@ -720,7 +720,19 @@ def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monke
                 }
             ]
         if "mart_general_filter_dimension_metric" in sql:
-            return []
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "molecule",
+                    "dimension_value": "Sitagliptin / Metformin",
+                    "raw_value_history": json.dumps(
+                        {"2026-04": 80.0, "2026-05": 100.0},
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
         return [dict(row) for row in strategic_rows]
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", fake_fetch_all)
@@ -781,11 +793,13 @@ def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monke
     )
 
     assert any(call[1] == ("ml_999", "ubist", "sales") for call in calls)
-    assert data["analysis_levels"]["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
+    assert data["analysis_levels"]["levels"] == ["판매사", "성분", "성분용량", "제형", "투여경로", "급여구분"]
     assert "Class" not in data["analysis_levels"]["data"]
     seller_segments = data["analysis_levels"]["data"]["판매사"]["by_channel"]["전체"]
+    ingredient_segments = data["analysis_levels"]["data"]["성분"]["by_channel"]["전체"]
     molecule_segments = data["analysis_levels"]["data"]["성분용량"]["by_channel"]["전체"]
     assert [item["name"] for item in seller_segments] == ["전체", "JW중외제약"]
+    assert [item["name"] for item in ingredient_segments] == ["전체", "Sitagliptin / Metformin"]
     assert [item["name"] for item in molecule_segments] == ["전체", "Sitagliptin 100mg"]
     assert data["level_top5_trend"]["by_level"]["판매사"]["values"][1]["value"] == "JW중외제약"
 
@@ -1420,7 +1434,7 @@ def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     analysis_levels = payload["data"]["analysis_levels"]
-    assert analysis_levels["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
+    assert analysis_levels["levels"] == ["판매사", "성분", "성분용량", "제형", "투여경로", "급여구분"]
     assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "(상급종병 + 종병)", "병원", "의원", "보건소", "기타"]
     assert any(
         segment["name"] == "JW중외제약"
@@ -2110,22 +2124,13 @@ def test_cause_payload_hhi_recent_uses_complete_calendar_year_not_partial_latest
     assert payload["data"]["kpi"]["hhi_recent"] == 6250.0
 
 
-def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:
-    resolver = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart")
+def test_build_dimension_filters_accepts_raw_ubist_molecule() -> None:
+    filters = resolvers.build_dimension_filters(
+        analysis_level={"ubist": {"molecule": ["PITAVASTATIN / EZETIMIBE"]}},
+        source="ubist",
+    )
 
-    try:
-        resolver.resolve(
-            atc4=["A10A1"],
-            molecule=[],
-            analysis_level={"ubist": {"molecule": ["PITAVASTATIN"]}},
-            focus_brand_key=None,
-            source="ubist",
-            measure="sales",
-        )
-    except DynamicMarketInputError as exc:
-        assert "disabled" in str(exc)
-    else:
-        raise AssertionError("disabled molecule dimension was accepted")
+    assert filters == (DimensionFilter("molecule", ("PITAVASTATIN / EZETIMIBE",)),)
 
 
 def test_build_dimension_filters_accepts_ubist_atc_narrowing_dimensions() -> None:

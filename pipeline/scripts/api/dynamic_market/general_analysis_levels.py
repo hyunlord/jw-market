@@ -50,6 +50,7 @@ FIELD_BY_CANONICAL_LEVEL: dict[str, str] = {
 GENERAL_LEVEL_SPECS: dict[str, tuple[GeneralLevelSpec, ...]] = {
     "ubist": (
         GeneralLevelSpec("판매사", "Class", "seller"),
+        GeneralLevelSpec("성분", "Ox/Gx", "molecule"),
         GeneralLevelSpec("성분용량", "Molecule", "molecule_strength"),
         GeneralLevelSpec("제형", "제형/투여경로", "form"),
         GeneralLevelSpec("투여경로", "용량", "route"),
@@ -197,6 +198,10 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
     dimension_data = _json_object(clone.get("dimension_data"))
     dimension_channel_data = _json_object(clone.get("dimension_channel_data"))
     dimension_specialty_data = _json_object(clone.get("dimension_specialty_data"))
+    source_labels = {spec.source_field: by_dimension.get(spec.source_field) for spec in specs}
+    source_dimension_data = {spec.source_field: dimension_data.get(spec.source_field) for spec in specs}
+    source_channel_data = {spec.source_field: dimension_channel_data.get(spec.source_field) for spec in specs}
+    source_specialty_data = {spec.source_field: dimension_specialty_data.get(spec.source_field) for spec in specs}
     if _uses_source_specific_dimensions(specs):
         for spec in specs:
             canonical_field = FIELD_BY_CANONICAL_LEVEL[spec.canonical_level]
@@ -206,12 +211,12 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
             dimension_specialty_data.pop(canonical_field, None)
     for spec in specs:
         canonical_field = FIELD_BY_CANONICAL_LEVEL[spec.canonical_level]
-        source_value = by_dimension.get(spec.source_field)
+        source_value = source_labels.get(spec.source_field)
         if source_value not in (None, "", [], {}):
             by_dimension[canonical_field] = source_value
-        _copy_dimension_field(dimension_data, source=spec.source_field, target=canonical_field)
-        _copy_dimension_field(dimension_channel_data, source=spec.source_field, target=canonical_field)
-        _copy_dimension_field(dimension_specialty_data, source=spec.source_field, target=canonical_field)
+        _copy_dimension_value(dimension_data, value=source_dimension_data.get(spec.source_field), target=canonical_field)
+        _copy_dimension_value(dimension_channel_data, value=source_channel_data.get(spec.source_field), target=canonical_field)
+        _copy_dimension_value(dimension_specialty_data, value=source_specialty_data.get(spec.source_field), target=canonical_field)
     clone["by_dimension"] = _json_dump(by_dimension)
     clone["dimension_data"] = _json_dump(dimension_data)
     clone["dimension_channel_data"] = _json_dump(dimension_channel_data)
@@ -275,8 +280,7 @@ def _rows_from_metrics(*, metrics: AggregatedMetrics, focus: BrandMetric | None)
     return rows
 
 
-def _copy_dimension_field(payload: dict[str, Any], *, source: str, target: str) -> None:
-    value = payload.get(source)
+def _copy_dimension_value(payload: dict[str, Any], *, value: Any, target: str) -> None:
     if isinstance(value, dict):
         payload[target] = value
 

@@ -30,6 +30,7 @@ FILTER_OPTION_CACHE_TTL_ENV = "DYNAMIC_MARKET_FILTER_OPTIONS_CACHE_TTL_SECONDS"
 DEFAULT_FILTER_OPTION_CACHE_TTL_SECONDS = 6 * 60 * 60
 DIMENSION_LABELS: dict[str, str] = {
     "seller": "판매사",
+    "molecule": "성분",
     "molecule_strength": "성분용량",
     "form": "제형",
     "route": "투여경로",

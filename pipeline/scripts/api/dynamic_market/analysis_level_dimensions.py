@@ -21,7 +21,7 @@ from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMe
 logger = logging.getLogger(__name__)
 
 IQVIA_GENERAL_DIMENSIONS = frozenset({"mfr", "molecule_type", "molecule_desc", "strength", "nhi"})
-UBIST_GENERAL_DIMENSIONS = frozenset({"seller", "molecule_strength", "form", "route", "reimbursement"})
+UBIST_GENERAL_DIMENSIONS = frozenset({"seller", "molecule", "molecule_strength", "form", "route", "reimbursement"})
 GENERAL_SIDECAR_DIMENSIONS_BY_SOURCE = {
     "iqvia_nsa": IQVIA_GENERAL_DIMENSIONS,
     "ubist": UBIST_GENERAL_DIMENSIONS,
@@ -195,7 +195,11 @@ def _analysis_rows(
         row = _merge_dimension_payload(row, sidecar_dimensions.get(key))
         strategic = strategic_dimensions.get(brand.brand_key) or strategic_dimensions.get(brand.brand_name) or {}
         if strategic.get("by_dimension"):
-            row["by_dimension"] = _merge_dimension_labels(row.get("by_dimension"), strategic["by_dimension"])
+            row["by_dimension"] = _merge_dimension_labels_preserving(
+                row.get("by_dimension"),
+                strategic["by_dimension"],
+                protected={"molecule"},
+            )
         row["is_jw"] = bool(row["is_target"] or strategic.get("is_jw"))
         row["metric_history"] = _metric_history(brand=brand, totals_by_period=totals_by_period)
         row["dimension_data"] = with_dimension_series_from_labels(
@@ -257,6 +261,15 @@ def _merge_dimension_labels(existing: Any, extra: Any) -> str:
     merged = _json_object(existing)
     for key, value in _json_object(extra).items():
         if _is_empty_dimension_value(value):
+            continue
+        merged[key] = value
+    return json.dumps(merged, ensure_ascii=False, sort_keys=True)
+
+
+def _merge_dimension_labels_preserving(existing: Any, extra: Any, *, protected: set[str]) -> str:
+    merged = _json_object(existing)
+    for key, value in _json_object(extra).items():
+        if (key in protected and key in merged) or _is_empty_dimension_value(value):
             continue
         merged[key] = value
     return json.dumps(merged, ensure_ascii=False, sort_keys=True)

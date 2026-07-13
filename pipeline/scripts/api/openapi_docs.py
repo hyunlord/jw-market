@@ -227,7 +227,11 @@ PUBLIC_GENERAL_UBIST_ANALYSIS_SCHEMA: Final = {
         "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
         "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
         "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
-        "molecule": {"type": "array", "items": {"type": "string"}, "description": "molecule(성분)"},
+        "molecule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "molecule(성분): UBIST 원천 문자열을 분해하지 않고 복합 성분도 한 값으로 취급",
+        },
         "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
         "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
         "route": {"type": "array", "items": {"type": "string"}, "description": "route(투여경로)"},
