@@ -9,6 +9,7 @@ import pymysql
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContext
+from pipeline.scripts.api.deep_analysis_vocabulary import STRENGTH_VIEW_KIND_BY_FORMAL_VIEW
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 FORECAST_BLOCK_TABLE: Final = "deep_forecast_block"
 FORECAST_HORIZON_TABLE: Final = "deep_forecast_horizon"
 MARKET_STRENGTH_TABLE: Final = "agent3_brand_strength_market"
+SOURCE_STRENGTH_TABLE: Final = "agent3_brand_strength_source"
 
 
 def load_forecast_records(
@@ -40,6 +42,16 @@ def load_market_strength_records(
         return []
     placeholders = ", ".join(["%s"] * len(keys))
     try:
+        if context.view_kind == "general":
+            return db.fetch_all(
+                f"""
+                SELECT *
+                FROM {SOURCE_STRENGTH_TABLE}
+                WHERE brand_key IN ({placeholders}) AND source = %s
+                """,
+                [*keys, context.source],
+            )
+        strength_view_kind = STRENGTH_VIEW_KIND_BY_FORMAL_VIEW[context.view_kind]
         return db.fetch_all(
             f"""
             SELECT *
@@ -47,8 +59,11 @@ def load_market_strength_records(
             WHERE brand_key IN ({placeholders})
               AND source = %s AND market_id = %s AND view_kind = %s
             """,
-            [*keys, context.source, context.market_id, context.view_kind],
+            [*keys, context.source, context.market_id, strength_view_kind],
         )
+    except KeyError:
+        logger.warning("unsupported formal strength view: %s", context.view_kind)
+        return []
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
             return []

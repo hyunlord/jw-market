@@ -486,6 +486,102 @@ def _load_ai_analysis_variants(brand: str) -> tuple[dict, dict]:
     )
 
 
+_AI_GENERATION_STATUS_PRIORITY = {
+    "complete": 0,
+    "complete_template_fallback": 1,
+    "legacy_unbound": 2,
+}
+
+
+def _unavailable_canonical_ai_variant(status: str = "not_generated") -> dict:
+    payload = _not_generated_ai_variant()
+    payload.update(
+        generation_status=status,
+        generated_at=None,
+        timestamp_status="unknown",
+    )
+    return payload
+
+
+def _format_origin_generated_at(value: object) -> str | None:
+    if isinstance(value, datetime):
+        generated_at = value
+    else:
+        try:
+            generated_at = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=KST)
+    else:
+        generated_at = generated_at.astimezone(KST)
+    return generated_at.isoformat(timespec="seconds")
+
+
+def _canonical_ai_variant(rows: list[dict], variant: str) -> dict:
+    status_key = f"{variant}_generation_status"
+    generated_at_key = f"{variant}_generated_at"
+    payload_key = f"ai_analysis_{variant}_json"
+    candidates = sorted(
+        rows,
+        key=lambda row: (
+            _AI_GENERATION_STATUS_PRIORITY.get(str(row.get(status_key) or ""), 3),
+            str(row.get("brand") or ""),
+        ),
+    )
+    if not candidates:
+        return _unavailable_canonical_ai_variant()
+    selected = candidates[0]
+    payload = _parse_ai_variant(selected.get(payload_key))
+    status = str(selected.get(status_key) or "unknown")
+    generated_at = _format_origin_generated_at(selected.get(generated_at_key))
+    payload["generation_status"] = status
+    payload["generated_at"] = generated_at
+    if generated_at is None:
+        payload["timestamp_status"] = "unknown"
+    return payload
+
+
+def _load_canonical_ai_analysis_variants(brand: str) -> tuple[dict, dict]:
+    columns = """
+        brand, ai_analysis_short_json, ai_analysis_long_json,
+        short_generation_status, short_generated_at,
+        long_generation_status, long_generated_at
+    """
+    try:
+        rows = db.fetch_all(
+            f"SELECT {columns} FROM cache_deep_analysis_ai_analysis WHERE brand = %s",
+            [brand],
+        )
+        if not rows:
+            compact = compact_brand_name(brand)
+            if compact and compact != brand:
+                rows = db.fetch_all(
+                    f"""
+                    SELECT {columns}
+                    FROM cache_deep_analysis_ai_analysis
+                    WHERE {_compact_sql("brand")} = %s
+                    """,
+                    [compact],
+                )
+                if len({str(row.get("brand") or "") for row in rows}) > 1:
+                    rows = []
+    except pymysql.err.ProgrammingError as exc:
+        if not exc.args or exc.args[0] != 1054:
+            logger.warning("canonical AI analysis lookup failed", exc_info=True)
+            return _unavailable_canonical_ai_variant(), _unavailable_canonical_ai_variant()
+        short, long = _load_ai_analysis_variants(brand)
+        for payload in (short, long):
+            payload["generation_status"] = "unknown"
+            payload["generated_at"] = None
+            payload["timestamp_status"] = "unknown"
+        return short, long
+    except pymysql.MySQLError:
+        logger.warning("canonical AI analysis lookup failed", exc_info=True)
+        return _unavailable_canonical_ai_variant(), _unavailable_canonical_ai_variant()
+    return _canonical_ai_variant(rows, "short"), _canonical_ai_variant(rows, "long")
+
+
 def _empty_brand_factors() -> dict:
     return json.loads(json.dumps(EMPTY_BRAND_FACTORS))
 
@@ -1375,7 +1471,10 @@ def deep_analysis(
             data["events"] = events
         selected_brand_key = str(row.get("brand_key") or matched_brand)
         selected_factors = _load_brand_factors(row.get("brand_factors"))
-        ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
+        if formal_contract:
+            ai_analysis_short, ai_analysis_long = _load_canonical_ai_analysis_variants(matched_brand)
+        else:
+            ai_analysis_short, ai_analysis_long = _load_ai_analysis_variants(matched_brand)
         if formal_contract:
             data["ai_analysis"] = ai_analysis_short
         else:

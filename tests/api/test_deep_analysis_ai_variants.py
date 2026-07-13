@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import pytest
 from pathlib import Path
 import sys
@@ -148,6 +149,93 @@ def test_deep_analysis_ai_variants_handle_invalid_json(monkeypatch) -> None:
     assert payload["data"]["ai_analysis_short"] == {"available": False, "reason": "not_generated"}
     assert payload["data"]["ai_analysis_long"] == {"available": False, "reason": "not_generated"}
     assert _selected_strength_available(payload) is False
+
+
+def test_formal_ai_variants_select_canonical_lineage_without_inventing_time(monkeypatch) -> None:
+    rows = [
+        {
+            "brand": "리바로",
+            "ai_analysis_short_json": json.dumps({"headline": "legacy"}),
+            "short_generation_status": "legacy_unbound",
+            "short_generated_at": None,
+            "ai_analysis_long_json": json.dumps({"headline": "fallback"}),
+            "long_generation_status": "complete_template_fallback",
+            "long_generated_at": datetime(2026, 7, 12, 1, 2, 3),
+        },
+        {
+            "brand": "리바로",
+            "ai_analysis_short_json": json.dumps({"headline": "complete"}),
+            "short_generation_status": "complete",
+            "short_generated_at": datetime(2026, 7, 13, 4, 5, 6),
+            "ai_analysis_long_json": json.dumps({"headline": "legacy"}),
+            "long_generation_status": "legacy_unbound",
+            "long_generated_at": None,
+        },
+    ]
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", lambda *_args, **_kwargs: rows)
+
+    short, long = deep_analysis._load_canonical_ai_analysis_variants("리바로")
+
+    assert short == {
+        "headline": "complete",
+        "generation_status": "complete",
+        "generated_at": "2026-07-13T04:05:06+09:00",
+    }
+    assert long == {
+        "headline": "fallback",
+        "generation_status": "complete_template_fallback",
+        "generated_at": "2026-07-12T01:02:03+09:00",
+    }
+
+
+def test_formal_ai_variant_missing_origin_time_is_explicitly_unknown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        deep_analysis.db,
+        "fetch_all",
+        lambda *_args, **_kwargs: [
+            {
+                "brand": "니코브렉",
+                "ai_analysis_short_json": json.dumps({"headline": "legacy"}),
+                "short_generation_status": "legacy_unbound",
+                "short_generated_at": None,
+                "ai_analysis_long_json": json.dumps({"headline": "legacy"}),
+                "long_generation_status": "legacy_unbound",
+                "long_generated_at": "not-a-timestamp",
+            }
+        ],
+    )
+
+    short, long = deep_analysis._load_canonical_ai_analysis_variants("니코브렉")
+
+    for variant in (short, long):
+        assert variant["generation_status"] == "legacy_unbound"
+        assert variant["generated_at"] is None
+        assert variant["timestamp_status"] == "unknown"
+
+
+def test_formal_ai_variants_fall_back_when_lineage_columns_are_absent(monkeypatch) -> None:
+    def missing_lineage(*_args, **_kwargs):
+        raise pymysql.err.ProgrammingError(1054, "Unknown column 'short_generated_at'")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", missing_lineage)
+    monkeypatch.setattr(
+        deep_analysis.db,
+        "fetch_one",
+        lambda *_args, **_kwargs: {
+            "brand": "구환경브랜드",
+            "ai_analysis_short_json": json.dumps({"headline": "short"}),
+            "ai_analysis_long_json": json.dumps({"headline": "long"}),
+        },
+    )
+
+    short, long = deep_analysis._load_canonical_ai_analysis_variants("구환경브랜드")
+
+    assert short["headline"] == "short"
+    assert long["headline"] == "long"
+    for variant in (short, long):
+        assert variant["generation_status"] == "unknown"
+        assert variant["generated_at"] is None
+        assert variant["timestamp_status"] == "unknown"
 
 
 def test_deep_analysis_ai_variants_handle_db_failure(monkeypatch) -> None:
