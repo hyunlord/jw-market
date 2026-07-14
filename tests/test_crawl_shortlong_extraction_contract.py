@@ -14,7 +14,7 @@ PROTECTED_BLOB_SHA256 = {
     "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "9c90906657dde4ef281b13fa8e3d347e328ee9abdd05458378ddcd29793ff221",
     "pipeline/scripts/api/main.py": "6da9103a735cb599a14a719e1e6729df15d163ec0481b9e4c97d369935715485",
     "pipeline/scripts/api/market_definition_display.py": "774291083195348bd17707e6a61b7853b3c4202ac91649788c5ec8cef0773d5b",
-    "pipeline/scripts/api/openapi_docs.py": "0eb9077317ddc3d1bd470059e75b38321c7a4480c54fddd2d17e2b6b8032052a",
+    "pipeline/scripts/api/openapi_docs.py": "a7c929ff853d775d2f0abce7d9d776a8291d9247a9f6d04a9b33d9e8021c903f",
     "pipeline/scripts/api/routes/cause.py": "cdd25a31b1318d310726b73afb170c636a09a8ed657c2469604c091217f4eb80",
     "pipeline/scripts/api/routes/deep_analysis.py": "07dddb5cc0a578757cbe3000f021a2ba7a6661960eed55b5eec8f96321147130",
 }
