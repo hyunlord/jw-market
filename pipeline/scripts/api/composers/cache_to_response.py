@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pipeline.scripts.api.composers.number_format import deep_format_numbers
-from pipeline.scripts.api.market_growth import compound_period_growth_pct
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
 from pipeline.scripts.api.utils import loads_json_maybe
 
 
@@ -21,8 +21,22 @@ def _series_dict_to_points(
     value: dict,
     *,
     value_key: str,
-    periods_per_year: int | None = None,
+    source: str | None = None,
 ) -> list[dict[str, Any]]:
+    def numeric_value(item: object) -> float | None:
+        if isinstance(item, dict):
+            candidate = item.get("value", item.get("raw_value", item.get("market_size")))
+        else:
+            candidate = item
+        if isinstance(candidate, bool) or not isinstance(candidate, int | float):
+            return None
+        return float(candidate)
+
+    numeric_values = {
+        str(period): numeric_value(item)
+        for period, item in value.items()
+    }
+    growth_by_period = fixed_five_year_growth_series(numeric_values, source=source) if value_key == "value" else {}
     points: list[dict[str, Any]] = []
     for period in sorted(value.keys()):
         item = value[period]
@@ -37,23 +51,15 @@ def _series_dict_to_points(
             point = {"period": period, value_key: item}
         if value_key == "value" and "sales_krw" not in point:
             point["sales_krw"] = point.get("value")
-        if periods_per_year is not None and "mom_growth_pct" not in point:
-            year, suffix = str(period).split("-", 1)
-            prior = value.get(f"{int(year) - 1}-{suffix}")
-            previous = prior.get("value") if isinstance(prior, dict) else prior
-            point["mom_growth_pct"] = compound_period_growth_pct(
-                float(previous) if isinstance(previous, int | float) else None,
-                float(point["value"]) if isinstance(point.get("value"), int | float) else None,
-                periods_per_year,
-            )
+        if value_key == "value":
+            point["mom_growth_pct"] = growth_by_period[str(period)].value
         points.append(point)
     return points
 
 
 def _frontend_shape_aliases(key: str, value: Any, source: str | None) -> Any:
     if key == "market_size_series" and isinstance(value, dict):
-        periods_per_year = 12 if source and source.lower() == "ubist" else 4 if source else None
-        return _series_dict_to_points(value, value_key="value", periods_per_year=periods_per_year)
+        return _series_dict_to_points(value, value_key="value", source=source)
     if key == "hhi_series_5y" and isinstance(value, dict):
         return _series_dict_to_points(value, value_key="hhi")
     if key in {"ei_ms_matrix", "growth_contribution_ms_matrix"} and isinstance(value, list):
