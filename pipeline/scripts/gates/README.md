@@ -9,6 +9,22 @@ The runner consumes evidence captured by deployment automation. It does not
 open cluster or database connections itself, which keeps it runnable in a
 clean clone and prevents a local test from claiming an unmeasured live pass.
 
+## Safe push
+
+`safe_push.py` fetches the target remote, requires `origin/develop` and every
+commit in `approved_shas.txt` to be ancestors of `HEAD`, rejects force
+refspecs, performs the push itself without force flags, and verifies the
+remote SHA.
+
+```bash
+python3 pipeline/scripts/gates/safe_push.py \
+  --refspec HEAD:refs/heads/develop \
+  --environment local
+```
+
+Update `approved_shas.txt` only when a commit has been explicitly approved as
+required release ancestry.
+
 ## API goldens
 
 Capture each response as an item in a JSON array:
