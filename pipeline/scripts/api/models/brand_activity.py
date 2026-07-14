@@ -243,6 +243,7 @@ class CsdTimeseriesRequest(BrandActivityBaseRequest):
     """Request body for the Brand Activity integrated CSD timeseries route."""
 
     market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id 또는 cd_id.")
+    csd_market: str | None = Field(default=None, description="선택 CSD 시장. 미지정 시 매핑된 전체 시장과 합산을 반환합니다.")
     mode: str = Field(
         "absolute",
         description="추세 차트 표현 방식. [입력] absolute=절대값, share=시장 총합 대비 점유율.",

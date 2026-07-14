@@ -5,6 +5,7 @@ from typing import Never
 from fastapi import APIRouter, HTTPException, Path, Query
 
 from pipeline.scripts.api.brand_activity_csd_timeseries import (
+    CsdMarketFilterError,
     CsdTimeseriesAmbiguousMarketError,
     CsdTimeseriesInputError,
     CsdTimeseriesNoMappingError,
@@ -189,6 +190,7 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     openapi_extra={
         "requestBody": brand_activity_request_body(
             {
+                "csd_market": {"type": "string", "description": "선택 CSD 시장. 미지정 시 전체 시장과 합산."},
                 "mode": {"type": "string", "enum": ["absolute", "share"], "default": "absolute"},
                 "window": {
                     "type": "object",
@@ -212,6 +214,11 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     except CsdTimeseriesInputError as exc:
         _raise_brand_set_context_error(exc)
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_timeseries_request", "message": str(exc)}) from exc
+    except CsdMarketFilterError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_csd_market", "message": str(exc), "available": list(exc.available)},
+        ) from exc
     except CsdTimeseriesNoMappingError as exc:
         return _csd_unavailable_response("no_csd_mapping", str(exc), csd_source_present=False)
     except CsdTimeseriesAmbiguousMarketError as exc:
@@ -232,7 +239,8 @@ def brand_activity_csd_timeseries(payload: CsdTimeseriesRequest) -> dict[str, Js
     summary="CSD 활동량·비율·순위 추세",
     description=(
         "문서 Section 1 CSD Channeldynamics 시계열 API입니다. "
-        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 월간 활동량 rank series를 제공합니다."
+        "기존 /csd-timeseries와 별도로 CSD jw_channel 선택, 회사축, 월간 활동량 rank series를 제공합니다. "
+        "csd_market 미지정 시 매핑된 전체 시장과 기간 union 합산을 반환하고, 지정 시 해당 시장만 반환합니다."
     ),
     response_model=None,
     openapi_extra={"requestBody": brand_activity_request_body({}, CSD_ACTIVITY_SERIES_EXAMPLE)},
@@ -244,6 +252,11 @@ def brand_activity_csd_activity_series(payload: CsdActivitySeriesRequest) -> dic
         result = get_csd_activity_series(_service_payload(payload))
     except CsdActivitySeriesInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_csd_activity_series_request", "message": str(exc)}) from exc
+    except CsdMarketFilterError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_csd_market", "message": str(exc), "available": list(exc.available)},
+        ) from exc
     except CsdTimeseriesNoMappingError as exc:
         return _csd_unavailable_response("no_csd_mapping", str(exc), csd_source_present=False)
     except CsdTimeseriesAmbiguousMarketError as exc:

@@ -195,3 +195,29 @@ def test_presence_route_accepts_batch_of_fifty(monkeypatch: pytest.MonkeyPatch) 
 
     assert response.status_code == 200
     assert [item["brand"] for item in response.json()] == brands
+
+
+def test_iqvia_product_codes_by_brand_always_reads_iqvia_sales_rows(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_brand_rows(brands: tuple[str, ...]) -> list[dict[str, object]]:
+        captured["brands"] = brands
+        return [
+            {
+                "brand_key": "리바로",
+                "brand_name": "리바로",
+                "by_dimension": {
+                    "products": [
+                        {"product_code": "LIVALO"},
+                        {"product_code": "LIVALO OD"},
+                    ]
+                },
+            }
+        ]
+
+    monkeypatch.setattr(service, "_fetch_brand_rows", fake_fetch_brand_rows)
+
+    codes = service.iqvia_product_codes_by_brand({"리바로": "리바로"})
+
+    assert captured["brands"] == ("리바로",)
+    assert codes == {"리바로": ("LIVALO", "LIVALO OD")}
