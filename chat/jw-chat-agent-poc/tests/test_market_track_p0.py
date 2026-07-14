@@ -677,6 +677,45 @@ def test_derived_calculation_does_not_add_a_hollow_provenance_row() -> None:
     assert provenance_rows == ["| UBIST | 2026-05 | 전략뷰 | 리바로 전략 시장 | 해당 없음 | 전체 | % |"]
 
 
+def test_quarter_metric_does_not_render_query_plan_as_a_source_row() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 2025년 2분기 매출",
+        answer="2025-Q2 리바로 매출은 242.72억원입니다.",
+        tool_calls=[
+            {
+                "tool": "query_spec",
+                "source": "UBIST",
+                "render_data": {
+                    "metric": "query_spec",
+                    "period": "2026-05",
+                    "query_spec": {"filters": {"brand": "리바로", "period": "2025-Q2"}},
+                },
+            },
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "리바로",
+                    "metric": "sales",
+                    "period": "2025-Q2",
+                    "sales_억원": 242.72,
+                    "query_spec": {
+                        "view": "market_landscape",
+                        "filters": {"brand": "리바로", "period": "2025-Q2"},
+                        "total_brands_in_market": 555,
+                    },
+                },
+            },
+        ],
+    )
+
+    provenance_rows = [line for line in answer.splitlines() if line.startswith("| UBIST |")]
+    assert provenance_rows == [
+        "| UBIST | 2025-Q2 | 전략뷰 | 요청 브랜드의 전략 시장 | 555 | 전체 | 억원 |"
+    ]
+    assert "2026-05" not in answer
+
+
 def test_file_sql_only_answer_is_outside_market_contract() -> None:
     original = "업로드 파일 집계 결과는 690건, 2,679,529입니다."
 
