@@ -749,6 +749,44 @@ def test_market_growth_rejects_negative_100_failure_injection() -> None:
     assert any("-100 growth sentinel is forbidden" in detail for detail in result.details)
 
 
+@pytest.mark.parametrize("actual", [-100.0, -99.9999])
+def test_market_growth_rejects_negative_100_with_numeric_tolerance(actual: float) -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": MARKET_GROWTH_PROVENANCE,
+        "observations": [
+            {"source": "ubist", "market": "A10N1", "expected": actual, "actual": actual, "error": None}
+        ],
+    }
+
+    result = check_market_growth_evidence(evidence, 1, 0.0001, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("-100 growth sentinel is forbidden" in detail for detail in result.details)
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "expected_exit"),
+    [(29.52, 29.52, 0), (29.53, 29.52, 1)],
+)
+def test_market_growth_uses_numeric_boundaries(
+    actual: float,
+    expected: float,
+    expected_exit: int,
+) -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": MARKET_GROWTH_PROVENANCE,
+        "observations": [
+            {"source": "ubist", "market": "A10N1", "expected": expected, "actual": actual, "error": None}
+        ],
+    }
+
+    result = check_market_growth_evidence(evidence, 1, 0.0001, "failure-injection")
+
+    assert result.exit_code == expected_exit
+
+
 def test_market_growth_rejects_independent_expected_perturbation() -> None:
     evidence = {
         "classification": "census",
