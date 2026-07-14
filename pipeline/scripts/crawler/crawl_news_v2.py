@@ -1767,6 +1767,76 @@ def _dedupe_string_list(values: object) -> list[str]:
     return out
 
 
+def _nonempty_string(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _normalized_context_for_keyword(ctx: dict, search_keyword: str | None = None) -> dict | None:
+    jw_brand = _nonempty_string(ctx.get("jw_brand"))
+    brand = _nonempty_string(ctx.get("brand") or ctx.get("brand_name") or jw_brand or search_keyword)
+    brand_key = _nonempty_string(ctx.get("brand_key"))
+    source = _nonempty_string(ctx.get("source"))
+    tier = ctx.get("tier")
+    matched_keywords = _dedupe_string_list(ctx.get("matched_keywords"))
+    if search_keyword and search_keyword not in matched_keywords:
+        matched_keywords.append(search_keyword)
+    if not any((jw_brand, brand, brand_key, source, tier, matched_keywords)):
+        return None
+
+    normalized: dict = {}
+    if jw_brand:
+        normalized["jw_brand"] = jw_brand
+    if tier not in (None, ""):
+        normalized["tier"] = tier
+    if brand and (brand != jw_brand or not jw_brand):
+        normalized["brand"] = brand
+    if brand_key:
+        normalized["brand_key"] = brand_key
+    if source:
+        normalized["source"] = source
+    normalized["matched_keywords"] = matched_keywords
+    return normalized
+
+
+def _context_identity(ctx: dict) -> tuple[str, str, str, str]:
+    tier = _nonempty_string(ctx.get("tier"))
+    brand_key = _nonempty_string(ctx.get("brand_key"))
+    brand = _nonempty_string(ctx.get("jw_brand") or ctx.get("brand") or ctx.get("brand_name"))
+    source = _nonempty_string(ctx.get("source"))
+    return tier, brand_key, brand, source
+
+
+def _context_sort_key(ctx: dict) -> tuple[str, str, str, str]:
+    tier, brand_key, brand, source = _context_identity(ctx)
+    return tier, brand or brand_key, brand_key, source
+
+
+def _merge_context_lists(*sources: object) -> list[dict]:
+    merged: dict[tuple[str, str, str, str], dict] = {}
+    keywords_by_key: dict[tuple[str, str, str, str], set[str]] = {}
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for ctx in source:
+            if not isinstance(ctx, dict):
+                continue
+            normalized = _normalized_context_for_keyword(ctx)
+            if not normalized:
+                continue
+            key = _context_identity(normalized)
+            if key not in merged:
+                merged[key] = {k: v for k, v in normalized.items() if k != "matched_keywords"}
+                keywords_by_key[key] = set()
+            keywords_by_key[key].update(_dedupe_string_list(normalized.get("matched_keywords")))
+    out: list[dict] = []
+    for key, base in sorted(merged.items(), key=lambda item: _context_sort_key(item[1])):
+        keywords = sorted(keywords_by_key[key])
+        item = dict(base)
+        item["matched_keywords"] = keywords
+        out.append(item)
+    return out
+
+
 def _merge_matched_context_fields(doc: dict, payload: dict) -> None:
     """Merge v2 crawl keyword provenance into an existing article document."""
     flat = set(_dedupe_string_list(doc.get("matched_search_keywords")))
@@ -1777,22 +1847,15 @@ def _merge_matched_context_fields(doc: dict, payload: dict) -> None:
     if flat:
         doc["matched_search_keywords"] = sorted(flat)
 
-    merged_by_jw: dict[str, set[str]] = {}
-    for source in (doc.get("matched_jw_search_contexts"), payload.get("matched_jw_search_contexts")):
-        if not isinstance(source, list):
-            continue
-        for ctx in source:
-            if not isinstance(ctx, dict):
-                continue
-            jw = str(ctx.get("jw_brand") or "").strip()
-            if not jw:
-                continue
-            merged_by_jw.setdefault(jw, set()).update(_dedupe_string_list(ctx.get("matched_keywords")))
-    if merged_by_jw:
-        doc["matched_jw_search_contexts"] = [
-            {"jw_brand": jw, "matched_keywords": sorted(kws)}
-            for jw, kws in sorted(merged_by_jw.items())
-        ]
+    merged_contexts = _merge_context_lists(
+        doc.get("collection_provenance"),
+        doc.get("matched_jw_search_contexts"),
+        payload.get("collection_provenance"),
+        payload.get("matched_jw_search_contexts"),
+    )
+    if merged_contexts:
+        doc["matched_jw_search_contexts"] = merged_contexts
+        doc["collection_provenance"] = merged_contexts
 
 
 def _payload_for_keyword(title: str, date_raw: str, content: str, search_keyword: str | None) -> dict:
@@ -1811,16 +1874,19 @@ def _apply_keyword_context(payload: dict, search_keyword: str | None, keyword_co
     if not search_keyword:
         return payload
     contexts = keyword_contexts.get(search_keyword, []) if keyword_contexts else []
-    if not contexts:
-        contexts = [{"jw_brand": "", "matched_keywords": [search_keyword]}]
     payload["matched_search_keywords"] = sorted(
         set(_dedupe_string_list(payload.get("matched_search_keywords"))) | {search_keyword}
     )
-    payload["matched_jw_search_contexts"] = [
-        {"jw_brand": str(ctx.get("jw_brand") or "").strip(), "matched_keywords": _dedupe_string_list(ctx.get("matched_keywords"))}
+    provenance = [
+        normalized
         for ctx in contexts
-        if str(ctx.get("jw_brand") or "").strip()
+        if isinstance(ctx, dict)
+        for normalized in [_normalized_context_for_keyword(ctx, search_keyword)]
+        if normalized
     ]
+    if provenance:
+        payload["matched_jw_search_contexts"] = provenance
+        payload["collection_provenance"] = provenance
     return payload
 
 
@@ -2115,6 +2181,42 @@ def try_merge_article_without_llm(
         return True
 
 
+def merge_keyword_context_for_existing_url(
+    output_dir: str,
+    site_name: str,
+    url: str,
+    search_kw: str | None,
+    *,
+    keyword_contexts: dict[str, list[dict]] | None = None,
+) -> bool:
+    """Merge search provenance when URL history skips an already-saved article."""
+    if not search_kw:
+        return False
+    try:
+        names = os.listdir(output_dir)
+    except OSError:
+        return False
+    stub = _apply_keyword_context({"search_keyword": search_kw}, search_kw, keyword_contexts)
+    for name in names:
+        if not name.endswith(".json") or name.startswith("_title_mismatch__"):
+            continue
+        path = os.path.join(output_dir, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        source_urls = {(source.get("url") or "").strip() for source in _sources_list_from_doc(doc)}
+        if url not in source_urls and (doc.get("url") or "").strip() != url:
+            continue
+        _append_source_url(doc, site_name, url)
+        _merge_article_meta(doc, stub)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=2)
+        return True
+    return False
+
+
 def crawl_once(
     months: int | None,
     days: int | None,
@@ -2241,6 +2343,13 @@ def crawl_once(
                     ):
                         row_list_date = (link_row[2] or "").strip()
                     if url in saved_urls or url in seen_on_site:
+                        merge_keyword_context_for_existing_url(
+                            output_dir,
+                            _normalized_source_name(site_name),
+                            url,
+                            kw,
+                            keyword_contexts=keyword_contexts,
+                        )
                         continue
                     seen_on_site.add(url)
 

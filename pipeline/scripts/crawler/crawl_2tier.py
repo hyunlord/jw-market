@@ -23,7 +23,12 @@ from pipeline.scripts.crawler.tier2_catalog import (
     select_tier2_brands,
     stable_weekday_slice,
 )
-from pipeline.scripts.crawler.tier2_match_score import Tier2Brand, build_tier2_matches
+from pipeline.scripts.crawler.tier2_match_score import (
+    TIER2_RULE_PROCESSOR,
+    Tier2Brand,
+    build_tier2_matches,
+    candidate_brands_for_item,
+)
 
 
 CRAWLER_DIR = Path(__file__).resolve().parent
@@ -147,17 +152,15 @@ def _article_json_files(input_dir: Path) -> list[Path]:
 
 def score_tier2_corpus(input_dir: Path, output_dir: Path, brands: list[Tier2Brand]) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    by_keyword = {brand.brand_name.casefold(): [brand] for brand in brands}
     total = 0
     matched = 0
     for path in _article_json_files(input_dir):
         item = json.loads(path.read_text(encoding="utf-8"))
-        keyword = str(item.get("search_keyword") or "").casefold()
-        candidate_brands = by_keyword.get(keyword, brands)
+        candidate_brands = candidate_brands_for_item(item, brands)
         matches = build_tier2_matches(item, candidate_brands)
         item["matches"] = matches
         item["tier"] = 2
-        item["processed_by"] = "tier2_exact_rule_v1"
+        item["processed_by"] = TIER2_RULE_PROCESSOR
         target = output_dir / path.name
         target.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
         total += 1
@@ -167,7 +170,7 @@ def score_tier2_corpus(input_dir: Path, output_dir: Path, brands: list[Tier2Bran
         "input_json": total,
         "matched_json": matched,
         "output_dir": str(output_dir),
-        "processor": "tier2_exact_rule_v1",
+        "processor": TIER2_RULE_PROCESSOR,
     }
 
 
@@ -223,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drug-profile-dir", default=str(CRAWLER_DIR / "drug_profiles"))
     parser.add_argument("--db-host", default=os.getenv("DB_HOST", "127.0.0.1"))
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "3306")))
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d1_stage_20260625_173115"))
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "jw_mart_d2_stage_20260630_r2"))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "root"))
     parser.add_argument("--db-password", default=os.getenv("DB_PASSWORD", ""))
     return parser

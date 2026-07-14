@@ -1,0 +1,567 @@
+{
+  "가드렛": {
+    "약 영문명": [
+      "GUARDLET"
+    ],
+    "경쟁사 약 한글명": [
+      "디아미크롱",
+      "리조덱",
+      "아마릴",
+      "자디앙",
+      "제미메트",
+      "트라젠타",
+      "트레시바",
+      "트루리시티"
+    ],
+    "경쟁사 약 영문명": [
+      "DIAMICRON",
+      "RYZODEG",
+      "AMARYL",
+      "JARDIANCE",
+      "ZEMIMET",
+      "TRAJENTA",
+      "TRESIBA",
+      "TRULICITY"
+    ]
+  },
+  "가드메트": {
+    "약 영문명": [
+      "GUARDMET"
+    ],
+    "경쟁사 약 한글명": [
+      "디아미크롱",
+      "리조덱",
+      "아마릴",
+      "자디앙",
+      "제미메트",
+      "트라젠타",
+      "트레시바",
+      "트루리시티"
+    ],
+    "경쟁사 약 영문명": [
+      "DIAMICRON",
+      "RYZODEG",
+      "AMARYL",
+      "JARDIANCE",
+      "ZEMIMET",
+      "TRAJENTA",
+      "TRESIBA",
+      "TRULICITY"
+    ]
+  },
+  "뉴트로진": {
+    "약 영문명": [
+      "NEUTROGIN"
+    ],
+    "경쟁사 약 한글명": [
+      "그라신",
+      "뉴라스타",
+      "뉴라펙",
+      "롤론티스",
+      "류코스팀"
+    ],
+    "경쟁사 약 영문명": [
+      "GRASIN",
+      "NEULASTA",
+      "NEULAPEC",
+      "ROLONTIS",
+      "LEUCOSTIM"
+    ]
+  },
+  "라베칸": {
+    "약 영문명": [
+      "RABEKHAN"
+    ],
+    "경쟁사 약 한글명": [
+      "놀텍",
+      "에소메졸",
+      "자큐보",
+      "케이캡",
+      "펙수클루"
+    ],
+    "경쟁사 약 영문명": [
+      "NOLTEC",
+      "ESOMEZOL",
+      "JAQBO",
+      "K-CAB",
+      "FEXUCLUE"
+    ]
+  },
+  "라베칸듀오": {
+    "약 영문명": [
+      "RABEKHAN DUO"
+    ],
+    "경쟁사 약 한글명": [
+      "놀텍",
+      "에소메졸",
+      "자큐보",
+      "케이캡",
+      "펙수클루"
+    ],
+    "경쟁사 약 영문명": [
+      "NOLTEC",
+      "ESOMEZOL",
+      "JAQBO",
+      "K-CAB",
+      "FEXUCLUE"
+    ]
+  },
+  "리바로": {
+    "약 영문명": [
+      "LIVALO"
+    ],
+    "경쟁사 약 한글명": [
+      "리바로젯",
+      "리피로우",
+      "아토르바",
+      "크레스토"
+    ],
+    "경쟁사 약 영문명": [
+      "LIVALOZET",
+      "LIPILOU",
+      "ATORVA",
+      "CRESTOR"
+    ]
+  },
+  "리바로브이": {
+    "약 영문명": [
+      "LIVALO V"
+    ],
+    "경쟁사 약 한글명": [
+      "노바스크",
+      "다이크로짇",
+      "듀카브",
+      "딜라트렌",
+      "아모잘탄",
+      "엑스포지",
+      "카나브",
+      "콩코르",
+      "트윈스타",
+      "헤르벤"
+    ],
+    "경쟁사 약 영문명": [
+      "NORVASC",
+      "DICHLOZID",
+      "DUCAB",
+      "DILATREND",
+      "AMOSARTAN",
+      "EXFORGE",
+      "KANARB",
+      "CONCOR",
+      "TWYNSTA",
+      "HERBEN"
+    ]
+  },
+  "리바로젯": {
+    "약 영문명": [
+      "LIVALOZET"
+    ],
+    "경쟁사 약 한글명": [
+      "리바로",
+      "리피로우",
+      "아토르바",
+      "크레스토"
+    ],
+    "경쟁사 약 영문명": [
+      "LIVALO",
+      "LIPILOU",
+      "ATORVA",
+      "CRESTOR"
+    ]
+  },
+  "리바로페노": {
+    "약 영문명": [
+      "LIVALOPENO"
+    ],
+    "경쟁사 약 한글명": [
+      "시코",
+      "오마코",
+      "오메가",
+      "오메틸 큐티렛",
+      "티지페논",
+      "프라바페닉스"
+    ],
+    "경쟁사 약 영문명": [
+      "SICO",
+      "OMACOR",
+      "OMEGA",
+      "OMETIL QTLET",
+      "TG-FENON",
+      "PRAVAFENIX"
+    ]
+  },
+  "리바로하이": {
+    "약 영문명": [
+      "LIVALO HI"
+    ],
+    "경쟁사 약 한글명": [
+      "노바스크",
+      "다이크로짇",
+      "듀카브",
+      "딜라트렌",
+      "아모잘탄",
+      "엑스포지",
+      "카나브",
+      "콩코르",
+      "트윈스타",
+      "헤르벤"
+    ],
+    "경쟁사 약 영문명": [
+      "NORVASC",
+      "DICHLOZID",
+      "DUCAB",
+      "DILATREND",
+      "AMOSARTAN",
+      "EXFORGE",
+      "KANARB",
+      "CONCOR",
+      "TWYNSTA",
+      "HERBEN"
+    ]
+  },
+  "모빌리아": {
+    "약 영문명": [
+      "MOVILIA"
+    ],
+    "경쟁사 약 한글명": [
+      "그라신",
+      "뉴라스타",
+      "뉴라펙",
+      "뉴트로진",
+      "롤론티스",
+      "류코스팀"
+    ],
+    "경쟁사 약 영문명": [
+      "GRASIN",
+      "NEULASTA",
+      "NEULAPEC",
+      "NEUTROGIN",
+      "ROLONTIS",
+      "LEUCOSTIM"
+    ]
+  },
+  "베노훼럼": {
+    "약 영문명": [
+      "VENOFERRUM"
+    ],
+    "경쟁사 약 한글명": [
+      "모노퍼",
+      "베노스틴",
+      "볼그레",
+      "산타몬플러스",
+      "페린젝트",
+      "훼럼키드",
+      "훼로맥스",
+      "훼로바유",
+      "훼리탑",
+      "훼마틴에이"
+    ],
+    "경쟁사 약 영문명": [
+      "MONOFER",
+      "VENOSTIN",
+      "BOLGRE",
+      "SANTAMON PLUS",
+      "FERINJECT",
+      "FERRUMKID",
+      "FERROMAX",
+      "FERROBA-U",
+      "FERITOP",
+      "FEMATIN-A"
+    ]
+  },
+  "시그마트": {
+    "약 영문명": [
+      "SIGMART"
+    ],
+    "경쟁사 약 한글명": [
+      "노바스크",
+      "딜라트렌",
+      "레보텐션",
+      "바스티난 엠알",
+      "헤르벤"
+    ],
+    "경쟁사 약 영문명": [
+      "NORVASC",
+      "DILATREND",
+      "LEVOTENSION",
+      "VASTINAN MR",
+      "HERBEN"
+    ]
+  },
+  "악템라": {
+    "약 영문명": [
+      "ACTEMRA"
+    ],
+    "경쟁사 약 한글명": [
+      "램시마",
+      "레미케이드",
+      "린버크",
+      "맙테라",
+      "심퍼니",
+      "아달로체",
+      "올루미언트",
+      "젤잔즈",
+      "지셀레카",
+      "트룩시마",
+      "휴미라"
+    ],
+    "경쟁사 약 영문명": [
+      "REMSIMA",
+      "REMICADE",
+      "RINVOQ",
+      "MABTHERA",
+      "SIMPONI",
+      "ADALROCE",
+      "OLUMIANT",
+      "XELJANZ",
+      "JYSELECA",
+      "TRUXIMA",
+      "HUMIRA"
+    ]
+  },
+  "엔커버": {
+    "약 영문명": [
+      "ENCOVER"
+    ],
+    "경쟁사 약 한글명": [
+      "하모닐란"
+    ],
+    "경쟁사 약 영문명": [
+      "HARMONILAN"
+    ]
+  },
+  "위너프": {
+    "약 영문명": [
+      "WINUF"
+    ],
+    "경쟁사 약 한글명": [
+      "뉴트리헥스",
+      "스모프리피드",
+      "스모프카비벤페리페랄",
+      "아르믹스",
+      "오마프원페리",
+      "위너프에이플러스페리",
+      "위너프페리",
+      "페리올리멜엔4이"
+    ],
+    "경쟁사 약 영문명": [
+      "NUTRIHEX",
+      "SMOFLIPID",
+      "SMOFKABIVEN PERIPHERAL",
+      "ARMIX",
+      "OMAPONE PERI",
+      "WINUF A+ PERI",
+      "WINUF PERI",
+      "PERIOLIMEL N4E"
+    ]
+  },
+  "위너프에이플러스": {
+    "약 영문명": [
+      "WINUF A+"
+    ],
+    "경쟁사 약 한글명": [
+      "뉴트리헥스",
+      "스모프리피드",
+      "스모프카비벤페리페랄",
+      "아르믹스",
+      "오마프원페리",
+      "위너프",
+      "위너프에이플러스페리",
+      "위너프페리",
+      "페리올리멜엔4이"
+    ],
+    "경쟁사 약 영문명": [
+      "NUTRIHEX",
+      "SMOFLIPID",
+      "SMOFKABIVEN PERIPHERAL",
+      "ARMIX",
+      "OMAPONE PERI",
+      "WINUF",
+      "WINUF A+ PERI",
+      "WINUF PERI",
+      "PERIOLIMEL N4E"
+    ]
+  },
+  "제이다트": {
+    "약 영문명": [
+      "JADART"
+    ],
+    "경쟁사 약 한글명": [
+      "미라벡",
+      "베타미가",
+      "아보다트",
+      "유로리드",
+      "탐스",
+      "하루날"
+    ],
+    "경쟁사 약 영문명": [
+      "MIRABEG",
+      "BETMIGA",
+      "AVODART",
+      "UROLEAD",
+      "TAMS",
+      "HARNAL"
+    ]
+  },
+  "제이클": {
+    "약 영문명": [
+      "JCLE"
+    ],
+    "경쟁사 약 한글명": [
+      "내시쿨",
+      "세이프렙",
+      "수클리어",
+      "수프렙미니",
+      "수프렙미니에스",
+      "오라팡",
+      "원프렙",
+      "크린뷰올",
+      "플렌뷰",
+      "피코솔루션",
+      "하프렙"
+    ],
+    "경쟁사 약 영문명": [
+      "NESCOOL",
+      "SAFEPREP",
+      "SUCLEAR",
+      "SUPREP MINI",
+      "SUPREP MINI S",
+      "ORAFANG",
+      "ONEPREP",
+      "CLEANVIEWALL",
+      "PLENVU",
+      "PICOSOLUTION",
+      "HALFREP"
+    ]
+  },
+  "타발리스": {
+    "약 영문명": [
+      "TAVALISSE"
+    ],
+    "경쟁사 약 한글명": [
+      "도프텔렛",
+      "레볼레이드",
+      "로미플레이트",
+      "엘팍"
+    ],
+    "경쟁사 약 영문명": [
+      "DOPTELET",
+      "REVOLADE",
+      "ROMIPLATE",
+      "ELPAC"
+    ]
+  },
+  "트루패스": {
+    "약 영문명": [
+      "TRUEPASS"
+    ],
+    "경쟁사 약 한글명": [
+      "미라벡",
+      "베타미가",
+      "아보다트",
+      "유로리드",
+      "탐스",
+      "하루날"
+    ],
+    "경쟁사 약 영문명": [
+      "MIRABEG",
+      "BETMIGA",
+      "AVODART",
+      "UROLEAD",
+      "TAMS",
+      "HARNAL"
+    ]
+  },
+  "페린젝트": {
+    "약 영문명": [
+      "FERINJECT"
+    ],
+    "경쟁사 약 한글명": [
+      "모노퍼",
+      "베노스틴",
+      "베노훼럼",
+      "볼그레",
+      "산타몬플러스",
+      "훼럼키드",
+      "훼로맥스",
+      "훼로바유",
+      "훼리탑",
+      "훼마틴에이"
+    ],
+    "경쟁사 약 영문명": [
+      "MONOFER",
+      "VENOSTIN",
+      "VENOFERRUM",
+      "BOLGRE",
+      "SANTAMON PLUS",
+      "FERRUMKID",
+      "FERROMAX",
+      "FERROBA-U",
+      "FERITOP",
+      "FEMATIN-A"
+    ]
+  },
+  "플라주오피": {
+    "약 영문명": [
+      "PLAJU OP"
+    ],
+    "경쟁사 약 한글명": [
+      "염화칼륨",
+      "플라스마라이트148",
+      "플라스마솔루션에이",
+      "플라스콘",
+      "하트만",
+      "하트만덱스"
+    ],
+    "경쟁사 약 영문명": [
+      "POTASSIUM CHLORIDE",
+      "PLASMA-LYTE 148",
+      "PLASMA SOLUTION A",
+      "PLASCON",
+      "HARTMANN",
+      "HARTMANN DEX"
+    ]
+  },
+  "피나스타": {
+    "약 영문명": [
+      "FINASTA"
+    ],
+    "경쟁사 약 한글명": [
+      "미라벡",
+      "베타미가",
+      "아보다트",
+      "유로리드",
+      "탐스",
+      "하루날"
+    ],
+    "경쟁사 약 영문명": [
+      "MIRABEG",
+      "BETMIGA",
+      "AVODART",
+      "UROLEAD",
+      "TAMS",
+      "HARNAL"
+    ]
+  },
+  "헴리브라": {
+    "약 영문명": [
+      "HEMLIBRA"
+    ],
+    "경쟁사 약 한글명": [
+      "그린모노",
+      "노보세븐알티",
+      "애드베이트",
+      "애디노베이트",
+      "엘록테이트",
+      "진타솔로퓨즈"
+    ],
+    "경쟁사 약 영문명": [
+      "GREEN MONO",
+      "NOVOSEVEN RT",
+      "ADVATE",
+      "ADYNOVATE",
+      "ELOCTATE",
+      "XYNTHA SOLOFUSE"
+    ]
+  }
+}

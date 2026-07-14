@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 
 PHARMA_CONTEXT_TERMS: tuple[str, ...] = (
@@ -44,6 +44,9 @@ COMMON_GENERIC_NAMES: frozenset[str] = frozenset(
     }
 )
 
+TIER2_RULE_PROCESSOR = "tier2_exact_rule_v1"
+TIER2_LLM_PROCESSOR = "tier2_llm_v1"
+
 
 @dataclass(frozen=True)
 class Tier2Brand:
@@ -61,7 +64,7 @@ class Tier2Match:
     score: int
     score_tier: str
     reason: str
-    source_processor: str = "tier2_exact_rule_v1"
+    source_processor: str = TIER2_RULE_PROCESSOR
 
     def as_score_match(self) -> dict[str, Any]:
         return {
@@ -125,13 +128,18 @@ def score_exact_match(
     title: str,
     content: str,
     search_keyword: str | None = None,
+    search_keywords: Iterable[str] | None = None,
 ) -> Tier2Match | None:
     brand_name = brand.brand_name.strip()
     if not brand_name:
         return None
     title_hit = has_exact_phrase(title, brand_name)
     content_hit = has_exact_phrase(content, brand_name)
-    keyword_hit = bool(search_keyword and normalize_text(search_keyword) == normalize_text(brand_name))
+    keyword_values = list(search_keywords or ())
+    if search_keyword:
+        keyword_values.append(search_keyword)
+    normalized_brand = normalize_text(brand_name)
+    keyword_hit = any(normalize_text(keyword) == normalized_brand for keyword in keyword_values)
     if not (title_hit or content_hit or keyword_hit):
         return None
     if is_ambiguous_brand_name(brand_name) and not has_pharma_context(title, content):
@@ -163,10 +171,66 @@ def score_exact_match(
     )
 
 
+def item_search_keywords(item: dict[str, Any]) -> tuple[str, ...]:
+    """Return all search-provenance keywords attached to a crawled article."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = normalize_text(text)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(text)
+
+    add(item.get("search_keyword"))
+    for keyword in item.get("matched_search_keywords") or ():
+        add(keyword)
+    for ctx in item.get("matched_jw_search_contexts") or ():
+        if not isinstance(ctx, dict):
+            continue
+        for keyword in ctx.get("matched_keywords") or ():
+            add(keyword)
+    return tuple(out)
+
+
+def candidate_brands_for_item(item: dict[str, Any], brands: list[Tier2Brand]) -> list[Tier2Brand]:
+    """Find Tier2 candidate brands from search provenance plus full-text exact hits.
+
+    Search provenance is preserved as a candidate even when the current article
+    body does not repeat the searched brand name. Full-text exact hits add
+    additional brands so multi-brand Tier2 articles can later be promoted by
+    the LLM tagger instead of being capped at the single search keyword.
+    """
+    title = str(item.get("title") or "")
+    content = str(item.get("content") or item.get("article_text") or "")
+    keywords = item_search_keywords(item)
+    candidate_keys: set[str] = set()
+    candidates: list[Tier2Brand] = []
+    for brand in brands:
+        brand_name = brand.brand_name.strip()
+        if not brand_name:
+            continue
+        keyword_hit = any(normalize_text(keyword) == normalize_text(brand_name) for keyword in keywords)
+        text_hit = has_exact_phrase(title, brand_name) or has_exact_phrase(content, brand_name)
+        if not (keyword_hit or text_hit):
+            continue
+        if is_ambiguous_brand_name(brand_name) and not has_pharma_context(title, content):
+            continue
+        if brand.brand_key in candidate_keys:
+            continue
+        candidate_keys.add(brand.brand_key)
+        candidates.append(brand)
+    return candidates
+
+
 def build_tier2_matches(item: dict[str, Any], brands: list[Tier2Brand]) -> list[dict[str, Any]]:
     title = str(item.get("title") or "")
     content = str(item.get("content") or item.get("article_text") or "")
-    search_keyword = item.get("search_keyword")
+    search_keywords = item_search_keywords(item)
     matches: list[dict[str, Any]] = []
     seen: set[str] = set()
     for brand in brands:
@@ -174,7 +238,7 @@ def build_tier2_matches(item: dict[str, Any], brands: list[Tier2Brand]) -> list[
             brand,
             title=title,
             content=content,
-            search_keyword=str(search_keyword) if search_keyword else None,
+            search_keywords=search_keywords,
         )
         if match is None or match.brand_key in seen:
             continue
