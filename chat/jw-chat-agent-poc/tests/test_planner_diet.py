@@ -57,6 +57,15 @@ def test_planner_brand_projection_omits_unreferenced_members_after_full_exposure
     assert projected == ("리바로", "피타틴")
 
 
+def test_csd_display_market_cannot_replace_canonical_market_id() -> None:
+    observations = [
+        _observation(1, "get_market_scope", {"brand": "리바로", "market_id": "ml_006"}),
+        _observation(2, "csd_activity_trend", {"brand": "리바로", "market": "LIVALO Market"}),
+    ]
+
+    assert agent_loop._observed_market_by_brand(observations) == {"리바로": "ml_006"}
+
+
 def test_planner_system_message_does_not_duplicate_schema_brand_enum() -> None:
     # Given: the tool schema already owns the canonical brand enum.
     brands = tuple(f"브랜드-{index}" for index in range(470))

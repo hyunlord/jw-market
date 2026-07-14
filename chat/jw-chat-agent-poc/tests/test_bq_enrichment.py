@@ -181,6 +181,41 @@ def test_d3_reports_missing_seller_axis_instead_of_substituting_brand_activity()
     assert "판매사별" in call["render_data"]["insights"][0]
 
 
+def test_d3_calculates_competitor_seller_share_change_without_target_company() -> None:
+    call = build_bq_analysis_call(
+        "D3",
+        [
+            {
+                "source": "CSD",
+                "tool": "csd_activity_trend",
+                "render_data": {
+                    "anchor_companies": ["JW PHARM"],
+                    "seller_series": [
+                        {"period": "2026-01", "company": "JW PHARM", "product_details": 12},
+                        {"period": "2026-01", "company": "COMPETITOR", "product_details": 18},
+                        {"period": "2026-03", "company": "JW PHARM", "product_details": 37},
+                        {"period": "2026-03", "company": "COMPETITOR", "product_details": 63},
+                    ],
+                },
+            }
+        ],
+    )
+
+    assert call is not None
+    data = call["render_data"]
+    assert data["status"] == "ok"
+    assert data["seller_results"][0]["company"] == "COMPETITOR"
+    assert data["seller_results"][0]["start_share_pct"] == 60.0
+    assert data["seller_results"][0]["latest_share_pct"] == 63.0
+    assert data["seller_results"][0]["share_delta_pctp"] == 3.0
+    assert "JW PHARM" not in " ".join(data["insights"])
+    assert any(
+        "CSD.render_data.seller_series" in reference
+        for row in data["evidence_ledger"]
+        for reference in row.get("references", [])
+    )
+
+
 def _market_call(source: str, period: str, values_eok: list[float | None]) -> dict[str, object]:
     periods = [f"2026-{index + 1:02d}" for index in range(len(values_eok))]
     return {

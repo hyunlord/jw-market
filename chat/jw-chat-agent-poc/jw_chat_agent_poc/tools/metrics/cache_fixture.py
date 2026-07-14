@@ -221,6 +221,15 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                 "available_fields": _csd_available_fields(),
                 "unsupported_fields": _csd_unsupported_fields(),
                 "series": [{"period": row.period_ym, "product_details": row.product_details} for row in payload.rows],
+                "seller_series": [
+                    {
+                        "period": row.period_ym,
+                        "company": row.representing_company,
+                        "product_details": row.product_details,
+                    }
+                    for row in payload.seller_rows
+                ],
+                "anchor_companies": list(payload.anchor_companies),
                 "start_period": first.period_ym if first is not None else None,
                 "start_product_details": first.product_details if first is not None else None,
                 "latest_period": latest.period_ym if latest is not None else None,

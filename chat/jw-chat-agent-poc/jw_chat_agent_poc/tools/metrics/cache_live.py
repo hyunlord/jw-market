@@ -55,10 +55,19 @@ class CsdActivityRow:
 
 
 @dataclass(frozen=True, slots=True)
+class CsdSellerActivityRow:
+    period_ym: str
+    representing_company: str
+    product_details: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class CsdActivityPayload:
     target: CsdActivityTarget
     rows: tuple[CsdActivityRow, ...]
     loaded_at: float
+    seller_rows: tuple[CsdSellerActivityRow, ...] = ()
+    anchor_companies: tuple[str, ...] = ()
 
 
 class CsdActivityReader(Protocol):
@@ -130,14 +139,27 @@ class StaticCausePayloadReader:
 @dataclass(frozen=True, slots=True)
 class StaticCsdActivityReader:
     rows_by_target: dict[tuple[str, str], tuple[tuple[str, int | None], ...]]
+    seller_rows_by_market: dict[str, tuple[tuple[str, str, int | None], ...]] = field(default_factory=dict)
+    anchor_companies_by_target: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
 
     def load(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload:
         rows = self.rows_by_target.get((target.market, target.master_product), ())
         selected = rows[-limit:] if limit > 0 else rows
+        periods = {str(period) for period, _value in selected}
+        seller_rows = self.seller_rows_by_market.get(target.market, ())
         return CsdActivityPayload(
             target=target,
             rows=tuple(CsdActivityRow(str(period), int(value) if value is not None else None) for period, value in selected),
             loaded_at=time.monotonic(),
+            seller_rows=tuple(
+                CsdSellerActivityRow(str(period), str(company), int(value) if value is not None else None)
+                for period, company, value in seller_rows
+                if str(period) in periods
+            ),
+            anchor_companies=self.anchor_companies_by_target.get(
+                (target.market, target.master_product),
+                (),
+            ),
         )
 
 
@@ -284,6 +306,8 @@ class MariaDbCsdActivityReader:
         import pymysql
 
         schema = _quote_identifier(self.schema)
+        seller_rows: tuple[dict[str, Any], ...] = ()
+        anchor_rows: tuple[dict[str, Any], ...] = ()
         with pymysql.connect(
             host=self.host,
             port=self.port,
@@ -313,6 +337,41 @@ class MariaDbCsdActivityReader:
                 )
                 rows = cursor.fetchall()
 
+                periods = tuple(str(row["period_ym"]) for row in rows)
+                if periods:
+                    placeholders = ", ".join("%s" for _period in periods)
+                    cursor.execute(
+                        f"""
+                        SELECT period_ym, representing_company,
+                               SUM(product_details) AS product_details
+                        FROM {schema}.`csd_channel_dynamics_stage`
+                        WHERE market = %s
+                          AND jw_channel = 'TOTAL'
+                          AND period_ym IN ({placeholders})
+                          AND NULLIF(TRIM(representing_company), '') IS NOT NULL
+                        GROUP BY period_ym, representing_company
+                        ORDER BY period_ym, representing_company
+                        """,
+                        (target.market, *periods),
+                    )
+                    seller_rows = tuple(cursor.fetchall())
+                    cursor.execute(
+                        f"""
+                        SELECT representing_company,
+                               SUM(product_details) AS product_details
+                        FROM {schema}.`csd_channel_dynamics_stage`
+                        WHERE market = %s
+                          AND master_product = %s
+                          AND jw_channel = 'TOTAL'
+                          AND period_ym IN ({placeholders})
+                          AND NULLIF(TRIM(representing_company), '') IS NOT NULL
+                        GROUP BY representing_company
+                        ORDER BY product_details DESC, representing_company
+                        """,
+                        (target.market, target.master_product, *periods),
+                    )
+                    anchor_rows = tuple(cursor.fetchall())
+
         parsed = tuple(
             CsdActivityRow(
                 str(row["period_ym"]),
@@ -320,7 +379,26 @@ class MariaDbCsdActivityReader:
             )
             for row in reversed(rows)
         )
-        return CsdActivityPayload(target=target, rows=parsed, loaded_at=time.monotonic())
+        parsed_sellers = tuple(
+            CsdSellerActivityRow(
+                str(row["period_ym"]),
+                str(row["representing_company"]),
+                int(row["product_details"]) if row.get("product_details") is not None else None,
+            )
+            for row in seller_rows
+        )
+        anchors = tuple(
+            str(row["representing_company"])
+            for row in anchor_rows
+            if row.get("representing_company")
+        )
+        return CsdActivityPayload(
+            target=target,
+            rows=parsed,
+            loaded_at=time.monotonic(),
+            seller_rows=parsed_sellers,
+            anchor_companies=anchors,
+        )
 
 
 PAYLOAD_CACHE_MAX_KEYS_ENV = "PAYLOAD_CACHE_MAX_KEYS"

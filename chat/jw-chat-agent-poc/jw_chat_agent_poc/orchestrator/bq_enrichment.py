@@ -196,10 +196,119 @@ def _patient_source_result(patient: tuple[str, Decimal], market: Call) -> dict[s
 
 
 def _seller_axis_call(calls: list[Call]) -> Call | None:
-    if not any(call.get("tool") == "csd_activity_trend" for call in calls):
+    activity = next((call for call in calls if call.get("tool") == "csd_activity_trend"), None)
+    if activity is None:
         return None
-    insight = "현재 CSD 도구는 TOTAL 제품 활동 시계열만 제공해 판매사별 활동 변화는 현재 미지원입니다. 브랜드 활동으로 대체하지 않습니다."
-    return _analysis_call("D3", "seller_activity_share_delta", [insight], status="unsupported_axis")
+    data = activity.get("render_data")
+    if not isinstance(data, dict):
+        return None
+    rows = data.get("seller_series")
+    if not isinstance(rows, list) or not rows:
+        insight = "현재 CSD 도구는 TOTAL 제품 활동 시계열만 제공해 판매사별 활동 변화는 현재 미지원입니다. 브랜드 활동으로 대체하지 않습니다."
+        return _analysis_call("D3", "seller_activity_share_delta", [insight], status="unsupported_axis")
+
+    anchors = {
+        str(company).strip().casefold()
+        for company in data.get("anchor_companies", [])
+        if str(company).strip()
+    }
+    by_period: dict[str, dict[str, Decimal]] = {}
+    display_name: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        period = str(row.get("period") or "").strip()
+        company = str(row.get("company") or "").strip()
+        value = _decimal(row.get("product_details"))
+        if not period or not company or value is None:
+            continue
+        key = company.casefold()
+        display_name.setdefault(key, company)
+        period_values = by_period.setdefault(period, {})
+        period_values[key] = period_values.get(key, Decimal("0")) + value
+
+    valid_periods = [
+        period
+        for period in sorted(by_period)
+        if sum(by_period[period].values(), Decimal("0")) > 0
+    ]
+    if len(valid_periods) < 2:
+        insight = "판매사별 활동 변화 계산에 필요한 서로 다른 두 기간의 CSD TOTAL 값이 없습니다. 브랜드 활동으로 대체하지 않습니다."
+        return _analysis_call("D3", "seller_activity_share_delta", [insight], status="insufficient_periods")
+
+    start_period, latest_period = valid_periods[0], valid_periods[-1]
+    start_values = by_period[start_period]
+    latest_values = by_period[latest_period]
+    start_total = sum(start_values.values(), Decimal("0"))
+    latest_total = sum(latest_values.values(), Decimal("0"))
+    companies = (set(start_values) | set(latest_values)) - anchors
+    results: list[dict[str, Any]] = []
+    for company in companies:
+        start_value = start_values.get(company, Decimal("0"))
+        latest_value = latest_values.get(company, Decimal("0"))
+        start_share = start_value / start_total * Decimal("100")
+        latest_share = latest_value / latest_total * Decimal("100")
+        results.append(
+            {
+                "company": display_name.get(company, company),
+                "start_product_details": _float(start_value),
+                "latest_product_details": _float(latest_value),
+                "start_share_pct": _float(start_share),
+                "latest_share_pct": _float(latest_share),
+                "share_delta_pctp": _float(latest_share - start_share),
+            }
+        )
+    results.sort(
+        key=lambda item: (
+            -abs(Decimal(str(item["share_delta_pctp"]))),
+            -Decimal(str(item["latest_product_details"])),
+            str(item["company"]),
+        )
+    )
+    results = results[:3]
+    if not results:
+        insight = "자사 판매사를 제외한 경쟁사 CSD TOTAL 활동이 없어 경쟁사 활동 변화는 계산하지 않습니다."
+        return _analysis_call("D3", "seller_activity_share_delta", [insight], status="no_competitor_activity")
+
+    insights = [
+        (
+            f"{start_period}~{latest_period} {item['company']}의 CSD TOTAL 활동 비중은 "
+            f"{item['start_share_pct']:.2f}%에서 {item['latest_share_pct']:.2f}%로 "
+            f"{item['share_delta_pctp']:+.2f}%p 변했습니다."
+        )
+        for item in results
+    ]
+    chart = {
+        "chart_type": "bar",
+        "title": "경쟁사 CSD 활동 비중 변화",
+        "source": "CSD",
+        "scope": "MARKET",
+        "evidence_refs": ["CSD.render_data.seller_series"],
+        "labels": [item["company"] for item in results],
+        "datasets": [
+            {
+                "label": f"{start_period} 활동 비중(%)",
+                "unit": "%",
+                "data": [item["start_share_pct"] for item in results],
+            },
+            {
+                "label": f"{latest_period} 활동 비중(%)",
+                "unit": "%",
+                "data": [item["latest_share_pct"] for item in results],
+            },
+        ],
+    }
+    return _analysis_call(
+        "D3",
+        "seller_activity_share_delta",
+        insights,
+        status="ok",
+        period=f"{start_period}~{latest_period}",
+        seller_results=results,
+        source_labels=["CSD"],
+        evidence_refs=["CSD.render_data.seller_series"],
+        chart_payloads=[chart],
+    )
 
 
 def _analysis_call(contract_id: str, calculation: str, insights: list[str], **data: Any) -> Call:

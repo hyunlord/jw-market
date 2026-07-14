@@ -55,6 +55,23 @@ def _series_rows(source: str, tool: str, data: Mapping[str, Any]) -> list[dict[s
                     "references": _series_references(source, key),
                 }
             )
+    for item in _mappings(data.get("seller_series")):
+        period = str(item.get("period") or "").strip()
+        company = str(item.get("company") or "").strip()
+        value = item.get("product_details")
+        if not period or not company or value is None:
+            continue
+        rows.append(
+            {
+                "source": source,
+                "kind": "series",
+                "identity": f"{tool}:seller_series:{period}:{company}",
+                "subject": company,
+                "period": period,
+                "value": value,
+                "references": [f"{source}.render_data.seller_series"],
+            }
+        )
     return rows
 
 
