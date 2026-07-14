@@ -95,6 +95,8 @@ _SeriesValueCache = dict[
     tuple[int, tuple[str, ...]],
     tuple[dict[str, Any], array],
 ]
+_AnnualRankRows = tuple[dict[int, list[dict[str, Any]]], dict[int, int]]
+_AnnualRankRowsCache = dict[tuple[int, str], _AnnualRankRows]
 
 
 def parse_args() -> Any:
@@ -320,12 +322,14 @@ def _stacked_ranking(
     target_overrides: dict[int, dict[str, Any]] | None = None,
     top_n: int = 5,
     full_rows: list[dict[str, Any]] | None = None,
+    annual_rank_cache: _AnnualRankRowsCache | None = None,
 ) -> dict[str, Any]:
     by_year, period_count_by_year = _annual_rank_rows(
         period_map,
         label_key=label_key,
         target_name=target_name,
         full_rows=full_rows,
+        annual_rank_cache=annual_rank_cache,
     )
 
     years = sorted(by_year.keys())[-5:]
@@ -453,9 +457,15 @@ def _annual_rank_rows(
     label_key: str,
     target_name: str | None,
     full_rows: list[dict[str, Any]] | None = None,
+    annual_rank_cache: _AnnualRankRowsCache | None = None,
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
     if full_rows:
-        return _annual_rank_rows_from_full_rows(full_rows, label_key=label_key, target_name=target_name)
+        return _annual_rank_rows_from_full_rows(
+            full_rows,
+            label_key=label_key,
+            target_name=target_name,
+            annual_rank_cache=annual_rank_cache,
+        )
     grouped: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     period_count_by_year: dict[int, int] = defaultdict(int)
     for period, rows in sorted((period_map or {}).items(), key=lambda pair: period_key(str(pair[0]))):
@@ -494,45 +504,93 @@ def _annual_rank_rows(
 
 
 def _annual_rank_rows_from_full_rows(
-    rows: list[dict[str, Any]], *, label_key: str, target_name: str | None
+    rows: list[dict[str, Any]],
+    *,
+    label_key: str,
+    target_name: str | None,
+    annual_rank_cache: _AnnualRankRowsCache | None = None,
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
-    periods_by_year: dict[int, set[str]] = defaultdict(set)
-    grouped: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
+    cache_key = (id(rows), label_key)
+    cached = annual_rank_cache.get(cache_key) if annual_rank_cache is not None else None
+    if cached is None:
+        if annual_rank_cache is not None:
+            _populate_annual_rank_rows_cache(rows, annual_rank_cache, label_keys=("brand", "company"))
+            cached = annual_rank_cache[cache_key]
+        else:
+            reduced: _AnnualRankRowsCache = {}
+            _populate_annual_rank_rows_cache(rows, reduced, label_keys=(label_key,))
+            cached = reduced[cache_key]
+    by_year, period_count_by_year = cached
+    if not target_name:
+        return by_year, period_count_by_year
+
+    targeted_by_year = deepcopy(by_year)
+    for year_rows in targeted_by_year.values():
+        for row in year_rows:
+            is_target = row_identity(row, label_key) == target_name
+            row["is_target"] = is_target
+            row["is_jw"] = bool(row.get("is_jw")) or is_target
+    return targeted_by_year, period_count_by_year
+
+
+def _populate_annual_rank_rows_cache(
+    rows: list[dict[str, Any]],
+    cache: _AnnualRankRowsCache,
+    *,
+    label_keys: tuple[str, ...],
+) -> None:
+    periods_by_label: dict[str, dict[int, set[str]]] = {
+        label_key: defaultdict(set) for label_key in label_keys
+    }
+    grouped_by_label: dict[str, dict[int, dict[str, dict[str, Any]]]] = {
+        label_key: defaultdict(dict) for label_key in label_keys
+    }
     for row in rows:
         history = _metric_history(row)
         if not history:
             continue
-        if label_key == "company":
-            name = _row_company(row)
-        else:
-            name = _row_brand(row)
-        if not name:
+        names = {
+            label_key: _row_company(row) if label_key == "company" else _row_brand(row)
+            for label_key in label_keys
+        }
+        if all(not name for name in names.values()):
             continue
         for period, item in history.items():
             year = _period_year(str(period))
             if year is None:
                 continue
             period_str = str(period)
-            periods_by_year[year].add(period_str)
-            bucket = grouped[year].setdefault(
-                name,
-                {
-                    label_key: name,
-                    "brand": name if label_key == "brand" else None,
-                    "company": _row_company(row) if label_key == "brand" else name,
-                    "is_target": bool(target_name and name == target_name),
-                    "is_jw": bool(row.get("is_jw")) or bool(target_name and name == target_name),
-                    "is_others": False,
-                    "value": 0.0,
-                    "rank": None,
-                    "ms_pct": 0.0,
-                },
-            )
-            bucket["value"] += _value_from_period_item(item)
-            bucket["is_jw"] = bool(bucket.get("is_jw") or row.get("is_jw"))
-    return {year: _rank_normalized_rows(list(items.values()), label_key=label_key) for year, items in grouped.items()}, {
-        year: len(periods) for year, periods in periods_by_year.items()
-    }
+            value = _value_from_period_item(item)
+            for label_key, name in names.items():
+                if not name:
+                    continue
+                periods_by_label[label_key][year].add(period_str)
+                bucket = grouped_by_label[label_key][year].setdefault(
+                    name,
+                    {
+                        label_key: name,
+                        "brand": name if label_key == "brand" else None,
+                        "company": _row_company(row) if label_key == "brand" else name,
+                        "is_target": False,
+                        "is_jw": bool(row.get("is_jw")),
+                        "is_others": False,
+                        "value": 0.0,
+                        "rank": None,
+                        "ms_pct": 0.0,
+                    },
+                )
+                bucket["value"] += value
+                bucket["is_jw"] = bool(bucket.get("is_jw") or row.get("is_jw"))
+    for label_key in label_keys:
+        grouped = grouped_by_label[label_key]
+        periods_by_year = periods_by_label[label_key]
+        cache[(id(rows), label_key)] = (
+            {
+                year: _rank_normalized_rows(list(items.values()), label_key=label_key)
+                for year, items in grouped.items()
+            },
+            {year: len(periods) for year, periods in periods_by_year.items()},
+        )
 
 
 def _rank_normalized_rows(rows: list[dict[str, Any]], *, label_key: str) -> list[dict[str, Any]]:
@@ -669,6 +727,7 @@ def _target_rank_overrides(
     label_key: str,
     target_name: str | None,
     cache_key: Any = None,
+    annual_rank_cache: _AnnualRankRowsCache | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Build target rows from full sibling mart history when market ranking is top-N.
 
@@ -686,6 +745,7 @@ def _target_rank_overrides(
             rows,
             label_key=label_key,
             target_name=target_name,
+            annual_rank_cache=annual_rank_cache,
         )
         TARGET_RANK_STATS_CACHE[stats_key] = {
             year: {
@@ -2201,8 +2261,15 @@ def _annual_share_hhi_from_rows(
     *,
     label_key: str,
     source: str | None = None,
+    annual_rank_cache: _AnnualRankRowsCache | None = None,
 ) -> list[dict[str, Any]]:
-    by_year, period_count_by_year = _annual_rank_rows({}, label_key=label_key, target_name=None, full_rows=rows)
+    by_year, period_count_by_year = _annual_rank_rows(
+        {},
+        label_key=label_key,
+        target_name=None,
+        full_rows=rows,
+        annual_rank_cache=annual_rank_cache,
+    )
     complete_years = _complete_calendar_years(period_count_by_year, source=source)
     points = []
     for year in sorted(year for year in by_year.keys() if year in complete_years)[-5:]:
@@ -2230,8 +2297,18 @@ def _company_hhi_from_ranking(company_ranking: Any) -> dict[str, Any]:
     return {"periods": periods, "hhi_values": values}
 
 
-def _company_hhi_from_rows(rows: list[dict[str, Any]], *, source: str | None = None) -> dict[str, Any]:
-    points = _annual_share_hhi_from_rows(rows, label_key="company", source=source)
+def _company_hhi_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    source: str | None = None,
+    annual_rank_cache: _AnnualRankRowsCache | None = None,
+) -> dict[str, Any]:
+    points = _annual_share_hhi_from_rows(
+        rows,
+        label_key="company",
+        source=source,
+        annual_rank_cache=annual_rank_cache,
+    )
     return {
         "periods": [str(point["year"]) for point in points],
         "hhi_values": [round(safe_float(point.get("hhi")) or 0.0, 4) for point in points],
@@ -2731,15 +2808,15 @@ def _level_top5_trend(
     periods = (analysis_levels.get("periods_monthly") or analysis_levels.get("periods_quarterly") or [])[-10:]
     available_levels = [{"key": level, "label": level} for level in levels]
     by_level = {}
+    full_market_rows = _rows_for_channel(
+        rows,
+        source,
+        channel,
+        periods,
+        series_value_cache=series_value_cache,
+    )
+    full_market_series = _total_series_for_rows(full_market_rows, periods)
     for level in levels:
-        full_market_rows = _rows_for_channel(
-            rows,
-            source,
-            channel,
-            periods,
-            series_value_cache=series_value_cache,
-        )
-        full_market_series = _total_series_for_rows(full_market_rows, periods)
         all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get(channel) or []
         overall_segment = next(
             (segment for segment in all_level_segments if isinstance(segment, dict) and segment.get("is_overall")),
@@ -3064,17 +3141,20 @@ def build_response(
         )
     if precomputed_block is None and not include_all_d3_options:
         analysis_levels = _trim_analysis_levels(analysis_levels)
+    annual_rank_cache: _AnnualRankRowsCache = {}
     brand_ranking_stacked = _stacked_ranking(
         brand_ranking,
         label_key="brand",
         target_name=brand_row.get("brand_name"),
         catalog_members=catalog_members,
         full_rows=sibling_rows,
+        annual_rank_cache=annual_rank_cache,
         target_overrides=_target_rank_overrides(
             sibling_rows,
             label_key="brand",
             target_name=brand_row.get("brand_name"),
             cache_key=(view_source_id, source_api, measure),
+            annual_rank_cache=annual_rank_cache,
         ),
     )
     company_ranking_stacked = _stacked_ranking(
@@ -3082,11 +3162,13 @@ def build_response(
         label_key="company",
         target_name=target_company_name,
         full_rows=sibling_rows,
+        annual_rank_cache=annual_rank_cache,
         target_overrides=_target_rank_overrides(
             sibling_rows,
             label_key="company",
             target_name=target_company_name,
             cache_key=("company", view_source_id, source_api, measure),
+            annual_rank_cache=annual_rank_cache,
         ),
     )
     display_entries_no_others = _display_brand_rows(
@@ -3097,21 +3179,22 @@ def build_response(
         market_series=market_series,
         ei_market_key=market_row.get("id"),
     )
-    display_entries_with_others = _display_brand_rows(
-        sibling_rows,
-        target_name=brand_row.get("brand_name"),
-        top_n=5,
-        include_others=True,
-        market_series=market_series,
-        ei_market_key=market_row.get("id"),
-    )
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
     periods = _history_periods(sibling_rows, source_api)
-    hhi_points = _annual_share_hhi_from_rows(sibling_rows, label_key="brand", source=source_api)
+    hhi_points = _annual_share_hhi_from_rows(
+        sibling_rows,
+        label_key="brand",
+        source=source_api,
+        annual_rank_cache=annual_rank_cache,
+    )
     if hhi_points:
         hhi_series = hhi_points
         hhi_recent = safe_float(hhi_points[-1].get("hhi"))
-    company_concentration = _company_hhi_from_rows(sibling_rows, source=source_api)
+    company_concentration = _company_hhi_from_rows(
+        sibling_rows,
+        source=source_api,
+        annual_rank_cache=annual_rank_cache,
+    )
     data_period_coverage = _data_period_coverage(market_series, source=source_api)
     growth_contribution = _growth_contribution_payload(sibling_rows, brand_row.get("brand_name"), periods, source=source_api)
     target_customer_channels = analysis_levels.get("channels")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pipeline.scripts.api.composers.number_format import deep_format_numbers
+from pipeline.scripts.api.composers.number_format import DISPLAY_KEY_SUFFIXES, format_number
 from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
 from pipeline.scripts.api.utils import loads_json_maybe
 
@@ -110,7 +110,7 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | No
     if isinstance(obj, list):
         return [_clean_dict_recursive(item, measure, source) for item in obj]
     if not isinstance(obj, dict):
-        return obj
+        return format_number(obj)
 
     source_key = MEASURE_TO_SERIES_KEY.get(measure or "")
     if source_key and any(key in obj for key in ALL_SERIES_KEYS):
@@ -118,7 +118,7 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | No
         cleaned = {
             key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
             for key, value in obj.items()
-            if key not in ALL_SERIES_KEYS
+            if key not in ALL_SERIES_KEYS and not str(key).endswith(DISPLAY_KEY_SUFFIXES)
         }
         cleaned["value_series"] = _clean_dict_recursive(picked, measure, source)
         return _frontend_entry_aliases(_anomaly_aliases(cleaned))
@@ -126,9 +126,10 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | No
     cleaned = {
         key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
         for key, value in obj.items()
+        if not str(key).endswith(DISPLAY_KEY_SUFFIXES)
     }
     return _frontend_entry_aliases(_anomaly_aliases(cleaned))
 
 
 def compose_cached_json(raw: Any, measure: str | None = None, source: str | None = None) -> Any:
-    return deep_format_numbers(_clean_dict_recursive(loads_json_maybe(raw), measure, source))
+    return _clean_dict_recursive(loads_json_maybe(raw), measure, source)

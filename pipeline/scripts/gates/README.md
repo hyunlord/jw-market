@@ -109,3 +109,18 @@ python3 pipeline/scripts/gates/release_acceptance.py brand-sources \
 
 The command fails on empty input, missing or unexpected identities, duplicate
 identities, and either direction of `listed != has_data`.
+
+## Cause assembly equivalence
+
+The cause-assembly gate compares before/after payload files byte-for-byte for
+the declared cold/warm and canonical/expanded brand census. It also requires
+every measured after time to improve and stay below the evidence document's
+runtime threshold. If an optimization expands a cache, the evidence must set
+`invalidation_verified=true`; request-local memoization declares
+`cache_expanded=false`.
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py cause-assembly \
+  --evidence /path/to/cause_assembly_evidence.json \
+  --environment local-runtime
+```

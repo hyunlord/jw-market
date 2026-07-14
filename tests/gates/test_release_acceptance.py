@@ -686,3 +686,68 @@ def test_brand_sources_gate_rejects_empty_or_incomplete_population(tmp_path: Pat
     assert "empty observation population is a failure" in result.stdout
     assert "checked=0" in result.stdout
     assert "population=8" in result.stdout
+
+
+def _cause_assembly_evidence(tmp_path: Path, *, mutate_after: bool = False) -> Path:
+    before = tmp_path / "before.json"
+    after = tmp_path / "after.json"
+    before.write_bytes(b'{"value":1,"missing":null}')
+    after.write_bytes(b'{"value":2,"missing":null}' if mutate_after else before.read_bytes())
+    expected_cases = [
+        "miss|jw25|livalo",
+        "hit|jw25|livalo",
+        "miss|expanded|mounjaro",
+        "hit|expanded|mounjaro",
+    ]
+    return _write_json(
+        tmp_path / "cause_assembly.json",
+        {
+            "classification": "census",
+            "max_after_ms": 2000.0,
+            "expected_cases": expected_cases,
+            "cache_expanded": False,
+            "cases": [
+                {
+                    "id": identifier,
+                    "before_payload": before.name,
+                    "after_payload": after.name,
+                    "before_ms": 1800.0,
+                    "after_ms": 900.0,
+                }
+                for identifier in expected_cases
+            ],
+        },
+    )
+
+
+def test_cause_assembly_gate_requires_byte_identity_and_faster_census(tmp_path: Path) -> None:
+    result = _run(
+        "cause-assembly",
+        "--evidence",
+        str(_cause_assembly_evidence(tmp_path)),
+        "--environment",
+        "local-runtime",
+    )
+
+    assert result.returncode == 0
+    assert "gate=cause_assembly" in result.stdout
+    assert "classification=census" in result.stdout
+    assert "checked=4" in result.stdout
+    assert "population=4" in result.stdout
+    assert "failures=0" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
+def test_cause_assembly_gate_failure_injection_exits_one(tmp_path: Path) -> None:
+    result = _run(
+        "cause-assembly",
+        "--evidence",
+        str(_cause_assembly_evidence(tmp_path, mutate_after=True)),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "byte mismatch" in result.stdout
+    assert "failures=4" in result.stdout
+    assert "exit_code=1" in result.stdout

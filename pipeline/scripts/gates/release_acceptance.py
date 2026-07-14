@@ -667,6 +667,99 @@ def check_brand_sources(
     )
 
 
+def check_cause_assembly(evidence_path: Path, environment: str) -> GateResult:
+    document = _load_json(evidence_path)
+    if not isinstance(document, dict) or document.get("classification") != "census":
+        raise ValueError("cause assembly evidence requires classification=census")
+    expected_raw = document.get("expected_cases")
+    cases = document.get("cases")
+    if not isinstance(expected_raw, list) or not expected_raw or not all(
+        isinstance(identifier, str) and identifier for identifier in expected_raw
+    ):
+        raise ValueError("cause assembly expected_cases must be a non-empty string array")
+    if len(set(expected_raw)) != len(expected_raw):
+        raise ValueError("cause assembly expected_cases must be unique")
+    if not isinstance(cases, list):
+        raise ValueError("cause assembly cases must be an array")
+    try:
+        max_after_ms = float(document["max_after_ms"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("cause assembly max_after_ms must be numeric") from exc
+    if max_after_ms <= 0:
+        raise ValueError("cause assembly max_after_ms must be positive")
+    if not isinstance(document.get("cache_expanded"), bool):
+        raise ValueError("cause assembly cache_expanded must be boolean")
+    if document["cache_expanded"] and document.get("invalidation_verified") is not True:
+        raise ValueError("expanded cache requires invalidation_verified=true")
+
+    observed: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        if not isinstance(case, dict) or not isinstance(case.get("id"), str) or not case["id"]:
+            raise ValueError("cause assembly cases require string ids")
+        identifier = case["id"]
+        if identifier in observed:
+            raise ValueError(f"duplicate cause assembly identity: {identifier}")
+        observed[identifier] = case
+
+    expected = set(expected_raw)
+    details: list[str] = []
+    failures = 0
+    missing = sorted(expected - set(observed))
+    unexpected = sorted(set(observed) - expected)
+    if missing:
+        details.append("missing identities: " + ",".join(missing))
+        failures += len(missing)
+    if unexpected:
+        details.append("unexpected identities: " + ",".join(unexpected))
+        failures += len(unexpected)
+    for identifier in sorted(expected & set(observed)):
+        case = observed[identifier]
+        before_name = case.get("before_payload")
+        after_name = case.get("after_payload")
+        if not isinstance(before_name, str) or not isinstance(after_name, str):
+            details.append(f"{identifier}: payload paths must be strings")
+            failures += 1
+            continue
+        before_path = evidence_path.parent / before_name
+        after_path = evidence_path.parent / after_name
+        try:
+            before_bytes = before_path.read_bytes()
+            after_bytes = after_path.read_bytes()
+            before_ms = float(case["before_ms"])
+            after_ms = float(case["after_ms"])
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            details.append(f"{identifier}: invalid evidence: {exc}")
+            failures += 1
+            continue
+        if before_bytes != after_bytes:
+            details.append(f"{identifier}: byte mismatch")
+            failures += 1
+        if before_ms <= 0 or after_ms <= 0:
+            details.append(f"{identifier}: timings must be positive")
+            failures += 1
+        elif after_ms >= before_ms:
+            details.append(f"{identifier}: no improvement before_ms={before_ms} after_ms={after_ms}")
+            failures += 1
+        if after_ms > max_after_ms:
+            details.append(
+                f"{identifier}: after_ms={after_ms} exceeds max_after_ms={max_after_ms}"
+            )
+            failures += 1
+    if not cases:
+        details.append("empty cause assembly population is a failure")
+        failures = max(failures, 1)
+    return GateResult(
+        gate="cause_assembly",
+        classification="census",
+        checked=len(observed),
+        population=len(expected),
+        failures=failures,
+        tolerance=f"exact bytes;after<before;after_ms<={max_after_ms}",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fail-closed release acceptance gates")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -705,6 +798,10 @@ def _parser() -> argparse.ArgumentParser:
     sources.add_argument("--expectations", type=Path, required=True)
     sources.add_argument("--observations", type=Path, required=True)
     sources.add_argument("--environment", default="local")
+
+    cause_assembly = subparsers.add_parser("cause-assembly")
+    cause_assembly.add_argument("--evidence", type=Path, required=True)
+    cause_assembly.add_argument("--environment", default="local")
     return parser
 
 
@@ -736,6 +833,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.observations,
             args.environment,
         ),
+        "cause-assembly": lambda: check_cause_assembly(args.evidence, args.environment),
     }
     try:
         result = handlers[args.command]()
