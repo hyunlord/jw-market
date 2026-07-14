@@ -71,7 +71,11 @@ def test_saved_document_gate_allows_328_page_text_layer_pdf(
     monkeypatch.setattr(settings, "PDF_TEXT_LAYER_MIN_CHARS", 20)
     monkeypatch.setattr(settings, "PDF_TEXT_PAGE_SECONDS", 0.38)
     monkeypatch.setattr(settings, "PDF_OCR_PAGE_SECONDS", 3.91)
-    monkeypatch.setattr(settings, "PDF_MAX_ESTIMATED_SECONDS", 300.0)
+    monkeypatch.setattr(settings, "EMBED_CHUNKS_PER_PAGE", 4.3)
+    monkeypatch.setattr(settings, "EMBED_SECONDS_PER_BATCH", 7.5)
+    monkeypatch.setattr(settings, "EMBED_BATCH_SIZE", 64)
+    monkeypatch.setattr(settings, "PREPROCESSOR_TIMEOUT_S", 450.0)
+    monkeypatch.setattr(settings, "PDF_ADMISSION_SAFETY_FACTOR", 0.8)
     pdf_path = tmp_path / "ada-like.pdf"
     _write_pdf(pdf_path, ["embedded ADA guideline text with sufficient characters"] * 328)
     document = SavedTempDocument(temp_document_id=1, file_name="ada-like.pdf", file_path=str(pdf_path))
@@ -101,6 +105,9 @@ def test_saved_document_gate_profiles_mixed_pdf_page_by_page(monkeypatch, tmp_pa
     monkeypatch.setattr(settings, "PDF_TEXT_LAYER_MIN_CHARS", 20)
     monkeypatch.setattr(settings, "PDF_TEXT_PAGE_SECONDS", 0.38)
     monkeypatch.setattr(settings, "PDF_OCR_PAGE_SECONDS", 3.91)
+    monkeypatch.setattr(settings, "EMBED_CHUNKS_PER_PAGE", 4.3)
+    monkeypatch.setattr(settings, "EMBED_SECONDS_PER_BATCH", 7.5)
+    monkeypatch.setattr(settings, "EMBED_BATCH_SIZE", 64)
     pdf_path = tmp_path / "mixed.pdf"
     _write_pdf(pdf_path, (["native text layer with sufficient characters"] * 3) + ([""] * 2))
 
@@ -110,7 +117,29 @@ def test_saved_document_gate_profiles_mixed_pdf_page_by_page(monkeypatch, tmp_pa
     assert estimate.page_count == 5
     assert estimate.text_layer_pages == 3
     assert estimate.ocr_candidate_pages == 2
-    assert estimate.estimated_seconds == pytest.approx((3 * 0.38) + (2 * 3.91))
+    assert estimate.estimated_chunks == 22
+    assert estimate.estimated_embedding_batches == 1
+    assert estimate.estimated_embedding_seconds == pytest.approx(7.5)
+    assert estimate.estimated_seconds == pytest.approx((3 * 0.38) + (2 * 3.91) + 7.5)
+
+
+def test_pdf_estimate_includes_ada_embedding_cost(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(settings, "PDF_TEXT_LAYER_MIN_CHARS", 20)
+    monkeypatch.setattr(settings, "PDF_TEXT_PAGE_SECONDS", 0.38)
+    monkeypatch.setattr(settings, "PDF_OCR_PAGE_SECONDS", 3.91)
+    monkeypatch.setattr(settings, "EMBED_CHUNKS_PER_PAGE", 4.3)
+    monkeypatch.setattr(settings, "EMBED_SECONDS_PER_BATCH", 7.5)
+    monkeypatch.setattr(settings, "EMBED_BATCH_SIZE", 64)
+    pdf_path = tmp_path / "ada-like.pdf"
+    _write_pdf(pdf_path, ["native ADA guideline text with sufficient characters"] * 328)
+
+    estimate = upload_adapter._pdf_processing_estimate(pdf_path)
+
+    assert estimate is not None
+    assert estimate.estimated_chunks == 1_411
+    assert estimate.estimated_embedding_batches == 23
+    assert estimate.estimated_embedding_seconds == pytest.approx(172.5)
+    assert estimate.estimated_seconds == pytest.approx(297.14)
 
 
 def test_saved_document_gate_allows_60_page_scan_within_budget(monkeypatch, tmp_path: Path) -> None:
@@ -118,7 +147,11 @@ def test_saved_document_gate_allows_60_page_scan_within_budget(monkeypatch, tmp_
     monkeypatch.setattr(settings, "PDF_TEXT_LAYER_MIN_CHARS", 20)
     monkeypatch.setattr(settings, "PDF_TEXT_PAGE_SECONDS", 0.38)
     monkeypatch.setattr(settings, "PDF_OCR_PAGE_SECONDS", 3.91)
-    monkeypatch.setattr(settings, "PDF_MAX_ESTIMATED_SECONDS", 300.0)
+    monkeypatch.setattr(settings, "EMBED_CHUNKS_PER_PAGE", 4.3)
+    monkeypatch.setattr(settings, "EMBED_SECONDS_PER_BATCH", 7.5)
+    monkeypatch.setattr(settings, "EMBED_BATCH_SIZE", 64)
+    monkeypatch.setattr(settings, "PREPROCESSOR_TIMEOUT_S", 450.0)
+    monkeypatch.setattr(settings, "PDF_ADMISSION_SAFETY_FACTOR", 0.8)
     pdf_path = tmp_path / "scan-60.pdf"
     _write_pdf(pdf_path, [""] * 60)
     document = SavedTempDocument(temp_document_id=1, file_name=pdf_path.name, file_path=str(pdf_path))
@@ -136,7 +169,11 @@ def test_saved_document_gate_rejects_scan_when_estimated_time_exceeds_budget(
     monkeypatch.setattr(settings, "PDF_TEXT_LAYER_MIN_CHARS", 20)
     monkeypatch.setattr(settings, "PDF_TEXT_PAGE_SECONDS", 0.38)
     monkeypatch.setattr(settings, "PDF_OCR_PAGE_SECONDS", 3.91)
-    monkeypatch.setattr(settings, "PDF_MAX_ESTIMATED_SECONDS", 300.0)
+    monkeypatch.setattr(settings, "EMBED_CHUNKS_PER_PAGE", 4.3)
+    monkeypatch.setattr(settings, "EMBED_SECONDS_PER_BATCH", 7.5)
+    monkeypatch.setattr(settings, "EMBED_BATCH_SIZE", 64)
+    monkeypatch.setattr(settings, "PREPROCESSOR_TIMEOUT_S", 450.0)
+    monkeypatch.setattr(settings, "PDF_ADMISSION_SAFETY_FACTOR", 0.8)
     pdf_path = tmp_path / "scan-300.pdf"
     _write_pdf(pdf_path, [""] * 300)
     document = SavedTempDocument(temp_document_id=1, file_name=pdf_path.name, file_path=str(pdf_path))
@@ -147,8 +184,33 @@ def test_saved_document_gate_rejects_scan_when_estimated_time_exceeds_budget(
     assert blocked[0].route == "blocked_oversized"
     assert "300페이지" in blocked[0].route_reason
     assert "OCR 예상 300페이지" in blocked[0].route_reason
-    assert "1173초" in blocked[0].route_reason
-    assert "300초" in blocked[0].route_reason
+    assert "1331초" in blocked[0].route_reason
+    assert "360초" in blocked[0].route_reason
+
+
+def test_saved_document_gate_uses_preprocessor_timeout_safety_budget(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES", 0)
+    monkeypatch.setattr(settings, "PDF_TEXT_LAYER_MIN_CHARS", 20)
+    monkeypatch.setattr(settings, "PDF_TEXT_PAGE_SECONDS", 0.38)
+    monkeypatch.setattr(settings, "PDF_OCR_PAGE_SECONDS", 3.91)
+    monkeypatch.setattr(settings, "EMBED_CHUNKS_PER_PAGE", 4.3)
+    monkeypatch.setattr(settings, "EMBED_SECONDS_PER_BATCH", 7.5)
+    monkeypatch.setattr(settings, "EMBED_BATCH_SIZE", 64)
+    monkeypatch.setattr(settings, "PREPROCESSOR_TIMEOUT_S", 350.0)
+    monkeypatch.setattr(settings, "PDF_ADMISSION_SAFETY_FACTOR", 0.8)
+    pdf_path = tmp_path / "ada-like.pdf"
+    _write_pdf(pdf_path, ["native ADA guideline text with sufficient characters"] * 328)
+    document = SavedTempDocument(temp_document_id=1, file_name=pdf_path.name, file_path=str(pdf_path))
+
+    blocked = upload_adapter.blocked_saved_external_preprocessor_documents([document])
+
+    assert len(blocked) == 1
+    assert blocked[0].route == "blocked_oversized"
+    assert "298초" in blocked[0].route_reason
+    assert "280초" in blocked[0].route_reason
 
 
 def test_saved_document_gate_rejects_pdf_when_admission_profile_fails(tmp_path: Path) -> None:
@@ -180,6 +242,33 @@ def test_admission_threshold_falls_back_to_legacy_p91_env() -> None:
     )
 
     assert output.strip() == "137"
+
+
+def test_embedding_admission_settings_honor_environment() -> None:
+    env = os.environ.copy()
+    env["EMBED_CHUNKS_PER_PAGE"] = "4.7"
+    env["EMBED_SECONDS_PER_BATCH"] = "8.2"
+    env["EMBED_BATCH_SIZE"] = "32"
+    env["PDF_ADMISSION_SAFETY_FACTOR"] = "0.75"
+    env["PREPROCESSOR_TIMEOUT_S"] = "450"
+
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from src import settings; "
+                "print(settings.EMBED_CHUNKS_PER_PAGE, "
+                "settings.EMBED_SECONDS_PER_BATCH, settings.EMBED_BATCH_SIZE, "
+                "settings.PDF_ADMISSION_SAFETY_FACTOR, settings.PREPROCESSOR_TIMEOUT_S)"
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+    )
+
+    assert output.strip() == "4.7 8.2 32 0.75 450.0"
 
 
 def test_saved_document_gate_blocks_pptx_slide_count_without_preprocessor_call(

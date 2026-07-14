@@ -73,6 +73,9 @@ class PdfProcessingEstimate:
     page_count: int
     text_layer_pages: int
     ocr_candidate_pages: int
+    estimated_chunks: int
+    estimated_embedding_batches: int
+    estimated_embedding_seconds: float
     estimated_seconds: float
 
 
@@ -238,23 +241,38 @@ def _pdf_processing_estimate(path: Path) -> PdfProcessingEstimate | None:
         return None
 
     ocr_candidate_pages = page_count - text_layer_pages
-    estimated_seconds = (
+    estimated_extraction_seconds = (
         text_layer_pages * settings.PDF_TEXT_PAGE_SECONDS
         + ocr_candidate_pages * settings.PDF_OCR_PAGE_SECONDS
     )
+    estimated_chunks = math.ceil(page_count * settings.EMBED_CHUNKS_PER_PAGE)
+    estimated_embedding_batches = math.ceil(
+        estimated_chunks / settings.EMBED_BATCH_SIZE
+    )
+    estimated_embedding_seconds = (
+        estimated_embedding_batches * settings.EMBED_SECONDS_PER_BATCH
+    )
+    estimated_seconds = estimated_extraction_seconds + estimated_embedding_seconds
     estimate = PdfProcessingEstimate(
         page_count=page_count,
         text_layer_pages=text_layer_pages,
         ocr_candidate_pages=ocr_candidate_pages,
+        estimated_chunks=estimated_chunks,
+        estimated_embedding_batches=estimated_embedding_batches,
+        estimated_embedding_seconds=estimated_embedding_seconds,
         estimated_seconds=estimated_seconds,
     )
     logger.info(
         "PDF admission profile file=%s pages=%d text_layer_pages=%d "
-        "ocr_candidate_pages=%d estimated_seconds=%.2f",
+        "ocr_candidate_pages=%d estimated_chunks=%d embedding_batches=%d "
+        "embedding_seconds=%.2f estimated_seconds=%.2f",
         path.name,
         page_count,
         text_layer_pages,
         ocr_candidate_pages,
+        estimated_chunks,
+        estimated_embedding_batches,
+        estimated_embedding_seconds,
         estimated_seconds,
     )
     return estimate
@@ -302,11 +320,12 @@ def _metadata_gate_block(
                 file_size_bytes=file_size_bytes,
                 user_message=reason,
             )
-        if (
-            estimate.estimated_seconds > settings.PDF_MAX_ESTIMATED_SECONDS
-        ):
+        admission_budget_seconds = (
+            settings.PREPROCESSOR_TIMEOUT_S * settings.PDF_ADMISSION_SAFETY_FACTOR
+        )
+        if estimate.estimated_seconds > admission_budget_seconds:
             estimated_seconds = math.ceil(estimate.estimated_seconds)
-            time_budget = math.floor(settings.PDF_MAX_ESTIMATED_SECONDS)
+            time_budget = math.floor(admission_budget_seconds)
             reason = (
                 f"이 문서는 {estimate.page_count}페이지 중 OCR 예상 "
                 f"{estimate.ocr_candidate_pages}페이지로 예상 처리 시간 "

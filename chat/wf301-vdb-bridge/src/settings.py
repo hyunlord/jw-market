@@ -18,7 +18,7 @@ ALLOWED_WORKFLOW_IDS = {
 
 WEAVIATE_BASE = os.environ.get("WEAVIATE_BASE", "http://llmops-weaviate-service:8080")
 HTTP_TIMEOUT_S = float(os.environ.get("HTTP_TIMEOUT_S", "15"))
-PREPROCESSOR_TIMEOUT_S = float(os.environ.get("PREPROCESSOR_TIMEOUT_S", "45"))
+PREPROCESSOR_TIMEOUT_S = float(os.environ.get("PREPROCESSOR_TIMEOUT_S", "450"))
 EMBEDDING_TIMEOUT_S = float(
     os.environ.get("EMBEDDING_TIMEOUT_S", str(max(HTTP_TIMEOUT_S, 60.0)))
 )
@@ -97,7 +97,13 @@ PDF_TEXT_LAYER_MIN_CHARS = max(
 )
 PDF_TEXT_PAGE_SECONDS = max(float(os.environ.get("PDF_TEXT_PAGE_SECONDS", "0.38")), 0.0)
 PDF_OCR_PAGE_SECONDS = max(float(os.environ.get("PDF_OCR_PAGE_SECONDS", "3.91")), 0.0)
-PDF_MAX_ESTIMATED_SECONDS = max(float(os.environ.get("PDF_MAX_ESTIMATED_SECONDS", "300")), 0.0)
+EMBED_CHUNKS_PER_PAGE = max(float(os.environ.get("EMBED_CHUNKS_PER_PAGE", "4.3")), 0.0)
+EMBED_SECONDS_PER_BATCH = max(float(os.environ.get("EMBED_SECONDS_PER_BATCH", "7.5")), 0.0)
+EMBED_BATCH_SIZE = max(int(os.environ.get("EMBED_BATCH_SIZE", "64")), 1)
+PDF_ADMISSION_SAFETY_FACTOR = min(
+    max(float(os.environ.get("PDF_ADMISSION_SAFETY_FACTOR", "0.8")), 0.0),
+    1.0,
+)
 
 # 로컬 XLSX 전처리(청킹+임베딩+139 복사)의 fail-closed 타임아웃 게이트.
 # XLSX_EMBED_CHUNKS_PER_SEC 근거: 2026-07-11 실측 — crosstab.xlsx 3,166청크가 약 158초

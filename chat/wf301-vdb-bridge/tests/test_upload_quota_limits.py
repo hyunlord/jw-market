@@ -116,7 +116,12 @@ def test_openapi_advertises_runtime_quota_without_stale_50mb_examples() -> None:
 
 def test_embedding_and_preprocessor_time_budgets_remain_bounded() -> None:
     assert settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB == 100
-    assert settings.PDF_MAX_ESTIMATED_SECONDS == 300
+    assert settings.PREPROCESSOR_TIMEOUT_S == 450
+    assert settings.PDF_ADMISSION_SAFETY_FACTOR == 0.8
+    assert settings.PREPROCESSOR_TIMEOUT_S * settings.PDF_ADMISSION_SAFETY_FACTOR == 360
+    assert settings.EMBED_CHUNKS_PER_PAGE == 4.3
+    assert settings.EMBED_SECONDS_PER_BATCH == 7.5
+    assert settings.EMBED_BATCH_SIZE == 64
     assert settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES == 0
     assert settings.ROUTE_SOFT_CHUNK_LIMIT == 100_000
     assert settings.ROUTE_HARD_CHUNK_LIMIT == 200_000
