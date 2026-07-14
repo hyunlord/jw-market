@@ -1357,7 +1357,7 @@ def mandatory_retry_messages(
     previous_answer: str,
     missing_lines: tuple[str, ...],
 ) -> list[dict[str, str]]:
-    missing_md = "\n".join(missing_lines)
+    missing_md = "\n".join(_mandatory_retry_line(previous_answer, line) for line in missing_lines)
     return [
         {
             "role": "system",
@@ -1383,6 +1383,27 @@ def mandatory_retry_messages(
             ),
         },
     ]
+
+
+def _mandatory_retry_line(answer: str, line: str) -> str:
+    missing_items = _mandatory_line_missing_items(answer, line)
+    if not missing_items:
+        return line
+    return f"{line}\n  누락 수치: {', '.join(missing_items)}"
+
+
+def _mandatory_line_missing_items(answer: str, line: str) -> tuple[str, ...]:
+    if line.startswith("- 매출 변화:"):
+        return _missing_required_number_tokens(answer, _number_like_tokens(line))
+    if "인사이트 계산" in line and not ("상승폭" in line and "하락폭" in line):
+        return _missing_required_number_tokens(answer, _number_like_tokens(line))
+    if "월별 MS" in line:
+        payload = line.split(":", 1)[-1].strip()
+        return _missing_required_number_tokens(answer, _number_like_tokens(payload))
+    if "브랜드 핵심 지표" in line:
+        payload = line.split(":", 1)[-1].strip()
+        return _missing_required_number_tokens(answer, _number_like_tokens(payload))
+    return ()
 
 
 def chunk_text(text: str, size: int = 24) -> Iterator[str]:
@@ -1420,8 +1441,22 @@ def _mandatory_line_present(answer: str, line: str) -> bool:
         return bool(numbers) and any(token in answer_numbers for token in numbers)
     if line.startswith("- 상위 브랜드 추이:"):
         return _top_brand_trend_line_present(answer, line)
-    if "매출 변화" in line:
-        return "매출" in answer and "변화" in answer and any(token in answer for token in _number_like_tokens(line))
+    if "브랜드 추세 비교" in line:
+        required_deltas = tuple(
+            re.findall(r"(?:MS 변화|매출 변화율)\s+([+-]?\d+(?:\.\d+)?)%p?", line)
+        )
+        return (
+            "리바로" in answer
+            and "아토젯" in answer
+            and any(token in answer for token in ("추세", "위협", "비교", "성장"))
+            and _all_required_numbers_present(answer, required_deltas)
+        )
+    if line.startswith("- 매출 변화:"):
+        return (
+            "매출" in answer
+            and "변화" in answer
+            and _all_required_numbers_present(answer, _number_like_tokens(line))
+        )
     if "매출 추이" in line:
         return _sales_trend_line_present(answer, line)
     if "점유율 변화" in line:
@@ -1452,28 +1487,20 @@ def _mandatory_line_present(answer: str, line: str) -> bool:
             and all(_signed_number_present(answer, token) for token in delta_numbers)
             and any(token in answer for token in ("인과", "동행", "유사", "고유", "대조", "비교"))
         )
-    if "브랜드 추세 비교" in line:
-        numbers = tuple(_number_like_tokens(line))
-        return (
-            "리바로" in answer
-            and "아토젯" in answer
-            and any(token in answer for token in ("추세", "위협", "비교", "성장"))
-            and all(_signed_number_present(answer, token) for token in numbers[-4:])
-        )
     if "인사이트 계산" in line:
         if "상승폭" in line and "하락폭" in line:
             movement = _movement_phrase(line)
             ratio = _regex_value(line, r"대비\s+([+-]?\d+(?:\.\d+)?%)")
             return bool(movement and ratio and ratio in answer and any(token in answer for token in ("반대 방향", "직접 처방 이동", "재편")))
         numbers = tuple(_number_like_tokens(line))
-        return any(token in answer for token in ("share-of-growth", "시장 성장", "점유 이동", "백분위")) and any(
-            _signed_number_present(answer, token) for token in numbers
+        return any(token in answer for token in ("share-of-growth", "시장 성장", "점유 이동", "백분위")) and (
+            _all_required_numbers_present(answer, numbers)
         )
     if "월별 MS" in line:
         payload = line.split(":", 1)[-1].strip()
         brand = payload.split(" 월별 MS", 1)[0]
         numbers = tuple(_number_like_tokens(payload))
-        return bool(brand) and brand in answer and any(token in answer for token in numbers)
+        return bool(brand) and brand in answer and _all_required_numbers_present(answer, numbers)
     if "Brand 상위" in line:
         return _top_brand_line_present(answer, line)
     return line.split(":", 1)[-1].strip() in answer
@@ -1570,7 +1597,7 @@ def _single_brand_focus_line_present(answer: str, line: str) -> bool:
     if checks:
         return all(checks)
     numbers = tuple(_number_like_tokens(payload))
-    return any(token in answer for token in numbers)
+    return _all_required_numbers_present(answer, numbers)
 
 
 def _mandatory_numeric_assertion(line: str) -> tuple[str, set[str]] | None:
@@ -1613,6 +1640,16 @@ def _line_has_metric_context(line: str) -> bool:
 
 def _number_like_tokens(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r"-?\d+(?:,\d{3})*(?:\.\d+)?", text))
+
+
+def _missing_required_number_tokens(answer: str, tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Return mandatory numeric tokens absent from the answer, preserving fact order."""
+
+    return tuple(dict.fromkeys(token for token in tokens if not _signed_number_present(answer, token)))
+
+
+def _all_required_numbers_present(answer: str, tokens: tuple[str, ...]) -> bool:
+    return bool(tokens) and not _missing_required_number_tokens(answer, tokens)
 
 
 def _plain_number_tokens(text: str) -> tuple[str, ...]:
