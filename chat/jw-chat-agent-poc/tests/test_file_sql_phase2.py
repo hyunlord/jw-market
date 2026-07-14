@@ -503,6 +503,34 @@ def test_bpi_question_runs_deterministic_planner_end_to_end(monkeypatch) -> None
         "column_validation",
         "execution",
     ]
+    planner_trace = outcome.trace[1]
+    assert planner_trace["plan_source"] == "deterministic"
+    assert "sql" not in planner_trace
+    assert "logical_name" not in planner_trace
+    assert outcome.trace[2]["selected_columns"] == "q1,no"
+
+
+def test_file_sql_failure_trace_records_stage_without_exception_details(monkeypatch) -> None:
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
+    monkeypatch.setattr(
+        file_sql_query,
+        "_deterministic_select",
+        lambda *_args: (_ for _ in ()).throw(ValueError("sensitive planner detail")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "동아제약과 동화약품 비교",
+        "conversation-1",
+        (file_sql_query.SqlFileSource("doc-91:sheet-1", "CHSO.xlsx", "Sell Out Standard"),),
+    )
+
+    assert outcome.status == "query_failed"
+    assert outcome.trace[-1] == {
+        "stage": "planner",
+        "status": "error",
+        "reason": "validation_error",
+    }
+    assert "sensitive planner detail" not in str(outcome.trace)
 
 
 def test_chso_compare_runs_planner_and_renderer_end_to_end(monkeypatch) -> None:

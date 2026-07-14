@@ -800,7 +800,8 @@ def _enforce_file_scope_isolation(result: dict, question: str, scope: ContextSco
 
 
 _FILE_MARKET_POSTPROCESS_RE = re.compile(
-    r"(?:시장\s*도구\s*미호출|일반뷰\s*(?:브랜드\s*)?(?:비교|조회)|시장\s*지표\s*도구)",
+    r"(?:시장\s*도구\s*미호출|일반뷰\s*(?:브랜드\s*)?(?:비교|조회)|"
+    r"시장\s*지표\s*(?:도구|조회))",
     re.IGNORECASE,
 )
 

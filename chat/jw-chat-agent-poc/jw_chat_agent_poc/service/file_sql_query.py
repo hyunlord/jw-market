@@ -84,6 +84,7 @@ def query_uploaded_sql(
     if not sources:
         return SqlQueryOutcome("", (), ())
     trace: list[dict[str, str]] = []
+    current_stage = "schema"
     try:
         schemas = tuple(
             _fetch_schema(source, conversation_id)
@@ -101,10 +102,17 @@ def query_uploaded_sql(
                 answer_md=answer,
                 trace=tuple(trace),
             )
+        current_stage = "measure_validation"
         measure = _measure_request(question, schemas)
         if measure.state == "unsupported":
             answer = file_absence_answer("unsupported", subject=measure.label)
-            trace.append({"stage": "measure_validation", "status": "unsupported", "label": measure.label})
+            trace.append(
+                {
+                    "stage": "measure_validation",
+                    "status": "unsupported",
+                    "label": measure.label,
+                }
+            )
             return SqlQueryOutcome(
                 file_context="## 업로드 파일 SQL 결과\n상태: 미지원\n" + answer,
                 file_source_items=_source_items(sources[: len(schemas)]),
@@ -113,10 +121,17 @@ def query_uploaded_sql(
                 status="unsupported_measure",
                 trace=tuple(trace),
             )
+        current_stage = "period_validation"
         missing_period = _missing_period(question, schemas)
         if missing_period:
             answer = file_absence_answer("missing", period=missing_period)
-            trace.append({"stage": "period_validation", "status": "missing", "period": missing_period})
+            trace.append(
+                {
+                    "stage": "period_validation",
+                    "status": "missing",
+                    "period": missing_period,
+                }
+            )
             return SqlQueryOutcome(
                 file_context="## 업로드 파일 SQL 결과\n상태: 원천없음\n" + answer,
                 file_source_items=_source_items(sources[: len(schemas)]),
@@ -125,7 +140,12 @@ def query_uploaded_sql(
                 status="unsupported_period",
                 trace=tuple(trace),
             )
-        plan = _deterministic_select(question, schemas) or _generate_select(question, schemas)
+        current_stage = "planner"
+        plan = _deterministic_select(question, schemas)
+        plan_source = "deterministic"
+        if plan is None:
+            plan = _generate_select(question, schemas)
+            plan_source = "llm"
         if not plan:
             trace.append({"stage": "planner", "status": "empty"})
             return SqlQueryOutcome("", (), (), status="empty_plan", trace=tuple(trace))
@@ -135,19 +155,21 @@ def query_uploaded_sql(
             (item for item in sources if item.logical_name == logical_name),
             None,
         )
+        current_stage = "plan_validation"
         if source is None or not _is_select_only_candidate(sql):
             raise ValueError("planner returned an invalid scoped file query")
         trace.append(
             {
                 "stage": "planner",
                 "status": "ok",
-                "logical_name": logical_name,
-                "sql": _sanitized_sql(sql),
+                "plan_source": plan_source,
             }
         )
         aggregate = _is_aggregate_question(question)
         if aggregate and not _has_aggregate_contract(sql):
-            return _aggregate_contract_failure()
+            return _aggregate_contract_failure(
+                trace=(*trace, {"stage": "plan_validation", "status": "contract_failed"})
+            )
         schema = next(
             (
                 item for item in schemas
@@ -155,24 +177,38 @@ def query_uploaded_sql(
             ),
             {},
         )
+        current_stage = "column_validation"
         intent = measure.intent
         if aggregate and intent and not _selected_columns_match_intent(intent, sql, schema):
-            return _column_intent_failure(intent)
+            return _column_intent_failure(
+                intent,
+                trace=(*trace, {"stage": "column_validation", "status": "intent_mismatch"}),
+            )
+        selected_columns = _used_source_columns(sql, schema)
         trace.append(
             {
                 "stage": "column_validation",
                 "status": "ok",
-                "selected_columns": ",".join(_used_query_columns(sql, schema)),
+                "selected_columns": ",".join(selected_columns),
             }
         )
+        logger.info(
+            "file SQL planner complete plan_source=%s selected_columns=%s",
+            plan_source,
+            selected_columns,
+        )
+        current_stage = "execution"
         result = _run_query(conversation_id, logical_name, sql)
         trace.append({"stage": "execution", "status": "ok"})
+        current_stage = "render"
         context = _render_result(source, result, schema)
         answer = ""
         if aggregate:
             answer = _render_aggregate_answer(question, source, sql, result, schema)
             if not answer:
-                return _aggregate_contract_failure()
+                return _aggregate_contract_failure(
+                    trace=(*trace, {"stage": "render", "status": "contract_failed"})
+                )
         source_item: dict[str, Any] = {"file_name": source.file_name}
         if source.document_id is not None:
             source_item["document_id"] = source.document_id
@@ -204,14 +240,7 @@ def query_uploaded_sql(
             ),
             status="query_failed",
             trace=tuple(
-                [
-                    *trace,
-                    {
-                        "stage": "execution",
-                        "status": "error",
-                        "error_type": type(exc).__name__,
-                    },
-                ]
+                [*trace, {"stage": current_stage, "status": "error", "reason": _failure_reason(exc)}]
             ),
         )
 
@@ -256,7 +285,9 @@ def _has_aggregate_contract(sql: str) -> bool:
     )
 
 
-def _aggregate_contract_failure() -> SqlQueryOutcome:
+def _aggregate_contract_failure(
+    *, trace: tuple[dict[str, str], ...] = ()
+) -> SqlQueryOutcome:
     answer = (
         "업로드 파일 집계 결과를 확인할 수 없습니다. "
         "필터, 집계 함수, 결과값, 적용 행 수를 모두 검증하지 못했습니다."
@@ -266,10 +297,16 @@ def _aggregate_contract_failure() -> SqlQueryOutcome:
         file_source_items=(),
         errors=("file SQL aggregate contract unavailable",),
         answer_md=answer,
+        status="contract_failed",
+        trace=trace,
     )
 
 
-def _column_intent_failure(intent: str) -> SqlQueryOutcome:
+def _column_intent_failure(
+    intent: str,
+    *,
+    trace: tuple[dict[str, str], ...] = (),
+) -> SqlQueryOutcome:
     label = {"amount": "금액", "average": "평균", "quantity": "수량", "count": "건수"}.get(
         intent, "요청"
     )
@@ -279,6 +316,8 @@ def _column_intent_failure(intent: str) -> SqlQueryOutcome:
         file_source_items=(),
         errors=("file SQL selected column intent mismatch",),
         answer_md=answer,
+        status="intent_mismatch",
+        trace=trace,
     )
 
 
@@ -601,20 +640,27 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _sanitized_sql(sql: str) -> str:
-    return re.sub(r"'(?:''|[^'])*'", "'?'", " ".join(sql.split()))
-
-
-def _used_query_columns(sql: str, schema: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(
-        str(item.get("query_name") or "")
-        for item in _schema_columns(schema)
-        if str(item.get("query_name") or "")
-        and re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(str(item.get('query_name')))}(?![A-Za-z0-9_])",
+def _used_source_columns(sql: str, schema: Mapping[str, Any]) -> tuple[str, ...]:
+    matches: list[tuple[int, str]] = []
+    for item in _schema_columns(schema):
+        query_name = str(item.get("query_name") or "")
+        if not query_name:
+            continue
+        match = re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(query_name)}(?![A-Za-z0-9_])",
             sql,
         )
-    )
+        if match is not None:
+            matches.append((match.start(), str(item.get("source_name") or "")))
+    return tuple(source_name for _, source_name in sorted(matches))
+
+
+def _failure_reason(exc: Exception) -> str:
+    if isinstance(exc, requests.RequestException):
+        return "request_error"
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return "validation_error"
+    return "execution_error"
 
 
 def _generate_select(
