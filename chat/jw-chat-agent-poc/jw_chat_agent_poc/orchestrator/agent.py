@@ -47,6 +47,8 @@ from jw_chat_agent_poc.tools.external.policy import (
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tool_use.contracts import FallbackCode
+from jw_chat_agent_poc.tool_use.integration import external_tool_agent_enabled, run_external_tool_agent
 
 
 class ChatAgent:
@@ -87,19 +89,52 @@ class ChatAgent:
     def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
         timing = new_timing()
         docs = documents or []
+        external_fallback_code: str | None = None
+
+        def finish(payload: dict[str, Any]) -> dict[str, Any]:
+            return _annotate_external_tool_fallback(payload, external_fallback_code)
+
         with stage(timing, "question_decomposition", "BQ and tool routing"):
             routes = self.router.route(question, has_documents=bool(docs))
+        source_trap = requested_unavailable_source(question)
+        agent_source_trap = requested_unavailable_source(question, identity_only=True)
+        pre_resolved: BrandResolution | None = None
+        if (
+            external_tool_agent_enabled()
+            and _is_external_tool_agent_candidate(routes, docs)
+            and agent_source_trap is None
+        ):
+            try:
+                pre_resolved = self.resolver.resolve(question, allow_default=False)
+            except UnsupportedBrandError:
+                pre_resolved = None
+            if pre_resolved is not None and pre_resolved.requires_market_clarification:
+                return finish(_market_ambiguity_result(question, pre_resolved))
+            tool_result = run_external_tool_agent(question, resolver=self.resolver, external=self.external)
+            diagnostics = tool_result.get("router_diagnostics")
+            fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
+            if fallback_code in {
+                None,
+                FallbackCode.UNSUPPORTED_QUERY.value,
+                FallbackCode.VERIFICATION_FAIL.value,
+            }:
+                return tool_result
+            external_fallback_code = str(fallback_code)
         if not docs and _is_known_ingredient_patent_question(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return loop.answer(question)
+            return finish(loop.answer(question))
         requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
         portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
         if portfolio_scope:
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return loop.answer(question)
+            return finish(loop.answer(question))
         try:
             with stage(timing, "agent_pre_resolve", "brand resolver"):
-                resolution = self.resolver.resolve(question, allow_default=False)
+                resolution = (
+                    pre_resolved
+                    if pre_resolved is not None
+                    else self.resolver.resolve(question, allow_default=False)
+                )
         except UnsupportedBrandError:
             disease_anchor = hira_disease_anchor_brand(question)
             if disease_anchor is not None:
@@ -107,24 +142,23 @@ class ChatAgent:
             elif docs:
                 resolution = _document_resolution()
             else:
-                return self._unsupported_brand(question, routes)
+                return finish(self._unsupported_brand(question, routes))
         if resolution.requires_market_clarification and not docs:
-            return _market_ambiguity_result(question, resolution)
+            return finish(_market_ambiguity_result(question, resolution))
         if resolution.support_source == "document_context" and any("metrics" in route.sources for route in routes):
-            return _brand_clarification_result(question)
+            return finish(_brand_clarification_result(question))
         calls: list[dict[str, Any]] = []
         notices: list[str] = []
         sources: list[str] = []
-        source_trap = requested_unavailable_source(question)
         if source_trap is not None and not docs:
-            return self._requested_source_unavailable(question, resolution, routes, source_trap)
+            return finish(self._requested_source_unavailable(question, resolution, routes, source_trap))
 
         if not docs and should_use_agent_loop(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return loop.answer(question)
+            return finish(loop.answer(question))
 
         if any("none" in route.sources for route in routes):
-            return self._no_data(question, resolution, routes)
+            return finish(self._no_data(question, resolution, routes))
 
         if any("deep_analysis_events" in route.sources for route in routes):
             news_filters = tuple(entry for route in routes if "deep_analysis_events" in route.sources for entry in route.filters)
@@ -201,7 +235,7 @@ class ChatAgent:
                 notices=notices,
             )
             answer = apply_requested_source_trap_gate(question, markdown.markdown)
-        return {
+        return finish({
             "question": question,
             "resolution": resolution.__dict__,
             "decomposition": [route.__dict__ for route in routes],
@@ -211,7 +245,7 @@ class ChatAgent:
             "markdown_response": markdown.to_dict(),
             "sources": sorted(set(sources)),
             "timing": timing,
-        }
+        })
 
     def _news_brands(self, question: str, routes: list[Any], fallback_brand: str) -> tuple[str, ...]:
         source_text = relevance_question_text(question)
@@ -647,6 +681,28 @@ def _brand_clarification_result(question: str) -> dict[str, Any]:
         "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
         "sources": [],
     }
+
+
+def _is_external_tool_agent_candidate(routes: list[Any], documents: list[Path]) -> bool:
+    if documents:
+        return False
+    sources = {source for route in routes for source in route.sources}
+    if "external_api" in sources:
+        return True
+    if sources == {"document"}:
+        return True
+    return sources == {"none"} and all(route.bq == "UNKNOWN" for route in routes)
+
+
+def _annotate_external_tool_fallback(payload: dict[str, Any], fallback_code: str | None) -> dict[str, Any]:
+    if fallback_code is None:
+        return payload
+    annotated = dict(payload)
+    diagnostics = annotated.get("router_diagnostics")
+    normalized = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    normalized["external_tool_agent_fallback_code"] = fallback_code
+    annotated["router_diagnostics"] = normalized
+    return annotated
 
 
 def _prefer_mart_metric(support_source: str) -> bool:

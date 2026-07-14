@@ -5,7 +5,7 @@ import threading
 from contextlib import contextmanager
 from typing import Iterator
 
-BUSY_MESSAGE = "현재 사용자가 많습니다. 잠시 후 다시 시도해주세요."
+BUSY_MESSAGE = "현재 동시 처리 한도를 초과해 요청을 처리할 수 없습니다."
 
 CHAT_MAX_CONCURRENCY_ENV = "CHAT_MAX_CONCURRENCY"
 CHAT_QUEUE_WAIT_S_ENV = "CHAT_QUEUE_WAIT_S"

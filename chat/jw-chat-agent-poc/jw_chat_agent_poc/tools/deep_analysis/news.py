@@ -248,7 +248,7 @@ def _source_state(snapshots: tuple[DeepAnalysisNewsSnapshot, ...]) -> tuple[str,
 def _unavailable_news_call(brand: str, plan: NewsFilterPlan, status: str, corpus_state: str) -> dict[str, Any]:
     messages = {
         NEWS_STATUS_NO_DATA: "관련 뉴스가 없습니다",
-        NEWS_STATUS_QUERY_FAILED: "뉴스를 조회하지 못했습니다. 다시 시도해 주십시오.",
+        NEWS_STATUS_QUERY_FAILED: "뉴스 조회에 실패했습니다.",
         NEWS_STATUS_DISABLED: "뉴스 조회 기능이 비활성 상태입니다",
     }
     message = messages[status]
