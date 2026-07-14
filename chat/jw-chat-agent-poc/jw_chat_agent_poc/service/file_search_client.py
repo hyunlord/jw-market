@@ -102,6 +102,31 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
     )
 
 
+def has_active_uploaded_file(conversation_id: str | None) -> bool:
+    """Check session file ownership without retrieving file contents."""
+
+    if not conversation_id or os.getenv("JW_CHAT_FILE_SEARCH_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+        return False
+    base_url = os.getenv("JW_CHAT_FILE_SEARCH_BASE", "http://code-serving-235:8080").rstrip("/")
+    workflow_id = int(os.getenv("JW_CHAT_FILE_WORKFLOW_ID", "301"))
+    timeout_s = float(os.getenv("JW_CHAT_FILE_PROBE_TIMEOUT_S", "3"))
+    try:
+        response = requests.get(
+            f"{base_url}/documents",
+            params={
+                "workflow_id": workflow_id,
+                "app_session_id": conversation_id,
+                "chat_id": conversation_id,
+            },
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError):
+        return False
+    return bool(body.get("documents"))
+
+
 def _sql_sources(raw_sources: Any) -> tuple[SqlFileSource, ...]:
     if not isinstance(raw_sources, list):
         return ()

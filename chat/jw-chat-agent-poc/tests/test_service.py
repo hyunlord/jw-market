@@ -311,7 +311,7 @@ def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatc
         SessionStore(),
         _market_scope_resolver(),
         _fake_agent_factory,
-        "리바로 경쟁 구도 변화",
+        "이 문서의 리바로 경쟁 구도 변화",
         "live",
         None,
         documents=[Path("/tmp/example.pdf")],

@@ -42,6 +42,9 @@ _PUBLIC_STAGE_NAMES = {
     "question_received": "질문 접수",
     "queue_wait": "대기 중",
     "question_classification": "질문 분류",
+    "file_session_probe": "첨부 파일 확인",
+    "mixed_file_leg": "첨부 문서 조회",
+    "mixed_market_leg": "시장 데이터 조회",
     "question_decomposition": "질문 분해",
     "market_snapshot": "시장 데이터 준비",
     "agent_pre_resolve": "질문 해석",
@@ -67,6 +70,9 @@ class StageProgress:
 
 _PUBLIC_STAGE_DETAILS = {
     "request processing": "전체 처리 진행",
+    "active uploaded file check": "현재 대화의 첨부 파일 확인",
+    "uploaded file retrieval": "첨부 문서 근거 조회",
+    "market fact retrieval": "시장 데이터 근거 조회",
     "view selection": "시장 기준 판정",
     "agent setup": "분석 구성 준비",
     "BQ and tool routing": "질문 유형·도구 경로 판정",

@@ -80,6 +80,18 @@ def test_markdown_messages_file_instruction_is_conditional() -> None:
     assert "업로드 파일 컨텍스트" in with_file[1]["content"]
 
 
+def test_markdown_messages_do_not_offer_legacy_mixed_synthesis() -> None:
+    messages = GenosClient._markdown_messages(
+        "리바로 매출과 이 보고서 전망을 비교해줘",
+        {"fact_md": "", "context_scope": "MIXED"},
+        "",
+        DOCX_FILE_CONTEXT,
+    )
+
+    assert "두 구획으로 나눠" not in messages[0]["content"]
+    assert "시장 데이터 기준" not in messages[0]["content"]
+
+
 def test_warn_dropped_file_tokens_logs_warning(caplog) -> None:
     final_without_token = "**시사점 및 한계**\n단계적 롤아웃 방식이 권고되고 있습니다."
     with caplog.at_level(logging.WARNING, logger="jw_chat_agent_poc.service.genos_client"):
@@ -228,15 +240,22 @@ def test_chat_answer_returns_file_sources_end_to_end(monkeypatch) -> None:
         file_source_items=({"file_name": "qa_e2e_operations_brief.docx", "document_id": 112706},),
     )
     monkeypatch.setattr(service_app, "search_uploaded_files", lambda question, conversation_id: uploaded)
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda conversation_id: True)
     client = TestClient(create_app(agent_factory=_echo_factory))
 
-    response = client.post("/chat/answer", json={"question": "리바로 최근 실적 알려줘", "conversation_id": "conv-file"})
+    response = client.post(
+        "/chat/answer",
+        json={"question": "이 문서에서 리바로 최근 실적 알려줘", "conversation_id": "conv-file"},
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["file_sources"] == [{"file_name": "qa_e2e_operations_brief.docx", "document_id": 112706}]
     assert "document" in payload["sources"]
 
-    stream = client.get("/chat/stream", params={"question": "리바로 최근 실적 알려줘", "conversation_id": "conv-file"})
+    stream = client.get(
+        "/chat/stream",
+        params={"question": "이 문서에서 리바로 최근 실적 알려줘", "conversation_id": "conv-file"},
+    )
     assert stream.status_code == 200
     assert "event: file_sources" in stream.text
 

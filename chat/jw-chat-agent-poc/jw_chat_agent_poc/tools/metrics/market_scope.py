@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
@@ -77,6 +78,13 @@ class MarketScopeResolver:
 
     def general_route(self, question: str) -> GeneralRoute:
         return self._general_view.route(question)
+
+    def has_explicit_anchor(self, question: str) -> bool:
+        if re.search(r"(?<![A-Za-z0-9_])ml_\d+(?![A-Za-z0-9_])", question, re.IGNORECASE):
+            return True
+        if re.search(r"(?<![A-Za-z0-9])(?:[A-Z]\d{2}[A-Z]\d)(?![A-Za-z0-9])", question, re.IGNORECASE):
+            return True
+        return self._resolver.has_explicit_alias(question)
 
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)

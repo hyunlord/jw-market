@@ -56,6 +56,27 @@ def test_invalid_heartbeat_threshold_falls_back(monkeypatch) -> None:
     assert [event["status"] for event in events] == ["started", "done"]
 
 
+def test_mixed_stage_names_are_user_facing() -> None:
+    events: list[dict] = []
+    with timing.stage(None, "file_session_probe", "active uploaded file check", sink=events.append):
+        pass
+    with timing.stage(None, "mixed_file_leg", "uploaded file retrieval", sink=events.append):
+        pass
+    with timing.stage(None, "mixed_market_leg", "market fact retrieval", sink=events.append):
+        pass
+
+    assert [event["name"] for event in events[::2]] == [
+        "첨부 파일 확인",
+        "첨부 문서 조회",
+        "시장 데이터 조회",
+    ]
+    assert [event["detail"] for event in events[::2]] == [
+        "현재 대화의 첨부 파일 확인",
+        "첨부 문서 근거 조회",
+        "시장 데이터 근거 조회",
+    ]
+
+
 class _WaitingLimiter:
     def __init__(self) -> None:
         self.released = False

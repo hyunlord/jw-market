@@ -9,7 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import nullcontext
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache
 from hmac import compare_digest
 from collections.abc import Callable
@@ -55,8 +55,13 @@ from jw_chat_agent_poc.service.conversation_context import (
     unresolved_reference_result,
 )
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
-from jw_chat_agent_poc.service.context_scope import ContextScope, resolve_context_scope
-from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
+from jw_chat_agent_poc.service.context_scope import (
+    ContextScope,
+    file_reference_terms,
+    has_file_reference,
+    resolve_context_scope,
+)
+from jw_chat_agent_poc.service.file_search_client import has_active_uploaded_file, search_uploaded_files
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
@@ -460,23 +465,56 @@ def _answer_question(
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         state = store.conversations.get_or_create(conversation_id)
-        (
-            delegated_file_context,
-            file_source_items,
-            has_active_upload,
-            deterministic_file_answer,
-        ) = _delegated_file_context(question, state.conversation_id, file_context)
-        has_file = _has_file_signal(documents, delegated_file_context) or has_active_upload
+        provided_file = _has_file_signal(documents, file_context)
+        with stage(None, "file_session_probe", "active uploaded file check"):
+            has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
+        previous_turn = state.turns[-1] if state.turns else None
+        routing_resolution = resolve_anaphora(question, previous_turn)
+        routing_question = routing_resolution.resolved_question
+        has_market_intent = _has_market_intent(routing_question)
+        has_market_anchor = (
+            market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
+        )
+        needs_scope_clarification = (
+            has_file
+            and has_market_intent
+            and not has_market_anchor
+            and not has_file_reference(question)
+        )
         context_scope = resolve_context_scope(
-            question,
+            routing_question,
             has_active_file=has_file,
             is_fresh_upload=bool(documents),
-            has_market_intent=_has_market_intent(question),
+            has_market_intent=has_market_intent,
+            has_market_anchor=has_market_anchor,
         )
-        if not question.strip() and _has_file_signal(documents, delegated_file_context):
-            result = _file_only_ready_result(documents, delegated_file_context)
+        delegated_file_context: str | None = None
+        file_source_items: tuple[dict[str, Any], ...] = ()
+        deterministic_file_answer = ""
+        if needs_scope_clarification:
+            result = _scope_clarification_result(question)
+        elif context_scope is ContextScope.MIXED:
+            result = _answer_mixed_parallel(
+                store,
+                market_scope_resolver,
+                agent_factory,
+                state.conversation_id,
+                question,
+                external_mode,
+                file_context,
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
         elif context_scope is ContextScope.FILE:
-            result = _file_scoped_result(question)
+            (
+                delegated_file_context,
+                file_source_items,
+                _has_active_upload,
+                deterministic_file_answer,
+            ) = _delegated_file_context(question, state.conversation_id, file_context)
+            if not question.strip() and _has_file_signal(documents, delegated_file_context):
+                result = _file_only_ready_result(documents, delegated_file_context)
+            else:
+                result = _file_scoped_result(question)
         else:
             result = _answer_with_conversation(
                 store,
@@ -488,6 +526,8 @@ def _answer_question(
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
+        if not question.strip() and context_scope is ContextScope.FILE and not result.get("file_only_ready"):
+            result = _file_only_ready_result(documents, delegated_file_context)
         result = _enforce_file_scope_isolation(result, question, context_scope)
         if deterministic_file_answer and context_scope is ContextScope.FILE:
             result = {**result, "deterministic_file_answer": deterministic_file_answer}
@@ -501,6 +541,136 @@ def _answer_question(
             slots=extract_conversation_slots(result),
         )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
+
+
+def _answer_mixed_parallel(
+    store: SessionStore,
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    conversation_id: str,
+    question: str,
+    external_mode: str,
+    file_context: str | None,
+    *,
+    use_direct_agent_loop: bool,
+) -> dict:
+    started = time.perf_counter()
+    timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_LEG_TIMEOUT_S", "90")))
+    total_timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "95")))
+    deadline = started + total_timeout_s
+    market_question = _mixed_market_question(question)
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mixed-m1")
+    file_future = executor.submit(_delegated_file_context, question, conversation_id, file_context)
+    market_future = executor.submit(
+        _answer_with_conversation,
+        store,
+        market_scope_resolver,
+        agent_factory,
+        conversation_id,
+        market_question,
+        external_mode,
+        [],
+        use_direct_agent_loop=use_direct_agent_loop,
+    )
+    try:
+        with stage(None, "mixed_file_leg", "uploaded file retrieval"):
+            try:
+                file_payload = file_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+            except FutureTimeoutError:
+                file_future.cancel()
+                file_payload = (None, (), True, "")
+            except Exception as exc:
+                LOGGER.warning("mixed file leg failed type=%s", type(exc).__name__)
+                file_payload = (None, (), True, "")
+        with stage(None, "mixed_market_leg", "market fact retrieval"):
+            try:
+                market_result = market_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+            except FutureTimeoutError:
+                market_future.cancel()
+                market_result = _mixed_market_failure_result(question)
+            except Exception as exc:
+                LOGGER.warning("mixed market leg failed type=%s", type(exc).__name__)
+                market_result = _mixed_market_failure_result(question)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    context, source_items, _has_active, deterministic_answer = file_payload
+    file_result = _file_scoped_result(question)
+    file_result = _attach_file_context(file_result, context, source_items)
+    if deterministic_answer:
+        file_result["deterministic_file_answer"] = deterministic_answer
+    if not context:
+        file_result["mixed_leg_error"] = "첨부 문서 근거를 가져오지 못했습니다."
+
+    combined = dict(market_result)
+    combined["mixed_market_result"] = dict(market_result)
+    combined["mixed_file_result"] = file_result
+    combined["mixed_market_question"] = market_question
+    combined["sources"] = list(
+        dict.fromkeys([*market_result.get("sources", []), *file_result.get("sources", [])])
+    )
+    diagnostics = dict(combined.get("router_diagnostics") or {})
+    diagnostics.update(
+        {
+            "mode": "mixed_m1_parallel",
+            "mixed_leg_timeout_s": timeout_s,
+            "mixed_total_timeout_s": total_timeout_s,
+            "mixed_synthesis_llm_calls": 0,
+        }
+    )
+    combined["router_diagnostics"] = diagnostics
+    return combined
+
+
+def _remaining_seconds(deadline: float) -> float:
+    return max(0.001, deadline - time.perf_counter())
+
+
+def _mixed_market_question(question: str) -> str:
+    normalized = question.strip()
+    lowered = normalized.lower()
+    positions = [
+        (lowered.find(term.lower()), term)
+        for term in file_reference_terms()
+        if lowered.find(term.lower()) >= 0
+    ]
+    if not positions:
+        return normalized
+    position, term = min(positions, key=lambda item: item[0])
+    if position > 0:
+        prefix = re.sub(r"(?:과|와|랑|이랑)\s*$", "", normalized[:position]).strip(" ,")
+        return f"{prefix} 알려줘" if prefix else normalized
+    remainder = normalized[position + len(term) :]
+    match = re.search(r"(?:과|와|랑|이랑)\s+(.+)", remainder)
+    if match:
+        market_part = re.sub(r"(?:비교|대비).*$", "", match.group(1)).strip(" ,")
+        if market_part:
+            return f"{market_part} 알려줘"
+    return normalized
+
+
+def _mixed_market_failure_result(question: str) -> dict:
+    answer = "시장 데이터 조회를 완료하지 못했습니다. 조회 오류입니다."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "mixed_leg_error": answer,
+    }
+
+
+def _scope_clarification_result(question: str) -> dict:
+    answer = "파일과 시장 중 어느 근거를 사용할지 확인이 필요합니다. 브랜드·시장 또는 첨부 문서를 지정해 주세요."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "router_diagnostics": {"mode": "scope_clarification", "deterministic_execution": True},
+    }
 
 
 def _delegated_file_context(
@@ -527,7 +697,12 @@ def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> 
 
 
 def _has_market_intent(question: str) -> bool:
-    return detect_market_scope_intent(question) is not None or should_use_agent_loop(question)
+    metric_signal = re.search(
+        r"(?:시장|매출|실적|점유율|MS|순위|HHI|CR\d*|환자수|특허|영업활동|최근\s*\d*\s*(?:개월|년)?\s*추이)",
+        question,
+        re.IGNORECASE,
+    )
+    return bool(metric_signal) or detect_market_scope_intent(question) is not None or should_use_agent_loop(question)
 
 
 def _file_scoped_result(question: str) -> dict:
@@ -1097,6 +1272,8 @@ def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
+    if result.get("context_scope") == ContextScope.MIXED.value:
+        return _compute_mixed_final_answer(question, result, conversation_id)
     client = GenosClient()
     timing = ensure_timing(result)
     if result.get("general_view_ready"):
@@ -1251,6 +1428,139 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         conversation_id=conversation_id,
         file_sources=_file_source_items(result),
     )
+
+
+def _compute_mixed_final_answer(
+    question: str,
+    result: dict,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    market_result = dict(result.get("mixed_market_result") or {})
+    file_result = dict(result.get("mixed_file_result") or {})
+    market_result["context_scope"] = ContextScope.MARKET.value
+    market_markdown = market_result.get("markdown_response")
+    if isinstance(market_markdown, dict):
+        market_result["markdown_response"] = {
+            **market_markdown,
+            "context_scope": ContextScope.MARKET.value,
+        }
+    file_result["context_scope"] = ContextScope.FILE.value
+
+    timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_LEG_TIMEOUT_S", "90")))
+    total_timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "95")))
+    started = time.perf_counter()
+    deadline = started + total_timeout_s
+    market_question = str(result.get("mixed_market_question") or question)
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mixed-m1-final")
+    market_future = executor.submit(
+        _finalize_mixed_leg,
+        "market",
+        market_question,
+        market_result,
+        conversation_id,
+    )
+    file_future = executor.submit(
+        _finalize_mixed_leg,
+        "file",
+        question,
+        file_result,
+        conversation_id,
+    )
+    try:
+        try:
+            market_final = market_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+        except FutureTimeoutError:
+            market_future.cancel()
+            market_final = _mixed_leg_failure_answer("시장 데이터 조회가 처리 시간을 초과했습니다.", conversation_id)
+        except Exception as exc:
+            LOGGER.warning("mixed market finalization failed type=%s", type(exc).__name__)
+            market_final = _mixed_leg_failure_answer(
+                "시장 데이터 조회를 완료하지 못했습니다. 조회 오류입니다.",
+                conversation_id,
+            )
+        try:
+            file_final = file_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+        except FutureTimeoutError:
+            file_future.cancel()
+            file_final = _mixed_leg_failure_answer("첨부 문서 조회가 처리 시간을 초과했습니다.", conversation_id)
+        except Exception as exc:
+            LOGGER.warning("mixed file finalization failed type=%s", type(exc).__name__)
+            file_final = _mixed_leg_failure_answer(
+                "첨부 문서 조회를 완료하지 못했습니다. 조회 오류입니다.",
+                conversation_id,
+            )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    file_name = _mixed_file_name(file_result)
+    answer = cleanup_markdown_answer(
+        "## 시장 데이터\n\n"
+        f"{market_final.text.strip()}\n\n"
+        f"## 첨부 문서 — {file_name}\n\n"
+        f"{file_final.text.strip()}\n\n"
+        "⚠️ 두 근거는 기준기간·단위·정의가 다를 수 있어 직접 비교하지 않습니다."
+    )
+    answer = scrub_internal_terminology(answer)
+    timing = ensure_timing(result)
+    timing["mixed_legs"] = {
+        "market": market_final.timing,
+        "file": file_final.timing,
+        "timeout_s": timeout_s,
+        "total_timeout_s": total_timeout_s,
+        "synthesis_llm_calls": 0,
+    }
+    timing_payload = finish(timing)
+    trace = trace_envelope(
+        question=question,
+        result=result,
+        answer=answer,
+        charts=[*market_final.charts, *file_final.charts],
+        timing=timing_payload,
+        conversation_id=conversation_id,
+    )
+    return FinalAnswer(
+        text=answer,
+        charts=[*market_final.charts, *file_final.charts],
+        timing=timing_payload,
+        trace=trace,
+        sources=tuple(dict.fromkeys([*market_final.sources, *file_final.sources])),
+        conversation_id=conversation_id,
+        file_sources=file_final.file_sources,
+    )
+
+
+def _finalize_mixed_leg(
+    leg: str,
+    question: str,
+    result: dict,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    error = str(result.get("mixed_leg_error") or "").strip()
+    if error:
+        return _mixed_leg_failure_answer(error, conversation_id)
+    if not result:
+        message = "첨부 문서 근거가 없습니다." if leg == "file" else "시장 데이터 근거가 없습니다."
+        return _mixed_leg_failure_answer(message, conversation_id)
+    return compute_final_answer(question, result, conversation_id)
+
+
+def _mixed_leg_failure_answer(message: str, conversation_id: str | None) -> FinalAnswer:
+    return FinalAnswer(
+        text=message,
+        charts=[],
+        timing={},
+        trace={},
+        sources=(),
+        conversation_id=conversation_id,
+    )
+
+
+def _mixed_file_name(result: dict) -> str:
+    for item in _file_source_items(result):
+        name = str(item.get("file_name") or "").strip()
+        if name:
+            return name
+    return "업로드 문서"
 
 
 def _is_market_clarification_result(result: dict) -> bool:
