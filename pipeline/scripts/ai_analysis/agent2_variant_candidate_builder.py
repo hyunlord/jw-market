@@ -41,8 +41,8 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         raise ValueError("route manifest must contain a rows array")
     keys = [str(row.get("brand_key") or "") for row in rows]
-    if len(rows) != 24_789 or len(set(keys)) != len(rows) or any(not key for key in keys):
-        raise ValueError("route manifest must contain 24,789 unique non-empty brand keys")
+    if not rows or len(set(keys)) != len(rows) or any(not key for key in keys):
+        raise ValueError("route manifest must contain unique non-empty brand keys")
     return rows
 
 
