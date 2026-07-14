@@ -103,6 +103,9 @@ class CategoryCursor:
         self.sql = sql
         self.params = params
 
+    def fetchone(self) -> dict[str, int]:
+        return {"eligible": 11}
+
 
 class CategoryConnection:
     def __init__(self) -> None:
@@ -197,6 +200,18 @@ def test_category_refresh_includes_v1_and_v2_but_excludes_tier1_news() -> None:
     assert "tier2_llm_v1" in conn.cursor_obj.params
     assert "tier2_llm_v2_rev5671" in conn.cursor_obj.params
     assert conn.commits == 1
+
+
+def test_category_refresh_dry_run_counts_without_update_or_commit() -> None:
+    conn = CategoryConnection()
+
+    eligible = update_live_tier2_categories(conn, dry_run=True)
+
+    assert eligible == 11
+    assert "SELECT COUNT(*) AS eligible" in conn.cursor_obj.sql
+    assert "UPDATE events" not in conn.cursor_obj.sql
+    assert "tier1.news_id IS NULL" in conn.cursor_obj.sql
+    assert conn.commits == 0
 
 
 def test_category_refresh_cronjob_is_registered_suspended() -> None:

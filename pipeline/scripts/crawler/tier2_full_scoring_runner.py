@@ -1092,34 +1092,58 @@ def update_tier2_only_event_categories(
     return updated
 
 
-def update_live_tier2_categories(conn: pymysql.connections.Connection) -> int:
+def update_live_tier2_categories(
+    conn: pymysql.connections.Connection,
+    *,
+    dry_run: bool = False,
+) -> int:
     """Refresh categories for Tier2-only news from approved live score generations."""
 
     tier1_placeholders = _tier1_processor_placeholders()
+    joins = f"""
+        JOIN (
+          SELECT news_id, MIN(tag) AS category_label,
+                 CASE MIN(tag)
+                   WHEN '신약/R&D' THEN 'rd'
+                   WHEN '자본/경영' THEN 'capital'
+                   WHEN '정책/규제' THEN 'policy'
+                   WHEN '공급/생산' THEN 'supply'
+                   ELSE 'external'
+                 END AS category_code
+          FROM event_brand_scores
+          WHERE source_processor IN (%s, %s)
+            AND news_id IS NOT NULL
+          GROUP BY news_id
+        ) tier2 ON tier2.news_id = e.news_id
+        LEFT JOIN (
+          SELECT DISTINCT news_id
+          FROM event_brand_scores
+          WHERE source_processor IN ({tier1_placeholders})
+            AND news_id IS NOT NULL
+        ) tier1 ON tier1.news_id = e.news_id
+    """
+    params = (
+        DEFAULT_SOURCE_PROCESSOR,
+        PENDING_SOURCE_PROCESSOR,
+        *TIER1_PROCESSORS,
+    )
     with conn.cursor() as cursor:
+        if dry_run:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS eligible
+                FROM events e
+                {joins}
+                WHERE tier1.news_id IS NULL
+                """,
+                params,
+            )
+            row = cursor.fetchone()
+            return int((row or {}).get("eligible") or 0)
         cursor.execute(
             f"""
             UPDATE events e
-            JOIN (
-              SELECT news_id, MIN(tag) AS category_label,
-                     CASE MIN(tag)
-                       WHEN '신약/R&D' THEN 'rd'
-                       WHEN '자본/경영' THEN 'capital'
-                       WHEN '정책/규제' THEN 'policy'
-                       WHEN '공급/생산' THEN 'supply'
-                       ELSE 'external'
-                     END AS category_code
-              FROM event_brand_scores
-              WHERE source_processor IN (%s, %s)
-                AND news_id IS NOT NULL
-              GROUP BY news_id
-            ) tier2 ON tier2.news_id = e.news_id
-            LEFT JOIN (
-              SELECT DISTINCT news_id
-              FROM event_brand_scores
-              WHERE source_processor IN ({tier1_placeholders})
-                AND news_id IS NOT NULL
-            ) tier1 ON tier1.news_id = e.news_id
+            {joins}
             SET e.category = tier2.category_code,
                 e.category_label = tier2.category_label,
                 e.processed_by = %s,
@@ -1127,9 +1151,7 @@ def update_live_tier2_categories(conn: pymysql.connections.Connection) -> int:
             WHERE tier1.news_id IS NULL
             """,
             (
-                DEFAULT_SOURCE_PROCESSOR,
-                PENDING_SOURCE_PROCESSOR,
-                *TIER1_PROCESSORS,
+                *params,
                 PENDING_SOURCE_PROCESSOR,
             ),
         )
@@ -1327,7 +1349,8 @@ def main() -> int:
     sync_parser = subparsers.add_parser("sync-events-raw")
     sync_parser.add_argument("--retries", type=int, default=1)
 
-    subparsers.add_parser("refresh-live-categories")
+    refresh_parser = subparsers.add_parser("refresh-live-categories")
+    refresh_parser.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
     conn = connect_from_env()
@@ -1370,8 +1393,11 @@ def main() -> int:
         elif args.command == "sync-events-raw":
             summary = sync_missing_events_raw(conn, retries=args.retries)
         elif args.command == "refresh-live-categories":
+            dry_run = bool(args.dry_run)
+            affected = update_live_tier2_categories(conn, dry_run=dry_run)
             summary = {
-                "updated_event_categories": update_live_tier2_categories(conn),
+                "eligible_event_categories" if dry_run else "updated_event_categories": affected,
+                "dry_run": dry_run,
                 "processors": [DEFAULT_SOURCE_PROCESSOR, PENDING_SOURCE_PROCESSOR],
             }
         else:  # pragma: no cover - argparse enforces commands.
