@@ -41,9 +41,25 @@ def test_feature_flag_routes_unclassified_external_question_to_tool_agent(monkey
     assert "pitavastatin" in result["answer"]
 
 
+def test_tool_agent_is_enabled_by_default_for_external_question(monkeypatch) -> None:
+    # Given: no runtime override is present and the tool agent returns verified evidence.
+    monkeypatch.delenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", raising=False)
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: _agent_payload(status="ok", fallback_code=None),
+    )
+
+    # When: an external-evidence question reaches the orchestrator.
+    result = ChatAgent(router=BQRouter()).answer("리바로 성분 알려줘")
+
+    # Then: the structural tool-use path is the default.
+    assert result["router_diagnostics"]["mode"] == "tool_use_agent"
+
+
 def test_feature_flag_off_preserves_legacy_path(monkeypatch) -> None:
     # Given: the feature flag is disabled.
-    monkeypatch.delenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", raising=False)
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "0")
     monkeypatch.setattr(
         agent_module,
         "run_external_tool_agent",
@@ -59,7 +75,7 @@ def test_feature_flag_off_preserves_legacy_path(monkeypatch) -> None:
 
 def test_feature_flag_off_preserves_legacy_guideline_source_trap(monkeypatch) -> None:
     # Given: the new tool-use path is disabled.
-    monkeypatch.delenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", raising=False)
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "0")
 
     # When: the legacy source-trap vocabulary sees a generic guideline request.
     result = ChatAgent(router=BQRouter()).answer("최신 고지혈증 가이드라인")

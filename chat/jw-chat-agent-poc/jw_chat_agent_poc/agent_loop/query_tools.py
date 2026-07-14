@@ -42,9 +42,24 @@ def catalog_for(layer: StrategicQueryLayer | None, brand: str | None, market: st
         return None
 
 
-def brand_metric(layer: StrategicQueryLayer | None, brand: str, metric: str, period: str, market: str | None = None) -> QueryToolResult:
+def brand_metric(
+    layer: StrategicQueryLayer | None,
+    brand: str,
+    metric: str,
+    period: str,
+    market: str | None = None,
+    source: str = "",
+    history_points: int = 10,
+) -> QueryToolResult:
     active_layer = required_layer(layer)
-    call = active_layer.brand_metric(brand, metric, period, market=market)
+    call = active_layer.brand_metric(
+        brand,
+        metric,
+        period,
+        market=market,
+        source=source,
+        history_points=history_points,
+    )
     return QueryToolResult(f"{brand} {metric} query-layer", call)
 
 
@@ -56,9 +71,15 @@ def compare_series(layer: StrategicQueryLayer | None, brand: str, comparison: st
     return QueryToolResult(f"{brand} vs {comparison} series query-layer", call)
 
 
-def top_brands(layer: StrategicQueryLayer | None, brand: str, limit: str | None, market: str | None = None) -> QueryToolResult:
+def top_brands(
+    layer: StrategicQueryLayer | None,
+    brand: str,
+    limit: str | None,
+    market: str | None = None,
+    source: str = "",
+) -> QueryToolResult:
     active_layer = required_layer(layer)
-    call = active_layer.top_brands(brand, int_arg(limit, 5), market=market)
+    call = active_layer.top_brands(brand, int_arg(limit, 5), market=market, source=source)
     return QueryToolResult(f"{brand} top brands query-layer", call)
 
 

@@ -89,13 +89,21 @@ class StrategicQueryLayer:
             for brand, market_id in sorted(memberships)
         )
 
-    def brand_metric(self, brand: str, metric: str, period: str, market: str | None = None) -> dict[str, Any]:
+    def brand_metric(
+        self,
+        brand: str,
+        metric: str,
+        period: str,
+        market: str | None = None,
+        source: str = "",
+        history_points: int = 10,
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
-        source = _default_source_for_metric(snapshot, market, brand, period)
+        source = source or _default_source_for_metric(snapshot, market, brand, period)
         record = snapshot.record(market, brand, source)
         if metric.casefold() in {"hhi", "momentum", "ei", "growth_contribution"}:
-            return self.brand_derived_metric(brand, metric, market=market)
+            return self.brand_derived_metric(brand, metric, market=market, source=source)
         requested_period = _actual_period(snapshot, market, source, period)
         actual_period = _display_period(snapshot, record, requested_period, period)
         structure = market_structure(snapshot, market, source)
@@ -111,7 +119,15 @@ class StrategicQueryLayer:
                 market=market,
                 market_structure=structure,
             )
-        render_data = metric_render_data(snapshot, market, source, record, metric, actual_period)
+        render_data = metric_render_data(
+            snapshot,
+            market,
+            source,
+            record,
+            metric,
+            actual_period,
+            series_points=history_points,
+        )
         if structure:
             render_data["market_structure"] = structure
         if actual_period != requested_period:
@@ -136,10 +152,16 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
-    def brand_derived_metric(self, brand: str, metric: str, market: str | None = None) -> dict[str, Any]:
+    def brand_derived_metric(
+        self,
+        brand: str,
+        metric: str,
+        market: str | None = None,
+        source: str = "",
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
-        source = _default_source_for_metric(snapshot, market, brand, "latest")
+        source = source or _default_source_for_metric(snapshot, market, brand, "latest")
         record = snapshot.record(market, brand, source)
         data = derived_metric_render_data(snapshot, market, source, record, metric)
         data["query_result_id"] = self._results.put(result_rows_from_render_data(data))
@@ -268,31 +290,37 @@ class StrategicQueryLayer:
             "render_data": data,
         }
 
-    def top_brands(self, brand: str, limit: int = 5, market: str | None = None) -> dict[str, Any]:
+    def top_brands(
+        self,
+        brand: str,
+        limit: int = 5,
+        market: str | None = None,
+        source: str = "",
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
-        source = snapshot.source_for_market(market)
-        latest = snapshot.latest_period(market, source)
-        ranked = snapshot.ranked_brands(market, latest, source)[: max(1, min(limit, 20))]
-        structure = market_structure(snapshot, market, source)
+        selected_source = source or snapshot.source_for_market(market)
+        latest = snapshot.latest_period(market, selected_source)
+        ranked = snapshot.ranked_brands(market, latest, selected_source)[: max(1, min(limit, 20))]
+        structure = market_structure(snapshot, market, selected_source)
         data = {
             "brand": brand,
             "metric": "market_top_brands",
             "period": latest,
             "market_id": market,
             "market_name": market,
-            "source_label": source_label(source),
+            "source_label": source_label(selected_source),
             "level": "Brand",
             "level_segments": level_segments(ranked),
-            "level_top5_trend_series": top_trend(snapshot, market, source, latest, brand, limit=max(limit, 5)),
-            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, source),
-            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, source)),
+            "level_top5_trend_series": top_trend(snapshot, market, selected_source, latest, brand, limit=max(limit, 5)),
+            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, selected_source),
+            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, selected_source)),
         }
         if structure:
             data["market_structure"] = structure
         data["query_result_id"] = self._results.put(ranked)
-        data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
-        return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
+        data["query_spec"] = {"source": selected_source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
+        return {"source": source_label(selected_source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
     def dimension_breakdown(
         self,

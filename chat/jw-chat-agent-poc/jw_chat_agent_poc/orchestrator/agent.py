@@ -12,6 +12,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_tool_use_agent,
     unsupported_brand_result,
 )
+from jw_chat_agent_poc.agent_loop.bq_planner import preflight_bq_question
 from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agentic import FilterEntry, relevance_filter_entries, relevance_question_text, validate_metric_filters
@@ -101,7 +102,10 @@ class ChatAgent:
             and source_trap is None
             and self.agent_loop is None
             and self.query_layer is not None
-            and preflight_structured_market_question(question, self.resolver) is not None
+            and (
+                preflight_bq_question(question, self.resolver) is not None
+                or preflight_structured_market_question(question, self.resolver) is not None
+            )
         ):
             loop = build_tool_use_agent(self._agent_loop_dependencies)
             result = loop.answer(question)

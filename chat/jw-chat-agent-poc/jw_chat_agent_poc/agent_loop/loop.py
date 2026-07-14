@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 import json
+import logging
 import math
 from typing import Any
 
+from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
+from jw_chat_agent_poc.agent_loop.parallel_execution import TimedExecution, execute_tool_batch
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
@@ -16,16 +19,20 @@ from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
+from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
+from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidationError, validate_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
-from jw_chat_agent_poc.common.timing import new_timing, stage
+from jw_chat_agent_poc.common.timing import add_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +108,8 @@ class ToolUseAgent:
         expanded_members_exposed = False
         deterministic_plan_hit = False
         deterministic_plan_kind: str | None = None
+        bq_analysis_validation = "not_applicable"
+        bq_missing_sources: tuple[str, ...] = ()
         llm_plan_calls = 0
         for step in range(1, self.max_steps + 1):
             allowed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
@@ -124,6 +133,17 @@ class ToolUseAgent:
                 tool_schemas = facade.schemas(planner_allowed_brands)
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
             brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
+            bq_plan = (
+                plan_bq_question(
+                    question,
+                    self.resolver,
+                    period_grounding,
+                    tool_schemas,
+                    facade.available_sources(),
+                )
+                if self.planner is None and not observations
+                else None
+            )
             structured_plan = (
                 plan_structured_market_question(
                     question,
@@ -131,10 +151,17 @@ class ToolUseAgent:
                     period_grounding,
                     tool_schemas,
                 )
-                if self.planner is None and not observations
+                if bq_plan is None and self.planner is None and not observations
                 else None
             )
-            if structured_plan is not None:
+            if bq_plan is not None:
+                with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                    decision = bq_plan.decision
+                    deterministic_plan_hit = True
+                    deterministic_plan_kind = f"BQ:{bq_plan.contract.contract_id}"
+                    bq_missing_sources = bq_plan.missing_sources
+                    progress.summary = " -> ".join(call.name for call in decision.tool_calls)
+            elif structured_plan is not None:
                 with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
                     decision = structured_plan.decision
                     deterministic_plan_hit = True
@@ -159,9 +186,29 @@ class ToolUseAgent:
                 break
             batch: list[AgentObservation] = []
             duplicate = False
-            for plan in decision.tool_calls:
-                with stage(timing, f"tool:{plan.name}", f"step={step}"):
-                    execution = _execute_grounded(facade, plan)
+            if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
+                with stage(timing, "tool_batch", f"step={step}; bounded independent support tools"):
+                    execution_batch = execute_tool_batch(
+                        decision.tool_calls,
+                        lambda plan: _execute_grounded(facade, plan),
+                    )
+            else:
+                serial_batch: list[TimedExecution[ToolExecution]] = []
+                for plan in decision.tool_calls:
+                    with stage(timing, f"tool:{plan.name}", f"step={step}"):
+                        execution = _execute_grounded(facade, plan)
+                    serial_batch.append(TimedExecution(plan, execution, 0.0, "serial"))
+                execution_batch = tuple(serial_batch)
+            for timed_execution in execution_batch:
+                plan = timed_execution.plan
+                execution = timed_execution.result
+                if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
+                    add_stage(
+                        timing,
+                        f"tool:{plan.name}",
+                        timed_execution.elapsed_ms,
+                        f"step={step}; mode={timed_execution.mode}",
+                    )
                 key = _fingerprint(ToolCallPlan(name=plan.name, arguments=execution.arguments, reason=plan.reason))
                 if key in seen:
                     duplicate = True
@@ -175,6 +222,8 @@ class ToolUseAgent:
                 calls.append(execution.call)
             trace.append(_trace_step(step, decision, tuple(batch)))
             if duplicate:
+                break
+            if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
                 break
             if _observation_is_sufficient_for_final_answer(question, tuple(observations), tuple(batch)):
                 break
@@ -275,6 +324,35 @@ class ToolUseAgent:
         _mark_answer_scope(question, calls, brand)
         with stage(timing, "context_retrieval", "background issue material"):
             calls.extend(_background_context_calls(question, calls, brand, self.news))
+        if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
+            with stage(timing, "bq_analysis", "deterministic cross-source calculations"):
+                analysis_call = None
+                if bq_missing_sources:
+                    status = "source_unavailable"
+                    bq_analysis_validation = "SOURCE_UNAVAILABLE"
+                    labels = ", ".join(_bq_source_label(source) for source in bq_missing_sources)
+                    notices.append(f"요청한 분석에 필요한 출처({labels})를 현재 조회할 수 없습니다.")
+                else:
+                    analysis_call = build_bq_analysis_call(deterministic_plan_kind.removeprefix("BQ:"), calls)
+                if not bq_missing_sources and analysis_call is None:
+                    status = "verification_failed"
+                    bq_analysis_validation = "MISSING_EVIDENCE"
+                    notices.append("분석에 필요한 근거가 완결되지 않아 해당 해석은 표시하지 않았습니다.")
+                elif analysis_call is not None:
+                    try:
+                        validate_bq_analysis_call(analysis_call)
+                    except BQAnalysisValidationError as exc:
+                        status = "verification_failed"
+                        bq_analysis_validation = "VERIFICATION_FAIL"
+                        notices.append("분석 근거 검증을 통과하지 못해 해당 해석은 표시하지 않았습니다.")
+                        logger.warning(
+                            "bq_analysis_validation_failed contract=%s reason=%s",
+                            deterministic_plan_kind,
+                            exc,
+                        )
+                    else:
+                        bq_analysis_validation = "passed"
+                        calls.append(analysis_call)
         sources = _sources(calls)
         selection = _tool_selection(question, calls)
         with stage(timing, "fact_assembly", "markdown fact set build"):
@@ -292,6 +370,8 @@ class ToolUseAgent:
                 "deterministic_plan_hit": deterministic_plan_hit,
                 "deterministic_plan_kind": deterministic_plan_kind,
                 "llm_plan_calls": llm_plan_calls,
+                "bq_analysis_validation": bq_analysis_validation,
+                "bq_missing_sources": list(bq_missing_sources),
                 "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
                 **selection,
             },
@@ -301,6 +381,10 @@ class ToolUseAgent:
             "sources": sources or ["cache"],
             "timing": timing,
         }
+
+
+def _bq_source_label(source: str) -> str:
+    return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
 
 
 def _record_planner_token_usage(timing: dict[str, Any], planner: ToolPlanner) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from jw_chat_agent_poc.service.bq_charts import build_bq_chart_specs
 from jw_chat_agent_poc.service.chart_utils import (
     BLUE,
     TEAL,
@@ -29,10 +30,17 @@ def build_charts(
     del cause_reader
     charts: list[dict[str, Any]] = []
     calls = [call for call in result.get("tool_calls", []) if isinstance(call, Mapping)]
+    bq_payloads = [
+        payload
+        for call in calls
+        for payload in (as_mapping(call.get("render_data")) or {}).get("chart_payloads", [])
+        if isinstance(payload, Mapping)
+    ]
+    charts.extend(build_bq_chart_specs(bq_payloads))
     target_brand = _target_brand(result, calls)
     intent = _chart_intent(question, answer)
     if not intent:
-        return []
+        return _valid_charts(dedupe_charts(charts))
 
     charts.extend(_metric_call_charts(calls, target_brand, intent))
     charts.extend(_hira_charts(calls, intent))

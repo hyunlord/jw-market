@@ -29,8 +29,9 @@ def provenance_rows_from_calls(
         query_spec_value = render_data.get("query_spec")
         query_spec = query_spec_value if isinstance(query_spec_value, Mapping) else {}
         raw_source = _first_value(render_data, call, query_spec, keys=("source_label", "source"))
-        if not raw_source:
-            raw_source = _source_from_tool(call)
+        tool_source = _source_from_tool(call)
+        if not raw_source or str(raw_source) in _GENERIC_PROVIDER_SOURCES:
+            raw_source = tool_source or raw_source
         rows.append(
             normalized_row(
                 source=public_source(raw_source),
@@ -51,6 +52,11 @@ def provenance_rows_from_calls(
 
     represented_sources = {row.source for row in rows}
     for raw_source in sources:
+        if raw_source in _GENERIC_PROVIDER_SOURCES and any(
+            str(call.get("source") or "") == raw_source and _source_from_tool(call)
+            for call in calls
+        ):
+            continue
         source = public_source(raw_source)
         if source not in represented_sources:
             rows.append(normalized_row(source=source))
@@ -60,6 +66,18 @@ def provenance_rows_from_calls(
 
 def _source_from_tool(call: Mapping[str, Any]) -> str:
     tool = str(call.get("tool") or "")
+    if tool in {"get_drug_main_ingredient", "mfds_composition"}:
+        return "식약처 의약품 성분 정보"
+    if tool in {"mfds_permission_search", "mfds_permission_detail", "mfds_easy_drug", "search_drug_info"}:
+        return "식약처 의약품 허가 정보"
+    if tool == "mfds_clinical_trial_kr":
+        return "식약처 임상시험 정보"
+    if tool in {"mfds_patent", "mfds_fda_orangebook", "get_patent_expiry"}:
+        return "식약처 의약품 특허 정보"
+    if tool.startswith("openfda"):
+        return "OpenFDA 의약품 라벨 정보"
+    if "clinicaltrials" in tool:
+        return "ClinicalTrials.gov"
     if tool.startswith("hira_disease"):
         return "hira_disease"
     if tool.startswith("hira_procedure"):
@@ -67,6 +85,11 @@ def _source_from_tool(call: Mapping[str, Any]) -> str:
     if call.get("safe_url"):
         return "external_api"
     return ""
+
+
+_GENERIC_PROVIDER_SOURCES = frozenset(
+    {"external_api", "nedrug_mcp", "openfda_mcp", "clinicaltrials_mcp"}
+)
 
 
 def _period_label(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -> str:

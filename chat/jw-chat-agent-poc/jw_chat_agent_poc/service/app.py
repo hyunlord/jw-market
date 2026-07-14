@@ -33,6 +33,11 @@ from jw_chat_agent_poc.common.periods import (
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.bq_mixed_analysis import build_file_market_analysis_call
+from jw_chat_agent_poc.orchestrator.bq_runtime_guard import (
+    BQAnalysisValidationError,
+    validate_bq_analysis_call,
+)
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
@@ -533,6 +538,7 @@ def _answer_question(
                 question,
                 external_mode,
                 file_context,
+                file_question=file_question,
                 use_direct_agent_loop=use_direct_agent_loop,
             )
         elif context_scope is ContextScope.FILE:
@@ -588,6 +594,7 @@ def _answer_mixed_parallel(
     external_mode: str,
     file_context: str | None,
     *,
+    file_question: str | None = None,
     use_direct_agent_loop: bool,
 ) -> dict:
     started = time.perf_counter()
@@ -595,8 +602,14 @@ def _answer_mixed_parallel(
     total_timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "95")))
     deadline = started + total_timeout_s
     market_question = _mixed_market_question(question)
+    resolved_file_question = file_question or question
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mixed-m1")
-    file_future = executor.submit(_delegated_file_context, question, conversation_id, file_context)
+    file_future = executor.submit(
+        _delegated_file_context,
+        resolved_file_question,
+        conversation_id,
+        file_context,
+    )
     market_future = executor.submit(
         _answer_with_conversation,
         store,
@@ -635,7 +648,7 @@ def _answer_mixed_parallel(
         file_sql_trace = ()
     else:
         context, source_items, _has_active, deterministic_answer, file_sql_trace = file_payload
-    file_result = _file_scoped_result(question)
+    file_result = _file_scoped_result(resolved_file_question)
     file_result = _attach_file_context(file_result, context, source_items)
     if deterministic_answer:
         file_result["deterministic_file_answer"] = deterministic_answer
@@ -654,6 +667,22 @@ def _answer_mixed_parallel(
     combined["sources"] = list(
         dict.fromkeys([*market_result.get("sources", []), *file_result.get("sources", [])])
     )
+    market_calls = [
+        call
+        for call in market_result.get("tool_calls", [])
+        if isinstance(call, dict)
+    ]
+    analysis_call = build_file_market_analysis_call(market_calls, deterministic_answer)
+    analysis_status = "MISSING_EVIDENCE"
+    if analysis_call is not None:
+        try:
+            validate_bq_analysis_call(analysis_call)
+        except BQAnalysisValidationError as exc:
+            LOGGER.warning("mixed BQ analysis rejected reason=%s", exc)
+            analysis_status = "VERIFICATION_FAIL"
+        else:
+            combined["tool_calls"] = [*market_calls, analysis_call]
+            analysis_status = "ok"
     diagnostics = dict(combined.get("router_diagnostics") or {})
     diagnostics.update(
         {
@@ -661,6 +690,7 @@ def _answer_mixed_parallel(
             "mixed_leg_timeout_s": timeout_s,
             "mixed_total_timeout_s": total_timeout_s,
             "mixed_synthesis_llm_calls": 0,
+            "mixed_bq_analysis_validation": analysis_status,
         }
     )
     combined["router_diagnostics"] = diagnostics

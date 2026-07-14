@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, patent_ingredient_call, procedure_stats_call, search_news_call, web_search_call
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding, display_period, require_available_period, resolve_relative_expression
-from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, query_spec, top_brands
+from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, int_arg, query_spec, top_brands
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tool_helpers import closest_allowed_brand, ground_news_query, market_members, metric_measure, period_filters, system_current_month
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -58,6 +58,10 @@ class AgentToolFacade:
     def schemas(self, planner_allowed_brands: tuple[str, ...] | None = None) -> tuple[dict[str, Any], ...]:
         schema_brands = self._allowed_brands if planner_allowed_brands is None else planner_allowed_brands
         return tool_schemas(schema_brands, self._periods.schema_periods, self._query_catalog())
+
+    def available_sources(self) -> tuple[str, ...] | None:
+        catalog = self._query_catalog()
+        return catalog.sources if catalog is not None else None
 
     def execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
         try:
@@ -303,7 +307,15 @@ class AgentToolFacade:
     def _query_metric(self, arguments: Mapping[str, str], metric: str) -> ToolExecution:
         brand = self._brand(arguments)
         period = arguments.get("period") or "latest"
-        result = brand_metric(self._query_layer, brand, metric, period, self._market(brand))
+        result = brand_metric(
+            self._query_layer,
+            brand,
+            metric,
+            period,
+            self._market(brand),
+            arguments.get("source", ""),
+            int_arg(arguments.get("history_points"), 10),
+        )
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _compare_brands_series(self, arguments: Mapping[str, str]) -> ToolExecution:
@@ -313,7 +325,13 @@ class AgentToolFacade:
 
     def _top_brands(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        result = top_brands(self._query_layer, brand, arguments.get("limit"), self._market(brand))
+        result = top_brands(
+            self._query_layer,
+            brand,
+            arguments.get("limit"),
+            self._market(brand),
+            arguments.get("source", ""),
+        )
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _dimension_breakdown(self, arguments: Mapping[str, str], dimension: str) -> ToolExecution:

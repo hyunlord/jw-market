@@ -17,6 +17,8 @@ DEFAULT_FILE_REFERENCE_TERMS = (
     "해당 보고서",
     "업로드 파일",
     "업로드한 파일",
+    "업로드한",
+    "업로드된",
     "첨부 파일",
     "첨부 문서",
     "이 문서",
@@ -37,6 +39,8 @@ _EXPLICIT_MARKET_TERMS = (
     "시장 기준",
     "db에서",
     "mart에서",
+    "ubist",
+    "iqvia",
 )
 
 
@@ -67,18 +71,19 @@ def resolve_context_scope(
 
     file_directed = has_file_reference(query)
     explicit_market = _has_explicit_market_reference(query)
+    market_grounded = has_market_anchor or explicit_market
     schema_directed = matches_file_schema(query, file_schema_columns)
     if not has_active_file:
-        if file_directed and has_market_intent and has_market_anchor and _COMPARISON_RE.search(query):
+        if file_directed and has_market_intent and market_grounded and _COMPARISON_RE.search(query):
             return ContextScope.MIXED
         if file_directed:
             return ContextScope.FILE
         return ContextScope.MARKET
     if schema_directed and not explicit_market:
         return ContextScope.FILE
-    if file_directed and has_market_intent and has_market_anchor and _COMPARISON_RE.search(query):
+    if file_directed and has_market_intent and market_grounded and _COMPARISON_RE.search(query):
         return ContextScope.MIXED
-    if not file_directed and has_market_intent and has_market_anchor:
+    if not file_directed and has_market_intent and market_grounded:
         return ContextScope.MARKET
     # Fresh uploads and unresolved references remain in the file boundary.
     return ContextScope.FILE

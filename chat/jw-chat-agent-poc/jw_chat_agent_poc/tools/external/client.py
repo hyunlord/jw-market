@@ -48,10 +48,10 @@ CLINICAL_TRIALS_MCP_SOURCE = "clinicaltrials_mcp"
 
 def resolve_patent_ingredient_query(text: str) -> str | None:
     normalized = " ".join(str(text or "").casefold().replace("-", " ").split())
-    compact = normalized.replace(" ", "")
     for alias, ingredient in MFDS_PATENT_INGREDIENT_ALIASES.items():
         alias_norm = " ".join(alias.casefold().replace("-", " ").split())
-        if alias_norm in normalized or alias_norm.replace(" ", "") in compact:
+        pattern = rf"(?<![0-9a-z가-힣]){re.escape(alias_norm)}(?![0-9a-z가-힣])"
+        if re.search(pattern, normalized):
             return ingredient
     return None
 
@@ -532,8 +532,12 @@ def _mcp_failed_call(
 
 def _mcp_payload(result: McpToolResult) -> Any:
     structured = result.raw_result.get("structuredContent")
-    if isinstance(structured, dict) and isinstance(structured.get("result"), str):
-        return _json_or_text(structured["result"])
+    if isinstance(structured, dict) and "result" in structured:
+        payload = structured["result"]
+        if isinstance(payload, str):
+            return _json_or_text(payload)
+        if isinstance(payload, (dict, list)):
+            return payload
     return _json_or_text(result.content_text)
 
 
