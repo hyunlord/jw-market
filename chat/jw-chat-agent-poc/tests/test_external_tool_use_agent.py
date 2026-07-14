@@ -13,6 +13,7 @@ from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
+from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
 from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoice
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tool_use.registry import _external_call_envelope
@@ -538,6 +539,57 @@ def test_integration_accepts_openfda_evidence_for_safety_question() -> None:
     assert payload["router_diagnostics"]["fallback_code"] is None
     assert [call["tool"] for call in payload["tool_calls"]] == ["openfda_label_search"]
     assert "FDA 의약품 라벨 정보" in payload["answer"]
+
+
+def _completed_external_call(tool: str, metric: str) -> dict[str, object]:
+    return {
+        "tool": tool,
+        "status": "live",
+        "render_data": {
+            "status": "live",
+            "ok": True,
+            "evidence": [
+                {
+                    "fact_id": f"{tool}:1",
+                    "subject": "pitavastatin",
+                    "metric": metric,
+                    "value": None,
+                    "unit": None,
+                    "period": None,
+                    "source_name": tool,
+                    "source_locator": None,
+                    "raw_ref": None,
+                }
+            ],
+        },
+    }
+
+
+def test_adverse_event_completion_rejects_plain_label_evidence() -> None:
+    label = _completed_external_call("openfda_label_search", "FDA 라벨")
+    adverse = _completed_external_call(
+        "openfda_label_search",
+        "FAERS 자발보고 내 이상반응",
+    )
+
+    assert tool_use_evidence_complete("pitavastatin 부작용", [label]) is False
+    assert tool_use_evidence_complete("pitavastatin 부작용", [adverse]) is True
+
+
+def test_orangebook_completion_rejects_domestic_patent_evidence() -> None:
+    domestic = _completed_external_call("mfds_patent", "국내 특허")
+    orangebook = _completed_external_call("mfds_fda_orangebook", "미국 특허/독점권")
+
+    assert tool_use_evidence_complete("pitavastatin 오렌지북", [domestic]) is False
+    assert tool_use_evidence_complete("pitavastatin 오렌지북", [orangebook]) is True
+
+
+def test_domestic_clinical_completion_rejects_global_trial_evidence() -> None:
+    global_trial = _completed_external_call("clinicaltrials_v2_search", "글로벌 임상시험")
+    domestic_trial = _completed_external_call("mfds_clinical_trial_kr", "국내 임상시험")
+
+    assert tool_use_evidence_complete("리바로 국내 임상시험", [global_trial]) is False
+    assert tool_use_evidence_complete("리바로 국내 임상시험", [domestic_trial]) is True
 
 
 def test_integration_requires_all_hira_distribution_tools() -> None:

@@ -29,6 +29,7 @@ class ToolUseRequirement:
     alternatives: frozenset[str]
     minimum_calls: int = 1
     required_periods: frozenset[str] = frozenset()
+    required_evidence_metrics: frozenset[str] = frozenset()
 
 
 def tool_use_requirements(question: str) -> tuple[ToolUseRequirement, ...]:
@@ -38,15 +39,24 @@ def tool_use_requirements(question: str) -> tuple[ToolUseRequirement, ...]:
     requirements: list[ToolUseRequirement] = []
     if is_hira_disease_question(question):
         requirements.extend(_hira_requirements(lowered))
-    if any(token in lowered for token in ("부작용", "이상반응", "안전성", "safety", "adverse", "side effect", "fda 라벨")):
+    if any(token in lowered for token in ("부작용", "이상반응", "adverse", "side effect")):
+        requirements.append(
+            ToolUseRequirement(
+                label="FDA 이상반응",
+                alternatives=frozenset({"openfda_label_search"}),
+                required_evidence_metrics=frozenset({"FAERS 자발보고 내 이상반응"}),
+            )
+        )
+    elif any(token in lowered for token in ("안전성", "safety", "fda 라벨")):
         requirements.append(_one("FDA 라벨/이상반응", "openfda_label_search"))
-    if any(
-        token in lowered
-        for token in ("특허", "독점권", "만료", "오렌지북", "patent", "orange book", "orangebook")
-    ):
+    if any(token in lowered for token in ("오렌지북", "orange book", "orangebook")):
+        requirements.append(_one("FDA Orange Book", "mfds_fda_orangebook"))
+    elif any(token in lowered for token in ("특허", "독점권", "만료", "patent")):
         requirements.append(_one("특허/독점권", "mfds_patent", "mfds_fda_orangebook"))
-    if any(token in lowered for token in ("임상", "clinical", "nct")):
-        requirements.append(_one("임상시험", "clinicaltrials_v2_search", "mfds_clinical_trial_kr"))
+    if any(token in lowered for token in ("국내 임상", "한국 임상", "식약처 임상", "mfds 임상")):
+        requirements.append(_one("국내 임상시험", "mfds_clinical_trial_kr"))
+    elif any(token in lowered for token in ("임상", "clinical", "nct")):
+        requirements.append(_one("글로벌 임상시험", "clinicaltrials_v2_search"))
     if any(token in lowered for token in ("가이드라인", "치료 지침", "guideline")):
         requirements.append(_one("웹 검색", "web_search"))
     if any(token in lowered for token in ("성분", "주성분", "molecule", "ingredient")):
@@ -84,6 +94,10 @@ def missing_tool_use_requirements(
             continue
         periods = frozenset(period for call in matching for period in _call_periods(call))
         if not requirement.required_periods.issubset(periods):
+            missing.append(requirement.label)
+            continue
+        metrics = frozenset(metric for call in matching for metric in _call_evidence_metrics(call))
+        if not requirement.required_evidence_metrics.issubset(metrics):
             missing.append(requirement.label)
     return tuple(missing)
 
@@ -156,3 +170,17 @@ def _call_periods(call: Mapping[str, Any]) -> frozenset[str]:
     if isinstance(request, Mapping) and request.get("year") not in (None, ""):
         periods.add(str(request["year"]))
     return frozenset(periods)
+
+
+def _call_evidence_metrics(call: Mapping[str, Any]) -> frozenset[str]:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return frozenset()
+    evidence = render_data.get("evidence")
+    if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes)):
+        return frozenset()
+    return frozenset(
+        str(fact["metric"])
+        for fact in evidence
+        if isinstance(fact, Mapping) and fact.get("metric") not in (None, "")
+    )

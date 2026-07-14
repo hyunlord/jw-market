@@ -829,6 +829,8 @@ def _observed_market_by_brand(observations: list[AgentObservation]) -> dict[str,
         market = str(data.get("market_id") or "")
         if not market and isinstance(query_spec, dict):
             market = str(query_spec.get("market_id") or query_spec.get("market") or "")
+        if not market and observation.tool_name in {"get_market_scope", "get_market_landscape"}:
+            market = str(data.get("market") or "")
         if brand and market:
             selected[brand] = market
     return selected
