@@ -90,11 +90,11 @@ unit test.
 ## Market growth census
 
 The market-growth command enumerates the complete UBIST and IQVIA sales
-population from `mart_general_market_metric`, derives the expected fixed-period
-growth from each mart series (`n=60` monthly or `n=20` quarterly), and compares
-it with a live `/api/dynamic-market` response. The independent calculation uses
-the latest numeric endpoint and the exact five-year baseline when present,
-otherwise the earliest numeric prior period, without shortening the exponent.
+population from `mart_general_market_metric`, fixes one baseline for each selected
+range, and compares every point with a live `/api/dynamic-market` response. The
+independent calculation uses the latest numeric endpoint's exact five-year prior
+period when present, otherwise the earliest numeric period. UBIST annualizes over
+the actual elapsed months (`12/n`); IQVIA annualizes over elapsed quarters (`4/n`).
 An empty or incomplete 902-cell population, unavailable independent expected
 value, endpoint mismatch, request error, non-finite value, `-100` sentinel,
 extreme value, or formula mismatch fails the command.
@@ -169,11 +169,12 @@ python3 pipeline/scripts/gates/release_acceptance.py competition-ranking \
   --environment test2
 ```
 
-Every entity/year pair must have contiguous displayed ranks. Brand and company
+Every entity/year pair must have contiguous displayed ranks, and the displayed
+rows must equal the same-length prefix of `rankings_by_year`. Brand and company
 rows, including `기타`, must independently reconcile to the same annual market
 total. The expected years are explicit, so a year missing from both entity
-payloads cannot disappear from the census. Missing years, null shares, and
-empty censuses fail closed.
+payloads cannot disappear from the census. Missing years, block divergence,
+null shares, and empty censuses fail closed.
 
 ## F-116 specialty, topic storage, and canonical precedence
 

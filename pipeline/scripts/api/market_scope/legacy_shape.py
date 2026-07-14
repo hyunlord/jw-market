@@ -48,7 +48,7 @@ def market_yoy_series(market_size: Mapping[str, float]) -> dict[str, float | Non
 
 
 def market_cmgr_series(market_size: Mapping[str, float], *, source: str) -> dict[str, float | None]:
-    """Return fixed five-year CQGR/CMGR values for each period."""
+    """Return range-baseline CQGR/CMGR values for each period."""
 
     results = fixed_five_year_growth_series(market_size, source=source)
     return {period: results[period].value for period in market_size}
