@@ -18,7 +18,7 @@ from pipeline.scripts.api.catalog import (
 )
 from pipeline.scripts.api.drivers import compute_drivers
 from pipeline.scripts.api.market_id import to_ml_id, to_strategy_id
-from pipeline.scripts.api.metadata import BRAND_METADATA
+from pipeline.scripts.api.metadata import BRAND_METADATA, build_brand_metadata_payload
 from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
 
 
@@ -161,7 +161,12 @@ def build_brands_response(
     normalized_market_id = to_strategy_id(market_id) if market_id else None
     query = q.casefold() if q else None
 
-    data = [brand.to_response() for brand in BRAND_METADATA]
+    data = build_brand_metadata_payload(
+        {
+            brand.market_id: _catalog_atc_codes_for_ml(to_ml_id(brand.market_id))
+            for brand in BRAND_METADATA
+        }
+    )
     if query:
         data = [brand for brand in data if query in str(brand["brand"]).casefold()]
     if normalized_market_id:
