@@ -7,7 +7,7 @@ spec:
   template:
     metadata:
       annotations:
-        jw-market/source-sha256: 005929b16388071aee3a7fb0b9d42774875cf61f8d4b2d82675faee4bdef8458
+        jw-market/source-sha256: 956a4797072bcc2ee4f9e64c3c6ac22ef9d311783fa7749307ab7dde386828bd
     spec:
       containers:
         - name: preprocessor-91
@@ -18,6 +18,8 @@ spec:
               value: "1"
             - name: PDF_OCR_LANGUAGES
               value: "eng+kor"
+            - name: OCR_TESSERACT_PSM
+              value: "4"
             - name: PDF_TEXT_LAYER_MIN_CHARS
               value: "20"
             - name: PREPROC_LARGE_PDF_MIN_PAGES

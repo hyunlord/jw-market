@@ -18,6 +18,37 @@ sys.modules[SPEC.name] = preprocessor
 SPEC.loader.exec_module(preprocessor)
 
 
+def test_tesseract_psm_defaults_to_four() -> None:
+    assert preprocessor.OCR_TESSERACT_PSM == 4
+
+
+def test_tesseract_psm_rejects_values_outside_tesseract_range() -> None:
+    with pytest.raises(ValueError, match="OCR_TESSERACT_PSM"):
+        preprocessor._parse_tesseract_psm("99")
+
+
+def test_tesseract_pdf_command_preserves_engine_language_and_psm() -> None:
+    command = preprocessor._tesseract_pdf_command(
+        Path("/tmp/page.png"),
+        Path("/tmp/ocr-page"),
+        language="eng+kor",
+        psm=4,
+    )
+
+    assert command == [
+        "tesseract",
+        "/tmp/page.png",
+        "/tmp/ocr-page",
+        "-l",
+        "eng+kor",
+        "--oem",
+        "3",
+        "--psm",
+        "4",
+        "pdf",
+    ]
+
+
 def test_effective_cpu_count_uses_cgroup_v2_quota(tmp_path: Path) -> None:
     cpu_max = tmp_path / "cpu.max"
     cpu_max.write_text("400000 100000\n", encoding="ascii")
@@ -45,6 +76,7 @@ def test_ocr_candidate_passes_configured_english_and_korean_languages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[dict[str, object]] = []
+    installed: list[bool] = []
 
     class FakePage:
         def get_text(self, mode: str) -> str:
@@ -63,6 +95,12 @@ def test_ocr_candidate_passes_configured_english_and_korean_languages(
             return [{"text": "recognized"}]
 
     monkeypatch.setattr(preprocessor, "PDF_OCR_LANGUAGES", "eng+kor", raising=False)
+    monkeypatch.setattr(
+        preprocessor,
+        "_install_tesseract_psm_adapter",
+        lambda: installed.append(True),
+        raising=False,
+    )
 
     items, used_ocr = preprocessor._page_markdown_items(
         FakePymupdf4llm,
@@ -73,6 +111,45 @@ def test_ocr_candidate_passes_configured_english_and_korean_languages(
     assert used_ocr is True
     assert items == [{"text": "recognized"}]
     assert observed[0]["ocr_language"] == "eng+kor"
+    assert installed == [True]
+
+
+def test_text_layer_fast_path_does_not_install_ocr_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed: list[bool] = []
+
+    class FakePage:
+        def get_text(self, mode: str) -> str:
+            assert mode == "text"
+            return "embedded text layer with enough useful characters"
+
+    class FakeDocument:
+        def __getitem__(self, page: int) -> FakePage:
+            assert page == 0
+            return FakePage()
+
+    class FakePymupdf4llm:
+        @staticmethod
+        def to_markdown(document: object, **kwargs: object) -> list[dict[str, str]]:
+            return [{"text": "native"}]
+
+    monkeypatch.setattr(
+        preprocessor,
+        "_install_tesseract_psm_adapter",
+        lambda: installed.append(True),
+        raising=False,
+    )
+
+    items, used_ocr = preprocessor._page_markdown_items(
+        FakePymupdf4llm,
+        FakeDocument(),
+        0,
+    )
+
+    assert used_ocr is False
+    assert items == [{"text": "native"}]
+    assert installed == []
 
 
 def test_page_with_usable_text_layer_skips_ocr() -> None:
@@ -193,9 +270,20 @@ def test_deployment_contract_reserves_parallel_resources() -> None:
     assert "name: PREPROC_LARGE_PDF_MIN_BYTES" in manifest
     assert 'name: PREPROC_PAGE_WORKER_THREADS\n              value: "1"' in manifest
     assert 'name: PDF_OCR_LANGUAGES\n              value: "eng+kor"' in manifest
+    assert 'name: OCR_TESSERACT_PSM\n              value: "4"' in manifest
     assert 'name: PDF_TEXT_LAYER_MIN_CHARS\n              value: "20"' in manifest
     assert 'value: "50"' in manifest
     assert 'value: "5242880"' in manifest
     assert 'cpu: "8"' in manifest
     assert "memory: 16Gi" in manifest
     assert f"jw-market/source-sha256: {source_sha256}" in manifest
+
+
+def test_candidate_image_default_matches_deployment_psm() -> None:
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    manifest = (Path(__file__).parents[1] / "deploy" / "preprocessor-91-patch.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ENV OCR_TESSERACT_PSM=4" in dockerfile
+    assert 'name: OCR_TESSERACT_PSM\n              value: "4"' in manifest

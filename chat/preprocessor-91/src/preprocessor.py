@@ -43,7 +43,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, Final, List, Optional, Tuple, Type
 
 from fastapi import Request
 from pydantic import BaseModel
@@ -81,6 +81,27 @@ PDF_TEXT_LAYER_MIN_CHARS = max(
 # Backward-compatible name for deployments that still carry the old setting.
 PDF_OCR_TEXT_MIN_NONSPACE = PDF_TEXT_LAYER_MIN_CHARS
 PDF_OCR_LANGUAGES = os.environ.get("PDF_OCR_LANGUAGES", "eng+kor").strip() or "eng+kor"
+OCR_TESSERACT_OEM: Final = 3
+OCR_TESSERACT_PSM_DEFAULT: Final = 4
+
+
+def _parse_tesseract_psm(raw_value: str) -> int:
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"OCR_TESSERACT_PSM must be an integer from 0 through 13, got {raw_value!r}"
+        ) from exc
+    if not 0 <= parsed <= 13:
+        raise ValueError(
+            f"OCR_TESSERACT_PSM must be an integer from 0 through 13, got {raw_value!r}"
+        )
+    return parsed
+
+
+OCR_TESSERACT_PSM: Final = _parse_tesseract_psm(
+    os.environ.get("OCR_TESSERACT_PSM", str(OCR_TESSERACT_PSM_DEFAULT))
+)
 PDF_MARKDOWN_CHUNK_SIZE = max(int(os.environ.get("PDF_MARKDOWN_CHUNK_SIZE", "2400")), 200)
 PDF_MARKDOWN_CHUNK_OVERLAP = max(int(os.environ.get("PDF_MARKDOWN_CHUNK_OVERLAP", "100")), 0)
 PREPROC_LARGE_PDF_MIN_PAGES = max(int(os.environ.get("PREPROC_LARGE_PDF_MIN_PAGES", "50")), 1)
@@ -213,6 +234,114 @@ class LargePdfGate:
 _PAGE_WORKER_DOC = None
 _PAGE_WORKER_PYMUPDF4LLM = None
 _PAGE_WORKER_HDR_INFO = None
+_TESSERACT_ADAPTER_INSTALLED = False
+
+
+def _tesseract_pdf_command(
+    input_path: Path,
+    output_base: Path,
+    *,
+    language: str,
+    psm: int,
+) -> list[str]:
+    return [
+        "tesseract",
+        str(input_path),
+        str(output_base),
+        "-l",
+        language,
+        "--oem",
+        str(OCR_TESSERACT_OEM),
+        "--psm",
+        str(psm),
+        "pdf",
+    ]
+
+
+def _tesseract_pdf_bytes(pixmap, *, language: str) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="p91-tesseract-") as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        input_path = temporary_path / "page.png"
+        output_base = temporary_path / "ocr-page"
+        output_path = output_base.with_suffix(".pdf")
+        pixmap.save(input_path)
+        subprocess.run(
+            _tesseract_pdf_command(
+                input_path,
+                output_base,
+                language=language,
+                psm=OCR_TESSERACT_PSM,
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return output_path.read_bytes()
+
+
+def _exec_tesseract_ocr(
+    page,
+    dpi: int = 300,
+    pixmap=None,
+    language: str = "eng",
+    keep_ocr_text: bool = False,
+) -> None:
+    import pymupdf
+    from pymupdf4llm.ocr.get_culled_pixmap import get_pixmap
+
+    displaylist = page.get_displaylist()
+    stextpage = displaylist.get_textpage(flags=pymupdf.TEXT_ACCURATE_BBOXES)
+    textpage = pymupdf.TextPage(stextpage)
+    text_blocks = textpage.extractDICT()["blocks"]
+    stroked_text = pymupdf.mupdf.FZ_STEXT_STROKED
+    filled_text = pymupdf.mupdf.FZ_STEXT_FILLED
+    replacement_unicode = chr(0xFFFD)
+    spans = []
+    ocr_spans = []
+    for block in text_blocks:
+        for line in block["lines"]:
+            for span in line["spans"]:
+                char_flags = span["char_flags"]
+                if (char_flags & stroked_text) or (char_flags & filled_text):
+                    if replacement_unicode not in span["text"]:
+                        spans.append(span["bbox"])
+                else:
+                    ocr_spans.append(span["bbox"])
+    if ocr_spans and keep_ocr_text:
+        return
+
+    ocr_pixmap = get_pixmap(displaylist, dpi=dpi, rects=spans)
+    with pymupdf.open("pdf", _tesseract_pdf_bytes(ocr_pixmap, language=language)) as temp_pdf:
+        temp_page = temp_pdf[0]
+        temp_page.add_redact_annot(temp_page.rect)
+        temp_page.apply_redactions(
+            images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
+            graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+            text=pymupdf.PDF_REDACT_TEXT_NONE,
+        )
+        page.add_redact_annot(page.rect)
+        page.apply_redactions(
+            images=pymupdf.PDF_REDACT_IMAGE_NONE,
+            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+            text=pymupdf.PDF_REDACT_TEXT_REMOVE,
+        )
+        page.show_pdf_page(page.rect, temp_pdf, 0)
+
+
+def _install_tesseract_psm_adapter() -> None:
+    global _TESSERACT_ADAPTER_INSTALLED
+    if _TESSERACT_ADAPTER_INSTALLED:
+        return
+    from pymupdf4llm.ocr import tesseract_api
+
+    tesseract_api.exec_ocr = _exec_tesseract_ocr
+    _TESSERACT_ADAPTER_INSTALLED = True
+    _log.info(
+        "[pdf-md] Tesseract OCR configured | psm=%d oem=%d languages=%s",
+        OCR_TESSERACT_PSM,
+        OCR_TESSERACT_OEM,
+        PDF_OCR_LANGUAGES,
+    )
 
 
 def _set_page_worker_thread_limits(thread_count: Optional[int] = None) -> int:
@@ -256,6 +385,8 @@ def _should_ocr_page(native_text: str) -> bool:
 def _page_markdown_items(pymupdf4llm, doc, pno: int, hdr_info=None) -> Tuple[list, bool]:
     native_text = doc[pno].get_text("text") or ""
     use_ocr = _should_ocr_page(native_text)
+    if use_ocr:
+        _install_tesseract_psm_adapter()
     kwargs_try = [
         {"page_chunks": True, "graphics_limit": PDF_GRAPHICS_LIMIT,
          "show_progress": False, "use_ocr": use_ocr, "ocr_language": PDF_OCR_LANGUAGES},
