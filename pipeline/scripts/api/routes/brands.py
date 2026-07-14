@@ -39,16 +39,15 @@ def _search_brand_candidates(query: str) -> list[dict[str, Any]]:
     needle = compact_brand_name(query)
     if not needle:
         return []
-    like = f"%{needle}%"
     rows = db.fetch_all(
         """
         SELECT brand_key, MAX(brand_name) AS brand_name, raw_value_history, source
         FROM mart_general_brand_metric
         WHERE measure = 'sales'
-          AND (REPLACE(brand_key, ' ', '') LIKE %s OR REPLACE(brand_name, ' ', '') LIKE %s)
+          AND (REPLACE(brand_key, ' ', '') = %s OR REPLACE(brand_name, ' ', '') = %s)
         GROUP BY brand_key, atc4_code, raw_value_history, source
         """,
-        (like, like),
+        (needle, needle),
     )
     candidates: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -112,23 +111,11 @@ def _context_options_for_brand(brand: str) -> tuple[list[dict[str, Any]], list[s
     return contexts, public_source_labels(context_sources)
 
 
-def _match_rank(candidate: dict[str, Any], query: str) -> tuple[int, float, str]:
-    needle = compact_brand_name(query).casefold()
-    names = {
-        compact_brand_name(candidate.get("brand_key")).casefold(),
-        compact_brand_name(candidate.get("brand_name")).casefold(),
-    }
-    if needle in names:
-        tier = 0
-    elif any(name.startswith(needle) for name in names):
-        tier = 1
-    else:
-        tier = 2
-    return (tier, -float(candidate.get("market_size") or 0.0), str(candidate.get("brand_name") or ""))
-
-
 def _search_results(query: str, limit: int) -> tuple[list[dict[str, Any]], int]:
-    candidates = sorted(_search_brand_candidates(query), key=lambda item: _match_rank(item, query))
+    candidates = sorted(
+        _search_brand_candidates(query),
+        key=lambda item: (-float(item.get("market_size") or 0.0), str(item.get("brand_name") or "")),
+    )
     results: list[dict[str, Any]] = []
     jw_targets = {str(item.get("brand") or "") for item in _default_brands()}
     for candidate in candidates[:limit]:
@@ -149,7 +136,7 @@ def _search_results(query: str, limit: int) -> tuple[list[dict[str, Any]], int]:
 @router.get("/api/brands")
 def list_brands(
     response: Response,
-    q: str | None = Query(None, description="brand 이름 부분 일치 검색"),
+    q: str | None = Query(None, description="brand 이름 완전 일치 검색"),
     query: str | None = Query(None, description="BFF 호환 brand 검색어"),
     market_id: str | None = Query(None, description="strategy_NNN market id"),
     limit: int = Query(20, ge=1, le=50, description="검색 결과 상한(최대 50)"),
