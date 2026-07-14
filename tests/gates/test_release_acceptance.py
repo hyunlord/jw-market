@@ -656,6 +656,12 @@ def test_market_growth_runtime_collector_recomputes_formula_from_sql() -> None:
         for index in range(61)
     }
     series["2026-05"] = 110.0
+    api_points = []
+    for period, value in sorted(series.items()):
+        year, month = (int(part) for part in period.split("-"))
+        elapsed = (year - 2021) * 12 + month - 5
+        growth = None if elapsed == 0 else ((value / 100.0) ** (12 / elapsed) - 1) * 100
+        api_points.append({"period": period, "mom_growth_pct": growth})
 
     def fake_sql(query: str, params: dict[str, object], **kwargs: object) -> list[dict[str, object]]:
         assert "mart_general_market_metric" in query
@@ -672,12 +678,7 @@ def test_market_growth_runtime_collector_recomputes_formula_from_sql() -> None:
         return {
             "result": {
                 "data": {
-                    "market_size_series": [
-                        {
-                            "period": "2026-05",
-                            "mom_growth_pct": ((110.0 / 100.0) ** (1 / 60) - 1) * 100,
-                        }
-                    ]
+                    "market_size_series": api_points
                 }
             }
         }
@@ -697,7 +698,7 @@ def test_market_growth_runtime_collector_recomputes_formula_from_sql() -> None:
 
 
 def test_market_growth_runtime_collector_uses_latest_available_endpoint() -> None:
-    expected = ((121.0 / 100.0) ** (1 / 60) - 1) * 100
+    expected = ((121.0 / 100.0) ** (12 / 48) - 1) * 100
     series = {
         "2021-05": None,
         "2022-05": 100.0,
@@ -804,6 +805,36 @@ def test_market_growth_rejects_independent_expected_perturbation() -> None:
     assert any("growth mismatch" in detail for detail in result.details)
 
 
+@pytest.mark.parametrize(
+    ("injection", "actual"),
+    [
+        ("rolling-baseline", ((82_054_035_370 / 81_433_488_434) ** (12 / 60) - 1) * 100),
+        ("wrong-fixed-baseline", ((82_054_035_370 / 85_000_000_000) ** (12 / 56) - 1) * 100),
+    ],
+)
+def test_market_growth_rejects_unstable_baseline_injections(injection: str, actual: float) -> None:
+    expected = ((82_054_035_370 / 90_209_049_371) ** (12 / 56) - 1) * 100
+    evidence = {
+        "classification": "census",
+        "provenance": MARKET_GROWTH_PROVENANCE,
+        "observations": [
+            {
+                "source": "ubist",
+                "market": "ml_006",
+                "expected": expected,
+                "actual": expected,
+                "error": None,
+                "point_checks": [{"period": "2026-02", "expected": expected, "actual": actual}],
+            }
+        ],
+    }
+
+    result = check_market_growth_evidence(evidence, 1, 0.0001, injection)
+
+    assert result.exit_code == 1
+    assert any("range-baseline growth mismatch" in detail for detail in result.details)
+
+
 def test_market_growth_rejects_missing_independent_expected_value() -> None:
     evidence = {
         "classification": "census",
@@ -826,8 +857,16 @@ def test_market_growth_rejects_missing_independent_expected_value() -> None:
 
 
 def test_market_growth_maps_iqvia_database_source_to_public_request_source() -> None:
-    series = {f"2021-Q{index:02d}": 100.0 for index in range(21)}
-    series["2021-Q20"] = 121.0
+    periods = [f"{year}-Q{quarter}" for year in range(2021, 2027) for quarter in range(1, 5)][:21]
+    series = {period: 100.0 for period in periods}
+    series["2026-Q1"] = 121.0
+    api_points = [
+        {
+            "period": period,
+            "mom_growth_pct": None if index == 0 else ((value / 100.0) ** (4 / index) - 1) * 100,
+        }
+        for index, (period, value) in enumerate(sorted(series.items()))
+    ]
 
     def fake_sql(query: str, params: dict[str, object], **kwargs: object) -> list[dict[str, object]]:
         return [{"source": "iqvia_nsa", "atc4_code": "A10N1", "market_size_series": series}]
@@ -842,12 +881,7 @@ def test_market_growth_maps_iqvia_database_source_to_public_request_source() -> 
         return {
             "result": {
                 "data": {
-                    "market_size_series": [
-                        {
-                            "period": "2021-Q20",
-                            "mom_growth_pct": ((121.0 / 100.0) ** (1 / 20) - 1) * 100,
-                        }
-                    ]
+                    "market_size_series": api_points
                 }
             }
         }

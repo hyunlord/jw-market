@@ -405,6 +405,33 @@ def check_market_growth_evidence(
                 f"expected={expected_value} difference={abs(actual_value - expected_value)}"
             )
             failures += 1
+        point_checks = item.get("point_checks")
+        if point_checks is not None:
+            if not isinstance(point_checks, list):
+                raise ValueError("market growth point_checks must be an array")
+            for point in point_checks:
+                if not isinstance(point, dict) or not point.get("period"):
+                    raise ValueError("market growth point check is invalid")
+                point_expected = point.get("expected")
+                point_actual = point.get("actual")
+                if point_expected is None and point_actual is None:
+                    continue
+                try:
+                    point_expected_value = float(point_expected)
+                    point_actual_value = float(point_actual)
+                except (TypeError, ValueError):
+                    details.append(
+                        f"{'|'.join(identity)}|{point['period']}: growth availability mismatch "
+                        f"actual={point_actual!r} expected={point_expected!r}"
+                    )
+                    failures += 1
+                    continue
+                if abs(point_actual_value - point_expected_value) > abs_tol:
+                    details.append(
+                        f"{'|'.join(identity)}|{point['period']}: range-baseline growth mismatch "
+                        f"actual={point_actual_value} expected={point_expected_value}"
+                    )
+                    failures += 1
     if len(observations) != expected_population:
         details.append(f"population mismatch: got {len(observations)}, expected {expected_population}")
         failures += abs(expected_population - len(observations)) or 1
