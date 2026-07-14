@@ -54,7 +54,7 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     current_analysis_level_source_epoch,
     load_analysis_level_block,
 )
-from pipeline.scripts.api.market_growth import compound_period_growth_pct
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
 from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
@@ -2925,13 +2925,11 @@ def market_cmgr_series(series: dict[str, Any]) -> dict[str, float | None]:
     if not isinstance(series, dict):
         return {}
     periods = sorted(series.keys(), key=period_key)
-    periods_per_year = 12 if any("-Q" not in str(period) for period in periods) else 4
+    values = {str(period): safe_float(series.get(period)) for period in periods}
+    growth_by_period = fixed_five_year_growth_series(values)
     result: dict[str, float | None] = {}
     for period in periods:
-        current = safe_float(series.get(period))
-        prior_period = _prior_year_period(str(period))
-        previous = safe_float(series.get(prior_period)) if prior_period in series else None
-        growth = compound_period_growth_pct(previous, current, periods_per_year)
+        growth = growth_by_period[str(period)].value
         result[str(period)] = round(growth, 4) if growth is not None else None
     return result
 
