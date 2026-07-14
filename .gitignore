@@ -26,6 +26,10 @@ docs/*
 !docs/reference/
 !docs/reference/**
 docs/reference/*.xlsx
+# Runtime catalog input; keep other untracked crawl artifacts ignored.
+!docs/crawl/
+docs/crawl/*
+!docs/crawl/search_keywords.json
 audit_*.json
 audit_F5_*
 
@@ -39,7 +43,9 @@ viewer/
 reports/
 exports/
 audits/
-phase_*/
+# Generated phase outputs at the repository root only. Nested phase_* paths may
+# be Python packages and must remain visible to git.
+/phase_*/
 phase_*_audit_*/
 phase_*_audit_*.zip
 *_audit_*.zip
