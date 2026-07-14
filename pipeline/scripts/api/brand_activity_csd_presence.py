@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Final
+from typing import Final, Mapping
 
 from typing_extensions import TypedDict
 
@@ -52,6 +52,23 @@ def get_csd_presences(brands: tuple[str, ...]) -> list[CsdPresence]:
     rows = _index_brand_rows(_fetch_brand_rows(brands))
     csd_products = _cached_csd_products()
     return [_presence_for_rows(brand, _rows_for_brand(rows, brand), csd_products) for brand in brands]
+
+
+def iqvia_product_codes_by_brand(brands: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
+    """Return IQVIA product codes for mart brand keys, independent of request source."""
+
+    aliases = tuple(dict.fromkeys((*brands.keys(), *brands.values())))
+    rows = _index_brand_rows(_fetch_brand_rows(aliases))
+    result: dict[str, tuple[str, ...]] = {}
+    for brand_key, brand_name in brands.items():
+        matched_rows = _rows_for_brand(rows, brand_key) or _rows_for_brand(rows, brand_name)
+        product_codes = {
+            normalize_iqvia_en(code)
+            for row in matched_rows
+            for code in _product_codes(row.get("by_dimension"))
+        }
+        result[brand_key] = tuple(sorted(product_codes))
+    return result
 
 
 def _fetch_brand_rows(brands: tuple[str, ...]) -> list[dict[str, object]]:

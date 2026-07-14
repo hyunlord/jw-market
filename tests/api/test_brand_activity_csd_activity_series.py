@@ -6,15 +6,29 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api import brand_activity_csd_activity_series as service
+from pipeline.scripts.api import brand_activity_csd_timeseries as timeseries_service
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolution
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, ViewConfig
 from pipeline.scripts.api.routes import brand_activity
+
+
+@pytest.fixture(autouse=True)
+def iqvia_product_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    def from_brand_meta(brands: dict[str, str]) -> dict[str, tuple[str, ...]]:
+        brand_meta = _brand_set().brand_meta
+        return {
+            brand_key: tuple(brand_meta[brand_key].product_codes)
+            for brand_key in brands
+        }
+
+    monkeypatch.setattr(timeseries_service, "iqvia_product_codes_by_brand", from_brand_meta)
 
 
 def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypatch) -> None:
@@ -181,8 +195,8 @@ def test_company_axis_keeps_missing_mart_company_in_visible_unclassified_bucket(
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: brand_set)
     monkeypatch.setattr(
         service,
-        "resolve_csd_market",
-        lambda **_kwargs: service.CsdCrosswalk("LIVALO Market", "LIVALO Market", ("A", "B"), 2),
+        "resolve_csd_markets",
+        lambda **_kwargs: (service.CsdCrosswalk("LIVALO Market", "LIVALO Market", ("A", "B"), 2),),
     )
     monkeypatch.setattr(
         service,
@@ -447,6 +461,152 @@ def test_csd_activity_series_request_accepts_string_and_list_selected_brand() ->
 
     assert string_request.selected_brand == "LIVALO"
     assert list_request.selected_brand == ["LIVALO"]
+
+
+def test_activity_request_preserves_optional_csd_market_filter() -> None:
+    parsed = service.parse_activity_request(
+        {
+            "view": "general",
+            "selected_brand": "LIVALO",
+            "filters": {"atc4": ["C10A1"]},
+            "csd_market": "LIVALO FENO",
+        }
+    )
+
+    assert parsed.csd_market == "LIVALO FENO"
+
+
+def test_activity_series_brand_join_uses_iqvia_codes_instead_of_ubist_meta() -> None:
+    brand_set = _brand_set()
+    brand_set.brand_meta["LIVALO"] = BrandMeta(
+        "LIVALO",
+        "LIVALO",
+        ("UBIST-LIVALO",),
+        True,
+    )
+    activity = service.ActivityRows(
+        months=("2025-01",),
+        all_months=("2025-01",),
+        totals={"2025-01": 17.0},
+        by_product={"LIVALO": {"2025-01": 17.0}},
+        by_company={"JW": {"2025-01": 17.0}},
+        observed_months=("2025-01",),
+    )
+
+    values = service._brand_activity_by_key(
+        brand_set,
+        activity,
+        {"LIVALO": frozenset({"LIVALO"})},
+    )
+
+    assert values["LIVALO"] == {"2025-01": 17.0}
+
+
+def test_activity_series_exposes_multimarket_union_and_filter_without_cross_call_leakage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    months = ("2024-01", "2024-02", "2024-03", "2025-01", "2025-02", "2025-03")
+
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": month} for month in months]
+        if "GROUP BY market, master_product" in sql:
+            return [
+                {"market": "LIVALO Market", "master_product": "LIVALO"},
+                {"market": "LIVALO Market", "master_product": "RIVAL"},
+                {"market": "LIVALO FENO Market", "master_product": "LIVALO FENO"},
+                {"market": "COMPETITOR ONLY Market", "master_product": "RIVAL"},
+            ]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            market = str(params[0]) if params else ""
+            if market == "LIVALO Market":
+                return [
+                    {"period_ym": month, "master_product": "LIVALO", "representing_company": "JW", "value": 10.0}
+                    for month in months
+                ]
+            if market == "LIVALO FENO Market":
+                return [
+                    {"period_ym": month, "master_product": "LIVALO FENO", "representing_company": "JW", "value": 3.0}
+                    for month in months[-3:]
+                ]
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    codes = service.CsdProductCodes(
+        selected=frozenset({"LIVALO", "LIVALO FENO"}),
+        candidates=frozenset({"LIVALO", "LIVALO FENO", "RIVAL"}),
+        by_brand={"LIVALO": frozenset({"LIVALO", "LIVALO FENO"})},
+    )
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(service, "_iqvia_csd_product_codes", lambda *_args, **_kwargs: codes)
+    base_request = _request(period={"start": "2024-Q1", "end": "2025-Q1"})
+
+    filtered_first = service.get_csd_activity_series({**base_request, "csd_market": "LIVALO FENO"})
+    unfiltered = service.get_csd_activity_series(base_request)
+    filtered_again = service.get_csd_activity_series({**base_request, "csd_market": "LIVALO FENO"})
+
+    assert filtered_first == filtered_again
+    assert filtered_first is not None
+    assert filtered_first["scope"]["csd_markets"] == ["LIVALO", "LIVALO FENO"]
+    assert filtered_first["scope"]["csd_market"] == "LIVALO FENO"
+    assert unfiltered is not None
+    assert unfiltered["scope"]["csd_markets"] == ["LIVALO", "LIVALO FENO"]
+    assert "COMPETITOR ONLY" not in unfiltered["series_by_csd_market"]
+    assert unfiltered["scope"]["csd_market"] == "LIVALO"
+    assert unfiltered["aggregate"]["available"] == {
+        "LIVALO": {"start": "2024-01", "end": "2025-03"},
+        "LIVALO FENO": {"start": "2025-01", "end": "2025-03"},
+    }
+    assert unfiltered["aggregate"]["series"]["market_totals"]["2024-01"] == 10.0
+    assert unfiltered["aggregate"]["series"]["market_totals"]["2025-01"] == 13.0
+    assert _point(unfiltered["entities"][0], "absolute", "2025-01") == 10.0
+    assert unfiltered["aggregate"]["contributing_markets_by_period"]["2024-01"] == ["LIVALO"]
+    assert unfiltered["aggregate"]["contributing_markets_by_period"]["2025-01"] == ["LIVALO", "LIVALO FENO"]
+    assert "2024-01" not in unfiltered["series_by_csd_market"]["LIVALO FENO"]["market_totals"]
+
+    with pytest.raises(service.CsdMarketFilterError):
+        service.get_csd_activity_series({**base_request, "csd_market": "COMPETITOR ONLY"})
+
+
+def test_activity_series_rejects_csd_market_outside_resolved_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(db, "fetch_all", lambda sql, _params=None: [{"period_ym": month} for month in _months()] if "SELECT DISTINCT period_ym" in sql else [])
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(
+        service,
+        "resolve_csd_markets",
+        lambda **_kwargs: (service.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),),
+    )
+
+    with pytest.raises(service.CsdMarketFilterError) as exc_info:
+        service.get_csd_activity_series({**_request(period={}), "csd_market": "UNKNOWN"})
+
+    assert exc_info.value.available == ("LIVALO",)
+
+
+def test_activity_series_route_returns_422_for_unknown_csd_market(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject(_payload: dict[str, Any]) -> None:
+        raise service.CsdMarketFilterError("UNKNOWN", available=("LIVALO",))
+
+    monkeypatch.setattr(brand_activity, "get_csd_activity_series", reject)
+    app = FastAPI()
+    app.include_router(brand_activity.router)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/csd-activity-series",
+        json={
+            "view": "general",
+            "selected_brand": "LIVALO",
+            "filters": {"atc4": ["C10A1"]},
+            "csd_market": "UNKNOWN",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "error": "invalid_csd_market",
+        "message": "unsupported csd_market: UNKNOWN",
+        "available": ["LIVALO"],
+    }
 
 
 def test_activity_series_selected_brand_list_keeps_required_validation() -> None:

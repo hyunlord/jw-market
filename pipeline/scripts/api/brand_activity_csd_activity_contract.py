@@ -24,6 +24,7 @@ CSD_ACTIVITY_SERIES_EXAMPLE: Final[JsonMap] = {
     "filters": {"atc4": ["C10A1"]},
     "entity_level": "brand",
     "csd_channel": "TOTAL",
+    "csd_market": "LIVALO",
     "period": {"start": "2024-Q1", "end": "2025-Q4"},
 }
 
@@ -40,6 +41,7 @@ class ParsedCsdActivityRequest:
     filter_payload: JsonMap
     entity_level: CsdEntityLevel
     csd_channel: str
+    csd_market: str | None
     selected_entities: tuple[str, ...]
     period: JsonMap
 
@@ -70,6 +72,7 @@ class CsdActivitySeriesRequest(BaseModel):
         description="brand 또는 company. company면 선택 브랜드 활동량을 IQVIA mart 회사 기준으로 합산합니다.",
     )
     csd_channel: str = Field(default="TOTAL", description="CSD 원본 jw_channel 값. TOTAL/GH/SHPPI/CPPI/GH+SHPPI.")
+    csd_market: str | None = Field(default=None, description="선택 CSD 시장. 미지정 시 매핑된 전체 시장과 합산을 반환합니다.")
     selected_entities: list[str] = Field(default_factory=list, max_length=MAX_ENTITIES, description="사용자 지정 브랜드/회사 최대 6개. 미지정 시 선택 + top5.")
     period: CsdActivitySeriesPeriod | None = Field(default=None, description="분기 window. 미지정 시 최신 1년, 최대 3년으로 제한.")
 
@@ -91,6 +94,7 @@ def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityReque
         filter_payload=filter_payload,
         entity_level=_typed_value(payload.get("entity_level"), ALLOWED_ENTITY_LEVELS, "entity_level", "brand"),
         csd_channel=_typed_value(payload.get("csd_channel"), ALLOWED_CHANNELS, "csd_channel", "TOTAL"),
+        csd_market=text(payload.get("csd_market")).strip() or None,
         selected_entities=_selected_entities(payload.get("selected_entities")),
         period=period if isinstance(period, dict) else {},
     )
