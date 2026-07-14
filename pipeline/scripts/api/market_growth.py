@@ -18,13 +18,15 @@ class GrowthResult:
 def compound_period_growth_pct(
     previous: float | None,
     current: float | None,
+    elapsed_periods: int,
+    *,
     periods_per_year: int,
 ) -> float | None:
-    """Return compound growth for a caller-provided fixed period count."""
+    """Return annualized compound growth over the actual elapsed periods."""
 
-    if previous is None or previous <= 0 or current is None or current < 0:
+    if previous is None or previous <= 0 or current is None or current < 0 or elapsed_periods <= 0:
         return None
-    return (math.pow(current / previous, 1 / periods_per_year) - 1) * 100
+    return (math.pow(current / previous, periods_per_year / elapsed_periods) - 1) * 100
 
 
 def fixed_five_year_growth_series(
@@ -32,41 +34,43 @@ def fixed_five_year_growth_series(
     *,
     source: str | None = None,
 ) -> dict[str, GrowthResult]:
-    """Return fixed-scale CQGR/CMGR values without shortening the exponent."""
+    """Return CQGR/CMGR values against one baseline fixed for the range."""
 
     periods = sorted(str(period) for period in values_by_period)
-    period_count = _fixed_period_count(source, periods)
     if not periods:
         return {}
 
+    numeric_periods = [period for period in periods if _number(values_by_period.get(period)) is not None]
+    if not numeric_periods:
+        return {
+            period: GrowthResult(None, "insufficient_history", None, 0)
+            for period in periods
+        }
+
+    latest_period = numeric_periods[-1]
+    exact_baseline = _five_year_prior_period(latest_period)
+    baseline_period = exact_baseline if exact_baseline in numeric_periods else numeric_periods[0]
+    baseline = _number(values_by_period.get(baseline_period))
+    periods_per_year = _periods_per_year(source, periods)
+
     results: dict[str, GrowthResult] = {}
     for period in periods:
-        exact_baseline = _five_year_prior_period(period)
-        numeric_prior_periods = [
-            candidate
-            for candidate in periods
-            if candidate < period and _number(values_by_period.get(candidate)) is not None
-        ]
-        exact_value = _number(values_by_period.get(exact_baseline))
-        baseline_period = (
-            exact_baseline
-            if exact_value is not None
-            else (numeric_prior_periods[0] if numeric_prior_periods else None)
-        )
-        if baseline_period is None:
-            results[period] = GrowthResult(None, "insufficient_history", None, period_count)
-            continue
-        baseline = _number(values_by_period.get(baseline_period))
+        elapsed_periods = max(0, _elapsed_periods(baseline_period, period, periods_per_year))
         current = _number(values_by_period.get(period))
-        if baseline is None or current is None:
-            results[period] = GrowthResult(None, "insufficient_history", baseline_period, period_count)
+        if baseline is None or current is None or elapsed_periods == 0:
+            results[period] = GrowthResult(None, "insufficient_history", baseline_period, elapsed_periods)
         elif baseline == 0:
-            results[period] = GrowthResult(None, "zero_baseline", baseline_period, period_count)
+            results[period] = GrowthResult(None, "zero_baseline", baseline_period, elapsed_periods)
         elif baseline < 0 or current < 0:
-            results[period] = GrowthResult(None, "invalid_baseline", baseline_period, period_count)
+            results[period] = GrowthResult(None, "invalid_baseline", baseline_period, elapsed_periods)
         else:
-            value = compound_period_growth_pct(baseline, current, period_count)
-            results[period] = GrowthResult(value, None, baseline_period, period_count)
+            value = compound_period_growth_pct(
+                baseline,
+                current,
+                elapsed_periods,
+                periods_per_year=periods_per_year,
+            )
+            results[period] = GrowthResult(value, None, baseline_period, elapsed_periods)
     return results
 
 
@@ -84,13 +88,25 @@ def growth_endpoint_meta(values_by_period: Mapping[str, float | None]) -> dict[s
     }
 
 
-def _fixed_period_count(source: str | None, periods: list[str]) -> int:
+def _periods_per_year(source: str | None, periods: list[str]) -> int:
     source_key = str(source or "").strip().lower()
     if source_key in {"ubist"}:
-        return 60
+        return 12
     if source_key in {"iqvia", "iqvia_nsa"}:
-        return 20
-    return 20 if periods and all("-Q" in period for period in periods) else 60
+        return 4
+    return 4 if periods and all("-Q" in period for period in periods) else 12
+
+
+def _elapsed_periods(start: str, end: str, periods_per_year: int) -> int:
+    start_year, start_suffix = start.split("-", 1)
+    end_year, end_suffix = end.split("-", 1)
+    if periods_per_year == 4:
+        start_index = int(start_year) * 4 + int(start_suffix.removeprefix("Q")) - 1
+        end_index = int(end_year) * 4 + int(end_suffix.removeprefix("Q")) - 1
+    else:
+        start_index = int(start_year) * 12 + int(start_suffix) - 1
+        end_index = int(end_year) * 12 + int(end_suffix) - 1
+    return end_index - start_index
 
 
 def _five_year_prior_period(period: str) -> str:

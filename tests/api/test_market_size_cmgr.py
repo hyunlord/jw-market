@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 
 import pytest
@@ -20,23 +21,103 @@ from pipeline.scripts.api.market_scope.legacy_shape import market_size_series_pa
 from pipeline.scripts.etl.build_cache_cause import market_size_series_with_yoy
 
 
+def test_ubist_growth_keeps_one_range_baseline_and_uses_elapsed_months() -> None:
+    series = {
+        "2021-06": 90_209_049_371.0,
+        "2025-09": 85_000_000_000.0,
+        "2026-02": 82_054_035_370.0,
+        "2026-05": 87_019_172_843.0,
+    }
+
+    results = fixed_five_year_growth_series(series, source="ubist")
+
+    assert {result.baseline_period for result in results.values()} == {"2021-06"}
+    assert {period: result.period_count for period, result in results.items()} == {
+        "2021-06": 0,
+        "2025-09": 51,
+        "2026-02": 56,
+        "2026-05": 59,
+    }
+    expected = (
+        (Decimal("82054035370") / Decimal("90209049371"))
+        ** (Decimal(12) / Decimal(56))
+        - Decimal(1)
+    ) * Decimal(100)
+    assert results["2026-02"].value == pytest.approx(float(expected), abs=0.0001)
+    assert results["2026-02"].value < 0
+
+
+def test_iqvia_growth_keeps_one_range_baseline_and_uses_elapsed_quarters() -> None:
+    series = {
+        "2021-Q2": 100.0,
+        "2021-Q3": 102.0,
+        "2025-Q4": 118.0,
+        "2026-Q1": 121.0,
+    }
+
+    results = fixed_five_year_growth_series(series, source="iqvia_nsa")
+
+    assert {result.baseline_period for result in results.values()} == {"2021-Q2"}
+    assert {period: result.period_count for period, result in results.items()} == {
+        "2021-Q2": 0,
+        "2021-Q3": 1,
+        "2025-Q4": 18,
+        "2026-Q1": 19,
+    }
+    expected = ((121.0 / 100.0) ** (4 / 19) - 1) * 100
+    assert results["2026-Q1"].value == pytest.approx(expected)
+
+
+def test_growth_uses_latest_five_year_period_when_present_in_range() -> None:
+    results = fixed_five_year_growth_series(
+        {"2021-05": 100.0, "2022-05": 105.0, "2026-05": 121.0},
+        source="ubist",
+    )
+
+    assert {result.baseline_period for result in results.values()} == {"2021-05"}
+
+
 @pytest.mark.parametrize(
-    ("source", "periods", "fixed_period_count"),
+    ("source", "periods"),
     [
-        ("ubist", ("2021-05", "2026-05"), 60),
-        ("iqvia_nsa", ("2021-Q1", "2026-Q1"), 20),
+        (
+            "ubist",
+            tuple(f"{2021 + (index + 5) // 12:04d}-{(index + 5) % 12 + 1:02d}" for index in range(60)),
+        ),
+        (
+            "iqvia_nsa",
+            tuple(f"{2021 + (index + 1) // 4:04d}-Q{(index + 1) % 4 + 1}" for index in range(20)),
+        ),
     ],
 )
-def test_dynamic_market_size_series_uses_fixed_five_year_growth(
+def test_range_baseline_is_stable_for_every_response_period(source: str, periods: tuple[str, ...]) -> None:
+    results = fixed_five_year_growth_series(
+        {period: float(100 + index) for index, period in enumerate(periods)},
+        source=source,
+    )
+
+    assert len(results) == len(periods)
+    assert {result.baseline_period for result in results.values()} == {periods[0]}
+
+
+@pytest.mark.parametrize(
+    ("source", "periods", "periods_per_year", "elapsed_periods"),
+    [
+        ("ubist", ("2021-05", "2026-05"), 12, 60),
+        ("iqvia_nsa", ("2021-Q1", "2026-Q1"), 4, 20),
+    ],
+)
+def test_dynamic_market_size_series_uses_range_baseline_growth(
     source: str,
     periods: tuple[str, str],
-    fixed_period_count: int,
+    periods_per_year: int,
+    elapsed_periods: int,
 ) -> None:
     metrics = _metrics(source=source, periods=periods, values=(100.0, 121.0))
 
     points = market_size_series(metrics)
 
-    expected = ((121.0 / 100.0) ** (1 / fixed_period_count) - 1) * 100
+    expected = ((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100
     assert points[0]["mom_growth_pct"] is None
     assert points[1]["mom_growth_pct"] == pytest.approx(expected)
 
@@ -73,12 +154,12 @@ def test_dynamic_market_size_series_handles_growth_boundaries(
     assert points[1]["mom_growth_pct"] == expected
 
 
-def test_dynamic_market_size_series_uses_earliest_value_but_keeps_fixed_exponent() -> None:
+def test_dynamic_market_size_series_uses_earliest_value_and_actual_elapsed_months() -> None:
     metrics = _metrics(source="ubist", periods=("2023-01", "2026-05"), values=(100.0, 121.0))
 
     points = market_size_series(metrics)
 
-    assert points[1]["mom_growth_pct"] == pytest.approx(((121.0 / 100.0) ** (1 / 60) - 1) * 100)
+    assert points[1]["mom_growth_pct"] == pytest.approx(((121.0 / 100.0) ** (12 / 40) - 1) * 100)
 
 
 @pytest.mark.parametrize(
@@ -112,7 +193,7 @@ def test_growth_skips_missing_baseline_period_but_preserves_actual_zero() -> Non
     )["2026-05"]
 
     assert missing.baseline_period == "2022-05"
-    assert missing.value == pytest.approx(((121.0 / 100.0) ** (1 / 60) - 1) * 100)
+    assert missing.value == pytest.approx(((121.0 / 100.0) ** (12 / 48) - 1) * 100)
     assert actual_zero.reason == "zero_baseline"
     assert actual_zero.value is None
 
@@ -232,42 +313,44 @@ def test_growth_endpoint_meta_ignores_missing_values_but_preserves_actual_zero()
 
 
 @pytest.mark.parametrize(
-    ("source", "periods", "fixed_period_count"),
+    ("source", "periods", "periods_per_year", "elapsed_periods"),
     [
-        ("UBIST", ("2021-05", "2026-05"), 60),
-        ("IQVIA", ("2021-Q1", "2026-Q1"), 20),
+        ("UBIST", ("2021-05", "2026-05"), 12, 60),
+        ("IQVIA", ("2021-Q1", "2026-Q1"), 4, 20),
     ],
 )
 def test_scoped_market_size_payload_matches_dynamic_growth_definition(
     source: str,
     periods: tuple[str, str],
-    fixed_period_count: int,
+    periods_per_year: int,
+    elapsed_periods: int,
 ) -> None:
     market_size = {periods[0]: 100.0, periods[1]: 121.0}
 
     points = market_size_series_payload(market_size, source=source)
 
-    expected = ((121.0 / 100.0) ** (1 / fixed_period_count) - 1) * 100
+    expected = ((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100
     assert points[periods[0]]["mom_growth_pct"] is None
     assert points[periods[1]]["mom_growth_pct"] == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
-    ("periods", "fixed_period_count"),
+    ("periods", "periods_per_year", "elapsed_periods"),
     [
-        (("2021-05", "2026-05"), 60),
-        (("2021-Q1", "2026-Q1"), 20),
+        (("2021-05", "2026-05"), 12, 60),
+        (("2021-Q1", "2026-Q1"), 4, 20),
     ],
 )
 def test_static_market_size_payload_adds_rounded_growth_without_changing_old_keys(
     periods: tuple[str, str],
-    fixed_period_count: int,
+    periods_per_year: int,
+    elapsed_periods: int,
 ) -> None:
     market_size = {periods[0]: 100.0, periods[1]: 121.0}
 
     points = market_size_series_with_yoy(market_size)
 
-    expected = round(((121.0 / 100.0) ** (1 / fixed_period_count) - 1) * 100, 4)
+    expected = round(((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100, 4)
     assert points[periods[0]]["mom_growth_pct"] is None
     assert points[periods[1]]["mom_growth_pct"] == expected
     assert {key: value for key, value in points[periods[1]].items() if key != "mom_growth_pct"} == {
@@ -277,16 +360,17 @@ def test_static_market_size_payload_adds_rounded_growth_without_changing_old_key
 
 
 @pytest.mark.parametrize(
-    ("source", "periods", "fixed_period_count"),
+    ("source", "periods", "periods_per_year", "elapsed_periods"),
     [
-        ("UBIST", ("2021-05", "2026-05"), 60),
-        ("IQVIA", ("2021-Q1", "2026-Q1"), 20),
+        ("UBIST", ("2021-05", "2026-05"), 12, 60),
+        ("IQVIA", ("2021-Q1", "2026-Q1"), 4, 20),
     ],
 )
 def test_cached_cause_response_recomputes_growth_without_rebuilding_cache(
     source: str,
     periods: tuple[str, str],
-    fixed_period_count: int,
+    periods_per_year: int,
+    elapsed_periods: int,
 ) -> None:
     cached = {
         "market_meta": {},
@@ -305,7 +389,7 @@ def test_cached_cause_response_recomputes_growth_without_rebuilding_cache(
         "end_period": periods[1],
         "reason": "latest_available",
     }
-    expected = ((121.0 / 100.0) ** (1 / fixed_period_count) - 1) * 100
+    expected = ((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100
     assert points[0]["mom_growth_pct"] is None
     assert points[1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
     assert {key: value for key, value in points[1].items() if key != "mom_growth_pct"} == {
@@ -329,12 +413,12 @@ def test_cached_cause_response_recomputes_growth_from_legacy_value_aliases(value
 
     payload = compose_cached_json(cached, measure="sales", source="UBIST")
 
-    expected = ((121.0 / 100.0) ** (1 / 60) - 1) * 100
+    expected = ((121.0 / 100.0) ** (12 / 60) - 1) * 100
     assert payload["data"]["market_size_series"][1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
 
 
 def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:
-    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v5-source-windowed-growth-company-rankings"
+    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v6-contiguous-rankings-range-baseline"
 
 
 def _metrics(

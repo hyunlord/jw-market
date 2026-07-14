@@ -88,6 +88,42 @@ def test_brand_ranking_includes_intervening_actual_ranks_for_fixed_competitors()
     assert [row["rank"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
 
 
+def test_b02d1_green_gene_f_remains_visible_at_rank_six() -> None:
+    # Given: the B02D1 tracker contains the historical sixth-place brand.
+    brands = tuple(
+        _brand(
+            str(rank),
+            name,
+            f"Company {rank}",
+            {"2023-Q1": value, "2024-Q1": value},
+        )
+        for rank, (name, value) in enumerate(
+            (
+                ("헴리브라", 700.0),
+                ("애드베이트", 600.0),
+                ("그린모노", 500.0),
+                ("애디노베이트", 400.0),
+                ("진타솔로퓨즈", 300.0),
+                ("그린진에프", 200.0),
+                ("기타경쟁품", 100.0),
+            ),
+            start=1,
+        )
+    )
+
+    # When: the B02D1 brand ranking is assembled.
+    result = brand_ranking(brands, focus=brands[0])
+
+    # Then: the known F-095 sixth-place row is not folded into 기타.
+    green_gene_f = next(
+        row
+        for row in result["rankings_by_year"]["2023"]
+        if row.get("brand") == "그린진에프"
+    )
+    assert green_gene_f["rank"] == 6
+    assert green_gene_f["value"] == 200.0
+
+
 def test_brand_ranking_keeps_real_zero_visible_and_reconciles_to_market_total() -> None:
     # Given: one selected competitor has a real zero in the historical year.
     brands = (
