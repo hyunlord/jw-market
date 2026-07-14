@@ -155,3 +155,22 @@ python3 pipeline/scripts/gates/release_acceptance.py cause-assembly \
   --evidence /path/to/cause_assembly_evidence.json \
   --environment local-runtime
 ```
+
+## Competition ranking census
+
+Capture the complete `brand_ranking_stacked` and `company_ranking_stacked`
+objects under `brand` and `company`, then run:
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py competition-ranking \
+  --observations /path/to/rankings.json \
+  --expected-year 2021 --expected-year 2022 --expected-year 2023 \
+  --expected-year 2024 --expected-year 2025 --expected-year 2026 \
+  --environment test2
+```
+
+Every entity/year pair must have contiguous displayed ranks. Brand and company
+rows, including `기타`, must independently reconcile to the same annual market
+total. The expected years are explicit, so a year missing from both entity
+payloads cannot disappear from the census. Missing years, null shares, and
+empty censuses fail closed.

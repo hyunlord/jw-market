@@ -10,7 +10,7 @@ from typing import Any
 
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.analysis_levels import build_analysis_level_sections
-from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking, company_ranking
+from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking, company_hhi_series, company_ranking
 from pipeline.scripts.api.dynamic_market.cause_sections import (
     display_matrix_rows,
     growth_contribution,
@@ -95,6 +95,7 @@ def build_cause_data(
     display_matrix = display_matrix_rows(matrix, focus=focus)
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
+    company_hhi = company_hhi_series(metrics.all_brands, source=metrics.source)
     levels = empty_analysis_levels(series)
     analysis_sections = build_analysis_level_sections(
         definition=definition,
@@ -129,8 +130,8 @@ def build_cause_data(
         "brand_ranking": ranking,
         "brand_ranking_stacked": ranking,
         "company_concentration_trend": {
-            "periods": [item["year"] for item in hhi],
-            "hhi_values": [item["hhi"] for item in hhi],
+            "periods": [item["year"] for item in company_hhi],
+            "hhi_values": [item["hhi"] for item in company_hhi],
         },
         "company_ranking": company,
         "company_ranking_stacked": company,

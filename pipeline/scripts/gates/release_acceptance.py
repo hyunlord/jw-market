@@ -840,6 +840,94 @@ def check_cause_assembly(evidence_path: Path, environment: str) -> GateResult:
     )
 
 
+def check_competition_ranking(
+    observations_path: Path,
+    expected_years: Sequence[str],
+    abs_tol: float,
+    environment: str,
+) -> GateResult:
+    observations = _load_json(observations_path)
+    if not isinstance(observations, dict):
+        raise ValueError("competition ranking observations must be an object")
+    details: list[str] = []
+    failures = 0
+    totals: dict[tuple[str, str], float] = {}
+    identities: set[tuple[str, str]] = set()
+    for entity in ("brand", "company"):
+        payload = observations.get(entity)
+        if not isinstance(payload, dict) or not isinstance(payload.get("yearly"), list):
+            details.append(f"{entity}: yearly census missing")
+            failures += 1
+            continue
+        for year_item in payload["yearly"]:
+            if not isinstance(year_item, dict) or "year" not in year_item or not isinstance(year_item.get("rankings"), list):
+                details.append(f"{entity}: invalid yearly ranking")
+                failures += 1
+                continue
+            year = str(year_item["year"])
+            identity = (entity, year)
+            if identity in identities:
+                details.append(f"{entity}|{year}: duplicate identity")
+                failures += 1
+                continue
+            identities.add(identity)
+            rows = year_item["rankings"]
+            visible = [row for row in rows if isinstance(row, dict) and not row.get("is_others")]
+            ranks = [row.get("rank") for row in visible]
+            expected = list(range(1, len(visible) + 1))
+            if ranks != expected:
+                details.append(
+                    f"{entity}|{year}: non-contiguous ranks got={','.join(map(str, ranks))} "
+                    f"expected={','.join(map(str, expected))}"
+                )
+                failures += 1
+            try:
+                totals[identity] = sum(float(row["value"]) for row in rows)
+                if any(row.get("ms_pct") is None for row in rows):
+                    raise ValueError("null share")
+            except (KeyError, TypeError, ValueError) as exc:
+                details.append(f"{entity}|{year}: invalid ranking value: {exc}")
+                failures += 1
+
+    expected = {(entity, str(year)) for entity in ("brand", "company") for year in expected_years}
+    missing = sorted(expected - identities)
+    unexpected = sorted(identities - expected)
+    if missing:
+        details.append("missing entity/year identities: " + ", ".join(f"{entity}|{year}" for entity, year in missing))
+        failures += len(missing)
+    if unexpected:
+        details.append(
+            "unexpected entity/year identities: " + ", ".join(f"{entity}|{year}" for entity, year in unexpected)
+        )
+        failures += len(unexpected)
+    for year in sorted({str(year) for year in expected_years}):
+        brand_total = totals.get(("brand", year))
+        company_total = totals.get(("company", year))
+        if brand_total is None or company_total is None:
+            details.append(f"{year}: brand/company census pair missing")
+            failures += 1
+            continue
+        difference = abs(brand_total - company_total)
+        if difference > abs_tol:
+            details.append(
+                f"{year}: entity total mismatch brand={brand_total} company={company_total} difference={difference}"
+            )
+            failures += 1
+    if not expected:
+        details.append("empty expected competition ranking census is a failure")
+        failures += 1
+    return GateResult(
+        gate="competition_ranking",
+        classification="census",
+        checked=len(identities),
+        population=len(expected),
+        failures=failures,
+        tolerance=f"abs_tol={abs_tol},rel_tol=0",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def _run_segment_gate(args: argparse.Namespace) -> GateResult:
     evidence = collect_segment_sum_evidence(args.base_url, timeout_seconds=args.timeout_seconds, env=dict(os.environ))
     write_evidence(args.evidence_output, evidence)
@@ -920,6 +1008,12 @@ def _parser() -> argparse.ArgumentParser:
     cause_assembly = subparsers.add_parser("cause-assembly")
     cause_assembly.add_argument("--evidence", type=Path, required=True)
     cause_assembly.add_argument("--environment", default="local")
+
+    competition = subparsers.add_parser("competition-ranking")
+    competition.add_argument("--observations", type=Path, required=True)
+    competition.add_argument("--expected-year", action="append", required=True)
+    competition.add_argument("--abs-tol", type=float, default=0.01)
+    competition.add_argument("--environment", default="local")
     return parser
 
 
@@ -944,6 +1038,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "period-ranges": lambda: check_period_ranges(args.evidence, args.environment),
         "brand-sources": lambda: _run_brand_source_gate(args),
         "cause-assembly": lambda: check_cause_assembly(args.evidence, args.environment),
+        "competition-ranking": lambda: check_competition_ranking(
+            args.observations,
+            args.expected_year,
+            args.abs_tol,
+            args.environment,
+        ),
     }
     try:
         result = handlers[args.command]()

@@ -374,7 +374,7 @@ def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(mon
 
     metric_sql = calls[0]
     assert "raw_value_history" in metric_sql
-    assert "by_dimension" not in metric_sql
+    assert "by_dimension" in metric_sql
     assert "dimension_data" not in metric_sql
     assert "dimension_channel_data" not in metric_sql
     assert "channel_data" not in metric_sql

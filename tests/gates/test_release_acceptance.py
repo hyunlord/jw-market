@@ -843,6 +843,76 @@ def test_runtime_collection_error_is_rendered_as_fail_closed_gate_result() -> No
     assert "Traceback" not in result.stderr
 
 
+def test_competition_ranking_gate_checks_every_entity_year(tmp_path: Path) -> None:
+    observations = _write_json(tmp_path / "rankings.json", _competition_rankings())
+
+    result = _run(
+        "competition-ranking",
+        "--observations",
+        str(observations),
+        "--abs-tol",
+        "0.01",
+        "--expected-year",
+        "2025",
+        "--expected-year",
+        "2026",
+        "--environment",
+        "fixture",
+    )
+
+    assert result.returncode == 0
+    assert "gate=competition_ranking" in result.stdout
+    assert "classification=census" in result.stdout
+    assert "checked=4" in result.stdout
+    assert "population=4" in result.stdout
+    assert "failures=0" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
+def test_competition_ranking_gate_fails_when_one_rank_is_removed(tmp_path: Path) -> None:
+    observations = _competition_rankings()
+    del observations["brand"]["yearly"][0]["rankings"][1]
+
+    result = _run(
+        "competition-ranking",
+        "--observations",
+        str(_write_json(tmp_path / "rankings.json", observations)),
+        "--abs-tol",
+        "0.01",
+        "--expected-year",
+        "2025",
+        "--expected-year",
+        "2026",
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "brand|2025: non-contiguous ranks got=1,3 expected=1,2" in result.stdout
+    assert "failures=2" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def _competition_rankings() -> dict[str, object]:
+    def year(year_value: int, labels: tuple[str, str, str]) -> dict[str, object]:
+        return {
+            "year": year_value,
+            "rankings": [
+                {labels[0]: "A", "rank": 1, "value": 50.0, "ms_pct": 50.0, "is_others": False},
+                {labels[0]: "B", "rank": 2, "value": 30.0, "ms_pct": 30.0, "is_others": False},
+                {labels[0]: "C", "rank": 3, "value": 10.0, "ms_pct": 10.0, "is_others": False},
+                {labels[0]: labels[1], "rank": None, "value": 10.0, "ms_pct": 10.0, "is_others": True},
+            ],
+        }
+
+    return {
+        "brand": {"yearly": [year(2025, ("brand", "기타", "company")), year(2026, ("brand", "기타", "company"))]},
+        "company": {
+            "yearly": [year(2025, ("company", "기타", "brand")), year(2026, ("company", "기타", "brand"))]
+        },
+    }
+
+
 def test_gate_sources_do_not_contain_known_fail_open_shell_patterns() -> None:
     gate_root = ROOT / "pipeline" / "scripts" / "gates"
     sources = "\n".join(
