@@ -127,7 +127,7 @@ def test_staging_validation_rejects_empty_expected_source_epoch() -> None:
 def test_staging_validation_rejects_incomplete_malb_before_cache_read(monkeypatch) -> None:
     conn = RecordingConnection()
     monkeypatch.setattr(validation, "table_exists", lambda _conn, _db, _table: True)
-    monkeypatch.setattr(validation, "_table_row_count", lambda _conn, _db, _table: 3137)
+    monkeypatch.setattr(validation, "table_row_count", lambda _conn, _db, _table: 3137)
 
     try:
         validation.validate_staging_tables(
@@ -149,7 +149,7 @@ def test_staging_validation_rejects_wrong_malb_build_version(monkeypatch) -> Non
     monkeypatch.setattr(validation, "table_exists", lambda _conn, _db, _table: True)
     monkeypatch.setattr(
         validation,
-        "_table_row_count",
+        "table_row_count",
         lambda _conn, _db, table: 3138 if "analysis_level" in table else 1,
     )
     monkeypatch.setattr(
@@ -198,7 +198,7 @@ def test_malb_identity_rejects_multiple_source_epochs() -> None:
 def test_staging_validation_rejects_expected_source_epoch_mismatch(monkeypatch) -> None:
     conn = RecordingConnection()
     monkeypatch.setattr(validation, "table_exists", lambda _conn, _db, _table: True)
-    monkeypatch.setattr(validation, "_table_row_count", lambda _conn, _db, _table: 3138)
+    monkeypatch.setattr(validation, "table_row_count", lambda _conn, _db, _table: 3138)
     monkeypatch.setattr(
         validation,
         "_malb_identity",
@@ -228,7 +228,7 @@ def test_staging_validation_rejects_extra_cache_rows(monkeypatch) -> None:
     monkeypatch.setattr(validation, "table_exists", lambda _conn, _db, _table: True)
     monkeypatch.setattr(
         validation,
-        "_table_row_count",
+        "table_row_count",
         lambda _conn, _db, table: 3138 if "analysis_level" in table else 2,
     )
     monkeypatch.setattr(

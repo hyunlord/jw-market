@@ -13,7 +13,7 @@ import pymysql
 from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
     ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
 )
-from pipeline.scripts.deploy.mart_load_ops import _table_row_count, validate_schema_name
+from pipeline.scripts.deploy.analysis_cache_db import table_row_count, validate_schema_name
 from pipeline.scripts.deploy.mart_load_verify import quote_id, table_exists
 
 
@@ -60,7 +60,7 @@ def validate_staging_tables(
             raise RuntimeError(f"staging table missing: {target_db}.{staging_table}")
 
     malb_table = STAGING_TABLES[MALB_TABLE]
-    malb_rows = _table_row_count(conn, target_db, malb_table)
+    malb_rows = table_row_count(conn, target_db, malb_table)
     if malb_rows != expected_malb_rows:
         raise RuntimeError(
             f"MALB staging row count mismatch: {malb_rows} != {expected_malb_rows}"
@@ -76,7 +76,7 @@ def validate_staging_tables(
         )
 
     cache_table = STAGING_TABLES[CACHE_BRANDS_TABLE]
-    cache_rows = _table_row_count(conn, target_db, cache_table)
+    cache_rows = table_row_count(conn, target_db, cache_table)
     if cache_rows != 1:
         raise RuntimeError(f"cache_brands staging row count mismatch: {cache_rows} != 1")
     payload = _read_cache_brands_payload(conn, target_db, cache_table)

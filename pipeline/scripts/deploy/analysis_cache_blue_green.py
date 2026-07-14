@@ -18,6 +18,7 @@ import pymysql
 from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
     ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
 )
+from pipeline.scripts.deploy.analysis_cache_db import connect_admin, validate_schema_name
 from pipeline.scripts.deploy.analysis_cache_blue_green_validation import (
     CACHE_BRANDS_TABLE,
     DEFAULT_EXPECTED_BRAND_COUNT,
@@ -27,7 +28,6 @@ from pipeline.scripts.deploy.analysis_cache_blue_green_validation import (
     StagingValidation,
     validate_staging_tables,
 )
-from pipeline.scripts.deploy.mart_load_ops import connect_admin, validate_schema_name
 from pipeline.scripts.deploy.mart_load_verify import quote_id, table_exists
 
 

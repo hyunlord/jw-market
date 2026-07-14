@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 from pipeline.scripts.deploy import analysis_cache_blue_green as blue_green
 
 
@@ -23,6 +28,36 @@ class RecordingConnection:
 
     def cursor(self) -> RecordingCursor:
         return RecordingCursor(self.statements)
+
+
+def test_blue_green_import_does_not_load_heavy_mart_builder() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    script = """
+import builtins
+
+original_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "pipeline.scripts.deploy.mart_load_ops":
+        raise RuntimeError("heavy mart builder import attempted")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+import pipeline.scripts.deploy.analysis_cache_blue_green
+import pipeline.scripts.deploy.analysis_cache_blue_green_validation
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_blue_green_allowlist_is_the_generation_pair() -> None:
