@@ -412,6 +412,78 @@ def check_growth_windows(evidence_path: Path, abs_tol: float, environment: str) 
     )
 
 
+def check_brand_sources(
+    expectations_path: Path,
+    observations_path: Path,
+    environment: str,
+) -> GateResult:
+    expectations = _load_json(expectations_path)
+    observations = _load_json(observations_path)
+    if not isinstance(expectations, dict) or expectations.get("classification") != "census":
+        raise ValueError("brand source expectations require classification=census")
+    dimensions: list[list[str]] = []
+    for field in ("brands", "views", "sources"):
+        values = expectations.get(field)
+        if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
+            raise ValueError(f"brand source expectations require non-empty string {field}")
+        if len(set(values)) != len(values):
+            raise ValueError(f"brand source expectation {field} must be unique")
+        dimensions.append(values)
+    if not isinstance(observations, list):
+        raise ValueError("brand source observations must be an array")
+
+    expected = {
+        (brand, view, source)
+        for brand in dimensions[0]
+        for view in dimensions[1]
+        for source in dimensions[2]
+    }
+    observed: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in observations:
+        if not isinstance(item, dict):
+            raise ValueError("brand source observations must be objects")
+        identity = tuple(str(item.get(field) or "") for field in ("brand", "view", "source"))
+        if not all(identity):
+            raise ValueError("brand source observation identity is incomplete")
+        if identity in observed:
+            raise ValueError(f"duplicate brand source identity: {'|'.join(identity)}")
+        if not isinstance(item.get("listed"), bool) or not isinstance(item.get("has_data"), bool):
+            raise ValueError("brand source observations require boolean listed and has_data")
+        observed[identity] = item
+
+    details: list[str] = []
+    failures = 0
+    missing = sorted(expected - set(observed))
+    unexpected = sorted(set(observed) - expected)
+    if missing:
+        details.append("missing identities: " + ",".join("|".join(item) for item in missing))
+        failures += len(missing)
+    if unexpected:
+        details.append("unexpected identities: " + ",".join("|".join(item) for item in unexpected))
+        failures += len(unexpected)
+    for identity in sorted(expected & set(observed)):
+        item = observed[identity]
+        if item["listed"] != item["has_data"]:
+            details.append(
+                f"{'|'.join(identity)}: listed/data mismatch "
+                f"listed={str(item['listed']).lower()} has_data={str(item['has_data']).lower()}"
+            )
+            failures += 1
+    if not observations:
+        details.append("empty observation population is a failure")
+        failures = max(failures, 1)
+    return GateResult(
+        gate="brand_sources",
+        classification="census",
+        checked=len(observed),
+        population=len(expected),
+        failures=failures,
+        tolerance="exact listed == has_data, missing=fail",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fail-closed release acceptance gates")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -441,6 +513,11 @@ def _parser() -> argparse.ArgumentParser:
     growth.add_argument("--evidence", type=Path, required=True)
     growth.add_argument("--abs-tol", type=float, default=0.01)
     growth.add_argument("--environment", default="local")
+
+    sources = subparsers.add_parser("brand-sources")
+    sources.add_argument("--expectations", type=Path, required=True)
+    sources.add_argument("--observations", type=Path, required=True)
+    sources.add_argument("--environment", default="local")
     return parser
 
 
@@ -459,6 +536,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "growth-windows": lambda: check_growth_windows(
             args.evidence,
             args.abs_tol,
+            args.environment,
+        ),
+        "brand-sources": lambda: check_brand_sources(
+            args.expectations,
+            args.observations,
             args.environment,
         ),
     }

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS mart_general_brand_metric (
   computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_general_brand (brand_key, atc4_code, source, measure),
   INDEX idx_general_brand_key (brand_key, source, measure),
+  INDEX idx_general_brand_name (brand_name, measure),
   INDEX idx_general_brand_atc4 (atc4_code, source, measure),
   INDEX idx_general_brand_source (source, measure),
   INDEX idx_general_atc_universe (source, atc4_code, atc4_desc)

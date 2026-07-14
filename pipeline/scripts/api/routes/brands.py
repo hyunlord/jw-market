@@ -6,9 +6,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from pipeline.scripts.api import db
+from pipeline.scripts.api.brand_source_options import brand_source_options
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.deep_analysis_context import (
-    DeepAnalysisContextError,
     public_source_labels,
     resolve_deep_analysis_context,
 )
@@ -42,18 +42,34 @@ def _search_brand_candidates(query: str) -> list[dict[str, Any]]:
     rows = db.fetch_all(
         """
         SELECT brand_key, MAX(brand_name) AS brand_name, raw_value_history, source
-        FROM mart_general_brand_metric
-        WHERE measure = 'sales'
-          AND (REPLACE(brand_key, ' ', '') = %s OR REPLACE(brand_name, ' ', '') = %s)
+        FROM (
+          SELECT brand_key, brand_name, atc4_code, raw_value_history, source
+          FROM mart_general_brand_metric
+          WHERE measure = 'sales' AND brand_key = %s
+          UNION ALL
+          SELECT brand_key, brand_name, atc4_code, raw_value_history, source
+          FROM mart_general_brand_metric
+          WHERE measure = 'sales' AND brand_name = %s AND brand_key <> %s
+        ) AS exact_matches
         GROUP BY brand_key, atc4_code, raw_value_history, source
         """,
-        (needle, needle),
+        (needle, needle, needle),
     )
     candidates: dict[str, dict[str, Any]] = {}
+    seen_rows: set[tuple[str, str, str, str]] = set()
     for row in rows:
         brand_key = str(row.get("brand_key") or "").strip()
         if not brand_key:
             continue
+        identity = (
+            brand_key,
+            str(row.get("brand_name") or ""),
+            str(row.get("raw_value_history") or ""),
+            str(row.get("source") or ""),
+        )
+        if identity in seen_rows:
+            continue
+        seen_rows.add(identity)
         item = candidates.setdefault(
             brand_key,
             {
@@ -82,33 +98,8 @@ def _latest_value(value: object) -> float:
         return 0.0
 
 
-def _context_options_for_brand(brand: str) -> tuple[list[dict[str, Any]], list[str]]:
-    contexts: list[dict[str, Any]] = []
-    context_sources: set[str] = set()
-    for view_kind in ("general", "strategic_ml", "strategic_cd"):
-        try:
-            resolved = resolve_deep_analysis_context(
-                brand=brand,
-                view_kind=view_kind,
-                market_id=None,
-                source=None,
-            )
-            available = [resolved.public()]
-        except DeepAnalysisContextError as exc:
-            available = list(exc.available_contexts)
-        for context in available:
-            source = str(context.get("source") or "").strip()
-            if source and bool(context.get("has_market_data")):
-                context_sources.add(source)
-            public = {
-                "view_kind": context.get("view_kind"),
-                "market_id": context.get("market_id"),
-                "market_name": context.get("market_name"),
-                "has_market_data": bool(context.get("has_market_data")),
-            }
-            if public["market_id"] and public not in contexts:
-                contexts.append(public)
-    return contexts, public_source_labels(context_sources)
+def _context_options_for_brand(brand: str) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    return brand_source_options(brand, resolver=resolve_deep_analysis_context)
 
 
 def _search_results(query: str, limit: int) -> tuple[list[dict[str, Any]], int]:
@@ -120,10 +111,13 @@ def _search_results(query: str, limit: int) -> tuple[list[dict[str, Any]], int]:
     jw_targets = {str(item.get("brand") or "") for item in _default_brands()}
     for candidate in candidates[:limit]:
         brand = str(candidate.get("brand_name") or candidate.get("brand_key") or "")
-        contexts, sources = _context_options_for_brand(brand)
+        contexts, general_sources, strategic_sources = _context_options_for_brand(brand)
+        sources = public_source_labels((*general_sources, *strategic_sources))
         result: dict[str, Any] = {
             "brand": brand,
             "sources": sources,
+            "strategic_sources": strategic_sources,
+            "general_sources": general_sources,
             "contexts": contexts,
             "is_jw_target": brand in jw_targets,
         }
