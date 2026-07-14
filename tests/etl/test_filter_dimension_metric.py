@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from pipeline.etl.io.mart import filter_dimension_metric as sidecar
 from pipeline.etl.io.mart.filter_dimension_load import filter_dimension_table_ddl
@@ -219,6 +220,133 @@ def test_build_filter_dimension_rows_collapses_iqvia_brand_display_variants() ->
 
     assert len(mfr_rows) == 1
     assert mfr_rows[0]["raw_value_history"] == {"2025-01": 10.0, "2025-02": 20.0}
+
+
+def test_latest_market_period_rejects_stale_ubist_dimension_sidecar() -> None:
+    rows = [
+        {
+            "dimension_type": dimension_type,
+            "raw_value_history": {"2026-04": 100.0},
+        }
+        for dimension_type in (
+            "seller",
+            "molecule",
+            "molecule_strength",
+            "form",
+            "route",
+            "reimbursement",
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="2026-05"):
+        sidecar.validate_filter_dimension_period_coverage(
+            "ubist",
+            rows,
+            expected_period="2026-05",
+        )
+
+
+def test_latest_market_period_rejects_sidecar_ahead_of_general_mart() -> None:
+    rows = [
+        {
+            "dimension_type": dimension_type,
+            "raw_value_history": {"2026-05": 100.0, "2026-06": 100.0},
+        }
+        for dimension_type in (
+            "seller",
+            "molecule",
+            "molecule_strength",
+            "form",
+            "route",
+            "reimbursement",
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="latest period mismatch"):
+        sidecar.validate_filter_dimension_period_coverage(
+            "ubist",
+            rows,
+            expected_period="2026-05",
+        )
+
+
+def test_latest_market_period_requires_complete_ubist_dimension_sums() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "atc4_code": "A10N1",
+                "brand_key": "brand-a",
+                "brand_name": "Brand A",
+                "product_code": "P1",
+                "period_yyyymm": "2026-05",
+                "raw_value": 40.0,
+                "company": "Seller A",
+                "ubist_molecule_raw": "Molecule A",
+                "ubist_molecule_strength": "10mg",
+                "ubist_form": "Tablet",
+                "ubist_route": "Oral",
+                "ubist_reimbursement": "Covered",
+            },
+            {
+                "atc4_code": "A10N1",
+                "brand_key": "brand-b",
+                "brand_name": "Brand B",
+                "product_code": "P2",
+                "period_yyyymm": "2026-05",
+                "raw_value": 60.0,
+                "company": "Seller B",
+                "ubist_molecule_raw": "Molecule B",
+                "ubist_molecule_strength": "20mg",
+                "ubist_form": "Capsule",
+                "ubist_route": "Oral",
+                "ubist_reimbursement": "Covered",
+            },
+        ]
+    )
+    rows = sidecar.build_filter_dimension_rows("ubist", "sales", frame)
+
+    coverage = sidecar.validate_filter_dimension_period_coverage(
+        "ubist",
+        rows,
+        expected_period="2026-05",
+        expected_total=100.0,
+    )
+
+    assert set(coverage) >= {
+        "seller",
+        "molecule",
+        "molecule_strength",
+        "form",
+        "route",
+        "reimbursement",
+    }
+    assert all(item["period_sum"] == 100.0 for item in coverage.values())
+
+
+def test_latest_market_period_rejects_incomplete_dimension_total() -> None:
+    dimensions = (
+        "seller",
+        "molecule",
+        "molecule_strength",
+        "form",
+        "route",
+        "reimbursement",
+    )
+    rows = [
+        {
+            "dimension_type": dimension_type,
+            "raw_value_history": {"2026-05": 99.0 if dimension_type == "form" else 100.0},
+        }
+        for dimension_type in dimensions
+    ]
+
+    with pytest.raises(RuntimeError, match="total mismatch"):
+        sidecar.validate_filter_dimension_period_coverage(
+            "ubist",
+            rows,
+            expected_period="2026-05",
+            expected_total=100.0,
+        )
 
 
 def test_guard_dimension_stage_rejects_operating_schemas() -> None:

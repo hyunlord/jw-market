@@ -78,12 +78,22 @@ class _Connection:
         self.commits += 1
 
 
-def test_shared_promotion_checks_the_approved_serving_schema() -> None:
+def test_shared_promotion_checks_the_approved_serving_schema(monkeypatch) -> None:
+    monkeypatch.delenv("MARIADB_DATABASE", raising=False)
     assert (
         _serving_guard_schema(Namespace(promote_to="jw_mart_d2_stage_20260630_r2"))
         == "jw_mart_d2_stage_20260630_r2"
     )
     assert _serving_guard_schema(Namespace(promote_to=None)) == "jw_mart"
+
+
+def test_isolated_builder_checks_the_configured_serving_schema(monkeypatch) -> None:
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_d2_stage_20260630_r2")
+
+    assert (
+        _serving_guard_schema(Namespace(promote_to=None))
+        == "jw_mart_d2_stage_20260630_r2"
+    )
 
 
 def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:
@@ -311,3 +321,49 @@ def test_direct_promotion_builds_from_bounded_ubist_partitions(monkeypatch) -> N
     assert manifest["source_rows"] == 2
     assert {row["dimension_value"] for row in rows} == {"A / B", "Vitamin B12"}
     assert {row["measure"] for row in rows} == {"sales", "volume"}
+
+
+def test_full_ubist_builder_validates_serving_market_period_before_insert(monkeypatch) -> None:
+    from pipeline.scripts.etl import build_filter_dimension_metric as cli
+
+    frame = pd.DataFrame(
+        [
+            {
+                "atc4_code": "A10N1",
+                "brand_key": "brand-a",
+                "brand_name": "Brand A",
+                "product_code": "P1",
+                "period_yyyymm": "2026-04",
+                "raw_sales": 100.0,
+                "raw_volume": 10.0,
+                "company": "Seller A",
+                "ubist_molecule_raw": "Molecule A",
+                "ubist_molecule_strength": "10mg",
+                "ubist_form": "Tablet",
+                "ubist_route": "Oral",
+                "ubist_reimbursement": "Covered",
+            }
+        ]
+    )
+    inserted: list[object] = []
+    monkeypatch.setattr(cli, "load_ubist_base_frame", lambda **_kwargs: frame)
+    monkeypatch.setattr(cli, "insert_filter_dimension_rows", lambda *_args, **_kwargs: inserted.append(True))
+
+    try:
+        cli._load_source_rows(
+            object(),
+            "jw_mart_dim_stage_test",
+            "ubist",
+            max_rows=None,
+            batch_size=200,
+            expected_markets_by_measure={
+                "sales": {"A10N1": ("2026-05", 100.0)},
+                "volume": {"A10N1": ("2026-05", 10.0)},
+            },
+        )
+    except RuntimeError as exc:
+        assert "2026-05" in str(exc)
+    else:
+        raise AssertionError("stale UBIST rows must fail before insertion")
+
+    assert inserted == []

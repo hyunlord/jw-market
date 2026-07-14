@@ -31,6 +31,7 @@ from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.filter_dimension_metric import build_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
 from pipeline.etl.io.mart.filter_dimension_metric import summarize_dimension_rows
+from pipeline.etl.io.mart.filter_dimension_metric import validate_filter_dimension_market_coverage
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
@@ -135,6 +136,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         manifest: dict[str, Any] = {
             "target_db": args.target_db,
+            "serving_guard_schema": serving_guard_schema,
             "table": FILTER_DIMENSION_TABLE,
             "source": args.source,
             "policy": {
@@ -158,6 +160,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         }
         computed_rows: list[dict[str, Any]] = []
         for source in _selected_sources(args.source):
+            expected_markets_by_measure = (
+                _general_market_expectations(conn, serving_guard_schema, source)
+                if source == "ubist" and not args.dimension_type
+                else None
+            )
             if args.direct_shared_promotion:
                 source_manifest, rows = _build_direct_source_rows(
                     source,
@@ -165,6 +172,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     dimension_types={args.dimension_type} if args.dimension_type else None,
                     spool_dir=args.spool_dir,
                 )
+                if expected_markets_by_measure is not None:
+                    _validate_source_market_coverage(
+                        source,
+                        rows,
+                        expected_markets_by_measure=expected_markets_by_measure,
+                        source_manifest=source_manifest,
+                    )
                 manifest["sources"][source] = source_manifest
                 computed_rows.extend(rows)
                 continue
@@ -190,6 +204,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     max_rows=args.max_rows,
                     batch_size=args.batch_size,
                     dimension_types={args.dimension_type} if args.dimension_type else None,
+                    expected_markets_by_measure=expected_markets_by_measure,
                 )
 
         if args.direct_shared_promotion:
@@ -241,7 +256,14 @@ def _selected_sources(source: str) -> tuple[str, ...]:
 def _serving_guard_schema(args: argparse.Namespace) -> str:
     """Check the schema that this run is allowed to affect."""
 
-    return args.promote_to or "jw_mart"
+    if args.promote_to:
+        return str(args.promote_to)
+    env_path = first_existing(
+        PROJECT_ROOT / "pipeline" / "docker" / ".env",
+        PROJECT_ROOT / "docker" / ".env",
+    )
+    env = load_env(env_path)
+    return str(env.get("MARIADB_DATABASE") or "jw_mart")
 
 
 def _load_source_rows(
@@ -252,6 +274,7 @@ def _load_source_rows(
     max_rows: int | None,
     batch_size: int,
     dimension_types: set[str] | None = None,
+    expected_markets_by_measure: dict[str, dict[str, tuple[str, float]]] | None = None,
 ) -> dict[str, Any]:
     if source == "ubist":
         base = load_ubist_base_frame(max_rows=max_rows)
@@ -269,10 +292,20 @@ def _load_source_rows(
     for measure in MEASURES_BY_SOURCE[source]:
         frame = measure_frame(base, measure)
         rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
+        period_gate = None
+        if expected_markets_by_measure is not None:
+            expectations = expected_markets_by_measure.get(measure, {})
+            validate_filter_dimension_market_coverage(
+                source,
+                rows,
+                expected_markets=expectations,
+            )
+            period_gate = _period_gate_summary(expectations)
         insert_filter_dimension_rows(conn, target_db, rows, batch_size=batch_size)
         source_manifest["measures"][measure] = {
             "input_rows": int(len(frame)),
             "sidecar": summarize_dimension_rows(rows),
+            "period_gate": period_gate,
         }
     return source_manifest
 
@@ -309,6 +342,72 @@ def _build_direct_source_rows(
             "sidecar": summarize_dimension_rows(rows_by_measure[measure]),
         }
     return source_manifest, computed_rows
+
+
+def _validate_source_market_coverage(
+    source: str,
+    rows: list[dict[str, Any]],
+    *,
+    expected_markets_by_measure: dict[str, dict[str, tuple[str, float]]],
+    source_manifest: dict[str, Any],
+) -> None:
+    for measure in MEASURES_BY_SOURCE[source]:
+        expectations = expected_markets_by_measure.get(measure, {})
+        measure_rows = [row for row in rows if row.get("measure") == measure]
+        validate_filter_dimension_market_coverage(
+            source,
+            measure_rows,
+            expected_markets=expectations,
+        )
+        source_manifest["measures"][measure]["period_gate"] = _period_gate_summary(expectations)
+
+
+def _general_market_expectations(
+    conn: pymysql.connections.Connection,
+    db_name: str,
+    source: str,
+) -> dict[str, dict[str, tuple[str, float]]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT atc4_code, measure, market_size_series
+            FROM {quote_id(db_name)}.mart_general_market_metric
+            WHERE source=%s
+            ORDER BY measure, atc4_code
+            """,
+            (source,),
+        )
+        rows = cur.fetchall()
+
+    expectations: dict[str, dict[str, tuple[str, float]]] = {}
+    for row in rows:
+        history = row.get("market_size_series")
+        if isinstance(history, str):
+            history = json.loads(history)
+        if not isinstance(history, dict) or not history:
+            continue
+        periods = sorted(str(period) for period, value in history.items() if value is not None)
+        if not periods:
+            continue
+        latest = periods[-1]
+        expectations.setdefault(str(row["measure"]), {})[str(row["atc4_code"])] = (
+            latest,
+            float(history[latest]),
+        )
+    if not expectations:
+        raise RuntimeError(
+            f"general market period reference is empty: db={db_name} source={source}"
+        )
+    return expectations
+
+
+def _period_gate_summary(expectations: dict[str, tuple[str, float]]) -> dict[str, Any]:
+    periods = sorted({period for period, _total in expectations.values()})
+    return {
+        "validated": True,
+        "market_count": len(expectations),
+        "periods": periods,
+    }
 
 
 def _source_epoch() -> str | None:
