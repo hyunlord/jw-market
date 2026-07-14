@@ -14,6 +14,7 @@ from jw_chat_agent_poc.genos_config import (
     resolve_planner_genos_base_url,
     resolve_planner_genos_token,
 )
+from jw_chat_agent_poc.orchestrator.unavailable_response import file_absence_answer
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,15 @@ class SqlQueryOutcome:
     file_source_items: tuple[dict[str, Any], ...]
     errors: tuple[str, ...]
     answer_md: str = ""
+    status: str = "ok"
+    trace: tuple[dict[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureRequest:
+    state: str
+    intent: str | None = None
+    label: str = ""
 
 
 def query_uploaded_sql(
@@ -73,10 +83,15 @@ def query_uploaded_sql(
 
     if not sources:
         return SqlQueryOutcome("", (), ())
+    trace: list[dict[str, str]] = []
+    current_stage = "schema"
     try:
         schemas = tuple(
             _fetch_schema(source, conversation_id)
             for source in sources[: _max_schema_tables()]
+        )
+        trace.append(
+            {"stage": "schema", "status": "ok", "table_count": str(len(schemas))}
         )
         if _is_schema_question(question):
             answer = _render_schema_answer(question, sources, schemas)
@@ -85,21 +100,76 @@ def query_uploaded_sql(
                 file_source_items=_source_items(sources[: len(schemas)]),
                 errors=(),
                 answer_md=answer,
+                trace=tuple(trace),
             )
-        plan = _generate_select(question, schemas)
+        current_stage = "measure_validation"
+        measure = _measure_request(question, schemas)
+        if measure.state == "unsupported":
+            answer = file_absence_answer("unsupported", subject=measure.label)
+            trace.append(
+                {
+                    "stage": "measure_validation",
+                    "status": "unsupported",
+                    "label": measure.label,
+                }
+            )
+            return SqlQueryOutcome(
+                file_context="## 업로드 파일 SQL 결과\n상태: 미지원\n" + answer,
+                file_source_items=_source_items(sources[: len(schemas)]),
+                errors=("file SQL unsupported measure",),
+                answer_md=answer,
+                status="unsupported_measure",
+                trace=tuple(trace),
+            )
+        current_stage = "period_validation"
+        missing_period = _missing_period(question, schemas)
+        if missing_period:
+            answer = file_absence_answer("missing", period=missing_period)
+            trace.append(
+                {
+                    "stage": "period_validation",
+                    "status": "missing",
+                    "period": missing_period,
+                }
+            )
+            return SqlQueryOutcome(
+                file_context="## 업로드 파일 SQL 결과\n상태: 원천없음\n" + answer,
+                file_source_items=_source_items(sources[: len(schemas)]),
+                errors=("file SQL missing period",),
+                answer_md=answer,
+                status="unsupported_period",
+                trace=tuple(trace),
+            )
+        current_stage = "planner"
+        plan = _deterministic_select(question, schemas)
+        plan_source = "deterministic"
+        if plan is None:
+            plan = _generate_select(question, schemas)
+            plan_source = "llm"
         if not plan:
-            return SqlQueryOutcome("", (), ())
+            trace.append({"stage": "planner", "status": "empty"})
+            return SqlQueryOutcome("", (), (), status="empty_plan", trace=tuple(trace))
         logical_name = str(plan.get("logical_name") or "").strip()
         sql = str(plan.get("sql") or "").strip()
         source = next(
             (item for item in sources if item.logical_name == logical_name),
             None,
         )
+        current_stage = "plan_validation"
         if source is None or not _is_select_only_candidate(sql):
             raise ValueError("planner returned an invalid scoped file query")
+        trace.append(
+            {
+                "stage": "planner",
+                "status": "ok",
+                "plan_source": plan_source,
+            }
+        )
         aggregate = _is_aggregate_question(question)
         if aggregate and not _has_aggregate_contract(sql):
-            return _aggregate_contract_failure()
+            return _aggregate_contract_failure(
+                trace=(*trace, {"stage": "plan_validation", "status": "contract_failed"})
+            )
         schema = next(
             (
                 item for item in schemas
@@ -107,16 +177,38 @@ def query_uploaded_sql(
             ),
             {},
         )
-        intent = _question_measure_intent(question)
+        current_stage = "column_validation"
+        intent = measure.intent
         if aggregate and intent and not _selected_columns_match_intent(intent, sql, schema):
-            return _column_intent_failure(intent)
+            return _column_intent_failure(
+                intent,
+                trace=(*trace, {"stage": "column_validation", "status": "intent_mismatch"}),
+            )
+        selected_columns = _used_source_columns(sql, schema)
+        trace.append(
+            {
+                "stage": "column_validation",
+                "status": "ok",
+                "selected_columns": ",".join(selected_columns),
+            }
+        )
+        logger.info(
+            "file SQL planner complete plan_source=%s selected_columns=%s",
+            plan_source,
+            selected_columns,
+        )
+        current_stage = "execution"
         result = _run_query(conversation_id, logical_name, sql)
+        trace.append({"stage": "execution", "status": "ok"})
+        current_stage = "render"
         context = _render_result(source, result, schema)
         answer = ""
         if aggregate:
             answer = _render_aggregate_answer(question, source, sql, result, schema)
             if not answer:
-                return _aggregate_contract_failure()
+                return _aggregate_contract_failure(
+                    trace=(*trace, {"stage": "render", "status": "contract_failed"})
+                )
         source_item: dict[str, Any] = {"file_name": source.file_name}
         if source.document_id is not None:
             source_item["document_id"] = source.document_id
@@ -125,6 +217,7 @@ def query_uploaded_sql(
             file_source_items=(source_item,),
             errors=(),
             answer_md=answer,
+            trace=tuple(trace),
         )
     except (requests.RequestException, ValueError, TypeError, KeyError, RuntimeError) as exc:
         logger.exception(
@@ -144,6 +237,10 @@ def query_uploaded_sql(
             answer_md=(
                 "업로드 파일 집계 결과를 확인할 수 없습니다. "
                 "파일 SQL 조회가 완료되지 않았습니다."
+            ),
+            status="query_failed",
+            trace=tuple(
+                [*trace, {"stage": current_stage, "status": "error", "reason": _failure_reason(exc)}]
             ),
         )
 
@@ -188,7 +285,9 @@ def _has_aggregate_contract(sql: str) -> bool:
     )
 
 
-def _aggregate_contract_failure() -> SqlQueryOutcome:
+def _aggregate_contract_failure(
+    *, trace: tuple[dict[str, str], ...] = ()
+) -> SqlQueryOutcome:
     answer = (
         "업로드 파일 집계 결과를 확인할 수 없습니다. "
         "필터, 집계 함수, 결과값, 적용 행 수를 모두 검증하지 못했습니다."
@@ -198,10 +297,16 @@ def _aggregate_contract_failure() -> SqlQueryOutcome:
         file_source_items=(),
         errors=("file SQL aggregate contract unavailable",),
         answer_md=answer,
+        status="contract_failed",
+        trace=trace,
     )
 
 
-def _column_intent_failure(intent: str) -> SqlQueryOutcome:
+def _column_intent_failure(
+    intent: str,
+    *,
+    trace: tuple[dict[str, str], ...] = (),
+) -> SqlQueryOutcome:
     label = {"amount": "금액", "average": "평균", "quantity": "수량", "count": "건수"}.get(
         intent, "요청"
     )
@@ -211,6 +316,8 @@ def _column_intent_failure(intent: str) -> SqlQueryOutcome:
         file_source_items=(),
         errors=("file SQL selected column intent mismatch",),
         answer_md=answer,
+        status="intent_mismatch",
+        trace=trace,
     )
 
 
@@ -387,6 +494,173 @@ def _fetch_schema(source: SqlFileSource, conversation_id: str) -> dict[str, Any]
         "file_name": source.file_name,
         "sheet_name": source.sheet_name,
     }
+
+
+def _deterministic_select(
+    question: str,
+    schemas: Sequence[Mapping[str, Any]],
+) -> dict[str, str] | None:
+    """Plan only file-query shapes whose slots are fully grounded in schema and text."""
+
+    for schema in schemas:
+        columns = _schema_columns(schema)
+        by_source = {
+            str(item.get("source_name") or "").strip().casefold(): str(item.get("query_name") or "").strip()
+            for item in columns
+        }
+        if "q1" in question.casefold() and re.search(r"(?<![a-z])no(?![a-z])", question, re.IGNORECASE):
+            q1_column = by_source.get("q1")
+            no_column = by_source.get("no")
+            if q1_column and no_column:
+                value_text = re.sub(r"\bq1\b", "", question, flags=re.IGNORECASE)
+                values = tuple(
+                    dict.fromkeys(re.findall(r"(?<!\d)\d+(?:\.\d+)?(?!\d)", value_text))
+                )
+                where = ""
+                if values:
+                    where = " WHERE " + q1_column + " IN (" + ", ".join(_sql_literal(value) for value in values) + ")"
+                return {
+                    "logical_name": str(schema.get("logical_name") or ""),
+                    "sql": (
+                        f"SELECT {q1_column}, COUNT(*) AS response_count, "
+                        f"SUM({no_column}) AS no_total, COUNT(*) AS applied_rows "
+                        f"FROM data{where} GROUP BY {q1_column} ORDER BY {q1_column}"
+                    ),
+                }
+
+        if _file_query_intent(question) != "file_compare":
+            continue
+        subjects = _file_comparison_subjects(question)
+        if len(subjects) != 2:
+            continue
+        manufacturer = _find_column(columns, r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체")
+        measure = _find_measure_column(columns, question)
+        if manufacturer is None or measure is None:
+            continue
+        manufacturer_query = str(manufacturer.get("query_name") or "")
+        measure_query = str(measure.get("query_name") or "")
+        filters = [
+            f"{manufacturer_query} IN ({', '.join(_sql_literal(value) for value in subjects)})"
+        ]
+        atc_code = _atc4_code(question)
+        if atc_code:
+            atc_column = _find_column(columns, r"atc\s*4")
+            if atc_column is None:
+                continue
+            filters.append(f"{atc_column.get('query_name')} = {_sql_literal(atc_code)}")
+        return {
+            "logical_name": str(schema.get("logical_name") or ""),
+            "sql": (
+                f"SELECT {manufacturer_query}, SUM({measure_query}) AS total_value, "
+                f"COUNT(*) AS applied_rows FROM data WHERE {' AND '.join(filters)} "
+                f"GROUP BY {manufacturer_query} ORDER BY total_value DESC"
+            ),
+        }
+    return None
+
+
+def _schema_columns(schema: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    raw = schema.get("columns")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item for item in raw if isinstance(item, Mapping))
+
+
+def _find_column(
+    columns: Sequence[Mapping[str, Any]], pattern: str
+) -> Mapping[str, Any] | None:
+    return next(
+        (
+            item
+            for item in columns
+            if re.search(pattern, str(item.get("source_name") or ""), re.IGNORECASE)
+        ),
+        None,
+    )
+
+
+def _find_measure_column(
+    columns: Sequence[Mapping[str, Any]], question: str
+) -> Mapping[str, Any] | None:
+    requested_months = month_keys(question)
+    candidates = tuple(
+        item
+        for item in columns
+        if _is_amount_column(str(item.get("source_name") or ""))
+        and not _is_average_column(str(item.get("source_name") or ""))
+        and not _is_quantity_column(str(item.get("source_name") or ""))
+    )
+    if requested_months:
+        return next(
+            (
+                item
+                for item in candidates
+                if requested_months.intersection(month_keys(str(item.get("source_name") or "")))
+            ),
+            None,
+        )
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: max(
+            month_keys(str(item.get("source_name") or "")), default=""
+        ),
+    )
+
+
+def _file_comparison_subjects(question: str) -> tuple[str, ...]:
+    match = re.search(
+        r"([가-힣A-Za-z0-9_-]+)(?:와|과)\s*([가-힣A-Za-z0-9_-]+)(?:의|\s+비교|\s+대비|$)",
+        question,
+    )
+    if match is None:
+        return ()
+    return tuple(value.strip() for value in match.groups())
+
+
+def _file_query_intent(question: str) -> str | None:
+    if re.search(r"(?:비교|대비|각각)", question) and len(
+        _file_comparison_subjects(question)
+    ) == 2:
+        return "file_compare"
+    return None
+
+
+def _atc4_code(question: str) -> str:
+    match = re.search(
+        r"\bATC\s*4?\s*[:=]?\s*([A-Z][A-Z0-9]{3,6})(?=[^A-Z0-9]|$)",
+        question,
+        re.IGNORECASE,
+    )
+    return match.group(1).upper() if match else ""
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _used_source_columns(sql: str, schema: Mapping[str, Any]) -> tuple[str, ...]:
+    matches: list[tuple[int, str]] = []
+    for item in _schema_columns(schema):
+        query_name = str(item.get("query_name") or "")
+        if not query_name:
+            continue
+        match = re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(query_name)}(?![A-Za-z0-9_])",
+            sql,
+        )
+        if match is not None:
+            matches.append((match.start(), str(item.get("source_name") or "")))
+    return tuple(source_name for _, source_name in sorted(matches))
+
+
+def _failure_reason(exc: Exception) -> str:
+    if isinstance(exc, requests.RequestException):
+        return "request_error"
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return "validation_error"
+    return "execution_error"
 
 
 def _generate_select(
@@ -641,8 +915,65 @@ def _column_matches_question(
             DEFAULT_AMOUNT_QUESTION_TERMS,
         ):
             return True
+        if _requested_measure_label(question_text):
+            return False
         return _is_aggregate_question(question_text)
     return False
+
+
+def _measure_request(
+    question: str,
+    schemas: Sequence[Mapping[str, Any]],
+) -> MeasureRequest:
+    intent = _question_measure_intent(question)
+    if intent is not None:
+        return MeasureRequest("recognized", intent=intent)
+    label = _requested_measure_label(question)
+    if not label:
+        return MeasureRequest("unspecified")
+    normalized = re.sub(r"\s+", "", label).casefold()
+    for schema in schemas:
+        for column in _schema_columns(schema):
+            source_name = re.sub(
+                r"\s+", "", str(column.get("source_name") or "")
+            ).casefold()
+            if normalized and normalized in source_name:
+                return MeasureRequest("recognized", label=label)
+    return MeasureRequest("unsupported", label=label)
+
+
+def _requested_measure_label(question: str) -> str:
+    patterns = (
+        r"([0-9A-Za-z가-힣_-]{2,}(?:율|률|금액|매출액|단가|수량|건수))\s*(?:합계|총계|합산|평균|총액|집계)",
+        r"(?:합계|총계|합산|평균|총액|집계)(?:는|은|이|가)?\s*([0-9A-Za-z가-힣_-]{2,}(?:율|률|금액|매출액|단가|수량|건수))",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, question, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _missing_period(
+    question: str,
+    schemas: Sequence[Mapping[str, Any]],
+) -> str:
+    requested = month_keys(question)
+    if not requested:
+        return ""
+    available = frozenset(
+        month
+        for schema in schemas
+        for column in _schema_columns(schema)
+        for month in month_keys(str(column.get("source_name") or ""))
+    )
+    if not available:
+        return ""
+    missing = sorted(requested - available)
+    if not missing:
+        return ""
+    year, month = missing[0].split("-", 1)
+    return f"{year}년 {int(month)}월"
 
 
 def _question_measure_intent(question: str) -> str | None:

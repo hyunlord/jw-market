@@ -386,3 +386,227 @@ def test_chso_natural_and_explicit_golden_answers(question, rows, expected) -> N
     assert "SELL OUT PRICE AVERAGE" not in answer
     for value in expected:
         assert value in answer
+
+
+def test_file_compare_planner_builds_scoped_manufacturer_query() -> None:
+    assert file_sql_query._file_query_intent("동아제약과 동화약품 비교") == "file_compare"
+    plan = file_sql_query._deterministic_select(
+        "동아제약과 동화약품 비교", (_wide_chso_schema(),)
+    )
+
+    assert plan is not None
+    assert "SUM(c72)" in plan["sql"]
+    assert "c2 IN ('동아제약', '동화약품')" in plan["sql"]
+    assert "GROUP BY c2" in plan["sql"]
+
+
+def test_compound_atc4_compare_plans_all_slots() -> None:
+    plan = file_sql_query._deterministic_select(
+        "ATC4 A02B2에서 동아제약과 동화약품의 sell-out 금액 비교",
+        (_wide_chso_schema(),),
+    )
+
+    assert plan is not None
+    assert "c12 = 'A02B2'" in plan["sql"]
+    assert "c2 IN ('동아제약', '동화약품')" in plan["sql"]
+    assert "SUM(c72)" in plan["sql"]
+
+
+def test_unsupported_measure_fails_closed_before_planner(monkeypatch) -> None:
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("planner must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "이 파일의 존재하지 않는 2035년 재구매율 합계는?",
+        "conversation-1",
+        (file_sql_query.SqlFileSource("doc-91:sheet-1", "CHSO.xlsx", "Sell Out Standard"),),
+    )
+
+    assert outcome.status == "unsupported_measure"
+    assert "재구매율 관련 열이 없습니다" in outcome.answer_md
+    assert "c72" not in outcome.answer_md
+    assert outcome.trace[-1]["stage"] == "measure_validation"
+
+
+def test_unsupported_measure_does_not_expose_default_amount_column(monkeypatch) -> None:
+    monkeypatch.setenv("JW_CHAT_FILE_SQL_MAX_COLUMNS", "160")
+
+    compact = file_sql_query._compact_schema(
+        "이 파일의 재구매율 합계는?", _wide_chso_schema()
+    )
+
+    assert "c72" not in {column["query_name"] for column in compact["columns"]}
+
+
+def test_missing_period_fails_closed_before_planner(monkeypatch) -> None:
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("planner must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "2035년 1월 sell-out 금액 합계는?",
+        "conversation-1",
+        (file_sql_query.SqlFileSource("doc-91:sheet-1", "CHSO.xlsx", "Sell Out Standard"),),
+    )
+
+    assert outcome.status == "unsupported_period"
+    assert "기간(2035년 1월)의 데이터가 없습니다" in outcome.answer_md
+
+
+def test_bpi_question_runs_deterministic_planner_end_to_end(monkeypatch) -> None:
+    schema = {
+        "logical_name": "doc-bpi:sheet-1",
+        "columns": [
+            {"query_name": "c1", "source_name": "no"},
+            {"query_name": "c2", "source_name": "q1"},
+        ],
+    }
+    source = file_sql_query.SqlFileSource("doc-bpi:sheet-1", "BPI.xlsx", "BPI Numeric")
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: schema)
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("LLM planner must not run")),
+    )
+    captured: dict[str, str] = {}
+
+    def run_query(_conversation_id: str, logical_name: str, sql: str) -> dict:
+        captured.update(logical_name=logical_name, sql=sql)
+        return {
+            "columns": ["c2", "response_count", "no_total", "applied_rows"],
+            "rows": [["1.0", 690, 2679529, 690], ["2.0", 910, 2555501, 910]],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "q1 값 1.0과 2.0 각각의 응답 수와 no 합계",
+        "conversation-1",
+        (source,),
+    )
+
+    assert "GROUP BY c2" in captured["sql"]
+    assert "COUNT(*) AS response_count" in captured["sql"]
+    assert "SUM(c1) AS no_total" in captured["sql"]
+    assert "2,679,529" in outcome.answer_md
+    assert "2,555,501" in outcome.answer_md
+    assert [item["stage"] for item in outcome.trace] == [
+        "schema",
+        "planner",
+        "column_validation",
+        "execution",
+    ]
+    planner_trace = outcome.trace[1]
+    assert planner_trace["plan_source"] == "deterministic"
+    assert "sql" not in planner_trace
+    assert "logical_name" not in planner_trace
+    assert outcome.trace[2]["selected_columns"] == "q1,no"
+
+
+def test_file_sql_failure_trace_records_stage_without_exception_details(monkeypatch) -> None:
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
+    monkeypatch.setattr(
+        file_sql_query,
+        "_deterministic_select",
+        lambda *_args: (_ for _ in ()).throw(ValueError("sensitive planner detail")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "동아제약과 동화약품 비교",
+        "conversation-1",
+        (file_sql_query.SqlFileSource("doc-91:sheet-1", "CHSO.xlsx", "Sell Out Standard"),),
+    )
+
+    assert outcome.status == "query_failed"
+    assert outcome.trace[-1] == {
+        "stage": "planner",
+        "status": "error",
+        "reason": "validation_error",
+    }
+    assert "sensitive planner detail" not in str(outcome.trace)
+
+
+def test_chso_compare_runs_planner_and_renderer_end_to_end(monkeypatch) -> None:
+    source = file_sql_query.SqlFileSource("doc-91:sheet-1", "CHSO.xlsx", "Sell Out Standard")
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("LLM planner must not run")),
+    )
+
+    def run_query(_conversation_id: str, _logical_name: str, sql: str) -> dict:
+        assert "c2 IN ('동아제약', '동화약품')" in sql
+        return {
+            "columns": ["c2", "total_value", "applied_rows"],
+            "rows": [["동아제약", 21978584141, 348], ["동화약품", 15188575523, 208]],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "동아제약과 동화약품 비교", "conversation-1", (source,)
+    )
+
+    assert "6,790,008,618" in outcome.answer_md
+    assert "시장 도구" not in outcome.answer_md
+
+
+def test_compound_atc4_compare_runs_with_explicit_slots(monkeypatch) -> None:
+    source = file_sql_query.SqlFileSource("doc-91:sheet-1", "CHSO.xlsx", "Sell Out Standard")
+    monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
+    monkeypatch.setattr(
+        file_sql_query,
+        "_generate_select",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("LLM planner must not run")),
+    )
+
+    def run_query(_conversation_id: str, _logical_name: str, sql: str) -> dict:
+        assert "c12 = 'A02B2'" in sql
+        assert "c2 IN ('동아제약', '동화약품')" in sql
+        return {
+            "columns": ["c2", "total_value", "applied_rows"],
+            "rows": [["동화약품", 3853883875, 120], ["동아제약", 3315233364, 98]],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "ATC4 A02B2에서 동아제약과 동화약품의 sell-out 금액 비교",
+        "conversation-1",
+        (source,),
+    )
+
+    assert "3,853,883,875" in outcome.answer_md
+    assert "3,315,233,364" in outcome.answer_md
+
+
+def test_file_sql_trace_reaches_delegated_context(monkeypatch) -> None:
+    expected = (
+        {"stage": "planner", "status": "ok", "selected_columns": "c2,c72"},
+        {"stage": "execution", "status": "ok"},
+    )
+    monkeypatch.setattr(
+        service_app,
+        "search_uploaded_files",
+        lambda *_args: file_search_client.UploadedFileSearchResult(
+            file_context="SQL result",
+            file_sources=("CHSO.xlsx",),
+            errors=(),
+            deterministic_answer="answer",
+            sql_trace=expected,
+        ),
+    )
+
+    delegated = service_app._delegated_file_context(
+        "동아제약과 동화약품 비교", "conversation-1", None
+    )
+
+    assert delegated[4] == expected

@@ -25,6 +25,7 @@ class UploadedFileSearchResult:
     file_source_items: tuple[dict[str, Any], ...] = ()
     has_active_file: bool = True
     deterministic_answer: str = ""
+    sql_trace: tuple[dict[str, str], ...] = ()
 
 
 def search_uploaded_files(question: str, conversation_id: str | None) -> UploadedFileSearchResult | None:
@@ -88,6 +89,7 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
                     items.append(item)
     errors = [str(error) for error in (body.get("errors") or []) if error]
     deterministic_answer = ""
+    sql_trace: tuple[dict[str, str], ...] = ()
     sql_sources = _sql_sources(raw_sql_sources)
     if body.get("sql_available") and sql_sources:
         sql_outcome = query_uploaded_sql(question, conversation_id, sql_sources)
@@ -102,6 +104,7 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
                 sources.append(name)
         errors.extend(sql_outcome.errors)
         deterministic_answer = sql_outcome.answer_md
+        sql_trace = sql_outcome.trace
     return UploadedFileSearchResult(
         file_context=context,
         file_sources=tuple(dict.fromkeys(sources)),
@@ -109,6 +112,7 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
         file_source_items=tuple(items),
         has_active_file=True,
         deterministic_answer=deterministic_answer,
+        sql_trace=sql_trace,
     )
 
 

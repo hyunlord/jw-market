@@ -509,6 +509,59 @@ def test_file_page_answer_is_not_rewritten_as_market_brand_compare(monkeypatch) 
     assert "표에 포함된 확정 데이터만" not in final.text
 
 
+def test_file_scope_postprocess_market_message_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: iter(
+            ["시장 도구 미호출로 일반뷰 브랜드 비교를 완료할 수 없습니다."]
+        ),
+    )
+    result = {
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "context_scope": "FILE",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+    }
+
+    final = compute_final_answer(
+        "동아제약과 동화약품 비교",
+        result,
+        "conversation-1",
+    )
+
+    assert "시장 도구" not in final.text
+    assert "일반뷰" not in final.text
+    assert "업로드 파일" in final.text
+
+
+def test_file_scope_postprocess_actual_missing_market_tool_message_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: iter(
+            ["필요 도구(시장 지표 조회)가 이번 턴에 실행되지 않았습니다."]
+        ),
+    )
+    result = {
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "context_scope": "FILE",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+    }
+
+    final = compute_final_answer(
+        "동아제약과 동화약품 비교",
+        result,
+        "conversation-1",
+    )
+
+    assert "시장 지표 조회" not in final.text
+    assert "업로드 파일" in final.text
+
+
 def test_file_page_answer_backfills_requested_numeric_evidence(monkeypatch) -> None:
     monkeypatch.setattr(
         GenosClient,
