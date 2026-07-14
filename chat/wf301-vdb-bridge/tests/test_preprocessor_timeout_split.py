@@ -9,6 +9,31 @@ import pytest
 from src import settings, upload_adapter
 
 
+class _ConfigCursor:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def __enter__(self) -> "_ConfigCursor":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def execute(self, *_args: Any) -> None:
+        return None
+
+    def fetchone(self) -> dict[str, Any]:
+        return self._rows.pop(0)
+
+
+class _ConfigConnection:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def cursor(self) -> _ConfigCursor:
+        return _ConfigCursor(self._rows)
+
+
 class _Response:
     def raise_for_status(self) -> None:
         return None
@@ -71,6 +96,19 @@ def test_run_preprocessor_keeps_workflow_embedding_batch(monkeypatch) -> None:
     )
 
     assert client.bodies[0]["batch_size"] == 64
+
+
+def test_load_file_upload_config_clamps_stale_large_embedding_batch() -> None:
+    conn = _ConfigConnection(
+        [
+            {"values": {"preprocessor": 64, "batchSize": 256}},
+            {"exts": "pdf,pptx"},
+        ]
+    )
+
+    config = upload_adapter.load_file_upload_config(conn, workflow_id=301)
+
+    assert config.batch_size == 64
 
 
 class _TimeoutClient:

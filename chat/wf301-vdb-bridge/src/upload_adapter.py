@@ -23,6 +23,7 @@ from . import settings
 from .logging_utils import safe_log
 
 FILE_UPLOAD_PLUGIN_CODE = "WP01"
+MAX_EMBEDDING_BATCH_SIZE = 64
 LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
 # 로컬 XLSX 전처리 경로가 직접 처리하는 확장자. .xlsm은 매크로를 무시하고 데이터 시트만 색인한다.
 LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
@@ -113,6 +114,11 @@ def _int_param(params: dict[str, Any], key: str, fallback: int) -> int:
     return int(raw) if raw is not None else fallback
 
 
+def _embedding_batch_size(params: dict[str, Any]) -> int:
+    configured = _int_param(params, "batchSize", settings.BATCH_SIZE)
+    return min(max(configured, 1), MAX_EMBEDDING_BATCH_SIZE)
+
+
 def _find_temp_vdb_payload(value: Any) -> dict[str, Any] | None:
     if isinstance(value, str):
         try:
@@ -181,7 +187,7 @@ def load_file_upload_config(
     return FileUploadConfig(
         serving_id=_int_param(params, "serving", settings.EMBEDDING_SERVING_ID),
         preprocessor_id=preprocessor_id,
-        batch_size=_int_param(params, "batchSize", settings.BATCH_SIZE),
+        batch_size=_embedding_batch_size(params),
         preprocessor_params=_as_dict(params.get("preprocessorParams")),
         lifespan_days=_int_param(params, "lifespan", settings.TTL_DAYS),
         allowed_extensions=allowed_extensions,
