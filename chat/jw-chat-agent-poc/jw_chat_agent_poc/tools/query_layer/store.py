@@ -180,16 +180,18 @@ class MartSnapshot:
         value = self.value_or_none(record, period)
         if value is None:
             return None
+        stored_share = None
+        if not (len(period) == 4 and period.isdigit()):
+            row = record.metric_history.get(period)
+            if isinstance(row, dict):
+                share = row.get("ms")
+                if isinstance(share, int | float):
+                    stored_share = float(share)
         total = self.market_value_or_none(market_id, period, source, measure)
         if total is None or total == 0:
             return None
-        if len(period) == 4 and period.isdigit():
-            return value / total * 100
-        row = record.metric_history.get(period)
-        if isinstance(row, dict):
-            share = row.get("ms")
-            if isinstance(share, int | float):
-                return float(share)
+        if stored_share is not None:
+            return stored_share
         return value / total * 100
 
     def share(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
@@ -210,12 +212,20 @@ class MartSnapshot:
             value = self.value_or_none(record, period)
             if value is None:
                 continue
+            share = None
+            if total is not None and total != 0:
+                if not (len(period) == 4 and period.isdigit()):
+                    period_row = record.metric_history.get(period)
+                    if isinstance(period_row, dict) and isinstance(period_row.get("ms"), int | float):
+                        share = float(period_row["ms"])
+                if share is None:
+                    share = value / total * 100
             rows.append(
                 {
                     "brand": record.brand_name,
                     "value": value,
                     "source_status": self.value_status(record, period),
-                    "ms_recent_pct": self.share_or_none(market_id, record, period, source, measure),
+                    "ms_recent_pct": share,
                     "company": record.company(),
                     "molecule": record.molecule(),
                 }
@@ -230,13 +240,23 @@ class MartSnapshot:
         rows: list[dict[str, Any]] = []
         for period in periods:
             value = self.value_or_none(record, period)
+            ranked_row = None
+            if value is not None:
+                ranked_row = next(
+                    (
+                        row
+                        for row in self.ranked_brands(market_id, period, source, measure)
+                        if row["brand"] == brand
+                    ),
+                    None,
+                )
             rows.append(
                 {
                     "period": period,
                     "value_krw": value,
                     "value_억원": round(value / 100_000_000, 2) if value is not None else None,
-                    "ms_pct": self.share_or_none(market_id, record, period, source, measure),
-                    "rank": self.rank(market_id, brand, period, source, measure) if value is not None else None,
+                    "ms_pct": ranked_row["ms_recent_pct"] if ranked_row is not None else None,
+                    "rank": int(ranked_row["rank"]) if ranked_row is not None else None,
                     "source_status": self.value_status(record, period),
                 }
             )
