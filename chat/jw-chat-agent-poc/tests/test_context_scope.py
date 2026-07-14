@@ -427,6 +427,48 @@ def test_mixed_partial_failure_preserves_successful_file_leg(monkeypatch) -> Non
     assert final.text.index("## 시장 데이터") < final.text.index("## 첨부 문서")
 
 
+def test_mixed_file_leg_renders_retrieved_evidence_without_llm(monkeypatch) -> None:
+    def unexpected_llm(*_args, **_kwargs):
+        raise AssertionError("MIXED M1 file evidence must not run an LLM")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_llm)
+    final = service_app.compute_final_answer(
+        "리바로 2025년 4월 매출과 이 보고서의 2026년 전망을 비교해줘",
+        {
+            "context_scope": "MIXED",
+            "mixed_market_question": "리바로 2025년 4월 매출 알려줘",
+            "mixed_market_result": {
+                "general_view_ready": True,
+                "answer": "2025-04 리바로 매출은 83.18억원입니다.",
+                "sources": ["UBIST"],
+                "tool_calls": [],
+                "markdown_response": {},
+            },
+            "mixed_file_result": {
+                "sources": ["document"],
+                "tool_calls": [],
+                "file_context": (
+                    "[1] report.pdf (document_id=113378)\n"
+                    "[DA] 문서: TEMP_DOCUMENT_1936.pdf | p.1\n\n"
+                    "The annual sales outlook for 2026 is exactly KRW 120.0 billion "
+                    "(1,200억원). This is a forward-looking full-year forecast."
+                ),
+                "file_source_items": [
+                    {"file_name": "report.pdf", "i_page": 1, "source_channel": "native_text"}
+                ],
+            },
+        },
+        "mixed-live-shape",
+    )
+
+    assert "1,200억원" in final.text
+    assert "업로드 문서 · report.pdf · p.1" in final.text
+    assert "document_id" not in final.text
+    assert "TEMP_DOCUMENT" not in final.text
+    assert final.timing["mixed_legs"]["file"]["deterministic_file_render"] is True
+    assert final.timing["mixed_legs"]["synthesis_llm_calls"] == 0
+
+
 def test_mixed_finalization_exception_preserves_other_leg(monkeypatch) -> None:
     original = service_app._finalize_mixed_leg
 

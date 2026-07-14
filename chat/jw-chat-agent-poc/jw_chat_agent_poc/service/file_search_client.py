@@ -72,6 +72,9 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
                 item: dict[str, Any] = {"file_name": name}
                 if source.get("document_id") is not None:
                     item["document_id"] = source["document_id"]
+                for key in ("i_page", "source_channel", "sheet_name", "row_start", "row_end"):
+                    if source.get(key) is not None:
+                        item[key] = source[key]
                 key = (name, str(item.get("document_id", "")))
                 if key not in seen_items:
                     seen_items.add(key)

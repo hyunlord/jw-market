@@ -1508,14 +1508,14 @@ def _compute_mixed_final_answer(
     )
     answer = scrub_internal_terminology(answer)
     timing = ensure_timing(result)
-    timing["mixed_legs"] = {
+    timing_payload = finish(timing)
+    timing_payload["mixed_legs"] = {
         "market": market_final.timing,
         "file": file_final.timing,
         "timeout_s": timeout_s,
         "total_timeout_s": total_timeout_s,
         "synthesis_llm_calls": 0,
     }
-    timing_payload = finish(timing)
     trace = trace_envelope(
         question=question,
         result=result,
@@ -1547,7 +1547,66 @@ def _finalize_mixed_leg(
     if not result:
         message = "첨부 문서 근거가 없습니다." if leg == "file" else "시장 데이터 근거가 없습니다."
         return _mixed_leg_failure_answer(message, conversation_id)
+    if leg == "file":
+        return _deterministic_mixed_file_answer(result, conversation_id)
     return compute_final_answer(question, result, conversation_id)
+
+
+_MIXED_FILE_METADATA_RE = re.compile(
+    r"^(?:\[\d+\]\s|\[DA\]\s|검색 범위:)|document_id=|TEMP_DOCUMENT_",
+    re.IGNORECASE,
+)
+_MIXED_FILE_PAGE_RE = re.compile(r"\bp\.(\d+)\b", re.IGNORECASE)
+
+
+def _deterministic_mixed_file_answer(
+    result: dict,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    context = str(result.get("file_context") or "").strip()
+    deterministic = str(result.get("deterministic_file_answer") or "").strip()
+    evidence = deterministic or _public_mixed_file_evidence(context)
+    if not evidence:
+        return _mixed_leg_failure_answer("첨부 문서 근거를 가져오지 못했습니다.", conversation_id)
+
+    file_name = _mixed_file_name(result)
+    page = _mixed_file_page(result, context)
+    source = f"출처: 업로드 문서 · {file_name}"
+    if page is not None:
+        source += f" · p.{page}"
+    answer = scrub_internal_terminology(cleanup_markdown_answer(f"{evidence}\n\n{source}"))
+    return FinalAnswer(
+        text=answer,
+        charts=[],
+        timing={"deterministic_file_render": True, "synthesis_llm_calls": 0},
+        trace={},
+        sources=("document",),
+        conversation_id=conversation_id,
+        file_sources=_file_source_items(result),
+    )
+
+
+def _public_mixed_file_evidence(context: str) -> str:
+    if not context:
+        return ""
+    kept = [
+        line.strip()
+        for line in context.splitlines()
+        if line.strip() and not _MIXED_FILE_METADATA_RE.search(line.strip())
+    ]
+    max_chars = max(200, int(os.getenv("JW_CHAT_MIXED_FILE_EVIDENCE_MAX_CHARS", "6000")))
+    return "\n\n".join(kept)[:max_chars].strip()
+
+
+def _mixed_file_page(result: dict, context: str) -> int | None:
+    for item in _file_source_items(result):
+        value = item.get("i_page")
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str) and value.isdigit() and int(value) > 0:
+            return int(value)
+    match = _MIXED_FILE_PAGE_RE.search(context)
+    return int(match.group(1)) if match else None
 
 
 def _mixed_leg_failure_answer(message: str, conversation_id: str | None) -> FinalAnswer:
