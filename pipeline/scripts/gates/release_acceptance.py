@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from decimal import Decimal
 import hashlib
 import json
 import math
@@ -387,7 +388,8 @@ def check_market_growth_evidence(
             details.append(f"{'|'.join(identity)}: invalid growth value: {exc}")
             failures += 1
             continue
-        if actual_value == -100.0:
+        sentinel_distance = abs(Decimal(str(actual_value)) + Decimal("100"))
+        if sentinel_distance <= Decimal(str(abs_tol)):
             details.append(f"{'|'.join(identity)}: -100 growth sentinel is forbidden")
             failures += 1
         if not all(math.isfinite(value) for value in (actual_value, expected_value)):
