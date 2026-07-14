@@ -18,6 +18,33 @@ from jw_chat_agent_poc.genos_config import (
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_AGGREGATE_TERMS = (
+    "합계",
+    "총계",
+    "합산",
+    "평균",
+    "개수",
+    "건수",
+    "몇 개",
+    "집계",
+    "비교",
+    "대비",
+    "총액",
+    "금액",
+    "총",
+    "전체",
+    "합",
+    "COUNT",
+    "SUM",
+    "AVG",
+)
+DEFAULT_AMOUNT_QUESTION_TERMS = ("금액", "총액", "매출", "sell-out", "sell out", "sales", "amount")
+DEFAULT_AMOUNT_COLUMN_TERMS = ("values lc si price", "sales", "amount", "revenue", "매출", "금액")
+DEFAULT_AVERAGE_TERMS = ("average", "avg", "평균", "단가", "unit price")
+DEFAULT_COUNT_QUESTION_TERMS = ("개수", "건수", "몇 개", "count")
+DEFAULT_QUANTITY_TERMS = ("quantity", "qty", "volume", "수량")
+
+
 @dataclass(frozen=True, slots=True)
 class SqlFileSource:
     logical_name: str
@@ -72,7 +99,6 @@ def query_uploaded_sql(
         aggregate = _is_aggregate_question(question)
         if aggregate and not _has_aggregate_contract(sql):
             return _aggregate_contract_failure()
-        result = _run_query(conversation_id, logical_name, sql)
         schema = next(
             (
                 item for item in schemas
@@ -80,6 +106,10 @@ def query_uploaded_sql(
             ),
             {},
         )
+        intent = _question_measure_intent(question)
+        if aggregate and intent and not _selected_columns_match_intent(intent, sql, schema):
+            return _column_intent_failure(intent)
+        result = _run_query(conversation_id, logical_name, sql)
         context = _render_result(source, result, schema)
         answer = ""
         if aggregate:
@@ -128,7 +158,11 @@ def _source_items(sources: Sequence[SqlFileSource]) -> tuple[dict[str, Any], ...
 
 
 def _is_schema_question(question: str) -> bool:
-    if _is_aggregate_question(question):
+    if re.search(
+        r"컬럼\s*의.*(?:합계|총계|합산|평균|총액|금액|SUM|AVG)",
+        question,
+        re.IGNORECASE,
+    ):
         return False
     return bool(
         re.search(
@@ -140,12 +174,10 @@ def _is_schema_question(question: str) -> bool:
 
 
 def _is_aggregate_question(question: str) -> bool:
-    return bool(
-        re.search(
-            r"(?:합계|총계|합산|평균|개수|건수|몇\s*개|집계|비교|대비|COUNT|SUM|AVG)",
-            question,
-            re.IGNORECASE,
-        )
+    return _contains_configured_term(
+        question,
+        "JW_CHAT_FILE_SQL_AGGREGATE_TERMS",
+        DEFAULT_AGGREGATE_TERMS,
     )
 
 
@@ -164,6 +196,19 @@ def _aggregate_contract_failure() -> SqlQueryOutcome:
         file_context="## 업로드 파일 SQL 결과\n상태: 확인불가\n" + answer,
         file_source_items=(),
         errors=("file SQL aggregate contract unavailable",),
+        answer_md=answer,
+    )
+
+
+def _column_intent_failure(intent: str) -> SqlQueryOutcome:
+    label = {"amount": "금액", "average": "평균", "quantity": "수량", "count": "건수"}.get(
+        intent, "요청"
+    )
+    answer = f"요청하신 {label} 열을 찾지 못했습니다. 열 이름을 지정해 주시겠습니까?"
+    return SqlQueryOutcome(
+        file_context="## 업로드 파일 SQL 결과\n상태: 확인불가\n" + answer,
+        file_source_items=(),
+        errors=("file SQL selected column intent mismatch",),
         answer_md=answer,
     )
 
@@ -409,13 +454,15 @@ def _run_query(
 def _compact_schema(question: str, schema: Mapping[str, Any]) -> dict[str, Any]:
     raw_columns = schema.get("columns")
     columns = [item for item in raw_columns if isinstance(item, dict)] if isinstance(raw_columns, list) else []
+    total_column_count = len(columns)
     cap = _max_schema_columns()
-    if len(columns) > cap:
+    if total_column_count > cap:
         tokens = _question_tokens(question)
+        question_months = _month_keys(question)
         matched = [
             item
             for item in columns
-            if any(token in str(item.get("source_name") or "").casefold() for token in tokens)
+            if _column_matches_question(item, tokens, question_months)
         ]
         identity = columns[: min(_identity_column_count(), cap)]
         selected: list[dict[str, Any]] = []
@@ -428,12 +475,22 @@ def _compact_schema(question: str, schema: Mapping[str, Any]) -> dict[str, Any]:
             if len(selected) >= cap:
                 break
         columns = selected
+    omitted_column_count = max(total_column_count - len(columns), 0)
     return {
         "logical_name": str(schema.get("logical_name") or ""),
         "file_name": str(schema.get("file_name") or ""),
         "sheet_name": str(schema.get("sheet_name") or ""),
         "query_table": "data",
         "columns": columns,
+        "schema_truncated": omitted_column_count > 0,
+        "total_column_count": total_column_count,
+        "omitted_column_count": omitted_column_count,
+        "selection_notice": (
+            "Schema was compacted; related columns may be omitted. "
+            "Return an empty plan rather than guessing when the requested measure is absent."
+            if omitted_column_count
+            else ""
+        ),
     }
 
 
@@ -536,13 +593,167 @@ def _is_select_only_candidate(sql: str) -> bool:
     return bool(sql) and bool(re.match(r"^\s*(?:SELECT|WITH)\b", sql, re.IGNORECASE))
 
 
-def _question_tokens(question: str) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            token.casefold()
-            for token in re.findall(r"[0-9A-Za-z가-힣_]{2,}", question)
-        )
+def _configured_terms(env_name: str, defaults: Sequence[str]) -> tuple[str, ...]:
+    raw = os.getenv(env_name)
+    if raw is None:
+        return tuple(defaults)
+    return tuple(term.strip() for term in raw.split(",") if term.strip())
+
+
+def _contains_configured_term(text: str, env_name: str, defaults: Sequence[str]) -> bool:
+    normalized = " ".join(text.casefold().split())
+    for raw_term in _configured_terms(env_name, defaults):
+        term = " ".join(raw_term.casefold().split())
+        if term in {"합", "총"}:
+            if re.search(
+                rf"(?<![0-9a-z가-힣]){re.escape(term)}(?=$|[\s?.,!은는이가을를의])",
+                normalized,
+            ):
+                return True
+        elif term in normalized:
+            return True
+    return False
+
+
+def _month_keys(text: str) -> frozenset[str]:
+    keys: set[str] = set()
+    patterns = (
+        r"(?<!\d)(20\d{2})\s*년\s*(1[0-2]|0?[1-9])\s*월",
+        r"(?<!\d)(20\d{2})[-./](1[0-2]|0?[1-9])(?!\d)",
     )
+    for pattern in patterns:
+        for year, month in re.findall(pattern, text, re.IGNORECASE):
+            keys.add(f"{int(year):04d}-{int(month):02d}")
+    for month, year in re.findall(
+        r"(?<!\d)(1[0-2]|0?[1-9])/(20\d{2})(?!\d)", text, re.IGNORECASE
+    ):
+        keys.add(f"{int(year):04d}-{int(month):02d}")
+    return frozenset(keys)
+
+
+def _column_matches_question(
+    column: Mapping[str, Any],
+    question_tokens: Sequence[str],
+    question_months: frozenset[str],
+) -> bool:
+    query_name = str(column.get("query_name") or "").casefold()
+    source_name = str(column.get("source_name") or "").casefold()
+    searchable = f"{query_name} {source_name}"
+    question_text = " ".join(question_tokens)
+    intent = _question_measure_intent(question_text)
+    if intent == "amount" and (
+        _is_average_column(source_name) or _is_quantity_column(source_name)
+    ):
+        return False
+    if any(token in searchable for token in question_tokens):
+        return True
+    if question_months and question_months.intersection(_month_keys(source_name)):
+        return True
+    if _is_amount_column(source_name) and not _is_average_column(source_name):
+        if _contains_configured_term(
+            question_text,
+            "JW_CHAT_FILE_SQL_AMOUNT_QUESTION_TERMS",
+            DEFAULT_AMOUNT_QUESTION_TERMS,
+        ):
+            return True
+        return _is_aggregate_question(question_text)
+    return False
+
+
+def _question_measure_intent(question: str) -> str | None:
+    if _contains_configured_term(question, "JW_CHAT_FILE_SQL_AVERAGE_TERMS", DEFAULT_AVERAGE_TERMS):
+        return "average"
+    if _contains_configured_term(
+        question,
+        "JW_CHAT_FILE_SQL_COUNT_QUESTION_TERMS",
+        DEFAULT_COUNT_QUESTION_TERMS,
+    ):
+        return "count"
+    if _contains_configured_term(question, "JW_CHAT_FILE_SQL_QUANTITY_TERMS", DEFAULT_QUANTITY_TERMS):
+        return "quantity"
+    if _contains_configured_term(
+        question,
+        "JW_CHAT_FILE_SQL_AMOUNT_QUESTION_TERMS",
+        DEFAULT_AMOUNT_QUESTION_TERMS,
+    ):
+        return "amount"
+    return None
+
+
+def _selected_columns_match_intent(
+    intent: str,
+    sql: str,
+    schema: Mapping[str, Any],
+) -> bool:
+    raw_columns = schema.get("columns")
+    columns = raw_columns if isinstance(raw_columns, list) else []
+    source_names = {
+        str(item.get("query_name") or "").casefold(): str(item.get("source_name") or "")
+        for item in columns
+        if isinstance(item, dict) and item.get("query_name")
+    }
+    targets = [
+        (function.casefold(), source_names.get(query_name.casefold(), ""))
+        for function, query_name in re.findall(
+            r"\b(SUM|AVG)\s*\(\s*([A-Za-z][A-Za-z0-9_]*)\s*\)",
+            sql,
+            re.IGNORECASE,
+        )
+    ]
+    targets = [(function, target) for function, target in targets if target]
+    if intent == "count":
+        return bool(
+            re.search(
+                r"\bCOUNT\s*\([^)]*\)\s+(?:AS\s+)?(?!applied_rows\b)[A-Za-z][A-Za-z0-9_]*",
+                sql,
+                re.IGNORECASE,
+            )
+        )
+    if not targets:
+        return False
+    if intent == "amount":
+        return all(
+            function == "sum" and _is_amount_column(target)
+            and not _is_average_column(target)
+            and not _is_quantity_column(target)
+            for function, target in targets
+        )
+    if intent == "average":
+        return all(
+            function == "avg" and _is_average_column(target)
+            for function, target in targets
+        )
+    if intent == "quantity":
+        return all(
+            function == "sum" and _is_quantity_column(target)
+            for function, target in targets
+        )
+    return True
+
+
+def _is_amount_column(name: str) -> bool:
+    return _contains_configured_term(
+        name,
+        "JW_CHAT_FILE_SQL_AMOUNT_COLUMN_TERMS",
+        DEFAULT_AMOUNT_COLUMN_TERMS,
+    )
+
+
+def _is_average_column(name: str) -> bool:
+    return _contains_configured_term(name, "JW_CHAT_FILE_SQL_AVERAGE_TERMS", DEFAULT_AVERAGE_TERMS)
+
+
+def _is_quantity_column(name: str) -> bool:
+    return _contains_configured_term(name, "JW_CHAT_FILE_SQL_QUANTITY_TERMS", DEFAULT_QUANTITY_TERMS)
+
+
+def _question_tokens(question: str) -> tuple[str, ...]:
+    tokens = [
+        token.casefold()
+        for token in re.findall(r"[0-9A-Za-z가-힣_]{2,}", question)
+    ]
+    tokens.extend(_month_keys(question))
+    return tuple(dict.fromkeys(tokens))
 
 
 def _markdown_cell(value: Any) -> str:
@@ -593,7 +804,7 @@ def _max_schema_tables() -> int:
 
 
 def _max_schema_columns() -> int:
-    return max(20, int(os.getenv("JW_CHAT_FILE_SQL_MAX_COLUMNS", "160")))
+    return max(20, int(os.getenv("JW_CHAT_FILE_SQL_MAX_COLUMNS", "192")))
 
 
 def _identity_column_count() -> int:

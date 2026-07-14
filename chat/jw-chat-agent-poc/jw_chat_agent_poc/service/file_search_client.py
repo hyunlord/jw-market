@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,6 +61,12 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
     if not context and not has_active_file:
         return None
     raw_sources = body.get("file_sources") or []
+    raw_sql_sources = body.get("sql_sources") or []
+    requested_names = _requested_file_names(question, raw_sources, raw_sql_sources)
+    if requested_names:
+        context = _filter_file_context(context, requested_names)
+        raw_sources = _filter_named_sources(raw_sources, requested_names)
+        raw_sql_sources = _filter_named_sources(raw_sql_sources, requested_names)
     sources = []
     items: list[dict[str, Any]] = []
     seen_items: set[tuple[str, str]] = set()
@@ -81,7 +88,7 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
                     items.append(item)
     errors = [str(error) for error in (body.get("errors") or []) if error]
     deterministic_answer = ""
-    sql_sources = _sql_sources(body.get("sql_sources"))
+    sql_sources = _sql_sources(raw_sql_sources)
     if body.get("sql_available") and sql_sources:
         sql_outcome = query_uploaded_sql(question, conversation_id, sql_sources)
         context = _join_contexts(context, sql_outcome.file_context)
@@ -165,6 +172,59 @@ def _sql_sources(raw_sources: Any) -> tuple[SqlFileSource, ...]:
 
 def _join_contexts(*values: str) -> str:
     return "\n\n".join(value.strip() for value in values if value.strip())
+
+
+def _requested_file_names(question: str, *source_groups: Any) -> frozenset[str]:
+    lowered = question.casefold()
+    names = {
+        match.casefold()
+        for match in re.findall(
+            r"[^\s/\\]+\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?)",
+            question,
+            re.IGNORECASE,
+        )
+    }
+    for group in source_groups:
+        if not isinstance(group, list):
+            continue
+        for source in group:
+            if not isinstance(source, dict):
+                continue
+            name = str(source.get("file_name") or "").strip()
+            stem = name.rsplit(".", 1)[0].casefold() if "." in name else ""
+            stem_pattern = (
+                rf"(?<![0-9a-z가-힣]){re.escape(stem)}"
+                r"(?=$|[\s.,?!()\[\]{}]|에서|의|은|는|이|가|을|를|와|과)"
+            )
+            if name and (
+                name.casefold() in lowered
+                or (len(stem) >= 2 and re.search(stem_pattern, lowered))
+            ):
+                names.add(name.casefold())
+    return frozenset(names)
+
+
+def _filter_named_sources(raw_sources: Any, requested_names: frozenset[str]) -> list[Any]:
+    if not isinstance(raw_sources, list):
+        return []
+    return [
+        source
+        for source in raw_sources
+        if isinstance(source, dict)
+        and str(source.get("file_name") or "").strip().casefold() in requested_names
+    ]
+
+
+def _filter_file_context(context: str, requested_names: frozenset[str]) -> str:
+    if not context:
+        return ""
+    blocks = re.split(r"\n\n(?=\[\d+\]\s)", context)
+    selected = [
+        block
+        for block in blocks
+        if any(name in block.casefold() for name in requested_names)
+    ]
+    return "\n\n".join(selected)
 
 
 def _active_file_fallback(

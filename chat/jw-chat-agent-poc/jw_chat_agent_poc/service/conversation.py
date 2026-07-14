@@ -30,6 +30,8 @@ class ConversationSlots:
     denominator: str | None = None
     ranked_brands: tuple[str, ...] = ()
     ranked: tuple[RankedBrandSlot, ...] = ()
+    file_name: str | None = None
+    file_measure: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

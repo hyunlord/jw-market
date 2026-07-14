@@ -47,7 +47,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
-from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
+from jw_chat_agent_poc.service.conversation import ConversationStore, ConversationTurn, PendingClarification
 from jw_chat_agent_poc.service.conversation_context import (
     extract_conversation_slots,
     resolve_anaphora,
@@ -475,6 +475,16 @@ def _answer_question(
         has_market_anchor = (
             market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
         )
+        inherit_file_context = has_file and not (
+            has_market_intent
+            and has_market_anchor
+            and not has_file_reference(routing_question)
+        )
+        file_question = (
+            _resolve_file_question(routing_question, previous_turn)
+            if inherit_file_context
+            else routing_question
+        )
         needs_scope_clarification = (
             has_file
             and has_market_intent
@@ -482,7 +492,7 @@ def _answer_question(
             and not has_file_reference(question)
         )
         context_scope = resolve_context_scope(
-            routing_question,
+            file_question,
             has_active_file=has_file,
             is_fresh_upload=bool(documents),
             has_market_intent=has_market_intent,
@@ -510,7 +520,7 @@ def _answer_question(
                 file_source_items,
                 _has_active_upload,
                 deterministic_file_answer,
-            ) = _delegated_file_context(question, state.conversation_id, file_context)
+            ) = _delegated_file_context(file_question, state.conversation_id, file_context)
             if not question.strip() and _has_file_signal(documents, delegated_file_context):
                 result = _file_only_ready_result(documents, delegated_file_context)
             else:
@@ -691,6 +701,28 @@ def _delegated_file_context(
     if not contexts:
         return None, (), has_active_upload, deterministic_answer
     return "\n\n".join(dict.fromkeys(contexts)), file_source_items, has_active_upload, deterministic_answer
+
+
+def _resolve_file_question(question: str, previous_turn: ConversationTurn | None) -> str:
+    if previous_turn is None:
+        return question
+    previous = previous_turn.question.strip()
+    resolved = question.strip()
+    file_match = re.search(r"(?P<name>[^\s]+\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?))", previous, re.IGNORECASE)
+    file_name = previous_turn.slots.file_name or (file_match.group("name") if file_match else "")
+    if file_name and re.search(r"(?:이|해당|그)\s*문서", resolved):
+        resolved = re.sub(r"(?:이|해당|그)\s*문서", file_name, resolved)
+    elif file_name and not re.search(r"\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?)", resolved, re.IGNORECASE):
+        resolved = f"{file_name}에서 {resolved}"
+
+    if not re.search(r"(?:합계|총계|합산|평균|개수|건수|집계|비교|총액|금액)", resolved):
+        inherited = re.search(r"(?:합계|총계|합산|평균|개수|건수|집계|비교|총액|금액)", previous)
+        if inherited:
+            resolved = f"{resolved.rstrip('? ')} {inherited.group(0)}는?"
+    file_measure = previous_turn.slots.file_measure or ""
+    if file_measure and file_measure.casefold() not in resolved.casefold():
+        resolved = f"{resolved.rstrip('? ')} {file_measure}는?"
+    return resolved
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:

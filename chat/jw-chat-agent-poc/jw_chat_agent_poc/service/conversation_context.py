@@ -37,6 +37,19 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     denominator = ""
     ranked: tuple[RankedBrandSlot, ...] = ()
     ranked_names: tuple[str, ...] = ()
+    file_name = ""
+    file_measure = ""
+
+    deterministic_file_answer = str(result.get("deterministic_file_answer") or "")
+    if deterministic_file_answer:
+        file_match = re.search(r"^파일:\s*(.+)$", deterministic_file_answer, re.MULTILINE)
+        measure_match = re.search(
+            r"^사용 열:\s*(.+?)(?=\n집계 함수:|\n적용 행 수:|\Z)",
+            deterministic_file_answer,
+            re.MULTILINE | re.DOTALL,
+        )
+        file_name = file_match.group(1).strip() if file_match else ""
+        file_measure = " ".join(measure_match.group(1).split()) if measure_match else ""
 
     for call in result.get("tool_calls", []):
         if not isinstance(call, dict):
@@ -66,6 +79,8 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         denominator=denominator or None,
         ranked_brands=ranked_names,
         ranked=ranked,
+        file_name=file_name or None,
+        file_measure=file_measure or None,
     )
 
 
