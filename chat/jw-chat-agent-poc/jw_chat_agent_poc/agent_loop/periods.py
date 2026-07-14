@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Final
 import re
 
+from jw_chat_agent_poc.common.periods import canonical_periods
+
 
 FIRST_AVAILABLE_PERIOD: Final[str] = "2021-01"
 LATEST_AVAILABLE_PERIOD: Final[str] = "2026-04"
@@ -33,7 +35,7 @@ def build_period_grounding(
     pre_resolved = _pre_resolved_periods(question, current_month or _default_current_month, available, latest_period)
     return AgentPeriodGrounding(
         available_months=available,
-        schema_periods=(*PERIOD_ALIASES, *available),
+        schema_periods=tuple(dict.fromkeys((*PERIOD_ALIASES, *available, *pre_resolved))),
         pre_resolved_periods=pre_resolved,
         first_period=first_period,
         latest_period=latest_period,
@@ -74,7 +76,7 @@ def _pre_resolved_periods(
     available: tuple[str, ...],
     latest_period: str,
 ) -> tuple[str, ...]:
-    periods: list[str] = []
+    periods = list(_available_explicit_periods(canonical_periods(question), available))
     for match in re.finditer(r"\d{1,2}\s*(?:달|개월)\s*전", question):
         period = _months_ago(match.group(0), current_month())
         if period in available:
@@ -85,6 +87,28 @@ def _pre_resolved_periods(
     if "작년" in question:
         periods.append("previous_year")
     return tuple(dict.fromkeys(periods))
+
+
+def _available_explicit_periods(
+    periods: tuple[str, ...],
+    available_months: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not available_months:
+        return ()
+    first_month, latest_month = available_months[0], available_months[-1]
+    available: list[str] = []
+    for period in periods:
+        if "-Q" not in period:
+            if period in available_months:
+                available.append(period)
+            continue
+        year, quarter_text = period.split("-Q", 1)
+        quarter = int(quarter_text)
+        first_quarter_month = f"{year}-{(quarter - 1) * 3 + 1:02d}"
+        last_quarter_month = f"{year}-{quarter * 3:02d}"
+        if first_month <= first_quarter_month and last_quarter_month <= latest_month:
+            available.append(period)
+    return tuple(available)
 
 
 def _month_span(start: str, end: str) -> tuple[str, ...]:
