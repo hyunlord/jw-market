@@ -89,8 +89,8 @@ CAUSE_RESPONSE_SCHEMA: Final = {
             "description": (
                 "원인분석 23섹션 payload. 주요 섹션: kpi, market_size_series, brand_ranking, "
                 "company_ranking, analysis_levels, analysis_level_market_status, level_top5_trend. "
-                "market_size_series.mom_growth_pct는 5년 고정 복리 기간성장률입니다. "
-                "UBIST는 CMGR(n=60), IQVIA는 CQGR(n=20)이며 5년 전 값이 없으면 최초값을 사용하되 n은 고정합니다. "
+                "market_size_series.mom_growth_pct는 선택 range의 고정 기준점 대비 연환산 복리성장률입니다. "
+                "최신점의 5년 전 값이 range에 있으면 그 값을, 없으면 range 내 최초 유효값을 모든 시점의 기준으로 사용합니다. "
                 "분모가 0 이하이거나 데이터 포인트가 하나뿐이면 null입니다. "
                 "기존 yoy_growth_pct는 단순 전년 대비 증감률입니다. "
                 "그 밖의 주요 섹션: "
@@ -200,10 +200,10 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 `brand_ranking`, `company_ranking`, `analysis_levels`, `analysis_level_market_status`,
 `level_top5_trend`, `target_customer_competition`입니다. 해당 source/범위에 데이터가 없거나
 채널축이 없으면 빈 배열(`[]`), 빈 객체(`{}`), 또는 `note`가 있는 fallback 객체로 반환됩니다.
-`market_size_series` 각 포인트의 `mom_growth_pct`는 5년 고정 복리 기간성장률입니다.
-UBIST는 CMGR(n=60), IQVIA는 CQGR(n=20)이며 5년 전 값이 없으면 최초값을 사용하되 n은 고정합니다.
-UBIST는 `((V_t / V_start)^(1/60) - 1) * 100`, IQVIA는
-`((V_t / V_start)^(1/20) - 1) * 100`을 사용합니다. 분모가 0 이하이거나 데이터 포인트가 하나뿐이면
+`market_size_series` 각 포인트의 `mom_growth_pct`는 선택 range의 고정 기준점 대비 연환산 복리성장률입니다.
+최신점의 5년 전 값이 range에 있으면 그 값을, 없으면 range 내 최초 유효값을 모든 시점의 기준으로 사용합니다.
+UBIST는 실제 경과 월수 `n`에 `((V_t / V_start)^(12/n) - 1) * 100`, IQVIA는
+실제 경과 분기수 `n`에 `((V_t / V_start)^(4/n) - 1) * 100`을 사용합니다. 분모가 0 이하이거나 데이터 포인트가 하나뿐이면
 null입니다. 기존 `yoy_growth_pct`는 단순 전년 대비 증감률이며 변경되지 않습니다.
 
 명시 view와 legacy view_kind 충돌은 422 `detail.error=invalid_dynamic_market_view`입니다.

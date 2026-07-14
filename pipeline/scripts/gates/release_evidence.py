@@ -271,10 +271,15 @@ def collect_segment_sum_evidence(
     }
 
 
-def _growth_rate(start: float | None, end: float | None, periods: int) -> float | None:
-    if start is None or end is None or start <= 0.0 or end < 0.0:
+def _growth_rate(
+    start: float | None,
+    end: float | None,
+    elapsed_periods: int,
+    periods_per_year: int,
+) -> float | None:
+    if start is None or end is None or start <= 0.0 or end < 0.0 or elapsed_periods <= 0:
         return None
-    return ((end / start) ** (1.0 / periods) - 1.0) * 100.0
+    return ((end / start) ** (periods_per_year / elapsed_periods) - 1.0) * 100.0
 
 
 def _five_year_prior_period(period: str) -> str:
@@ -308,6 +313,31 @@ def _series_growth_inputs(
     return start, end, baseline_period, end_period
 
 
+def _period_ordinal(period: str, periods_per_year: int) -> int:
+    year, suffix = period.split("-", 1)
+    offset = int(suffix.removeprefix("Q")) - 1
+    return int(year) * periods_per_year + offset
+
+
+def _series_growth_expectations(series: object, source: str) -> tuple[dict[str, float | None], str | None]:
+    values = _series_by_period(series)
+    start, _, baseline_period, _ = _series_growth_inputs(series)
+    if baseline_period is None:
+        return {}, None
+    periods_per_year = 4 if source == "iqvia_nsa" else 12
+    baseline_ordinal = _period_ordinal(baseline_period, periods_per_year)
+    expected = {
+        period: _growth_rate(
+            start,
+            value,
+            _period_ordinal(period, periods_per_year) - baseline_ordinal,
+            periods_per_year,
+        )
+        for period, value in values.items()
+    }
+    return expected, baseline_period
+
+
 def _actual_growth_from_payload(
     payload: object,
     expected_end_period: str | None,
@@ -332,6 +362,23 @@ def _actual_growth_from_payload(
     value = latest.get("mom_growth_pct")
     actual_period = str(latest.get("period") or "") or None
     return (None if value is None else float(value), actual_period)
+
+
+def _actual_growth_series(payload: object) -> dict[str, float | None]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("dynamic payload must be an object")
+    series = payload
+    for key in ("result", "data"):
+        if isinstance(series, dict) and isinstance(series.get(key), dict):
+            series = series[key]
+    points = series.get("market_size_series") if isinstance(series, dict) else None
+    if not isinstance(points, list) or not all(isinstance(point, dict) for point in points):
+        raise RuntimeError("dynamic payload missing market_size_series")
+    return {
+        str(point.get("period") or ""): None if point.get("mom_growth_pct") is None else float(point["mom_growth_pct"])
+        for point in points
+        if point.get("period")
+    }
 
 
 def collect_market_growth_evidence(
@@ -361,9 +408,15 @@ def collect_market_growth_evidence(
     def probe(row: Mapping[str, Any]) -> dict[str, object]:
         source = str(row["source"])
         market = str(row["atc4_code"])
-        periods = 20 if source == "iqvia_nsa" else 60
         start, end, baseline_period, end_period = _series_growth_inputs(row["market_size_series"])
-        expected = _growth_rate(start, end, periods)
+        periods_per_year = 4 if source == "iqvia_nsa" else 12
+        elapsed_periods = (
+            _period_ordinal(end_period, periods_per_year) - _period_ordinal(baseline_period, periods_per_year)
+            if end_period is not None and baseline_period is not None
+            else 0
+        )
+        expected = _growth_rate(start, end, elapsed_periods, periods_per_year)
+        expected_series, _ = _series_growth_expectations(row["market_size_series"], source)
         api_source = "iqvia" if source == "iqvia_nsa" else source
         body = {
             "view": "general",
@@ -374,20 +427,27 @@ def collect_market_growth_evidence(
         try:
             payload = fetcher(base_url, dynamic_path, method="POST", body=body, timeout_seconds=timeout_seconds)
             actual, actual_end_period = _actual_growth_from_payload(payload, end_period)
+            actual_series = _actual_growth_series(payload)
             error = None
         except RuntimeError as exc:
             actual = None
             actual_end_period = None
+            actual_series = {}
             error = str(exc)
         return {
             "market": market,
             "source": source,
-            "periods": periods,
+            "periods_per_year": periods_per_year,
+            "elapsed_periods": elapsed_periods,
             "expected": expected,
             "expected_baseline_period": baseline_period,
             "expected_end_period": end_period,
             "actual": actual,
             "actual_end_period": actual_end_period,
+            "point_checks": [
+                {"period": period, "expected": point_expected, "actual": actual_series.get(period)}
+                for period, point_expected in sorted(expected_series.items())
+            ],
             "error": error,
         }
 
