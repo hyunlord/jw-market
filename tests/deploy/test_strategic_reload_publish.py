@@ -1,10 +1,39 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from pipeline.scripts.deploy import strategic_reload_publish as publish
 from pipeline.scripts.deploy.mart_load_ops import PublishAction
 from pipeline.scripts.deploy.mart_load_verify import CanonicalDigest
+
+
+class RecordingCursor:
+    def __init__(self, connection: "RecordingConnection") -> None:
+        self.connection = connection
+
+    def __enter__(self) -> "RecordingCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.connection.executed.append((" ".join(sql.split()), params))
+
+    def fetchall(self) -> list[dict[str, object]]:
+        if not self.connection.results:
+            return []
+        return self.connection.results.pop(0)
+
+
+class RecordingConnection:
+    def __init__(self, results: list[list[dict[str, object]]] | None = None) -> None:
+        self.executed: list[tuple[str, object]] = []
+        self.results = list(results or [[], []])
+
+    def cursor(self) -> RecordingCursor:
+        return RecordingCursor(self)
 
 
 def test_strategic_reload_tables_are_exact_eight_body_tables() -> None:
@@ -143,3 +172,184 @@ def test_publish_restores_successful_backups_after_later_failure(monkeypatch) ->
 
     assert published == ["mart_strategic_ml_brand_metric", "mart_strategic_cd_brand_metric"]
     assert restored == ["mart_strategic_ml_brand_metric"]
+
+
+def test_f124a_publish_uses_one_two_move_rename_after_preflight(monkeypatch) -> None:
+    conn = RecordingConnection()
+
+    def fake_exists(_conn: object, _db: str, table: str) -> bool:
+        return table in {
+            publish.F124A_LIVE_TABLE,
+            publish.F124A_STAGING_TABLE,
+        }
+
+    monkeypatch.setattr(publish, "table_exists", fake_exists)
+    monkeypatch.setattr(
+        publish,
+        "table_digest",
+        lambda *_args: CanonicalDigest(row_count=916_076, sha256="stage-sha"),
+    )
+
+    action = publish.publish_f124a_general_dimension(
+        conn,
+        target_db=publish.F124A_TARGET_DB,
+        run_id="run123",
+        lock_wait_timeout_seconds=7,
+    )
+
+    rename_sql = [sql for sql, _params in conn.executed if sql.startswith("RENAME TABLE")]
+    assert len(rename_sql) == 1
+    assert rename_sql[0].count(" TO ") == 2
+    assert publish.F124A_STAGING_TABLE in rename_sql[0]
+    assert action.backup_table == f"{publish.F124A_LIVE_TABLE}__old_run123"
+    assert any(sql == "SET SESSION lock_wait_timeout=%s" and params == (7,) for sql, params in conn.executed)
+    transaction_queries = [
+        (sql, params) for sql, params in conn.executed if "information_schema.innodb_trx" in sql
+    ]
+    assert len(transaction_queries) == 1
+    assert "information_schema.processlist" in transaction_queries[0][0]
+    assert transaction_queries[0][1] == (publish.F124A_TARGET_DB,)
+    metadata_queries = [
+        (sql, params) for sql, params in conn.executed if "performance_schema.metadata_locks" in sql
+    ]
+    assert len(metadata_queries) == 1
+    assert "performance_schema.threads" in metadata_queries[0][0]
+
+
+def test_f124a_publish_rejects_missing_staging_table(monkeypatch) -> None:
+    conn = RecordingConnection()
+    monkeypatch.setattr(
+        publish,
+        "table_exists",
+        lambda _conn, _db, table: table == publish.F124A_LIVE_TABLE,
+    )
+
+    try:
+        publish.publish_f124a_general_dimension(
+            conn,
+            target_db=publish.F124A_TARGET_DB,
+            run_id="run123",
+        )
+    except RuntimeError as exc:
+        assert "staging table missing" in str(exc)
+    else:
+        raise AssertionError("missing staging table must fail")
+
+    assert not any(sql.startswith("RENAME TABLE") for sql, _params in conn.executed)
+
+
+def test_f124a_publish_rejects_active_transaction_or_metadata_lock(monkeypatch) -> None:
+    conn = RecordingConnection(
+        results=[
+            [{"trx_mysql_thread_id": 42}],
+            [{"owner_thread_id": 84}],
+        ]
+    )
+    monkeypatch.setattr(
+        publish,
+        "table_exists",
+        lambda _conn, _db, table: table in {publish.F124A_LIVE_TABLE, publish.F124A_STAGING_TABLE},
+    )
+
+    try:
+        publish.publish_f124a_general_dimension(
+            conn,
+            target_db=publish.F124A_TARGET_DB,
+            run_id="run123",
+        )
+    except RuntimeError as exc:
+        assert "active transaction" in str(exc)
+    else:
+        raise AssertionError("active transaction must fail")
+
+    assert not any(sql.startswith("RENAME TABLE") for sql, _params in conn.executed)
+
+
+def test_candidate_image_probe_rejects_unpullable_digest(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[:2] == ["kubectl", "run"]:
+            return subprocess.CompletedProcess(command, 0, stdout="pod/f124a-image-run123 created\n", stderr="")
+        if command[:2] == ["kubectl", "wait"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="ImagePullBackOff")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(publish.subprocess, "run", fake_run)
+
+    try:
+        publish.probe_candidate_image_pullable(
+            "registry.example/app@sha256:" + "c" * 64,
+            namespace="llmops",
+            run_id="run123",
+            timeout_seconds=1,
+        )
+    except publish.ImagePullPreflightError as exc:
+        assert "ImagePullBackOff" in str(exc)
+    else:
+        raise AssertionError("unpullable image must fail")
+
+    assert any(command[:2] == ["kubectl", "delete"] for command in calls)
+
+
+def test_f124a_main_returns_one_when_staging_is_missing(monkeypatch, capsys) -> None:
+    class Connection:
+        def close(self) -> None:
+            pass
+
+    args = type(
+        "Args",
+        (),
+        {
+            "f124a_general_dimension": True,
+            "build_db": None,
+            "target_db": publish.F124A_TARGET_DB,
+            "run_id": "run123",
+            "catalog_root": None,
+            "allow_operating_target": False,
+            "dry_run": False,
+            "candidate_image": "registry.example/app@sha256:" + "a" * 64,
+            "pull_probe_namespace": "llmops",
+            "lock_wait_timeout": 10,
+        },
+    )()
+    monkeypatch.setattr(publish, "parse_args", lambda _argv=None: args)
+    monkeypatch.setattr(publish, "probe_candidate_image_pullable", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish, "connect_admin", Connection)
+    monkeypatch.setattr(
+        publish,
+        "publish_f124a_general_dimension",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("staging table missing")),
+    )
+
+    assert publish.main([]) == 1
+    assert "staging table missing" in capsys.readouterr().err
+
+
+def test_f124a_main_returns_one_when_digest_is_unpullable(monkeypatch, capsys) -> None:
+    args = type(
+        "Args",
+        (),
+        {
+            "f124a_general_dimension": True,
+            "build_db": None,
+            "target_db": publish.F124A_TARGET_DB,
+            "run_id": "run123",
+            "catalog_root": None,
+            "allow_operating_target": False,
+            "dry_run": False,
+            "candidate_image": "registry.example/app@sha256:" + "b" * 64,
+            "pull_probe_namespace": "llmops",
+            "lock_wait_timeout": 10,
+        },
+    )()
+    monkeypatch.setattr(publish, "parse_args", lambda _argv=None: args)
+    monkeypatch.setattr(
+        publish,
+        "probe_candidate_image_pullable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(publish.ImagePullPreflightError("ImagePullBackOff")),
+    )
+
+    assert publish.main([]) == 1
+    assert "ImagePullBackOff" in capsys.readouterr().err
