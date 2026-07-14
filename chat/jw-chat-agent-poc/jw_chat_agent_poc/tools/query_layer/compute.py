@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 import math
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.tools.query_layer.render import level_segments, metric_name, source_label
 from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, dimension_value
-from jw_chat_agent_poc.tools.query_layer.store import MartRecord, MartSnapshot
+from jw_chat_agent_poc.tools.query_layer.store import FAILED_VALUE_STATUSES, MartRecord, MartSnapshot
 
 
 def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record: MartRecord, metric: str, period: str) -> dict[str, Any]:
@@ -15,6 +16,7 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
     if value is None:
         raise LookupError(f"mart metric row missing or failed: market={market} source={source} brand={record.brand_name} period={period}")
     market_value = snapshot.market_value_or_none(market, period, source)
+    hhi = snapshot.hhi(market, period, source)
     series_periods = snapshot.periods(market, source)[-10:]
     structure = market_structure(snapshot, market, source)
     data = {
@@ -32,7 +34,7 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
         "source_status": snapshot.value_status(record, period),
         "market_size_recent_krw": market_value,
         "market_size_억원": round(market_value / 100_000_000, 2) if market_value is not None else None,
-        "hhi_recent": round(snapshot.hhi(market, period, source), 4),
+        "hhi_recent": round(hhi, 4) if hhi is not None else None,
         "brand_value_series_10pt": snapshot.brand_series(market, record.brand_name, series_periods, source),
         "market_size_series": snapshot.market_series(market, series_periods, source),
         "level": "Brand",
@@ -219,12 +221,13 @@ def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anc
                 "from_ms_pct": first.get("ms_pct"),
                 "to_period": latest.get("period"),
                 "to_ms_pct": latest.get("ms_pct"),
-                "share_delta_pctp": round(float(latest.get("ms_pct") or 0) - float(first.get("ms_pct") or 0), 4),
+                "share_delta_pctp": _difference_or_none(latest.get("ms_pct"), first.get("ms_pct"), digits=4),
                 "value_recent": latest.get("value_krw"),
                 "value_recent_억원": latest.get("value_억원"),
-                "value_delta_krw": float(latest.get("value_krw") or 0) - float(first.get("value_krw") or 0),
+                "value_delta_krw": _difference_or_none(latest.get("value_krw"), first.get("value_krw")),
                 "series": series,
                 "company": record.company(),
+                **_missing_period_metadata(series),
             }
         )
     return out
@@ -265,12 +268,13 @@ def grouped_trends(snapshot: MartSnapshot, market: str, source: str, spec: Mappi
                 "from_ms_pct": first.get("ms_pct"),
                 "to_period": latest.get("period"),
                 "to_ms_pct": latest.get("ms_pct"),
-                "share_delta_pctp": round(float(latest.get("ms_pct") or 0) - float(first.get("ms_pct") or 0), 4),
+                "share_delta_pctp": _difference_or_none(latest.get("ms_pct"), first.get("ms_pct"), digits=4),
                 "value_recent": latest.get("value_krw"),
                 "value_recent_억원": latest.get("value_억원"),
-                "value_delta_krw": float(latest.get("value_krw") or 0) - float(first.get("value_krw") or 0),
-                "value_delta_억원": round((float(latest.get("value_krw") or 0) - float(first.get("value_krw") or 0)) / 100_000_000, 2),
+                "value_delta_krw": _difference_or_none(latest.get("value_krw"), first.get("value_krw")),
+                "value_delta_억원": _scaled_difference_or_none(latest.get("value_krw"), first.get("value_krw"), 100_000_000, 2),
                 "series": series,
+                **_missing_period_metadata(series),
             }
         )
     return out
@@ -280,38 +284,53 @@ def brand_yoy_data(snapshot: MartSnapshot, market: str, source: str, brand: str)
     latest = snapshot.latest_period(market, source)
     prior = f"{int(latest[:4]) - 1}{latest[4:]}" if len(latest) == 7 else ""
     record = snapshot.record(market, brand, source)
-    current = snapshot.value(record, latest)
-    base = snapshot.value(record, prior) if prior else 0.0
-    growth = (current / base - 1) * 100 if base else 0.0
-    return {
+    current = snapshot.value_or_none(record, latest)
+    base = snapshot.value_or_none(record, prior) if prior else None
+    missing_periods = [period for period, value in ((prior, base), (latest, current)) if period and value is None]
+    computable = current is not None and base is not None
+    growth = (current / base - 1) * 100 if computable and base != 0 else None
+    result = {
         "brand": brand,
         "metric": "yoy_growth",
         "period": f"{prior}→{latest}" if prior else latest,
         "from_period": prior,
         "to_period": latest,
         "from_sales_krw": base,
-        "from_sales_억원": round(base / 100_000_000, 2),
+        "from_sales_억원": round(base / 100_000_000, 2) if base is not None else None,
         "to_sales_krw": current,
-        "to_sales_억원": round(current / 100_000_000, 2),
-        "sales_delta_krw": current - base,
-        "sales_delta_억원": round((current - base) / 100_000_000, 2),
-        "growth_pct": round(growth, 4),
+        "to_sales_억원": round(current / 100_000_000, 2) if current is not None else None,
+        "sales_delta_krw": current - base if computable else None,
+        "sales_delta_억원": round((current - base) / 100_000_000, 2) if computable else None,
+        "growth_pct": round(growth, 4) if growth is not None else None,
+        "growth_unavailable_reason": "missing_operand" if missing_periods else "zero_denominator" if computable and base == 0 else None,
         "brand_value_series_10pt": snapshot.brand_series(market, brand, (prior, latest), source) if prior else snapshot.brand_series(market, brand, (latest,), source),
     }
+    result.update(_missing_period_metadata_from_periods(missing_periods, fail_closed=True))
+    return result
 
 
 def brand_average_share_data(snapshot: MartSnapshot, market: str, source: str, brand: str, count: int) -> dict[str, Any]:
     periods = snapshot.periods(market, source)[-max(1, min(count, 24)) :]
     series = snapshot.brand_series(market, brand, periods, source)
-    shares = [float(item.get("ms_pct") or 0.0) for item in series]
-    avg = sum(shares) / len(shares) if shares else 0.0
-    return {
+    shares = [float(item["ms_pct"]) for item in series if isinstance(item.get("ms_pct"), int | float)]
+    missing_periods = [str(item["period"]) for item in series if item.get("value_krw") is None]
+    ratio_unavailable_periods = [
+        str(item["period"])
+        for item in series
+        if item.get("value_krw") is not None and item.get("ms_pct") is None
+    ]
+    avg = sum(shares) / len(shares) if shares else None
+    result = {
         "brand": brand,
         "metric": "average_share",
         "period": f"{periods[0]}→{periods[-1]}" if periods else "latest",
-        "avg_ms_pct": round(avg, 4),
+        "avg_ms_pct": round(avg, 4) if avg is not None else None,
+        "observation_count_used": len(shares),
         "brand_value_series_10pt": series,
     }
+    result.update(_missing_period_metadata_from_periods(missing_periods, excluded_from_calculation=True))
+    result.update(_ratio_unavailable_metadata(ratio_unavailable_periods))
+    return result
 
 
 def _ranked_group_rows(snapshot: MartSnapshot, market: str, source: str, key: str, period: str, filters: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -319,7 +338,7 @@ def _ranked_group_rows(snapshot: MartSnapshot, market: str, source: str, key: st
     rows = []
     for name, value in grouped.items():
         denominator = _share_denominator(snapshot, market, source, key, period, filters, name, grouped)
-        rows.append({"brand": name, "name": name, "value": value, "ms_recent_pct": value / denominator * 100 if denominator else 0.0})
+        rows.append({"brand": name, "name": name, "value": value, "ms_recent_pct": value / denominator * 100 if denominator is not None and denominator != 0 else None})
     rows.sort(key=lambda item: item["value"], reverse=True)
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
@@ -375,19 +394,19 @@ def _share_denominator(
     filters: Mapping[str, Any],
     label: str,
     grouped: Mapping[str, float],
-) -> float:
+) -> float | None:
     if key in {"product", "brand"} and filters.get("brand"):
-        return snapshot.market_value(market, period, source)
+        return snapshot.market_value_or_none(market, period, source)
     if key == "channel" and filters.get("brand"):
-        return sum(_period_value(_nested(record.channel_data, label), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.channel_data, label), period) for record in snapshot.market_records(market, source))
     if key == "specialty" and filters.get("brand"):
-        return sum(_period_value(_nested(record.specialty_data, label), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.specialty_data, label), period) for record in snapshot.market_records(market, source))
     if filters.get("channel"):
         channel = str(filters["channel"])
-        return sum(_period_value(_nested(record.channel_data, channel), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.channel_data, channel), period) for record in snapshot.market_records(market, source))
     if filters.get("specialty"):
         specialty = str(filters["specialty"])
-        return sum(_period_value(_nested(record.specialty_data, specialty), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.specialty_data, specialty), period) for record in snapshot.market_records(market, source))
     return sum(grouped.values())
 
 
@@ -404,11 +423,9 @@ def _series_for_group(
     for period in periods:
         rows = _ranked_group_rows(snapshot, market, source, key, period, filters)
         row = next((item for item in rows if item["name"] == label), None)
-        if row is None:
-            continue
-        value = float(row.get("value") or 0.0)
-        rank = snapshot.rank(market, label, period, source) if key in {"product", "brand"} else row.get("rank")
-        out.append({"period": period, "value_krw": value, "value_억원": round(value / 100_000_000, 2), "ms_pct": row.get("ms_recent_pct"), "rank": rank})
+        value = float(row["value"]) if row is not None and isinstance(row.get("value"), int | float) else None
+        rank = snapshot.rank(market, label, period, source) if key in {"product", "brand"} and value is not None else row.get("rank") if row else None
+        out.append({"period": period, "value_krw": value, "value_억원": round(value / 100_000_000, 2) if value is not None else None, "ms_pct": row.get("ms_recent_pct") if row else None, "rank": rank})
     return out
 
 
@@ -454,20 +471,78 @@ def _nested(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _period_value(history: Mapping[str, Any], period: str) -> float:
-    value = _period_value_or_none(history, period)
-    return value if value is not None else 0.0
-
-
 def _period_value_or_none(history: Mapping[str, Any], period: str) -> float | None:
     row = history.get(period)
     if isinstance(row, Mapping):
         status = str(row.get("source_status", row.get("status")) or "OK")
-        if status in {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}:
+        if status in FAILED_VALUE_STATUSES:
             return None
         value = row.get("raw_value")
         return float(value) if isinstance(value, int | float) else None
     return None
+
+
+def _sum_known(values: Iterable[float | None]) -> float | None:
+    known = [float(value) for value in values if value is not None]
+    return sum(known) if known else None
+
+
+def _difference_or_none(current: Any, previous: Any, *, digits: int | None = None) -> float | None:
+    if not isinstance(current, int | float) or not isinstance(previous, int | float):
+        return None
+    value = float(current) - float(previous)
+    return round(value, digits) if digits is not None else value
+
+
+def _scaled_difference_or_none(current: Any, previous: Any, scale: float, digits: int) -> float | None:
+    difference = _difference_or_none(current, previous)
+    return round(difference / scale, digits) if difference is not None else None
+
+
+def _missing_period_metadata(series: list[dict[str, Any]]) -> dict[str, Any]:
+    missing = [str(point["period"]) for point in series if point.get("value_krw") is None]
+    ratio_unavailable = [
+        str(point["period"])
+        for point in series
+        if point.get("value_krw") is not None and point.get("ms_pct") is None
+    ]
+    return {
+        **_missing_period_metadata_from_periods(missing),
+        **_ratio_unavailable_metadata(ratio_unavailable),
+    }
+
+
+def _missing_period_metadata_from_periods(
+    periods: list[str],
+    *,
+    excluded_from_calculation: bool = False,
+    fail_closed: bool = False,
+) -> dict[str, Any]:
+    missing = list(dict.fromkeys(period for period in periods if period))
+    if not missing:
+        return {}
+    joined = ", ".join(missing)
+    if fail_closed:
+        note = f"{joined} 데이터가 없어 계산할 수 없습니다"
+    elif excluded_from_calculation:
+        note = f"{joined} 데이터가 없어 해당 기간을 제외하고 계산했습니다"
+    else:
+        note = f"{joined} 데이터가 없어 해당 기간을 제외했습니다"
+    return {
+        "missing_periods": missing,
+        "data_availability_note": note,
+    }
+
+
+def _ratio_unavailable_metadata(periods: list[str]) -> dict[str, Any]:
+    unavailable = list(dict.fromkeys(period for period in periods if period))
+    if not unavailable:
+        return {}
+    joined = ", ".join(unavailable)
+    return {
+        "ratio_unavailable_periods": unavailable,
+        "ratio_availability_note": f"{joined} 분모가 0이거나 없어 비율을 계산할 수 없습니다",
+    }
 
 
 def _int(value: Any, default: int) -> int:

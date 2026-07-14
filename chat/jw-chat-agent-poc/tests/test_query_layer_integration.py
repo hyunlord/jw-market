@@ -437,7 +437,9 @@ def test_query_layer_falls_back_from_failed_requested_period_and_keeps_split_str
         }
     ]
     series_periods = [item["period"] for item in data["brand_value_series_10pt"]]
-    assert series_periods == ["2025-Q3", "2025-Q4"]
+    assert series_periods == ["2025-Q3", "2025-Q4", "2026-04"]
+    assert data["brand_value_series_10pt"][-1]["value_krw"] is None
+    assert data["brand_value_series_10pt"][-1]["ms_pct"] is None
     assert "0.00억원" not in result["summary_text"]
     assert "MS 0.00%" not in result["summary_text"]
     fact_md = answer_fact_markdown([result], [result["source"]])

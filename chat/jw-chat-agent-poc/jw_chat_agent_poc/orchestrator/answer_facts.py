@@ -565,6 +565,7 @@ def _required_yoy_growth(data: dict[str, Any], brand: str) -> str:
         f"비교 매출 {eok_value(data.get('to_sales_억원'), data.get('to_sales_krw'))}",
         f"매출 변화 {eok_value(data.get('sales_delta_억원'), data.get('sales_delta_krw'))}",
         f"성장률 {pct_value(data.get('growth_pct'))}",
+        str(data.get("data_availability_note") or ""),
     ]
     return " ".join(part for part in parts if part)
 
@@ -575,6 +576,8 @@ def _required_average_share(data: dict[str, Any], brand: str) -> str:
         f"{brand} 평균 점유율",
         period,
         pct_value(data.get("avg_ms_pct")),
+        str(data.get("data_availability_note") or ""),
+        str(data.get("ratio_availability_note") or ""),
     ]
     return " ".join(part for part in parts if part)
 
@@ -1245,6 +1248,8 @@ def _metric_facts(
     _append(rows, "비교 브랜드 매출 변화율", pct_value(data.get("comparison_sales_delta_pct")))
     _append(rows, "YoY 성장률", pct_value(data.get("growth_pct")))
     _append(rows, "평균 점유율", pct_value(data.get("avg_ms_pct")))
+    _append(rows, "데이터 상태", data.get("data_availability_note"))
+    _append(rows, "비율 상태", data.get("ratio_availability_note"))
     _append(rows, "기준 점유율", pct_value(data.get("from_ms_pct")))
     _append(rows, "비교 점유율", pct_value(data.get("to_ms_pct")))
     _append(rows, "점유율 변화", pct_value(data.get("ms_delta_pct")))

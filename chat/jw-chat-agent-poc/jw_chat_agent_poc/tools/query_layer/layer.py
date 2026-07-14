@@ -14,6 +14,8 @@ from jw_chat_agent_poc.tools.query_layer.compute import (
     top_trend,
 )
 from jw_chat_agent_poc.tools.query_layer.render import (
+    format_eok,
+    format_pct,
     level_segments,
     metric_name,
     metric_summary,
@@ -166,6 +168,7 @@ class StrategicQueryLayer:
         rows = ranked[:10]
         result_id = self._results.put(rows)
         structure = market_structure(snapshot, market, source)
+        hhi = snapshot.hhi(market, latest, source)
         render_data: dict[str, Any] = {
             "market": market,
             "market_id": market,
@@ -178,9 +181,9 @@ class StrategicQueryLayer:
             "anchor_brand": brand,
             "member_brands": tuple(row["brand"] for row in ranked),
             "total_brands_in_market": len(ranked),
-            "market_size_recent_krw": snapshot.market_value(market, latest, source),
-            "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
-            "hhi_recent": round(snapshot.hhi(market, latest, source), 4),
+            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, source),
+            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, source)),
+            "hhi_recent": round(hhi, 4) if hhi is not None else None,
             "level_segments": level_segments(rows),
             "source_label": source_label(source),
             "query_result_id": result_id,
@@ -208,7 +211,9 @@ class StrategicQueryLayer:
         if not ranked:
             raise LookupError(f"mart market period not found: market={market} period={selected_period}")
         rows = ranked[:10]
-        market_value = snapshot.market_value(market, selected_period, source)
+        market_value = snapshot.market_value_or_none(market, selected_period, source)
+        if market_value is None:
+            raise LookupError(f"mart market period value missing: market={market} period={selected_period}")
         structure = market_structure(snapshot, market, source)
         render_data: dict[str, Any] = {
             "market": market,
@@ -280,8 +285,8 @@ class StrategicQueryLayer:
             "level": "Brand",
             "level_segments": level_segments(ranked),
             "level_top5_trend_series": top_trend(snapshot, market, source, latest, brand, limit=max(limit, 5)),
-            "market_size_recent_krw": snapshot.market_value(market, latest, source),
-            "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
+            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, source),
+            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, source)),
         }
         if structure:
             data["market_structure"] = structure
@@ -343,8 +348,8 @@ class StrategicQueryLayer:
                     "source": source_label(source),
                     "market": market,
                     "period": latest,
-                    "sales": f"{float(row.get('value') or 0.0) / 100_000_000:,.2f}억원",
-                    "market_share": f"{float(row.get('ms_recent_pct') or 0.0):.2f}%",
+                    "sales": format_eok(_eok_or_none(row.get("value"))),
+                    "market_share": format_pct(row.get("ms_recent_pct")),
                 }
             )
             if len(rows) >= max(1, min(limit, 10)):
@@ -363,7 +368,7 @@ class StrategicQueryLayer:
             row = _portfolio_decline_row(snapshot, brand, str(item.get("market_id") or ""), str(item.get("market_name") or ""), lookback_points)
             if row is not None:
                 rows.append(row)
-        rows.sort(key=lambda row: float(row.get("share_delta_pctp") or 0.0))
+        rows.sort(key=lambda row: float(row["share_delta_pctp"]))
         result_id = self._results.put(rows)
         sources = tuple(dict.fromkeys(str(row.get("source") or "") for row in rows if row.get("source")))
         source = "/".join(source_label(source) for source in sources) if sources else "UBIST/IQVIA NSA"
@@ -597,8 +602,10 @@ def _portfolio_decline_row(
             if len(periods) < 2:
                 continue
             start, end = _portfolio_period_pair(periods, lookback_points)
-            start_ms = snapshot.share(market, record, start, source)
-            end_ms = snapshot.share(market, record, end, source)
+            start_ms = snapshot.share_or_none(market, record, start, source)
+            end_ms = snapshot.share_or_none(market, record, end, source)
+            if start_ms is None or end_ms is None:
+                continue
             delta = round(end_ms - start_ms, 4)
             if delta >= 0:
                 return None
@@ -612,8 +619,8 @@ def _portfolio_decline_row(
                 "from_ms_pct": start_ms,
                 "to_ms_pct": end_ms,
                 "share_delta_pctp": delta,
-                "from_sales_krw": snapshot.value(record, start),
-                "to_sales_krw": snapshot.value(record, end),
+                "from_sales_krw": snapshot.value_or_none(record, start),
+                "to_sales_krw": snapshot.value_or_none(record, end),
                 "rank": snapshot.rank(market, brand, end, source),
                 "top_gainers": _portfolio_gainers(snapshot, market, source, start, end, brand),
             }
@@ -659,8 +666,10 @@ def _portfolio_gainers(
     for record in snapshot.market_records(market, source):
         if record.brand_name == declined_brand or start not in record.metric_history or end not in record.metric_history:
             continue
-        start_ms = snapshot.share(market, record, start, source)
-        end_ms = snapshot.share(market, record, end, source)
+        start_ms = snapshot.share_or_none(market, record, start, source)
+        end_ms = snapshot.share_or_none(market, record, end, source)
+        if start_ms is None or end_ms is None:
+            continue
         delta = round(end_ms - start_ms, 4)
         if delta <= 0:
             continue
@@ -670,12 +679,12 @@ def _portfolio_gainers(
                 "from_ms_pct": start_ms,
                 "to_ms_pct": end_ms,
                 "share_delta_pctp": delta,
-                "from_sales_krw": snapshot.value(record, start),
-                "to_sales_krw": snapshot.value(record, end),
+                "from_sales_krw": snapshot.value_or_none(record, start),
+                "to_sales_krw": snapshot.value_or_none(record, end),
                 "rank": snapshot.rank(market, record.brand_name, end, source),
             }
         )
-    gainers.sort(key=lambda row: float(row.get("share_delta_pctp") or 0.0), reverse=True)
+    gainers.sort(key=lambda row: float(row["share_delta_pctp"]), reverse=True)
     return gainers[:3]
 
 
@@ -687,6 +696,10 @@ def _portfolio_period_label(rows: list[dict[str, Any]]) -> str:
     if len(starts) == 1 and len(ends) == 1:
         return f"{starts[0]}→{ends[0]}"
     return "최근 관측기간"
+
+
+def _eok_or_none(value: Any) -> float | None:
+    return round(float(value) / 100_000_000, 2) if isinstance(value, int | float) else None
 
 
 def _portfolio_summary(rows: list[dict[str, Any]], period: str) -> str:
