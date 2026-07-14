@@ -1,0 +1,119 @@
+# cache_brand_elements weekly full refresh.
+#
+# Registered suspended (suspend: true) on 2026-07-13 — resume is a jw market
+# decision. Before resuming:
+#   1. Rebuild/point the image at a revision that includes the alias-matching
+#      fixes (9136f025, 0144d8c9, 3befff26, e48e31c7); the in-script lineage
+#      guard below aborts (exit 21) if the baked builder predates them.
+#   2. Confirm AGENT3_DB_NAME still points at the schema that actually holds
+#      agent3_brand_strength (d2 as of 2026-07-13; the builder default
+#      "agent3" does not exist in-cluster and a stale jw_mart copy does).
+#
+# Schedule: weekly, Sun 21:30 UTC (Mon 06:30 KST) — after the daily
+# jw-cache-refresh-daily (20:00 UTC) so the cache_deep_analysis* brand
+# universe is fresh. Weekly cadence keeps every row well inside the 35-day
+# TTL and re-captures brands newly added to the deep-analysis caches
+# (serving refreshes stale rows only; cache misses are never backfilled
+# at request time).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-brand-elements-refresh-weekly
+  namespace: llmops
+  labels:
+    app: jw-brand-elements-refresh
+    component: cache-brand-elements
+spec:
+  schedule: '30 21 * * 0'
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: 'false'
+          labels:
+            app: jw-brand-elements-refresh
+            component: cache-brand-elements
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: enabled
+          containers:
+          - name: brand-elements-refresh
+            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:321a79cf31c35b2beb8944e20b3c0af3f0c6b6f00e69e9c085284cde1bf581a2
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/bash
+            - -lc
+            args:
+            - |
+              set -euo pipefail
+              test "${MARIADB_DATABASE}" = "jw_mart_d2_stage_20260630_r2"
+              test "${AGENT3_DB_NAME}" = "jw_mart_d2_stage_20260630_r2"
+              APPDIR=/app
+              if [ ! -f "${APPDIR}/pipeline/scripts/etl/cache_brand_elements.py" ]; then
+                APPDIR=/workspace
+              fi
+              if [ ! -f "${APPDIR}/pipeline/scripts/etl/cache_brand_elements.py" ]; then
+                echo "ABORT: cache_brand_elements.py not found in image"
+                exit 20
+              fi
+              # Lineage guard: refuse to run a builder baked before the
+              # alias-matching fixes (would silently mis-attribute strength
+              # rows across compact-name duplicates such as 리바로 브이/리바로브이).
+              if ! grep -q "ambiguous_compact" "${APPDIR}/pipeline/scripts/etl/cache_brand_elements.py" \
+                 || ! grep -q "ambiguous_source_compact" "${APPDIR}/pipeline/scripts/etl/cache_deep_analysis_brand_factors.py"; then
+                echo "ABORT: baked builder predates alias-matching fixes (9136f025..e48e31c7)"
+                exit 21
+              fi
+              cd "${APPDIR}"
+              PYTHON_BIN="${PYTHON_BIN:-python3}"
+              command -v "${PYTHON_BIN}" >/dev/null 2>&1 || PYTHON_BIN=python
+              echo "BRAND_ELEMENTS_REFRESH_START $(date -u +%Y-%m-%dT%H:%M:%SZ) database=${MARIADB_DATABASE} agent3_schema=${AGENT3_DB_NAME}"
+              "${PYTHON_BIN}" pipeline/scripts/etl/cache_brand_elements.py \
+                --ensure-table --pilot-fill --verify \
+                --agent3-schema "${AGENT3_DB_NAME}"
+              echo "BRAND_ELEMENTS_REFRESH_DONE $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            env:
+            - name: MARIADB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: '3306'
+            - name: MARIADB_DATABASE
+              value: jw_mart_d2_stage_20260630_r2
+            - name: AGENT3_DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            - name: D2_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: D2_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+            resources:
+              requests:
+                cpu: 200m
+                memory: 1Gi
+              limits:
+                cpu: '1'
+                memory: 4Gi
