@@ -404,6 +404,7 @@ class SearchResponse(BaseModel):
 class PublicUploadedTempDocument(BaseModel):
     """User-visible metadata for a staged upload."""
 
+    temp_document_id: int
     file_name: str
 
 
@@ -454,8 +455,10 @@ class PublicUploadResponse(BaseModel):
 
 
 class PublicSessionDocument(BaseModel):
-    """A user asset without ledger identifiers or storage topology."""
+    """A user asset with deletion keys but without storage topology."""
 
+    document_id: int
+    temp_document_id: int | None = None
     file_name: str
     uploaded_at: str
     expires_at: str | None = None
@@ -468,9 +471,17 @@ class PublicSessionDocument(BaseModel):
 
 
 class PublicDocumentsResponse(BaseModel):
-    """Session assets projected without session and document identifiers."""
+    """Session assets projected with deletion keys and no storage topology."""
 
     documents: list[PublicSessionDocument]
+
+
+class PublicDeleteDocumentResponse(BaseModel):
+    """Public deletion result without storage IDs or rollback instructions."""
+
+    document_id: int | None = None
+    temp_document_id: int | None = None
+    status: str
 
 
 class PublicFileSource(BaseModel):

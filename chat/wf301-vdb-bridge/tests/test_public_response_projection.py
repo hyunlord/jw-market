@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 
 import src.models as models
-from src.main import app
+from src.main import _context_from_hits, app
 
 
-FORBIDDEN_PUBLIC_FIELDS = {
+FORBIDDEN_TOPOLOGY_FIELDS = {
     "app_session_id",
     "chunk_id",
-    "document_id",
     "document_upsert_id",
     "errors",
     "file_path",
@@ -20,7 +19,6 @@ FORBIDDEN_PUBLIC_FIELDS = {
     "source_doc_key",
     "target_collection",
     "target_vdb_id",
-    "temp_document_id",
     "temp_vdb_index",
     "temp_vdb_index_id",
     "weaviate_object_ids",
@@ -30,6 +28,14 @@ FORBIDDEN_PUBLIC_FIELDS = {
 
 def _encoded(model: type[models.BaseModel], raw: dict[str, object]) -> str:
     return json.dumps(model.model_validate(raw).model_dump())
+
+
+def _all_keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in _all_keys(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in _all_keys(item)}
+    return set()
 
 
 def test_public_routes_use_projection_models_without_changing_file_sql() -> None:
@@ -43,6 +49,9 @@ def test_public_routes_use_projection_models_without_changing_file_sql() -> None
     assert route_models["/commit"] is models.PublicCommitResponse
     assert route_models["/search"] is models.PublicSearchResponse
     assert route_models["/documents"] is models.PublicDocumentsResponse
+    delete_routes = [route for route in app.routes if getattr(route, "path", None) == "/documents/delete"]
+    assert delete_routes
+    assert all(route.response_model is models.PublicDeleteDocumentResponse for route in delete_routes)
     assert route_models["/file-sql/schema"] is models.FileSqlSchemaResponse
     assert route_models["/file-sql/query"] is models.FileSqlQueryResponse
 
@@ -86,8 +95,9 @@ def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> Non
 
     projected = models.PublicUploadResponse.model_validate(raw).model_dump()
     encoded = json.dumps(projected)
-    assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
-    assert projected["temp_documents"] == [{"file_name": "survey.xlsx"}]
+    assert not any(field in encoded for field in FORBIDDEN_TOPOLOGY_FIELDS)
+    assert "document_id" not in _all_keys(projected)
+    assert projected["temp_documents"] == [{"temp_document_id": 1601, "file_name": "survey.xlsx"}]
     document = projected["commit"]["documents"][0]
     assert document["route"] == "sql"
     assert document["status"] == "committed_sql"
@@ -128,7 +138,7 @@ def test_upload_projection_exposes_only_safe_block_message() -> None:
     assert "/private/path" not in encoded
 
 
-def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> None:
+def test_documents_projection_exposes_delete_keys_and_hides_topology() -> None:
     raw = {
         "target_vdb_id": 139,
         "workflow_id": 301,
@@ -154,8 +164,10 @@ def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> Non
 
     projected = models.PublicDocumentsResponse.model_validate(raw).model_dump()
     encoded = json.dumps(projected)
-    assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    assert not any(field in encoded for field in FORBIDDEN_TOPOLOGY_FIELDS)
     document = projected["documents"][0]
+    assert document["document_id"] == 42
+    assert document["temp_document_id"] == 17
     assert document["file_size_bytes"] == 12345
     assert document["storage_route"] == "hybrid"
     assert document["sql_tables"][0]["logical_name"] == "data_abc"
@@ -180,23 +192,73 @@ def test_search_projection_hides_ids_and_keeps_provenance() -> None:
 
     projected = models.PublicSearchResponse.model_validate(raw).model_dump()
     encoded = json.dumps(projected)
-    assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    assert not any(field in encoded for field in FORBIDDEN_TOPOLOGY_FIELDS)
+    assert "document_id" not in _all_keys(projected)
+    assert "temp_document_id" not in _all_keys(projected)
     assert projected["file_context"] == "Germany: 61/22/13/4"
     assert projected["file_sources"][0]["source_channel"] == "vlm_image_extraction"
     assert projected["sql_sources"][0]["logical_name"] == "data_abc"
 
 
-def test_openapi_public_responses_exclude_internal_fields_and_keep_capacity() -> None:
+def test_search_context_does_not_embed_document_id() -> None:
+    context, sources, empty_pages = _context_from_hits([{
+        "doc_id": 42,
+        "file_name": "survey.pdf",
+        "text": "시장 전망은 2026년에 증가합니다.",
+        "i_page": 3,
+        "_additional": {"id": "object-1", "distance": 0.2},
+    }])
+
+    assert context == "[1] survey.pdf\n시장 전망은 2026년에 증가합니다."
+    assert "document_id" not in context
+    assert sources[0].document_id == 42
+    assert empty_pages == []
+
+
+def test_delete_projection_exposes_only_status_and_delete_keys() -> None:
+    raw = {
+        "target_vdb_id": 139,
+        "workflow_id": 301,
+        "app_session_id": "session-a",
+        "session_id": "session-a",
+        "document_id": 42,
+        "temp_document_id": 17,
+        "status": "deleted",
+        "write_count": 3,
+        "deleted_weaviate_object_ids": ["object-1"],
+        "rollback_hint": ["restore internal object"],
+        "errors": ["internal error"],
+    }
+
+    projected = models.PublicDeleteDocumentResponse.model_validate(raw).model_dump()
+
+    assert projected == {
+        "document_id": 42,
+        "temp_document_id": 17,
+        "status": "deleted",
+    }
+    encoded = json.dumps(projected)
+    assert not any(field in encoded for field in FORBIDDEN_TOPOLOGY_FIELDS)
+    assert "deleted_weaviate_object_ids" not in encoded
+    assert "rollback_hint" not in encoded
+
+
+def test_openapi_public_responses_exclude_topology_and_publish_delete_keys() -> None:
     spec = app.openapi()
     schemas = spec["components"]["schemas"]
     public_schema_names = {name for name in schemas if name.startswith("Public")}
     encoded = json.dumps({name: schemas[name] for name in public_schema_names})
 
-    assert not any(f'"{field}"' in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    assert not any(f'"{field}"' in encoded for field in FORBIDDEN_TOPOLOGY_FIELDS)
     assert '"file_size_bytes"' in encoded
     assert '"logical_name"' in encoded
     assert '"route"' in encoded
     assert '"status"' in encoded
+    assert "document_id" in schemas["PublicSessionDocument"]["properties"]
+    assert "temp_document_id" in schemas["PublicSessionDocument"]["properties"]
+    assert "temp_document_id" in schemas["PublicUploadedTempDocument"]["properties"]
+    assert "document_id" in schemas["PublicDeleteDocumentResponse"]["properties"]
+    assert "temp_document_id" in schemas["PublicDeleteDocumentResponse"]["properties"]
     assert "document_id" not in schemas["PublicFileSqlSource"]["properties"]
     assert "current_bytes" in schemas["QuotaSnapshot"]["properties"]
 
@@ -208,6 +270,7 @@ def test_openapi_public_route_descriptions_do_not_publish_internal_topology() ->
         "/commit": "post",
         "/search": "post",
         "/documents": "get",
+        "/documents/delete": "post",
     }
     encoded = json.dumps(
         {path: spec["paths"][path][method] for path, method in operations.items()}

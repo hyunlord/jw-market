@@ -54,6 +54,7 @@ from .models import (
     QuotaLimits,
     QuotaSnapshot,
     PublicCommitResponse,
+    PublicDeleteDocumentResponse,
     PublicDocumentsResponse,
     PublicSearchResponse,
     PublicUploadResponse,
@@ -241,9 +242,10 @@ SQL 라우팅에 필요한 논리 테이블 메타데이터가 포함됩니다.
 """
 
 DELETE_DESCRIPTION = """
-세션에 등록된 문서 하나를 비활성화하고, 연결된 VDB 139 객체를 삭제합니다.
+세션에 등록된 문서 하나를 삭제합니다.
 
-내부적으로 요청 세션이 해당 문서의 description JSON과 일치하는지 확인한 뒤, `document_id` 또는 `temp_document_id`로 삭제 대상을 찾습니다. 권한이 맞으면 GenOS `document`/`document_upsert`를 비활성화하고 Weaviate 객체 삭제를 시도합니다. 응답에는 삭제된 객체 ID와 rollback 참고 정보가 포함됩니다.
+요청 세션의 소유권을 확인한 뒤 `document_id` 또는 `temp_document_id`로 삭제 대상을 찾습니다.
+응답에는 처리 상태와 요청에 대응하는 삭제 키만 포함됩니다.
 
 언제 사용하나요:
 - 사용자가 채팅 세션에서 업로드한 파일을 검색 대상에서 제거할 때
@@ -251,7 +253,6 @@ DELETE_DESCRIPTION = """
 
 중요:
 - 가능하면 `document_id` 또는 `temp_document_id` 중 하나만 보내세요. 둘 다 없으면 `document_id or temp_document_id is required` 오류가 반환됩니다.
-- `/upload`만 되었고 `/commit`되지 않은 임시 파일은 등록 문서가 아니므로 이 API의 주 대상이 아닙니다.
 
 요청 예시:
 ```json
@@ -267,7 +268,7 @@ DELETE_DESCRIPTION = """
 DELETE_DELETE_DESCRIPTION = """
 `/documents/delete`의 DELETE 메서드 변형입니다.
 
-요청 body와 응답 schema는 POST 변형과 같습니다. 클라이언트 또는 게이트웨이 정책상 삭제 동작을 HTTP DELETE로 표현해야 할 때 사용합니다. 실제 내부 동작은 POST `/documents/delete`와 동일하게 세션 검증, 삭제 대상 조회, GenOS 원장 비활성화, VDB 객체 삭제 순서로 진행됩니다.
+요청 body와 공개 응답 schema는 POST 변형과 같습니다. 클라이언트 또는 게이트웨이 정책상 삭제 동작을 HTTP DELETE로 표현해야 할 때 사용합니다.
 """
 
 QUOTA_DESCRIPTION = """
@@ -1721,13 +1722,13 @@ def documents(
 
 @app.post(
     "/documents/delete",
-    response_model=DeleteDocumentResponse,
+    response_model=PublicDeleteDocumentResponse,
     summary="세션 등록 문서 1건 삭제",
     description=DELETE_DESCRIPTION,
 )
 @app.delete(
     "/documents/delete",
-    response_model=DeleteDocumentResponse,
+    response_model=PublicDeleteDocumentResponse,
     summary="세션 등록 문서 1건 삭제(DELETE)",
     description=DELETE_DELETE_DESCRIPTION,
 )
@@ -1885,7 +1886,7 @@ def _context_from_hits(
         source_channel = str(provenance.get("source_channel") or "native_text")
         label = " [image-derived extraction]" if source_channel == pdf_vlm.SOURCE_CHANNEL else ""
         index += 1
-        lines.append(f"[{index}] {file_name} (document_id={doc_id}){label}\n{clipped}")
+        lines.append(f"[{index}] {file_name}{label}\n{clipped}")
         sources.append(
             FileSource(
                 document_id=doc_id,
