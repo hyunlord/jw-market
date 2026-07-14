@@ -68,6 +68,7 @@ CHANNELS_5 = ["전체", "상급종병", "종병", UBIST_TGH_FACILITY_CHANNEL, "�
 IQVIA_CHANNELS = ["전체", "KHPA", "KCPA", "KPA"]
 CAUSE_LEVELS_V091 = ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
 FISH_OIL_LEVEL = "Fish Oil"
+UNCLASSIFIED_DIMENSION_NAME = "미분류"
 LEVEL_FIELD_BY_LABEL = {
     "Class": "class",
     "Class 1": "class_1",
@@ -1068,6 +1069,10 @@ def _is_class_level(level: str) -> bool:
     return str(level or "").strip().lower().replace("_", " ").startswith("class")
 
 
+def _requires_unclassified_dimension_bucket(level: str) -> bool:
+    return _is_class_level(level) or level == "Molecule"
+
+
 def _row_is_class_excluded(row: dict[str, Any]) -> bool:
     if bool(row.get("is_class_excluded")):
         return True
@@ -1416,7 +1421,9 @@ def _segment_rows_for_level(
 
         names = _dimension_values(row, level)
         if not names:
-            continue
+            if not _requires_unclassified_dimension_bucket(level):
+                continue
+            names = [UNCLASSIFIED_DIMENSION_NAME]
         if isinstance(dual_channel_data, dict) and len(names) != 1:
             continue
         for name in names:
@@ -1499,7 +1506,15 @@ def _segment_rows_for_level(
                 "series_pct": series_pct,
                 "value_series": value_series,
             }
-        if missing_periods:
+        if name == UNCLASSIFIED_DIMENSION_NAME:
+            segment["data_quality"] = {
+                "available": False,
+                "reason": "dimension_value_missing",
+                "dimension": level,
+            }
+            if missing_periods:
+                segment["data_quality"]["missing_periods"] = missing_periods
+        elif missing_periods:
             segment["data_quality"] = {
                 "available": False,
                 "reason": "dimension_period_missing",

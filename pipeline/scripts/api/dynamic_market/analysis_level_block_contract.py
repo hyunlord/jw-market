@@ -7,7 +7,7 @@ import json
 from collections.abc import Sequence
 
 
-ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION = "analysis-level-block-v4-filter-complete"
+ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION = "analysis-level-block-v5-unclassified-partitions"
 
 
 def channel_profile_signature(channels: Sequence[str]) -> str:

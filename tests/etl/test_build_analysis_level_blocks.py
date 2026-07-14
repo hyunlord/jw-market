@@ -24,7 +24,7 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
 
 
 def test_schema_version_is_independent_from_app_version() -> None:
-    assert ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION == "analysis-level-block-v4-filter-complete"
+    assert ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION == "analysis-level-block-v5-unclassified-partitions"
 
 
 def test_framed_payload_sha256_uses_unambiguous_lengths() -> None:
