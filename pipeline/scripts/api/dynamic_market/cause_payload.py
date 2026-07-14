@@ -29,6 +29,7 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     recent_yoy,
 )
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
+from pipeline.scripts.api.market_growth import growth_endpoint_meta
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
 
 
@@ -464,6 +465,10 @@ def build_market_meta(
     label = _market_label(atc_codes=atc_codes, molecules=molecules)
     if definition.view.startswith("strategic_"):
         label = f"전략 동적 시장: {market_id}"
+    growth_values = {
+        str(item["period"]): item.get("market_size")
+        for item in metrics.monthly_series
+    }
     return {
         "strategic_market_id": market_id,
         "market_name": label,
@@ -488,6 +493,7 @@ def build_market_meta(
         "direct_competition_count": len(metrics.all_brands),
         "market_size_recent": latest_market_value(data["market_size_series"]),
         "market_cagr_5y_pct": metrics.cagr,
+        "mom_growth_meta": growth_endpoint_meta(growth_values),
         "is_jw": False,
         "is_target": False,
     }
