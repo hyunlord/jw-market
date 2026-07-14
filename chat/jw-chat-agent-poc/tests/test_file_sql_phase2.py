@@ -350,13 +350,13 @@ def test_file_sql_result_records_measure_for_next_turn() -> None:
             ("21,978,584,141", "15,188,575,523", "6,790,008,618"),
         ),
         (
-            "특정 ATC4에서 두 제조사 비교",
-            [["동화약품", 3853883875, 120], ["동아제약", 3315233364, 98]],
+            "ATC4 R05A0에서 두 제조사 비교",
+            [["동화약품", 3853883875, 22], ["동아제약", 3315233364, 17]],
             ("3,853,883,875", "3,315,233,364"),
         ),
         (
-            "VALUES LC SI PRICE 1/2026 특정 ATC4 두 제조사 비교",
-            [["동화약품", 3853883875, 120], ["동아제약", 3315233364, 98]],
+            "VALUES LC SI PRICE 1/2026 ATC4 R05A0 두 제조사 비교",
+            [["동화약품", 3853883875, 22], ["동아제약", 3315233364, 17]],
             ("3,853,883,875", "3,315,233,364"),
         ),
     ],
@@ -409,6 +409,7 @@ def test_compound_atc4_compare_plans_all_slots() -> None:
 
     assert plan is not None
     assert "c12 = 'A02B2'" in plan["sql"]
+    assert "c12 LIKE 'A02B2\\_%' ESCAPE '\\'" in plan["sql"]
     assert "c2 IN ('동아제약', '동화약품')" in plan["sql"]
     assert "SUM(c72)" in plan["sql"]
 
@@ -570,17 +571,18 @@ def test_compound_atc4_compare_runs_with_explicit_slots(monkeypatch) -> None:
     )
 
     def run_query(_conversation_id: str, _logical_name: str, sql: str) -> dict:
-        assert "c12 = 'A02B2'" in sql
+        assert "c12 = 'R05A0'" in sql
+        assert "c12 LIKE 'R05A0\\_%' ESCAPE '\\'" in sql
         assert "c2 IN ('동아제약', '동화약품')" in sql
         return {
             "columns": ["c2", "total_value", "applied_rows"],
-            "rows": [["동화약품", 3853883875, 120], ["동아제약", 3315233364, 98]],
+            "rows": [["동화약품", 3853883875, 22], ["동아제약", 3315233364, 17]],
         }
 
     monkeypatch.setattr(file_sql_query, "_run_query", run_query)
 
     outcome = file_sql_query.query_uploaded_sql(
-        "ATC4 A02B2에서 동아제약과 동화약품의 sell-out 금액 비교",
+        "ATC4 R05A0에서 동아제약과 동화약품의 sell-out 금액 비교",
         "conversation-1",
         (source,),
     )

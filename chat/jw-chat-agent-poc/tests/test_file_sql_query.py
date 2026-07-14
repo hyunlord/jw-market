@@ -81,6 +81,7 @@ def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monk
             "logical_name": SQL_SOURCE.logical_name,
             "columns": [
                 {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {"query_name": "c12", "source_name": "ATC 4"},
                 {"query_name": "c72", "source_name": "1/2026 VALUES LC SI PRICE"},
             ],
         },
@@ -102,14 +103,14 @@ def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monk
         lambda *args, **kwargs: {
             "columns": ["c1", "total_value", "applied_rows"],
             "rows": [
-                ["동화약품", 3853883875, 120],
-                ["동아제약", 3315233364, 98],
+                ["동화약품", 3853883875, 22],
+                ["동아제약", 3315233364, 17],
             ],
         },
     )
 
     outcome = file_sql_query.query_uploaded_sql(
-        "ATC4 조건에서 동화약품과 동아제약을 비교해줘",
+        "ATC4 R05A0에서 동화약품과 동아제약을 비교해줘",
         "conversation-1",
         (SQL_SOURCE,),
     )
@@ -123,6 +124,54 @@ def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monk
     assert "3,315,233,364" in outcome.answer_md
     assert "538,650,511" in outcome.answer_md
     assert "동화약품" in outcome.answer_md and "더 큽니다" in outcome.answer_md
+
+
+def test_existing_atc4_column_with_no_matching_value_reports_zero_rows(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c2", "source_name": "MFR NAME KOR"},
+                {"query_name": "c12", "source_name": "ATC 4"},
+                {"query_name": "c72", "source_name": "VALUES LC SI PRICE 1/2026"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *_args: {
+            "columns": ["c2", "total_value", "applied_rows"],
+            "rows": [],
+        },
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "ATC4 A02B2에서 동아제약과 동화약품의 sell-out 금액 비교",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert outcome.status == "no_matching_rows"
+    assert "ATC4 열은 있으나 'A02B2' 조건에 맞는 행이 0건입니다" in outcome.answer_md
+    assert "sell-out을(를) 찾을 수 없습니다" not in outcome.answer_md
+    assert "ATC4 관련 열이 없습니다" not in outcome.answer_md
+    assert outcome.trace[-1] == {
+        "stage": "render",
+        "status": "no_matching_rows",
+        "filter": "ATC4=A02B2",
+    }
+
+
+def test_real_zero_value_is_not_misclassified_as_no_matching_rows() -> None:
+    assert file_sql_query._has_no_applied_rows(
+        {"columns": ["total_value", "applied_rows"], "rows": [[0, 1]]}
+    ) is False
+    assert file_sql_query._has_no_applied_rows(
+        {"columns": ["total_value", "applied_rows"], "rows": [[None, 0]]}
+    ) is True
 
 
 def test_aggregate_comparison_concludes_when_question_asks_which_is_larger(monkeypatch) -> None:
@@ -399,7 +448,9 @@ def test_zero_rows_are_explicit_not_silent(monkeypatch) -> None:
 
     outcome = file_sql_query.query_uploaded_sql("없는 값", "conversation-1", (SQL_SOURCE,))
 
-    assert "원천 조회 결과 0행" in outcome.file_context
+    assert "상태: 조건 일치 0건" in outcome.file_context
+    assert "요청한 조건에 맞는 행이 0건입니다" in outcome.answer_md
+    assert outcome.status == "no_matching_rows"
     assert "시장" not in outcome.file_context
 
 

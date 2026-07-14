@@ -111,7 +111,7 @@ def test_chat_route_keeps_file_comparison_out_of_market_contract(monkeypatch) ->
 
 def test_chat_route_prefers_file_schema_for_atc4_comparison(monkeypatch) -> None:
     # Given: a real /chat request in a session with a SQL workbook.
-    question = "A02B2에서 동아제약과 동화약품 비교"
+    question = "R05A0에서 동아제약과 동화약품 비교"
     answer = "동화약품 3,853,883,875원 / 동아제약 3,315,233,364원"
     calls: list[str] = []
     monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)

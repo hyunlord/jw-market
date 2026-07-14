@@ -233,6 +233,26 @@ def query_uploaded_sql(
         result = _run_query(conversation_id, logical_name, sql)
         trace.append({"stage": "execution", "status": "ok"})
         current_stage = "render"
+        if _has_no_applied_rows(result):
+            answer, filter_label = _no_matching_rows_answer(question, schema)
+            trace.append(
+                {
+                    "stage": "render",
+                    "status": "no_matching_rows",
+                    "filter": filter_label,
+                }
+            )
+            source_item: dict[str, Any] = {"file_name": source.file_name}
+            if source.document_id is not None:
+                source_item["document_id"] = source.document_id
+            return SqlQueryOutcome(
+                file_context="## 업로드 파일 SQL 결과\n상태: 조건 일치 0건\n" + answer,
+                file_source_items=(source_item,),
+                errors=(),
+                answer_md=answer,
+                status="no_matching_rows",
+                trace=tuple(trace),
+            )
         context = _render_result(source, result, schema)
         answer = ""
         if aggregate:
@@ -628,7 +648,12 @@ def _resolve_deterministic_select(
             if atc_column is None:
                 missing.append("ATC4")
             else:
-                filters.append(f"{atc_column.get('query_name')} = {_sql_literal(atc_code)}")
+                atc_query = str(atc_column.get("query_name") or "")
+                atc_prefix = _sql_literal(atc_code + "\\_%")
+                filters.append(
+                    f"({atc_query} = {_sql_literal(atc_code)} OR "
+                    f"{atc_query} LIKE {atc_prefix} ESCAPE '\\')"
+                )
                 resolved.append("ATC4")
 
         if missing:
@@ -900,6 +925,48 @@ def _render_result(
         values = [*row[: len(safe_columns)], *("" for _ in range(max(0, len(safe_columns) - len(row))))]
         lines.append("| " + " | ".join(_markdown_cell(value) for value in values) + " |")
     return "\n".join(lines)
+
+
+def _has_no_applied_rows(result: Mapping[str, Any]) -> bool:
+    columns = result.get("columns")
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        return False
+    if not rows:
+        return True
+    if not isinstance(columns, list):
+        return False
+    applied_index = next(
+        (
+            index
+            for index, name in enumerate(columns)
+            if str(name).casefold() == "applied_rows"
+        ),
+        None,
+    )
+    if applied_index is None:
+        return False
+    return all(
+        isinstance(row, list)
+        and applied_index < len(row)
+        and _is_number(row[applied_index])
+        and float(row[applied_index]) == 0.0
+        for row in rows
+    )
+
+
+def _no_matching_rows_answer(
+    question: str,
+    schema: Mapping[str, Any],
+) -> tuple[str, str]:
+    atc_code = _atc4_code(question)
+    atc_column = _find_column(_schema_columns(schema), r"atc\s*4")
+    if atc_code and atc_column is not None:
+        return (
+            f"ATC4 열은 있으나 '{atc_code}' 조건에 맞는 행이 0건입니다.",
+            f"ATC4={atc_code}",
+        )
+    return "요청한 조건에 맞는 행이 0건입니다.", "requested_filters"
 
 
 def _source_column_labels(columns: Any, schema: Mapping[str, Any]) -> list[str]:
