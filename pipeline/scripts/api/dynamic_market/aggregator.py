@@ -295,7 +295,7 @@ class MetricAggregator:
         scope_sql, scope_params, pair_scope = brand_matrix_summary_scope(brands)
         sql = f"""
             SELECT brand_key, brand_name, atc4_code, source, measure, unit_label, raw_value_history,
-                   channel_specialty_matrix, audit_code_matrix
+                   by_dimension, channel_specialty_matrix, audit_code_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -401,7 +401,7 @@ class MetricAggregator:
         scope_sql, scope_params = brand_scope_predicate(brands)
         rows = db.fetch_all(
             f"""
-            SELECT DISTINCT brand_key, atc4_code, unit_label, channel_specialty_matrix, audit_code_matrix
+            SELECT DISTINCT brand_key, atc4_code, unit_label, by_dimension, channel_specialty_matrix, audit_code_matrix
             FROM {mart_db}.mart_general_brand_metric
             WHERE source = %s
               AND measure = %s
@@ -799,6 +799,8 @@ def sidecar_rows_to_metric_rows(
             "raw_value_history": json.dumps(history, ensure_ascii=False, sort_keys=True),
             "channel_specialty_matrix": meta.get("channel_specialty_matrix") or {},
         }
+        if meta.get("by_dimension"):
+            metric_row["by_dimension"] = meta["by_dimension"]
         if meta.get("audit_code_matrix"):
             metric_row["audit_code_matrix"] = meta["audit_code_matrix"]
         metric_rows.append(metric_row)

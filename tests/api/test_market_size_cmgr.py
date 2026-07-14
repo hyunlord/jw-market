@@ -189,8 +189,8 @@ def test_cached_cause_response_recomputes_growth_from_legacy_value_aliases(value
     assert payload["data"]["market_size_series"][1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
 
 
-def test_fixed_five_year_growth_invalidates_legacy_dynamic_response_cache() -> None:
-    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v3-fixed-five-year-growth"
+def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:
+    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v4-f095-company-rankings"
 
 
 def _metrics(

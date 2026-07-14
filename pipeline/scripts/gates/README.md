@@ -65,3 +65,22 @@ The initial tracked runner supports representative samples. A full mart census
 should be scheduled as a separate nightly job because clean-clone CI has no d2
 credentials and the full cell scan is intentionally not disguised as a local
 unit test.
+
+## Competition ranking census
+
+Capture the complete `brand_ranking_stacked` and `company_ranking_stacked`
+objects under `brand` and `company`, then run:
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py competition-ranking \
+  --observations /path/to/rankings.json \
+  --expected-year 2021 --expected-year 2022 --expected-year 2023 \
+  --expected-year 2024 --expected-year 2025 --expected-year 2026 \
+  --environment test2
+```
+
+Every entity/year pair must have contiguous displayed ranks. Brand and company
+rows, including `기타`, must independently reconcile to the same annual market
+total. The expected years are explicit, so a year missing from both entity
+payloads cannot disappear from the census. Missing years, null shares, and
+empty censuses fail closed.
