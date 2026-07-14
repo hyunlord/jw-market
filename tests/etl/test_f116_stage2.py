@@ -39,6 +39,30 @@ def test_strategic_specialty_context_drops_catalog_aggregate_parent() -> None:
     assert sum(periods["2025-01"]["raw_value"] for periods in channel_history.values()) == 10
 
 
+def test_strategic_specialty_context_preserves_unclassified_specialty_value() -> None:
+    rows = [
+        {
+            "product_code": "P1",
+            "channel": "TH",
+            "specialty": "Unknown",
+            "period_yyyymm": "2025-01",
+            "raw_sales": 25,
+            "raw_volume": 2,
+        }
+    ]
+
+    context = _build_channel_context(pd.DataFrame(rows), {"P1": {"molecule": "M1"}})
+    specialty_history = context["code_specialty_history"]["sales"]["P1"]["molecule"]["M1"]
+    channel_history = context["code_channel_history"]["sales"]["P1"]["molecule"]["M1"]
+
+    assert specialty_history == {
+        "종합병원 분리되지 않은 진료과": {"2025-01": {"raw_value": 25.0}}
+    }
+    assert sum(periods["2025-01"]["raw_value"] for periods in specialty_history.values()) == sum(
+        periods["2025-01"]["raw_value"] for periods in channel_history.values()
+    )
+
+
 def test_canonical_row_falls_back_per_field_without_inventing_molecule() -> None:
     table = pd.DataFrame(
         [
