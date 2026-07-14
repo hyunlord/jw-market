@@ -165,6 +165,40 @@ def test_run_table_ddl_and_upsert_include_input_fingerprint() -> None:
     assert "VALUES (schema_stage_hash)" not in upsert
 
 
+def test_topic_store_target_pair_defaults_to_live_tables(monkeypatch) -> None:
+    monkeypatch.delenv("BRAND_ACTIVITY_TOPICS_TARGET_TABLE", raising=False)
+    monkeypatch.delenv("BRAND_ACTIVITY_TOPIC_RUNS_TARGET_TABLE", raising=False)
+
+    assert topic_store_db.resolve_topic_tables() == topic_store_db.TopicTables(
+        topics=topic_store_db.TOPICS_TABLE,
+        runs=topic_store_db.RUNS_TABLE,
+    )
+
+
+def test_topic_store_target_pair_accepts_only_the_staging_pair(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "BRAND_ACTIVITY_TOPICS_TARGET_TABLE",
+        topic_store_db.STAGING_TOPICS_TABLE,
+    )
+    monkeypatch.setenv(
+        "BRAND_ACTIVITY_TOPIC_RUNS_TARGET_TABLE",
+        topic_store_db.STAGING_RUNS_TABLE,
+    )
+
+    assert topic_store_db.resolve_topic_tables() == topic_store_db.TopicTables(
+        topics=topic_store_db.STAGING_TOPICS_TABLE,
+        runs=topic_store_db.STAGING_RUNS_TABLE,
+    )
+
+
+def test_topic_store_target_pair_rejects_mixed_live_and_staging(monkeypatch) -> None:
+    monkeypatch.setenv("BRAND_ACTIVITY_TOPICS_TARGET_TABLE", topic_store_db.STAGING_TOPICS_TABLE)
+    monkeypatch.setenv("BRAND_ACTIVITY_TOPIC_RUNS_TARGET_TABLE", topic_store_db.RUNS_TABLE)
+
+    with pytest.raises(topic_store.TopicStoreError, match="approved live or staging pair"):
+        topic_store_db.resolve_topic_tables()
+
+
 def test_store_summary_validation_rejects_zero_row_save() -> None:
     """Given built records, When persistence evidence is zero, Then the save must fail loudly."""
     summary = topic_store_db.StoreSummary(
