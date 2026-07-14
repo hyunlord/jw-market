@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 import pandas as pd
 import pymysql
@@ -34,6 +34,8 @@ STRATEGIC_MARKET_TABLE = "mart_strategic_ml_market_metric"
 STRATEGIC_BRAND_TABLE = "mart_strategic_ml_brand_metric"
 PROTECTED_TARGETS = frozenset({"jw_mart"})
 SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
+COUNT_READBACK_RETRY_LIMIT: Final = 5
+COUNT_READBACK_RETRY_DELAY_SECONDS: Final = 1.0
 STRATEGIC_BRAND_REQUIRED_COLUMNS = (
     "ml_id",
     "brand_id",
@@ -317,7 +319,7 @@ def _publish_one(
     if table_exists(conn, target_db, new_table) or table_exists(conn, target_db, backup_table):
         raise RuntimeError(f"publish scratch table already exists for run_id={run_id}: {table_name}")
     _copy_table(conn, build_db, target_db, table_name, new_table)
-    copied_rows = _table_row_count(conn, target_db, new_table)
+    copied_rows = _table_row_count_with_bounded_retry(conn, target_db, new_table, expected=build_rows)
     if copied_rows != build_rows:
         raise RuntimeError(f"{target_db}.{new_table} row count mismatch after copy: {copied_rows} != {build_rows}")
     with conn.cursor() as cur:
@@ -476,6 +478,22 @@ def _table_row_count(conn: pymysql.connections.Connection, db_name: str, table_n
         cur.execute(f"SELECT COUNT(*) AS row_count FROM {quote_id(db_name)}.{quote_id(table_name)}")
         row = cur.fetchone()
     return int(row["row_count"])
+
+
+def _table_row_count_with_bounded_retry(
+    conn: pymysql.connections.Connection,
+    db_name: str,
+    table_name: str,
+    *,
+    expected: int,
+) -> int:
+    row_count = _table_row_count(conn, db_name, table_name)
+    for _ in range(COUNT_READBACK_RETRY_LIMIT):
+        if row_count == expected:
+            return row_count
+        time.sleep(COUNT_READBACK_RETRY_DELAY_SECONDS)
+        row_count = _table_row_count(conn, db_name, table_name)
+    return row_count
 
 
 def _id_bounds(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> tuple[int, int] | None:
