@@ -67,7 +67,6 @@ UBIST_TGH_FACILITY_BUCKETS = {"상급종병", "종병"}
 CHANNELS_5 = ["전체", "상급종병", "종병", UBIST_TGH_FACILITY_CHANNEL, "병원", "의원", "보건소", "기타"]
 IQVIA_CHANNELS = ["전체", "KHPA", "KCPA", "KPA"]
 CAUSE_LEVELS_V091 = ["Class", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
-CAUSE_LEVELS_ML011 = ["Class 1", "Class 2", "Molecule", "Brand", "제형/투여경로", "용량", "비/급여", "Ox/Gx"]
 FISH_OIL_LEVEL = "Fish Oil"
 LEVEL_FIELD_BY_LABEL = {
     "Class": "class",
@@ -965,30 +964,74 @@ def _market_levels(market: dict[str, Any] | None) -> list[str]:
     return levels
 
 
-def _strategic_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
+def _class_level_axes(rows: list[dict[str, Any]] | None) -> list[str]:
+    if not rows:
+        return ["Class"]
+    values = [
+        (
+            tuple(_dimension_values(row, "Class")),
+            tuple(_dimension_values(row, "Class 1")),
+            tuple(_dimension_values(row, "Class 2")),
+        )
+        for row in rows
+    ]
+    has_class_1 = any(class_1 for _, class_1, _ in values)
+    has_class_2 = any(class_2 for _, _, class_2 in values)
+    has_generic = any(generic for generic, _, _ in values)
+    if not has_class_1 and not has_class_2:
+        return ["Class"]
+    if not has_generic:
+        return [
+            level
+            for level, available in (("Class 1", has_class_1), ("Class 2", has_class_2))
+            if available
+        ]
+
+    generic_equals_class_2 = has_class_2 and all(
+        generic == class_2
+        for generic, _, class_2 in values
+        if generic or class_2
+    )
+    class_1_equals_class_2 = has_class_1 and has_class_2 and all(
+        class_1 == class_2
+        for _, class_1, class_2 in values
+        if class_1 or class_2
+    )
+    if generic_equals_class_2:
+        return [
+            level
+            for level, available in (("Class 1", has_class_1), ("Class 2", has_class_2))
+            if available
+        ]
+
+    axes = ["Class"]
+    if has_class_1:
+        axes.append("Class 1")
+    if has_class_2 and not class_1_equals_class_2:
+        axes.append("Class 2")
+    return axes
+
+
+def _strategic_levels(
+    market: dict[str, Any] | None,
+    rows: list[dict[str, Any]] | None = None,
+) -> list[str]:
     levels = _market_levels(market)
-    if _is_ml011_view(market, view_source_id) and "Class" in levels:
+    if "Class" in levels:
         index = levels.index("Class")
-        levels[index : index + 1] = ["Class 1", "Class 2"]
+        levels[index : index + 1] = _class_level_axes(rows)
     return levels
 
 
-def _is_ml011_view(market: dict[str, Any] | None, view_source_id: str | None) -> bool:
-    source_id = str(view_source_id or "")
-    if source_id == "ml_011":
-        return True
-    market_id = str((market or {}).get("ml_id") or "")
-    return market_id == "ml_011"
-
-
-def _response_levels(market: dict[str, Any] | None, view_source_id: str | None) -> list[str]:
+def _response_levels(
+    market: dict[str, Any] | None,
+    _view_source_id: str | None,
+    rows: list[dict[str, Any]] | None = None,
+) -> list[str]:
     """Return only the analysis levels enabled by the market catalog."""
-    enabled_levels = set(_strategic_levels(market, view_source_id))
+    enabled_levels = set(_strategic_levels(market, rows))
     enabled_levels.add("Brand")
-    if _is_ml011_view(market, view_source_id) and bool((market or {}).get("analyze_class")):
-        ordered_levels = CAUSE_LEVELS_ML011
-    else:
-        ordered_levels = CAUSE_LEVELS_V091
+    ordered_levels = ["Class", "Class 1", "Class 2", *CAUSE_LEVELS_V091[1:]]
     ordered_levels = [*ordered_levels, FISH_OIL_LEVEL]
     if FE_CONTENT_LEVEL in enabled_levels:
         insert_at = ordered_levels.index("용량") + 1 if "용량" in ordered_levels else len(ordered_levels)
@@ -1802,8 +1845,8 @@ def _build_analysis_levels_from_mart(
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
-    levels = _response_levels(market, view_source_id)
-    enabled_levels = set(_strategic_levels(market, view_source_id))
+    levels = _response_levels(market, view_source_id, rows)
+    enabled_levels = set(_strategic_levels(market, rows))
     enabled_levels.add("Brand")
     periods = _history_periods(rows, source)
     data: dict[str, Any] = {}

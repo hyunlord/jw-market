@@ -17,7 +17,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from pipeline.scripts.etl.cache_build_common import (
     api_source,
-    CANONICAL_25,
     decode_json,
     dump_payload,
     fetch_all,
@@ -275,6 +274,14 @@ def _events_spec_list(events_payload: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return _apply_event_cut_flags(projected, chart_event_ids=chart_event_ids)
+
+
+def _events_meta(events: list[dict[str, Any]]) -> dict[str, str | None]:
+    return {
+        "status": "available" if events else "no_news",
+        "reason": None if events else "no_events_for_brand",
+        "generation_status": "generated",
+    }
 
 
 def _load_phase29_poc_report() -> dict[str, Any]:
@@ -634,7 +641,38 @@ def _forecast_brand_entry(
     }
 
 
-def empty_combo_payload(source: str, measure: str, brand: str, base_row: dict[str, Any]) -> dict[str, Any]:
+def _history_has_points(row: dict[str, Any]) -> bool:
+    _, values = sorted_history_values(decode_json(row.get("metric_history")))
+    return any(value is not None for value in values)
+
+
+def _phase30_input_status(
+    row: dict[str, Any],
+    market_rows: list[dict[str, Any]],
+) -> tuple[bool, str | None]:
+    required_helpers = (
+        build_phase30_forecast_brand_entry,
+        build_phase30_market_forecast,
+        phase30_forecast_periods_from_history,
+        phase30_forecast_steps,
+    )
+    if any(helper is None for helper in required_helpers):
+        return False, "phase30_engine_unavailable"
+    if not _history_has_points(row):
+        return False, "missing_target_history"
+    if not any(_history_has_points(market_row) for market_row in market_rows):
+        return False, "missing_market_history"
+    return True, None
+
+
+def empty_combo_payload(
+    source: str,
+    measure: str,
+    brand: str,
+    base_row: dict[str, Any],
+    *,
+    reason: str = "missing_target_row",
+) -> dict[str, Any]:
     forecast_periods = forecast_periods_from_history([], source)
     return {
         "period_unit": "월" if source == "UBIST" else "분기",
@@ -654,6 +692,7 @@ def empty_combo_payload(source: str, measure: str, brand: str, base_row: dict[st
             }
         ],
         "baseline": {"value_recent": None, "ms_recent_pct": None},
+        "availability": {"status": "not_generated", "reason": reason},
     }
 
 
@@ -669,10 +708,14 @@ def _safe_table_name(value: str) -> str:
     return value
 
 
-def _rebuild_events_for_brand(conn: Any, brand: str) -> list[dict[str, Any]]:
-    events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
+def _rebuild_events_payload_for_brand(
+    conn: Any,
+    brand: str,
+) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
+    events_payload = build_events_for_cache(conn, brand)
     events_payload = _dedup_cut_a_events(events_payload)
-    return _events_spec_list(events_payload)
+    events = _events_spec_list(events_payload)
+    return events, _events_meta(events)
 
 
 def update_events_only(target_table: str, brands: set[str] | None = None, *, verbose: bool = False) -> None:
@@ -681,7 +724,7 @@ def update_events_only(target_table: str, brands: set[str] | None = None, *, ver
     277건 증분 뉴스는 Agent 1 산출물이라 forecast/simulation 시장값과 독립이다.
     기존 full builder는 live `cache_deep_analysis`를 DELETE 후 전체 REPLACE하므로 운영
     증분 반영에는 위험하다. 이 경로는 live row를 읽고 `data.events`만 갈아끼운 뒤
-    별도 target table에 기록한다. 기각한 대안은 full rebuild다. full rebuild는 mart
+    별도 target table에 events와 events_meta를 함께 기록한다. 기각한 대안은 full rebuild다. full rebuild는 mart
     freshness와 forecast/simulation까지 같이 흔들어 이번 범위의 "events-only" 계약을
     깨뜨린다.
     """
@@ -706,7 +749,9 @@ def update_events_only(target_table: str, brands: set[str] | None = None, *, ver
         payload = decode_json(row.get("response_json")) or {}
         if brands is None or brand in brands:
             data = payload.setdefault("data", {})
-            data["events"] = _rebuild_events_for_brand(conn, brand)
+            events, events_meta = _rebuild_events_payload_for_brand(conn, brand)
+            data["events"] = events
+            data["events_meta"] = events_meta
             changed += 1
         out = {
             "brand": brand,
@@ -776,8 +821,8 @@ def main() -> None:
         market = ml_market.loc[ml_id].to_dict() if ml_id in ml_market.index else {}
         market_atc_codes = atc_codes_from_market_catalog(market)
         available_combos = available_combos_for_market(market)
-        phase30_enabled = brand in CANONICAL_25
         by_combo = {}
+        unavailable_by_combo: dict[str, str] = {}
         rows_by_combo = {}
         for row in sorted(brand_rows, key=lambda r: (str(r["source"]), str(r["measure"]), str(r["ml_id"]))):
             combo = f"{api_source(row['source'])}.{row['measure']}"
@@ -790,16 +835,43 @@ def main() -> None:
             internal_source = SOURCE_TO_INTERNAL[source]
             market_rows = by_market_combo.get((ml_id, internal_source, measure), [])
             if row is None:
-                by_combo[combo] = empty_combo_payload(source, measure, brand, base)
+                unavailable_by_combo[combo] = "missing_target_row"
+                by_combo[combo] = empty_combo_payload(
+                    source,
+                    measure,
+                    brand,
+                    base,
+                    reason="missing_target_row",
+                )
             else:
-                by_combo[combo] = combo_payload(row, market_rows=market_rows, target_brand=brand, combo_source=source, phase30=phase30_enabled)
+                phase30_enabled, unavailable_reason = _phase30_input_status(row, market_rows)
+                if phase30_enabled:
+                    by_combo[combo] = combo_payload(
+                        row,
+                        market_rows=market_rows,
+                        target_brand=brand,
+                        combo_source=source,
+                        phase30=True,
+                    )
+                else:
+                    reason = unavailable_reason or "phase30_input_unavailable"
+                    unavailable_by_combo[combo] = reason
+                    by_combo[combo] = empty_combo_payload(
+                        source,
+                        measure,
+                        brand,
+                        base,
+                        reason=reason,
+                    )
 
-        events_payload = build_events_for_cache(conn, brand) if brand in CANONICAL_25 else {"cut_a": [], "cut_b": [], "meta": {"lookback_months": 6}}
+        events_payload = build_events_for_cache(conn, brand)
         events_payload = _dedup_cut_a_events(events_payload)
         events_spec = _events_spec_list(events_payload)
+        events_meta = _events_meta(events_spec)
         simulation_by_combo = {}
+        simulation_unavailable_by_combo: dict[str, str] = {}
         for combo, combo_data in by_combo.items():
-            if phase30_enabled and build_phase30_simulation_combo is not None:
+            if build_phase30_simulation_combo is not None:
                 market_forecast = combo_data.pop("_phase30_market_forecast", None)
                 if market_forecast is not None:
                     source, measure = combo.split(".", 1)
@@ -813,9 +885,10 @@ def main() -> None:
                         cut_b_events=events_payload.get("cut_b") or [],
                     )
                     continue
-            sim_payload = _simulation_from_poc(brand, combo, poc_report, combo_data.get("unit_label"))
-            if sim_payload:
-                simulation_by_combo[combo] = sim_payload
+            simulation_unavailable_by_combo[combo] = unavailable_by_combo.get(
+                combo,
+                "phase30_simulation_unavailable",
+            )
 
         payload = {
             "brand": brand,
@@ -835,6 +908,7 @@ def main() -> None:
                 },
                 "simulation": {"by_combo": simulation_by_combo},
                 "events": events_spec,
+                "events_meta": events_meta,
             },
             "market_meta": {
                 "market_name": market.get("name"),
@@ -850,6 +924,10 @@ def main() -> None:
                 "is_target": bool(base.get("is_target")),
             },
         }
+        if unavailable_by_combo:
+            payload["data"]["forecast"]["unavailable_by_combo"] = unavailable_by_combo
+        if simulation_unavailable_by_combo:
+            payload["data"]["simulation"]["unavailable_by_combo"] = simulation_unavailable_by_combo
         out = {
             "brand": brand,
             "market_id": market_id,

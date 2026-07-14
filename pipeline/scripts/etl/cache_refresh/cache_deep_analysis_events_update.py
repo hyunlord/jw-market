@@ -28,7 +28,7 @@ for candidate in (Path("/app"), Path("/workspace")):
         break
 
 from cache_build_common import decode_json, dump_payload, payload_size
-from pipeline.scripts.etl.build_cache_deep_analysis import CANONICAL_25, _rebuild_events_for_brand
+from pipeline.scripts.etl.build_cache_deep_analysis import _rebuild_events_payload_for_brand
 
 
 TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
@@ -121,12 +121,13 @@ def table_summary(conn: Any, table: str) -> TableSummary:
     return TableSummary(table=table, rows=rows, payload_hash=digest.hexdigest())
 
 
-def strip_events_from_raw(raw: str | None) -> dict[str, Any]:
+def strip_event_fields_from_raw(raw: str | None) -> dict[str, Any]:
     payload = decode_json(raw) or {}
     data = payload.get("data")
     if isinstance(data, dict):
         data = dict(data)
         data.pop("events", None)
+        data.pop("events_meta", None)
         payload = dict(payload)
         payload["data"] = data
     return payload
@@ -178,11 +179,10 @@ def build_staging(conn: Any, live_table: str, staging_table: str) -> dict[str, A
             brand = str(row["brand"])
             payload = decode_json(row.get("response_json")) or {}
             data = payload.setdefault("data", {})
-            if brand in CANONICAL_25:
-                data["events"] = _rebuild_events_for_brand(conn, brand)
-                rebuilt_rows += 1
-            else:
-                preserved_rows += 1
+            events, events_meta = _rebuild_events_payload_for_brand(conn, brand)
+            data["events"] = events
+            data["events_meta"] = events_meta
+            rebuilt_rows += 1
             events = get_events(payload)
             if events:
                 rows_with_events += 1
@@ -287,7 +287,9 @@ def verify_after_update(conn: Any, live_table: str, backup_table: str) -> dict[s
         backup_raw = row.get("backup_json")
         live_payload = decode_json(live_raw) or {}
         backup_payload = decode_json(backup_raw) or {}
-        if stable_json_hash(strip_events_from_raw(live_raw)) != stable_json_hash(strip_events_from_raw(backup_raw)):
+        if stable_json_hash(strip_event_fields_from_raw(live_raw)) != stable_json_hash(
+            strip_event_fields_from_raw(backup_raw)
+        ):
             non_events_diff += 1
         if stable_json_hash(get_events(live_payload)) != stable_json_hash(get_events(backup_payload)):
             events_changed += 1

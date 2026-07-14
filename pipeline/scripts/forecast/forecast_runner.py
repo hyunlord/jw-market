@@ -31,7 +31,6 @@ import statsmodels.api as sm
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 from pipeline.scripts.etl.cache_build_common import (
-    CANONICAL_25,
     decode_json,
     fetch_all,
     metric_recent,
@@ -989,8 +988,6 @@ def main() -> int:
     report = {"phase": "30", "brands": {}, "row_count": len(rows)}
     for row in rows:
         brand = row.get("brand_name")
-        if args.all_brands and brand not in CANONICAL_25:
-            continue
         source = "UBIST" if row.get("source") == "ubist" else "IQVIA"
         periods, values = history_from_row(row)
         spec = select_model(len(values), source)

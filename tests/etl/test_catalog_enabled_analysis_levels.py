@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 
 from pipeline.scripts.etl import build_cache_cause
 
@@ -64,7 +65,17 @@ def test_ml011_keeps_split_class_levels_and_portal_alias() -> None:
         "analyze_ox_gx": 0,
     }
     payload = {
-        "levels": build_cache_cause._response_levels(market, "ml_011"),
+        "levels": build_cache_cause._response_levels(
+            market,
+            "ml_011",
+            [
+                {
+                    "by_dimension": json.dumps(
+                        {"class": "TNF-a", "class_1": "Biologics", "class_2": "TNF-a"}
+                    )
+                }
+            ],
+        ),
         "data": {
             "Class 1": {"segments": ["class-1"]},
             "Class 2": {"segments": ["class-2"]},
