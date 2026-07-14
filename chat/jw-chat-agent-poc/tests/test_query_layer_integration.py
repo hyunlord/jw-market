@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from jw_chat_agent_poc import ChatAgent
+from jw_chat_agent_poc.common.periods import canonical_periods
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
@@ -124,6 +125,50 @@ def test_brand_metric_carries_split_market_structure_for_source_detail() -> None
     fact_md = answer_fact_markdown([call], ["IQVIA NSA"])
     assert "Class 구분 존재" in fact_md
     assert "Class 2 기준" in fact_md
+
+
+def test_brand_metric_aggregates_complete_quarter_and_rejects_incomplete_quarter() -> None:
+    """Given an explicit quarter, all three monthly values are required and summed."""
+
+    question = "리바로 2025년 2분기 매출"
+    requested_period = canonical_periods(question)[0]
+    complete_records = (
+        _record_with_market(
+            "ml_006",
+            "리바로",
+            (1_000_000_000.0, 2_000_000_000.0, 3_000_000_000.0),
+            ("2025-04", "2025-05", "2025-06"),
+            [10_000_000_000.0] * 3,
+        ),
+        _record_with_market(
+            "ml_006",
+            "경쟁브랜드",
+            (9_000_000_000.0, 8_000_000_000.0, 7_000_000_000.0),
+            ("2025-04", "2025-05", "2025-06"),
+            [10_000_000_000.0] * 3,
+        ),
+    )
+
+    complete = StrategicQueryLayer(reader=StaticStrategicMartReader(complete_records)).brand_metric(
+        "리바로", "sales", requested_period
+    )
+    incomplete_record = replace(
+        complete_records[0],
+        metric_history={key: value for key, value in complete_records[0].metric_history.items() if key != "2025-06"},
+    )
+    incomplete = StrategicQueryLayer(
+        reader=StaticStrategicMartReader((incomplete_record, complete_records[1]))
+    ).brand_metric("리바로", "sales", requested_period)
+
+    assert complete["tool"] == "get_brand_metric"
+    assert complete["render_data"]["period"] == "2025-Q2"
+    assert complete["render_data"]["sales_krw"] == 6_000_000_000.0
+    assert complete["render_data"]["market_size_recent_krw"] == 30_000_000_000.0
+    assert "fallback_period" not in complete["render_data"]
+    assert complete["render_data"]["query_spec"]["filters"]["period"] == "2025-Q2"
+    assert "~" not in complete["summary_text"]
+    assert incomplete["tool"] == "query_failed"
+    assert incomplete["render_data"]["period"] == "2025-Q2"
 
 
 def test_brand_metric_uses_the_source_that_contains_an_iqvia_only_brand() -> None:

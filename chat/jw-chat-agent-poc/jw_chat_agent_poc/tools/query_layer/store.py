@@ -156,6 +156,12 @@ class MartSnapshot:
             if any(status in FAILED_VALUE_STATUSES for status in statuses):
                 return next(status for status in statuses if status in FAILED_VALUE_STATUSES)
             return "OK"
+        quarter_months = _quarter_months(period)
+        if quarter_months and period not in record.metric_history:
+            statuses = tuple(self.value_status(record, month) for month in quarter_months)
+            if any(status in FAILED_VALUE_STATUSES for status in statuses):
+                return next(status for status in statuses if status in FAILED_VALUE_STATUSES)
+            return "OK"
         row = record.metric_history.get(period)
         if not isinstance(row, dict):
             return "missing"
@@ -169,6 +175,10 @@ class MartSnapshot:
             matching_periods = [key for key in sorted(record.metric_history) if key.startswith(f"{period}-")]
             values = [self.value_or_none(record, key) for key in matching_periods]
             return sum(value for value in values if value is not None) if values and all(value is not None for value in values) else None
+        quarter_months = _quarter_months(period)
+        if quarter_months and period not in record.metric_history:
+            values = tuple(self.value_or_none(record, month) for month in quarter_months)
+            return sum(value for value in values if value is not None) if all(value is not None for value in values) else None
         row = record.metric_history.get(period)
         if not isinstance(row, dict) or _row_status(row) in FAILED_VALUE_STATUSES:
             return None
@@ -293,6 +303,13 @@ class MartSnapshot:
     def hhi(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
         shares = [row["ms_recent_pct"] for row in self.ranked_brands(market_id, period, source, measure) if row["ms_recent_pct"] is not None]
         return sum(float(share) ** 2 for share in shares) if shares else None
+
+
+def _quarter_months(period: str) -> tuple[str, ...]:
+    if len(period) != 7 or period[4:6] != "-Q" or period[-1] not in "1234" or not period[:4].isdigit():
+        return ()
+    first_month = (int(period[-1]) - 1) * 3 + 1
+    return tuple(f"{period[:4]}-{month:02d}" for month in range(first_month, first_month + 3))
 
 
 class StrategicMartReader(Protocol):
