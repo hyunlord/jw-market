@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
@@ -82,6 +84,37 @@ def test_explanatory_metric_question_is_not_misclassified_as_descriptive() -> No
     schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
 
     assert plan_structured_market_question(question, resolver, grounding, schemas) is None
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_period"),
+    (
+        ("리바로 2025년 4월 매출", "2025-04"),
+        ("리바로 2025년 2분기 매출", "2025-Q2"),
+    ),
+)
+def test_structured_plan_preserves_canonical_explicit_period(
+    question: str,
+    expected_period: str,
+) -> None:
+    # Given: a user-facing Korean period and the production planner catalog.
+    resolver = BrandResolver(mode="fixture")
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
+
+    # When: the deterministic market planner builds its tool calls.
+    plan = plan_structured_market_question(question, resolver, grounding, schemas)
+
+    # Then: every period-bearing tool receives the explicit canonical period.
+    assert plan is not None
+    period_arguments = {
+        call.name: call.arguments["period"]
+        for call in plan.decision.tool_calls
+        if "period" in call.arguments
+    }
+    assert period_arguments
+    assert set(period_arguments.values()) == {expected_period}
+    assert expected_period in grounding.schema_periods
 
 
 def test_query_tool_descriptions_require_context_companions() -> None:
