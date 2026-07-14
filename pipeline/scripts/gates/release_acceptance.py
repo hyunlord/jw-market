@@ -292,6 +292,126 @@ def check_segment_sums(
     )
 
 
+def _contribution_total(section: object) -> float:
+    if not isinstance(section, dict) or not isinstance(section.get("top_contributors"), list):
+        raise ValueError("contribution section requires top_contributors")
+    return sum(float(item["contribution_value"]) for item in section["top_contributors"]) + float(
+        section.get("others_total") or 0.0
+    )
+
+
+def check_growth_windows(evidence_path: Path, abs_tol: float, environment: str) -> GateResult:
+    document = _load_json(evidence_path)
+    if not isinstance(document, dict) or document.get("classification") not in {"census", "sample"}:
+        raise ValueError("growth evidence requires census or sample classification")
+    cases = document.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("growth evidence cases must be an array")
+    expected_keys = ("1y", "2y", "3y", "4y", "5y")
+    details: list[str] = []
+    failures = 0
+    identities: set[str] = set()
+    for case in cases:
+        if not isinstance(case, dict) or not isinstance(case.get("id"), str):
+            raise ValueError("growth cases require string ids")
+        identifier = case["id"]
+        if identifier in identities:
+            raise ValueError(f"duplicate growth case identity: {identifier}")
+        identities.add(identifier)
+        windows = case.get("windows")
+        expected_starts = case.get("expected_period_starts")
+        expected_market_starts = case.get("expected_market_starts")
+        expected_truncated_raw = case.get("expected_truncated_windows")
+        if not isinstance(windows, dict) or set(windows) != set(expected_keys):
+            details.append(f"{identifier}: windows must be exactly 1y,2y,3y,4y,5y")
+            failures += 1
+            continue
+        if not isinstance(expected_starts, dict) or not isinstance(expected_market_starts, dict):
+            details.append(f"{identifier}: independent expected starts are required")
+            failures += 1
+            continue
+        if not isinstance(expected_truncated_raw, list) or any(
+            not isinstance(key, str) for key in expected_truncated_raw
+        ):
+            details.append(f"{identifier}: expected_truncated_windows must be a string array")
+            failures += 1
+            continue
+        expected_truncated = set(expected_truncated_raw)
+        if not expected_truncated <= set(expected_keys):
+            details.append(f"{identifier}: expected_truncated_windows contains unknown windows")
+            failures += 1
+            continue
+        complete_starts: list[str] = []
+        complete_signatures: set[str] = set()
+        for key in expected_keys:
+            window = windows[key]
+            if not isinstance(window, dict):
+                details.append(f"{identifier}|{key}: window must be an object")
+                failures += 1
+                continue
+            start = str(window.get("period_start") or "")
+            if start != str(expected_starts.get(key) or ""):
+                details.append(f"{identifier}|{key}: period_start expected={expected_starts.get(key)} actual={start}")
+                failures += 1
+            try:
+                market_start = float(window["market_start"])
+                expected_market_start = float(expected_market_starts[key])
+                market_end = float(window["market_end"])
+                market_growth = float(window["market_growth"])
+                brand_total = _contribution_total(window["by_brand"])
+                company_total = _contribution_total(window["by_company"])
+            except (KeyError, TypeError, ValueError) as exc:
+                details.append(f"{identifier}|{key}: invalid numeric evidence: {exc}")
+                failures += 1
+                continue
+            for label, difference in (
+                ("market_start", abs(market_start - expected_market_start)),
+                ("market_growth", abs((market_end - market_start) - market_growth)),
+                ("brand_sum", abs(brand_total - market_growth)),
+                ("company_sum", abs(company_total - market_growth)),
+                ("brand_company", abs(brand_total - company_total)),
+            ):
+                if difference > abs_tol:
+                    details.append(f"{identifier}|{key}: {label} difference={difference}")
+                    failures += 1
+            signature = _canonical_sha(
+                {
+                    "by_brand": window["by_brand"],
+                    "by_company": window["by_company"],
+                }
+            )
+            if key in expected_truncated:
+                if window.get("reason") != "earliest_available" or window.get("period_start_actual") != start:
+                    details.append(f"{identifier}|{key}: invalid truncated-history metadata")
+                    failures += 1
+            else:
+                if window.get("reason") is not None or window.get("period_start_actual") is not None:
+                    details.append(f"{identifier}|{key}: unexpected truncated-history metadata")
+                    failures += 1
+                complete_starts.append(start)
+                complete_signatures.add(signature)
+        complete_count = len(expected_keys) - len(expected_truncated)
+        if len(set(complete_starts)) != complete_count:
+            details.append(f"{identifier}: non-truncated period starts are not distinct")
+            failures += 1
+        if len(complete_signatures) != complete_count:
+            details.append(f"{identifier}: non-truncated contribution payloads are not distinct")
+            failures += 1
+    if not cases:
+        details.append("empty growth-window population is a failure")
+        failures += 1
+    return GateResult(
+        gate="growth_windows",
+        classification=str(document["classification"]),
+        checked=len(cases),
+        population=len(cases),
+        failures=failures,
+        tolerance=f"abs_tol={abs_tol},rel_tol=0",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fail-closed release acceptance gates")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -316,6 +436,11 @@ def _parser() -> argparse.ArgumentParser:
     segment.add_argument("--observations", type=Path, required=True)
     segment.add_argument("--abs-tol", type=float, default=0.01)
     segment.add_argument("--environment", default="local")
+
+    growth = subparsers.add_parser("growth-windows")
+    growth.add_argument("--evidence", type=Path, required=True)
+    growth.add_argument("--abs-tol", type=float, default=0.01)
+    growth.add_argument("--environment", default="local")
     return parser
 
 
@@ -328,6 +453,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "segment-sum": lambda: check_segment_sums(
             args.expected_identities,
             args.observations,
+            args.abs_tol,
+            args.environment,
+        ),
+        "growth-windows": lambda: check_growth_windows(
+            args.evidence,
             args.abs_tol,
             args.environment,
         ),

@@ -130,7 +130,11 @@ def build_cause_data(
         "company_ranking": company,
         "company_ranking_stacked": company,
         "ei_ms_matrix": matrix_payload,
-        "growth_contribution": growth_contribution(metrics.all_brands, focus=focus),
+        "growth_contribution": growth_contribution(
+            metrics.all_brands,
+            focus=focus,
+            source=metrics.source,
+        ),
         "growth_contribution_ms_matrix": matrix_payload,
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,

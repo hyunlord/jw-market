@@ -65,3 +65,18 @@ The initial tracked runner supports representative samples. A full mart census
 should be scheduled as a separate nightly job because clean-clone CI has no d2
 credentials and the full cell scan is intentionally not disguised as a local
 unit test.
+
+## Growth contribution windows
+
+The `growth-windows` command checks every declared 1y through 5y window for
+period identity, an independently supplied market start, contribution sums,
+brand/company agreement, and distinct non-truncated payloads. Short histories
+are accepted only when the response exposes `reason=earliest_available` and a
+matching `period_start_actual`.
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py growth-windows \
+  --evidence /path/to/growth_window_evidence.json \
+  --abs-tol 0.01 \
+  --environment runtime
+```
