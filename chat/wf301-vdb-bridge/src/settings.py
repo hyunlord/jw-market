@@ -112,9 +112,6 @@ PREPROCESSOR_ID = int(os.environ.get("PREPROCESSOR_ID", "64"))
 EMBEDDING_SERVING_ID = int(os.environ.get("EMBEDDING_SERVING_ID", "25"))
 EMBEDDING_SERVING_REV_ID = int(os.environ.get("EMBEDDING_SERVING_REV_ID", "31"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "64"))
-# Overrides only the external preprocessor's temporary-vector indexing batch.
-# Zero preserves the workflow-provided batch size.
-VDB_INDEX_BATCH_SIZE = max(int(os.environ.get("VDB_INDEX_BATCH_SIZE", "0")), 0)
 DEFAULT_USER_ID = int(os.environ.get("DEFAULT_USER_ID", "7"))
 
 JS_COMPLETE = "JS0003"

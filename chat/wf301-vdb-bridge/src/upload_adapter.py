@@ -513,13 +513,12 @@ def run_preprocessor(
     user_id: int | None,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    batch_size = settings.VDB_INDEX_BATCH_SIZE or config.batch_size
     headers = {"x-user-id": str(user_id)} if user_id is not None else {}
     body = {
         "temp_vdb_index": temp_vdb_index,
         "serving_id": config.serving_id,
         "preprocessor_id": config.preprocessor_id,
-        "batch_size": batch_size,
+        "batch_size": config.batch_size,
         "params": config.preprocessor_params,
         "files": [
             {"name": item.file_name, "path": item.file_path}
@@ -545,7 +544,7 @@ def run_preprocessor(
     safe_log(
         "preprocessor_run_done",
         file_count=len(saved_documents),
-        batch_size=batch_size,
+        batch_size=config.batch_size,
         elapsed_s=round(time.monotonic() - started, 3),
     )
     # fail-closed: facade는 HTTP 200으로 실패를 감싸므로 envelope code를 반드시 검사한다.
