@@ -41,6 +41,28 @@ python3 pipeline/scripts/gates/release_acceptance.py strict-logs \
   --environment test2
 ```
 
+For a live deployment, use `collect_strict_logs.sh`. It derives the deployment
+selector, captures every non-deleting pod, and lets the tracked runner
+distinguish an empty pod census, a log retrieval failure, no matches, and real
+strict matches. Historical one-pod fail-open grep scripts are evidence, not
+reusable gates.
+
+## Historical TSV goldens
+
+Historical audits that already contain `production_goldens.tsv` can be checked
+without rewriting their evidence:
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py golden-tsv \
+  --observations /path/to/production_goldens.tsv \
+  --expected-count 5 --environment production
+```
+
+The command prints each identity and the measured numerator/denominator. A
+4/5 input remains red; callers must not lower the expected count to match it.
+`all_four_v2_verify_audit.sh` is the tracked wrapper for that historical
+artifact shape.
+
 ## Independent population census
 
 The candidates JSON is an array. The census JSON must come from an independent
@@ -52,6 +74,13 @@ query path, such as direct mart SQL, and has this shape:
 
 An empty candidate set always fails, including when the expected count is
 zero.
+
+Use a distinct `--gate-id` for each parity path. F-062 molecule and corpus
+parity are separate gates even though both use the same independent-census
+contract. Their census evidence must declare `source_kind=direct_db_count` and
+preserve the independent `COUNT(...)` query; an API-derived candidate count is
+rejected as a census.
+Use `f062_population_gate.sh` for both named F-062 paths.
 
 ## Segment sums
 
