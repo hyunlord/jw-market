@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import math
 import os
+import re
 import struct
 import time
 from typing import Any
@@ -30,6 +31,10 @@ from pipeline.scripts.api.routes.dynamic_market import _build_general_dynamic_re
 MAX_BATCH_ROWS = 10
 MAX_BATCH_BYTES = 8 * 1024 * 1024
 BUILD_VERSION = ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION
+MALB_LIVE_TABLE = "mart_analysis_level_block"
+MALB_STAGING_TABLE = "mart_analysis_level_block_staging"
+MALB_TARGET_TABLES = frozenset({MALB_LIVE_TABLE, MALB_STAGING_TABLE})
+MALB_DATABASE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,8 +316,38 @@ def _strategic_focus(key: BlockKey, *, source: str) -> str:
     return str(row["brand_key"])
 
 
-UPSERT_SQL = """
-INSERT INTO mart_analysis_level_block (
+def target_table() -> str:
+    selected = os.environ.get("MALB_TARGET_TABLE", "").strip()
+    if not selected:
+        raise RuntimeError(
+            "MALB_TARGET_TABLE is required; choose mart_analysis_level_block "
+            "or mart_analysis_level_block_staging"
+        )
+    if selected not in MALB_TARGET_TABLES:
+        raise RuntimeError(f"unsupported MALB_TARGET_TABLE: {selected!r}")
+    return selected
+
+
+def target_db() -> str:
+    selected = os.environ.get("MALB_TARGET_DB", "").strip()
+    if not selected:
+        raise RuntimeError("MALB_TARGET_DB is required")
+    if not MALB_DATABASE_RE.fullmatch(selected):
+        raise RuntimeError(f"unsupported MALB_TARGET_DB: {selected!r}")
+    if selected != config.db_name:
+        raise RuntimeError(
+            f"MALB_TARGET_DB {selected!r} does not match DB_NAME {config.db_name!r}"
+        )
+    return selected
+
+
+def target_relation() -> str:
+    return f"`{target_db()}`.`{target_table()}`"
+
+
+def upsert_sql() -> str:
+    return f"""
+INSERT INTO {target_relation()} (
     view, market_id, source, measure, profile_sig, trim_mode, analysis_levels_json,
     analysis_level_market_status_json, payload_sha256, source_epoch,
     build_version, payload_size, built_at
@@ -333,7 +368,7 @@ def write_batch(batch: Sequence[BlockPayload]) -> None:
     for attempt in range(4):
         try:
             with db.connect() as conn, conn.cursor() as cursor:
-                cursor.executemany(UPSERT_SQL, params)
+                cursor.executemany(upsert_sql(), params)
                 conn.commit()
             return
         except OperationalError as exc:
@@ -365,6 +400,7 @@ def source_epoch() -> str:
 
 
 def run_build() -> None:
+    target_relation()
     keys = sharded_keys(enumerate_keys())
     epoch = source_epoch()
     if os.environ.get("MALB_RESUME") == "1":
@@ -400,9 +436,9 @@ def current_keys(*, source_epoch: str, build_version: str) -> set[BlockKey]:
             str(row.get("profile_sig") or ""), str(row.get("trim_mode") or "full"), None,
         )
         for row in db.fetch_all(
-            """
+            f"""
             SELECT view, market_id, source, measure, profile_sig, trim_mode
-            FROM mart_analysis_level_block
+            FROM {target_relation()}
             WHERE source_epoch = %s AND build_version = %s
             """,
             (source_epoch, build_version),
@@ -411,6 +447,7 @@ def current_keys(*, source_epoch: str, build_version: str) -> set[BlockKey]:
 
 
 def run_parity() -> None:
+    target_relation()
     keys = sharded_keys(enumerate_keys())
     stride = int(os.environ.get("MALB_PARITY_STRIDE", "1"))
     keys = stride_order(keys, stride)
@@ -419,8 +456,8 @@ def run_parity() -> None:
     for index, key in enumerate(keys, start=1):
         live = build_block(key, source_epoch=epoch)
         row = db.fetch_one(
-            """
-            SELECT payload_sha256 FROM mart_analysis_level_block
+            f"""
+            SELECT payload_sha256 FROM {target_relation()}
             WHERE view=%s AND market_id=%s AND source=%s AND measure=%s AND profile_sig=%s AND trim_mode=%s
               AND build_version=%s AND source_epoch=%s
             """,

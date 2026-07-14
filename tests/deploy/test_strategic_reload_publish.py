@@ -20,6 +20,15 @@ def test_strategic_reload_tables_are_exact_eight_body_tables() -> None:
     )
 
 
+def test_legacy_publish_allowlist_rejects_analysis_level_blocks() -> None:
+    try:
+        publish.validate_publish_tables(("mart_analysis_level_block",))
+    except ValueError as exc:
+        assert "mart_analysis_level_block" in str(exc)
+    else:
+        raise AssertionError("MALB must use the paired blue-green publisher")
+
+
 def test_validate_publish_tables_rejects_general_mart() -> None:
     try:
         publish.validate_publish_tables(("mart_strategic_ml_brand_metric", "mart_general_brand_metric"))
