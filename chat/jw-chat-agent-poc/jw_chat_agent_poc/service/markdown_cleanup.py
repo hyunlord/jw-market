@@ -49,8 +49,16 @@ _VERIFIER_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
     r"숫자\s*검증\s*[:：]\s*근거[^\n]*?제한했습니다\."
 )
 _INTERNAL_ID_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"(?<![A-Za-z0-9_])TEMP_DOCUMENT_[^\s|,;)]*", re.IGNORECASE), "업로드 문서"),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:temp_document_id|document_id|vdb_id|chunk_id|tool_call_id)"
+            r"(?:\s*[:=]\s*[0-9A-Za-z._:-]+)?(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
     (re.compile(r"query_result_id\s*[:：]?\s*[0-9A-Za-z_-]*"), ""),
-    (re.compile(r"(?<![A-Za-z0-9_])tool_call_id(?![A-Za-z0-9_])"), ""),
     (re.compile(r"(?<![A-Za-z0-9_])qr_\d+(?![A-Za-z0-9_])"), ""),
     (re.compile(r"query\(spec\)"), "조회"),
 )

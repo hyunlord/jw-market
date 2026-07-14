@@ -239,7 +239,7 @@ def test_sse_emits_file_sources_event_only_when_present() -> None:
     body = "".join(_sse_events_from_final_answer(_final_answer(items)))
     assert "event: file_sources" in body
     assert "qa_e2e_operations_brief.docx" in body
-    assert '"document_id":112706' in body.replace(" ", "")
+    assert '"document_id"' not in body
     sources_pos = body.index("event: sources")
     file_sources_pos = body.index("event: file_sources")
     assert sources_pos < file_sources_pos  # 기존 sources 이벤트 뒤에 추가만
@@ -278,7 +278,7 @@ def test_chat_answer_returns_file_sources_end_to_end(monkeypatch) -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["file_sources"] == [{"file_name": "qa_e2e_operations_brief.docx", "document_id": 112706}]
+    assert payload["file_sources"] == [{"file_name": "qa_e2e_operations_brief.docx"}]
     assert "document" in payload["sources"]
 
     stream = client.get(

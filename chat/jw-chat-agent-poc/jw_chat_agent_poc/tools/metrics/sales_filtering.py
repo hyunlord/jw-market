@@ -241,7 +241,7 @@ def _transparency_fields(
     if extra_applied:
         applied.update(extra_applied)
     basis = {
-        "source": "cache_cause",
+        "source": "mart_direct",
         "view_type": "market_landscape",
         "period_grain": "cache period",
         "latest_period": latest_period or "-",

@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache
 from hmac import compare_digest
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -64,9 +64,14 @@ from jw_chat_agent_poc.service.context_scope import (
     ContextScope,
     file_reference_terms,
     has_file_reference,
+    matches_file_schema,
     resolve_context_scope,
 )
-from jw_chat_agent_poc.service.file_search_client import has_active_uploaded_file, search_uploaded_files
+from jw_chat_agent_poc.service.file_search_client import (
+    fetch_uploaded_file_schema_columns,
+    has_active_uploaded_file,
+    search_uploaded_files,
+)
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
@@ -129,7 +134,7 @@ CHAT_STREAM_DESCRIPTION = """
 | conversation | plain string conversation_id | first, if conversation_id exists | 0-1 |
 | step | JSON `{index, name, detail, status, raw_name, raw_detail, elapsed_ms?}` | while live question processing stages start/finish | 0-N |
 | sources | comma-separated source labels | before content | 1 |
-| file_sources | JSON array `[{file_name, document_id?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
+| file_sources | JSON array `[{file_name, i_page?, sheet_name?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
 | delta | markdown text chunk | prose segments | 0-N |
 | markdown_block | JSON `{kind, markdown}` | table segments | 0-N |
 | charts | JSON array | if charts are present | 0-1 |
@@ -356,7 +361,7 @@ def create_app(
             trace=final_answer.trace,
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
-            file_sources=[dict(item) for item in final_answer.file_sources],
+            file_sources=list(_project_public_file_sources(final_answer.file_sources)),
         )
 
     @app.get(
@@ -473,6 +478,12 @@ def _answer_question(
         provided_file = _has_file_signal(documents, file_context)
         with stage(None, "file_session_probe", "active uploaded file check"):
             has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
+        with stage(None, "file_schema_probe", "active uploaded file schema check"):
+            file_schema_columns = (
+                fetch_uploaded_file_schema_columns(state.conversation_id)
+                if has_file and not provided_file
+                else ()
+            )
         previous_turn = state.turns[-1] if state.turns else None
         routing_resolution = resolve_anaphora(question, previous_turn)
         routing_question = routing_resolution.resolved_question
@@ -490,18 +501,21 @@ def _answer_question(
             if inherit_file_context
             else routing_question
         )
-        needs_scope_clarification = (
-            has_file
-            and has_market_intent
-            and not has_market_anchor
-            and not has_file_reference(question)
-        )
         context_scope = resolve_context_scope(
             file_question,
             has_active_file=has_file,
             is_fresh_upload=bool(documents),
             has_market_intent=has_market_intent,
             has_market_anchor=has_market_anchor,
+            file_schema_columns=file_schema_columns,
+        )
+        file_schema_match = matches_file_schema(file_question, file_schema_columns)
+        needs_scope_clarification = (
+            has_file
+            and has_market_intent
+            and not has_market_anchor
+            and not has_file_reference(question)
+            and not file_schema_match
         )
         delegated_file_context: str | None = None
         file_source_items: tuple[dict[str, Any], ...] = ()
@@ -1314,8 +1328,9 @@ def _sse_events_from_final_answer(final_answer: FinalAnswer):
     if final_answer.conversation_id:
         yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
     yield f"event: sources\ndata: {','.join(source_labels(final_answer.sources))}\n\n"
-    if final_answer.file_sources:
-        yield _sse_json_event("file_sources", list(final_answer.file_sources))
+    public_file_sources = _project_public_file_sources(final_answer.file_sources)
+    if public_file_sources:
+        yield _sse_json_event("file_sources", list(public_file_sources))
     yield from iter_markdown_sse_events(final_answer.text)
     if final_answer.charts:
         yield _sse_json_event("charts", final_answer.charts)
@@ -1354,7 +1369,18 @@ def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
     items = result.get("file_source_items")
     if not isinstance(items, list):
         return ()
-    return tuple(item for item in items if isinstance(item, dict))
+    return _project_public_file_sources(item for item in items if isinstance(item, dict))
+
+
+def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    public_keys = ("file_name", "i_page", "source_channel", "sheet_name", "row_start", "row_end")
+    projected: list[dict[str, Any]] = []
+    for item in items:
+        public_item = {key: item[key] for key in public_keys if item.get(key) is not None}
+        if "file_name" in public_item:
+            public_item["file_name"] = scrub_internal_terminology(str(public_item["file_name"]))
+        projected.append(public_item)
+    return tuple(projected)
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
@@ -1478,13 +1504,13 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     )
     safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
-    if not file_context_fact and market_contract_allowed:
-        safe_answer = apply_common_unavailable_response(
-            question,
-            safe_answer,
-            markdown_response,
-            tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
-        )
+    safe_answer = apply_common_unavailable_response(
+        question,
+        safe_answer,
+        markdown_response,
+        tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        source_scope=str(result.get("context_scope") or "MARKET"),
+    )
     safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
     if not file_context_fact and market_contract_allowed:
         safe_answer = apply_requested_source_trap_gate(question, safe_answer)

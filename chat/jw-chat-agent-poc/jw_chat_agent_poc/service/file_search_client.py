@@ -10,6 +10,7 @@ import requests
 
 from jw_chat_agent_poc.service.file_sql_query import (
     SqlFileSource,
+    fetch_sql_schema_columns,
     query_uploaded_sql,
 )
 
@@ -74,7 +75,7 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
     if isinstance(raw_sources, list):
         for source in raw_sources:
             if isinstance(source, dict):
-                name = str(source.get("file_name") or source.get("chunk_id") or "uploaded file")
+                name = str(source.get("file_name") or "업로드 문서")
                 if name:
                     sources.append(name)
                 item: dict[str, Any] = {"file_name": name}
@@ -139,6 +140,43 @@ def has_active_uploaded_file(conversation_id: str | None) -> bool:
     except (requests.RequestException, ValueError):
         return False
     return bool(body.get("documents"))
+
+
+def fetch_uploaded_file_schema_columns(conversation_id: str | None) -> tuple[str, ...]:
+    """Read the active session's public SQL sources and their source columns."""
+
+    if not conversation_id or os.getenv("JW_CHAT_FILE_SEARCH_ENABLED", "true").lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return ()
+    base_url = os.getenv("JW_CHAT_FILE_SEARCH_BASE", "http://code-serving-235:8080").rstrip("/")
+    workflow_id = int(os.getenv("JW_CHAT_FILE_WORKFLOW_ID", "301"))
+    timeout_s = float(os.getenv("JW_CHAT_FILE_PROBE_TIMEOUT_S", "3"))
+    try:
+        response = requests.post(
+            f"{base_url}/search",
+            json={
+                "workflow_id": workflow_id,
+                "app_session_id": conversation_id,
+                "chat_id": conversation_id,
+                "question": "업로드 파일의 열 구조를 확인합니다.",
+            },
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("file search response must be an object")
+        sources = _sql_sources(body.get("sql_sources"))
+        if not sources:
+            return ()
+        return fetch_sql_schema_columns(conversation_id, sources)
+    except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+        logger.warning("file schema probe failed reason=%s", exc)
+        return ()
 
 
 def _sql_sources(raw_sources: Any) -> tuple[SqlFileSource, ...]:

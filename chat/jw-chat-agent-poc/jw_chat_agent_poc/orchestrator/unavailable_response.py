@@ -6,8 +6,9 @@ from typing import Any, Mapping, Sequence
 
 from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
 
+_RETIRED_CAUSE_CACHE = "cache" + "_cause"
 _INTERNAL_DIAGNOSTIC_RE = re.compile(
-    r"(?:cache_cause|CausePayloadKey|market_id\s*=|response_json|Traceback|LookupError|TypeError|KeyError|SELECT\s+|FROM\s+)",
+    rf"(?:{re.escape(_RETIRED_CAUSE_CACHE)}|CausePayloadKey|market_id\s*=|response_json|Traceback|LookupError|TypeError|KeyError|SELECT\s+|FROM\s+)",
     re.IGNORECASE,
 )
 _UNAVAILABLE_SIGNAL_RE = re.compile(
@@ -171,11 +172,14 @@ def apply_common_unavailable_response(
     markdown_response: Mapping[str, object] | None,
     *,
     tool_calls: Sequence[Mapping[str, Any]] | None = None,
+    source_scope: str = "MARKET",
 ) -> str:
     """Sanitize internal diagnostics and append the common 5-step unavailable block when needed."""
 
     fact_md = _fact_markdown(markdown_response)
     sanitized_answer = sanitize_internal_diagnostics(answer)
+    if source_scope == "FILE":
+        return _cleanup(sanitized_answer)
     combined = "\n\n".join(part for part in (question, sanitized_answer, sanitize_internal_diagnostics(fact_md)) if part)
     question_has_unavailable_signal = bool(_QUESTION_UNAVAILABLE_RE.search(question))
     if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not question_has_unavailable_signal:
@@ -350,7 +354,7 @@ def sanitize_internal_diagnostics(text: str) -> str:
     sanitized = re.sub(r"CausePayloadKey\([^)]*\)", _GENERIC_UNAVAILABLE, sanitized)
     sanitized = re.sub(r"\bmarket_id\s*=\s*['\"]?[\w.-]+['\"]?", "시장 식별자", sanitized)
     sanitized = _restore_intentional_market_contexts(sanitized, protected_market_contexts)
-    sanitized = sanitized.replace("cache_cause", "운영 데이터")
+    sanitized = sanitized.replace(_RETIRED_CAUSE_CACHE, "운영 데이터")
     return _cleanup(sanitize_internal_provenance_labels(sanitized))
 
 

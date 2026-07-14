@@ -10,10 +10,6 @@ from typing import Any, Mapping, Sequence
 import requests
 
 from jw_chat_agent_poc.common.periods import month_keys
-from jw_chat_agent_poc.genos_config import (
-    resolve_planner_genos_base_url,
-    resolve_planner_genos_token,
-)
 from jw_chat_agent_poc.orchestrator.unavailable_response import file_absence_answer
 
 
@@ -72,6 +68,30 @@ class MeasureRequest:
     state: str
     intent: str | None = None
     label: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DeterministicPlanResolution:
+    plan: dict[str, str] | None
+    resolved_slots: tuple[str, ...] = ()
+    missing_slots: tuple[str, ...] = ()
+
+
+def fetch_sql_schema_columns(
+    conversation_id: str,
+    sources: Sequence[SqlFileSource],
+) -> tuple[str, ...]:
+    """Return the source column names visible to the file SQL planner."""
+
+    names: list[str] = []
+    for source in sources[: _max_schema_tables()]:
+        schema = _fetch_schema(source, conversation_id)
+        names.extend(
+            str(column.get("source_name") or "").strip()
+            for column in _schema_columns(schema)
+            if str(column.get("source_name") or "").strip()
+        )
+    return tuple(dict.fromkeys(names))
 
 
 def query_uploaded_sql(
@@ -141,14 +161,26 @@ def query_uploaded_sql(
                 trace=tuple(trace),
             )
         current_stage = "planner"
-        plan = _deterministic_select(question, schemas)
-        plan_source = "deterministic"
+        resolution = _resolve_deterministic_select(question, schemas)
+        plan = resolution.plan
         if plan is None:
-            plan = _generate_select(question, schemas)
-            plan_source = "llm"
-        if not plan:
-            trace.append({"stage": "planner", "status": "empty"})
-            return SqlQueryOutcome("", (), (), status="empty_plan", trace=tuple(trace))
+            answer = _missing_plan_answer(resolution.missing_slots)
+            trace.append(
+                {
+                    "stage": "planner",
+                    "status": "unsupported",
+                    "resolved_slots": ",".join(resolution.resolved_slots),
+                    "missing_slots": ",".join(resolution.missing_slots),
+                }
+            )
+            return SqlQueryOutcome(
+                file_context="## 업로드 파일 SQL 결과\n상태: 미지원\n" + answer,
+                file_source_items=_source_items(sources[: len(schemas)]),
+                errors=("file SQL deterministic plan unavailable",),
+                answer_md=answer,
+                status="unsupported_query",
+                trace=tuple(trace),
+            )
         logical_name = str(plan.get("logical_name") or "").strip()
         sql = str(plan.get("sql") or "").strip()
         source = next(
@@ -162,7 +194,7 @@ def query_uploaded_sql(
             {
                 "stage": "planner",
                 "status": "ok",
-                "plan_source": plan_source,
+                "plan_source": "deterministic",
             }
         )
         aggregate = _is_aggregate_question(question)
@@ -194,7 +226,7 @@ def query_uploaded_sql(
         )
         logger.info(
             "file SQL planner complete plan_source=%s selected_columns=%s",
-            plan_source,
+            "deterministic",
             selected_columns,
         )
         current_stage = "execution"
@@ -502,6 +534,17 @@ def _deterministic_select(
 ) -> dict[str, str] | None:
     """Plan only file-query shapes whose slots are fully grounded in schema and text."""
 
+    return _resolve_deterministic_select(question, schemas).plan
+
+
+def _resolve_deterministic_select(
+    question: str,
+    schemas: Sequence[Mapping[str, Any]],
+) -> DeterministicPlanResolution:
+    """Resolve file-query slots independently and never invent an ungrounded plan."""
+
+    best_failure = DeterministicPlanResolution(None, (), ("요청한 조건",))
+
     for schema in schemas:
         columns = _schema_columns(schema)
         by_source = {
@@ -519,44 +562,114 @@ def _deterministic_select(
                 where = ""
                 if values:
                     where = " WHERE " + q1_column + " IN (" + ", ".join(_sql_literal(value) for value in values) + ")"
-                return {
-                    "logical_name": str(schema.get("logical_name") or ""),
-                    "sql": (
-                        f"SELECT {q1_column}, COUNT(*) AS response_count, "
-                        f"SUM({no_column}) AS no_total, COUNT(*) AS applied_rows "
-                        f"FROM data{where} GROUP BY {q1_column} ORDER BY {q1_column}"
-                    ),
-                }
+                return DeterministicPlanResolution(
+                    {
+                        "logical_name": str(schema.get("logical_name") or ""),
+                        "sql": (
+                            f"SELECT {q1_column}, COUNT(*) AS response_count, "
+                            f"SUM({no_column}) AS no_total, COUNT(*) AS applied_rows "
+                            f"FROM data{where} GROUP BY {q1_column} ORDER BY {q1_column}"
+                        ),
+                    },
+                    ("q1", "no"),
+                )
 
-        if _file_query_intent(question) != "file_compare":
+        if not _is_aggregate_question(question):
             continue
-        subjects = _file_comparison_subjects(question)
-        if len(subjects) != 2:
-            continue
+
+        resolved: list[str] = []
+        missing: list[str] = []
         manufacturer = _find_column(columns, r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체")
-        measure = _find_measure_column(columns, question)
-        if manufacturer is None or measure is None:
-            continue
-        manufacturer_query = str(manufacturer.get("query_name") or "")
-        measure_query = str(measure.get("query_name") or "")
-        filters = [
-            f"{manufacturer_query} IN ({', '.join(_sql_literal(value) for value in subjects)})"
-        ]
+        intent = _question_measure_intent(question) or "amount"
+        measure = None if intent == "count" else _find_measure_column(columns, question)
+        if intent == "count":
+            aggregate_expression = "COUNT(*) AS response_count"
+            resolved.append("measure")
+        elif measure is not None:
+            measure_query = str(measure.get("query_name") or "")
+            function = "AVG" if intent == "average" else "SUM"
+            aggregate_expression = f"{function}({measure_query}) AS total_value"
+            resolved.append("measure")
+        else:
+            requested = _requested_measure_label(question)
+            missing.append(requested or _measure_label(intent))
+            aggregate_expression = ""
+
+        filters: list[str] = []
+        select_prefix = ""
+        group_suffix = ""
+        subjects = _file_comparison_subjects(question)
+        if _file_query_intent(question) == "file_compare":
+            if manufacturer is None:
+                missing.append("제조사")
+            elif len(subjects) != 2:
+                missing.append("비교 대상")
+            else:
+                manufacturer_query = str(manufacturer.get("query_name") or "")
+                filters.append(
+                    f"{manufacturer_query} IN ({', '.join(_sql_literal(value) for value in subjects)})"
+                )
+                select_prefix = f"{manufacturer_query}, "
+                group_suffix = f" GROUP BY {manufacturer_query} ORDER BY total_value DESC"
+                resolved.extend(("manufacturer", "subjects"))
+        else:
+            subject = _single_manufacturer_subject(question)
+            if subject:
+                if manufacturer is None:
+                    missing.append("제조사")
+                else:
+                    manufacturer_query = str(manufacturer.get("query_name") or "")
+                    filters.append(f"{manufacturer_query} = {_sql_literal(subject)}")
+                    resolved.append("manufacturer")
+
         atc_code = _atc4_code(question)
         if atc_code:
             atc_column = _find_column(columns, r"atc\s*4")
             if atc_column is None:
-                continue
-            filters.append(f"{atc_column.get('query_name')} = {_sql_literal(atc_code)}")
-        return {
-            "logical_name": str(schema.get("logical_name") or ""),
-            "sql": (
-                f"SELECT {manufacturer_query}, SUM({measure_query}) AS total_value, "
-                f"COUNT(*) AS applied_rows FROM data WHERE {' AND '.join(filters)} "
-                f"GROUP BY {manufacturer_query} ORDER BY total_value DESC"
-            ),
-        }
-    return None
+                missing.append("ATC4")
+            else:
+                filters.append(f"{atc_column.get('query_name')} = {_sql_literal(atc_code)}")
+                resolved.append("ATC4")
+
+        if missing:
+            candidate = DeterministicPlanResolution(
+                None,
+                tuple(dict.fromkeys(resolved)),
+                tuple(dict.fromkeys(missing)),
+            )
+            if len(candidate.resolved_slots) >= len(best_failure.resolved_slots):
+                best_failure = candidate
+            continue
+
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
+        return DeterministicPlanResolution(
+            {
+                "logical_name": str(schema.get("logical_name") or ""),
+                "sql": (
+                    f"SELECT {select_prefix}{aggregate_expression}, COUNT(*) AS applied_rows "
+                    f"FROM data{where}{group_suffix}"
+                ),
+            },
+            tuple(dict.fromkeys(resolved)),
+        )
+    return best_failure
+
+
+def _measure_label(intent: str) -> str:
+    return {
+        "amount": "금액",
+        "average": "평균",
+        "quantity": "수량",
+        "count": "건수",
+    }.get(intent, "요청한 지표")
+
+
+def _missing_plan_answer(missing_slots: Sequence[str]) -> str:
+    labels = tuple(dict.fromkeys(value for value in missing_slots if value))
+    if len(labels) == 1 and labels[0] != "요청한 조건":
+        return file_absence_answer("unsupported", subject=labels[0])
+    detail = ", ".join(labels) if labels else "요청한 조건"
+    return f"이 파일에서 {detail}을 찾을 수 없습니다. 파일의 열 이름을 확인해 주세요."
 
 
 def _schema_columns(schema: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
@@ -619,6 +732,19 @@ def _file_comparison_subjects(question: str) -> tuple[str, ...]:
     return tuple(value.strip() for value in match.groups())
 
 
+def _single_manufacturer_subject(question: str) -> str:
+    matches = re.finditer(
+        r"([가-힣A-Za-z0-9_-]+)(?:의|에서)\s*(?:sell[ -]?out|매출|금액|합계|총액)",
+        question,
+        re.IGNORECASE,
+    )
+    for match in matches:
+        candidate = match.group(1).strip()
+        if not re.fullmatch(r"[A-Z]\d{2}[A-Z]\d", candidate, re.IGNORECASE):
+            return candidate
+    return ""
+
+
 def _file_query_intent(question: str) -> str | None:
     if re.search(r"(?:비교|대비|각각)", question) and len(
         _file_comparison_subjects(question)
@@ -633,6 +759,12 @@ def _atc4_code(question: str) -> str:
         question,
         re.IGNORECASE,
     )
+    if match is None:
+        match = re.search(
+            r"(?<![A-Z0-9])([A-Z]\d{2}[A-Z]\d)(?![A-Z0-9])",
+            question,
+            re.IGNORECASE,
+        )
     return match.group(1).upper() if match else ""
 
 
@@ -667,42 +799,10 @@ def _generate_select(
     question: str,
     schemas: Sequence[Mapping[str, Any]],
 ) -> dict[str, str] | None:
-    token = resolve_planner_genos_token()
-    if not token:
-        raise RuntimeError("planner token is unavailable")
-    compact_schemas = [_compact_schema(question, schema) for schema in schemas]
-    response = requests.post(
-        f"{resolve_planner_genos_base_url().rstrip('/')}/chat/completions",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "messages": [
-                {
-                    "role": "system",
-                    "content": _planner_system_prompt(),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {"question": question, "uploaded_file_schemas": compact_schemas},
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            "stream": False,
-            "temperature": 0.0,
-            "max_tokens": _planner_max_tokens(),
-        },
-        timeout=_planner_timeout(),
-    )
-    response.raise_for_status()
-    payload = response.json()
-    content = _message_content(payload)
-    parsed = _json_object(content)
-    logical_name = str(parsed.get("logical_name") or "").strip()
-    sql = str(parsed.get("sql") or "").strip()
-    if not logical_name and not sql:
-        return None
-    return {"logical_name": logical_name, "sql": sql}
+    """Retain the legacy test seam while structurally disabling LLM SQL generation."""
+
+    del question, schemas
+    raise RuntimeError("LLM file SQL generation is disabled")
 
 
 def _run_query(

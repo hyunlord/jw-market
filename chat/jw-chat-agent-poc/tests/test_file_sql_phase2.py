@@ -142,8 +142,9 @@ def test_amount_request_rejects_average_price_column(monkeypatch) -> None:
         "2026년 1월 총 sell-out 금액은?", "conversation-1", (source,)
     )
 
-    assert outcome.errors == ("file SQL selected column intent mismatch",)
-    assert "금액 열을 찾지 못했습니다" in outcome.answer_md
+    assert outcome.errors == ("file SQL deterministic plan unavailable",)
+    assert outcome.status == "unsupported_query"
+    assert "금액 관련 열이 없습니다" in outcome.answer_md
     assert "12,345" not in outcome.answer_md
 
 
@@ -514,7 +515,7 @@ def test_file_sql_failure_trace_records_stage_without_exception_details(monkeypa
     monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
     monkeypatch.setattr(
         file_sql_query,
-        "_deterministic_select",
+        "_resolve_deterministic_select",
         lambda *_args: (_ for _ in ()).throw(ValueError("sensitive planner detail")),
     )
 

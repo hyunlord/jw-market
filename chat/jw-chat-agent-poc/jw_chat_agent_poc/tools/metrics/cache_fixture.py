@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jw_chat_agent_poc.agentic import FilterEntry, validate_metric_filters
-from jw_chat_agent_poc.tools.metrics.cache_cause_metrics import CauseMetricMixin
+from jw_chat_agent_poc.tools.metrics.legacy_payload_metrics import CauseMetricMixin
 from jw_chat_agent_poc.tools.metrics.cache_helpers import CacheMetricHelperMixin
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadReader,

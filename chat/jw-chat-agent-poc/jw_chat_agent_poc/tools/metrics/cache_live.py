@@ -123,7 +123,7 @@ class StaticCausePayloadReader:
     def load(self, key: CausePayloadKey) -> CausePayload:
         payload = self.payloads.get((key.brand, key.view_type, key.source, key.measure, key.market_id))
         if payload is None:
-            raise LookupError(f"cache_cause fixture is missing: {key}")
+            raise LookupError(f"legacy payload fixture is missing: {key}")
         return CausePayload(key=key, payload=payload, loaded_at=time.monotonic())
 
 

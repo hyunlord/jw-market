@@ -226,11 +226,14 @@ def test_aggregate_without_applied_rows_is_rejected(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         file_sql_query,
-        "_generate_select",
-        lambda question, schemas: {
-            "logical_name": SQL_SOURCE.logical_name,
-            "sql": "SELECT SUM(c72) AS total FROM data",
-        },
+        "_resolve_deterministic_select",
+        lambda question, schemas: file_sql_query.DeterministicPlanResolution(
+            {
+                "logical_name": SQL_SOURCE.logical_name,
+                "sql": "SELECT SUM(c72) AS total FROM data",
+            },
+            ("measure",),
+        ),
     )
 
     outcome = file_sql_query.query_uploaded_sql("총 합계", "conversation-1", (SQL_SOURCE,))
@@ -379,11 +382,14 @@ def test_zero_rows_are_explicit_not_silent(monkeypatch) -> None:
     monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         file_sql_query,
-        "_generate_select",
-        lambda question, schemas: {
-            "logical_name": SQL_SOURCE.logical_name,
-            "sql": "SELECT c1 FROM data WHERE c1 = 'missing'",
-        },
+        "_resolve_deterministic_select",
+        lambda question, schemas: file_sql_query.DeterministicPlanResolution(
+            {
+                "logical_name": SQL_SOURCE.logical_name,
+                "sql": "SELECT c1 FROM data WHERE c1 = 'missing'",
+            },
+            ("requested_value",),
+        ),
     )
     monkeypatch.setattr(
         file_sql_query,
@@ -418,6 +424,31 @@ def test_public_file_sql_source_contract_does_not_require_document_id() -> None:
     assert len(sources) == 1
     assert sources[0].logical_name == PUBLIC_FILE_SQL_SOURCE["logical_name"]
     assert sources[0].document_id is None
+
+
+def test_file_schema_probe_uses_public_sql_source_contract(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_search_client.requests,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"sql_sources": [PUBLIC_FILE_SQL_SOURCE]},
+        ),
+    )
+    captured: list[SqlFileSource] = []
+
+    def fetch_columns(conversation_id, sources):
+        assert conversation_id == "conversation-1"
+        captured.extend(sources)
+        return ("ATC 4", "MFR NAME KOR")
+
+    monkeypatch.setattr(file_search_client, "fetch_sql_schema_columns", fetch_columns)
+
+    columns = file_search_client.fetch_uploaded_file_schema_columns("conversation-1")
+
+    assert columns == ("ATC 4", "MFR NAME KOR")
+    assert len(captured) == 1
+    assert captured[0].document_id is None
 
 
 def test_invalid_sql_source_is_logged_without_discarding_valid_sources(caplog) -> None:
