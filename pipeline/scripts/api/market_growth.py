@@ -39,15 +39,23 @@ def fixed_five_year_growth_series(
     if not periods:
         return {}
 
-    earliest = periods[0]
     results: dict[str, GrowthResult] = {}
-    for index, period in enumerate(periods):
-        if index == 0:
+    for period in periods:
+        exact_baseline = _five_year_prior_period(period)
+        numeric_prior_periods = [
+            candidate
+            for candidate in periods
+            if candidate < period and _number(values_by_period.get(candidate)) is not None
+        ]
+        exact_value = _number(values_by_period.get(exact_baseline))
+        baseline_period = (
+            exact_baseline
+            if exact_value is not None
+            else (numeric_prior_periods[0] if numeric_prior_periods else None)
+        )
+        if baseline_period is None:
             results[period] = GrowthResult(None, "insufficient_history", None, period_count)
             continue
-
-        exact_baseline = _five_year_prior_period(period)
-        baseline_period = exact_baseline if exact_baseline in values_by_period else earliest
         baseline = _number(values_by_period.get(baseline_period))
         current = _number(values_by_period.get(period))
         if baseline is None or current is None:
@@ -60,6 +68,20 @@ def fixed_five_year_growth_series(
             value = compound_period_growth_pct(baseline, current, period_count)
             results[period] = GrowthResult(value, None, baseline_period, period_count)
     return results
+
+
+def growth_endpoint_meta(values_by_period: Mapping[str, float | None]) -> dict[str, str | None]:
+    """Describe the latest real value used as the growth endpoint."""
+
+    numeric_periods = [
+        str(period)
+        for period, value in values_by_period.items()
+        if _number(value) is not None
+    ]
+    return {
+        "end_period": max(numeric_periods) if numeric_periods else None,
+        "reason": "latest_available" if numeric_periods else "insufficient_history",
+    }
 
 
 def _fixed_period_count(source: str | None, periods: list[str]) -> int:

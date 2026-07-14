@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.dynamic_market.aggregator import (
+    MetricAggregator,
+    parse_history,
+    sidecar_rows_to_metric_rows,
+    strategic_sidecar_rows_to_metric_rows,
+)
+from pipeline.scripts.api.dynamic_market.cause_payload import build_market_meta
 from pipeline.scripts.api.dynamic_market.cause_time import market_size_series
 from pipeline.scripts.api.dynamic_market.response_cache import CACHE_SCHEMA_VERSION
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, MarketDefinition, PeriodRange
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, growth_endpoint_meta
 from pipeline.scripts.api.market_scope.legacy_shape import market_size_series_payload
 from pipeline.scripts.etl.build_cache_cause import market_size_series_with_yoy
 
@@ -92,6 +101,136 @@ def test_growth_result_distinguishes_unavailable_reasons(
     assert result.reason == reason
 
 
+def test_growth_skips_missing_baseline_period_but_preserves_actual_zero() -> None:
+    missing = fixed_five_year_growth_series(
+        {"2021-05": None, "2022-05": 100.0, "2026-05": 121.0},
+        source="ubist",
+    )["2026-05"]
+    actual_zero = fixed_five_year_growth_series(
+        {"2021-05": 0.0, "2022-05": 100.0, "2026-05": 121.0},
+        source="ubist",
+    )["2026-05"]
+
+    assert missing.baseline_period == "2022-05"
+    assert missing.value == pytest.approx(((121.0 / 100.0) ** (1 / 60) - 1) * 100)
+    assert actual_zero.reason == "zero_baseline"
+    assert actual_zero.value is None
+
+
+def test_growth_does_not_turn_missing_endpoint_into_minus_one_hundred_percent() -> None:
+    result = fixed_five_year_growth_series(
+        {"2021-05": 100.0, "2026-05": None},
+        source="ubist",
+    )["2026-05"]
+
+    assert result.value is None
+    assert result.reason == "insufficient_history"
+
+
+def test_parse_history_preserves_null_separately_from_actual_zero() -> None:
+    assert parse_history('{"2026-04": 0, "2026-05": null}') == {
+        "2026-04": 0.0,
+        "2026-05": None,
+    }
+
+
+def test_aggregation_excludes_incomplete_period_instead_of_summing_missing_as_zero() -> None:
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "A10N1",
+            "unit_label": "KRW",
+            "raw_value_history": '{"2026-04": 10, "2026-05": null}',
+        },
+        {
+            "brand_key": "b",
+            "brand_name": "B",
+            "atc4_code": "A10N1",
+            "unit_label": "KRW",
+            "raw_value_history": '{"2026-04": 20, "2026-05": 30}',
+        },
+    ]
+
+    brands, totals = MetricAggregator(mart_db="jw_mart")._aggregate_rows(
+        rows,
+        period_range=PeriodRange(),
+    )
+
+    assert totals == {"2026-04": 30.0}
+    assert all(brand.latest_period == "2026-04" for brand in brands)
+    assert all("2026-05" not in brand.history_by_period for brand in brands)
+
+
+@pytest.mark.parametrize("strategic", [False, True])
+def test_sidecar_collapse_propagates_incomplete_period(strategic: bool) -> None:
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "A10N1",
+            "product_code": "P1",
+            "dimension_type": "molecule",
+            "raw_value_history": '{"2026-04": 10, "2026-05": null}',
+        },
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "A10N1",
+            "product_code": "P2",
+            "dimension_type": "molecule",
+            "raw_value_history": '{"2026-04": 20, "2026-05": 30}',
+        },
+    ]
+
+    if strategic:
+        collapsed = strategic_sidecar_rows_to_metric_rows(
+            rows,
+            metadata={},
+            required_dimensions=("molecule",),
+        )
+    else:
+        collapsed = sidecar_rows_to_metric_rows(
+            rows,
+            metadata={},
+            required_dimensions=("molecule",),
+        )
+
+    assert json.loads(collapsed[0]["raw_value_history"]) == {
+        "2026-04": 30.0,
+        "2026-05": None,
+    }
+
+
+def test_market_meta_discloses_latest_available_growth_endpoint() -> None:
+    metrics = _metrics(source="ubist", periods=("2021-04", "2026-04"), values=(100.0, 121.0))
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"atc4": ["A10N1"]},
+        source="ubist",
+        measure="sales",
+    )
+
+    meta = build_market_meta(
+        definition=definition,
+        metrics=metrics,
+        market_id="dynamic_general_test",
+        data={"market_size_series": market_size_series(metrics)},
+    )
+
+    assert meta["mom_growth_meta"] == {
+        "end_period": "2026-04",
+        "reason": "latest_available",
+    }
+
+
+def test_growth_endpoint_meta_ignores_missing_values_but_preserves_actual_zero() -> None:
+    assert growth_endpoint_meta({"2026-03": 1.0, "2026-04": 0.0, "2026-05": None}) == {
+        "end_period": "2026-04",
+        "reason": "latest_available",
+    }
+
+
 @pytest.mark.parametrize(
     ("source", "periods", "fixed_period_count"),
     [
@@ -150,6 +289,7 @@ def test_cached_cause_response_recomputes_growth_without_rebuilding_cache(
     fixed_period_count: int,
 ) -> None:
     cached = {
+        "market_meta": {},
         "data": {
             "market_size_series": {
                 periods[0]: {"value": 100.0, "yoy_growth_pct": None, "mom_growth_pct": 999.0},
@@ -161,6 +301,10 @@ def test_cached_cause_response_recomputes_growth_without_rebuilding_cache(
     payload = compose_cached_json(cached, measure="sales", source=source)
 
     points = payload["data"]["market_size_series"]
+    assert payload["market_meta"]["mom_growth_meta"] == {
+        "end_period": periods[1],
+        "reason": "latest_available",
+    }
     expected = ((121.0 / 100.0) ** (1 / fixed_period_count) - 1) * 100
     assert points[0]["mom_growth_pct"] is None
     assert points[1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pipeline.scripts.api.composers.number_format import deep_format_numbers
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, growth_endpoint_meta
 from pipeline.scripts.api.utils import loads_json_maybe
 
 
@@ -127,6 +127,18 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | No
         key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
         for key, value in obj.items()
     }
+    market_meta = cleaned.get("market_meta")
+    market_series = cleaned.get("market_size_series")
+    data = cleaned.get("data")
+    if not isinstance(market_series, list) and isinstance(data, dict):
+        market_series = data.get("market_size_series")
+    if isinstance(market_meta, dict) and isinstance(market_series, list):
+        values = {
+            str(point.get("period")): point.get("value")
+            for point in market_series
+            if isinstance(point, dict) and point.get("period") is not None
+        }
+        market_meta["mom_growth_meta"] = growth_endpoint_meta(values)
     return _frontend_entry_aliases(_anomaly_aliases(cleaned))
 
 
