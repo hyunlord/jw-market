@@ -31,15 +31,25 @@ def compound(
 
 
 def elapsed_months(start: str, end: str) -> int | None:
-    if len(start) == len(end) == 7 and start[4] == end[4] == "-":
+    if (
+        len(start) == len(end) == 7
+        and start[4] == end[4] == "-"
+        and start[5:7].isdigit()
+        and end[5:7].isdigit()
+    ):
         return (int(end[:4]) - int(start[:4])) * 12 + int(end[5:7]) - int(start[5:7])
-    if len(start) == len(end) == 7 and start[4:6] == end[4:6] == "-Q":
+    if (
+        len(start) == len(end) == 7
+        and start[4:6] == end[4:6] == "-Q"
+        and start[-1] in "1234"
+        and end[-1] in "1234"
+    ):
         return ((int(end[:4]) - int(start[:4])) * 4 + int(end[-1]) - int(start[-1])) * 3
     return None
 
 
 def shift_month(period: str) -> str:
-    if len(period) != 7 or period[4] != "-":
+    if len(period) != 7 or period[4] != "-" or not period[5:7].isdigit():
         return ""
     year, month = int(period[:4]), int(period[5:7])
     return f"{year - 1}-12" if month == 1 else f"{year:04d}-{month - 1:02d}"

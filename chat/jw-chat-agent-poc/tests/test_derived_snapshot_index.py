@@ -21,6 +21,29 @@ def test_derived_snapshot_matches_live_calculation_for_every_fixture_cell() -> N
     assert report.exit_code == 0
 
 
+def test_derived_parity_census_handles_quarterly_periods() -> None:
+    periods = ("2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4")
+    values = {
+        "브랜드A": (100.0, 110.0, 120.0, 130.0),
+        "브랜드B": (200.0, 210.0, 220.0, 230.0),
+    }
+    totals = {
+        period: sum(series[index] for series in values.values())
+        for index, period in enumerate(periods)
+    }
+    snapshot = MartSnapshot(
+        tuple(_record(brand, series, periods, totals) for brand, series in values.items()),
+        0.0,
+    )
+
+    report = derived_parity_report(snapshot)
+
+    assert report.checked == report.population
+    assert report.population > 0
+    assert report.failures == ()
+    assert report.exit_code == 0
+
+
 def test_derived_snapshot_keeps_missing_market_values_out_of_growth_math() -> None:
     snapshot = MartSnapshot(_records(missing_market_period=True), 0.0)
 
