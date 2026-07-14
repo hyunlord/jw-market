@@ -586,7 +586,12 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
             ),
         )
     primary_calls = tuple(call for call in calls if call.get("tool") != "agent_calculation")
-    return provenance_rows_from_calls(primary_calls or calls, ())
+    result_calls = tuple(call for call in primary_calls if not _is_query_plan_call(call))
+    return provenance_rows_from_calls(result_calls or primary_calls or calls, ())
+
+
+def _is_query_plan_call(call: Mapping[str, Any]) -> bool:
+    return call.get("tool") == "query_spec" or _render_data(call).get("metric") == "query_spec"
 
 
 def _complete_row(
