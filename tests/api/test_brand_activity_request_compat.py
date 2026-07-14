@@ -24,6 +24,25 @@ ROUTE_GETTERS: tuple[RouteGetter, ...] = (
 )
 
 
+TOPIC_PERIOD_META = {
+    "period": {
+        "start_date": "2024-06",
+        "end_date": "2026-05",
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def topic_period_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+
 def _client(monkeypatch: pytest.MonkeyPatch, getter_name: str, getter: Callable[[dict[str, object]], dict[str, object] | None]) -> TestClient:
     monkeypatch.setattr(brand_activity, getter_name, getter)
     app = FastAPI()
@@ -53,10 +72,10 @@ def test_nested_atc4_is_normalized_and_reported(
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "data": {"scope": "fixture"},
-        "meta": {"request_normalized": True},
-    }
+    expected_meta = {"request_normalized": True}
+    if route == "topics":
+        expected_meta = {**TOPIC_PERIOD_META, **expected_meta}
+    assert response.json() == {"data": {"scope": "fixture"}, "meta": expected_meta}
     captured_filters = captured["filters"]
     assert isinstance(captured_filters, dict)
     assert captured_filters["atc4"] == ["C10A1"]
@@ -88,7 +107,10 @@ def test_matching_flat_and_nested_atc4_keeps_flat_value(
     )
 
     assert response.status_code == 200
-    assert response.json()["meta"] == {"request_normalized": True}
+    expected_meta = {"request_normalized": True}
+    if route == "topics":
+        expected_meta = {**TOPIC_PERIOD_META, **expected_meta}
+    assert response.json()["meta"] == expected_meta
     captured_filters = captured["filters"]
     assert isinstance(captured_filters, dict)
     assert captured_filters["atc4"] == ["C10A1"]
@@ -110,7 +132,10 @@ def test_flat_atc4_response_bytes_are_unchanged(
     )
 
     assert response.status_code == 200
-    assert response.content == b'{"data":{"scope":"fixture"}}'
+    expected = {"data": {"scope": "fixture"}}
+    if route == "topics":
+        expected["meta"] = TOPIC_PERIOD_META
+    assert response.json() == expected
 
 
 @pytest.mark.parametrize(("route", "getter_name"), ROUTE_GETTERS)

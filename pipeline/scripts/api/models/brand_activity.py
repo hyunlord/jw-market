@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _dict(value: Any) -> dict[str, Any] | None:
@@ -267,6 +268,8 @@ class BrandActivityTopicsRequest(BrandActivityBaseRequest):
     specialty: str | list[str] = Field("전체", description="진료과 shortcut. 문자열 또는 OR 리스트.")
     interest: str | list[str] = Field("전체", description="키워드 유용성 shortcut. 문자열 또는 OR 리스트.")
     prescription_evolution: str | list[str] = Field("전체", description="처방 변화 shortcut. 문자열 또는 OR 리스트.")
+    start_date: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
+    end_date: str | None = Field(default=None, description="키워드 집계 종료월 YYYY-MM.")
     period_start: str | None = Field(default=None, description="키워드 집계 시작월 YYYY-MM.")
     period_end: str | None = Field(default=None, description="키워드 집계 종료월 YYYY-MM.")
     top_n: int = Field(default=5, ge=1, le=10, description="브랜드 카드에 보여줄 상위 토픽 개수. [입력] 1~10, 기본 5.")
@@ -279,9 +282,29 @@ class BrandActivityTopicsRequest(BrandActivityBaseRequest):
             return value
         for source, target in (("topN", "top_n"), ("periodStart", "period_start"), ("periodEnd", "period_end")):
             _rename(data, source, target)
+        for canonical, legacy in (("start_date", "period_start"), ("end_date", "period_end")):
+            if data.get(canonical) is not None and data.get(legacy) is not None and data[canonical] != data[legacy]:
+                raise ValueError(f"{canonical} and {legacy} must match when both are provided")
+            value = data.get(canonical) if data.get(canonical) is not None else data.get(legacy)
+            if value is not None:
+                data[canonical] = value
+                data[legacy] = value
         if data.get("top_n") is None:
             data.pop("top_n", None)
         return data
+
+    @field_validator("start_date", "end_date", "period_start", "period_end")
+    @classmethod
+    def validate_month_format(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value) is None:
+            raise ValueError("month must use YYYY-MM format")
+        return value
+
+    @model_validator(mode="after")
+    def validate_period_order(self) -> BrandActivityTopicsRequest:
+        if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
+            raise ValueError("start_date must be earlier than or equal to end_date")
+        return self
 
 
 class InterestRxWeights(BaseModel):

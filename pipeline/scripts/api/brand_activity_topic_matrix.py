@@ -38,6 +38,22 @@ class TopicRequestError(RuntimeError):
     """Raised when a topic matrix request cannot be parsed."""
 
 
+def get_topic_period_bounds() -> dict[str, str]:
+    """Return the available monthly range from the indexed keyword source."""
+    schema = quote_identifier(config.brand_activity_db_name)
+    row = db.fetch_one(
+        f"""
+        SELECT MIN(period_ym) AS available_start,
+               MAX(period_ym) AS available_end
+        FROM {schema}.`km_keyword_event_stage`
+        """
+    ) or {}
+    return {
+        "available_start": _text(row.get("available_start")),
+        "available_end": _text(row.get("available_end")),
+    }
+
+
 def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue] | None:
     """Return selected plus competitor brands with stored topic shares."""
 
