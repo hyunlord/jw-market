@@ -209,6 +209,47 @@ def test_market_forecasts_use_persistent_cache_for_fresh_combos(monkeypatch) -> 
     assert sorted(upserted) == [missing_key]
 
 
+def test_market_forecast_cache_can_be_isolated_to_staging_table(monkeypatch) -> None:
+    combo_key = ("A10N3", "ubist", "sales")
+    observed_tables: list[str] = []
+
+    monkeypatch.setattr(
+        general_builder,
+        "ensure_market_forecast_table",
+        lambda _conn, table_name: observed_tables.append(f"ensure:{table_name}"),
+    )
+    monkeypatch.setattr(
+        general_builder,
+        "load_market_forecast_cache",
+        lambda _conn, _combos, *, table_name: observed_tables.append(f"load:{table_name}") or {},
+    )
+    monkeypatch.setattr(
+        general_builder,
+        "upsert_market_forecast_cache",
+        lambda _conn, _forecasts, _rows, *, table_name: observed_tables.append(f"upsert:{table_name}"),
+    )
+    monkeypatch.setattr(
+        general_builder,
+        "build_market_forecast",
+        lambda _rows, _source, steps: {"steps": steps},
+    )
+
+    forecasts = general_builder.build_market_forecasts_by_combo(
+        {combo_key: [_row("target", "타깃", "A10N3", "ubist", "sales", 100)]},
+        workers=1,
+        conn=object(),
+        table_name="cache_market_forecast_general_stage_test",
+        horizon_years=5,
+    )
+
+    assert forecasts[combo_key] == {"steps": 60}
+    assert observed_tables == [
+        "ensure:cache_market_forecast_general_stage_test",
+        "load:cache_market_forecast_general_stage_test",
+        "upsert:cache_market_forecast_general_stage_test",
+    ]
+
+
 def test_market_forecast_cache_freshness_uses_etl_stale_marker_not_calendar_expiry() -> None:
     # Given: a persisted market forecast has an old calendar expiry timestamp,
     # but no ETL completion event marked it stale and its source version matches.
