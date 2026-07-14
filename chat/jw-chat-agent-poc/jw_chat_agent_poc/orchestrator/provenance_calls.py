@@ -30,7 +30,7 @@ def provenance_rows_from_calls(
         query_spec = query_spec_value if isinstance(query_spec_value, Mapping) else {}
         raw_source = _first_value(render_data, call, query_spec, keys=("source_label", "source"))
         tool_source = _source_from_tool(call)
-        if not raw_source or str(raw_source) in _GENERIC_PROVIDER_SOURCES:
+        if tool_source == "지원 범위" or not raw_source or str(raw_source) in _GENERIC_PROVIDER_SOURCES:
             raw_source = tool_source or raw_source
         rows.append(
             normalized_row(
@@ -52,6 +52,12 @@ def provenance_rows_from_calls(
 
     represented_sources = {row.source for row in rows}
     for raw_source in sources:
+        if any(
+            call.get("tool") == "requested_source_unavailable"
+            and str(call.get("source") or "") == raw_source
+            for call in calls
+        ):
+            continue
         if raw_source in _GENERIC_PROVIDER_SOURCES and any(
             str(call.get("source") or "") == raw_source and _source_from_tool(call)
             for call in calls
@@ -66,6 +72,8 @@ def provenance_rows_from_calls(
 
 def _source_from_tool(call: Mapping[str, Any]) -> str:
     tool = str(call.get("tool") or "")
+    if tool == "requested_source_unavailable":
+        return "지원 범위"
     if tool in {"get_drug_main_ingredient", "mfds_composition"}:
         return "식약처 의약품 성분 정보"
     if tool in {"mfds_permission_search", "mfds_permission_detail", "mfds_easy_drug", "search_drug_info"}:

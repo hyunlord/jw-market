@@ -21,6 +21,7 @@ from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
+from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
 
 
 class _NoInput(BaseModel):
@@ -67,12 +68,58 @@ def test_evidence_renderer_uses_text_fact_without_placeholder_or_raw_scalars() -
     assert "totalCount" not in answer
 
 
+def test_web_evidence_preserves_title_url_and_date() -> None:
+    # Given: a live web result has explicit provenance fields.
+    call = ExternalCall(
+        tool="web_search",
+        source="web_search",
+        status="live",
+        summary_text="one result",
+        render_data={
+            "items": [
+                {
+                    "title": "고지혈증 치료 가이드라인",
+                    "url": "https://example.test/guideline",
+                    "published_date": "2026-07-15",
+                }
+            ]
+        },
+    )
+
+    # When: the web call becomes evidence and is rendered deterministically.
+    envelope = _external_call_envelope(call, "최신 고지혈증 가이드라인", "웹 검색")
+    answer = render_evidence_answer(envelope.evidence)
+
+    # Then: title, URL, and provider-supplied date survive the envelope boundary.
+    assert "[고지혈증 치료 가이드라인](https://example.test/guideline)" in answer
+    assert "(2026-07-15)" in answer
+
+
+def test_external_transport_failure_is_reported_as_lookup_failure() -> None:
+    # Given: the live gateway failed before any evidence could be returned.
+    call = ExternalCall(
+        tool="openfda_label_search",
+        source="openfda_mcp",
+        status="error",
+        summary_text="gateway unavailable",
+        render_data={"message": "MCP lookup failed"},
+    )
+
+    # When: the failed call crosses the public ToolEnvelope boundary.
+    envelope = _external_call_envelope(call, "pitavastatin", "라벨/이상반응")
+
+    # Then: transport failure is not misreported as an evidence absence.
+    assert envelope.ok is False
+    assert envelope.error_code == "ERROR"
+    assert envelope.error_message == "외부 도구 조회에 실패했습니다."
+    assert "근거를 찾지 못" not in envelope.error_message
+
+
 def test_agent_executor_stops_before_final_llm_when_evidence_is_complete() -> None:
-    # Given: one tool call yields evidence and the planner then stops.
+    # Given: one tool call yields complete evidence.
     provider = _ChoiceSequence(
         (
             ToolChoice("evidence_tool", {}, "call evidence tool", call_id="call-1"),
-            ToolChoice(None, {}, "enough evidence", call_id=None),
         )
     )
     spec = ToolSpec(
@@ -97,9 +144,77 @@ def test_agent_executor_stops_before_final_llm_when_evidence_is_complete() -> No
     # Then: deterministic evidence rendering completes without a final generation call.
     assert result.status == "ok"
     assert result.fallback_code is None
-    assert provider.calls == 2
+    assert provider.calls == 1
     assert "pitavastatin" in result.answer
     assert "resultCode" not in result.answer
+
+
+def test_agent_executor_continues_when_completion_policy_requires_final_tool() -> None:
+    # Given: the planner first grounds a molecule, then selects the requested patent tool.
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("grounding_tool", {}, "ground the ingredient", call_id="call-1"),
+            ToolChoice("patent_tool", {}, "fetch patent evidence", call_id="call-2"),
+        )
+    )
+    grounding = ToolSpec(
+        name="grounding_tool",
+        description="when to use: grounding. when NOT to use: final patent evidence.",
+        input_model=_NoInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=True,
+            preview="ingredient grounded",
+            evidence=(_fact(),),
+            raw={"private": "not for planner"},
+            error_code=None,
+            error_message=None,
+        ),
+        timeout_s=1.0,
+        tags=("local", "grounding"),
+    )
+    patent_fact = EvidenceFact(
+        fact_id="patent:1",
+        subject="리바로",
+        metric="국내 특허",
+        value=None,
+        unit=None,
+        period="2018-05-08",
+        source_name="식약처 의약품 특허 정보",
+        source_locator="10-0830018",
+        raw_ref="mfds_patent:1",
+    )
+    patent = ToolSpec(
+        name="patent_tool",
+        description="when to use: patent evidence. when NOT to use: ingredients only.",
+        input_model=_NoInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=True,
+            preview="patent verified",
+            evidence=(patent_fact,),
+            raw={"provider_payload": "private"},
+            error_code=None,
+            error_message=None,
+        ),
+        timeout_s=1.0,
+        tags=("external", "patent"),
+    )
+
+    def completion_policy(*, user_text, ledger, spec, tool_calls):
+        del user_text, tool_calls
+        return ledger.is_complete() and "grounding" not in spec.tags
+
+    # When: the executor applies a verification policy instead of treating any fact as final.
+    result = AgentExecutor(provider=provider, completion_policy=completion_policy).run(
+        user_text="리바로 특허 만료일",
+        tools=(grounding, patent),
+    )
+
+    # Then: both steps run, only evidence crosses the planner boundary, and final evidence is rendered.
+    assert result.status == "ok"
+    assert provider.calls == 2
+    assert [call["tool"] for call in result.tool_calls] == ["grounding_tool", "patent_tool"]
+    assert "10-0830018" in result.answer
+    assert "provider_payload" not in result.answer
 
 
 def test_tool_catalog_has_descriptions_for_all_19_tools() -> None:
@@ -116,6 +231,14 @@ def test_tool_catalog_has_descriptions_for_all_19_tools() -> None:
     assert all("when not" in description for description in descriptions)
 
 
+def test_tool_descriptions_route_unqualified_trials_global_and_latest_web_as_news() -> None:
+    descriptions = {record.name: record.description for record in TOOL_DESCRIPTION_CATALOG}
+
+    assert "비한정" in descriptions["clinicaltrials_v2_search"]
+    assert "비한정" in descriptions["mfds_clinical_trial_kr"]
+    assert "topic=news" in descriptions["web_search"]
+
+
 def test_registry_exposes_a_spec_for_every_cataloged_tool() -> None:
     # Given: the real fixture-backed external client and local resolver.
     registry = ExternalToolRegistry(resolver=BrandResolver(), external=ExternalApiClient(mode="fixture"))
@@ -128,12 +251,77 @@ def test_registry_exposes_a_spec_for_every_cataloged_tool() -> None:
     assert {spec.name for spec in specs} == {record.name for record in TOOL_DESCRIPTION_CATALOG}
 
 
+def test_mcp_specs_allow_the_client_timeout_to_finish() -> None:
+    # Given: the MCP client owns its transport timeout and returns a structured failure at that boundary.
+    external = ExternalApiClient(mode="fixture", timeout_s=12)
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=external)
+
+    # When: wrapper timeouts are compared with the transport timeout.
+    mcp_specs = tuple(
+        spec
+        for spec in registry.list_for_query("외부 근거 조회")
+        if spec.name not in {"local_molecule_lookup", "web_search"}
+    )
+
+    # Then: the wrapper cannot preempt a structured MCP response at the same deadline.
+    assert mcp_specs
+    expected_wrapper_budget = MCP_FIRST_ATTEMPT_TIMEOUT_S + external.timeout_s + 1.0
+    assert all(spec.timeout_s == expected_wrapper_budget for spec in mcp_specs)
+
+
+def test_hira_registry_reuses_authoritative_disease_code_for_korean_label() -> None:
+    # Given: the planner supplies the Korean disease label while the live HIRA API expects KCD.
+    class _CapturingHiraClient(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+            self.sick_codes: list[str] = []
+
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            self.sick_codes.append(sick_cd)
+            return super().hira_disease_name_code(sick_cd)
+
+    external = _CapturingHiraClient()
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=external)
+    spec = next(spec for spec in registry.list_for_query("고지혈증 환자수") if spec.name == "hira_disease_name_code")
+
+    # When: the HIRA grounding tool crosses the registry boundary.
+    envelope = spec.execute(spec.input_model.model_validate({"sick_cd": "고지혈증"}))
+
+    # Then: the existing authoritative mapping supplies E78 before the live adapter call.
+    assert envelope.ok is True
+    assert external.sick_codes == ["E78"]
+
+
+def test_web_registry_forwards_planner_selected_news_topic() -> None:
+    class _CapturingWebClient(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+            self.topics: list[str] = []
+
+        def web_search(self, query: str, max_results: int = 5, *, topic: str = "general") -> ExternalCall:
+            self.topics.append(topic)
+            return super().web_search(query, max_results=max_results, topic=topic)
+
+    external = _CapturingWebClient()
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=external)
+    spec = next(spec for spec in registry.list_for_query("최신 가이드라인") if spec.name == "web_search")
+
+    envelope = spec.execute(
+        spec.input_model.model_validate(
+            {"query": "최신 고지혈증 가이드라인", "topic": "news"}
+        )
+    )
+
+    assert envelope.ok is True
+    assert external.topics == ["news"]
+
+
 def test_fixture_tool_pack_executes_all_19_specs_with_evidence() -> None:
     # Given: schema-valid fixture inputs for every registered external tool.
     payloads: dict[str, dict[str, str]] = {
         "local_molecule_lookup": {"brand": "리바로"},
         "get_drug_main_ingredient": {"brand": "리바로"},
-        "openfda_label_search": {"ingredient": "pitavastatin"},
+        "openfda_label_search": {"ingredient": "pitavastatin", "evidence_type": "label"},
         "web_search": {"query": "최신 고지혈증 가이드라인"},
         "mfds_permission_search": {"brand": "리바로"},
         "mfds_permission_detail": {"item_seq": "200500287"},
@@ -164,6 +352,55 @@ def test_fixture_tool_pack_executes_all_19_specs_with_evidence() -> None:
     assert all(envelope.ok and envelope.evidence for envelope in envelopes.values())
 
 
+def test_openfda_tool_requires_planner_to_choose_label_or_adverse_evidence(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    monkeypatch.setattr(
+        external,
+        "openfda_label_search",
+        lambda ingredient, *, evidence_type="label": ExternalCall(
+            tool="openfda_label_search",
+            source="openfda_mcp",
+            status="live",
+            summary_text="one FAERS report",
+            render_data={
+                "payload": {
+                    "results": [
+                        {
+                            "safety_report_id": "26558911",
+                            "date": "2026-03-31",
+                            "reaction_terms": ["Myalgia"],
+                            "title": "FAERS report 26558911",
+                        }
+                    ]
+                },
+                "mcp": {"tool": "search_drug_adverse_events"},
+            },
+        ),
+    )
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=external,
+    )
+
+    spec = next(
+        tool
+        for tool in registry.list_for_query("pitavastatin 부작용")
+        if tool.name == "openfda_label_search"
+    )
+    parameters = spec.openai_schema()["function"]["parameters"]
+
+    assert parameters["properties"]["evidence_type"]["enum"] == ["label", "adverse_event"]
+    assert "evidence_type" in parameters["required"]
+
+    envelope = spec.execute(
+        spec.input_model.model_validate(
+            {"ingredient": "pitavastatin", "evidence_type": "adverse_event"}
+        )
+    )
+    assert envelope.ok is True
+    assert {fact.metric for fact in envelope.evidence} == {"FAERS 자발보고 내 이상반응"}
+
+
 def test_registry_executor_integration_never_exposes_raw_payload() -> None:
     # Given: the planner selects the local evidence tool and then stops.
     provider = _ChoiceSequence(
@@ -188,6 +425,204 @@ def test_registry_executor_integration_never_exposes_raw_payload() -> None:
     assert '"raw"' not in wire
     assert "resultCode" not in wire
     assert "totalCount" not in wire
+
+
+def test_integration_requires_patent_evidence_after_molecule_grounding() -> None:
+    # Given: the planner grounds the brand molecule before choosing the patent tool.
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("local_molecule_lookup", {"brand": "리바로"}, "ground molecule", call_id="call-1"),
+            ToolChoice("mfds_patent", {"ingredient": "pitavastatin"}, "fetch patent", call_id="call-2"),
+        )
+    )
+
+    # When: the production integration applies its evidence-completion policy.
+    payload = run_external_tool_agent(
+        "리바로 특허 만료일",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    # Then: molecule grounding alone cannot terminate a patent request.
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    assert provider.calls == 2
+    assert [call["tool"] for call in payload["tool_calls"]] == ["local_molecule_lookup", "mfds_patent"]
+    assert "국내 특허" in payload["answer"]
+
+
+def test_integration_requires_clinical_evidence_for_short_korean_intent() -> None:
+    # Given: the planner grounds the molecule before selecting a clinical-trial tool.
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("local_molecule_lookup", {"brand": "리바로"}, "ground molecule", call_id="call-1"),
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "pitavastatin"},
+                "fetch clinical trials",
+                call_id="call-2",
+            ),
+        )
+    )
+
+    # When: the short Korean clinical intent crosses the production completion policy.
+    payload = run_external_tool_agent(
+        "리바로 임상 알려줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    # Then: molecule grounding cannot terminate a request for clinical evidence.
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    assert provider.calls == 2
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "local_molecule_lookup",
+        "clinicaltrials_v2_search",
+    ]
+
+
+def test_integration_requires_orangebook_evidence_for_korean_expiry_intent() -> None:
+    # Given: the planner grounds the molecule before selecting the Orange Book tool.
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("local_molecule_lookup", {"brand": "리바로"}, "ground molecule", call_id="call-1"),
+            ToolChoice(
+                "mfds_fda_orangebook",
+                {"ingredient": "pitavastatin"},
+                "fetch Orange Book evidence",
+                call_id="call-2",
+            ),
+        )
+    )
+
+    # When: the Korean Orange Book expiry intent crosses the completion policy.
+    payload = run_external_tool_agent(
+        "리바로 오렌지북 만료일 알려줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    # Then: molecule grounding cannot terminate a request for patent evidence.
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    assert provider.calls == 2
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "local_molecule_lookup",
+        "mfds_fda_orangebook",
+    ]
+
+
+def test_integration_accepts_openfda_evidence_for_safety_question() -> None:
+    # Given: the requested safety evidence is supplied by the dedicated label tool.
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "openfda_label_search",
+                {"ingredient": "pitavastatin", "evidence_type": "adverse_event"},
+                "fetch adverse-event evidence",
+                call_id="call-1",
+            ),
+        )
+    )
+
+    # When: the production completion policy evaluates the safety question.
+    payload = run_external_tool_agent(
+        "pitavastatin 안전성 알려줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    # Then: OpenFDA evidence is final evidence, not an incomplete clinical-trial request.
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    assert [call["tool"] for call in payload["tool_calls"]] == ["openfda_label_search"]
+    assert "FDA 의약품 라벨 정보" in payload["answer"]
+
+
+def test_integration_requires_all_hira_distribution_tools() -> None:
+    # Given: a patient-distribution question needs every distribution dimension.
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("hira_disease_name_code", {"sick_cd": "E78"}, "ground KCD", call_id="call-1"),
+            ToolChoice(
+                "hira_disease_hospitalization_outpatient_stats",
+                {"sick_cd": "E78"},
+                "fetch inpatient and outpatient",
+                call_id="call-2",
+            ),
+            ToolChoice(
+                "hira_disease_gender_age_stats",
+                {"sick_cd": "E78"},
+                "fetch gender and age",
+                call_id="call-3",
+            ),
+            ToolChoice(
+                "hira_disease_institution_class_stats",
+                {"sick_cd": "E78"},
+                "fetch institution class",
+                call_id="call-4",
+            ),
+            ToolChoice(
+                "hira_disease_area_stats",
+                {"sick_cd": "E78"},
+                "fetch area",
+                call_id="call-5",
+            ),
+        )
+    )
+
+    # When: the tool-use agent answers a full patient-distribution request.
+    payload = run_external_tool_agent(
+        "고지혈증 환자 분포 알려줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    # Then: it cannot stop after the first successful statistic.
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "hira_disease_name_code",
+        "hira_disease_hospitalization_outpatient_stats",
+        "hira_disease_gender_age_stats",
+        "hira_disease_institution_class_stats",
+        "hira_disease_area_stats",
+    ]
+
+
+def test_integration_requires_five_hira_years_for_trend() -> None:
+    # Given: the established HIRA trend contract spans five distinct years.
+    choices = [ToolChoice("hira_disease_name_code", {"sick_cd": "E78"}, "ground KCD", call_id="call-1")]
+    choices.extend(
+        ToolChoice(
+            "hira_disease_hospitalization_outpatient_stats",
+            {"sick_cd": "E78", "year": str(year)},
+            f"fetch {year}",
+            call_id=f"call-{index}",
+        )
+        for index, year in enumerate(range(2020, 2025), start=2)
+    )
+    provider = _ChoiceSequence(tuple(choices))
+
+    # When: the tool-use agent answers a patient trend request.
+    payload = run_external_tool_agent(
+        "고지혈증 환자수 추이",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    # Then: all five yearly statistics are required before deterministic rendering.
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    years = [
+        fact["period"]
+        for call in payload["tool_calls"]
+        if call["tool"] == "hira_disease_hospitalization_outpatient_stats"
+        for fact in call["render_data"]["evidence"]
+        if fact.get("period")
+    ]
+    assert set(years) == {"2020", "2021", "2022", "2023", "2024"}
 
 
 def test_genos_provider_parses_strict_tool_call(monkeypatch) -> None:

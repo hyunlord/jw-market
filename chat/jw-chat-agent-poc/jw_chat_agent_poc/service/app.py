@@ -1575,10 +1575,15 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
-    if not file_context_fact and market_contract_allowed:
+    router_diagnostics = result.get("router_diagnostics")
+    external_tool_agent_result = (
+        isinstance(router_diagnostics, dict)
+        and router_diagnostics.get("mode") == "tool_use_agent"
+    )
+    if not file_context_fact and market_contract_allowed and not external_tool_agent_result:
         safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    if not file_context_fact and market_contract_allowed:
+    if not file_context_fact and market_contract_allowed and not external_tool_agent_result:
         safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
@@ -1595,10 +1600,15 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         markdown_response,
         tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         source_scope=str(result.get("context_scope") or "MARKET"),
+        connected_source_mode=external_tool_agent_result,
     )
     safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
     if not file_context_fact and market_contract_allowed:
-        safe_answer = apply_requested_source_trap_gate(question, safe_answer)
+        safe_answer = apply_requested_source_trap_gate(
+            question,
+            safe_answer,
+            identity_only=external_tool_agent_result,
+        )
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
     if not file_context_fact and market_contract_allowed:
         safe_answer = enforce_market_answer_contract(

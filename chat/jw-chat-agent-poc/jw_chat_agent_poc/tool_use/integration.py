@@ -4,18 +4,19 @@ import logging
 import os
 from typing import Any, Final
 
+from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use.contracts import AgentResult
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
+from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoiceProvider
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
+from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 
 
 LOGGER = logging.getLogger(__name__)
 FEATURE_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_AGENT_ENABLED"
-
-
 def external_tool_agent_enabled() -> bool:
     return os.environ.get(FEATURE_FLAG, "1").lower() in {"1", "true", "yes"}
 
@@ -29,10 +30,24 @@ def run_external_tool_agent(
 ) -> dict[str, Any]:
     registry = ExternalToolRegistry(resolver=resolver, external=external)
     selected_provider = provider or GenosToolChoiceProvider.from_env()
-    result = AgentExecutor(provider=selected_provider).run(user_text=question, tools=registry.list_for_query(question))
+    result = AgentExecutor(
+        provider=selected_provider,
+        completion_policy=_external_evidence_complete,
+    ).run(user_text=question, tools=registry.list_for_query(question))
     if result.fallback_code is not None:
         LOGGER.info("external tool agent fallback code=%s", result.fallback_code.value)
     return _agent_result_payload(question, result)
+
+
+def _external_evidence_complete(
+    *,
+    user_text: str,
+    ledger: EvidenceLedger,
+    spec: ToolSpec | None,
+    tool_calls: tuple[dict, ...],
+) -> bool:
+    del spec
+    return ledger.is_complete() and tool_use_evidence_complete(user_text, tool_calls)
 
 
 def _agent_result_payload(question: str, result: AgentResult) -> dict[str, Any]:

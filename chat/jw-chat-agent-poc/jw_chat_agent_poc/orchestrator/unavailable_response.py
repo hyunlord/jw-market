@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
+from jw_chat_agent_poc.orchestrator.tool_use_contract import (
+    missing_tool_use_requirements,
+    tool_call_status,
+    tool_use_evidence_complete,
+)
 
 _RETIRED_CAUSE_CACHE = "cache" + "_cause"
 _INTERNAL_DIAGNOSTIC_RE = re.compile(
@@ -173,6 +178,7 @@ def apply_common_unavailable_response(
     *,
     tool_calls: Sequence[Mapping[str, Any]] | None = None,
     source_scope: str = "MARKET",
+    connected_source_mode: bool = False,
 ) -> str:
     """Sanitize internal diagnostics and append the common 5-step unavailable block when needed."""
 
@@ -182,6 +188,8 @@ def apply_common_unavailable_response(
         return _cleanup(sanitized_answer)
     combined = "\n\n".join(part for part in (question, sanitized_answer, sanitize_internal_diagnostics(fact_md)) if part)
     question_has_unavailable_signal = bool(_QUESTION_UNAVAILABLE_RE.search(question))
+    if connected_source_mode and _is_generic_guideline_request(question):
+        question_has_unavailable_signal = False
     if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not question_has_unavailable_signal:
         return _cleanup(sanitized_answer)
     gated = _four_stage_unavailable_gate(
@@ -190,6 +198,7 @@ def apply_common_unavailable_response(
         fact_md,
         tool_calls,
         question_has_unavailable_signal=question_has_unavailable_signal,
+        connected_source_mode=connected_source_mode,
     )
     if gated is not None:
         return gated
@@ -201,6 +210,13 @@ def apply_common_unavailable_response(
         return _cleanup(sanitized_answer)
     block = _five_step_block(_plan_for(question, sanitized_answer, fact_md))
     return _cleanup(_insert_before_source(sanitized_answer, block))
+
+
+def _is_generic_guideline_request(question: str) -> bool:
+    lowered = question.casefold()
+    return "nccn" not in lowered and any(
+        token in lowered for token in ("가이드라인", "치료 지침", "guideline")
+    )
 
 
 def _completed_answer_contract(question: str, answer: str, fact_md: str) -> bool:
@@ -219,6 +235,7 @@ def _four_stage_unavailable_gate(
     tool_calls: Sequence[Mapping[str, Any]] | None,
     *,
     question_has_unavailable_signal: bool,
+    connected_source_mode: bool,
 ) -> str | None:
     """Separate owned facts, source absence, and failed verification.
 
@@ -231,6 +248,19 @@ def _four_stage_unavailable_gate(
     if tool_calls is None:
         return None
     calls = tuple(tool_calls)
+    if connected_source_mode:
+        failed = tuple(
+            _public_tool_name(call)
+            for call in calls
+            if _tool_status(call) in _ERROR_STATUSES
+        )
+        if failed:
+            return _unverified_answer(f"도구 조회({', '.join(dict.fromkeys(failed))})가 실패했습니다")
+        if tool_use_evidence_complete(question, calls):
+            return _cleanup(answer)
+        missing = missing_tool_use_requirements(question, calls)
+        if missing:
+            return _unverified_answer(f"필요 근거({', '.join(missing)})가 이번 턴에 완성되지 않았습니다")
     if not question_has_unavailable_signal and _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
         if _completed_answer_contract(question, answer, fact_md):
             return _cleanup(answer)
@@ -299,10 +329,7 @@ def _public_tool_name(call: Mapping[str, Any]) -> str:
 
 
 def _tool_status(call: Mapping[str, Any]) -> str:
-    data = call.get("render_data")
-    if isinstance(data, Mapping):
-        return str(data.get("status") or "ok").lower()
-    return str(call.get("status") or "ok").lower()
+    return tool_call_status(call)
 
 
 def _has_successful_fact_call(calls: Sequence[Mapping[str, Any]]) -> bool:

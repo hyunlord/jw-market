@@ -93,9 +93,21 @@ class ChatAgent:
         docs = documents or []
         external_fallback_code: str | None = None
         source_trap = requested_unavailable_source(question)
+        agent_source_trap = requested_unavailable_source(question, identity_only=True)
+        pre_resolved: BrandResolution | None = None
 
         def finish(payload: dict[str, Any]) -> dict[str, Any]:
             return _annotate_external_tool_fallback(payload, external_fallback_code)
+
+        if external_tool_agent_enabled() and agent_source_trap is None:
+            tool_pack_routes = BQRouter().route(question, has_documents=bool(docs))
+            if _is_external_tool_agent_candidate(tool_pack_routes, docs):
+                tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
+                    question,
+                    pre_resolved,
+                )
+                if tool_result is not None:
+                    return finish(tool_result)
 
         if (
             not docs
@@ -116,29 +128,18 @@ class ChatAgent:
 
         with stage(timing, "question_decomposition", "BQ and tool routing"):
             routes = self.router.route(question, has_documents=bool(docs))
-        agent_source_trap = requested_unavailable_source(question, identity_only=True)
-        pre_resolved: BrandResolution | None = None
         if (
             external_tool_agent_enabled()
+            and external_fallback_code is None
             and _is_external_tool_agent_candidate(routes, docs)
             and agent_source_trap is None
         ):
-            try:
-                pre_resolved = self.resolver.resolve(question, allow_default=False)
-            except UnsupportedBrandError:
-                pre_resolved = None
-            if pre_resolved is not None and pre_resolved.requires_market_clarification:
-                return finish(_market_ambiguity_result(question, pre_resolved))
-            tool_result = run_external_tool_agent(question, resolver=self.resolver, external=self.external)
-            diagnostics = tool_result.get("router_diagnostics")
-            fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
-            if fallback_code in {
-                None,
-                FallbackCode.UNSUPPORTED_QUERY.value,
-                FallbackCode.VERIFICATION_FAIL.value,
-            }:
-                return tool_result
-            external_fallback_code = str(fallback_code)
+            tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
+                question,
+                pre_resolved,
+            )
+            if tool_result is not None:
+                return finish(tool_result)
         if not docs and _is_known_ingredient_patent_question(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
             return finish(loop.answer(question))
@@ -380,6 +381,31 @@ class ChatAgent:
             with stage(timing, "tool:mfds_permission_search", resolution.canonical_brand):
                 calls.append(self.external.mfds_permission_search(resolution.canonical_brand))
         return calls
+
+    def _attempt_external_tool_agent(
+        self,
+        question: str,
+        pre_resolved: BrandResolution | None,
+    ) -> tuple[dict[str, Any] | None, BrandResolution | None, str | None]:
+        fixture_alias_check = getattr(self.resolver, "has_fixture_alias", None)
+        should_pre_resolve = not callable(fixture_alias_check) or fixture_alias_check(question)
+        if pre_resolved is None and should_pre_resolve:
+            try:
+                pre_resolved = self.resolver.resolve(question, allow_default=False)
+            except UnsupportedBrandError:
+                pre_resolved = None
+        if pre_resolved is not None and pre_resolved.requires_market_clarification:
+            return _market_ambiguity_result(question, pre_resolved), pre_resolved, None
+        tool_result = run_external_tool_agent(question, resolver=self.resolver, external=self.external)
+        diagnostics = tool_result.get("router_diagnostics")
+        fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
+        if fallback_code in {
+            None,
+            FallbackCode.UNSUPPORTED_QUERY.value,
+            FallbackCode.VERIFICATION_FAIL.value,
+        }:
+            return tool_result, pre_resolved, None
+        return None, pre_resolved, str(fallback_code)
 
     def _competitor_patent_context_call(self, question: str, resolution, *, timing: Timing | None = None) -> ExternalCall | None:
         if self.query_layer is None or not _asks_competitor_ingredients(question):

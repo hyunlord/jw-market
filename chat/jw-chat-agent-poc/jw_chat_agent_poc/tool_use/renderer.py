@@ -17,4 +17,6 @@ def render_evidence_answer(facts: tuple[EvidenceFact, ...]) -> str:
             f"- {fact.subject}{period}: {fact.metric} = {value}{unit} "
             f"[{fact.source_name}{locator}]"
         )
+    if any(fact.source_name == "FDA 이상반응 보고 정보" for fact in facts):
+        lines.append("주의: FAERS 자발보고는 약물과 반응의 인과관계를 입증하지 않습니다.")
     return "\n".join(lines)

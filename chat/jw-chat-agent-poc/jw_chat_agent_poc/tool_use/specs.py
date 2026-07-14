@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -45,11 +45,19 @@ class IngredientInput(BaseModel):
     ingredient: str
 
 
+class OpenFdaInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ingredient: str
+    evidence_type: Literal["label", "adverse_event"]
+
+
 class QueryInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     query: str
     brand: str | None = None
+    topic: Literal["general", "news"] = "general"
 
 
 class EmptyInput(BaseModel):

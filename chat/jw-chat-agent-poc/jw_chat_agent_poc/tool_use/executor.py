@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 import json
 import logging
+from typing import Protocol
 
 from pydantic import BaseModel, ValidationError
 import requests
@@ -18,10 +19,22 @@ from jw_chat_agent_poc.tool_use.specs import ToolSpec
 LOGGER = logging.getLogger(__name__)
 
 
+class CompletionPolicy(Protocol):
+    def __call__(
+        self,
+        *,
+        user_text: str,
+        ledger: EvidenceLedger,
+        spec: ToolSpec | None,
+        tool_calls: tuple[dict, ...],
+    ) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AgentExecutor:
     provider: ToolChoiceProvider
-    max_steps: int = 4
+    max_steps: int = 6
+    completion_policy: CompletionPolicy | None = None
 
     def run(self, *, user_text: str, tools: tuple[ToolSpec, ...]) -> AgentResult:
         ledger = EvidenceLedger()
@@ -38,6 +51,7 @@ class AgentExecutor:
             {"role": "user", "content": user_text},
         ]
         by_name = {tool.name: tool for tool in tools}
+        answer_complete = False
         for step in range(1, self.max_steps + 1):
             try:
                 choice = self.provider.choose(user_text=user_text, messages=messages, tools=[tool.openai_schema() for tool in tools])
@@ -47,10 +61,33 @@ class AgentExecutor:
                 LOGGER.warning("tool-use provider schema invalid: %s", exc)
                 return _terminal("provider schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
             if choice.name is None:
-                code = None if ledger.is_complete() else FallbackCode.UNSUPPORTED_QUERY
-                status = "ok" if ledger.is_complete() else "unsupported"
-                answer = render_evidence_answer(tuple(ledger.facts)) if ledger.is_complete() else "이 질문에 맞는 도구가 없습니다."
-                trace_message = "evidence complete" if ledger.is_complete() else "no matching tool"
+                answer_complete = _is_complete(
+                    self.completion_policy,
+                    user_text=user_text,
+                    ledger=ledger,
+                    spec=None,
+                    tool_calls=tuple(tool_calls),
+                )
+                if ledger.is_complete() and not answer_complete:
+                    traces.append(
+                        ToolTrace(
+                            step=step,
+                            tool=None,
+                            status="verification_failed",
+                            fallback_code=FallbackCode.VERIFICATION_FAIL,
+                            message="planner stopped before required evidence was complete",
+                        )
+                    )
+                    return _terminal(
+                        "요청한 근거를 완성할 도구가 선택되지 않았습니다.",
+                        FallbackCode.VERIFICATION_FAIL,
+                        traces,
+                        tool_calls,
+                    )
+                code = None if answer_complete else FallbackCode.UNSUPPORTED_QUERY
+                status = "ok" if answer_complete else "unsupported"
+                answer = render_evidence_answer(tuple(ledger.facts)) if answer_complete else "이 질문에 맞는 도구가 없습니다."
+                trace_message = "evidence complete" if answer_complete else "no matching tool"
                 traces.append(ToolTrace(step=step, tool=None, status=status, fallback_code=code, message=trace_message))
                 return AgentResult(status=status, answer=answer, tool_calls=tuple(tool_calls), sources=ledger.sources(), traces=tuple(traces), fallback_code=code)
             spec = by_name.get(choice.name)
@@ -80,7 +117,23 @@ class AgentExecutor:
             traces.append(ToolTrace(step=step, tool=spec.name, status="ok" if envelope.ok else "no_evidence", fallback_code=None if envelope.ok else FallbackCode.VERIFICATION_FAIL, message=public_preview))
             if not envelope.ok or not ledger.is_complete():
                 return _terminal(envelope.error_message or "도구 근거가 비었습니다.", FallbackCode.VERIFICATION_FAIL, traces, tool_calls)
-            call_id = choice.call_id or f"tool-use-{step}"
+            answer_complete = _is_complete(
+                self.completion_policy,
+                user_text=user_text,
+                ledger=ledger,
+                spec=spec,
+                tool_calls=tuple(tool_calls),
+            )
+            if answer_complete:
+                return AgentResult(
+                    status="ok",
+                    answer=render_evidence_answer(tuple(ledger.facts)),
+                    tool_calls=tuple(tool_calls),
+                    sources=ledger.sources(),
+                    traces=tuple(traces),
+                    fallback_code=None,
+                )
+            call_id = choice.call_id or f"tool-call-{step}"
             messages.extend(
                 (
                     {
@@ -90,7 +143,10 @@ class AgentExecutor:
                             {
                                 "id": call_id,
                                 "type": "function",
-                                "function": {"name": spec.name, "arguments": json.dumps(choice.arguments, ensure_ascii=False)},
+                                "function": {
+                                    "name": spec.name,
+                                    "arguments": json.dumps(choice.arguments, ensure_ascii=False, sort_keys=True),
+                                },
                             }
                         ],
                     },
@@ -98,11 +154,24 @@ class AgentExecutor:
                         "role": "tool",
                         "tool_call_id": call_id,
                         "name": spec.name,
-                        "content": json.dumps(safe_envelope, ensure_ascii=False),
+                        "content": json.dumps(safe_envelope, ensure_ascii=False, sort_keys=True),
                     },
                 )
             )
         return _terminal("tool-use step limit exceeded", FallbackCode.STEP_LIMIT, traces, tool_calls)
+
+
+def _is_complete(
+    policy: CompletionPolicy | None,
+    *,
+    user_text: str,
+    ledger: EvidenceLedger,
+    spec: ToolSpec | None,
+    tool_calls: tuple[dict, ...],
+) -> bool:
+    if policy is None:
+        return ledger.is_complete()
+    return policy(user_text=user_text, ledger=ledger, spec=spec, tool_calls=tool_calls)
 
 
 def _terminal(message: str, code: FallbackCode, traces: list[ToolTrace], calls: list[dict]) -> AgentResult:

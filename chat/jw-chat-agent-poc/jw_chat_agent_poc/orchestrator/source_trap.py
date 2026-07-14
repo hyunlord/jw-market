@@ -75,7 +75,12 @@ def requested_csd_unsupported_detail(question: str) -> bool:
     return any(token.lower() in lowered for token in _CSD_DETAIL_TOKENS)
 
 
-def apply_requested_source_trap_gate(question: str, answer: str) -> str:
+def apply_requested_source_trap_gate(
+    question: str,
+    answer: str,
+    *,
+    identity_only: bool = False,
+) -> str:
     """Keep unavailable requested-source questions from masquerading alternate sources.
 
     The gate is intentionally answer-path only: it does not mutate tool payloads or
@@ -84,7 +89,7 @@ def apply_requested_source_trap_gate(question: str, answer: str) -> str:
     remain an alternate reference and must not inherit the requested source label.
     """
 
-    source = requested_unavailable_source(question)
+    source = requested_unavailable_source(question, identity_only=identity_only)
     if source is None:
         return answer.strip()
     text = _remove_unsupported_cortellis_packaging(answer.strip(), source)

@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 import requests
 
 from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient, McpToolResult
@@ -102,9 +102,17 @@ class ExternalApiClient:
     def clinicaltrials_v2_search(self, query_intr: str) -> ExternalCall:
         return self._fixture_or_live("clinicaltrials_v2_search", {"query.intr": query_intr})
 
-    def openfda_label_search(self, substance_name: str) -> ExternalCall:
+    def openfda_label_search(
+        self,
+        substance_name: str,
+        *,
+        evidence_type: str = "label",
+    ) -> ExternalCall:
         query = f'openfda.substance_name:"{substance_name.upper()}"'
-        return self._fixture_or_live("openfda_label_search", {"search": query})
+        return self._fixture_or_live(
+            "openfda_label_search",
+            {"search": query, "evidence_type": evidence_type},
+        )
 
     def openfda_combo_label_search(self, substance_names: tuple[str, ...]) -> ExternalCall:
         query = " AND ".join(f'openfda.substance_name:"{name.upper()}"' for name in substance_names)
@@ -195,12 +203,21 @@ class ExternalApiClient:
         )
         return self._with_source(call, HIRA_PROCEDURE_SOURCE)
 
-    def web_search(self, query: str, max_results: int = 5) -> ExternalCall:
+    def web_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: Literal["general", "news"] = "general",
+    ) -> ExternalCall:
         max_results = _bounded_web_results(max_results)
         if self.mode != "live":
-            call = self._fixture_or_live("web_search", {"query": query, "max_results": str(max_results)})
+            call = self._fixture_or_live(
+                "web_search",
+                {"query": query, "max_results": str(max_results), "topic": topic},
+            )
             return self._with_source(call, WEB_SEARCH_SOURCE)
-        return self._live_web_search(query, max_results=max_results)
+        return self._live_web_search(query, max_results=max_results, topic=topic)
 
     @staticmethod
     def _with_source(call: ExternalCall, source: str) -> ExternalCall:
@@ -245,10 +262,16 @@ class ExternalApiClient:
     def _mcp_url(self, resource_id: str) -> str:
         return f"{self.mcp_gateway_base}/mcp/{resource_id}/mcp"
 
-    def _live_web_search(self, query: str, max_results: int = 5) -> ExternalCall:
+    def _live_web_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: Literal["general", "news"] = "general",
+    ) -> ExternalCall:
         provider = os.environ.get(WEB_SEARCH_PROVIDER_ENV, "tavily").strip().lower()
         if provider == "tavily":
-            return self._live_tavily_search(query, max_results)
+            return self._live_tavily_search(query, max_results, topic=topic)
         if provider == "serper":
             return self._live_serper_search(query, max_results)
         if provider == "brave":
@@ -262,7 +285,13 @@ class ExternalApiClient:
             elapsed_ms=0.0,
         )
 
-    def _live_tavily_search(self, query: str, max_results: int) -> ExternalCall:
+    def _live_tavily_search(
+        self,
+        query: str,
+        max_results: int,
+        *,
+        topic: Literal["general", "news"],
+    ) -> ExternalCall:
         key = os.environ.get(TAVILY_API_KEY_ENV)
         if not key:
             return _missing_web_key("tavily", TAVILY_API_KEY_ENV, query)
@@ -272,7 +301,13 @@ class ExternalApiClient:
             response = requests.post(
                 "https://api.tavily.com/search",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"query": query, "max_results": max_results, "search_depth": "basic", "include_answer": False},
+                json={
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": "basic",
+                    "include_answer": False,
+                    "topic": topic,
+                },
                 timeout=min(self.timeout_s, TAVILY_TIMEOUT_CAP_S),
             )
             elapsed = round((time.monotonic() - start) * 1000, 1)
@@ -282,7 +317,12 @@ class ExternalApiClient:
             elapsed = round((time.monotonic() - start) * 1000, 1)
             return _web_error("tavily", query, exc, elapsed)
         items = [
-            {"title": item.get("title"), "url": item.get("url"), "snippet": item.get("content") or item.get("snippet")}
+            {
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "snippet": item.get("content") or item.get("snippet"),
+                "published_date": item.get("published_date") or item.get("date"),
+            }
             for item in payload.get("results", [])[:max_results]
             if isinstance(item, dict)
         ]
@@ -350,11 +390,23 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
                 "arguments": {"intervention": params.get("query.intr", ""), "pageSize": 5},
             }
         case "openfda_label_search":
+            ingredient = _openfda_active_ingredient(params)
+            if params.get("evidence_type") == "adverse_event":
+                return {
+                    "resource_id": os.environ.get(OPENFDA_MCP_RESOURCE_ENV, OPENFDA_MCP_DEFAULT_RESOURCE),
+                    "source": OPENFDA_MCP_SOURCE,
+                    "mcp_tool": "search_drug_adverse_events",
+                    "arguments": {
+                        "generic_name": ingredient,
+                        "limit": 5,
+                        "sort": "receivedate:desc",
+                    },
+                }
             return {
                 "resource_id": os.environ.get(OPENFDA_MCP_RESOURCE_ENV, OPENFDA_MCP_DEFAULT_RESOURCE),
                 "source": OPENFDA_MCP_SOURCE,
                 "mcp_tool": "search_drug_labels",
-                "arguments": {"active_ingredient": _openfda_active_ingredient(params), "limit": 5},
+                "arguments": {"active_ingredient": ingredient, "limit": 5},
             }
         case "mfds_permission_search":
             return _nedrug_spec(tool, "search_drug_permission_list", {"item_name": params.get("brand"), "limit": 10})
@@ -442,6 +494,10 @@ def _mcp_external_call(
     if tool == "clinicaltrials_v2_search":
         return _clinicaltrials_call_from_mcp(params, mcp_tool, result, url, elapsed)
     payload = _mcp_payload(result)
+    if mcp_tool == "search_drug_adverse_events" and not (
+        isinstance(payload, dict) and isinstance(payload.get("results"), list)
+    ):
+        payload = _openfda_adverse_mcp_payload(result.content_text)
     render_data = _mcp_render_data(payload, params, mcp_tool, result.content_text)
     has_items = bool(render_data.get("items") or render_data.get("payload", {}).get("results"))
     status = "live" if has_items else "no_data"
@@ -570,6 +626,71 @@ def _mcp_summary(tool: str, status: str, render_data: dict[str, Any]) -> str:
     if isinstance(payload, dict) and isinstance(payload.get("results"), list):
         return f"{tool} MCP returned results={len(payload['results'])}"
     return f"{tool} MCP returned data"
+
+
+def _openfda_adverse_mcp_payload(text: str) -> dict[str, Any]:
+    total = 0
+    events: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    in_reactions = False
+
+    def finish_event() -> None:
+        nonlocal current
+        if current is None:
+            return
+        reactions = current.get("reaction_terms")
+        if isinstance(reactions, list) and reactions:
+            date = str(current.get("date") or "기간 미상")
+            report_id = str(current.get("safety_report_id") or "식별자 미상")
+            current["title"] = (
+                f"FAERS 보고 {report_id} ({date}) · "
+                f"보고 반응: {', '.join(str(item) for item in reactions)}"
+            )
+        events.append(current)
+        current = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if stripped.startswith("total_results:"):
+            total = _int_or_none(stripped.split(":", 1)[1].strip()) or 0
+            continue
+        report_match = re.match(r'^  - safety_report_id:\s*"?([^"\s]+)"?$', line)
+        if report_match:
+            finish_event()
+            current = {
+                "safety_report_id": report_match.group(1),
+                "drug_names": [],
+                "reaction_terms": [],
+            }
+            in_reactions = False
+            continue
+        if current is None:
+            continue
+        if re.match(r"^    reactions\[", line):
+            in_reactions = True
+            continue
+        if in_reactions and line.startswith("      ") and "," in stripped and ":" not in stripped:
+            reaction, _outcome = stripped.split(",", 1)
+            current["reaction_terms"].append(reaction.strip().strip('"'))
+            continue
+        if line.startswith("      - name:"):
+            name = stripped.split(":", 1)[1].strip().strip('"')
+            current["drug_names"].append(name)
+            in_reactions = False
+            continue
+        if line.startswith("    report_date:"):
+            current["date"] = stripped.split(":", 1)[1].strip().strip('"')
+        elif line.startswith("    serious:"):
+            current["serious"] = stripped.split(":", 1)[1].strip() == "Yes"
+        elif line.startswith("    country:"):
+            current["country"] = stripped.split(":", 1)[1].strip().strip('"')
+
+    finish_event()
+    return {
+        "meta": {"results": {"total": total}},
+        "results": events[:5],
+    }
 
 def _clinicaltrials_mcp_payload(text: str) -> dict[str, Any]:
     studies: list[dict[str, Any]] = []

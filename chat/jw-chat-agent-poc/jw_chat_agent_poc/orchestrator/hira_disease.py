@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Protocol, TypeAlias, TypedDict
 
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
@@ -214,6 +215,19 @@ def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMap
         if token in question:
             return _normalize_hira_mappings(mapping)
     return None
+
+
+def hira_disease_code_for_text(text: str) -> str | None:
+    """Return one authoritative KCD code when the existing mapping is unambiguous."""
+
+    candidate = text.strip().upper()
+    if re.fullmatch(r"[A-Z]\d{2}(?:\.\d{1,2})?", candidate):
+        return candidate
+    mappings = _hira_disease_mappings(text, text.strip())
+    if mappings is None:
+        return None
+    codes = {mapping["sick_cd"] for mapping in mappings}
+    return next(iter(codes)) if len(codes) == 1 else None
 
 
 def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ...]:

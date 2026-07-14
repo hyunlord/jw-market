@@ -700,6 +700,63 @@ def test_source_trap_gate_generalizes_to_requested_unavailable_sources() -> None
         assert revised.startswith(expected)
 
 
+def test_source_trap_identity_mode_keeps_generic_guideline_web_evidence() -> None:
+    web_answer = "대한내과학회 가이드라인 검색 결과입니다.\n\n## 출처\n- https://example.test/guideline"
+
+    assert (
+        apply_requested_source_trap_gate(
+            "최신 고지혈증 가이드라인",
+            web_answer,
+            identity_only=True,
+        )
+        == web_answer
+    )
+    assert apply_requested_source_trap_gate(
+        "최신 NCCN 고지혈증 가이드라인",
+        web_answer,
+        identity_only=True,
+    ).startswith("NCCN/가이드라인 데이터는 현재 운영 데이터에 미보유입니다.")
+
+
+def test_common_unavailable_gate_preserves_connected_generic_guideline_web_result() -> None:
+    answer = "대한내과학회 가이드라인 검색 결과입니다.\n\n## 출처\n- https://example.test/guideline"
+    calls = (
+        {
+            "tool": "web_search",
+            "status": "ok",
+            "render_data": {"ok": True, "evidence": [{"source_locator": "https://example.test/guideline"}]},
+        },
+    )
+
+    assert apply_common_unavailable_response(
+        "최신 고지혈증 가이드라인",
+        answer,
+        {"fact_md": answer},
+        tool_calls=calls,
+        connected_source_mode=True,
+    ) == answer
+
+
+def test_common_unavailable_gate_honors_top_level_tool_error() -> None:
+    calls = (
+        {
+            "tool": "web_search",
+            "status": "error",
+            "render_data": {"ok": False, "evidence": []},
+        },
+    )
+
+    revised = apply_common_unavailable_response(
+        "최신 고지혈증 가이드라인",
+        "현재 확인 불가",
+        {"fact_md": ""},
+        tool_calls=calls,
+        connected_source_mode=True,
+    )
+
+    assert "도구 조회(web_search)가 실패했습니다" in revised
+
+
 def test_source_trap_gate_compacts_final_answer_once_common_5step_exists() -> None:
     answer = (
         "Cortellis 데이터는 현재 운영 데이터에 미보유입니다.\n\n"

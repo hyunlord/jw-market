@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 import requests
 from types import SimpleNamespace
 
@@ -298,6 +299,90 @@ def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_
 
     assert item["result"]["answer"].startswith("fallback:리바로 KOL 자문")
     assert FakeAgent.calls == [("리바로 KOL 자문 기준 처방 의견과 시장 시사점을 알려줘", "live")]
+
+
+def test_answer_question_external_contract_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
+    captured: list[tuple[str, str]] = []
+
+    class ExternalContractAgent:
+        def answer(self, question: str, _documents=None) -> dict:
+            captured.append((question, "answered"))
+            return {
+                "answer": "verified external evidence",
+                "sources": ["external"],
+                "tool_calls": [{"tool": "clinicaltrials_v2_search"}],
+                "router_diagnostics": {"mode": "tool_use_agent"},
+            }
+
+    def factory(*, external_mode: str = "live") -> ExternalContractAgent:
+        captured.append((external_mode, "factory"))
+        return ExternalContractAgent()
+
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(
+        service_app,
+        "_answer_direct_agent_loop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("external structural contracts must not bypass the ChatAgent facade")
+        ),
+    )
+
+    for question in ("리바로 임상시험", "리바로 특허 만료일"):
+        item = service_app._answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            factory,
+            question,
+            "live",
+            None,
+            use_direct_agent_loop=True,
+        )
+
+        assert item["result"]["router_diagnostics"]["mode"] == "tool_use_agent"
+
+    assert captured == [
+        ("live", "factory"),
+        ("리바로 임상시험", "answered"),
+        ("live", "factory"),
+        ("리바로 특허 만료일", "answered"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "tool", "evidence_text"),
+    (
+        ("리바로 임상시험", "clinicaltrials_v2_search", "NCT05537948 임상시험 근거"),
+        ("리바로 특허 만료일", "mfds_patent", "국내 특허 10-0830018 근거"),
+        ("pitavastatin 안전성", "openfda_label_search", "FDA 라벨 이상반응 근거"),
+    ),
+)
+def test_compute_final_answer_preserves_verified_tool_use_evidence(
+    question: str,
+    tool: str,
+    evidence_text: str,
+) -> None:
+    result = {
+        "answer": evidence_text,
+        "sources": ["verified external source"],
+        "tool_calls": [
+            {
+                "tool": tool,
+                "status": "ok",
+                "render_data": {
+                    "ok": True,
+                    "evidence": [{"source_name": "verified external source"}],
+                },
+            }
+        ],
+        "markdown_response": {"fact_md": evidence_text, "allowed_numbers": ()},
+        "router_diagnostics": {"mode": "tool_use_agent"},
+    }
+
+    final = compute_final_answer(question, result, "tool-use-final")
+
+    assert evidence_text in final.text
+    assert "필요 도구" not in final.text
+    assert "현재 확인 불가" not in final.text
 
 
 def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatch) -> None:

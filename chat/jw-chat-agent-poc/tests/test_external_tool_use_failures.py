@@ -192,7 +192,11 @@ def test_agent_executor_classifies_step_limit_even_with_partial_ledger() -> None
     )
 
     # When: the configured single step is exhausted.
-    result = AgentExecutor(provider=provider, max_steps=1).run(user_text="step probe", tools=(spec,))
+    result = AgentExecutor(
+        provider=provider,
+        max_steps=1,
+        completion_policy=lambda **_kwargs: False,
+    ).run(user_text="step probe", tools=(spec,))
 
     # Then: the incomplete planning loop is not silently normalized to success.
     assert result.fallback_code is FallbackCode.STEP_LIMIT

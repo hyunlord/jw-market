@@ -108,11 +108,8 @@ class BrandResolver:
         return len(self._items())
 
     def has_explicit_alias(self, question: str) -> bool:
-        normalized = self._normalize(question)
-        for item in self._fixture_items:
-            aliases = [item["canonical_brand"], *item.get("aliases", [])]
-            if any(self._normalize(str(alias)) in normalized for alias in aliases):
-                return True
+        if self.has_fixture_alias(question):
+            return True
         try:
             self.resolve(question, allow_default=False)
         except (UnsupportedBrandError, OSError):
@@ -120,6 +117,16 @@ class BrandResolver:
         except Exception:
             return False
         return True
+
+    def has_fixture_alias(self, question: str) -> bool:
+        normalized = self._normalize(question)
+        return any(
+            any(
+                self._normalize(str(alias)) in normalized
+                for alias in (item["canonical_brand"], *item.get("aliases", []))
+            )
+            for item in self._fixture_items
+        )
 
     def portfolio_brands(self) -> tuple[BrandResolution, ...]:
         """Return only the JW sidecar portfolio, not the global resolver universe."""

@@ -130,7 +130,12 @@ def _quality_taxonomy(
     facts_surfaced: Mapping[str, Any],
     answer_contract_status: Mapping[str, Any],
 ) -> dict[str, Any]:
-    source = requested_unavailable_source(question)
+    diagnostics = result.get("router_diagnostics")
+    source = requested_unavailable_source(
+        question,
+        identity_only=isinstance(diagnostics, Mapping)
+        and diagnostics.get("mode") == "tool_use_agent",
+    )
     if source is not None:
         return {
             "label": "not_connected",

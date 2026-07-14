@@ -382,7 +382,12 @@ def test_tavily_web_search_uses_five_second_timeout_and_caps_results(monkeypatch
             def json(self):
                 return {
                     "results": [
-                        {"title": f"title-{index}", "url": f"https://example.test/{index}", "content": f"snippet-{index}"}
+                        {
+                            "title": f"title-{index}",
+                            "url": f"https://example.test/{index}",
+                            "content": f"snippet-{index}",
+                            "published_date": f"2026-07-{index + 1:02d}",
+                        }
                         for index in range(7)
                     ]
                 }
@@ -395,10 +400,44 @@ def test_tavily_web_search_uses_five_second_timeout_and_caps_results(monkeypatch
 
     assert captured["url"] == "https://api.tavily.com/search"
     assert captured["timeout"] == 5
-    assert captured["json"] == {"query": "리바로 pitavastatin 제약", "max_results": 5, "search_depth": "basic", "include_answer": False}
+    assert captured["json"] == {
+        "query": "리바로 pitavastatin 제약",
+        "max_results": 5,
+        "search_depth": "basic",
+        "include_answer": False,
+        "topic": "general",
+    }
     assert call.status == "live"
     assert len(call.render_data["items"]) == 5
     assert call.render_data["items"][-1]["url"] == "https://example.test/4"
+    assert call.render_data["items"][-1]["published_date"] == "2026-07-05"
+
+
+def test_tavily_news_search_requests_provider_dates(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "SECRETKEY")
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
+    captured: dict[str, object] = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        return Response()
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.post", fake_post)
+
+    ExternalApiClient(mode="live", timeout_s=12).web_search(
+        "최신 고지혈증 가이드라인",
+        topic="news",
+    )
+
+    assert captured["json"]["topic"] == "news"
 
 
 def test_tavily_web_search_timeout_is_graceful(monkeypatch):

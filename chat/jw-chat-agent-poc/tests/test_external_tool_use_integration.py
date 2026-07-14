@@ -7,7 +7,7 @@ import jw_chat_agent_poc.orchestrator.agent as agent_module
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 from jw_chat_agent_poc.orchestrator.agent import _is_external_tool_agent_candidate
 from jw_chat_agent_poc.resolver import BrandResolution
-from jw_chat_agent_poc.router import BQRouter
+from jw_chat_agent_poc.router import BQRouter, LLMFirstBQRouter
 
 
 def _agent_payload(*, status: str, fallback_code: str | None) -> dict[str, Any]:
@@ -185,6 +185,59 @@ def test_unattached_guideline_research_can_enter_external_tool_agent(monkeypatch
 
     # Then: the external tool pack remains available for the Tavily path.
     assert result["router_diagnostics"]["mode"] == "tool_use_agent"
+
+
+def test_guideline_tool_pack_selection_precedes_llm_bq_decomposition(monkeypatch) -> None:
+    # Given: the external tool pack is enabled and live BQ decomposition would be unnecessary.
+    class UnexpectedDecomposer:
+        def decompose(self, _question: str, _has_documents: bool) -> str:
+            raise AssertionError("tool-pack selection must precede LLM BQ decomposition")
+
+    class UnbrandedResolver:
+        def has_fixture_alias(self, _question: str) -> bool:
+            return False
+
+        def resolve(self, _question: str, allow_default: bool = False) -> BrandResolution:
+            del allow_default
+            raise AssertionError("unbranded web research must not load the brand catalog")
+
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: _agent_payload(status="ok", fallback_code=None),
+    )
+
+    # When: generic guideline research is answered by the production LLM-first router.
+    result = ChatAgent(
+        router=LLMFirstBQRouter(decomposer=UnexpectedDecomposer()),
+        resolver=UnbrandedResolver(),
+    ).answer("최신 고지혈증 가이드라인")
+
+    # Then: the existing deterministic pack selector enters ToolSpec selection directly.
+    assert result["router_diagnostics"]["mode"] == "tool_use_agent"
+
+
+def test_structural_external_contract_precedes_direct_bq_loop(monkeypatch) -> None:
+    # Given: clinical and patent questions already have declarative answer contracts.
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: _agent_payload(status="ok", fallback_code=None),
+    )
+    monkeypatch.setattr(
+        agent_module,
+        "build_tool_use_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("structural external contracts must enter ToolSpec before the direct BQ loop")
+        ),
+    )
+
+    for question in ("리바로 임상시험", "리바로 특허 만료일"):
+        result = ChatAgent(router=BQRouter()).answer(question)
+
+        assert result["router_diagnostics"]["mode"] == "tool_use_agent"
 
 
 def test_unavailable_source_contract_precedes_external_tool_agent(monkeypatch) -> None:

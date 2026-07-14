@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from jw_chat_agent_poc.agent_loop.external_tools import _first_matching_mfds_item
+from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_text
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
@@ -17,11 +18,13 @@ from jw_chat_agent_poc.tool_use.specs import (
     DiseaseCodeInput,
     IngredientInput,
     ItemSequenceInput,
+    OpenFdaInput,
     ProcedureCodeInput,
     QueryInput,
     ToolSpec,
 )
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
+from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
 
 
 _DESCRIPTIONS = {record.name: record.description for record in TOOL_DESCRIPTION_CATALOG}
@@ -36,26 +39,27 @@ class ExternalToolRegistry:
         self._external = external
 
     def list_for_query(self, _user_text: str) -> tuple[ToolSpec, ...]:
+        mcp_timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S + float(self._external.timeout_s) + 1.0
         definitions = (
             ("local_molecule_lookup", BrandInput, self._local_molecule, 1.0, ("local", "molecule")),
-            ("get_drug_main_ingredient", BrandInput, self._mfds_main_ingredient, 12.0, ("external", "mfds")),
-            ("openfda_label_search", IngredientInput, partial(self._ingredient_call, "openfda_label_search", "라벨/이상반응"), 12.0, ("external", "openfda")),
+            ("get_drug_main_ingredient", BrandInput, self._mfds_main_ingredient, mcp_timeout_s, ("external", "mfds")),
+            ("openfda_label_search", OpenFdaInput, self._openfda_call, mcp_timeout_s, ("external", "openfda")),
             ("web_search", QueryInput, self._web_search, 8.0, ("external", "web")),
-            ("mfds_permission_search", BrandInput, self._permission_search, 12.0, ("external", "mfds")),
-            ("mfds_permission_detail", ItemSequenceInput, self._permission_detail, 12.0, ("external", "mfds")),
-            ("mfds_clinical_trial_kr", ClinicalQueryInput, self._clinical_kr, 12.0, ("external", "mfds")),
-            ("clinicaltrials_v2_search", ClinicalQueryInput, self._clinical_global, 12.0, ("external", "clinicaltrials")),
-            ("mfds_patent", IngredientInput, partial(self._ingredient_call, "mfds_patent", "국내 특허"), 12.0, ("external", "mfds")),
-            ("mfds_fda_orangebook", IngredientInput, partial(self._ingredient_call, "mfds_fda_orangebook", "미국 특허/독점권"), 12.0, ("external", "orangebook")),
-            ("hira_disease_name_code", DiseaseCodeInput, partial(self._disease_call, "hira_disease_name_code", "질병명/상병코드"), 12.0, ("external", "hira")),
-            ("hira_disease_hospitalization_outpatient_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_hospitalization_outpatient_stats", "질병 입원/외래 통계"), 12.0, ("external", "hira")),
-            ("hira_disease_gender_age_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_gender_age_stats", "질병 성별/연령 통계"), 12.0, ("external", "hira")),
-            ("hira_disease_institution_class_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_institution_class_stats", "질병 기관종별 통계"), 12.0, ("external", "hira")),
-            ("hira_disease_area_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_area_stats", "질병 지역 통계"), 12.0, ("external", "hira")),
-            ("hira_procedure_gender_ipat_opat_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_gender_ipat_opat_stats", "진료행위 입원/외래 통계"), 12.0, ("external", "hira")),
-            ("hira_procedure_gender_age_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_gender_age_stats", "진료행위 성별/연령 통계"), 12.0, ("external", "hira")),
-            ("hira_procedure_institution_class_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_institution_class_stats", "진료행위 기관종별 통계"), 12.0, ("external", "hira")),
-            ("hira_procedure_area_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_area_stats", "진료행위 지역 통계"), 12.0, ("external", "hira")),
+            ("mfds_permission_search", BrandInput, self._permission_search, mcp_timeout_s, ("external", "mfds")),
+            ("mfds_permission_detail", ItemSequenceInput, self._permission_detail, mcp_timeout_s, ("external", "mfds")),
+            ("mfds_clinical_trial_kr", ClinicalQueryInput, self._clinical_kr, mcp_timeout_s, ("external", "mfds")),
+            ("clinicaltrials_v2_search", ClinicalQueryInput, self._clinical_global, mcp_timeout_s, ("external", "clinicaltrials")),
+            ("mfds_patent", IngredientInput, partial(self._ingredient_call, "mfds_patent", "국내 특허"), mcp_timeout_s, ("external", "mfds")),
+            ("mfds_fda_orangebook", IngredientInput, partial(self._ingredient_call, "mfds_fda_orangebook", "미국 특허/독점권"), mcp_timeout_s, ("external", "orangebook")),
+            ("hira_disease_name_code", DiseaseCodeInput, partial(self._disease_call, "hira_disease_name_code", "질병명/상병코드"), mcp_timeout_s, ("external", "hira", "grounding")),
+            ("hira_disease_hospitalization_outpatient_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_hospitalization_outpatient_stats", "질병 입원/외래 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_disease_gender_age_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_gender_age_stats", "질병 성별/연령 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_disease_institution_class_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_institution_class_stats", "질병 기관종별 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_disease_area_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_area_stats", "질병 지역 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_procedure_gender_ipat_opat_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_gender_ipat_opat_stats", "진료행위 입원/외래 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_procedure_gender_age_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_gender_age_stats", "진료행위 성별/연령 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_procedure_institution_class_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_institution_class_stats", "진료행위 기관종별 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_procedure_area_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_area_stats", "진료행위 지역 통계"), mcp_timeout_s, ("external", "hira")),
         )
         return tuple(
             ToolSpec(name, _DESCRIPTIONS[name], input_model, execute, timeout_s, tags)
@@ -147,6 +151,15 @@ class ExternalToolRegistry:
         call = getattr(self._external, method)(request.ingredient)
         return _external_call_envelope(call, request.ingredient, metric)
 
+    def _openfda_call(self, payload: BaseModel) -> ToolEnvelope:
+        request = OpenFdaInput.model_validate(payload.model_dump())
+        call = self._external.openfda_label_search(
+            request.ingredient,
+            evidence_type=request.evidence_type,
+        )
+        metric = "FAERS 자발보고 내 이상반응" if request.evidence_type == "adverse_event" else "FDA 라벨"
+        return _external_call_envelope(call, request.ingredient, metric)
+
     def _permission_detail(self, payload: BaseModel) -> ToolEnvelope:
         request = ItemSequenceInput.model_validate(payload.model_dump())
         call = self._external.mfds_permission_detail(request.item_seq)
@@ -164,14 +177,15 @@ class ExternalToolRegistry:
 
     def _web_search(self, payload: BaseModel) -> ToolEnvelope:
         request = QueryInput.model_validate(payload.model_dump())
-        call = self._external.web_search(request.query)
+        call = self._external.web_search(request.query, topic=request.topic)
         return _external_call_envelope(call, request.brand or request.query, "웹 검색")
 
     def _disease_call(self, method: str, metric: str, payload: BaseModel) -> ToolEnvelope:
         request = DiseaseCodeInput.model_validate(payload.model_dump())
+        sick_cd = hira_disease_code_for_text(request.sick_cd) or request.sick_cd.strip()
         function = getattr(self._external, method)
-        call = function(request.sick_cd) if method == "hira_disease_name_code" else function(request.sick_cd, year=request.year)
-        return _external_call_envelope(call, request.sick_cd, metric)
+        call = function(sick_cd) if method == "hira_disease_name_code" else function(sick_cd, year=request.year)
+        return _external_call_envelope(call, sick_cd, metric)
 
     def _procedure_call(self, method: str, metric: str, payload: BaseModel) -> ToolEnvelope:
         request = ProcedureCodeInput.model_validate(payload.model_dump())
@@ -183,13 +197,18 @@ def _external_call_envelope(call: ExternalCall, subject: str, metric: str) -> To
     evidence = _facts_from_external_call(call, subject, metric)
     ok = call.status not in _FAILED_STATUSES and bool(evidence)
     if not ok:
+        error_message = (
+            "외부 도구 조회에 실패했습니다."
+            if call.status == "error"
+            else "도구 응답에서 검증 가능한 근거를 찾지 못했습니다."
+        )
         return ToolEnvelope(
             ok=False,
             preview=call.summary_text,
             evidence=(),
             raw=asdict(call),
             error_code="NO_EVIDENCE" if call.status not in _FAILED_STATUSES else call.status.upper(),
-            error_message="도구 응답에서 검증 가능한 근거를 찾지 못했습니다.",
+            error_message=error_message,
         )
     return ToolEnvelope(ok=True, preview=call.summary_text, evidence=evidence, raw=asdict(call), error_code=None, error_message=None)
 
@@ -198,7 +217,11 @@ def _facts_from_external_call(call: ExternalCall, subject: str, metric: str) -> 
     data = call.render_data
     rows = _external_rows(data)
     if rows:
-        return tuple(_row_fact(call, subject, metric, item, index) for index, item in enumerate(rows[:5], start=1))
+        fallback_period = _request_period(data)
+        return tuple(
+            _row_fact(call, subject, metric, item, index, fallback_period=fallback_period)
+            for index, item in enumerate(rows[:5], start=1)
+        )
     sections = data.get("label_sections")
     if isinstance(sections, list):
         return tuple(
@@ -227,9 +250,20 @@ def _external_rows(data: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     return tuple(item for item in candidates if isinstance(item, dict))
 
 
-def _row_fact(call: ExternalCall, subject: str, metric: str, item: dict[str, Any], index: int) -> EvidenceFact:
+def _row_fact(
+    call: ExternalCall,
+    subject: str,
+    metric: str,
+    item: dict[str, Any],
+    index: int,
+    *,
+    fallback_period: str | None = None,
+) -> EvidenceFact:
     value = next((_decimal_or_none(item.get(key)) for key in ("value", "rank", "ptntCnt") if item.get(key) not in (None, "")), None)
-    period = next((str(item[key]) for key in ("date", "period", "year") if item.get(key)), None)
+    period = next(
+        (str(item[key]) for key in ("published_date", "date", "period", "year") if item.get(key)),
+        fallback_period,
+    )
     return EvidenceFact(
         fact_id=f"{call.tool}:{index}",
         subject=subject,
@@ -241,6 +275,14 @@ def _row_fact(call: ExternalCall, subject: str, metric: str, item: dict[str, Any
         source_locator=_item_locator(item),
         raw_ref=f"{call.tool}:{index}",
     )
+
+
+def _request_period(data: dict[str, Any]) -> str | None:
+    request = data.get("request")
+    if not isinstance(request, dict):
+        return None
+    year = request.get("year")
+    return str(year) if year not in (None, "") else None
 
 
 def _text_fact(call: ExternalCall, subject: str, metric: str, text: str, index: int) -> EvidenceFact:
@@ -258,6 +300,37 @@ def _text_fact(call: ExternalCall, subject: str, metric: str, text: str, index: 
 
 
 def _item_locator(item: dict[str, Any]) -> str | None:
+    report_id = str(item.get("safety_report_id") or "").strip()
+    if report_id:
+        parts = [f"FAERS 보고 {report_id}"]
+        date = str(item.get("date") or "").strip()
+        if date:
+            parts.append(date)
+        reactions = item.get("reaction_terms")
+        if isinstance(reactions, list) and reactions:
+            parts.append(f"보고 반응: {', '.join(str(value) for value in reactions)}")
+        return " · ".join(parts)
+    title = str(item.get("title") or "").strip()
+    url = str(item.get("url") or "").strip()
+    if title and url:
+        safe_title = title.replace("[", "\\[").replace("]", "\\]")
+        return f"[{safe_title}]({url})"
+    patent_number = str(item.get("DOMESTIC_PATENT_NO") or "").strip()
+    if patent_number:
+        parts = []
+        product = str(item.get("GOODS_NAME") or item.get("ITEM_NAME") or "").strip()
+        if product:
+            parts.append(product)
+        parts.append(f"특허번호 {patent_number}")
+        for key, label in (
+            ("DOMESTIC_END_DATE", "만료일"),
+            ("DOMESTIC_PATENT_STATUS", "상태"),
+            ("PATENTEE", "권리자"),
+        ):
+            value = str(item.get(key) or "").strip()
+            if value:
+                parts.append(f"{label} {value}")
+        return " · ".join(parts)
     keys = (
         "title", "ITEM_NAME", "itemName", "briefTitle", "sickNm", "st5Nm",
         "GOODS_NAME", "INGR_ENG_NAME", "DOMESTIC_PATENT_NO", "PRT_NAME",
@@ -269,6 +342,9 @@ def _item_locator(item: dict[str, Any]) -> str | None:
 
 def _source_name(call: ExternalCall) -> str:
     if call.tool.startswith("openfda"):
+        mcp = call.render_data.get("mcp")
+        if isinstance(mcp, dict) and mcp.get("tool") == "search_drug_adverse_events":
+            return "FDA 이상반응 보고 정보"
         return "FDA 의약품 라벨 정보"
     if call.tool.startswith("clinicaltrials"):
         return "ClinicalTrials.gov 임상시험 정보"
