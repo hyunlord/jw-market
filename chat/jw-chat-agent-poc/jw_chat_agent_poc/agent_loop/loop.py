@@ -27,6 +27,7 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambigui
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import add_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
+from jw_chat_agent_poc.common.periods import canonical_periods
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
@@ -920,8 +921,6 @@ def _answer_contract_required_calls(
     for required_tool in required_tools:
         if required_tool in existing:
             continue
-        if required_tool == "get_brand_metric" and structural_contract == "quarter_metric" and "query_spec" in existing:
-            continue
         plan = _required_contract_plan(required_tool, question, brand)
         if plan is None:
             continue
@@ -960,9 +959,14 @@ def _contract_required_tools(question: str) -> tuple[str, ...]:
 
 def _required_contract_plan(required_tool: str, question: str, brand: str) -> ToolCallPlan | None:
     if required_tool == "get_brand_metric":
+        requested_periods = canonical_periods(question)
         return ToolCallPlan(
             name="get_metric",
-            arguments={"brand": brand, "measure": "sales", "period": "latest"},
+            arguments={
+                "brand": brand,
+                "measure": "sales",
+                "period": requested_periods[0] if requested_periods else "latest",
+            },
             reason=required_tool,
         )
     if required_tool == "market_scope":

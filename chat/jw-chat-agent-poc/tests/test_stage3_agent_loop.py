@@ -10,6 +10,7 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _answer_contract_required_calls, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
+from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
@@ -639,6 +640,44 @@ def test_news_sales_impact_required_tools_survive_planner_unsupported_metric() -
 
     tools = {call["tool"] for call in completed}
     assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
+
+
+def test_quarter_query_spec_does_not_replace_required_period_metric() -> None:
+    metrics = _metrics_tool()
+    question = "리바로 2025년 2분기 매출"
+    calls = [
+        {
+            "source": "strategic_mart",
+            "tool": "get_brand_metric",
+            "render_data": {
+                "brand": "리바로",
+                "metric": "query_spec",
+                "status": "ok",
+                "query_spec": {"filters": {"brand": "리바로", "period": "2025-Q2"}},
+            },
+        }
+    ]
+
+    completed = _answer_contract_required_calls(
+        question,
+        calls,
+        [],
+        "리바로",
+        ("리바로",),
+        metrics,
+        BrandResolver(),
+        None,
+        build_period_grounding(question),
+        None,
+        None,
+        _query_layer(),
+    )
+
+    metric_calls = [call for call in completed if call.get("tool") == "get_brand_metric"]
+    assert metric_calls
+    render_data = metric_calls[0]["render_data"]
+    assert render_data["requested_period"] == "2025-Q2"
+    assert render_data["period"] != "2026-04"
 
 
 def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:
