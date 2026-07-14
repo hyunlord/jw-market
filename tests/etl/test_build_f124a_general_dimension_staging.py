@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pandas as pd
+
 from pipeline.scripts.etl import build_f124a_general_dimension_staging as stage
 
 
@@ -145,3 +147,45 @@ def test_merge_rejects_rows_with_nonmay_history() -> None:
         raise AssertionError("non-May history must fail")
 
     assert conn.executed == []
+
+
+def test_build_may_rows_streams_product_stable_partitions(monkeypatch, tmp_path: Path) -> None:
+    frames = [
+        pd.DataFrame([{"period_yyyymm": "2026-05", "partition": 1}]),
+        pd.DataFrame([{"period_yyyymm": "2026-05", "partition": 2}]),
+    ]
+    merged: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(
+        stage,
+        "iter_ubist_base_frames",
+        lambda **_kwargs: iter(frames),
+    )
+    monkeypatch.setattr(stage, "ubist_measure_frame", lambda frame, _measure: frame)
+    monkeypatch.setattr(
+        stage,
+        "build_filter_dimension_rows",
+        lambda _source, measure, frame: [
+            {
+                "measure": measure,
+                "partition": int(frame.iloc[0]["partition"]),
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        stage,
+        "merge_may_rows",
+        lambda _conn, rows, **_kwargs: merged.append((rows[0]["measure"], rows[0]["partition"])) or len(rows),
+    )
+
+    measures, total = stage.build_and_merge_may_rows(
+        FakeConnection(),
+        spool_dir=tmp_path,
+        target_db=stage.F124A_TARGET_DB,
+        target_table=stage.F124A_STAGING_TABLE,
+        batch_size=200,
+    )
+
+    assert measures == {"sales": 2, "volume": 2}
+    assert total == 4
+    assert merged == [("sales", 1), ("volume", 1), ("sales", 2), ("volume", 2)]

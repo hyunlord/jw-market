@@ -20,7 +20,7 @@ from pipeline.etl.io.mart.filter_dimension_load import quote_id
 from pipeline.etl.io.mart.filter_dimension_metric import build_filter_dimension_rows
 from pipeline.etl.io.mart.general_config import MEASURES_BY_SOURCE
 from pipeline.etl.io.mart.general_json import dumps
-from pipeline.etl.io.mart.general_ubist import load_ubist_base_frame
+from pipeline.etl.io.mart.general_ubist import iter_ubist_base_frames
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
 from pipeline.scripts.deploy.mart_load_verify import table_exists
 from pipeline.scripts.etl.build_filter_dimension_metric import _connect_admin
@@ -134,6 +134,34 @@ def merge_may_rows(
     return len(payloads)
 
 
+def build_and_merge_may_rows(
+    conn: pymysql.connections.Connection,
+    *,
+    spool_dir: Path,
+    target_db: str,
+    target_table: str,
+    batch_size: int,
+) -> tuple[dict[str, int], int]:
+    measures = {measure: 0 for measure in MEASURES_BY_SOURCE["ubist"]}
+    total = 0
+    for base in iter_ubist_base_frames(spool_dir=spool_dir, partition_count=64):
+        periods = {str(period) for period in base["period_yyyymm"].dropna().tolist()}
+        if periods != {F124A_PERIOD}:
+            raise RuntimeError(f"F-124a input must contain only {F124A_PERIOD}: {sorted(periods)}")
+        for measure in MEASURES_BY_SOURCE["ubist"]:
+            rows = build_filter_dimension_rows("ubist", measure, ubist_measure_frame(base, measure))
+            merged_count = merge_may_rows(
+                conn,
+                rows,
+                target_db=target_db,
+                target_table=target_table,
+                batch_size=batch_size,
+            )
+            measures[measure] += merged_count
+            total += merged_count
+    return measures, total
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     guard_f124a_target(args.target_db, args.target_table)
     parquet = verify_may_parquet(args.ubist_dir, args.expected_sha256)
@@ -148,24 +176,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             target_table=args.target_table,
             batch_size=args.batch_size,
         )
-        base = load_ubist_base_frame(max_rows=None)
-        periods = sorted({str(period) for period in base["period_yyyymm"].dropna().tolist()})
-        if periods != [F124A_PERIOD]:
-            raise RuntimeError(f"F-124a input must contain only {F124A_PERIOD}: {periods}")
-
-        may_rows_merged = 0
-        measures: dict[str, int] = {}
-        for measure in MEASURES_BY_SOURCE["ubist"]:
-            measure_rows = build_filter_dimension_rows("ubist", measure, ubist_measure_frame(base, measure))
-            merge_may_rows(
-                conn,
-                measure_rows,
-                target_db=args.target_db,
-                target_table=args.target_table,
-                batch_size=args.batch_size,
-            )
-            measures[measure] = len(measure_rows)
-            may_rows_merged += len(measure_rows)
+        measures, may_rows_merged = build_and_merge_may_rows(
+            conn,
+            spool_dir=args.spool_dir,
+            target_db=args.target_db,
+            target_table=args.target_table,
+            batch_size=args.batch_size,
+        )
         summary = _staging_summary(conn, args.target_db, args.target_table)
         manifest = {
             "target_db": args.target_db,
@@ -222,6 +239,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ubist-dir", type=Path, required=True)
     parser.add_argument("--expected-sha256", required=True)
     parser.add_argument("--manifest-path", type=Path, required=True)
+    parser.add_argument("--spool-dir", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=200)
     return parser.parse_args(argv)
 
