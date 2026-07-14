@@ -198,7 +198,7 @@ def _section_by_combo(section: object) -> dict[str, Any]:
 
 def _event_payload(brand: str) -> dict[str, Any]:
     try:
-        with db.connect() as conn:
+        with db.borrow_read_connection() as conn:
             return build_events_for_cache(conn, brand)
     except pymysql.MySQLError:
         logger.warning("deep_analysis_events_unavailable brand=%s", brand, exc_info=True)
