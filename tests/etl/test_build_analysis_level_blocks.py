@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import struct
 
+from pipeline.scripts.etl import build_analysis_level_blocks as malb
 from pipeline.scripts.etl.build_analysis_level_blocks import (
     BlockKey,
     BlockPayload,
@@ -21,6 +22,11 @@ from pipeline.scripts.etl.build_analysis_level_blocks import (
 from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
     ANALYSIS_LEVEL_BLOCK_SCHEMA_VERSION,
 )
+
+
+def _select_malb_target(monkeypatch, table: str = "mart_analysis_level_block") -> None:
+    monkeypatch.setenv("MALB_TARGET_DB", malb.config.db_name)
+    monkeypatch.setenv("MALB_TARGET_TABLE", table)
 
 
 def test_schema_version_is_independent_from_app_version() -> None:
@@ -156,6 +162,7 @@ def test_stride_order_visits_every_key_in_a_different_order() -> None:
 
 def test_current_keys_is_scoped_to_epoch_and_build(monkeypatch) -> None:
     captured = {}
+    _select_malb_target(monkeypatch)
 
     def fake_fetch_all(sql, params):
         captured["sql"] = sql
@@ -176,6 +183,7 @@ def test_run_parity_reads_only_current_build_and_epoch(monkeypatch) -> None:
     captured = {}
     key = BlockKey("general", "A10N1", "UBIST", "sales")
     payload = BlockPayload.for_test(market_id=key.market_id, payload_size=2)
+    _select_malb_target(monkeypatch)
 
     monkeypatch.setattr(
         "pipeline.scripts.etl.build_analysis_level_blocks.enumerate_keys",
