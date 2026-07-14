@@ -11,8 +11,22 @@ from pipeline.scripts.api.routes import brands
 
 
 DEFAULT_PAYLOAD = [
-    {"brand": "리바로", "market_id": "strategy_001", "value": 1},
-    {"brand": "가드메트", "market_id": "strategy_002", "value": 2},
+    {
+        "brand": "리바로",
+        "market_id": "strategy_001",
+        "sources": ["UBIST", "IQVIA"],
+        "strategic_sources": ["UBIST"],
+        "general_sources": ["UBIST", "IQVIA"],
+        "value": 1,
+    },
+    {
+        "brand": "가드메트",
+        "market_id": "strategy_002",
+        "sources": ["UBIST", "IQVIA"],
+        "strategic_sources": ["UBIST", "IQVIA"],
+        "general_sources": ["UBIST", "IQVIA"],
+        "value": 2,
+    },
 ]
 
 
@@ -32,7 +46,11 @@ def test_exact_brand_query_returns_exact_match(monkeypatch) -> None:
         "_search_brand_candidates",
         lambda _query: [{"brand_key": "리바로", "brand_name": "리바로", "market_size": 1}],
     )
-    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], ["UBIST"]))
+    monkeypatch.setattr(
+        brands,
+        "_context_options_for_brand",
+        lambda _brand: ([], ["UBIST"], ["UBIST"]),
+    )
 
     response = TestClient(app).get("/api/brands?q=리바로")
 
@@ -41,6 +59,8 @@ def test_exact_brand_query_returns_exact_match(monkeypatch) -> None:
         {
             "brand": "리바로",
             "sources": ["UBIST"],
+            "strategic_sources": ["UBIST"],
+            "general_sources": ["UBIST"],
             "contexts": [],
             "is_jw_target": True,
             "context_reason": "analysis_context_not_available",
@@ -48,21 +68,45 @@ def test_exact_brand_query_returns_exact_match(monkeypatch) -> None:
     ]
 
 
-def test_search_uses_compact_exact_sql_without_wildcards(monkeypatch) -> None:
-    captured: list[tuple[str, tuple[str, str]]] = []
+def test_search_uses_sargable_compact_exact_indexes_without_wildcards(monkeypatch) -> None:
+    captured: list[tuple[str, tuple[str, ...]]] = []
 
-    def fake_fetch_all(sql: str, params: tuple[str, str]) -> list[dict]:
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
         captured.append((sql, params))
+        return [
+            {
+                "brand_key": "리바로",
+                "brand_name": "리바로",
+                "raw_value_history": '{"2026-04":1}',
+                "source": "ubist",
+            }
+        ]
+
+    monkeypatch.setattr(brands.db, "fetch_all", fake_fetch_all)
+
+    assert len(brands._search_brand_candidates("  리 바 로  ")) == 1
+    assert len(captured) == 1
+    sql, params = captured[0]
+    assert " LIKE " not in sql
+    assert "REPLACE(" not in sql
+    assert "brand_key = %s" in sql
+    assert "brand_name = %s" in sql
+    assert "UNION ALL" in sql
+    assert params == ("리바로", "리바로", "리바로")
+
+
+def test_search_exact_miss_never_falls_back_to_non_sargable_scan(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def fake_fetch_all(sql: str, _params: tuple[str, ...]) -> list[dict]:
+        captured.append(sql)
         return []
 
     monkeypatch.setattr(brands.db, "fetch_all", fake_fetch_all)
 
-    assert brands._search_brand_candidates("  리 바 로  ") == []
-    sql, params = captured[0]
-    assert " LIKE " not in sql
-    assert "REPLACE(brand_key, ' ', '') = %s" in sql
-    assert "REPLACE(brand_name, ' ', '') = %s" in sql
-    assert params == ("리바로", "리바로")
+    assert brands._search_brand_candidates("없는 브랜드") == []
+    assert len(captured) == 1
+    assert all("REPLACE(" not in sql for sql in captured)
 
 
 @pytest.mark.parametrize("query", ["리바", "바로"])
@@ -91,7 +135,11 @@ def test_search_orders_exact_matches_by_sales_and_preserves_contract(monkeypatch
     monkeypatch.setattr(
         brands,
         "_context_options_for_brand",
-        lambda _brand: ([{"view_kind": "general", "market_id": "A10S0"}], ["IQVIA"]),
+        lambda _brand: (
+            [{"view_kind": "general", "market_id": "A10S0"}],
+            ["IQVIA"],
+            [],
+        ),
     )
 
     response = TestClient(app).get("/api/brands?q=마운자로&limit=1")
@@ -101,11 +149,20 @@ def test_search_orders_exact_matches_by_sales_and_preserves_contract(monkeypatch
         {
             "brand": "마운자로",
             "sources": ["IQVIA"],
+            "strategic_sources": [],
+            "general_sources": ["IQVIA"],
             "contexts": [{"view_kind": "general", "market_id": "A10S0"}],
             "is_jw_target": False,
         }
     ]
-    assert list(response.json()[0]) == ["brand", "sources", "contexts", "is_jw_target"]
+    assert list(response.json()[0]) == [
+        "brand",
+        "sources",
+        "strategic_sources",
+        "general_sources",
+        "contexts",
+        "is_jw_target",
+    ]
     assert response.headers["x-has-more"] == "true"
     assert response.headers["x-total-matches"] == "2"
     assert response.headers["x-result-limit"] == "1"
@@ -158,6 +215,8 @@ def test_search_uses_shared_context_resolver_and_deduplicates_sources(monkeypatc
         "has_market_data": True,
     }
     assert item["sources"] == ["UBIST", "IQVIA"]
+    assert item["general_sources"] == ["UBIST", "IQVIA"]
+    assert item["strategic_sources"] == ["UBIST", "IQVIA"]
 
 
 def test_search_sources_exclude_contexts_without_market_data(monkeypatch) -> None:
@@ -196,6 +255,8 @@ def test_search_sources_exclude_contexts_without_market_data(monkeypatch) -> Non
     item = TestClient(app).get("/api/brands?q=마운자로").json()[0]
 
     assert item["sources"] == ["IQVIA"]
+    assert item["general_sources"] == ["IQVIA"]
+    assert item["strategic_sources"] == ["IQVIA"]
 
 
 def test_search_keeps_known_brand_without_context(monkeypatch) -> None:
@@ -205,12 +266,14 @@ def test_search_keeps_known_brand_without_context(monkeypatch) -> None:
         "_search_brand_candidates",
         lambda _query: [{"brand_key": "휴면브랜드", "brand_name": "휴면브랜드", "market_size": 0}],
     )
-    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], []))
+    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], [], []))
 
     item = TestClient(app).get("/api/brands?q=휴면브랜드").json()[0]
 
     assert item["contexts"] == []
     assert item["sources"] == []
+    assert item["general_sources"] == []
+    assert item["strategic_sources"] == []
     assert item["context_reason"] == "analysis_context_not_available"
 
 
@@ -227,7 +290,7 @@ def test_query_alias_is_supported_and_conflicts_fail_closed(monkeypatch) -> None
         "_search_brand_candidates",
         lambda query: [{"brand_key": query, "brand_name": query, "market_size": 1}],
     )
-    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], []))
+    monkeypatch.setattr(brands, "_context_options_for_brand", lambda _brand: ([], [], []))
 
     assert TestClient(app).get("/api/brands?query=마운자로").json()[0]["brand"] == "마운자로"
     assert TestClient(app).get("/api/brands?q=리바로&query=마운자로").status_code == 422

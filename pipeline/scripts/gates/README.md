@@ -80,3 +80,21 @@ python3 pipeline/scripts/gates/release_acceptance.py growth-windows \
   --abs-tol 0.01 \
   --environment runtime
 ```
+
+## Brand source census
+
+The brand-source gate compares the complete Cartesian population declared by
+the expectations file with independently captured API observations. Every
+brand, view, and source combination must be present exactly once, and each
+observation must report whether the source was listed and whether the API
+actually returned market data.
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py brand-sources \
+  --expectations /path/to/source_census_expectations.json \
+  --observations /path/to/source_census_observations.json \
+  --environment production-read-only
+```
+
+The command fails on empty input, missing or unexpected identities, duplicate
+identities, and either direction of `listed != has_data`.

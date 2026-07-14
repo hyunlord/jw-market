@@ -21,6 +21,8 @@ from pipeline.scripts.etl.cache_build_common import (
 )
 
 from pipeline.scripts.api.metadata import BRAND_METADATA, build_brand_metadata_payload
+from pipeline.scripts.api.brand_source_options import brand_source_options
+from pipeline.scripts.api.deep_analysis_context import public_source_labels
 
 
 def _catalog_atc_codes_by_market(ml_market: object) -> dict[str, list[str]]:
@@ -38,12 +40,50 @@ def _catalog_atc_codes_by_market(ml_market: object) -> dict[str, list[str]]:
     return by_market
 
 
-def _brand_payload(ml_market: object) -> list[dict[str, object]]:
+def _brand_payload(
+    ml_market: object,
+    source_lists_by_brand: dict[str, dict[str, list[str]]],
+) -> list[dict[str, object]]:
     atc_codes_by_market = _catalog_atc_codes_by_market(ml_market)
     try:
-        return build_brand_metadata_payload(atc_codes_by_market)
+        payload = build_brand_metadata_payload(atc_codes_by_market)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    expected = {str(item["brand"]) for item in payload}
+    missing = sorted(expected - source_lists_by_brand.keys())
+    unexpected = sorted(source_lists_by_brand.keys() - expected)
+    if missing or unexpected:
+        raise SystemExit(
+            f"source evidence missing={missing}, unexpected={unexpected}"
+        )
+    enriched: list[dict[str, object]] = []
+    for item in payload:
+        brand = str(item["brand"])
+        evidence = source_lists_by_brand[brand]
+        general_sources = list(evidence.get("general_sources") or [])
+        strategic_sources = list(evidence.get("strategic_sources") or [])
+        sources = public_source_labels((*general_sources, *strategic_sources))
+        row: dict[str, object] = {}
+        for key, value in item.items():
+            if key == "sources":
+                row["sources"] = sources
+                row["strategic_sources"] = strategic_sources
+                row["general_sources"] = general_sources
+            else:
+                row[key] = value
+        enriched.append(row)
+    return enriched
+
+
+def _source_lists_by_brand() -> dict[str, dict[str, list[str]]]:
+    result: dict[str, dict[str, list[str]]] = {}
+    for metadata in BRAND_METADATA:
+        _, general_sources, strategic_sources = brand_source_options(metadata.brand)
+        result[metadata.brand] = {
+            "general_sources": general_sources,
+            "strategic_sources": strategic_sources,
+        }
+    return result
 
 
 def main() -> None:
@@ -71,7 +111,7 @@ def main() -> None:
             f"extra={sorted(metadata_brands - CANONICAL_25)}"
         )
 
-    payload = _brand_payload(ml_market)
+    payload = _brand_payload(ml_market, _source_lists_by_brand())
     row = {
         "query_key": "default",
         "response_json": dump_payload(payload),

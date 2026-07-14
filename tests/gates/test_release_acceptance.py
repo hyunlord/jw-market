@@ -521,3 +521,86 @@ def test_gate_sources_do_not_contain_known_fail_open_shell_patterns() -> None:
     assert "|| true" not in sources
     assert "head -1" not in sources
     assert "head -n 1" not in sources
+
+
+def _brand_source_expectations() -> dict[str, object]:
+    return {
+        "classification": "census",
+        "brands": ["리바로", "위너프A+"],
+        "views": ["general", "strategic"],
+        "sources": ["UBIST", "IQVIA"],
+    }
+
+
+def _brand_source_observations() -> list[dict[str, object]]:
+    available = {
+        ("리바로", "general", "UBIST"),
+        ("리바로", "general", "IQVIA"),
+        ("리바로", "strategic", "UBIST"),
+        ("위너프A+", "strategic", "IQVIA"),
+    }
+    return [
+        {
+            "brand": brand,
+            "view": view,
+            "source": source,
+            "listed": (brand, view, source) in available,
+            "has_data": (brand, view, source) in available,
+        }
+        for brand in ("리바로", "위너프A+")
+        for view in ("general", "strategic")
+        for source in ("UBIST", "IQVIA")
+    ]
+
+
+def test_brand_sources_gate_requires_bidirectional_census_parity(tmp_path: Path) -> None:
+    result = _run(
+        "brand-sources",
+        "--expectations",
+        str(_write_json(tmp_path / "expectations.json", _brand_source_expectations())),
+        "--observations",
+        str(_write_json(tmp_path / "observations.json", _brand_source_observations())),
+        "--environment",
+        "fixture",
+    )
+
+    assert result.returncode == 0
+    assert "gate=brand_sources" in result.stdout
+    assert "classification=census" in result.stdout
+    assert "checked=8" in result.stdout
+    assert "population=8" in result.stdout
+    assert "failures=0" in result.stdout
+
+
+def test_brand_sources_gate_failure_injection_exits_one(tmp_path: Path) -> None:
+    observations = _brand_source_observations()
+    observations[0]["listed"] = not observations[0]["has_data"]
+    result = _run(
+        "brand-sources",
+        "--expectations",
+        str(_write_json(tmp_path / "expectations.json", _brand_source_expectations())),
+        "--observations",
+        str(_write_json(tmp_path / "observations.json", observations)),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "listed/data mismatch" in result.stdout
+    assert "failures=1" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def test_brand_sources_gate_rejects_empty_or_incomplete_population(tmp_path: Path) -> None:
+    result = _run(
+        "brand-sources",
+        "--expectations",
+        str(_write_json(tmp_path / "expectations.json", _brand_source_expectations())),
+        "--observations",
+        str(_write_json(tmp_path / "observations.json", [])),
+    )
+
+    assert result.returncode == 1
+    assert "empty observation population is a failure" in result.stdout
+    assert "checked=0" in result.stdout
+    assert "population=8" in result.stdout
