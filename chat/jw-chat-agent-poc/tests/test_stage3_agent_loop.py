@@ -20,9 +20,10 @@ from jw_chat_agent_poc.tools.deep_analysis.news import DeepAnalysisNewsTool, Sta
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.query_layer import StaticStrategicMartReader, StrategicQueryLayer
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD, cause_payload_with_top_brand_trends
-from test_query_layer_integration import _query_layer
+from test_query_layer_integration import _query_layer, _record_with_market
 
 
 @dataclass(slots=True)
@@ -645,6 +646,27 @@ def test_news_sales_impact_required_tools_survive_planner_unsupported_metric() -
 def test_quarter_query_spec_does_not_replace_required_period_metric() -> None:
     metrics = _metrics_tool()
     question = "리바로 2025년 2분기 매출"
+    quarter_periods = ("2025-04", "2025-05", "2025-06")
+    quarter_layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_market(
+                    "ml_006",
+                    "리바로",
+                    (8_000_000_000.0, 8_100_000_000.0, 8_200_000_000.0),
+                    quarter_periods,
+                    [100_000_000_000.0] * 3,
+                ),
+                _record_with_market(
+                    "ml_006",
+                    "경쟁브랜드",
+                    (92_000_000_000.0, 91_900_000_000.0, 91_800_000_000.0),
+                    quarter_periods,
+                    [100_000_000_000.0] * 3,
+                ),
+            )
+        )
+    )
     calls = [
         {
             "source": "strategic_mart",
@@ -670,14 +692,15 @@ def test_quarter_query_spec_does_not_replace_required_period_metric() -> None:
         build_period_grounding(question),
         None,
         None,
-        _query_layer(),
+        quarter_layer,
     )
 
     metric_calls = [call for call in completed if call.get("tool") == "get_brand_metric"]
     assert metric_calls
     render_data = metric_calls[0]["render_data"]
-    assert render_data["requested_period"] == "2025-Q2"
-    assert render_data["period"] != "2026-04"
+    assert render_data["period"] == "2025-Q2"
+    assert render_data["query_spec"]["filters"]["period"] == "2025-Q2"
+    assert "fallback_period" not in render_data
 
 
 def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:
