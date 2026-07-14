@@ -4,7 +4,7 @@ metadata:
   name: jw-news-tier2-category-refresh
   namespace: llmops
   annotations:
-    canonicalization.jw/required-code-commit: "835c9693-or-later"
+    canonicalization.jw/required-code-commit: "733ed31f-or-later"
 spec:
   schedule: "10 20 * * *"
   suspend: true
@@ -47,4 +47,3 @@ spec:
                     secretKeyRef:
                       name: jw-mart-d2-writer
                       key: password
-
