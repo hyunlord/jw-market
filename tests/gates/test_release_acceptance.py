@@ -1171,3 +1171,123 @@ def test_cause_assembly_gate_failure_injection_exits_one(tmp_path: Path) -> None
     assert "byte mismatch" in result.stdout
     assert "failures=4" in result.stdout
     assert "exit_code=1" in result.stdout
+
+
+def _cause_null_integrity_evidence(
+    tmp_path: Path,
+    *,
+    invent_zero: bool = False,
+    regress_performance: bool = False,
+    extreme_numeric: bool = False,
+    census_mismatch: bool = False,
+) -> Path:
+    return _write_json(
+        tmp_path / "cause_null_integrity.json",
+        {
+            "classification": "census",
+            "candidate_population": 3 if census_mismatch else 2,
+            "candidate_breakdown": {"or_zero": 1, "else_zero": 1, "get_default_zero": 0},
+            "candidates": [
+                {
+                    "id": "rank-normalization",
+                    "calculation_distortion": False,
+                    "denominator_contamination": False,
+                },
+                {
+                    "id": "growth-contribution",
+                    "calculation_distortion": False,
+                    "denominator_contamination": False,
+                },
+            ],
+            "semantics": [
+                {"id": "missing", "kind": "missing", "value": 0.0 if invent_zero else None},
+                {"id": "real-zero", "kind": "real_zero", "value": 0.0},
+            ],
+            "numeric_observations": [
+                {"id": "growth", "value": -100.0 if extreme_numeric else 12.5},
+                {"id": "share", "value": 0.0},
+            ],
+            "performance_cases": [
+                {
+                    "id": "cause-fixture",
+                    "before_calls": 1000,
+                    "after_calls": 1001 if regress_performance else 900,
+                    "before_ms": 100.0,
+                    "after_ms": 121.0 if regress_performance else 95.0,
+                }
+            ],
+        },
+    )
+
+
+def test_cause_null_integrity_gate_checks_census_semantics_and_performance(tmp_path: Path) -> None:
+    result = _run(
+        "cause-null-integrity",
+        "--evidence",
+        str(_cause_null_integrity_evidence(tmp_path)),
+        "--environment",
+        "unit",
+    )
+
+    assert result.returncode == 0
+    assert "gate=cause_null_integrity" in result.stdout
+    assert "classification=census" in result.stdout
+    assert "failures=0" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
+def test_cause_null_integrity_gate_rejects_missing_to_zero_injection(tmp_path: Path) -> None:
+    result = _run(
+        "cause-null-integrity",
+        "--evidence",
+        str(_cause_null_integrity_evidence(tmp_path, invent_zero=True)),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "missing: missing value was coerced to zero" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def test_cause_null_integrity_gate_rejects_performance_injection(tmp_path: Path) -> None:
+    result = _run(
+        "cause-null-integrity",
+        "--evidence",
+        str(_cause_null_integrity_evidence(tmp_path, regress_performance=True)),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "cause-fixture: call count increased" in result.stdout
+    assert "cause-fixture: latency ratio" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def test_cause_null_integrity_gate_rejects_candidate_census_mismatch(tmp_path: Path) -> None:
+    result = _run(
+        "cause-null-integrity",
+        "--evidence",
+        str(_cause_null_integrity_evidence(tmp_path, census_mismatch=True)),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "candidate census mismatch" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def test_cause_null_integrity_gate_rejects_extreme_numeric_injection(tmp_path: Path) -> None:
+    result = _run(
+        "cause-null-integrity",
+        "--evidence",
+        str(_cause_null_integrity_evidence(tmp_path, extreme_numeric=True)),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "growth: prohibited extreme numeric value=-100.0" in result.stdout
+    assert "exit_code=1" in result.stdout
