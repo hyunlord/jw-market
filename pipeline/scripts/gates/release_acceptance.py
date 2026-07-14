@@ -12,6 +12,7 @@ from typing import Any, Callable, Sequence
 
 STRICT_LOG_PATTERN = re.compile(r"Traceback|(?:^|\s)ERROR(?:\s|:|$)|(?:^|\s)5[0-9]{2}(?:\s|$)")
 IDENTITY_FIELDS = ("market", "period", "source", "measure", "level")
+PERIOD_TOKEN = re.compile(r"^\d{4}(?:-(?:0[1-9]|1[0-2]|Q[1-4]))?$")
 
 
 @dataclass(frozen=True)
@@ -412,6 +413,156 @@ def check_growth_windows(evidence_path: Path, abs_tol: float, environment: str) 
     )
 
 
+def _period_interval(value: object) -> tuple[int, int] | None:
+    text = str(value)
+    if not PERIOD_TOKEN.fullmatch(text):
+        return None
+    year = int(text[:4])
+    suffix = text[5:] if len(text) > 4 else ""
+    if suffix.startswith("Q"):
+        start = year * 12 + (int(suffix[1:]) - 1) * 3
+        return start, start + 2
+    if suffix:
+        month = int(suffix)
+        index = year * 12 + month - 1
+        return index, index
+    return year * 12, year * 12 + 11
+
+
+def _period_sections(value: object, path: str = "$") -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    if isinstance(value, dict):
+        keys = list(value)
+        if keys and all(_period_interval(key) is not None for key in keys):
+            sections[path] = [str(key) for key in keys]
+        periods = value.get("periods")
+        if isinstance(periods, list) and periods and all(_period_interval(item) is not None for item in periods):
+            sections[f"{path}.periods"] = [str(item) for item in periods]
+        for key, item in value.items():
+            sections.update(_period_sections(item, f"{path}.{key}"))
+    elif isinstance(value, list):
+        point_periods: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                point_periods = []
+                break
+            period = item.get("period", item.get("period_full", item.get("year")))
+            if _period_interval(period) is None:
+                point_periods = []
+                break
+            point_periods.append(str(period))
+        if point_periods:
+            sections[path] = point_periods
+        for index, item in enumerate(value):
+            sections.update(_period_sections(item, f"{path}[{index}]"))
+    return sections
+
+
+def _period_values(value: object) -> object:
+    if isinstance(value, dict):
+        keys = list(value)
+        if keys and all(_period_interval(key) is not None for key in keys):
+            return [_period_values(value[key]) for key in sorted(keys)]
+        return {
+            str(key): _period_values(item)
+            for key, item in value.items()
+            if key not in {"period", "period_full", "periods", "year"}
+        }
+    if isinstance(value, list):
+        return [_period_values(item) for item in value]
+    return value
+
+
+def check_period_ranges(evidence_path: Path, environment: str) -> GateResult:
+    document = _load_json(evidence_path)
+    if not isinstance(document, dict):
+        raise ValueError("period-range evidence must be a JSON object")
+    if document.get("classification") not in {"census", "sample"}:
+        raise ValueError("period-range evidence requires census or sample classification")
+    cases = document.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("period-range evidence cases must be an array")
+
+    details: list[str] = []
+    failures = 0
+    identities: set[str] = set()
+    checked = 0
+    for case in cases:
+        if not isinstance(case, dict) or not isinstance(case.get("id"), str):
+            raise ValueError("period-range cases require a string id")
+        identifier = case["id"]
+        if identifier in identities:
+            raise ValueError(f"duplicate period-range identity: {identifier}")
+        identities.add(identifier)
+        window_a = case.get("window_a")
+        window_b = case.get("window_b")
+        window_a_repeat = case.get("window_a_repeat")
+        if not all(isinstance(window, dict) for window in (window_a, window_b, window_a_repeat)):
+            details.append(f"{identifier}: window evidence must be objects")
+            failures += 1
+            continue
+        if not all(
+            all(key in window for key in ("start", "end", "payload"))
+            for window in (window_a, window_b, window_a_repeat)
+        ):
+            details.append(f"{identifier}: window evidence missing start, end, or payload")
+            failures += 1
+            continue
+        if _canonical_sha(_period_values(window_a["payload"])) == _canonical_sha(
+            _period_values(window_b["payload"])
+        ):
+            details.append(f"{identifier}: period windows produced identical values")
+            failures += 1
+        if _canonical_sha(window_a["payload"]) != _canonical_sha(window_a_repeat["payload"]):
+            details.append(f"{identifier}: A-B-A replay changed window A")
+            failures += 1
+        for window_name, window in (
+            ("window_a", window_a),
+            ("window_b", window_b),
+            ("window_a_repeat", window_a_repeat),
+        ):
+            if not all(key in window for key in ("start", "end", "payload")):
+                details.append(f"{identifier}|{window_name}: missing start, end, or payload")
+                failures += 1
+                continue
+            sections = _period_sections(window["payload"])
+            if not sections:
+                details.append(f"{identifier}|{window_name}: empty period-section population")
+                failures += 1
+                continue
+            start_interval = _period_interval(window["start"])
+            end_interval = _period_interval(window["end"])
+            if start_interval is None or end_interval is None:
+                details.append(f"{identifier}|{window_name}: invalid requested period range")
+                failures += 1
+                continue
+            for path, periods in sections.items():
+                checked += 1
+                outside = []
+                for period in periods:
+                    interval = _period_interval(period)
+                    if interval is None or interval[1] < start_interval[0] or interval[0] > end_interval[1]:
+                        outside.append(period)
+                if outside:
+                    details.append(
+                        f"{identifier}|{window_name}|{path}: periods outside window {','.join(outside)}"
+                    )
+                    failures += len(outside)
+    if not cases:
+        details.append("empty period-range case population is a failure")
+        failures += 1
+    return GateResult(
+        gate="period_ranges",
+        classification=str(document["classification"]),
+        checked=checked,
+        population=checked,
+        failures=failures,
+        tolerance="exact canonical values and inclusive period bounds",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fail-closed release acceptance gates")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -441,6 +592,10 @@ def _parser() -> argparse.ArgumentParser:
     growth.add_argument("--evidence", type=Path, required=True)
     growth.add_argument("--abs-tol", type=float, default=0.01)
     growth.add_argument("--environment", default="local")
+
+    periods = subparsers.add_parser("period-ranges")
+    periods.add_argument("--evidence", type=Path, required=True)
+    periods.add_argument("--environment", default="local")
     return parser
 
 
@@ -461,6 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.abs_tol,
             args.environment,
         ),
+        "period-ranges": lambda: check_period_ranges(args.evidence, args.environment),
     }
     try:
         result = handlers[args.command]()

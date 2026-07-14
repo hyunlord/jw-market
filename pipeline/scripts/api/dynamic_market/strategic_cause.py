@@ -11,6 +11,7 @@ from pipeline.scripts.api.dynamic_market.response_cache import (
 )
 from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
+from pipeline.scripts.api.dynamic_market.types import PeriodRange
 
 
 def strategic_cache_request(
@@ -21,8 +22,9 @@ def strategic_cache_request(
     source: str,
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any]:
-    return {
+    request: dict[str, Any] = {
         "contract": "strategic-cause-core-v1",
         "view": "strategic_cd" if cd_market_id else "strategic_ml",
         "market_id": cd_market_id or ml_id,
@@ -31,6 +33,9 @@ def strategic_cache_request(
         "measure": measure.lower(),
         "analysis_level": analysis_level.model_dump(mode="json", by_alias=True),
     }
+    if period_range.start is not None or period_range.end is not None:
+        request["period_range"] = {"start": period_range.start, "end": period_range.end}
+    return request
 
 
 def get_strategic_payload(
@@ -43,6 +48,7 @@ def get_strategic_payload(
     source: str,
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
     persistence_scheduler: PersistenceScheduler | None = None,
 ) -> dict[str, Any]:
     request = strategic_cache_request(
@@ -52,6 +58,7 @@ def get_strategic_payload(
         source=source,
         measure=measure,
         analysis_level=analysis_level,
+        period_range=period_range,
     )
 
     def build() -> dict[str, Any]:
@@ -63,6 +70,7 @@ def get_strategic_payload(
             source=source,
             measure=measure,
             analysis_level=analysis_level,
+            period_range=period_range,
         )
 
     try:

@@ -37,6 +37,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     BrandRef,
     DimensionFilter,
     DynamicMarketInputError,
+    DynamicMarketPeriodNoDataError,
     MarketDefinition,
     PeriodRange,
 )
@@ -903,6 +904,7 @@ def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monke
         ),
         metrics=metrics,
         focus=metrics.all_brands[0],
+        period_range=PeriodRange("2026-05", "2026-05"),
     )
 
     assert any(call[1] == ("ml_999", "ubist", "sales") for call in calls)
@@ -915,6 +917,114 @@ def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monke
     assert [item["name"] for item in ingredient_segments] == ["전체", "Sitagliptin / Metformin"]
     assert [item["name"] for item in molecule_segments] == ["전체", "Sitagliptin 100mg"]
     assert data["level_top5_trend"]["by_level"]["판매사"]["values"][1]["value"] == "JW중외제약"
+    analysis_json = json.dumps(
+        {
+            "analysis_levels": data["analysis_levels"],
+            "analysis_level_market_status": data["analysis_level_market_status"],
+            "level_top5_trend": data["level_top5_trend"],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert "2026-04" not in analysis_json
+    assert "2026-05" in analysis_json
+
+
+@pytest.mark.parametrize(
+    ("ml_id", "cd_market_id"),
+    (("ml_006", None), (None, "cd_006")),
+)
+def test_strategic_runtime_trims_every_builder_row_before_ml_or_cd_assembly(
+    monkeypatch,
+    ml_id: str | None,
+    cd_market_id: str | None,
+) -> None:
+    captured: dict[str, object] = {}
+    sibling_rows = [
+        {
+            "brand_key": "리바로",
+            "brand_name": "리바로",
+            "metric_history": json.dumps(
+                {"2025-01": {"raw_value": 10.0}, "2026-01": {"raw_value": 20.0}}
+            ),
+            "extended_metric_history": json.dumps(
+                {"2025-01": {"raw_value": 10.0}, "2026-01": {"raw_value": 20.0}}
+            ),
+            "dimension_data": json.dumps(
+                {"molecule": {"Pitavastatin": {"2025-01": 10.0, "2026-01": 20.0}}}
+            ),
+            "is_jw": 1,
+        }
+    ]
+    market_row = {
+        "market_size_series": json.dumps({"2025-01": 100.0, "2026-01": 200.0}),
+        "hhi_series_5y": json.dumps(
+            [{"year": 2025, "hhi": 100.0}, {"year": 2026, "hhi": 200.0}]
+        ),
+    }
+
+    monkeypatch.setattr(strategic_runtime, "_fetch_sibling_rows", lambda **_kwargs: sibling_rows)
+    monkeypatch.setattr(strategic_runtime, "_fetch_market_row", lambda **_kwargs: market_row)
+    monkeypatch.setattr(strategic_runtime, "_catalog_row", lambda *_args: {})
+    monkeypatch.setattr(strategic_runtime, "_strategic_brand_catalog", lambda: [])
+    monkeypatch.setattr(strategic_runtime, "compose_cached_json", lambda payload, **_kwargs: payload)
+    monkeypatch.setattr(strategic_runtime, "apply_cd_market_definition", lambda *_args: None)
+
+    def fake_build_response(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"data": {"kpi": {"market_size_recent": 100.0}}}
+
+    monkeypatch.setattr(strategic_runtime.cause_builder, "build_response", fake_build_response)
+
+    strategic_runtime._build_strategic_payload(
+        mart_db="mart",
+        ml_id=ml_id,
+        cd_market_id=cd_market_id,
+        focus_brand_key="리바로",
+        source="iqvia",
+        measure="sales",
+        analysis_level=DynamicMarketRequest().filters.analysis_level,
+        period_range=PeriodRange("2025-01", "2025-12"),
+    )
+
+    captured_rows = captured["sibling_rows"]
+    assert isinstance(captured_rows, list)
+    assert json.loads(captured_rows[0]["metric_history"]) == {"2025-01": {"raw_value": 10.0}}
+    assert json.loads(captured_rows[0]["dimension_data"])["molecule"]["Pitavastatin"] == {
+        "2025-01": 10.0
+    }
+    captured_market = captured["market_row"]
+    assert isinstance(captured_market, dict)
+    assert json.loads(captured_market["market_size_series"]) == {"2025-01": 100.0}
+    assert json.loads(captured_market["hhi_series_5y"]) == [{"hhi": 100.0, "year": 2025}]
+
+
+def test_strategic_runtime_rejects_period_window_without_observed_points(monkeypatch) -> None:
+    sibling_rows = [
+        {
+            "brand_key": "리바로",
+            "brand_name": "리바로",
+            "metric_history": json.dumps({"2026-01": {"raw_value": 20.0}}),
+            "extended_metric_history": json.dumps({"2026-01": {"raw_value": 20.0}}),
+            "is_jw": 1,
+        }
+    ]
+    market_row = {"market_size_series": json.dumps({"2026-01": 200.0})}
+    monkeypatch.setattr(strategic_runtime, "_fetch_sibling_rows", lambda **_kwargs: sibling_rows)
+    monkeypatch.setattr(strategic_runtime, "_fetch_market_row", lambda **_kwargs: market_row)
+    monkeypatch.setattr(strategic_runtime, "_catalog_row", lambda *_args: {})
+
+    with pytest.raises(DynamicMarketPeriodNoDataError):
+        strategic_runtime._build_strategic_payload(
+            mart_db="mart",
+            ml_id="ml_006",
+            cd_market_id=None,
+            focus_brand_key="리바로",
+            source="iqvia",
+            measure="sales",
+            analysis_level=DynamicMarketRequest().filters.analysis_level,
+            period_range=PeriodRange("2030-01", "2030-12"),
+        )
 
 
 def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
@@ -2759,6 +2869,51 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
     assert response["result"]["view"] == "strategic_ml"
     assert response["result"]["market_meta"]["view"] == "strategic_ml"
     assert response["result"]["data"]["ubist_specialty_channels"][1] == "주요고객 종합병원 순환기"
+
+
+@pytest.mark.parametrize("view_kind", ["market_landscape", "competitive_dynamics"])
+def test_route_forwards_period_range_to_every_strategic_view(monkeypatch, view_kind: str) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"data": {"kpi": {}}}
+
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
+        lambda *_args, **_kwargs: [{"market_id": "ml_006" if view_kind == "market_landscape" else "cd_006"}],
+    )
+
+    dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "filters": {"view_kind": view_kind, "focus_brand_key": "리바로"},
+                "source": "ubist",
+                "measure": "sales",
+                "options": {"period_range": {"start": "2025-01", "end": "2025-12"}},
+            }
+        )
+    )
+
+    assert captured["period_range"] == PeriodRange("2025-01", "2025-12")
+
+
+def test_empty_period_response_is_null_with_explicit_reason() -> None:
+    payload = DynamicMarketRequest.model_validate(
+        {
+            "filters": {"focus_brand_key": "리바로"},
+            "source": "ubist",
+            "measure": "sales",
+            "options": {"period_range": {"start": "2030-01", "end": "2030-12"}},
+        }
+    )
+
+    response = dynamic_market_route._empty_period_response(payload, "general")
+
+    assert response["result"]["data"] is None
+    assert response["result"]["reason"] == "no_data_in_period"
+    assert response["result"]["period_range"] == {"start": "2030-01", "end": "2030-12"}
 
 
 def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monkeypatch) -> None:

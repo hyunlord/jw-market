@@ -212,3 +212,25 @@ def test_analysis_level_profile_signature_canonicalizes_filter_order() -> None:
 
     assert left == right
     assert analysis_level_profile_signature(base_profile="base", dimension_filters=()) == "base"
+
+
+def test_analysis_level_profile_signature_separates_period_windows() -> None:
+    unbounded = analysis_level_profile_signature(
+        base_profile="base",
+        dimension_filters=(),
+    )
+    april = analysis_level_profile_signature(
+        base_profile="base",
+        dimension_filters=(),
+        period_range=("2026-04", "2026-04"),
+    )
+    may = analysis_level_profile_signature(
+        base_profile="base",
+        dimension_filters=(),
+        period_range=("2026-05", "2026-05"),
+    )
+
+    assert unbounded == "base"
+    assert april != unbounded
+    assert may != unbounded
+    assert april != may

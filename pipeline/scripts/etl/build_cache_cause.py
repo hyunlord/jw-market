@@ -2995,6 +2995,7 @@ def build_response(
     market_sources: list[str],
     market_catalog_row: dict[str, Any] | None = None,
     strategic_brand: Any = None,
+    analysis_profile_sig: str = "",
 ) -> dict[str, Any]:
     metric_history = decode_json(brand_row.get("metric_history"))
     extended = decode_json(brand_row.get("extended_metric_history"))
@@ -3014,7 +3015,7 @@ def build_response(
     level_top5 = decode_json(market_row.get("level_top5_trend"))
     catalog_members = _catalog_members_for_market(strategic_brand, view_source_id)
     analysis_view_id = view_source_id
-    analysis_cache_key = (analysis_view_id, source_api, measure)
+    analysis_cache_key = (analysis_view_id, source_api, measure, analysis_profile_sig)
     ubist_channel_context = None
     if source_api == "UBIST":
         with strategic_channel_totals_context(sibling_rows):
@@ -3033,7 +3034,7 @@ def build_response(
                 market_id=view_source_id,
                 source=source_api,
                 measure=measure,
-                profile_sig="",
+                profile_sig=analysis_profile_sig,
                 trim_mode="full" if include_all_d3_options else "trim",
             ),
             source_epoch=block_epoch,

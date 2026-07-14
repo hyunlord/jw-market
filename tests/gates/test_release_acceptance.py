@@ -313,6 +313,65 @@ def test_growth_windows_gate_accepts_distinct_reconciled_windows(tmp_path: Path)
     assert "exit_code=0" in result.stdout
 
 
+def _period_range_evidence(*, identical_windows: bool = False) -> dict[str, object]:
+    value_b = 10.0 if identical_windows else 20.0
+    window_a = {
+        "start": "2025-01",
+        "end": "2025-12",
+        "payload": {"market_size_series": [{"period": "2025-01", "value": 10.0}]},
+    }
+    window_b = {
+        "start": "2026-01",
+        "end": "2026-04",
+        "payload": {"market_size_series": [{"period": "2026-01", "value": value_b}]},
+    }
+    return {
+        "classification": "census",
+        "cases": [
+            {
+                "id": "general|C10A1|ubist|sales",
+                "window_a": window_a,
+                "window_b": window_b,
+                "window_a_repeat": window_a,
+            }
+        ],
+    }
+
+
+def test_period_ranges_gate_accepts_complete_distinct_cross_call_evidence(tmp_path: Path) -> None:
+    evidence = _write_json(tmp_path / "periods.json", _period_range_evidence())
+
+    result = _run("period-ranges", "--evidence", str(evidence), "--environment", "local")
+
+    assert result.returncode == 0
+    assert "gate=period_ranges" in result.stdout
+    assert "classification=census" in result.stdout
+    assert "checked=3" in result.stdout
+    assert "population=3" in result.stdout
+    assert "failures=0" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
+def test_period_ranges_gate_rejects_ignored_window_failure_injection(tmp_path: Path) -> None:
+    evidence = _write_json(
+        tmp_path / "periods_ignored.json",
+        _period_range_evidence(identical_windows=True),
+    )
+
+    result = _run(
+        "period-ranges",
+        "--evidence",
+        str(evidence),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "period windows produced identical values" in result.stdout
+    assert "failures=1" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
 def test_tracked_golden_contracts_have_exact_identity_set_and_truth_metadata() -> None:
     document = json.loads(
         (ROOT / "tests" / "api" / "api_golden_contracts.json").read_text(encoding="utf-8")

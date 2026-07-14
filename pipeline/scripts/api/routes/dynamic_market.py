@@ -29,6 +29,7 @@ from pipeline.scripts.api.dynamic_market.strategic_cause import get_strategic_pa
 from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import success_envelope
 from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketInputError,
+    DynamicMarketPeriodNoDataError,
     DynamicMarketScopeTooBroadError,
     MarketDefinition,
     PeriodRange,
@@ -94,9 +95,12 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                     source=payload.source,
                     measure=payload.measure,
                     analysis_level=analysis_level,
+                    period_range=_period_range(payload),
                 )
             )
             return _with_view_echo(envelope, effective_view)
+        except DynamicMarketPeriodNoDataError:
+            return _empty_period_response(payload, effective_view)
         except DynamicMarketOverloadedError as exc:
             raise HTTPException(
                 status_code=429,
@@ -125,10 +129,7 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
 def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, Any]:
     aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
-    period_range = PeriodRange(
-        start=payload.options.period_range.start if payload.options.period_range else None,
-        end=payload.options.period_range.end if payload.options.period_range else None,
-    )
+    period_range = _period_range(payload)
     try:
         definition = _resolve_definition(payload)
         _enforce_scope_size_limit(definition, limit=config.dynamic_max_brand_rows)
@@ -144,6 +145,8 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
             strategic_market_id=definition.strategic_market_id,
             selected_brand_key=getattr(definition, "focus_brand_key", None),
         )
+        if (period_range.start is not None or period_range.end is not None) and not metrics.monthly_series:
+            return _empty_period_response(payload, "general")
     except DynamicMarketScopeTooBroadError as exc:
         raise HTTPException(
             status_code=400,
@@ -156,8 +159,15 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
         ) from exc
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
-    result = composer.compose(definition=definition, metrics=metrics)
+    result = composer.compose(definition=definition, metrics=metrics, period_range=period_range)
     return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+
+
+def _period_range(payload: DynamicMarketRequest) -> PeriodRange:
+    return PeriodRange(
+        start=payload.options.period_range.start if payload.options.period_range else None,
+        end=payload.options.period_range.end if payload.options.period_range else None,
+    )
 
 
 def _brand_exists(brand: str | None) -> bool:
@@ -178,6 +188,32 @@ def _empty_strategic_response(payload: DynamicMarketRequest, view: str) -> dict[
             "unit_label": unit_label,
             "data": None,
             "reason": "brand_not_in_source",
+            "market_meta": None,
+            "markets": [],
+        }
+    )
+
+
+def _empty_period_response(payload: DynamicMarketRequest, view: str) -> dict[str, Any]:
+    source = normalize_source(payload.source)
+    measure = normalize_measure(source, payload.measure)
+    unit_label = (
+        "KRW"
+        if measure == "sales"
+        else ("Rx" if source == "ubist" else measure.replace("_", " ").title())
+    )
+    requested = payload.options.period_range
+    return success_envelope(
+        {
+            "brand": payload.filters.focus_brand_key,
+            "market_id": None,
+            "view": view,
+            "source": payload.source,
+            "measure": payload.measure,
+            "unit_label": unit_label,
+            "data": None,
+            "reason": "no_data_in_period",
+            "period_range": requested.model_dump(mode="json") if requested else None,
             "market_meta": None,
             "markets": [],
         }

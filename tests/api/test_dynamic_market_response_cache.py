@@ -111,6 +111,32 @@ def test_response_cache_hits_without_rebuilding() -> None:
     assert stored["__cache_encoding"] == "zlib-base64"
 
 
+def test_period_windows_do_not_cross_contaminate_response_cache() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    builds = 0
+
+    def request(start: str, end: str) -> dict[str, object]:
+        return {
+            "view": "general",
+            "options": {"period_range": {"start": start, "end": end}},
+        }
+
+    def build(value: int) -> dict[str, object]:
+        nonlocal builds
+        builds += 1
+        return {"status": "SUCCESS", "value": value}
+
+    first_a = cache.get_or_build(request("2025-01", "2025-12"), lambda: build(2025))
+    window_b = cache.get_or_build(request("2026-01", "2026-04"), lambda: build(2026))
+    second_a = cache.get_or_build(request("2025-01", "2025-12"), lambda: build(-1))
+
+    assert first_a == second_a == {"status": "SUCCESS", "value": 2025}
+    assert window_b == {"status": "SUCCESS", "value": 2026}
+    assert builds == 2
+    assert store.claim_count == 2
+
+
 def test_response_cache_reads_legacy_uncompressed_rows() -> None:
     store = MemoryStore()
     cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)

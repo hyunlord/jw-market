@@ -18,7 +18,14 @@ from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
-from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
+from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import analysis_level_profile_signature
+from pipeline.scripts.api.dynamic_market.period_window import trim_period_rows
+from pipeline.scripts.api.dynamic_market.types import (
+    DynamicMarketInputError,
+    DynamicMarketPeriodNoDataError,
+    PeriodRange,
+    quote_identifier,
+)
 from pipeline.scripts.api.market_definition_display import apply_cd_market_definition
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
 
@@ -44,6 +51,7 @@ def build_strategic_payload(
     source: str,
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
 ) -> JsonRow:
     """Build one strategic response while bounding shared builder cache memory."""
 
@@ -58,6 +66,7 @@ def build_strategic_payload(
                 source=source,
                 measure=measure,
                 analysis_level=analysis_level,
+                period_range=period_range,
             )
         finally:
             _clear_cause_builder_runtime_caches()
@@ -72,6 +81,7 @@ def _build_strategic_payload(
     source: str,
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
 ) -> JsonRow:
     """Assemble a strategic response from mart rows."""
 
@@ -103,7 +113,6 @@ def _build_strategic_payload(
     if not filtered_rows:
         raise DynamicMarketInputError("analysis-level filters removed all strategic market rows")
 
-    brand_row = _choose_focus_row(filtered_rows, focus_brand_key)
     market_row = _fetch_market_row(
         mart_db=mart_db,
         table=market_table,
@@ -129,6 +138,19 @@ def _build_strategic_payload(
             measure=measure,
             market_catalog_row=market_catalog_row,
         )
+    filtered_rows = trim_period_rows(filtered_rows, period_range)
+    market_row = trim_period_rows([market_row], period_range)[0]
+    if (period_range.start is not None or period_range.end is not None) and not cause_builder._history_periods(
+        filtered_rows,
+        source_api,
+    ):
+        raise DynamicMarketPeriodNoDataError("requested period range contains no strategic market data")
+    brand_row = _choose_focus_row(filtered_rows, focus_brand_key)
+    period_profile_sig = analysis_level_profile_signature(
+        base_profile="",
+        dimension_filters=(),
+        period_range=(period_range.start, period_range.end),
+    )
     strategic_brand = _strategic_brand_catalog()
     with strategic_channel_totals_context(filtered_rows):
         raw_payload = cause_builder.build_response(
@@ -144,6 +166,7 @@ def _build_strategic_payload(
             market_sources=_market_sources(market_catalog_row, source_api),
             market_catalog_row=market_catalog_row,
             strategic_brand=strategic_brand,
+            analysis_profile_sig=period_profile_sig,
         )
     composed = compose_cached_json(raw_payload, measure=measure)
     if not isinstance(composed, dict):

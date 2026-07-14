@@ -28,7 +28,7 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     market_size_series,
     recent_yoy,
 )
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
 
 
@@ -51,13 +51,15 @@ GENERAL_UNUSED_DATA_KEYS = frozenset(
 )
 
 
-def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetrics) -> dict[str, Any]:
+def build_cause_payload(
+    *, definition: MarketDefinition, metrics: AggregatedMetrics, period_range: PeriodRange = PeriodRange()
+) -> dict[str, Any]:
     """Return a runtime payload with the same field tree as ``/api/cause``."""
 
     source = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     market_id = _market_id(definition)
     focus = _focus_brand(metrics.all_brands, definition.focus_brand_key)
-    data = build_cause_data(definition=definition, metrics=metrics, focus=focus)
+    data = build_cause_data(definition=definition, metrics=metrics, focus=focus, period_range=period_range)
     meta = build_market_meta(definition=definition, metrics=metrics, market_id=market_id, data=data)
     payload = {
         "brand": focus.brand_name if focus else "동적 시장",
@@ -80,6 +82,7 @@ def build_cause_data(
     definition: MarketDefinition,
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any]:
     """Build all direct ``data`` keys expected by the cause renderer."""
 
@@ -97,6 +100,7 @@ def build_cause_data(
         metrics=metrics,
         focus=focus,
         mart_db=config.db_name,
+        period_range=period_range,
     )
     if analysis_sections:
         levels = analysis_sections["analysis_levels"]

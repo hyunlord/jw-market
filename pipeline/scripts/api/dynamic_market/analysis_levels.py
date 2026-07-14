@@ -12,7 +12,7 @@ from pymysql.err import MySQLError
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import build_analysis_rows
 from pipeline.scripts.api.dynamic_market.cause_time import SOURCE_LABELS
 from pipeline.scripts.api.dynamic_market.general_analysis_levels import build_general_analysis_level_sections
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 
 
 ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
@@ -32,6 +32,7 @@ def build_analysis_level_sections(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     mart_db: str,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any] | None:
     """Build the three cache-compatible analysis-level sections for dynamic data.
 
@@ -47,6 +48,7 @@ def build_analysis_level_sections(
             metrics=metrics,
             focus=focus,
             mart_db=mart_db,
+            period_range=period_range,
         )
 
     market = definition.market_catalog_row

@@ -22,8 +22,9 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     load_analysis_level_block,
 )
 from pipeline.scripts.api.dynamic_market.analysis_level_series import metric_history_from_periods
+from pipeline.scripts.api.dynamic_market.period_window import trim_period_rows
 from pipeline.scripts.api.dynamic_market.cause_time import SOURCE_LABELS
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 
 
 ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
@@ -75,6 +76,7 @@ def build_general_analysis_level_sections(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     mart_db: str,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any] | None:
     specs = GENERAL_LEVEL_SPECS.get(metrics.source)
     if not specs:
@@ -91,7 +93,10 @@ def build_general_analysis_level_sections(
     if not rows:
         return None
     source_api = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
-    canonical_rows = [_with_canonical_dimension_aliases(row, specs) for row in rows]
+    canonical_rows = trim_period_rows(
+        [_with_canonical_dimension_aliases(row, specs) for row in rows],
+        period_range,
+    )
     channels = list(cause_builder._channels_for_source(source_api))
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
@@ -112,6 +117,7 @@ def build_general_analysis_level_sections(
         source=source_api,
         measure=metrics.measure,
         status_channels=status_channels,
+        period_range=period_range,
     )
     if precomputed is None:
         all_channel_levels = _rename_analysis_levels(
@@ -176,6 +182,7 @@ def _load_precomputed_general_block(
     source: str,
     measure: str,
     status_channels: list[str],
+    period_range: PeriodRange = PeriodRange(),
 ) -> AnalysisLevelBlock | None:
     atc4_codes = [str(value) for value in definition.filter_echo.get("atc4", []) if str(value)]
     epoch = current_analysis_level_source_epoch()
@@ -188,6 +195,7 @@ def _load_precomputed_general_block(
             (item.dimension_type, item.values)
             for item in definition.dimension_filters
         ),
+        period_range=(period_range.start, period_range.end),
     )
     return load_analysis_level_block(
         key=AnalysisLevelBlockKey(

@@ -19,6 +19,7 @@ def analysis_level_profile_signature(
     *,
     base_profile: str,
     dimension_filters: Sequence[tuple[str, Sequence[str]]],
+    period_range: tuple[str | None, str | None] = (None, None),
 ) -> str:
     """Return the replay identity for every row filter that can change a block.
 
@@ -35,10 +36,14 @@ def analysis_level_profile_signature(
         for dimension_type, values in dimension_filters
         if any(str(value) for value in values)
     )
-    if not canonical_filters:
+    if not canonical_filters and period_range == (None, None):
         return base_profile
     payload = json.dumps(
-        {"base_profile": base_profile, "dimension_filters": canonical_filters},
+        {
+            "base_profile": base_profile,
+            "dimension_filters": canonical_filters,
+            "period_range": {"start": period_range[0], "end": period_range[1]},
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     )
