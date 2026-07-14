@@ -842,6 +842,142 @@ def check_cause_assembly(evidence_path: Path, environment: str) -> GateResult:
     )
 
 
+def check_cause_null_integrity(evidence_path: Path, environment: str) -> GateResult:
+    document = _load_json(evidence_path)
+    if not isinstance(document, dict) or document.get("classification") != "census":
+        raise ValueError("cause null integrity evidence requires classification=census")
+    candidates = document.get("candidates")
+    candidate_breakdown = document.get("candidate_breakdown")
+    semantics = document.get("semantics")
+    numeric_observations = document.get("numeric_observations")
+    performance_cases = document.get("performance_cases")
+    try:
+        candidate_population = int(document["candidate_population"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("cause null integrity candidate_population must be numeric") from exc
+    if candidate_population <= 0 or not isinstance(candidates, list):
+        raise ValueError("cause null integrity requires a non-empty candidate census")
+    if not isinstance(candidate_breakdown, dict) or not candidate_breakdown:
+        raise ValueError("cause null integrity requires a candidate pattern breakdown")
+    if not isinstance(semantics, list) or not semantics:
+        raise ValueError("cause null integrity requires semantic observations")
+    if not isinstance(numeric_observations, list):
+        raise ValueError("cause null integrity requires numeric observations")
+    if not isinstance(performance_cases, list) or not performance_cases:
+        raise ValueError("cause null integrity requires performance cases")
+
+    details: list[str] = []
+    failures = 0
+    candidate_ids: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not isinstance(candidate.get("id"), str):
+            raise ValueError("cause null integrity candidates require string ids")
+        identifier = candidate["id"]
+        if identifier in candidate_ids:
+            raise ValueError(f"duplicate cause null candidate: {identifier}")
+        candidate_ids.add(identifier)
+        if candidate.get("calculation_distortion") is not False:
+            details.append(f"{identifier}: calculation distortion remains")
+            failures += 1
+        if candidate.get("denominator_contamination") is not False:
+            details.append(f"{identifier}: denominator contamination remains")
+            failures += 1
+    if len(candidate_ids) != candidate_population:
+        details.append(
+            f"candidate census mismatch checked={len(candidate_ids)} population={candidate_population}"
+        )
+        failures += abs(candidate_population - len(candidate_ids)) or 1
+    try:
+        breakdown_population = sum(int(value) for value in candidate_breakdown.values())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cause null integrity candidate breakdown must be numeric") from exc
+    if breakdown_population != candidate_population:
+        details.append(
+            f"candidate pattern mismatch breakdown={breakdown_population} population={candidate_population}"
+        )
+        failures += abs(candidate_population - breakdown_population) or 1
+
+    semantic_ids: set[str] = set()
+    for observation in semantics:
+        if not isinstance(observation, dict) or not isinstance(observation.get("id"), str):
+            raise ValueError("cause null semantic observations require string ids")
+        identifier = observation["id"]
+        if identifier in semantic_ids:
+            raise ValueError(f"duplicate cause null semantic identity: {identifier}")
+        semantic_ids.add(identifier)
+        kind = observation.get("kind")
+        value = observation.get("value")
+        if kind == "missing" and value is not None:
+            details.append(f"{identifier}: missing value was coerced to zero or another number")
+            failures += 1
+        elif kind == "real_zero":
+            try:
+                real_zero_preserved = not isinstance(value, bool) and Decimal(str(value)) == Decimal("0")
+            except (ValueError, ArithmeticError):
+                real_zero_preserved = False
+            if not real_zero_preserved:
+                details.append(f"{identifier}: real zero was not preserved")
+                failures += 1
+        elif kind not in {"missing", "real_zero"}:
+            raise ValueError(f"unsupported cause null semantic kind: {kind}")
+
+    numeric_ids: set[str] = set()
+    for observation in numeric_observations:
+        if not isinstance(observation, dict) or not isinstance(observation.get("id"), str):
+            raise ValueError("cause null numeric observations require string ids")
+        identifier = observation["id"]
+        if identifier in numeric_ids:
+            raise ValueError(f"duplicate cause null numeric identity: {identifier}")
+        numeric_ids.add(identifier)
+        try:
+            value = Decimal(str(observation["value"]))
+        except (KeyError, ValueError, ArithmeticError) as exc:
+            raise ValueError(f"{identifier}: invalid numeric observation") from exc
+        if not value.is_finite() or value <= Decimal("-100") or abs(value) >= Decimal("1000"):
+            details.append(f"{identifier}: prohibited extreme numeric value={observation['value']}")
+            failures += 1
+
+    performance_ids: set[str] = set()
+    for case in performance_cases:
+        if not isinstance(case, dict) or not isinstance(case.get("id"), str):
+            raise ValueError("cause null performance cases require string ids")
+        identifier = case["id"]
+        if identifier in performance_ids:
+            raise ValueError(f"duplicate cause null performance identity: {identifier}")
+        performance_ids.add(identifier)
+        try:
+            before_calls = int(case["before_calls"])
+            after_calls = int(case["after_calls"])
+            before_ms = float(case["before_ms"])
+            after_ms = float(case["after_ms"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{identifier}: invalid performance evidence") from exc
+        if before_calls <= 0 or before_ms <= 0 or after_ms <= 0:
+            raise ValueError(f"{identifier}: performance evidence must be positive")
+        if after_calls > before_calls:
+            details.append(
+                f"{identifier}: call count increased before={before_calls} after={after_calls}"
+            )
+            failures += 1
+        ratio = after_ms / before_ms
+        if ratio > 1.2:
+            details.append(f"{identifier}: latency ratio {ratio:.6f} exceeds 1.2")
+            failures += 1
+
+    checked = len(candidate_ids) + len(semantic_ids) + len(numeric_ids) + len(performance_ids)
+    population = candidate_population + len(semantics) + len(numeric_observations) + len(performance_cases)
+    return GateResult(
+        gate="cause_null_integrity",
+        classification="census",
+        checked=checked,
+        population=population,
+        failures=failures,
+        tolerance="exact null/zero;finite -100<x<1000;calls_after<=before;latency_ratio<=1.2",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def check_competition_ranking(
     observations_path: Path,
     expected_years: Sequence[str],
@@ -1011,6 +1147,10 @@ def _parser() -> argparse.ArgumentParser:
     cause_assembly.add_argument("--evidence", type=Path, required=True)
     cause_assembly.add_argument("--environment", default="local")
 
+    cause_null_integrity = subparsers.add_parser("cause-null-integrity")
+    cause_null_integrity.add_argument("--evidence", type=Path, required=True)
+    cause_null_integrity.add_argument("--environment", default="local")
+
     competition = subparsers.add_parser("competition-ranking")
     competition.add_argument("--observations", type=Path, required=True)
     competition.add_argument("--expected-year", action="append", required=True)
@@ -1040,6 +1180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "period-ranges": lambda: check_period_ranges(args.evidence, args.environment),
         "brand-sources": lambda: _run_brand_source_gate(args),
         "cause-assembly": lambda: check_cause_assembly(args.evidence, args.environment),
+        "cause-null-integrity": lambda: check_cause_null_integrity(args.evidence, args.environment),
         "competition-ranking": lambda: check_competition_ranking(
             args.observations,
             args.expected_year,

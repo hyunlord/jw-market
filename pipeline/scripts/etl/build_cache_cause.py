@@ -22,7 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -217,12 +217,27 @@ def _period_year(period: str) -> int | None:
         return None
 
 
-def _row_value(row: dict[str, Any]) -> float:
-    return safe_float(row.get("raw_value") or row.get("value") or row.get("sales")) or 0.0
+def _first_optional_float(*values: Any) -> float | None:
+    for value in values:
+        parsed = safe_float(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
-def _row_share(row: dict[str, Any]) -> float:
-    return safe_float(row.get("ms") or row.get("ms_pct") or row.get("share_pct")) or 0.0
+def _optional_row_value(row: dict[str, Any]) -> float | None:
+    return _first_optional_float(row.get("raw_value"), row.get("value"), row.get("sales"))
+
+
+def _optional_row_share(row: dict[str, Any]) -> float | None:
+    return _first_optional_float(row.get("ms"), row.get("ms_pct"), row.get("share_pct"))
+
+
+def _sum_optional_complete(values: Iterable[Any]) -> float | None:
+    parsed = [safe_float(value) for value in values]
+    if any(value is None for value in parsed):
+        return None
+    return sum(value for value in parsed if value is not None)
 
 
 def _row_brand(row: dict[str, Any]) -> str | None:
@@ -307,9 +322,9 @@ def _normalize_rank_row(row: dict[str, Any], *, label_key: str, target_name: str
         "is_target": is_target,
         "is_jw": bool(row.get("is_jw")) or is_target,
         "is_others": False,
-        "value": _row_value(row),
+        "value": _optional_row_value(row),
         "rank": row.get("rank"),
-        "ms_pct": _row_share(row),
+        "ms_pct": _optional_row_share(row),
     }
 
 
@@ -337,7 +352,14 @@ def _stacked_ranking(
     normalized_by_year: dict[int, list[dict[str, Any]]] = {}
 
     latest_rows = [row for row in by_year.get(years[-1], []) if row_identity(row, label_key)] if years else []
-    latest_ranked = sorted(latest_rows, key=lambda item: safe_float(item.get("value")) or 0.0, reverse=True)
+    latest_ranked = sorted(
+        latest_rows,
+        key=lambda item: (
+            safe_float(item.get("value")) is not None,
+            safe_float(item.get("value")) or 0.0,
+        ),
+        reverse=True,
+    )
     target = next((row for row in latest_ranked if target_name and row_identity(row, label_key) == target_name), None)
     target_id = row_identity(target, label_key)
     competitors = [row for row in latest_ranked if row_identity(row, label_key) and row_identity(row, label_key) != target_id]
@@ -391,7 +413,9 @@ def _stacked_ranking(
             selected.append(row)
         selected_ids = {row_identity(row, label_key) for row in selected}
         others = [row for row in normalized if row_identity(row, label_key) not in selected_ids]
-        displayed_ms = sum(float(row.get("ms_pct") or 0.0) for row in selected)
+        displayed_ms = _sum_optional_complete(row.get("ms_pct") for row in selected)
+        others_value = _sum_optional_complete(row.get("value") for row in others)
+        all_shares_complete = all(safe_float(row.get("ms_pct")) is not None for row in normalized)
         selected.append(
             {
                 label_key: "기타",
@@ -400,11 +424,17 @@ def _stacked_ranking(
                 "is_target": False,
                 "is_jw": False,
                 "is_others": True,
-                "value": sum(safe_float(row.get("value")) or 0.0 for row in others),
+                "value": others_value,
                 "rank": None,
-                "ms_pct": round(max(0.0, 100.0 - displayed_ms), 4),
+                "ms_pct": (
+                    round(max(0.0, 100.0 - displayed_ms), 4)
+                    if displayed_ms is not None and all_shares_complete
+                    else None
+                ),
             }
         )
+        if others_value is None or not all_shares_complete:
+            selected[-1]["data_quality"] = {"available": False, "reason": "no_data"}
         yearly.append({"year": year, "rankings": selected})
 
     trend_key = "brands" if label_key == "brand" else "companies"
@@ -412,7 +442,7 @@ def _stacked_ranking(
     top_brands = [str(name) for name in top_brands if name]
     series = {
         name: [
-            safe_float(next((row.get("value") for row in item["rankings"] if row_identity(row, label_key) == name), 0.0)) or 0.0
+            safe_float(next((row.get("value") for row in item["rankings"] if row_identity(row, label_key) == name), None))
             for item in yearly
         ]
         for name in top_brands
@@ -424,8 +454,8 @@ def _stacked_ranking(
                 label_key: row.get(label_key),
                 "brand": row.get("brand"),
                 "company": row.get("company"),
-                "value": safe_float(row.get("value")) or 0.0,
-                "ms_pct": safe_float(row.get("ms_pct")) or 0.0,
+                "value": safe_float(row.get("value")),
+                "ms_pct": safe_float(row.get("ms_pct")),
                 "is_target": bool(row.get("is_target")),
                 "is_jw": bool(row.get("is_jw")),
             }
@@ -476,6 +506,7 @@ def _annual_rank_rows(
         for row in rows:
             normalized = _normalize_rank_row(row, label_key=label_key, target_name=target_name)
             name = row_identity(normalized, label_key)
+            value = safe_float(normalized.get("value"))
             if not name:
                 continue
             # 연간 ranking/HHI는 연말 스냅샷이 아니라 full-year 합산이다.
@@ -495,11 +526,19 @@ def _annual_rank_rows(
                     "value": 0.0,
                     "rank": None,
                     "ms_pct": 0.0,
+                    "_complete": True,
                 },
             )
-            bucket["value"] += safe_float(normalized.get("value")) or 0.0
+            if value is None:
+                bucket["_complete"] = False
+            else:
+                bucket["value"] += value
             bucket["is_jw"] = bool(bucket.get("is_jw") or normalized.get("is_jw"))
             bucket["is_target"] = bool(bucket.get("is_target") or normalized.get("is_target"))
+    for rows in grouped.values():
+        for bucket in rows.values():
+            if not bucket.pop("_complete"):
+                bucket["value"] = None
     return {year: _rank_normalized_rows(list(rows.values()), label_key=label_key) for year, rows in grouped.items()}, dict(period_count_by_year)
 
 
@@ -560,7 +599,6 @@ def _populate_annual_rank_rows_cache(
             if year is None:
                 continue
             period_str = str(period)
-            value = _value_from_period_item(item)
             for label_key, name in names.items():
                 if not name:
                     continue
@@ -577,13 +615,22 @@ def _populate_annual_rank_rows_cache(
                         "value": 0.0,
                         "rank": None,
                         "ms_pct": 0.0,
+                        "_complete": True,
                     },
                 )
-                bucket["value"] += value
+                value = _optional_value_from_period_item(item)
+                if value is None:
+                    bucket["_complete"] = False
+                else:
+                    bucket["value"] += value
                 bucket["is_jw"] = bool(bucket.get("is_jw") or row.get("is_jw"))
     for label_key in label_keys:
         grouped = grouped_by_label[label_key]
         periods_by_year = periods_by_label[label_key]
+        for items in grouped.values():
+            for item in items.values():
+                if not item.pop("_complete"):
+                    item["value"] = None
         cache[(id(rows), label_key)] = (
             {
                 year: _rank_normalized_rows(list(items.values()), label_key=label_key)
@@ -594,12 +641,22 @@ def _populate_annual_rank_rows_cache(
 
 
 def _rank_normalized_rows(rows: list[dict[str, Any]], *, label_key: str) -> list[dict[str, Any]]:
-    ranked = sorted(rows, key=lambda item: safe_float(item.get("value")) or 0.0, reverse=True)
-    total = sum(safe_float(row.get("value")) or 0.0 for row in ranked)
+    values = {id(row): safe_float(row.get("value")) for row in rows}
+    ranked = sorted(
+        rows,
+        key=lambda item: (
+            values[id(item)] is not None,
+            values[id(item)] if values[id(item)] is not None else 0.0,
+        ),
+        reverse=True,
+    )
+    total = sum(value for value in values.values() if value is not None)
     for index, row in enumerate(ranked, start=1):
-        value = safe_float(row.get("value")) or 0.0
-        row["rank"] = index if value > 0 else None
-        row["ms_pct"] = round(value / total * 100, 4) if total > 0 else 0.0
+        value = values[id(row)]
+        row["rank"] = index if value is not None and value > 0 else None
+        row["ms_pct"] = round(value / total * 100, 4) if value is not None and total > 0 else (0.0 if value == 0.0 else None)
+        if value is None:
+            row["data_quality"] = {"available": False, "reason": "no_data"}
         row.setdefault("is_others", False)
         row.setdefault("brand", row.get(label_key) if label_key == "brand" else None)
         row.setdefault("company", row.get(label_key) if label_key == "company" else row.get("company"))
@@ -641,9 +698,19 @@ def _latest_top_trends(
             for row in normalized_by_year.get(year, [])
             if identity(row)
             and not row.get("is_others")
-            and ((safe_float(row.get("value")) or 0.0) > 0 or bool(target_name and identity(row) == target_name))
+            and (
+                (safe_float(row.get("value")) is not None and safe_float(row.get("value")) > 0)
+                or bool(target_name and identity(row) == target_name)
+            )
         ]
-        ranked = sorted(rows, key=lambda item: safe_float(item.get("value")) or 0.0, reverse=True)
+        ranked = sorted(
+            rows,
+            key=lambda item: (
+                safe_float(item.get("value")) is not None,
+                safe_float(item.get("value")) or 0.0,
+            ),
+            reverse=True,
+        )
         for index, row in enumerate(ranked, start=1):
             row.setdefault("rank", index)
         return ranked
@@ -667,8 +734,8 @@ def _latest_top_trends(
             yearly_values.append(
                 {
                     "year": year,
-                    "value": safe_float(row.get("value")) if row else 0.0,
-                    "ms_pct": safe_float(row.get("ms_pct")) if row else 0.0,
+                    "value": safe_float(row.get("value")) if row else None,
+                    "ms_pct": safe_float(row.get("ms_pct")) if row else None,
                     "rank": row.get("rank") if row else None,
                 }
             )
@@ -687,12 +754,20 @@ def _latest_top_trends(
         for year in years:
             rows = ranked_rows(year)
             others = [row for row in rows if identity(row) not in selected_ids]
-            displayed_ms = sum(safe_float(row.get("ms_pct")) or 0.0 for row in rows if identity(row) in selected_ids)
+            displayed_ms = _sum_optional_complete(
+                row.get("ms_pct") for row in rows if identity(row) in selected_ids
+            )
+            others_value = _sum_optional_complete(row.get("value") for row in others)
+            all_shares_complete = all(safe_float(row.get("ms_pct")) is not None for row in rows)
             yearly_values.append(
                 {
                     "year": year,
-                    "value": sum(safe_float(row.get("value")) or 0.0 for row in others),
-                    "ms_pct": round(max(0.0, 100.0 - displayed_ms), 4),
+                    "value": others_value,
+                    "ms_pct": (
+                        round(max(0.0, 100.0 - displayed_ms), 4)
+                        if displayed_ms is not None and all_shares_complete
+                        else None
+                    ),
                     "rank": None,
                 }
             )
@@ -714,11 +789,6 @@ def row_identity(row: dict[str, Any] | None, label_key: str) -> str | None:
     if not row:
         return None
     return str(row.get(label_key) or row.get("brand") or row.get("company") or row.get("name"))
-
-
-def _period_value_for_row(row: dict[str, Any], period: str) -> float:
-    history = _metric_history(row)
-    return _value_from_period_item(history.get(period))
 
 
 def _target_rank_overrides(
@@ -751,9 +821,9 @@ def _target_rank_overrides(
             year: {
                 row_identity(row, label_key): {
                     "row": row,
-                    "value": safe_float(row.get("value")) or 0.0,
+                    "value": safe_float(row.get("value")),
                     "rank": row.get("rank"),
-                    "ms_pct": safe_float(row.get("ms_pct")) or 0.0,
+                    "ms_pct": safe_float(row.get("ms_pct")),
                     "is_jw": bool(row.get("is_jw")),
                     "company": row.get("company"),
                     "brand": row.get("brand"),
@@ -795,20 +865,25 @@ def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
                     latest_period = period
                     latest = rows
                     break
-        total = sum(_row_value(row) for row in latest)
+        latest_values = [_optional_row_value(row) for row in latest]
+        total = _sum_optional_complete(latest_values)
         segments = [
             {
                 "name": row.get("label") or row.get("level") or row.get("name") or row.get(level),
                 "rank": row.get("rank") or idx,
-                "recent_share_pct": row.get("ms") or row.get("share_pct"),
-                "series_pct": [(_row_share(row) if latest_period else 0.0)],
-                "value_series": [_row_value(row)],
+                "recent_share_pct": _first_optional_float(row.get("ms"), row.get("share_pct")),
+                "series_pct": [(_optional_row_share(row) if latest_period else None)],
+                "value_series": [_optional_row_value(row)],
             }
             for idx, row in enumerate(latest, start=1)
         ]
-        if total and not any(segment.get("recent_share_pct") for segment in segments):
+        for segment in segments:
+            if segment["value_series"][-1] is None:
+                segment["data_quality"] = {"available": False, "reason": "no_data"}
+        if total and not any(segment.get("recent_share_pct") is not None for segment in segments):
             for segment in segments:
-                segment["recent_share_pct"] = round((segment["value_series"][-1] / total) * 100, 4)
+                value = segment["value_series"][-1]
+                segment["recent_share_pct"] = round((value / total) * 100, 4) if value is not None else None
                 segment["series_pct"] = [segment["recent_share_pct"]]
         data[level] = {"segments": segments, "by_channel": {"전체": segments}}
     return _normalize_segment_name_lists({
@@ -821,19 +896,24 @@ def _analysis_levels(level_top5: dict[str, Any], source: str) -> dict[str, Any]:
     })
 
 
-def _series_from_period_map(period_map: dict[str, Any]) -> tuple[list[float], list[float]]:
-    values: list[float] = []
-    shares: list[float] = []
+def _series_from_period_map(period_map: dict[str, Any]) -> tuple[list[float | None], list[float | None]]:
+    values: list[float | None] = []
+    shares: list[float | None] = []
     for _, item in sorted((period_map or {}).items()):
         if isinstance(item, dict):
-            values.append(_row_value(item))
-            shares.append(_row_share(item))
+            values.append(_optional_row_value(item))
+            shares.append(_optional_row_share(item))
         else:
-            values.append(safe_float(item) or 0.0)
-            shares.append(0.0)
-    if values and not any(shares):
-        total = sum(values)
-        shares = [round(value / total * 100, 4) if total else 0.0 for value in values]
+            values.append(safe_float(item))
+            shares.append(None)
+    if values and not any(share is not None for share in shares):
+        total = _sum_optional_complete(values)
+        shares = [
+            round(value / total * 100, 4)
+            if value is not None and total is not None and total > 0
+            else (0.0 if value == 0.0 and total == 0.0 else None)
+            for value in values
+        ]
     return values, shares
 
 
@@ -851,19 +931,21 @@ def _normalize_analysis_levels(raw: Any, fallback_level_top5: dict[str, Any], so
                     if not isinstance(period_map, dict):
                         continue
                     values, shares = _series_from_period_map(period_map)
-                    recent_value = values[-1] if values else 0.0
-                    recent_share = shares[-1] if shares else 0.0
+                    recent_value = values[-1] if values else None
+                    recent_share = shares[-1] if shares else None
                     ranked.append((recent_value, name, values, shares, recent_share))
-                for idx, (_, name, values, shares, recent_share) in enumerate(sorted(ranked, reverse=True)[:8], start=1):
-                    segments.append(
-                        {
-                            "name": name,
-                            "rank": idx,
-                            "recent_share_pct": recent_share,
-                            "series_pct": shares,
-                            "value_series": values,
-                        }
-                    )
+                ranked.sort(key=lambda item: (item[0] is not None, item[0] or 0.0), reverse=True)
+                for idx, (recent_value, name, values, shares, recent_share) in enumerate(ranked[:8], start=1):
+                    segment = {
+                        "name": name,
+                        "rank": idx if recent_value is not None else None,
+                        "recent_share_pct": recent_share,
+                        "series_pct": shares,
+                        "value_series": values,
+                    }
+                    if recent_value is None:
+                        segment["data_quality"] = {"available": False, "reason": "no_data"}
+                    segments.append(segment)
             data[level] = {"segments": segments, "by_channel": {"전체": segments}}
         normalized = {
             "levels": levels,
@@ -1369,8 +1451,15 @@ def _measure_labels(source: str) -> dict[str, str | None]:
 
 def _value_from_period_item(item: Any) -> float:
     if isinstance(item, dict):
-        return _row_value(item)
+        value = _optional_row_value(item)
+        return value if value is not None else 0.0
     return safe_float(item) or 0.0
+
+
+def _optional_value_from_period_item(item: Any) -> float | None:
+    if isinstance(item, dict):
+        return _optional_row_value(item)
+    return safe_float(item)
 
 
 def _period_item_is_observed(item: Any) -> bool:
@@ -1799,8 +1888,11 @@ def _dimension_specialty_total_series(
     return [round(value, 4) for value in totals]
 
 
-def _sum_segment_value_series(segments: list[dict[str, Any]], periods: list[str]) -> list[float]:
-    totals = [0.0 for _ in periods]
+def _sum_segment_value_series(
+    segments: list[dict[str, Any]],
+    periods: list[str],
+) -> list[float | None]:
+    totals: list[float | None] = [0.0 for _ in periods]
     for segment in segments:
         if not isinstance(segment, dict) or segment.get("is_overall"):
             continue
@@ -1809,14 +1901,24 @@ def _sum_segment_value_series(segments: list[dict[str, Any]], periods: list[str]
             series = series[-len(periods):] if periods else []
         for idx, value in enumerate(series):
             if idx < len(totals):
-                totals[idx] += safe_float(value) or 0.0
-    return [round(value, 4) for value in totals]
+                parsed = safe_float(value)
+                if parsed is None:
+                    totals[idx] = None
+                elif totals[idx] is not None:
+                    totals[idx] += parsed
+    return [round(value, 4) if value is not None else None for value in totals]
 
 
-def _series_covers_options(total_series: list[float], option_series: list[float]) -> bool:
+def _series_covers_options(
+    total_series: list[float],
+    option_series: list[float | None],
+) -> bool:
     if not total_series or len(total_series) != len(option_series):
         return False
-    return all((total + 1.0) >= option for total, option in zip(total_series, option_series))
+    return all(
+        option is not None and (total + 1.0) >= option
+        for total, option in zip(total_series, option_series)
+    )
 
 
 def _with_overall_level_options(
@@ -2031,6 +2133,25 @@ def _series_for_row(row: dict[str, Any], periods: list[str], *, scaled_sales: bo
     return values
 
 
+def _optional_series_for_row(
+    row: dict[str, Any],
+    periods: list[str],
+    *,
+    scaled_sales: bool,
+) -> list[float | None]:
+    cache_key = ("optional", tuple(periods), scaled_sales)
+    series_cache = row.setdefault("__series_cache", {})
+    if cache_key in series_cache:
+        return series_cache[cache_key]
+    history = _metric_history(row)
+    values = [
+        round(value, 4) if (value := _optional_value_from_period_item(history.get(period))) is not None else None
+        for period in periods
+    ]
+    series_cache[cache_key] = values
+    return values
+
+
 def _display_brand_rows(
     rows: list[dict[str, Any]],
     *,
@@ -2055,8 +2176,8 @@ def _display_brand_rows(
         recent = _latest_history_item(row)
         extended = _latest_extended_item(row)
         is_target = bool(target_name and brand == target_name)
-        value_recent = safe_float(recent.get("raw_value") or recent.get("value")) or 0.0
-        share = safe_float(recent.get("ms")) or 0.0
+        value_recent = _first_optional_float(recent.get("raw_value"), recent.get("value"))
+        share = safe_float(recent.get("ms"))
         cache_key = (ei_market_key if ei_market_key is not None else id(market_series), row.get("id") or row.get("brand_key") or brand)
         if cache_key not in EI_META_CACHE:
             EI_META_CACHE[cache_key] = calculate_ei_with_fallback(_metric_history(row), market_series)
@@ -2072,9 +2193,8 @@ def _display_brand_rows(
                 optional_float(extended.get("momentum_score")),
             )
         )
-        growth_contribution = parsed_growth_contribution if parsed_growth_contribution is not None else 0.0
-        normalized.append(
-            {
+        growth_contribution = parsed_growth_contribution
+        item = {
                 "brand": brand,
                 "brand_key": row.get("brand_key") or brand,
                 "company": _row_company(row),
@@ -2104,22 +2224,32 @@ def _display_brand_rows(
                 "contribution_pct": growth_contribution,
                 "_source_row": row,
             }
-        )
+        if value_recent is None:
+            item["data_quality"] = {"available": False, "reason": "no_data"}
+        normalized.append(item)
 
     market_total = optional_float(series_latest_number(market_series)) if market_series else None
     if market_total is None or market_total <= 0:
-        market_total = sum(row["value_recent"] for row in normalized)
+        market_total = _sum_optional_complete(row["value_recent"] for row in normalized)
     if market_total and market_total > 0:
         for row in normalized:
-            share = round(row["value_recent"] / market_total * 100, 4)
+            value_recent = safe_float(row.get("value_recent"))
+            share = round(value_recent / market_total * 100, 4) if value_recent is not None else None
             row["share_pct"] = share
             row["ms_pct"] = share
             row["ms_recent_pct"] = share
 
     ranked = [
         row
-        for row in sorted(normalized, key=lambda item: item["value_recent"], reverse=True)
-        if row["value_recent"] > 0
+        for row in sorted(
+            normalized,
+            key=lambda item: (
+                safe_float(item.get("value_recent")) is not None,
+                safe_float(item.get("value_recent")) or 0.0,
+            ),
+            reverse=True,
+        )
+        if safe_float(row.get("value_recent")) is not None and safe_float(row.get("value_recent")) > 0
     ]
     for index, row in enumerate(ranked, start=1):
         row["rank"] = index
@@ -2128,7 +2258,14 @@ def _display_brand_rows(
     target_id = row_identity(target, "brand")
     competitors = [
         row
-        for row in sorted(normalized, key=lambda item: item["value_recent"], reverse=True)
+        for row in sorted(
+            normalized,
+            key=lambda item: (
+                safe_float(item.get("value_recent")) is not None,
+                safe_float(item.get("value_recent")) or 0.0,
+            ),
+            reverse=True,
+        )
         if row_identity(row, "brand") != target_id
     ]
     # B1: 채널/세그먼트 내 표시 브랜드도 선택 브랜드를 선두에 고정하고,
@@ -2139,8 +2276,10 @@ def _display_brand_rows(
     selected_ids = {row_identity(row, "brand") for row in selected}
     others = [row for row in normalized if row_identity(row, "brand") not in selected_ids]
     if include_others and others:
-        selected_ms = sum(row["ms_pct"] for row in selected)
-        selected_contribution = sum(row["contribution_pct"] for row in selected)
+        selected_ms = _sum_optional_complete(row["ms_pct"] for row in selected)
+        selected_contribution = _sum_optional_complete(row["contribution_pct"] for row in selected)
+        others_value = _sum_optional_complete(row["value_recent"] for row in others)
+        others_contribution = _sum_optional_complete(row["growth_contribution"] for row in others)
         selected.append(
             {
                 "brand": "기타",
@@ -2151,11 +2290,11 @@ def _display_brand_rows(
                 "is_others": True,
                 "rank": None,
                 "rank_overall": None,
-                "value_recent": sum(row["value_recent"] for row in others),
-                "raw_value": sum(row["raw_value"] for row in others),
-                "share_pct": round(max(0.0, 100.0 - selected_ms), 4),
-                "ms_pct": round(max(0.0, 100.0 - selected_ms), 4),
-                "ms_recent_pct": round(max(0.0, 100.0 - selected_ms), 4),
+                "value_recent": others_value,
+                "raw_value": others_value,
+                "share_pct": round(max(0.0, 100.0 - selected_ms), 4) if selected_ms is not None else None,
+                "ms_pct": round(max(0.0, 100.0 - selected_ms), 4) if selected_ms is not None else None,
+                "ms_recent_pct": round(max(0.0, 100.0 - selected_ms), 4) if selected_ms is not None else None,
                 "ei": None,
                 "ei_5y": None,
                 "cagr_5y_pct": None,
@@ -2166,19 +2305,21 @@ def _display_brand_rows(
                 "ei_note": None,
                 "cagr_basis": None,
                 "momentum_score": None,
-                "growth_contribution": sum(row["growth_contribution"] for row in others),
-                "growth_contribution_pct": round(100.0 - selected_contribution, 4),
-                "contribution": sum(row["contribution"] for row in others),
-                "contribution_pct": round(100.0 - selected_contribution, 4),
+                "growth_contribution": others_contribution,
+                "growth_contribution_pct": round(100.0 - selected_contribution, 4) if selected_contribution is not None else None,
+                "contribution": others_contribution,
+                "contribution_pct": round(100.0 - selected_contribution, 4) if selected_contribution is not None else None,
             }
         )
+        if others_value is None or others_contribution is None:
+            selected[-1]["data_quality"] = {"available": False, "reason": "no_data"}
     return [{key: value for key, value in row.items() if key != "_source_row"} for row in selected]
 
 
 def _matrix_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
     visible = [row for row in entries if not row.get("is_others")]
-    shares = [safe_float(row.get("share_pct")) or 0.0 for row in visible]
-    avg = round(sum(shares) / len(shares), 4) if shares else 0.0
+    shares = [share for row in visible if (share := safe_float(row.get("share_pct"))) is not None]
+    avg = round(sum(shares) / len(shares), 4) if shares else None
     return {"data": entries, "ms_avg_pct": avg, "share_avg_pct": avg}
 
 
@@ -2197,10 +2338,18 @@ def _annual_latest_points(period_map: Any, *, value_key: str) -> list[dict[str, 
     for year in sorted(by_year.keys())[-5:]:
         period, item = by_year[year]
         if isinstance(item, dict):
-            value = safe_float(item.get(value_key) or item.get("hhi") or item.get("company_hhi") or item.get("cr4"))
+            value = _first_optional_float(
+                item.get(value_key),
+                item.get("hhi"),
+                item.get("company_hhi"),
+                item.get("cr4"),
+            )
         else:
             value = safe_float(item)
-        points.append({"period": period, "period_full": period, "year": year, value_key: value or 0.0})
+        point = {"period": period, "period_full": period, "year": year, value_key: value}
+        if value is None:
+            point["data_quality"] = {"available": False, "reason": "no_data"}
+        points.append(point)
     return points
 
 
@@ -2214,6 +2363,7 @@ def _annual_share_hhi(period_map: Any) -> list[dict[str, Any]]:
     if not isinstance(period_map, dict):
         return []
     by_year: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    incomplete_years: set[int] = set()
     period_by_year: dict[int, str] = {}
     for period, rows in sorted(period_map.items(), key=lambda pair: period_key(str(pair[0]))):
         year = _period_year(str(period))
@@ -2226,13 +2376,24 @@ def _annual_share_hhi(period_map: Any) -> list[dict[str, Any]]:
             name = row.get("brand") or row.get("name") or row.get("company") or row.get("brand_key")
             if not name:
                 continue
-            by_year[year][str(name)] += _row_value(row)
+            value = _optional_row_value(row)
+            if value is None:
+                incomplete_years.add(year)
+                continue
+            by_year[year][str(name)] += value
     points = []
     for year in sorted(by_year.keys())[-5:]:
         values = by_year[year]
         total = sum(values.values())
-        hhi = sum(((value / total) * 100.0) ** 2 for value in values.values()) if total > 0 else 0.0
-        points.append({"period": str(year), "period_full": period_by_year.get(year, str(year)), "year": year, "hhi": round(hhi, 4)})
+        hhi = (
+            sum(((value / total) * 100.0) ** 2 for value in values.values())
+            if total > 0 and year not in incomplete_years
+            else None
+        )
+        point = {"period": str(year), "period_full": period_by_year.get(year, str(year)), "year": year, "hhi": round(hhi, 4) if hhi is not None else None}
+        if hhi is None:
+            point["data_quality"] = {"available": False, "reason": "no_data"}
+        points.append(point)
     return points
 
 
@@ -2274,8 +2435,12 @@ def _annual_share_hhi_from_rows(
     points = []
     for year in sorted(year for year in by_year.keys() if year in complete_years)[-5:]:
         year_rows = by_year[year]
-        hhi = sum((safe_float(row.get("ms_pct")) or 0.0) ** 2 for row in year_rows)
-        points.append({"period": str(year), "period_full": str(year), "year": year, "hhi": round(hhi, 4)})
+        shares = [safe_float(row.get("ms_pct")) for row in year_rows]
+        hhi = sum(share**2 for share in shares if share is not None) if all(share is not None for share in shares) else None
+        point = {"period": str(year), "period_full": str(year), "year": year, "hhi": round(hhi, 4) if hhi is not None else None}
+        if hhi is None:
+            point["data_quality"] = {"available": False, "reason": "no_data"}
+        points.append(point)
     return points
 
 
@@ -2288,13 +2453,19 @@ def _company_hhi_from_ranking(company_ranking: Any) -> dict[str, Any]:
         if year is not None and isinstance(rows, list):
             by_year[year] = (str(period), rows)
     periods: list[str] = []
-    values: list[float] = []
+    values: list[float | None] = []
+    data_quality: list[dict[str, Any] | None] = []
     for year in sorted(by_year.keys())[-5:]:
         _, rows = by_year[year]
-        hhi = sum((_row_share(row) ** 2) for row in rows)
+        shares = [_optional_row_share(row) for row in rows]
+        hhi = sum(share**2 for share in shares if share is not None) if all(share is not None for share in shares) else None
         periods.append(str(year))
-        values.append(round(hhi, 4))
-    return {"periods": periods, "hhi_values": values}
+        values.append(round(hhi, 4) if hhi is not None else None)
+        data_quality.append(None if hhi is not None else {"available": False, "reason": "no_data"})
+    result = {"periods": periods, "hhi_values": values}
+    if any(item is not None for item in data_quality):
+        result["data_quality"] = data_quality
+    return result
 
 
 def _company_hhi_from_rows(
@@ -2311,7 +2482,10 @@ def _company_hhi_from_rows(
     )
     return {
         "periods": [str(point["year"]) for point in points],
-        "hhi_values": [round(safe_float(point.get("hhi")) or 0.0, 4) for point in points],
+        "hhi_values": [
+            round(value, 4) if (value := safe_float(point.get("hhi"))) is not None else None
+            for point in points
+        ],
     }
 
 
@@ -2350,20 +2524,37 @@ def _company_waterfall(entries: list[dict[str, Any]], *, target_company: str | N
                 "contribution": 0.0,
                 "contribution_pct": 0.0,
                 "value_recent": 0.0,
+                "complete": True,
             },
         )
         bucket["brands"].append(row.get("brand"))
         bucket["is_target"] = bucket["is_target"] or bool(target_company and company == target_company)
         bucket["is_jw"] = bucket["is_jw"] or bool(row.get("is_jw"))
-        bucket["contribution"] += safe_float(row.get("growth_contribution")) or 0.0
-        bucket["contribution_pct"] += safe_float(row.get("growth_contribution_pct")) or 0.0
-        bucket["value_recent"] += safe_float(row.get("value_recent")) or 0.0
+        contribution = safe_float(row.get("growth_contribution"))
+        contribution_pct = safe_float(row.get("growth_contribution_pct"))
+        value_recent = safe_float(row.get("value_recent"))
+        if contribution is None or contribution_pct is None or value_recent is None:
+            bucket["complete"] = False
+            bucket["contribution"] = None
+            bucket["contribution_pct"] = None
+            bucket["value_recent"] = None
+        elif bucket["complete"]:
+            bucket["contribution"] += contribution
+            bucket["contribution_pct"] += contribution_pct
+            bucket["value_recent"] += value_recent
     rows = list(grouped.values())
+    for row in rows:
+        row.pop("complete", None)
+        if row["value_recent"] is None:
+            row["data_quality"] = {"available": False, "reason": "no_data"}
     target = next((row for row in rows if row["is_target"]), None)
-    competitors = [row for row in sorted(rows, key=lambda item: item["value_recent"], reverse=True) if row is not target]
+    competitors = [row for row in sorted(rows, key=lambda item: (safe_float(item.get("value_recent")) is not None, safe_float(item.get("value_recent")) or 0.0), reverse=True) if row is not target]
     selected = ([target] if target else []) + competitors[:5]
     rest = [row for row in rows if row not in selected]
     if rest:
+        rest_contribution = _sum_optional_complete(row["contribution"] for row in rest)
+        rest_pct = _sum_optional_complete(row["contribution_pct"] for row in rest)
+        rest_value = _sum_optional_complete(row["value_recent"] for row in rest)
         selected.append(
             {
                 "company": "기타",
@@ -2371,27 +2562,39 @@ def _company_waterfall(entries: list[dict[str, Any]], *, target_company: str | N
                 "is_target": False,
                 "is_jw": False,
                 "is_others": True,
-                "contribution": sum(row["contribution"] for row in rest),
-                "contribution_pct": sum(row["contribution_pct"] for row in rest),
-                "value_recent": sum(row["value_recent"] for row in rest),
+                "contribution": rest_contribution,
+                "contribution_pct": rest_pct,
+                "value_recent": rest_value,
             }
         )
+        if rest_value is None or rest_contribution is None or rest_pct is None:
+            selected[-1]["data_quality"] = {"available": False, "reason": "no_data"}
     return {"top_contributors": selected, "others_total": 0.0}
 
 
-def _history_value_at(row: dict[str, Any], period: str | None) -> float:
+def _history_value_at(row: dict[str, Any], period: str | None) -> float | None:
     if not period:
-        return 0.0
+        return None
     history = _metric_history(row)
-    return _value_from_period_item((history or {}).get(period)) if isinstance(history, dict) else 0.0
+    return _optional_value_from_period_item(history.get(period)) if isinstance(history, dict) else None
 
 
-def _top_contribution_rows(rows: list[dict[str, Any]], target_name: str | None, periods: list[str], top_n: int = 5) -> tuple[list[dict[str, Any]], float, float, float]:
+def _top_contribution_rows(
+    rows: list[dict[str, Any]],
+    target_name: str | None,
+    periods: list[str],
+    top_n: int = 5,
+) -> tuple[list[dict[str, Any]], float | None, float | None, float | None]:
     period_start = periods[0] if periods else None
     period_end = periods[-1] if periods else None
-    market_start = sum(_history_value_at(row, period_start) for row in rows)
-    market_end = sum(_history_value_at(row, period_end) for row in rows)
-    market_growth = market_end - market_start
+    period_values = [
+        (_history_value_at(row, period_start), _history_value_at(row, period_end))
+        for row in rows
+    ]
+    complete_market = all(start is not None and end is not None for start, end in period_values)
+    market_start = sum(start for start, _ in period_values if start is not None) if complete_market else None
+    market_end = sum(end for _, end in period_values if end is not None) if complete_market else None
+    market_growth = market_end - market_start if market_start is not None and market_end is not None else None
     contribution_rows: list[dict[str, Any]] = []
     for row in rows:
         brand = _row_brand(row)
@@ -2399,10 +2602,9 @@ def _top_contribution_rows(rows: list[dict[str, Any]], target_name: str | None, 
             continue
         start_value = _history_value_at(row, period_start)
         end_value = _history_value_at(row, period_end)
-        value = end_value - start_value
-        pct = round(value / market_growth * 100, 4) if market_growth else None
-        contribution_rows.append(
-            {
+        value = end_value - start_value if start_value is not None and end_value is not None else None
+        pct = round(value / market_growth * 100, 4) if value is not None and market_growth else None
+        item = {
                 "brand": brand,
                 "company": _company_name(row),
                 "is_target": bool(target_name and brand == target_name),
@@ -2415,14 +2617,32 @@ def _top_contribution_rows(rows: list[dict[str, Any]], target_name: str | None, 
                 "value_end": end_value,
                 "value_recent": end_value,
             }
-        )
+        if value is None:
+            item["data_quality"] = {"available": False, "reason": "no_data"}
+        contribution_rows.append(item)
 
     target = next((row for row in contribution_rows if row["is_target"]), None)
-    competitors = [row for row in sorted(contribution_rows, key=lambda item: abs(item["contribution_value"]), reverse=True) if row is not target]
+    competitors = [
+        row
+        for row in sorted(
+            contribution_rows,
+            key=lambda item: (
+                safe_float(item.get("contribution_value")) is not None,
+                abs(safe_float(item.get("contribution_value")) or 0.0),
+            ),
+            reverse=True,
+        )
+        if row is not target
+    ]
     selected = ([target] if target else []) + competitors[:top_n]
     rest = [row for row in contribution_rows if row not in selected]
     if rest:
-        displayed_pct = sum((row.get("contribution_pct") or 0.0) for row in selected)
+        displayed_values = [safe_float(row.get("contribution_pct")) for row in selected]
+        rest_values = [safe_float(row.get("contribution_value")) for row in rest]
+        rest_starts = [safe_float(row.get("value_start")) for row in rest]
+        rest_ends = [safe_float(row.get("value_end")) for row in rest]
+        displayed_complete = all(value is not None for value in displayed_values)
+        rest_complete = all(value is not None for value in (*rest_values, *rest_starts, *rest_ends))
         selected.append(
             {
                 "brand": "기타",
@@ -2430,33 +2650,43 @@ def _top_contribution_rows(rows: list[dict[str, Any]], target_name: str | None, 
                 "is_target": False,
                 "is_jw": False,
                 "is_others": True,
-                "contribution": sum(row["contribution_value"] for row in rest),
-                "contribution_value": sum(row["contribution_value"] for row in rest),
-                "contribution_pct": round(100.0 - displayed_pct, 4) if market_growth else None,
-                "value_start": sum(row["value_start"] for row in rest),
-                "value_end": sum(row["value_end"] for row in rest),
-                "value_recent": sum(row["value_recent"] for row in rest),
+                "contribution": sum(value for value in rest_values if value is not None) if rest_complete else None,
+                "contribution_value": sum(value for value in rest_values if value is not None) if rest_complete else None,
+                "contribution_pct": (
+                    round(100.0 - sum(value for value in displayed_values if value is not None), 4)
+                    if market_growth and displayed_complete and rest_complete
+                    else None
+                ),
+                "value_start": sum(value for value in rest_starts if value is not None) if rest_complete else None,
+                "value_end": sum(value for value in rest_ends if value is not None) if rest_complete else None,
+                "value_recent": sum(value for value in rest_ends if value is not None) if rest_complete else None,
             }
         )
+        if not rest_complete:
+            selected[-1]["data_quality"] = {"available": False, "reason": "no_data"}
     return selected, market_start, market_end, market_growth
 
 
-def _company_contribution_payload(rows: list[dict[str, Any]], target_company: str | None, periods: list[str], market_growth: float, top_n: int = 5) -> dict[str, Any]:
+def _company_contribution_payload(rows: list[dict[str, Any]], target_company: str | None, periods: list[str], market_growth: float | None, top_n: int = 5) -> dict[str, Any]:
     period_start = periods[0] if periods else None
     period_end = periods[-1] if periods else None
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         company = _company_name(row)
-        bucket = grouped.setdefault(company, {"company": company, "brands": [], "value_start": 0.0, "value_end": 0.0, "is_target": bool(target_company and company == target_company), "is_jw": False})
+        bucket = grouped.setdefault(company, {"company": company, "brands": [], "value_start": 0.0, "value_end": 0.0, "complete": True, "is_target": bool(target_company and company == target_company), "is_jw": False})
         bucket["brands"].append(_row_brand(row))
-        bucket["value_start"] += _history_value_at(row, period_start)
-        bucket["value_end"] += _history_value_at(row, period_end)
+        start_value = _history_value_at(row, period_start)
+        end_value = _history_value_at(row, period_end)
+        if start_value is None or end_value is None:
+            bucket["complete"] = False
+        else:
+            bucket["value_start"] += start_value
+            bucket["value_end"] += end_value
         bucket["is_jw"] = bucket["is_jw"] or bool(row.get("is_jw"))
     company_rows = []
     for bucket in grouped.values():
-        value = bucket["value_end"] - bucket["value_start"]
-        company_rows.append(
-            {
+        value = bucket["value_end"] - bucket["value_start"] if bucket["complete"] else None
+        item = {
                 "company": bucket["company"],
                 "brands": bucket["brands"],
                 "is_target": bucket["is_target"],
@@ -2464,16 +2694,20 @@ def _company_contribution_payload(rows: list[dict[str, Any]], target_company: st
                 "is_others": False,
                 "contribution": value,
                 "contribution_value": value,
-                "contribution_pct": round(value / market_growth * 100, 4) if market_growth else None,
-                "value_recent": bucket["value_end"],
+                "contribution_pct": round(value / market_growth * 100, 4) if value is not None and market_growth else None,
+                "value_recent": bucket["value_end"] if bucket["complete"] else None,
             }
-        )
+        if value is None:
+            item["data_quality"] = {"available": False, "reason": "no_data"}
+        company_rows.append(item)
     target = next((row for row in company_rows if row["is_target"]), None)
-    competitors = [row for row in sorted(company_rows, key=lambda item: abs(item["contribution_value"]), reverse=True) if row is not target]
+    competitors = [row for row in sorted(company_rows, key=lambda item: (safe_float(item.get("contribution_value")) is not None, abs(safe_float(item.get("contribution_value")) or 0.0)), reverse=True) if row is not target]
     selected = ([target] if target else []) + competitors[:top_n]
     rest = [row for row in company_rows if row not in selected]
     if rest:
-        displayed_pct = sum((row.get("contribution_pct") or 0.0) for row in selected)
+        displayed_pct = _sum_optional_complete(row.get("contribution_pct") for row in selected)
+        rest_contribution = _sum_optional_complete(row.get("contribution_value") for row in rest)
+        rest_value = _sum_optional_complete(row.get("value_recent") for row in rest)
         selected.append(
             {
                 "company": "기타",
@@ -2481,12 +2715,18 @@ def _company_contribution_payload(rows: list[dict[str, Any]], target_company: st
                 "is_target": False,
                 "is_jw": False,
                 "is_others": True,
-                "contribution": sum(row["contribution_value"] for row in rest),
-                "contribution_value": sum(row["contribution_value"] for row in rest),
-                "contribution_pct": round(100.0 - displayed_pct, 4) if market_growth else None,
-                "value_recent": sum(row["value_recent"] for row in rest),
+                "contribution": rest_contribution,
+                "contribution_value": rest_contribution,
+                "contribution_pct": (
+                    round(100.0 - displayed_pct, 4)
+                    if market_growth and displayed_pct is not None and rest_contribution is not None
+                    else None
+                ),
+                "value_recent": rest_value,
             }
         )
+        if rest_contribution is None or rest_value is None:
+            selected[-1]["data_quality"] = {"available": False, "reason": "no_data"}
     return {"top_contributors": selected, "others_total": 0.0}
 
 
@@ -2561,13 +2801,18 @@ def _period_rank_series_by_brand(rows: list[dict[str, Any]], periods: list[str])
     """Return each brand's rank for every display period."""
 
     brand_values: dict[str, list[float]] = defaultdict(lambda: [0.0 for _ in periods])
+    brand_complete: dict[str, list[bool]] = defaultdict(lambda: [True for _ in periods])
     for row in rows:
         brand = _row_brand(row)
         if not brand:
             continue
         history = _metric_history(row)
         for idx, period in enumerate(periods):
-            brand_values[brand][idx] += _value_from_period_item(history.get(period))
+            value = _optional_value_from_period_item(history.get(period))
+            if value is None:
+                brand_complete[brand][idx] = False
+            else:
+                brand_values[brand][idx] += value
 
     ranks = {brand: [None for _ in periods] for brand in brand_values}
     for idx, _period in enumerate(periods):
@@ -2575,7 +2820,7 @@ def _period_rank_series_by_brand(rows: list[dict[str, Any]], periods: list[str])
             (
                 (brand, values[idx])
                 for brand, values in brand_values.items()
-                if idx < len(values) and values[idx] > 0
+                if idx < len(values) and brand_complete[brand][idx] and values[idx] > 0
             ),
             key=lambda item: item[1],
             reverse=True,
@@ -2734,23 +2979,26 @@ def _level_trend_brand_payloads(
     ) if option_rows else []
     row_by_brand = {_row_brand(row): row for row in option_rows if _row_brand(row)}
     rank_series_by_brand = _period_rank_series_by_brand(option_rows, periods)
-    selected_series: list[list[float]] = []
+    selected_series: list[list[float | None]] = []
     brands_in_value = []
     for entry in brand_entries:
         source_row = row_by_brand.get(entry.get("brand"))
         if entry.get("is_others"):
-            series = [
-                round(
-                    max(
-                        0.0,
-                        total - sum(item[idx] if idx < len(item) else 0.0 for item in selected_series),
-                    ),
-                    4,
+            series = []
+            for idx, total in enumerate(total_series):
+                selected_values = [item[idx] if idx < len(item) else None for item in selected_series]
+                selected_total = _sum_optional_complete(selected_values)
+                series.append(
+                    round(max(0.0, total - selected_total), 4)
+                    if selected_total is not None
+                    else None
                 )
-                for idx, total in enumerate(total_series)
-            ]
         else:
-            series = _series_for_row(source_row or {}, periods, scaled_sales=True) if source_row else [0.0] * len(periods)
+            series = (
+                _optional_series_for_row(source_row, periods, scaled_sales=True)
+                if source_row
+                else [None] * len(periods)
+            )
             selected_series.append(series)
         # D3도 D2와 같은 회귀를 막는다. 표시 멤버십은 최근 segment top5로
         # 고정하지만, rank_series_10pt는 각 기간의 segment 전체 브랜드 값을
@@ -2761,32 +3009,42 @@ def _level_trend_brand_payloads(
             if entry.get("is_others")
             else rank_series_by_brand.get(str(entry.get("brand")), [None for _ in periods])
         )
-        brands_in_value.append(
-            {
-                "brand": entry.get("brand"),
-                "company": entry.get("company"),
-                "is_target": entry.get("is_target"),
-                "is_jw": entry.get("is_jw"),
-                "is_others": entry.get("is_others"),
-                "rank": entry.get("rank"),
-                "rank_series_10pt": rank_series,
-                "ms_recent_pct": (
-                    _latest_valid_share_pct(series, total_series)
-                    if use_latest_valid_share
-                    else safe_float(entry.get("share_pct")) or 0.0
-                ),
-                "value_recent": safe_float(entry.get("value_recent")) or 0.0,
-                "raw_value": safe_float(entry.get("raw_value")) or safe_float(entry.get("value_recent")) or 0.0,
-                "value_recent_100m": round((safe_float(entry.get("value_recent")) or 0.0) / 100_000_000, 4),
-                "volume_recent": safe_float(entry.get("value_recent")) or 0.0,
-                "value_series_10pt": series,
-                "ms_series_10pt": [
-                    round(value / total * 100, 4) if total else 0.0
-                    for value, total in zip(series, total_series)
-                ],
-                "volume_series_10pt": series,
-            }
+        recent_value = safe_float(entry.get("value_recent"))
+        recent_raw_value = _first_optional_float(entry.get("raw_value"), entry.get("value_recent"))
+        recent_share = (
+            _latest_valid_share_pct(series, total_series)
+            if use_latest_valid_share and recent_value is not None
+            else safe_float(entry.get("share_pct"))
         )
+        payload = {
+            "brand": entry.get("brand"),
+            "company": entry.get("company"),
+            "is_target": entry.get("is_target"),
+            "is_jw": entry.get("is_jw"),
+            "is_others": entry.get("is_others"),
+            "rank": entry.get("rank"),
+            "rank_series_10pt": rank_series,
+            "ms_recent_pct": recent_share,
+            "value_recent": recent_value,
+            "raw_value": recent_raw_value,
+            "value_recent_100m": round(recent_value / 100_000_000, 4) if recent_value is not None else None,
+            "volume_recent": recent_value,
+            "value_series_10pt": series,
+            "ms_series_10pt": [
+                (
+                    round(value / total * 100, 4)
+                    if value is not None and total
+                    else 0.0
+                    if value == 0.0 and total == 0.0
+                    else None
+                )
+                for value, total in zip(series, total_series)
+            ],
+            "volume_series_10pt": series,
+        }
+        if recent_value is None:
+            payload["data_quality"] = {"available": False, "reason": "no_data"}
+        brands_in_value.append(payload)
     return brands_in_value
 
 
@@ -2840,14 +3098,14 @@ def _level_top5_trend(
             channel_rows = full_market_rows
             if not overall_value_series:
                 overall_value_series = _total_series_for_rows(channel_rows, periods)
-            values.append(
-                {
+            overall_value = safe_float(overall_value_series[-1] if overall_value_series else None)
+            overall_item = {
                     "value": "전체",
                     "is_default": True,
                     "is_overall": True,
-                    "total_value": safe_float(overall_value_series[-1] if overall_value_series else None) or 0.0,
-                    "total_volume": safe_float(overall_value_series[-1] if overall_value_series else None) or 0.0,
-                    "ms_pct": 100.0 if overall_value_series else 0.0,
+                    "total_value": overall_value,
+                    "total_volume": overall_value,
+                    "ms_pct": 100.0 if overall_value is not None else None,
                     "brands_in_value": _level_trend_brand_payloads(
                         option_rows=channel_rows,
                         periods=periods,
@@ -2860,7 +3118,9 @@ def _level_top5_trend(
                         use_latest_valid_share=use_latest_valid_share,
                     ),
                 }
-            )
+            if overall_value is None:
+                overall_item["data_quality"] = {"available": False, "reason": "no_data"}
+            values.append(overall_item)
         for index, segment in enumerate(level_segments, start=1):
             segment_name = segment.get("name") or f"{level} {index}"
             data_quality = segment.get("data_quality")
@@ -2894,14 +3154,13 @@ def _level_top5_trend(
             segment_total_series = segment.get("value_series") or _total_series_for_rows(segment_rows, periods)
             if len(segment_total_series) != len(periods):
                 segment_total_series = list(segment_total_series)[-len(periods):] if periods else []
-            total_value = safe_float(segment_total_series[-1] if segment_total_series else None) or 0.0
-            values.append(
-                {
+            total_value = safe_float(segment_total_series[-1] if segment_total_series else None)
+            segment_item = {
                     "value": segment_name,
                     "is_default": not values and index == 1,
                     "total_value": total_value,
                     "total_volume": total_value,
-                    "ms_pct": safe_float(segment.get("recent_share_pct")) or 0.0,
+                    "ms_pct": safe_float(segment.get("recent_share_pct")),
                     "brands_in_value": _level_trend_brand_payloads(
                         option_rows=segment_rows,
                         periods=periods,
@@ -2914,17 +3173,20 @@ def _level_top5_trend(
                         use_latest_valid_share=use_latest_valid_share,
                     ),
                 }
-            )
+            if total_value is None:
+                segment_item["data_quality"] = {"available": False, "reason": "no_data"}
+            values.append(segment_item)
         overall_total = (
-            safe_float(overall_value_series[-1]) or 0.0
+            safe_float(overall_value_series[-1])
             if overall_value_series
             else safe_float(full_market_series[-1] if full_market_series else None)
         )
+        fallback_total = _sum_optional_complete(item.get("total_value") for item in values)
         by_level[level] = {
             "level_label": level,
             "level_value": values[0]["value"] if values else None,
             "default_value": values[0]["value"] if values else None,
-            "total_market_value": overall_total if overall_total is not None else sum((safe_float(item.get("total_value")) or 0.0) for item in values),
+            "total_market_value": overall_total if overall_total is not None else fallback_total,
             "empty": not bool(values),
             "periods_10pt": periods,
             "all_options": [value.get("value") for value in values if value.get("value")],
