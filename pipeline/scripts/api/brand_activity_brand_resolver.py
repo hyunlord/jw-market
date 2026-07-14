@@ -30,7 +30,6 @@ from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.deep_analysis_context import (
-    SOURCE_TO_DB,
     DeepAnalysisContext,
     DeepAnalysisContextError,
     resolve_deep_analysis_context,
@@ -143,15 +142,10 @@ def resolve_brand_set(
         if resolved_context is not None:
             # F-055: the caller already resolved this exact strategic context;
             # re-resolving here repeated the expensive mart scans per request.
-            # Mirror _resolve_strategic_brand_context's source rule exactly:
-            # a multi-source market resolves through the iqvia retry branch.
+            # Preserve its source-specific market identity as well.
             resolved_market_id = resolved_context.market_id
             resolved_selected_brand = resolved_context.brand_key
-            resolved_source = (
-                SOURCE_TO_DB["iqvia"]
-                if len(resolved_context.market_allowed_sources) > 1
-                else resolved_context.db_source
-            )
+            resolved_source = resolved_context.db_source
         else:
             context = _resolve_strategic_brand_context(
                 selected_brand,
