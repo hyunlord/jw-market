@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,7 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     score_tier,
     scoped_event_id,
     sync_missing_events_raw,
+    update_live_tier2_categories,
 )
 
 
@@ -79,6 +81,35 @@ class SyncConnection:
         self.commits = 0
 
     def cursor(self) -> SyncCursor:
+        return self.cursor_obj
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+class CategoryCursor:
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: tuple[object, ...] = ()
+        self.rowcount = 7
+
+    def __enter__(self) -> "CategoryCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        self.sql = sql
+        self.params = params
+
+
+class CategoryConnection:
+    def __init__(self) -> None:
+        self.cursor_obj = CategoryCursor()
+        self.commits = 0
+
+    def cursor(self) -> CategoryCursor:
         return self.cursor_obj
 
     def commit(self) -> None:
@@ -151,6 +182,33 @@ def test_events_raw_sync_inserts_only_missing_rows_and_requires_zero_gap() -> No
     assert "ON DUPLICATE KEY UPDATE" not in sql
     assert "UPDATE events_raw" not in sql
     assert conn.commits == 1
+
+
+def test_category_refresh_includes_v1_and_v2_but_excludes_tier1_news() -> None:
+    conn = CategoryConnection()
+
+    updated = update_live_tier2_categories(conn)
+
+    assert updated == 7
+    assert "FROM event_brand_scores" in conn.cursor_obj.sql
+    assert "source_processor IN (%s, %s)" in conn.cursor_obj.sql
+    assert "tier1.news_id IS NULL" in conn.cursor_obj.sql
+    assert "workflow_196_rev5674" in conn.cursor_obj.params
+    assert "tier2_llm_v1" in conn.cursor_obj.params
+    assert "tier2_llm_v2_rev5671" in conn.cursor_obj.params
+    assert conn.commits == 1
+
+
+def test_category_refresh_cronjob_is_registered_suspended() -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = (root / "deploy/k8s/crawler/tier2-category-refresh-cronjob.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "suspend: true" in manifest
+    assert "refresh-live-categories" in manifest
+    assert "append-live" not in manifest
+    assert "replace-live" not in manifest
 
 
 def _brands() -> list[MatchedBrand]:

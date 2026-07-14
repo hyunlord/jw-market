@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-news-tier2-category-refresh
+  namespace: llmops
+  annotations:
+    canonicalization.jw/required-code-commit: "835c9693-or-later"
+spec:
+  schedule: "10 20 * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: "enabled"
+          containers:
+            - name: category-refresh
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
+              command: ["python"]
+              args:
+                - -m
+                - pipeline.scripts.crawler.tier2_full_scoring_runner
+                - refresh-live-categories
+              env:
+                - name: DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: DB_PORT
+                  value: "3306"
+                - name: DB_NAME
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+

@@ -1092,6 +1092,52 @@ def update_tier2_only_event_categories(
     return updated
 
 
+def update_live_tier2_categories(conn: pymysql.connections.Connection) -> int:
+    """Refresh categories for Tier2-only news from approved live score generations."""
+
+    tier1_placeholders = _tier1_processor_placeholders()
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"""
+            UPDATE events e
+            JOIN (
+              SELECT news_id, MIN(tag) AS category_label,
+                     CASE MIN(tag)
+                       WHEN '신약/R&D' THEN 'rd'
+                       WHEN '자본/경영' THEN 'capital'
+                       WHEN '정책/규제' THEN 'policy'
+                       WHEN '공급/생산' THEN 'supply'
+                       ELSE 'external'
+                     END AS category_code
+              FROM event_brand_scores
+              WHERE source_processor IN (%s, %s)
+                AND news_id IS NOT NULL
+              GROUP BY news_id
+            ) tier2 ON tier2.news_id = e.news_id
+            LEFT JOIN (
+              SELECT DISTINCT news_id
+              FROM event_brand_scores
+              WHERE source_processor IN ({tier1_placeholders})
+                AND news_id IS NOT NULL
+            ) tier1 ON tier1.news_id = e.news_id
+            SET e.category = tier2.category_code,
+                e.category_label = tier2.category_label,
+                e.processed_by = %s,
+                e.processed_at = CURRENT_TIMESTAMP()
+            WHERE tier1.news_id IS NULL
+            """,
+            (
+                DEFAULT_SOURCE_PROCESSOR,
+                PENDING_SOURCE_PROCESSOR,
+                *TIER1_PROCESSORS,
+                PENDING_SOURCE_PROCESSOR,
+            ),
+        )
+        updated = int(cursor.rowcount)
+    conn.commit()
+    return updated
+
+
 def controlled_replace(
     conn: pymysql.connections.Connection,
     *,
@@ -1281,6 +1327,8 @@ def main() -> int:
     sync_parser = subparsers.add_parser("sync-events-raw")
     sync_parser.add_argument("--retries", type=int, default=1)
 
+    subparsers.add_parser("refresh-live-categories")
+
     args = parser.parse_args()
     conn = connect_from_env()
     try:
@@ -1321,6 +1369,11 @@ def main() -> int:
             )
         elif args.command == "sync-events-raw":
             summary = sync_missing_events_raw(conn, retries=args.retries)
+        elif args.command == "refresh-live-categories":
+            summary = {
+                "updated_event_categories": update_live_tier2_categories(conn),
+                "processors": [DEFAULT_SOURCE_PROCESSOR, PENDING_SOURCE_PROCESSOR],
+            }
         else:  # pragma: no cover - argparse enforces commands.
             raise ValueError(f"unknown command={args.command!r}")
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True, default=str))
