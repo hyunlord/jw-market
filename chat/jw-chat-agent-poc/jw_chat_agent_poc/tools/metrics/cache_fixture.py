@@ -195,17 +195,24 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                     "unsupported_fields": _csd_unsupported_fields(),
                 },
             }
-        first = payload.rows[0]
-        latest = payload.rows[-1]
-        delta = latest.product_details - first.product_details
-        delta_pct = (delta / first.product_details * 100) if first.product_details else None
+        known_rows = tuple(row for row in payload.rows if row.product_details is not None)
+        missing_periods = [row.period_ym for row in payload.rows if row.product_details is None]
+        first = known_rows[0] if known_rows else None
+        latest = known_rows[-1] if known_rows else None
+        delta = latest.product_details - first.product_details if first is not None and latest is not None else None
+        delta_pct = (
+            delta / first.product_details * 100
+            if delta is not None and first is not None and first.product_details not in (None, 0)
+            else None
+        )
+        status = "no_data" if not known_rows else "partial_data" if missing_periods else "ok"
         return {
             "source": "cache",
             "tool": "csd_activity_trend",
-            "status": "ok",
+            "status": status,
             "summary_text": _csd_activity_summary(brand, payload.rows, delta, delta_pct),
             "render_data": {
-                "status": "ok",
+                "status": status,
                 "brand": brand,
                 "market": target.market,
                 "master_product": target.master_product,
@@ -214,12 +221,14 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                 "available_fields": _csd_available_fields(),
                 "unsupported_fields": _csd_unsupported_fields(),
                 "series": [{"period": row.period_ym, "product_details": row.product_details} for row in payload.rows],
-                "start_period": first.period_ym,
-                "start_product_details": first.product_details,
-                "latest_period": latest.period_ym,
-                "latest_product_details": latest.product_details,
+                "start_period": first.period_ym if first is not None else None,
+                "start_product_details": first.product_details if first is not None else None,
+                "latest_period": latest.period_ym if latest is not None else None,
+                "latest_product_details": latest.product_details if latest is not None else None,
                 "delta_product_details": delta,
                 "delta_pct": delta_pct,
+                "missing_periods": missing_periods,
+                "data_availability_note": _missing_activity_note(missing_periods),
             },
         }
 
@@ -369,15 +378,25 @@ def _brand_card_summary(
     )
 
 
-def _csd_activity_summary(brand: str, rows: tuple[CsdActivityRow, ...], delta: int, delta_pct: float | None) -> str:
-    first = rows[0]
-    latest = rows[-1]
+def _csd_activity_summary(brand: str, rows: tuple[CsdActivityRow, ...], delta: int | None, delta_pct: float | None) -> str:
+    known_rows = tuple(row for row in rows if row.product_details is not None)
+    missing_periods = [row.period_ym for row in rows if row.product_details is None]
+    if not known_rows:
+        return f"{brand}의 CSD ChannelDynamics aggregate 콜수/활동량 데이터가 없습니다."
+    first = known_rows[0]
+    latest = known_rows[-1]
     pct = "" if delta_pct is None else f"({delta_pct:+.1f}%)"
+    change = f"{delta:+,}건 {pct} 변했습니다." if delta is not None else "증감은 계산할 수 없습니다."
+    note = f" {_missing_activity_note(missing_periods)}" if missing_periods else ""
     return (
         f"{brand}의 CSD ChannelDynamics aggregate 콜수/활동량은 "
         f"{first.period_ym} {first.product_details:,}건에서 {latest.period_ym} {latest.product_details:,}건으로 "
-        f"{delta:+,}건 {pct} 변했습니다. impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다."
+        f"{change}{note} impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다."
     )
+
+
+def _missing_activity_note(periods: list[str]) -> str:
+    return f"{', '.join(periods)} 데이터가 없어 해당 기간을 제외하고 계산했습니다" if periods else ""
 
 
 def _csd_available_fields() -> tuple[str, ...]:

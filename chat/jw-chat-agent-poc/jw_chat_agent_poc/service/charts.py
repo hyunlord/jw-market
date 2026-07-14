@@ -127,7 +127,7 @@ def _metric_call_charts(
         level_segments = render_data.get("level_segments")
         if "comparison" in intent and not _is_single_brand_scope(render_data) and isinstance(level_segments, list):
             rows = {
-                text(row.get("name")) or "미분류": number(row.get("ms_recent_pct")) or number(row.get("value")) or 0.0
+                text(row.get("name")) or "미분류": _first_number(row.get("ms_recent_pct"), row.get("value"))
                 for row in level_segments
                 if isinstance(row, Mapping)
             }
@@ -199,21 +199,22 @@ def _chart_intent(question: str, answer: str) -> set[str]:
     return intents
 
 
-def _brand_sales_series(render_data: Mapping[str, Any]) -> tuple[list[str], list[float]] | None:
+def _brand_sales_series(render_data: Mapping[str, Any]) -> tuple[list[str], list[float | None]] | None:
     raw_series = render_data.get("brand_value_series_10pt")
     if not isinstance(raw_series, Sequence) or isinstance(raw_series, (str, bytes)):
         return None
     labels: list[str] = []
-    values: list[float] = []
+    values: list[float | None] = []
     for item in raw_series:
         row = as_mapping(item)
         if not row:
             return None
         label = text(row.get("period")) or text(row.get("year"))
-        value = number(row.get("value_krw")) or number(row.get("value"))
-        if value is None and number(row.get("value_억원")) is not None:
-            value = (number(row.get("value_억원")) or 0.0) * 100_000_000
-        if label is None or value is None:
+        value = _first_number(row.get("value_krw"), row.get("value"))
+        eok_value = number(row.get("value_억원"))
+        if value is None and eok_value is not None:
+            value = eok_value * 100_000_000
+        if label is None:
             return None
         labels.append(label)
         values.append(value)
@@ -233,14 +234,14 @@ def _and_particle(value: str) -> str:
 
 def _aligned_series(
     left_labels: Sequence[str],
-    left_values: Sequence[float],
+    left_values: Sequence[float | None],
     right_labels: Sequence[str],
-    right_values: Sequence[float],
-) -> tuple[list[str], list[float], list[float]] | None:
+    right_values: Sequence[float | None],
+) -> tuple[list[str], list[float | None], list[float | None]] | None:
     right_by_label = {label: value for label, value in zip(right_labels, right_values, strict=False)}
     labels: list[str] = []
-    left: list[float] = []
-    right: list[float] = []
+    left: list[float | None] = []
+    right: list[float | None] = []
     for label, value in zip(left_labels, left_values, strict=False):
         if label not in right_by_label:
             continue
@@ -250,6 +251,14 @@ def _aligned_series(
     if len(labels) < 2:
         return None
     return labels, left, right
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        parsed = number(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _valid_charts(charts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -269,7 +278,7 @@ def _chart_point_count(chart: Mapping[str, Any]) -> int:
         dataset_map = as_mapping(dataset)
         data = dataset_map.get("data") if dataset_map else None
         if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
-            data_counts.append(len(data))
+            data_counts.append(sum(number(value) is not None for value in data))
     if not data_counts:
         return label_count
     return min(label_count, max(data_counts))

@@ -15,12 +15,12 @@ PALETTE = [TEAL, BLUE, ORANGE, PURPLE, "#16a34a", "#dc2626", "#0891b2", "#ca8a04
 def share_chart(rows: Sequence[Mapping[str, Any]], target_brand: str | None) -> dict[str, Any]:
     def row_order(row: Mapping[str, Any]) -> tuple[float, float]:
         rank = number(row.get("rank"))
-        share = number(row.get("ms_recent_pct")) or 0.0
-        return (rank if rank is not None else 9999.0, -share)
+        share = number(row.get("ms_recent_pct"))
+        return (rank if rank is not None else 9999.0, -(share if share is not None else float("-inf")))
 
     top_rows = sorted(rows, key=row_order)[:8]
     labels = [text(row.get("brand")) or text(row.get("name")) or "미분류" for row in top_rows]
-    values = [number(row.get("ms_recent_pct")) or 0.0 for row in top_rows]
+    values = [number(row.get("ms_recent_pct")) for row in top_rows]
     colors = [TEAL if target_brand and label == target_brand else SLATE for label in labels]
     return {
         "type": "bar",
@@ -32,7 +32,7 @@ def share_chart(rows: Sequence[Mapping[str, Any]], target_brand: str | None) -> 
     }
 
 
-def bar_chart(title: str, values_by_label: Mapping[str, float], source: str, unit: str) -> dict[str, Any]:
+def bar_chart(title: str, values_by_label: Mapping[str, float | None], source: str, unit: str) -> dict[str, Any]:
     labels = list(values_by_label.keys())
     values = [values_by_label[label] for label in labels]
     return {
@@ -75,34 +75,32 @@ def line_chart(
     }
 
 
-def series_from_mapping(value: Any) -> tuple[list[str], list[float]] | None:
+def series_from_mapping(value: Any) -> tuple[list[str], list[float | None]] | None:
     mapping = as_mapping(value)
     if not mapping:
         return None
     labels = sorted(str(key) for key in mapping.keys())
-    values: list[float] = []
+    values: list[float | None] = []
     for label in labels:
         item = mapping.get(label)
         item_value = (as_mapping(item) or {}).get("value") if isinstance(item, Mapping) else item
         item_number = number(item_value)
-        if item_number is None:
-            return None
         values.append(item_number)
     return labels, values
 
 
-def series_from_list(value: Any, value_key: str) -> tuple[list[str], list[float]] | None:
+def series_from_list(value: Any, value_key: str) -> tuple[list[str], list[float | None]] | None:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return None
     labels: list[str] = []
-    values: list[float] = []
+    values: list[float | None] = []
     for item in value:
         row = as_mapping(item)
         if not row:
             return None
         label = text(row.get("period")) or text(row.get("year"))
         item_number = number(row.get(value_key))
-        if label is None or item_number is None:
+        if label is None:
             return None
         labels.append(label)
         values.append(item_number)

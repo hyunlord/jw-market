@@ -51,7 +51,7 @@ class CsdActivityTarget:
 @dataclass(frozen=True, slots=True)
 class CsdActivityRow:
     period_ym: str
-    product_details: int
+    product_details: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,14 +129,14 @@ class StaticCausePayloadReader:
 
 @dataclass(frozen=True, slots=True)
 class StaticCsdActivityReader:
-    rows_by_target: dict[tuple[str, str], tuple[tuple[str, int], ...]]
+    rows_by_target: dict[tuple[str, str], tuple[tuple[str, int | None], ...]]
 
     def load(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload:
         rows = self.rows_by_target.get((target.market, target.master_product), ())
         selected = rows[-limit:] if limit > 0 else rows
         return CsdActivityPayload(
             target=target,
-            rows=tuple(CsdActivityRow(str(period), int(value)) for period, value in selected),
+            rows=tuple(CsdActivityRow(str(period), int(value) if value is not None else None) for period, value in selected),
             loaded_at=time.monotonic(),
         )
 
@@ -186,7 +186,7 @@ class MariaDbCsdActivityTargetReader:
                     cursor.execute(
                         f"""
                         SELECT market, master_product,
-                               SUM(COALESCE(product_details, 0)) AS total_activity
+                               SUM(product_details) AS total_activity
                         FROM {schema}.`csd_channel_dynamics_stage`
                         WHERE jw_channel = 'TOTAL'
                         GROUP BY market, master_product
@@ -314,7 +314,10 @@ class MariaDbCsdActivityReader:
                 rows = cursor.fetchall()
 
         parsed = tuple(
-            CsdActivityRow(str(row["period_ym"]), int(row["product_details"] or 0))
+            CsdActivityRow(
+                str(row["period_ym"]),
+                int(row["product_details"]) if row.get("product_details") is not None else None,
+            )
             for row in reversed(rows)
         )
         return CsdActivityPayload(target=target, rows=parsed, loaded_at=time.monotonic())
@@ -488,6 +491,17 @@ def _normalise_master_product(value: Any) -> str:
 
 
 def _best_csd_activity_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    if not candidates:
+    known = [(row, _numeric_or_none(row.get("total_activity"))) for row in candidates]
+    known = [(row, value) for row, value in known if value is not None]
+    if not known:
         return None
-    return max(candidates, key=lambda row: int(row.get("total_activity") or 0))
+    return max(known, key=lambda item: item[1])[0]
+
+
+def _numeric_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

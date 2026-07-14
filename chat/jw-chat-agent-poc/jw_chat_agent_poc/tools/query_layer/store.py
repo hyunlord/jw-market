@@ -156,55 +156,44 @@ class MartSnapshot:
 
     def value_or_none(self, record: MartRecord, period: str) -> float | None:
         if len(period) == 4 and period.isdigit():
-            values = [
-                value
-                for key in sorted(record.metric_history)
-                if key.startswith(f"{period}-")
-                for value in (self.value_or_none(record, key),)
-                if value is not None
-            ]
-            return sum(values) if values else None
+            matching_periods = [key for key in sorted(record.metric_history) if key.startswith(f"{period}-")]
+            values = [self.value_or_none(record, key) for key in matching_periods]
+            return sum(value for value in values if value is not None) if values and all(value is not None for value in values) else None
         row = record.metric_history.get(period)
         if not isinstance(row, dict) or _row_status(row) in FAILED_VALUE_STATUSES:
             return None
         value = row.get("raw_value")
         return float(value) if isinstance(value, int | float) else None
 
-    def value(self, record: MartRecord, period: str) -> float:
-        value = self.value_or_none(record, period)
-        return value if value is not None else 0.0
+    def value(self, record: MartRecord, period: str) -> float | None:
+        return self.value_or_none(record, period)
 
     def market_value_or_none(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
-        values = [
-            value
-            for record in self.market_records(market_id, source, measure)
-            for value in (self.value_or_none(record, period),)
-            if value is not None
-        ]
-        return sum(values) if values else None
+        records = self.market_records(market_id, source, measure)
+        values = [self.value_or_none(record, period) for record in records]
+        return sum(value for value in values if value is not None) if values and all(value is not None for value in values) else None
 
-    def market_value(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        value = self.market_value_or_none(market_id, period, source, measure)
-        return value if value is not None else 0.0
+    def market_value(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        return self.market_value_or_none(market_id, period, source, measure)
 
     def share_or_none(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
         value = self.value_or_none(record, period)
         if value is None:
             return None
+        total = self.market_value_or_none(market_id, period, source, measure)
+        if total is None or total == 0:
+            return None
         if len(period) == 4 and period.isdigit():
-            total = self.market_value_or_none(market_id, period, source, measure)
-            return value / total * 100 if total else 0.0
+            return value / total * 100
         row = record.metric_history.get(period)
         if isinstance(row, dict):
             share = row.get("ms")
             if isinstance(share, int | float):
                 return float(share)
-        total = self.market_value_or_none(market_id, period, source, measure)
-        return value / total * 100 if total else 0.0
+        return value / total * 100
 
-    def share(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        value = self.share_or_none(market_id, record, period, source, measure)
-        return value if value is not None else 0.0
+    def share(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        return self.share_or_none(market_id, record, period, source, measure)
 
     def rank(self, market_id: str, brand: str, period: str, source: str = "ubist", measure: str = "sales") -> int | None:
         rows = self.ranked_brands(market_id, period, source, measure)
@@ -226,7 +215,7 @@ class MartSnapshot:
                     "brand": record.brand_name,
                     "value": value,
                     "source_status": self.value_status(record, period),
-                    "ms_recent_pct": self.share(market_id, record, period, source, measure) if total is not None else 0.0,
+                    "ms_recent_pct": self.share_or_none(market_id, record, period, source, measure),
                     "company": record.company(),
                     "molecule": record.molecule(),
                 }
@@ -241,33 +230,34 @@ class MartSnapshot:
         rows: list[dict[str, Any]] = []
         for period in periods:
             value = self.value_or_none(record, period)
-            if value is None:
-                continue
             rows.append(
                 {
                     "period": period,
                     "value_krw": value,
-                    "value_억원": round(value / 100_000_000, 2),
-                    "ms_pct": self.share(market_id, record, period, source, measure),
-                    "rank": self.rank(market_id, brand, period, source, measure),
+                    "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                    "ms_pct": self.share_or_none(market_id, record, period, source, measure),
+                    "rank": self.rank(market_id, brand, period, source, measure) if value is not None else None,
                     "source_status": self.value_status(record, period),
                 }
             )
         return rows
 
     def market_series(self, market_id: str, periods: Iterable[str], source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
-        return [
-            {
-                "period": period,
-                "value_krw": self.market_value(market_id, period, source, measure),
-                "value_억원": round(self.market_value(market_id, period, source, measure) / 100_000_000, 2),
-            }
-            for period in periods
-        ]
+        rows: list[dict[str, Any]] = []
+        for period in periods:
+            value = self.market_value_or_none(market_id, period, source, measure)
+            rows.append(
+                {
+                    "period": period,
+                    "value_krw": value,
+                    "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                }
+            )
+        return rows
 
-    def hhi(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        shares = [row["ms_recent_pct"] for row in self.ranked_brands(market_id, period, source, measure)]
-        return sum(float(share) ** 2 for share in shares)
+    def hhi(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        shares = [row["ms_recent_pct"] for row in self.ranked_brands(market_id, period, source, measure) if row["ms_recent_pct"] is not None]
+        return sum(float(share) ** 2 for share in shares) if shares else None
 
 
 class StrategicMartReader(Protocol):
