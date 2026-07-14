@@ -4,6 +4,8 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -12,13 +14,25 @@ from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from pipeline.scripts.gates.release_evidence import (
+    BRAND_SOURCE_PROVENANCE,
+    MARKET_GROWTH_PROVENANCE,
+    SEGMENT_LEVELS,
+    SEGMENT_PROVENANCE,
+    collect_brand_source_evidence,
+    collect_market_growth_evidence,
+    collect_segment_sum_evidence,
+    write_evidence,
+)
+
 
 STRICT_LOG_PATTERN = re.compile(r"Traceback|(?:^|\s)ERROR(?:\s|:|$)|(?:^|\s)5[0-9]{2}(?:\s|$)")
-IDENTITY_FIELDS = ("market", "period", "source", "measure", "level")
 PERIOD_TOKEN = re.compile(r"^\d{4}(?:-(?:0[1-9]|1[0-2]|Q[1-4]))?$")
-TRACKED_GOLDEN_CONTRACTS = (
-    Path(__file__).resolve().parents[3] / "tests" / "api" / "api_golden_contracts.json"
-)
+TRACKED_GOLDEN_CONTRACTS = ROOT / "tests" / "api" / "api_golden_contracts.json"
 
 
 @dataclass(frozen=True)
@@ -250,48 +264,43 @@ def check_population(candidates_path: Path, census_path: Path, environment: str)
     )
 
 
-def _identity(item: dict[str, Any]) -> tuple[str, ...]:
-    missing = [field for field in IDENTITY_FIELDS if field not in item]
-    if missing:
-        raise ValueError(f"segment identity missing fields: {','.join(missing)}")
-    return tuple(str(item[field]) for field in IDENTITY_FIELDS)
+def _require_provenance(document: dict[str, Any], expected: str, label: str) -> list[str]:
+    return [] if document.get("provenance") == expected else [f"{label}: invalid provenance {document.get('provenance')!r}"]
 
 
-def check_segment_sums(
-    expected_path: Path,
-    observations_path: Path,
+def check_segment_sum_evidence(
+    evidence: dict[str, Any],
     abs_tol: float,
     environment: str,
 ) -> GateResult:
-    expected_document = _load_json(expected_path)
-    observations_document = _load_json(observations_path)
-    if not isinstance(expected_document, dict):
-        raise ValueError("expected identities document must be an object")
-    classification = expected_document.get("classification")
+    classification = evidence.get("classification")
     if classification not in {"census", "sample"}:
         raise ValueError("classification must be census or sample")
-    expected_items = expected_document.get("identities")
-    if not isinstance(expected_items, list) or not isinstance(observations_document, list):
-        raise ValueError("segment identities and observations must be arrays")
-    expected = {_identity(item) for item in expected_items if isinstance(item, dict)}
-    observed: dict[tuple[str, ...], dict[str, Any]] = {}
-    for item in observations_document:
+    observations = evidence.get("observations")
+    if not isinstance(observations, list):
+        raise ValueError("segment observations must be an array")
+    expected = set(SEGMENT_LEVELS)
+    observed: dict[str, dict[str, Any]] = {}
+    for item in observations:
         if not isinstance(item, dict):
             raise ValueError("segment observations must be objects")
-        key = _identity(item)
-        if key in observed:
-            raise ValueError(f"duplicate segment identity: {'|'.join(key)}")
-        observed[key] = item
+        level = str(item.get("level") or "")
+        if not level:
+            raise ValueError("segment observation level is required")
+        if level in observed:
+            raise ValueError(f"duplicate segment level: {level}")
+        observed[level] = item
 
-    details: list[str] = []
+    provenance_failures = _require_provenance(evidence, SEGMENT_PROVENANCE, "segment_sum")
+    details = list(provenance_failures)
     failures = 0
     missing = sorted(expected - set(observed))
     unexpected = sorted(set(observed) - expected)
     if missing:
-        details.append("missing identities: " + ",".join("|".join(item) for item in missing))
+        details.append("missing levels: " + ",".join(missing))
         failures += len(missing)
     if unexpected:
-        details.append("unexpected identities: " + ",".join("|".join(item) for item in unexpected))
+        details.append("unexpected levels: " + ",".join(unexpected))
         failures += len(unexpected)
     for key in sorted(expected & set(observed)):
         item = observed[key]
@@ -299,13 +308,17 @@ def check_segment_sums(
             segment_sum = float(item["segment_sum"])
             market_total = float(item["market_total"])
         except (KeyError, TypeError, ValueError) as exc:
-            details.append(f"{'|'.join(key)}: invalid numeric observation: {exc}")
+            details.append(f"{key}: invalid numeric observation: {exc}")
+            failures += 1
+            continue
+        if not all(math.isfinite(value) for value in (segment_sum, market_total)):
+            details.append(f"{key}: non-finite numeric observation")
             failures += 1
             continue
         difference = abs(segment_sum - market_total)
         if difference > abs_tol:
             details.append(
-                f"{'|'.join(key)}: sum mismatch segment_sum={segment_sum} "
+                f"{key}: sum mismatch segment_sum={segment_sum} "
                 f"market_total={market_total} difference={difference}"
             )
             failures += 1
@@ -315,10 +328,93 @@ def check_segment_sums(
         failures += 1
     return GateResult(
         gate="segment_sum",
-        classification=classification,
+        classification=str(classification),
         checked=len(observed),
         population=len(expected),
-        failures=failures,
+        failures=failures + len(provenance_failures),
+        tolerance=f"abs_tol={abs_tol},rel_tol=0",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
+def check_market_growth_evidence(
+    evidence: dict[str, Any],
+    expected_population: int,
+    abs_tol: float,
+    environment: str,
+) -> GateResult:
+    if evidence.get("classification") != "census":
+        raise ValueError("market growth evidence requires classification=census")
+    observations = evidence.get("observations")
+    if not isinstance(observations, list):
+        raise ValueError("market growth observations must be an array")
+    provenance_failures = _require_provenance(evidence, MARKET_GROWTH_PROVENANCE, "market_growth")
+    details = list(provenance_failures)
+    failures = 0
+    identities: set[tuple[str, str]] = set()
+    for item in observations:
+        if not isinstance(item, dict):
+            raise ValueError("market growth observations must be objects")
+        identity = (str(item.get("source") or ""), str(item.get("market") or ""))
+        if not all(identity):
+            raise ValueError("market growth observation identity is incomplete")
+        if identity in identities:
+            raise ValueError(f"duplicate market growth identity: {'|'.join(identity)}")
+        identities.add(identity)
+        if item.get("error"):
+            details.append(f"{'|'.join(identity)}: live request failed: {item['error']}")
+            failures += 1
+            continue
+        actual = item.get("actual")
+        expected = item.get("expected")
+        if expected is None:
+            details.append(f"{'|'.join(identity)}: independent expected value is unavailable")
+            failures += 1
+            continue
+        expected_end_period = item.get("expected_end_period")
+        actual_end_period = item.get("actual_end_period")
+        if expected_end_period is not None and actual_end_period != expected_end_period:
+            details.append(
+                f"{'|'.join(identity)}: growth endpoint mismatch "
+                f"actual={actual_end_period!r} expected={expected_end_period!r}"
+            )
+            failures += 1
+        try:
+            actual_value = float(actual)
+            expected_value = float(expected)
+        except (TypeError, ValueError) as exc:
+            details.append(f"{'|'.join(identity)}: invalid growth value: {exc}")
+            failures += 1
+            continue
+        if actual_value == -100.0:
+            details.append(f"{'|'.join(identity)}: -100 growth sentinel is forbidden")
+            failures += 1
+        if not all(math.isfinite(value) for value in (actual_value, expected_value)):
+            details.append(f"{'|'.join(identity)}: non-finite growth value")
+            failures += 1
+            continue
+        if abs(actual_value) >= 1000.0:
+            details.append(f"{'|'.join(identity)}: extreme growth value {actual_value}")
+            failures += 1
+        if abs(actual_value - expected_value) > abs_tol:
+            details.append(
+                f"{'|'.join(identity)}: growth mismatch actual={actual_value} "
+                f"expected={expected_value} difference={abs(actual_value - expected_value)}"
+            )
+            failures += 1
+    if len(observations) != expected_population:
+        details.append(f"population mismatch: got {len(observations)}, expected {expected_population}")
+        failures += abs(expected_population - len(observations)) or 1
+    if not observations:
+        details.append("empty market growth population is a failure")
+        failures += 1
+    return GateResult(
+        gate="market_growth",
+        classification="census",
+        checked=len(observations),
+        population=expected_population,
+        failures=failures + len(provenance_failures),
         tolerance=f"abs_tol={abs_tol},rel_tol=0",
         environment=environment,
         details=tuple(details),
@@ -595,32 +691,18 @@ def check_period_ranges(evidence_path: Path, environment: str) -> GateResult:
     )
 
 
-def check_brand_sources(
-    expectations_path: Path,
-    observations_path: Path,
+def check_brand_source_evidence(
+    evidence: dict[str, Any],
+    expected_population: int,
     environment: str,
 ) -> GateResult:
-    expectations = _load_json(expectations_path)
-    observations = _load_json(observations_path)
-    if not isinstance(expectations, dict) or expectations.get("classification") != "census":
-        raise ValueError("brand source expectations require classification=census")
-    dimensions: list[list[str]] = []
-    for field in ("brands", "views", "sources"):
-        values = expectations.get(field)
-        if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
-            raise ValueError(f"brand source expectations require non-empty string {field}")
-        if len(set(values)) != len(values):
-            raise ValueError(f"brand source expectation {field} must be unique")
-        dimensions.append(values)
+    if evidence.get("classification") != "census":
+        raise ValueError("brand source evidence requires classification=census")
+    observations = evidence.get("observations")
     if not isinstance(observations, list):
         raise ValueError("brand source observations must be an array")
-
-    expected = {
-        (brand, view, source)
-        for brand in dimensions[0]
-        for view in dimensions[1]
-        for source in dimensions[2]
-    }
+    provenance_failures = _require_provenance(evidence, BRAND_SOURCE_PROVENANCE, "brand_sources")
+    details = list(provenance_failures)
     observed: dict[tuple[str, str, str], dict[str, Any]] = {}
     for item in observations:
         if not isinstance(item, dict):
@@ -634,18 +716,16 @@ def check_brand_sources(
             raise ValueError("brand source observations require boolean listed and has_data")
         observed[identity] = item
 
-    details: list[str] = []
     failures = 0
-    missing = sorted(expected - set(observed))
-    unexpected = sorted(set(observed) - expected)
-    if missing:
-        details.append("missing identities: " + ",".join("|".join(item) for item in missing))
-        failures += len(missing)
-    if unexpected:
-        details.append("unexpected identities: " + ",".join("|".join(item) for item in unexpected))
-        failures += len(unexpected)
-    for identity in sorted(expected & set(observed)):
+    if len(observed) != expected_population:
+        details.append(f"population mismatch: got {len(observed)}, expected {expected_population}")
+        failures += abs(expected_population - len(observed)) or 1
+    for identity in sorted(observed):
         item = observed[identity]
+        if item.get("error"):
+            details.append(f"{'|'.join(identity)}: probe failed: {item['error']}")
+            failures += 1
+            continue
         if item["listed"] != item["has_data"]:
             details.append(
                 f"{'|'.join(identity)}: listed/data mismatch "
@@ -659,8 +739,8 @@ def check_brand_sources(
         gate="brand_sources",
         classification="census",
         checked=len(observed),
-        population=len(expected),
-        failures=failures,
+        population=expected_population,
+        failures=failures + len(provenance_failures),
         tolerance="exact listed == has_data, missing=fail",
         environment=environment,
         details=tuple(details),
@@ -760,6 +840,33 @@ def check_cause_assembly(evidence_path: Path, environment: str) -> GateResult:
     )
 
 
+def _run_segment_gate(args: argparse.Namespace) -> GateResult:
+    evidence = collect_segment_sum_evidence(args.base_url, timeout_seconds=args.timeout_seconds, env=dict(os.environ))
+    write_evidence(args.evidence_output, evidence)
+    return check_segment_sum_evidence(evidence, args.abs_tol, args.environment)
+
+
+def _run_market_growth_gate(args: argparse.Namespace) -> GateResult:
+    evidence = collect_market_growth_evidence(
+        args.base_url,
+        timeout_seconds=args.timeout_seconds,
+        max_workers=args.max_workers,
+        env=dict(os.environ),
+    )
+    write_evidence(args.evidence_output, evidence)
+    return check_market_growth_evidence(evidence, 902, args.abs_tol, args.environment)
+
+
+def _run_brand_source_gate(args: argparse.Namespace) -> GateResult:
+    evidence = collect_brand_source_evidence(
+        args.base_url,
+        timeout_seconds=args.timeout_seconds,
+        max_workers=args.max_workers,
+    )
+    write_evidence(args.evidence_output, evidence)
+    return check_brand_source_evidence(evidence, 100, args.environment)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fail-closed release acceptance gates")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -780,10 +887,19 @@ def _parser() -> argparse.ArgumentParser:
     population.add_argument("--environment", default="local")
 
     segment = subparsers.add_parser("segment-sum")
-    segment.add_argument("--expected-identities", type=Path, required=True)
-    segment.add_argument("--observations", type=Path, required=True)
+    segment.add_argument("--base-url", required=True)
+    segment.add_argument("--timeout-seconds", type=float, default=30.0)
     segment.add_argument("--abs-tol", type=float, default=0.01)
+    segment.add_argument("--evidence-output", type=Path)
     segment.add_argument("--environment", default="local")
+
+    market_growth = subparsers.add_parser("market-growth")
+    market_growth.add_argument("--base-url", required=True)
+    market_growth.add_argument("--timeout-seconds", type=float, default=30.0)
+    market_growth.add_argument("--max-workers", type=int, default=8)
+    market_growth.add_argument("--abs-tol", type=float, default=0.0001)
+    market_growth.add_argument("--evidence-output", type=Path)
+    market_growth.add_argument("--environment", default="local")
 
     growth = subparsers.add_parser("growth-windows")
     growth.add_argument("--evidence", type=Path, required=True)
@@ -795,8 +911,10 @@ def _parser() -> argparse.ArgumentParser:
     periods.add_argument("--environment", default="local")
 
     sources = subparsers.add_parser("brand-sources")
-    sources.add_argument("--expectations", type=Path, required=True)
-    sources.add_argument("--observations", type=Path, required=True)
+    sources.add_argument("--base-url", required=True)
+    sources.add_argument("--timeout-seconds", type=float, default=30.0)
+    sources.add_argument("--max-workers", type=int, default=8)
+    sources.add_argument("--evidence-output", type=Path)
     sources.add_argument("--environment", default="local")
 
     cause_assembly = subparsers.add_parser("cause-assembly")
@@ -816,28 +934,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "strict-logs": lambda: check_strict_logs(args.expected_pod, args.pod_log, args.environment),
         "population": lambda: check_population(args.candidates, args.census, args.environment),
-        "segment-sum": lambda: check_segment_sums(
-            args.expected_identities,
-            args.observations,
-            args.abs_tol,
-            args.environment,
-        ),
+        "segment-sum": lambda: _run_segment_gate(args),
+        "market-growth": lambda: _run_market_growth_gate(args),
         "growth-windows": lambda: check_growth_windows(
             args.evidence,
             args.abs_tol,
             args.environment,
         ),
         "period-ranges": lambda: check_period_ranges(args.evidence, args.environment),
-        "brand-sources": lambda: check_brand_sources(
-            args.expectations,
-            args.observations,
-            args.environment,
-        ),
+        "brand-sources": lambda: _run_brand_source_gate(args),
         "cause-assembly": lambda: check_cause_assembly(args.evidence, args.environment),
     }
     try:
         result = handlers[args.command]()
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         result = GateResult(
             gate=args.command.replace("-", "_"),
             classification="census",

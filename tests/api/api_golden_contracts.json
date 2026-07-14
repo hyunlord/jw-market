@@ -3,15 +3,15 @@
   "contracts": [
     {
       "id": "brands",
-      "canonical_sha256": "472b4c5ced445efd5a5fe7656c363fdb7d5abd8e4cbf802b2077180c02937b6b",
+      "canonical_sha256": "77917362f9ca356bc6a596abcb59d5b7b8e418c45ca7599d5c618852866fa6ab",
       "request": {
         "method": "GET",
         "path": "/jw-market-backend-api/api/brands"
       },
-      "truth_basis": "Exactly the 25 cache_brands default members; each atc_codes value matches catalog_ml_market.atc_codes_json.",
+      "truth_basis": "Exactly the 25 cache_brands default members; general_sources and strategic_sources match the independently probed data-serving contexts for all 100 brand-view-source cells.",
       "measured_at": "2026-07-14",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "not deployed; generated with candidate F-080 09b26f213dc9eeef88c8d1b63fc69370dd5fe46a"
+      "runtime_provenance": "not deployed; generated with candidate F-092 v2 91187f8f420c9179e213857b49e1ddd4e5f60d27"
     },
     {
       "id": "market_status",

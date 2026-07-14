@@ -28,20 +28,19 @@ used because whitespace and object-key order are not part of the API contract.
 - Reference runtime image digest for unchanged live payloads:
   `sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6`
 - Runtime Python: `3.11.15`
-- `cache_brands` default-row build SHA:
-  `c3e08440d64c49c8c0212e812407474800149bb8`
 - Candidate commits: F-079 `a9cc0ca2dec974d7af29e106b43e11c2c304f962`,
-  F-080 `09b26f213dc9eeef88c8d1b63fc69370dd5fe46a`
+  F-080 `09b26f213dc9eeef88c8d1b63fc69370dd5fe46a`, and F-092 v2
+  `91187f8f420c9179e213857b49e1ddd4e5f60d27`
 
-The F-079 and F-080 candidate hashes were generated without deploying those
-commits. The candidate code ran against the database above, while unchanged
-payloads were re-read from the reference runtime. Do not describe all four as
-having been measured from one deployed image.
+The changed candidate hashes were generated without deploying those commits.
+The candidate code ran against the database above, while unchanged payloads
+were re-read from the reference runtime. Do not describe all four as having
+been measured from one deployed image.
 
 ## `/api/brands`
 
 - Canonical SHA-256:
-  `472b4c5ced445efd5a5fe7656c363fdb7d5abd8e4cbf802b2077180c02937b6b`
+  `77917362f9ca356bc6a596abcb59d5b7b8e418c45ca7599d5c618852866fa6ab`
 - Request: `GET /jw-market-backend-api/api/brands`
 - Headers: no custom request headers
 - Truth basis:
@@ -49,7 +48,11 @@ having been measured from one deployed image.
     `cache_brands.response_json` for `query_key='default'`.
   - Each member's `atc_codes` equals
     `catalog_ml_market.atc_codes_json`; 25 of 25 matched.
-  - Rank and all non-ATC fields are unchanged from the prior payload.
+  - `general_sources` and `strategic_sources` match the independently probed
+    data-serving contexts in both directions for all 100 brand/view/source
+    cells.
+  - Seventeen of 25 brands have source metadata changes from the prior
+    single-list payload; the two view-specific source keys are intentional.
 
 `cache_brands.default` is the serving membership authority. `is_jw` and
 `is_target` happen to describe the same 25 names in the recorded database

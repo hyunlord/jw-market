@@ -5,9 +5,11 @@ release checks. Every command emits the machine-readable acceptance fields and
 returns a non-zero status for missing input, an empty census, mismatched API
 goldens, strict log matches, or incomplete segment levels.
 
-The golden command calls the supplied runtime directly. Other commands consume
-evidence captured by deployment automation and do not open cluster or database
-connections themselves.
+The golden, segment-sum, market-growth, and brand-source commands call the
+supplied runtime directly. Segment and growth expectations come from mart SQL
+inside an explicitly read-only transaction. Optional `--evidence-output`
+files are audit output only; none of these commands accepts caller-produced
+observations as gate input.
 
 ## Safe push
 
@@ -66,16 +68,44 @@ zero.
 
 ## Segment sums
 
-The segment-sum command compares observed `segment_sum` and `market_total`
-values using `abs_tol=0.01, rel_tol=0`. Its expected identity file declares
-whether the check is a `sample` or full `census`. Every expected combination of
-market, period, source, measure, and level must be present; a correct value at
-one level cannot hide a missing level.
+The segment-sum command reads Class, Molecule, and Ox/Gx from the live
+`/api/cause/리바로` response and independently reads the ml_006 UBIST sales
+total from `mart_strategic_ml_market_metric`. All three levels must reconcile
+with `abs_tol=0.01, rel_tol=0`; one correct level cannot hide a missing or
+incorrect level, and non-finite values fail before tolerance is evaluated.
+
+```bash
+DB_HOST=... DB_PORT=3306 DB_USER=... DB_PASSWORD=... DB_NAME=... \
+python3 pipeline/scripts/gates/release_acceptance.py segment-sum \
+  --base-url http://candidate-runtime:8000 \
+  --evidence-output /tmp/segment-sum.json \
+  --environment runtime
+```
 
 The initial tracked runner supports representative samples. A full mart census
 should be scheduled as a separate nightly job because clean-clone CI has no d2
 credentials and the full cell scan is intentionally not disguised as a local
 unit test.
+
+## Market growth census
+
+The market-growth command enumerates the complete UBIST and IQVIA sales
+population from `mart_general_market_metric`, derives the expected fixed-period
+growth from each mart series (`n=60` monthly or `n=20` quarterly), and compares
+it with a live `/api/dynamic-market` response. The independent calculation uses
+the latest numeric endpoint and the exact five-year baseline when present,
+otherwise the earliest numeric prior period, without shortening the exponent.
+An empty or incomplete 902-cell population, unavailable independent expected
+value, endpoint mismatch, request error, non-finite value, `-100` sentinel,
+extreme value, or formula mismatch fails the command.
+
+```bash
+DB_HOST=... DB_PORT=3306 DB_USER=... DB_PASSWORD=... DB_NAME=... \
+python3 pipeline/scripts/gates/release_acceptance.py market-growth \
+  --base-url http://candidate-runtime:8000 \
+  --evidence-output /tmp/market-growth.json \
+  --environment runtime
+```
 
 ## Growth contribution windows
 
@@ -94,21 +124,22 @@ python3 pipeline/scripts/gates/release_acceptance.py growth-windows \
 
 ## Brand source census
 
-The brand-source gate compares the complete Cartesian population declared by
-the expectations file with independently captured API observations. Every
-brand, view, and source combination must be present exactly once, and each
-observation must report whether the source was listed and whether the API
-actually returned market data.
+The brand-source gate reads the 25 live default brands and probes all 100
+brand/view/source combinations. The listed side comes from `/api/brands`; the
+data-presence side uses each exact search context and the formal
+`/api/deep-analysis/{brand}` contract (`view_kind`, `market_id`, and `source`).
+Every combination must be present exactly once and `listed` must equal the
+formal response's boolean `market_meta.has_market_data`.
 
 ```bash
 python3 pipeline/scripts/gates/release_acceptance.py brand-sources \
-  --expectations /path/to/source_census_expectations.json \
-  --observations /path/to/source_census_observations.json \
+  --base-url http://candidate-runtime:8000 \
+  --evidence-output /tmp/brand-sources.json \
   --environment production-read-only
 ```
 
-The command fails on empty input, missing or unexpected identities, duplicate
-identities, and either direction of `listed != has_data`.
+The command fails on an empty or incomplete population, duplicate identities,
+probe errors, and either direction of `listed != has_data`.
 
 ## Cause assembly equivalence
 

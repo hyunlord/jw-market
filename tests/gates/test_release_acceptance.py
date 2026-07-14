@@ -12,7 +12,20 @@ from threading import Thread
 
 import pytest
 
-from pipeline.scripts.gates.release_acceptance import check_goldens
+from pipeline.scripts.gates.release_acceptance import (
+    check_brand_source_evidence,
+    check_goldens,
+    check_market_growth_evidence,
+    check_segment_sum_evidence,
+)
+from pipeline.scripts.gates.release_evidence import (
+    BRAND_SOURCE_PROVENANCE,
+    MARKET_GROWTH_PROVENANCE,
+    SEGMENT_PROVENANCE,
+    collect_brand_source_evidence,
+    collect_market_growth_evidence,
+    collect_segment_sum_evidence,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -471,6 +484,9 @@ def test_tracked_golden_contracts_have_exact_identity_set_and_truth_metadata() -
         "dynamic_general_c10a1_livalo",
     }
     assert len(contracts) == 4
+    assert next(contract for contract in contracts if contract["id"] == "brands")["canonical_sha256"] == (
+        "77917362f9ca356bc6a596abcb59d5b7b8e418c45ca7599d5c618852866fa6ab"
+    )
     for contract in contracts:
         assert len(contract["canonical_sha256"]) == 64
         assert contract["request"]["method"] in {"GET", "POST"}
@@ -511,85 +527,320 @@ def test_golden_gate_passes_only_when_all_live_responses_match(tmp_path: Path) -
 
 
 def test_segment_sum_sample_requires_every_expected_level(tmp_path: Path) -> None:
-    expected = _write_json(
-        tmp_path / "expected.json",
+    result = check_segment_sum_evidence(
         {
             "classification": "sample",
-            "identities": [
-                {
-                    "market": "C10A1",
-                    "period": "2026-05",
-                    "source": "ubist",
-                    "measure": "sales",
-                    "level": level,
-                }
-                for level in ("form", "molecule")
+            "provenance": SEGMENT_PROVENANCE,
+            "observations": [
+                {"level": "class", "segment_sum": 100.0, "market_total": 100.0},
             ],
         },
-    )
-    observations = _write_json(
-        tmp_path / "observations.json",
-        [
-            {
-                "market": "C10A1",
-                "period": "2026-05",
-                "source": "ubist",
-                "measure": "sales",
-                "level": "form",
-                "segment_sum": 100.0,
-                "market_total": 100.0,
-            }
-        ],
+        0.01,
+        "failure-injection",
     )
 
-    result = _run(
-        "segment-sum",
-        "--expected-identities",
-        str(expected),
-        "--observations",
-        str(observations),
-        "--abs-tol",
-        "0.01",
-    )
-
-    assert result.returncode == 1
-    assert "missing identities:" in result.stdout
-    assert "gate=segment_sum" in result.stdout
-    assert "classification=sample" in result.stdout
-    assert "checked=1" in result.stdout
-    assert "population=2" in result.stdout
+    assert result.exit_code == 1
+    assert "missing levels:" in "\n".join(result.details)
+    assert result.checked == 1
+    assert result.population == 3
 
 
 def test_segment_sum_uses_absolute_tolerance_without_hiding_missing_levels(tmp_path: Path) -> None:
-    identity = {
-        "market": "C10A1",
-        "period": "2026-05",
-        "source": "ubist",
-        "measure": "sales",
-        "level": "form",
-    }
-    expected = _write_json(
-        tmp_path / "expected.json",
-        {"classification": "sample", "identities": [identity]},
-    )
-    observations = _write_json(
-        tmp_path / "observations.json",
-        [{**identity, "segment_sum": 100.009, "market_total": 100.0}],
+    result = check_segment_sum_evidence(
+        {
+            "classification": "census",
+            "provenance": SEGMENT_PROVENANCE,
+            "observations": [
+                {"level": "class", "segment_sum": 100.009, "market_total": 100.0},
+                {"level": "molecule", "segment_sum": 100.0, "market_total": 100.0},
+                {"level": "ox_gx", "segment_sum": 100.0, "market_total": 100.0},
+            ],
+        },
+        0.01,
+        "local",
     )
 
+    assert result.exit_code == 0
+    assert result.tolerance == "abs_tol=0.01,rel_tol=0"
+    assert result.failures == 0
+
+
+def test_segment_sum_cli_rejects_caller_supplied_evidence_files(tmp_path: Path) -> None:
     result = _run(
         "segment-sum",
+        "--base-url",
+        "http://127.0.0.1:1",
         "--expected-identities",
-        str(expected),
+        str(tmp_path / "expected.json"),
         "--observations",
-        str(observations),
-        "--abs-tol",
-        "0.01",
+        str(tmp_path / "observations.json"),
     )
 
-    assert result.returncode == 0
-    assert "tolerance=abs_tol=0.01,rel_tol=0" in result.stdout
-    assert "failures=0" in result.stdout
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_segment_sum_runtime_collector_compares_live_payload_to_sql_total() -> None:
+    def fake_fetch(base_url: str, path: str, **kwargs: object) -> object:
+        assert base_url == "http://runtime"
+        assert path.startswith("/jw-market-backend-api/api/cause/")
+        return {
+            "data": {
+                "analysis_levels": {
+                    "data": {
+                        level: {"segments": [{"name": "전체", "value": 100.0}, {"name": "A", "value": 100.0}]}
+                        for level in ("Class", "Molecule", "Ox/Gx")
+                    }
+                }
+            }
+        }
+
+    def fake_sql(query: str, params: dict[str, object], **kwargs: object) -> list[dict[str, object]]:
+        assert "mart_strategic_ml_market_metric" in query
+        assert "WHERE ml_id = %(ml_id)s" in query
+        assert params["ml_id"] == "ml_006"
+        return [{"market_size_series": json.dumps({"2026-05": 100.0})}]
+
+    evidence = collect_segment_sum_evidence(
+        "http://runtime",
+        timeout_seconds=1.0,
+        env={},
+        fetcher=fake_fetch,
+        sql_fetcher=fake_sql,
+    )
+    result = check_segment_sum_evidence(evidence, 0.01, "unit")
+
+    assert evidence["provenance"] == SEGMENT_PROVENANCE
+    assert result.exit_code == 0
+
+
+def test_segment_sum_rejects_expected_perturbation_failure_injection() -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": SEGMENT_PROVENANCE,
+        "observations": [
+            {"level": "class", "segment_sum": 99.0, "market_total": 100.0},
+            {"level": "molecule", "segment_sum": 100.0, "market_total": 100.0},
+            {"level": "ox_gx", "segment_sum": 100.0, "market_total": 100.0},
+        ],
+    }
+
+    result = check_segment_sum_evidence(evidence, 0.01, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("class: sum mismatch" in detail for detail in result.details)
+
+
+def test_segment_sum_rejects_non_finite_values_failure_injection() -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": SEGMENT_PROVENANCE,
+        "observations": [
+            {"level": "class", "segment_sum": float("nan"), "market_total": 100.0},
+            {"level": "molecule", "segment_sum": 100.0, "market_total": 100.0},
+            {"level": "ox_gx", "segment_sum": 100.0, "market_total": 100.0},
+        ],
+    }
+
+    result = check_segment_sum_evidence(evidence, 0.01, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("class: non-finite numeric observation" in detail for detail in result.details)
+
+
+def test_market_growth_runtime_collector_recomputes_formula_from_sql() -> None:
+    series = {
+        f"{2021 + (index + 4) // 12:04d}-{(index + 4) % 12 + 1:02d}": 100.0
+        for index in range(61)
+    }
+    series["2026-05"] = 110.0
+
+    def fake_sql(query: str, params: dict[str, object], **kwargs: object) -> list[dict[str, object]]:
+        assert "mart_general_market_metric" in query
+        return [{"source": "ubist", "atc4_code": "A10N1", "market_size_series": json.dumps(series)}]
+
+    def fake_fetch(base_url: str, path: str, **kwargs: object) -> object:
+        assert path == "/jw-market-backend-api/api/dynamic-market"
+        assert kwargs["body"] == {
+            "view": "general",
+            "source": "ubist",
+            "measure": "sales",
+            "filters": {"atc4": ["A10N1"]},
+        }
+        return {
+            "result": {
+                "data": {
+                    "market_size_series": [
+                        {
+                            "period": "2026-05",
+                            "mom_growth_pct": ((110.0 / 100.0) ** (1 / 60) - 1) * 100,
+                        }
+                    ]
+                }
+            }
+        }
+
+    evidence = collect_market_growth_evidence(
+        "http://runtime",
+        timeout_seconds=1.0,
+        max_workers=1,
+        env={},
+        fetcher=fake_fetch,
+        sql_fetcher=fake_sql,
+    )
+    result = check_market_growth_evidence(evidence, 1, 0.0001, "unit")
+
+    assert evidence["provenance"] == MARKET_GROWTH_PROVENANCE
+    assert result.exit_code == 0
+
+
+def test_market_growth_runtime_collector_uses_latest_available_endpoint() -> None:
+    expected = ((121.0 / 100.0) ** (1 / 60) - 1) * 100
+    series = {
+        "2021-05": None,
+        "2022-05": 100.0,
+        "2026-05": 121.0,
+        "2026-06": None,
+    }
+
+    def fake_sql(query: str, params: dict[str, object], **kwargs: object) -> list[dict[str, object]]:
+        return [{"source": "ubist", "atc4_code": "A10N1", "market_size_series": series}]
+
+    def fake_fetch(base_url: str, path: str, **kwargs: object) -> object:
+        return {
+            "result": {
+                "data": {
+                    "market_size_series": [
+                        {"period": "2022-05", "mom_growth_pct": None},
+                        {"period": "2026-05", "mom_growth_pct": expected},
+                    ]
+                }
+            }
+        }
+
+    evidence = collect_market_growth_evidence(
+        "http://runtime",
+        timeout_seconds=1.0,
+        max_workers=1,
+        env={},
+        fetcher=fake_fetch,
+        sql_fetcher=fake_sql,
+    )
+
+    observation = evidence["observations"][0]
+    assert observation["expected"] == pytest.approx(expected)
+    assert observation["expected_end_period"] == "2026-05"
+    assert observation["expected_baseline_period"] == "2022-05"
+    assert check_market_growth_evidence(evidence, 1, 0.0001, "unit").exit_code == 0
+
+
+def test_market_growth_rejects_negative_100_failure_injection() -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": MARKET_GROWTH_PROVENANCE,
+        "observations": [
+            {"source": "ubist", "market": "A10N1", "expected": 1.0, "actual": -100.0, "error": None}
+        ],
+    }
+
+    result = check_market_growth_evidence(evidence, 1, 0.0001, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("-100 growth sentinel is forbidden" in detail for detail in result.details)
+
+
+def test_market_growth_rejects_independent_expected_perturbation() -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": MARKET_GROWTH_PROVENANCE,
+        "observations": [
+            {"source": "ubist", "market": "A10N1", "expected": 1.0, "actual": 2.0, "error": None}
+        ],
+    }
+
+    result = check_market_growth_evidence(evidence, 1, 0.0001, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("growth mismatch" in detail for detail in result.details)
+
+
+def test_market_growth_rejects_missing_independent_expected_value() -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": MARKET_GROWTH_PROVENANCE,
+        "observations": [
+            {
+                "source": "ubist",
+                "market": "A10N1",
+                "expected": None,
+                "actual": None,
+                "error": None,
+            }
+        ],
+    }
+
+    result = check_market_growth_evidence(evidence, 1, 0.0001, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("independent expected value is unavailable" in detail for detail in result.details)
+
+
+def test_market_growth_maps_iqvia_database_source_to_public_request_source() -> None:
+    series = {f"2021-Q{index:02d}": 100.0 for index in range(21)}
+    series["2021-Q20"] = 121.0
+
+    def fake_sql(query: str, params: dict[str, object], **kwargs: object) -> list[dict[str, object]]:
+        return [{"source": "iqvia_nsa", "atc4_code": "A10N1", "market_size_series": series}]
+
+    def fake_fetch(base_url: str, path: str, **kwargs: object) -> object:
+        assert kwargs["body"] == {
+            "view": "general",
+            "source": "iqvia",
+            "measure": "sales",
+            "filters": {"atc4": ["A10N1"]},
+        }
+        return {
+            "result": {
+                "data": {
+                    "market_size_series": [
+                        {
+                            "period": "2021-Q20",
+                            "mom_growth_pct": ((121.0 / 100.0) ** (1 / 20) - 1) * 100,
+                        }
+                    ]
+                }
+            }
+        }
+
+    evidence = collect_market_growth_evidence(
+        "http://runtime",
+        timeout_seconds=1.0,
+        max_workers=1,
+        env={},
+        fetcher=fake_fetch,
+        sql_fetcher=fake_sql,
+    )
+
+    assert check_market_growth_evidence(evidence, 1, 0.0001, "unit").exit_code == 0
+
+
+def test_runtime_collection_error_is_rendered_as_fail_closed_gate_result() -> None:
+    result = _run(
+        "segment-sum",
+        "--base-url",
+        "http://127.0.0.1:1",
+        "--timeout-seconds",
+        "0.01",
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "gate=segment_sum" in result.stdout
+    assert "checked=0" in result.stdout
+    assert "failures=1" in result.stdout
+    assert "exit_code=1" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 def test_gate_sources_do_not_contain_known_fail_open_shell_patterns() -> None:
@@ -636,56 +887,117 @@ def _brand_source_observations() -> list[dict[str, object]]:
 
 
 def test_brand_sources_gate_requires_bidirectional_census_parity(tmp_path: Path) -> None:
-    result = _run(
-        "brand-sources",
-        "--expectations",
-        str(_write_json(tmp_path / "expectations.json", _brand_source_expectations())),
-        "--observations",
-        str(_write_json(tmp_path / "observations.json", _brand_source_observations())),
-        "--environment",
+    result = check_brand_source_evidence(
+        {
+            "classification": "census",
+            "provenance": BRAND_SOURCE_PROVENANCE,
+            "observations": _brand_source_observations(),
+        },
+        8,
         "fixture",
     )
 
-    assert result.returncode == 0
-    assert "gate=brand_sources" in result.stdout
-    assert "classification=census" in result.stdout
-    assert "checked=8" in result.stdout
-    assert "population=8" in result.stdout
-    assert "failures=0" in result.stdout
+    assert result.exit_code == 0
+    assert result.checked == 8
+    assert result.population == 8
+    assert result.failures == 0
 
 
 def test_brand_sources_gate_failure_injection_exits_one(tmp_path: Path) -> None:
     observations = _brand_source_observations()
     observations[0]["listed"] = not observations[0]["has_data"]
-    result = _run(
-        "brand-sources",
-        "--expectations",
-        str(_write_json(tmp_path / "expectations.json", _brand_source_expectations())),
-        "--observations",
-        str(_write_json(tmp_path / "observations.json", observations)),
-        "--environment",
+    result = check_brand_source_evidence(
+        {
+            "classification": "census",
+            "provenance": BRAND_SOURCE_PROVENANCE,
+            "observations": observations,
+        },
+        8,
         "failure-injection",
     )
 
-    assert result.returncode == 1
-    assert "listed/data mismatch" in result.stdout
-    assert "failures=1" in result.stdout
-    assert "exit_code=1" in result.stdout
+    assert result.exit_code == 1
+    assert any("listed/data mismatch" in detail for detail in result.details)
+    assert result.failures == 1
 
 
 def test_brand_sources_gate_rejects_empty_or_incomplete_population(tmp_path: Path) -> None:
-    result = _run(
-        "brand-sources",
-        "--expectations",
-        str(_write_json(tmp_path / "expectations.json", _brand_source_expectations())),
-        "--observations",
-        str(_write_json(tmp_path / "observations.json", [])),
+    result = check_brand_source_evidence(
+        {"classification": "census", "provenance": BRAND_SOURCE_PROVENANCE, "observations": []},
+        8,
+        "failure-injection",
     )
 
-    assert result.returncode == 1
-    assert "empty observation population is a failure" in result.stdout
-    assert "checked=0" in result.stdout
-    assert "population=8" in result.stdout
+    assert result.exit_code == 1
+    assert any("empty observation population is a failure" in detail for detail in result.details)
+    assert result.checked == 0
+    assert result.population == 8
+
+
+def test_brand_sources_cli_rejects_caller_supplied_evidence_files(tmp_path: Path) -> None:
+    result = _run(
+        "brand-sources",
+        "--base-url",
+        "http://127.0.0.1:1",
+        "--expectations",
+        str(tmp_path / "expectations.json"),
+        "--observations",
+        str(tmp_path / "observations.json"),
+    )
+
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_brand_sources_runtime_collector_probes_each_listed_context() -> None:
+    deep_paths: list[str] = []
+
+    def fake_fetch(base_url: str, path: str, **kwargs: object) -> object:
+        if path == "/jw-market-backend-api/api/brands":
+            return [{"brand": "리바로", "general_sources": ["UBIST"], "strategic_sources": []}]
+        if path.startswith("/jw-market-backend-api/api/brands?"):
+            return [
+                {
+                    "brand": "리바로",
+                    "contexts": [
+                        {"view_kind": "general", "market_id": "C10A1", "has_market_data": True},
+                        {"view_kind": "strategic_ml", "market_id": "ml_006", "has_market_data": True},
+                    ],
+                }
+            ]
+        deep_paths.append(path)
+        assert path.startswith("/jw-market-backend-api/api/deep-analysis/")
+        assert "view=" not in path
+        assert "view_kind=" in path
+        assert "market_id=" in path
+        assert "source=" in path
+        if "view_kind=general" in path and "source=ubist" in path:
+            return {"market_meta": {"has_market_data": True}}
+        return {"detail": {"error": "source_not_available"}}
+
+    evidence = collect_brand_source_evidence(
+        "http://runtime",
+        timeout_seconds=1.0,
+        max_workers=1,
+        fetcher=fake_fetch,
+    )
+    result = check_brand_source_evidence(evidence, 4, "unit")
+
+    assert evidence["provenance"] == BRAND_SOURCE_PROVENANCE
+    assert result.exit_code == 0
+    assert deep_paths
+
+
+def test_gate_runtime_evidence_producer_is_tracked() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "pipeline/scripts/gates/release_evidence.py"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "pipeline/scripts/gates/release_evidence.py"
 
 
 def _cause_assembly_evidence(tmp_path: Path, *, mutate_after: bool = False) -> Path:
