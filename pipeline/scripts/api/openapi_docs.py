@@ -745,6 +745,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
     "view": "general",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
+    "csd_market": "LIVALO",
     "mode": "absolute",
     "window": {"start": "2024Q1", "end": "2025Q4"},
 }
@@ -937,7 +938,8 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
     200: {
         "description": (
             "활동·처방 추세. CSD 활동량은 csd_channel_dynamics_stage에서 jw_channel='TOTAL'(region=TOTAL)만 사용하며 월간 activity_months 축으로 반환합니다. "
-            "IQVIA mart의 sales/unit/counting_unit/dosage_unit은 기존 quarters 분기축을 유지합니다."
+            "IQVIA mart의 sales/unit/counting_unit/dosage_unit은 기존 quarters 분기축을 유지합니다. "
+            "csd_market 미지정 시 매핑된 CSD 시장 전체와 기간 union 합산을 반환하며, 기여하지 않은 시장은 0으로 채우지 않습니다."
         ),
         "content": {
             "application/json": {
@@ -953,6 +955,11 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                     "properties": {
                                         **BRAND_ACTIVITY_SCOPE_SCHEMA["properties"],
                                         "csd_market": {"type": "string", "description": "mart product code overlap으로 결정한 CSD 시장 표시명."},
+                                        "csd_markets": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "매핑된 CSD 시장 목록. 시장이 하나여도 1원소 배열입니다.",
+                                        },
                                         "quarters": {"type": "array", "items": {"type": "string"}, "description": "Rx measure 분기축. 예: 2025-Q4."},
                                         "activity_months": {"type": "array", "items": {"type": "string"}, "description": "CSD activity 월간축. 요청 분기 window 안의 YYYY-MM 목록."},
                                         "mode": {"type": "string", "description": "absolute 또는 share."},
@@ -963,6 +970,14 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                     "description": "브랜드별 activity/Rx series. is_selected 브랜드는 굵게, is_jw는 강조 표시 대상입니다.",
                                 },
                                 "market_totals": {"type": "object", "description": "activity와 Rx measure별 시장 총합 series."},
+                                "series_by_csd_market": {
+                                    "type": "object",
+                                    "description": "CSD 시장별 월간 activity. 각 시장의 실제 관측 기간만 포함합니다.",
+                                },
+                                "aggregate": {
+                                    "type": "object",
+                                    "description": "기간 union 합산과 시장별 가용 범위, 시점별 기여 시장 목록.",
+                                },
                             },
                         },
                         "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
@@ -974,6 +989,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                             "view": "general",
                             "market_id": "C10A1",
                             "csd_market": "LIVALO",
+                            "csd_markets": ["LIVALO", "LIVALO FENO"],
                             "quarters": ["2025-Q1", "2025-Q2"],
                             "activity_months": ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06"],
                             "mode": "absolute",
@@ -993,12 +1009,25 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                             }
                         ],
                         "market_totals": {"activity": {"2025-01": 90.7, "2025-02": 99.3}, "sales": {"2025-Q1": 2675.0}},
+                        "series_by_csd_market": {
+                            "LIVALO": {
+                                "available": {"start": "2023-06", "end": "2026-05"},
+                                "market_totals": {"2025-01": 90.7},
+                                "by_entity": {"리바로": {"2025-01": 40.0}},
+                            }
+                        },
+                        "aggregate": {
+                            "series": {"market_totals": {"2025-01": 90.7}, "by_entity": {"리바로": {"2025-01": 40.0}}},
+                            "available": {"LIVALO": {"start": "2023-06", "end": "2026-05"}},
+                            "contributing_markets_by_period": {"2025-01": ["LIVALO"]},
+                        },
                     }
                 },
             }
         },
     },
     400: {"description": "view/selected_brand/filter/window 조합이 유효하지 않음"},
+    422: {"description": "요청 csd_market이 매핑된 시장 목록에 없음"},
 }
 
 

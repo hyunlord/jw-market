@@ -21,6 +21,15 @@ class CsdTimeseriesInputError(RuntimeError):
     """Raised when a CSD timeseries request cannot be parsed."""
 
 
+class CsdMarketFilterError(RuntimeError):
+    """Raised when a requested CSD market is not available for the brand."""
+
+    def __init__(self, requested: str, *, available: Sequence[str]) -> None:
+        super().__init__(f"unsupported csd_market: {requested}")
+        self.requested = requested
+        self.available = tuple(available)
+
+
 class CsdTimeseriesNoMappingError(RuntimeError):
     """Raised when the selected brand has no product in any CSD market."""
 
