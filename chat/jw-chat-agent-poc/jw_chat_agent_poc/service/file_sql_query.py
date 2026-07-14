@@ -564,8 +564,31 @@ def _resolve_deterministic_select(
     """Resolve file-query slots independently and never invent an ungrounded plan."""
 
     best_failure = DeterministicPlanResolution(None, (), ("요청한 조건",))
+    requested_sheet = _requested_sheet_name(question, schemas)
+    scoped_schemas = tuple(schemas)
+    if requested_sheet:
+        scoped_schemas = tuple(
+            schema
+            for schema in schemas
+            if str(schema.get("sheet_name") or "").strip().casefold()
+            == requested_sheet.casefold()
+        )
+        if not scoped_schemas:
+            available = ", ".join(
+                dict.fromkeys(
+                    str(schema.get("sheet_name") or "").strip()
+                    for schema in schemas
+                    if str(schema.get("sheet_name") or "").strip()
+                )
+            )
+            suffix = f" (사용 가능: {available})" if available else ""
+            return DeterministicPlanResolution(
+                None,
+                (),
+                (f"시트 '{requested_sheet}'{suffix}",),
+            )
 
-    for schema in schemas:
+    for schema in scoped_schemas:
         columns = _schema_columns(schema)
         by_source = {
             str(item.get("source_name") or "").strip().casefold(): str(item.get("query_name") or "").strip()
@@ -596,6 +619,9 @@ def _resolve_deterministic_select(
 
         if not _is_aggregate_question(question):
             continue
+
+        if _is_unscoped_bare_aggregate(question):
+            return DeterministicPlanResolution(None, (), ("집계 대상",))
 
         resolved: list[str] = []
         missing: list[str] = []
@@ -691,6 +717,8 @@ def _measure_label(intent: str) -> str:
 
 def _missing_plan_answer(missing_slots: Sequence[str]) -> str:
     labels = tuple(dict.fromkeys(value for value in missing_slots if value))
+    if labels == ("집계 대상",):
+        return "무엇의 합계인지 명확하지 않습니다. 제조사 또는 측정 항목을 지정해 주세요."
     if len(labels) == 1 and labels[0] != "요청한 조건":
         return file_absence_answer("unsupported", subject=labels[0])
     detail = ", ".join(labels) if labels else "요청한 조건"
@@ -759,7 +787,7 @@ def _file_comparison_subjects(question: str) -> tuple[str, ...]:
 
 def _single_manufacturer_subject(question: str) -> str:
     matches = re.finditer(
-        r"([가-힣A-Za-z0-9_-]+)(?:의|에서)\s*(?:sell[ -]?out|매출|금액|합계|총액)",
+        r"([가-힣A-Za-z0-9_-]+(?:제약|약품))(?:의|은|는|이|가|에서)?\s*(?:sell[ -]?out|매출|금액|합계|총액)",
         question,
         re.IGNORECASE,
     )
@@ -768,6 +796,41 @@ def _single_manufacturer_subject(question: str) -> str:
         if not re.fullmatch(r"[A-Z]\d{2}[A-Z]\d", candidate, re.IGNORECASE):
             return candidate
     return ""
+
+
+def _requested_sheet_name(
+    question: str,
+    schemas: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    known_names = sorted(
+        {
+            str(schema.get("sheet_name") or "").strip()
+            for schema in schemas
+            if str(schema.get("sheet_name") or "").strip()
+        },
+        key=len,
+        reverse=True,
+    )
+    for name in known_names:
+        if re.search(rf"(?<![0-9A-Za-z가-힣]){re.escape(name)}\s*시트", question, re.IGNORECASE):
+            return name
+    match = re.search(
+        r"(?<![0-9A-Za-z가-힣_.-])([0-9A-Za-z가-힣_.-]+)\s*시트(?:에서|의|는|은|이|가)?",
+        question,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _is_unscoped_bare_aggregate(question: str) -> bool:
+    normalized = " ".join(question.split())
+    if _question_measure_intent(normalized) or _requested_measure_label(normalized):
+        return False
+    if month_keys(normalized) or _single_manufacturer_subject(normalized):
+        return False
+    if _file_query_intent(normalized) or _atc4_code(normalized) or _requested_sheet_name(normalized):
+        return False
+    return bool(re.fullmatch(r"(?:합계|총계|합산|평균|총액|집계)(?:는|은|이|가)?[?.,!]?", normalized))
 
 
 def _file_query_intent(question: str) -> str | None:
@@ -1092,21 +1155,21 @@ def _measure_request(
     question: str,
     schemas: Sequence[Mapping[str, Any]],
 ) -> MeasureRequest:
+    label = _requested_measure_label(question)
+    if label:
+        normalized = re.sub(r"\s+", "", label).casefold()
+        for schema in schemas:
+            for column in _schema_columns(schema):
+                source_name = re.sub(
+                    r"\s+", "", str(column.get("source_name") or "")
+                ).casefold()
+                if normalized and normalized in source_name:
+                    return MeasureRequest("recognized", label=label)
+        return MeasureRequest("unsupported", label=label)
     intent = _question_measure_intent(question)
     if intent is not None:
         return MeasureRequest("recognized", intent=intent)
-    label = _requested_measure_label(question)
-    if not label:
-        return MeasureRequest("unspecified")
-    normalized = re.sub(r"\s+", "", label).casefold()
-    for schema in schemas:
-        for column in _schema_columns(schema):
-            source_name = re.sub(
-                r"\s+", "", str(column.get("source_name") or "")
-            ).casefold()
-            if normalized and normalized in source_name:
-                return MeasureRequest("recognized", label=label)
-    return MeasureRequest("unsupported", label=label)
+    return MeasureRequest("unspecified")
 
 
 def _requested_measure_label(question: str) -> str:

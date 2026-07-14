@@ -119,7 +119,9 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
     )
     if not exhaustive:
         return answer
-    if "## 업로드 파일 SQL 결과" in context and "상태: 확인됨" in context:
+    if "## 업로드 파일 SQL 결과" in context and (
+        "상태: 확인됨" in context or "상태: 조건 일치 0건" in context
+    ):
         return answer
     context_fold = context.casefold()
     answer_fold = answer.casefold()

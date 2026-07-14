@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 
@@ -68,6 +69,49 @@ def test_missing_atc4_reports_only_unresolved_slot(monkeypatch) -> None:
     assert "sell-out" not in outcome.answer_md.casefold()
     assert outcome.trace[-1]["missing_slots"] == "ATC4"
     assert "measure" in outcome.trace[-1]["resolved_slots"]
+
+
+def test_zero_row_atc4_answer_does_not_gain_false_missing_sentences(monkeypatch) -> None:
+    question = "ATC4 A02B2에서 동아제약과 동화약품의 sell-out 금액 비교"
+    answer = "ATC4 열은 있으나 'A02B2' 조건에 맞는 행이 0건입니다."
+    file_context = (
+        "업로드 문서에서 ATC4 A02B2을(를) 찾을 수 없습니다.\n\n"
+        "## 업로드 파일 SQL 결과\n상태: 조건 일치 0건\n" + answer
+    )
+
+    rendered = app.compute_final_answer(
+        question,
+        {
+            "answer": answer,
+            "deterministic_file_answer": answer,
+            "file_context": file_context,
+            "context_scope": "FILE",
+            "sources": ["document"],
+            "tool_calls": [],
+        },
+        "conversation-1",
+    ).text
+
+    false_missing = re.compile(
+        r"^(?:업로드 문서에서\s+)?(?:ATC4\s+A02B2|sell-out)(?:을|를|은|는|이|가|의|을\(를\))?\s*찾을 수 없습니다[.!]?$",
+        re.IGNORECASE,
+    )
+    sentences = tuple(part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", rendered) if part.strip())
+    assert re.fullmatch(
+        r"ATC4 열은 있으나 'A02B2' 조건에 맞(?:는|은) 행이 0건입니다\.",
+        sentences[0],
+    )
+    assert not any(false_missing.fullmatch(sentence) for sentence in sentences)
+
+
+def test_bare_file_aggregate_without_prior_slots_fails_closed() -> None:
+    resolution = file_sql_query._resolve_deterministic_select("합계는?", (_chso_schema(),))
+
+    assert resolution.plan is None
+    assert resolution.missing_slots == ("집계 대상",)
+    assert file_sql_query._missing_plan_answer(resolution.missing_slots) == (
+        "무엇의 합계인지 명확하지 않습니다. 제조사 또는 측정 항목을 지정해 주세요."
+    )
 
 
 @pytest.mark.parametrize(

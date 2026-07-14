@@ -259,15 +259,84 @@ def test_file_followup_inherits_previous_aggregate_and_filename() -> None:
         slots=ConversationSlots(
             file_name="F4.docx",
             file_measure="VALUES LC SI PRICE 1/2026",
+            file_manufacturer="동아제약",
+            file_sheet="Sell Out Standard",
         ),
     )
 
     resolved = service_app._resolve_file_question("동화약품은?", previous)
 
     assert "F4.docx" in resolved
-    assert "동화약품" in resolved
+    assert "동화약품의" in resolved
     assert "합계" in resolved
     assert "VALUES LC SI PRICE 1/2026" in resolved
+
+
+def test_file_followup_keeps_current_manufacturer_and_inherits_only_missing_measure() -> None:
+    previous = ConversationTurn(
+        question="동아제약의 sell-out 합계는?",
+        answer="21,978,584,141",
+        applied_filters={},
+        slots=ConversationSlots(
+            file_name="CHSO.xlsx",
+            file_measure="VALUES LC SI PRICE 1/2026",
+            file_manufacturer="동아제약",
+            file_sheet="Sell Out Standard",
+        ),
+    )
+
+    same_manufacturer = service_app._resolve_file_question("동아제약 합계는?", previous)
+    changed_manufacturer = service_app._resolve_file_question("동화약품은?", previous)
+
+    assert "동아제약의 합계" in same_manufacturer
+    assert "동화약품의 합계" in changed_manufacturer
+    assert "VALUES LC SI PRICE 1/2026" in same_manufacturer
+    assert "VALUES LC SI PRICE 1/2026" in changed_manufacturer
+    assert "전체" not in same_manufacturer
+    assert "전체" not in changed_manufacturer
+
+    same_plan = file_sql_query._resolve_deterministic_select(
+        same_manufacturer, (_wide_chso_schema(),)
+    ).plan
+    changed_plan = file_sql_query._resolve_deterministic_select(
+        changed_manufacturer, (_wide_chso_schema(),)
+    ).plan
+    assert same_plan is not None and "c2 = '동아제약'" in same_plan["sql"]
+    assert changed_plan is not None and "c2 = '동화약품'" in changed_plan["sql"]
+
+
+def test_file_followup_does_not_inherit_measure_when_current_question_names_one() -> None:
+    previous = ConversationTurn(
+        question="동아제약의 sell-out 합계는?",
+        answer="21,978,584,141",
+        applied_filters={},
+        slots=ConversationSlots(
+            file_name="CHSO.xlsx",
+            file_measure="VALUES LC SI PRICE 1/2026",
+            file_manufacturer="동아제약",
+            file_sheet="Sell Out Standard",
+        ),
+    )
+
+    resolved = service_app._resolve_file_question(
+        "Numeric 시트에서 q1과 no 합계", previous
+    )
+
+    assert "Numeric 시트" in resolved
+    assert "VALUES LC SI PRICE" not in resolved
+    assert "동아제약" not in resolved
+
+
+def test_explicit_unsupported_measure_beats_inherited_sell_out_sheet_name() -> None:
+    question = (
+        "Sell Out Standard 시트에서 CHSO.xlsx에서 "
+        "이 파일의 존재하지 않는 2035년 재구매율 합계는?"
+    )
+
+    request = file_sql_query._measure_request(question, (_wide_chso_schema(),))
+
+    assert request.state == "unsupported"
+    assert request.label == "재구매율"
 
 
 def test_market_anchor_does_not_inherit_file_slots(monkeypatch) -> None:
@@ -319,6 +388,8 @@ def test_file_sql_result_records_measure_for_next_turn() -> None:
             "deterministic_file_answer": (
                 "## 업로드 파일 집계 결과\n"
                 "파일: CHSO.xlsx\n"
+                "시트·테이블명: Sell Out Standard / data\n"
+                "필터 조건: c2 = '동아제약'\n"
                 "사용 열: VALUES LC SI PRICE\n1/2026\n"
                 "집계 함수: SUM, COUNT\n"
                 "적용 행 수: 12,268"
@@ -328,6 +399,8 @@ def test_file_sql_result_records_measure_for_next_turn() -> None:
 
     assert slots.file_name == "CHSO.xlsx"
     assert slots.file_measure == "VALUES LC SI PRICE 1/2026"
+    assert slots.file_manufacturer == "동아제약"
+    assert slots.file_sheet == "Sell Out Standard"
 
 
 @pytest.mark.parametrize(
@@ -510,6 +583,71 @@ def test_bpi_question_runs_deterministic_planner_end_to_end(monkeypatch) -> None
     assert "sql" not in planner_trace
     assert "logical_name" not in planner_trace
     assert outcome.trace[2]["selected_columns"] == "q1,no"
+
+
+def test_bpi_explicit_numeric_sheet_selects_matching_table(monkeypatch) -> None:
+    schemas = {
+        "doc-bpi:string": {
+            "logical_name": "doc-bpi:string",
+            "sheet_name": "String",
+            "columns": [
+                {"query_name": "c1", "source_name": "no"},
+                {"query_name": "c2", "source_name": "q1"},
+            ],
+        },
+        "doc-bpi:numeric": {
+            "logical_name": "doc-bpi:numeric",
+            "sheet_name": "Numeric",
+            "columns": [
+                {"query_name": "c1", "source_name": "no"},
+                {"query_name": "c2", "source_name": "q1"},
+            ],
+        },
+    }
+    sources = (
+        file_sql_query.SqlFileSource("doc-bpi:string", "BPI.xlsx", "String"),
+        file_sql_query.SqlFileSource("doc-bpi:numeric", "BPI.xlsx", "Numeric"),
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda source, _conversation_id: schemas[source.logical_name],
+    )
+    captured: dict[str, str] = {}
+
+    def run_query(_conversation_id: str, logical_name: str, sql: str) -> dict:
+        captured.update(logical_name=logical_name, sql=sql)
+        return {
+            "columns": ["c2", "response_count", "no_total", "applied_rows"],
+            "rows": [["1.0", 690, 2679529, 690], ["2.0", 910, 2555501, 910]],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "Numeric 시트에서 q1=1.0과 q1=2.0 각각의 응답자 수와 no 합계를 표로 알려줘.",
+        "conversation-1",
+        sources,
+    )
+
+    assert captured["logical_name"] == "doc-bpi:numeric"
+    assert "2,679,529" in outcome.answer_md
+    assert "2,555,501" in outcome.answer_md
+    assert "시트·테이블명: Numeric / data" in outcome.answer_md
+
+
+def test_missing_explicit_sheet_reports_available_sheet_names() -> None:
+    schemas = (
+        {"logical_name": "doc-bpi:numeric", "sheet_name": "Numeric", "columns": []},
+        {"logical_name": "doc-bpi:string", "sheet_name": "String", "columns": []},
+    )
+
+    resolution = file_sql_query._resolve_deterministic_select(
+        "Missing 시트에서 q1과 no 합계", schemas
+    )
+
+    assert resolution.plan is None
+    assert resolution.missing_slots == ("시트 'Missing' (사용 가능: Numeric, String)",)
 
 
 def test_file_sql_failure_trace_records_stage_without_exception_details(monkeypatch) -> None:

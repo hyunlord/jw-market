@@ -32,6 +32,8 @@ class ConversationSlots:
     ranked: tuple[RankedBrandSlot, ...] = ()
     file_name: str | None = None
     file_measure: str | None = None
+    file_manufacturer: str | None = None
+    file_sheet: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

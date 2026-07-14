@@ -184,7 +184,7 @@ def test_chat_route_preserves_unsupported_measure_fail_closed(monkeypatch) -> No
 def test_chat_route_preserves_file_multiturn_subject(monkeypatch) -> None:
     first = "동아제약 합계"
     follow_up = "동화약품은?"
-    resolved_follow_up = "동화약품은 합계는?"
+    resolved_follow_up = "동화약품의 합계는?"
     client, store, calls = _file_client(
         monkeypatch,
         {
@@ -211,6 +211,32 @@ def test_chat_route_preserves_bpi_deterministic_result(monkeypatch) -> None:
     assert result["context_scope"] == "FILE"
     assert "690 / 2,679,529" in result["deterministic_file_answer"]
     assert "910 / 2,555,501" in result["deterministic_file_answer"]
+    assert calls == [question]
+
+
+def test_chat_route_treats_explicit_bpi_sheet_as_file_reference(monkeypatch) -> None:
+    question = "Numeric 시트에서 q1=1.0과 q1=2.0 각각의 응답자 수와 no 합계를 표로 알려줘."
+    answer = "q1=1.0: 690 / 2,679,529, q1=2.0: 910 / 2,555,501"
+    calls: list[str] = []
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_schema_columns",
+        lambda _conversation_id: ("q1", "no"),
+    )
+
+    def search(search_question: str, _conversation_id: str | None) -> UploadedFileSearchResult:
+        calls.append(search_question)
+        return _uploaded(answer)
+
+    monkeypatch.setattr(service_app, "search_uploaded_files", search)
+    store = SessionStore()
+    client = TestClient(create_app(agent_factory=_market_factory, store=store))
+
+    result = _post_and_result(client, store, question, "bpi-explicit-sheet")
+
+    assert result["context_scope"] == "FILE"
+    assert result["deterministic_file_answer"] == answer
     assert calls == [question]
 
 

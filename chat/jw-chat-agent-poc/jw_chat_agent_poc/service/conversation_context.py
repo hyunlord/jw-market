@@ -39,6 +39,8 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     ranked_names: tuple[str, ...] = ()
     file_name = ""
     file_measure = ""
+    file_manufacturer = ""
+    file_sheet = ""
 
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "")
     if deterministic_file_answer:
@@ -48,8 +50,24 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
             deterministic_file_answer,
             re.MULTILINE | re.DOTALL,
         )
+        manufacturer_match = re.search(
+            r"^필터 조건:\s*[^\n=]+?=\s*'([^']+)'\s*$",
+            deterministic_file_answer,
+            re.MULTILINE,
+        )
+        sheet_match = re.search(
+            r"^시트(?:·테이블명)?:\s*(.+?)(?:\s*/\s*data)?\s*$",
+            deterministic_file_answer,
+            re.MULTILINE,
+        )
         file_name = file_match.group(1).strip() if file_match else ""
-        file_measure = " ".join(measure_match.group(1).split()) if measure_match else ""
+        file_measure = (
+            " ".join(measure_match.group(1).split(",", maxsplit=1)[0].split())
+            if measure_match
+            else ""
+        )
+        file_manufacturer = manufacturer_match.group(1).strip() if manufacturer_match else ""
+        file_sheet = sheet_match.group(1).strip() if sheet_match else ""
 
     for call in result.get("tool_calls", []):
         if not isinstance(call, dict):
@@ -81,6 +99,8 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         ranked=ranked,
         file_name=file_name or None,
         file_measure=file_measure or None,
+        file_manufacturer=file_manufacturer or None,
+        file_sheet=file_sheet or None,
     )
 
 

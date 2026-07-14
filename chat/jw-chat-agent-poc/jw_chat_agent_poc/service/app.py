@@ -515,6 +515,7 @@ def _answer_question(
             and has_market_intent
             and not has_market_anchor
             and not has_file_reference(question)
+            and not _has_explicit_file_sheet_reference(question)
             and not file_schema_match
         )
         delegated_file_context: str | None = None
@@ -748,21 +749,75 @@ def _resolve_file_question(question: str, previous_turn: ConversationTurn | None
         return question
     previous = previous_turn.question.strip()
     resolved = question.strip()
+    has_current_sheet = bool(re.search(r"[^\s]+\s*시트", question, re.IGNORECASE))
+    has_current_measure = bool(
+        re.search(
+            r"(?:sell[ -]?out|매출|금액|수량|단가|재구매율|\bq1\b|(?<![A-Za-z])no(?![A-Za-z])|VALUES\s+LC\s+SI\s+PRICE)",
+            question,
+            re.IGNORECASE,
+        )
+    )
     file_match = re.search(r"(?P<name>[^\s]+\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?))", previous, re.IGNORECASE)
     file_name = previous_turn.slots.file_name or (file_match.group("name") if file_match else "")
     if file_name and re.search(r"(?:이|해당|그)\s*문서", resolved):
         resolved = re.sub(r"(?:이|해당|그)\s*문서", file_name, resolved)
-    elif file_name and not re.search(r"\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?)", resolved, re.IGNORECASE):
+    elif (
+        file_name
+        and not has_current_sheet
+        and not re.search(r"\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?)", resolved, re.IGNORECASE)
+    ):
         resolved = f"{file_name}에서 {resolved}"
+
+    manufacturers = tuple(
+        dict.fromkeys(
+            match.group("name")
+            for match in re.finditer(
+                r"(?P<name>[가-힣A-Za-z0-9_-]+(?:제약|약품))(?=(?:의|은|는|이|가|과|와|\s|[?.,!]|$))",
+                question,
+            )
+        )
+    )
+    if len(manufacturers) == 1:
+        manufacturer = manufacturers[0]
+        resolved = re.sub(
+            rf"{re.escape(manufacturer)}(?:의|은|는|이|가)?",
+            f"{manufacturer}의",
+            resolved,
+            count=1,
+        )
+    elif (
+        not manufacturers
+        and not has_current_sheet
+        and not has_current_measure
+        and previous_turn.slots.file_manufacturer
+    ):
+        resolved = f"{previous_turn.slots.file_manufacturer}의 {resolved}"
 
     if not re.search(r"(?:합계|총계|합산|평균|개수|건수|집계|비교|총액|금액)", resolved):
         inherited = re.search(r"(?:합계|총계|합산|평균|개수|건수|집계|비교|총액|금액)", previous)
         if inherited:
             resolved = f"{resolved.rstrip('? ')} {inherited.group(0)}는?"
     file_measure = previous_turn.slots.file_measure or ""
-    if file_measure and file_measure.casefold() not in resolved.casefold():
+    if (
+        file_measure
+        and not has_current_measure
+        and file_measure.casefold() not in resolved.casefold()
+    ):
         resolved = f"{resolved.rstrip('? ')} {file_measure}는?"
+    file_sheet = previous_turn.slots.file_sheet or ""
+    if file_sheet and not has_current_sheet:
+        resolved = f"{file_sheet} 시트에서 {resolved}"
     return resolved
+
+
+def _has_explicit_file_sheet_reference(question: str) -> bool:
+    return bool(
+        re.search(
+            r"(?<![0-9A-Za-z가-힣_.-])[0-9A-Za-z가-힣_.-]+\s*시트(?:에서|의|는|은|이|가)?",
+            question,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
