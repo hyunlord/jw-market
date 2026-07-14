@@ -11,25 +11,27 @@ from pipeline.scripts.api import brand_activity_brand_resolver as resolver
 from pipeline.scripts.api import deep_analysis_context
 from pipeline.scripts.api import deep_analysis_runtime
 from pipeline.scripts.api.deep_analysis_serving import ForecastBlock
-from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContext
+from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContext, DeepAnalysisSource
 
 
 def _context(
     *,
-    market_allowed_sources: tuple[str, ...] = ("ubist",),
+    brand: str = "선택브랜드",
+    source: DeepAnalysisSource = "ubist",
+    market_allowed_sources: tuple[DeepAnalysisSource, ...] = ("ubist",),
     db_source: str = "ubist",
 ) -> DeepAnalysisContext:
     return DeepAnalysisContext(
-        brand_key="선택브랜드",
-        brand_name="선택브랜드",
+        brand_key=brand,
+        brand_name=brand,
         view_kind="strategic_ml",
         market_id="ml_003",
         market_name="당뇨 OAD",
-        source="ubist",
+        source=source,
         db_source=db_source,
         in_catalog=True,
         has_market_data=True,
-        market_allowed_sources=market_allowed_sources,  # type: ignore[arg-type]
+        market_allowed_sources=market_allowed_sources,
         brand_available_sources=("ubist",),
     )
 
@@ -123,7 +125,20 @@ def test_resolve_brand_set_reuses_resolved_context(monkeypatch) -> None:
     assert captured == {"market_id": "ml_003", "source": "ubist"}
 
 
-def test_resolve_brand_set_context_multi_source_mirrors_iqvia_retry(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("brand", "source", "db_source"),
+    (
+        ("가드렛", "ubist", "ubist"),
+        ("리바로", "iqvia", "iqvia_nsa"),
+        ("마운자로", "ubist", "ubist"),
+    ),
+)
+def test_resolve_brand_set_multi_source_context_preserves_source(
+    monkeypatch,
+    brand: str,
+    source: DeepAnalysisSource,
+    db_source: str,
+) -> None:
     captured: dict[str, Any] = {}
 
     def fake_fetch_brand_rows(view: Any, market_id: str, *, source: str) -> tuple:
@@ -134,12 +149,48 @@ def test_resolve_brand_set_context_multi_source_mirrors_iqvia_retry(monkeypatch)
     resolver.resolve_brand_set(
         view_name="strategic_ml",
         market_id="ml_003",
-        selected_brand="선택브랜드",
+        selected_brand=brand,
         filter_payload={},
-        source="ubist",
-        resolved_context=_context(market_allowed_sources=("ubist", "iqvia")),
+        source=source,
+        resolved_context=_context(
+            brand=brand,
+            source=source,
+            db_source=db_source,
+            market_allowed_sources=("ubist", "iqvia"),
+        ),
     )
-    assert captured["source"] == "iqvia_nsa"
+    assert captured["source"] == db_source
+
+
+def test_resolve_brand_set_source_is_stable_across_alternating_calls(monkeypatch) -> None:
+    captured_sources: list[str] = []
+    cases: tuple[tuple[str, DeepAnalysisSource, str], ...] = (
+        ("리바로", "iqvia", "iqvia_nsa"),
+        ("가드렛", "ubist", "ubist"),
+        ("마운자로", "iqvia", "iqvia_nsa"),
+    )
+
+    def fake_fetch_brand_rows(view: Any, market_id: str, *, source: str) -> tuple:
+        captured_sources.append(source)
+        return ()
+
+    monkeypatch.setattr(resolver, "_fetch_brand_rows", fake_fetch_brand_rows)
+    for brand, source, db_source in cases:
+        resolver.resolve_brand_set(
+            view_name="strategic_ml",
+            market_id="ml_003",
+            selected_brand=brand,
+            filter_payload={},
+            source=source,
+            resolved_context=_context(
+                brand=brand,
+                source=source,
+                db_source=db_source,
+                market_allowed_sources=("ubist", "iqvia"),
+            ),
+        )
+
+    assert captured_sources == ["iqvia_nsa", "ubist", "iqvia_nsa"]
 
 
 def test_fetch_raw_molecules_loads_latest_quarter_once(monkeypatch) -> None:
