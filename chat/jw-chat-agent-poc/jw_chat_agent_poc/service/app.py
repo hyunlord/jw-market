@@ -506,6 +506,7 @@ def _answer_question(
         delegated_file_context: str | None = None
         file_source_items: tuple[dict[str, Any], ...] = ()
         deterministic_file_answer = ""
+        file_sql_trace: tuple[dict[str, str], ...] = ()
         if needs_scope_clarification:
             result = _scope_clarification_result(question)
         elif context_scope is ContextScope.MIXED:
@@ -525,6 +526,7 @@ def _answer_question(
                 file_source_items,
                 _has_active_upload,
                 deterministic_file_answer,
+                file_sql_trace,
             ) = _delegated_file_context(file_question, state.conversation_id, file_context)
             if not question.strip() and _has_file_signal(documents, delegated_file_context):
                 result = _file_only_ready_result(documents, delegated_file_context)
@@ -546,6 +548,10 @@ def _answer_question(
         result = _enforce_file_scope_isolation(result, question, context_scope)
         if deterministic_file_answer and context_scope is ContextScope.FILE:
             result = {**result, "deterministic_file_answer": deterministic_file_answer}
+        if file_sql_trace and context_scope is ContextScope.FILE:
+            diagnostics = dict(result.get("router_diagnostics") or {})
+            diagnostics["file_sql"] = [dict(item) for item in file_sql_trace]
+            result = {**result, "router_diagnostics": diagnostics}
         result = _attach_file_context(result, delegated_file_context, file_source_items)
         result = _annotate_context_scope(result, context_scope)
         store.conversations.record_exchange(
@@ -593,10 +599,10 @@ def _answer_mixed_parallel(
                 file_payload = file_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
             except FutureTimeoutError:
                 file_future.cancel()
-                file_payload = (None, (), True, "")
+                file_payload = (None, (), True, "", ())
             except Exception as exc:
                 LOGGER.warning("mixed file leg failed type=%s", type(exc).__name__)
-                file_payload = (None, (), True, "")
+                file_payload = (None, (), True, "", ())
         with stage(None, "mixed_market_leg", "market fact retrieval"):
             try:
                 market_result = market_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
@@ -609,11 +615,19 @@ def _answer_mixed_parallel(
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
-    context, source_items, _has_active, deterministic_answer = file_payload
+    if len(file_payload) == 4:
+        context, source_items, _has_active, deterministic_answer = file_payload
+        file_sql_trace = ()
+    else:
+        context, source_items, _has_active, deterministic_answer, file_sql_trace = file_payload
     file_result = _file_scoped_result(question)
     file_result = _attach_file_context(file_result, context, source_items)
     if deterministic_answer:
         file_result["deterministic_file_answer"] = deterministic_answer
+    if file_sql_trace:
+        diagnostics = dict(file_result.get("router_diagnostics") or {})
+        diagnostics["file_sql"] = [dict(item) for item in file_sql_trace]
+        file_result["router_diagnostics"] = diagnostics
     if not context:
         file_result["mixed_leg_error"] = "첨부 문서 근거를 가져오지 못했습니다."
 
@@ -691,12 +705,13 @@ def _scope_clarification_result(question: str) -> dict:
 
 def _delegated_file_context(
     question: str, conversation_id: str | None, file_context: str | None
-) -> tuple[str | None, tuple[dict[str, Any], ...], bool, str]:
+) -> tuple[str | None, tuple[dict[str, Any], ...], bool, str, tuple[dict[str, str], ...]]:
     contexts: list[str] = []
     file_source_items: tuple[dict[str, Any], ...] = ()
     uploaded = search_uploaded_files(question, conversation_id)
     has_active_upload = bool(uploaded and uploaded.has_active_file)
     deterministic_answer = uploaded.deterministic_answer if uploaded is not None else ""
+    sql_trace = uploaded.sql_trace if uploaded is not None else ()
     if uploaded is not None and uploaded.file_context.strip():
         contexts.append(uploaded.file_context.strip())
         file_source_items = uploaded.file_source_items
@@ -704,8 +719,14 @@ def _delegated_file_context(
     if provided:
         contexts.append(provided)
     if not contexts:
-        return None, (), has_active_upload, deterministic_answer
-    return "\n\n".join(dict.fromkeys(contexts)), file_source_items, has_active_upload, deterministic_answer
+        return None, (), has_active_upload, deterministic_answer, sql_trace
+    return (
+        "\n\n".join(dict.fromkeys(contexts)),
+        file_source_items,
+        has_active_upload,
+        deterministic_answer,
+        sql_trace,
+    )
 
 
 def _resolve_file_question(question: str, previous_turn: ConversationTurn | None) -> str:
@@ -776,6 +797,29 @@ def _enforce_file_scope_isolation(result: dict, question: str, scope: ContextSco
     if contaminated or any(value not in {"document", "file_upload"} for value in sources):
         return _file_scoped_result(question)
     return result
+
+
+_FILE_MARKET_POSTPROCESS_RE = re.compile(
+    r"(?:시장\s*도구\s*미호출|일반뷰\s*(?:브랜드\s*)?(?:비교|조회)|시장\s*지표\s*도구)",
+    re.IGNORECASE,
+)
+
+
+def _enforce_file_postprocess_isolation(answer: str, result: dict) -> str:
+    """Reject market-contract prose introduced after a FILE-scoped execution."""
+
+    if result.get("context_scope") != ContextScope.FILE.value:
+        return answer
+    calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+    if calls or not _FILE_MARKET_POSTPROCESS_RE.search(answer):
+        return answer
+    deterministic = str(result.get("deterministic_file_answer") or "").strip()
+    if deterministic:
+        return deterministic
+    context = str(result.get("file_context") or "").strip()
+    if context:
+        return _file_context_fallback_answer("## 업로드 파일 컨텍스트\n" + context)
+    return "업로드 파일 SQL 결과를 확인하지 못했습니다. 파일의 열과 조건을 확인해 다시 질문해 주세요."
 
 
 def _annotate_context_scope(result: dict, scope: ContextScope) -> dict:
@@ -1391,6 +1435,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             conversation_id=conversation_id,
         )
     file_context_fact = _file_context_fact(result)
+    market_contract_allowed = result.get("context_scope") != ContextScope.FILE.value
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "").strip()
     if deterministic_file_answer:
         generated_answer = deterministic_file_answer
@@ -1418,10 +1463,10 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
-    if not file_context_fact:
+    if not file_context_fact and market_contract_allowed:
         safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    if not file_context_fact:
+    if not file_context_fact and market_contract_allowed:
         safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
@@ -1432,7 +1477,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     )
     safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
-    if not file_context_fact:
+    if not file_context_fact and market_contract_allowed:
         safe_answer = apply_common_unavailable_response(
             question,
             safe_answer,
@@ -1440,10 +1485,10 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )
     safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
-    if not file_context_fact:
+    if not file_context_fact and market_contract_allowed:
         safe_answer = apply_requested_source_trap_gate(question, safe_answer)
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
-    if not file_context_fact:
+    if not file_context_fact and market_contract_allowed:
         safe_answer = enforce_market_answer_contract(
             question,
             safe_answer,
@@ -1451,6 +1496,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         )
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
     # notice/source appenders above so no path bypasses terminology scrubbing.
+    safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
     safe_answer = scrub_internal_terminology(safe_answer)
     trace = trace_envelope(
         question=question,

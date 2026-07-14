@@ -42,6 +42,18 @@ _ERROR_STATUSES = frozenset({"error", "query_failed", "mapping_failed", "timeout
 _ABSENT_STATUSES = frozenset({"no_data", "unsupported", "missing", "not_found", "incomplete_split"})
 
 
+def file_absence_answer(status: str, *, subject: str = "", period: str = "") -> str:
+    """Render file-query absence with the shared public absence status vocabulary."""
+
+    if status not in _ABSENT_STATUSES:
+        raise ValueError(f"unsupported absence status: {status}")
+    if status == "unsupported" and subject:
+        return f"이 파일에는 {subject} 관련 열이 없습니다. 파일의 열 이름을 확인해 주세요."
+    if status in {"missing", "no_data", "not_found"} and period:
+        return f"요청하신 기간({period})의 데이터가 없습니다. 파일에 있는 기간을 지정해 주세요."
+    return "요청하신 항목은 이 파일에서 확인되지 않습니다. 파일의 열과 기간을 확인해 주세요."
+
+
 @dataclass(frozen=True, slots=True)
 class UnavailablePlan:
     missing: str
