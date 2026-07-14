@@ -144,7 +144,7 @@ def _year_value(value: FilterValue, unsupported: list[UnsupportedFilter]) -> int
 
 
 def _period_month(value: str, unsupported: list[UnsupportedFilter]) -> str | None:
-    if re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", value):
+    if re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2]|Q[1-4])", value):
         return value
-    unsupported.append(UnsupportedFilter("period_month", value, "YYYY-MM만 지원"))
+    unsupported.append(UnsupportedFilter("period_month", value, "YYYY-MM 또는 YYYY-Qn만 지원"))
     return None

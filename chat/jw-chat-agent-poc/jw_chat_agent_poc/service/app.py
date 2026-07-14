@@ -25,6 +25,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.common.periods import (
+    canonical_periods,
+    first_explicit_period_cue,
+    has_explicit_period_cue,
+)
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
@@ -994,11 +999,14 @@ def _answer_existing_without_pending(
 ) -> dict:
     explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
     if explicit_market is not None and "시장" in question:
-        requested_period = re.search(r"(?<!\d)(20\d{2}-(?:0[1-9]|1[0-2]))(?!\d)", question)
+        requested_periods = canonical_periods(question)
+        requested_period = requested_periods[0] if requested_periods else "latest"
+        if not requested_periods and has_explicit_period_cue(question):
+            requested_period = first_explicit_period_cue(question)
         return market_scope_resolver.answer_market_id(
             question,
             market_id=explicit_market.group(1).lower(),
-            period=requested_period.group(1) if requested_period is not None else "latest",
+            period=requested_period,
         )
     if requested_unavailable_source(question) is not None and not documents:
         with stage(None, "question_classification", "agent setup"):

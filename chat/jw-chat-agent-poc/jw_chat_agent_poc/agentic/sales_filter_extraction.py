@@ -9,6 +9,11 @@ from jw_chat_agent_poc.agentic.sales_filter_aliases import (
     SOURCE_ALIASES,
     match_channel_in_text,
 )
+from jw_chat_agent_poc.common.periods import (
+    canonical_periods,
+    first_explicit_period_cue,
+    has_explicit_period_cue,
+)
 
 
 def extract_metric_filter_entries(question: str) -> tuple[FilterEntry, ...]:
@@ -65,9 +70,12 @@ def _period_entries(question: str) -> list[FilterEntry]:
     entries: list[FilterEntry] = []
     if any(token in question for token in ("작년", "지난해", "전년")):
         entries.append(("period", "previous_year"))
-    month = re.search(r"(20\d{2})[-.년\s]+(0?[1-9]|1[0-2])\s*(?:월)?", question)
-    if month:
-        entries.append(("period_month", f"{month.group(1)}-{int(month.group(2)):02d}"))
+    periods = canonical_periods(question)
+    if periods:
+        entries.append(("period_month", periods[0]))
+        return entries
+    if has_explicit_period_cue(question):
+        entries.append(("period_month", first_explicit_period_cue(question)))
         return entries
     year = re.search(r"(20\d{2})\s*년?", question)
     if year:

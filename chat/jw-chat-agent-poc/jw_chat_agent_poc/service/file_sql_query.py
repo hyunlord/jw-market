@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 import requests
 
+from jw_chat_agent_poc.common.periods import month_keys
 from jw_chat_agent_poc.genos_config import (
     resolve_planner_genos_base_url,
     resolve_planner_genos_token,
@@ -458,7 +459,7 @@ def _compact_schema(question: str, schema: Mapping[str, Any]) -> dict[str, Any]:
     cap = _max_schema_columns()
     if total_column_count > cap:
         tokens = _question_tokens(question)
-        question_months = _month_keys(question)
+        question_months = month_keys(question)
         matched = [
             item
             for item in columns
@@ -615,22 +616,6 @@ def _contains_configured_term(text: str, env_name: str, defaults: Sequence[str])
     return False
 
 
-def _month_keys(text: str) -> frozenset[str]:
-    keys: set[str] = set()
-    patterns = (
-        r"(?<!\d)(20\d{2})\s*년\s*(1[0-2]|0?[1-9])\s*월",
-        r"(?<!\d)(20\d{2})[-./](1[0-2]|0?[1-9])(?!\d)",
-    )
-    for pattern in patterns:
-        for year, month in re.findall(pattern, text, re.IGNORECASE):
-            keys.add(f"{int(year):04d}-{int(month):02d}")
-    for month, year in re.findall(
-        r"(?<!\d)(1[0-2]|0?[1-9])/(20\d{2})(?!\d)", text, re.IGNORECASE
-    ):
-        keys.add(f"{int(year):04d}-{int(month):02d}")
-    return frozenset(keys)
-
-
 def _column_matches_question(
     column: Mapping[str, Any],
     question_tokens: Sequence[str],
@@ -647,7 +632,7 @@ def _column_matches_question(
         return False
     if any(token in searchable for token in question_tokens):
         return True
-    if question_months and question_months.intersection(_month_keys(source_name)):
+    if question_months and question_months.intersection(month_keys(source_name)):
         return True
     if _is_amount_column(source_name) and not _is_average_column(source_name):
         if _contains_configured_term(
@@ -752,7 +737,7 @@ def _question_tokens(question: str) -> tuple[str, ...]:
         token.casefold()
         for token in re.findall(r"[0-9A-Za-z가-힣_]{2,}", question)
     ]
-    tokens.extend(_month_keys(question))
+    tokens.extend(month_keys(question))
     return tuple(dict.fromkeys(tokens))
 
 
