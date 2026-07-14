@@ -552,6 +552,8 @@ def _display_period(snapshot: MartSnapshot, record: MartRecord, requested_period
         return snapshot.latest_valid_period(record)
     if snapshot.value_or_none(record, requested_period) is not None:
         return requested_period
+    if _is_quarter_period(raw_period):
+        return None
     previous = tuple(
         period
         for period in sorted(record.metric_history)
