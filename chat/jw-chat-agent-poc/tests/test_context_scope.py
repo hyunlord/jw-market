@@ -455,7 +455,7 @@ def test_mixed_finalization_exception_preserves_other_leg(monkeypatch) -> None:
     assert "2026년 예상 매출은 1,200억원입니다. (p.7)" in final.text
 
 
-def test_mixed_finalization_uses_a_fresh_request_deadline(monkeypatch) -> None:
+def test_mixed_finalization_honors_the_original_request_deadline(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "1")
 
     def finalize(leg: str, _question: str, _result: dict, conversation_id: str | None):
@@ -475,7 +475,7 @@ def test_mixed_finalization_uses_a_fresh_request_deadline(monkeypatch) -> None:
         "리바로 매출과 이 보고서 전망을 비교해줘",
         {
             "context_scope": "MIXED",
-            "mixed_started_monotonic": 1.0,
+            "mixed_deadline_monotonic": 1.0,
             "mixed_market_result": {"answer": "시장 값"},
             "mixed_file_result": {
                 "answer": "파일 값",
@@ -485,6 +485,4 @@ def test_mixed_finalization_uses_a_fresh_request_deadline(monkeypatch) -> None:
         "mixed-stale-result",
     )
 
-    assert "시장 값" in final.text
-    assert "파일 값" in final.text
-    assert "처리 시간을 초과" not in final.text
+    assert final.text.count("처리 시간을 초과") == 2

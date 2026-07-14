@@ -606,6 +606,7 @@ def _answer_mixed_parallel(
     combined["mixed_market_result"] = dict(market_result)
     combined["mixed_file_result"] = file_result
     combined["mixed_market_question"] = market_question
+    combined["mixed_deadline_monotonic"] = deadline
     combined["sources"] = list(
         dict.fromkeys([*market_result.get("sources", []), *file_result.get("sources", [])])
     )
@@ -1449,7 +1450,12 @@ def _compute_mixed_final_answer(
     timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_LEG_TIMEOUT_S", "90")))
     total_timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "95")))
     started = time.perf_counter()
-    deadline = started + total_timeout_s
+    deadline_value = result.get("mixed_deadline_monotonic")
+    deadline = (
+        float(deadline_value)
+        if isinstance(deadline_value, (int, float))
+        else started + total_timeout_s
+    )
     market_question = str(result.get("mixed_market_question") or question)
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mixed-m1-final")
     market_future = executor.submit(
