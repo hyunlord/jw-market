@@ -106,7 +106,7 @@ class BQRouter:
                     bq="Q1",
                     question="관련 뉴스·소식·이슈",
                     sources=("deep_analysis_events",),
-                    reason="Related news questions use curated cache_deep_analysis.data.events.",
+                    reason="Related news questions use the events/event_brand_scores corpus.",
                     filters=extract_news_filter_entries(question),
                 )
             )

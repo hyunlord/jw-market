@@ -17,7 +17,7 @@ def build_system_prompt(has_documents: bool) -> str:
         "Tool meanings are strict: metrics=internal numeric market cache; "
         "external_api=clinical trials, patents, FDA labels, approvals, public external APIs; "
         "document=user-uploaded document/RAG only; "
-        "deep_analysis_events=curated related news/events in cache_deep_analysis; "
+        "deep_analysis_events=curated related news/events in events/event_brand_scores; "
         "none=known unavailable data boundary.\n"
         "Hard routing rules:\n"
         "- Related news, recent issue, 소식, or 뉴스 questions MUST use "
