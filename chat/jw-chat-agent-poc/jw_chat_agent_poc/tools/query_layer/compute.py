@@ -12,13 +12,23 @@ from jw_chat_agent_poc.tools.query_layer.spec import as_list, dimension_value
 from jw_chat_agent_poc.tools.query_layer.store import FAILED_VALUE_STATUSES, MartRecord, MartSnapshot
 
 
-def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record: MartRecord, metric: str, period: str) -> dict[str, Any]:
+def metric_render_data(
+    snapshot: MartSnapshot,
+    market: str,
+    source: str,
+    record: MartRecord,
+    metric: str,
+    period: str,
+    *,
+    series_points: int = 10,
+) -> dict[str, Any]:
     value = snapshot.value_or_none(record, period)
     if value is None:
         raise LookupError(f"mart metric row missing or failed: market={market} source={source} brand={record.brand_name} period={period}")
     market_value = snapshot.market_value_or_none(market, period, source)
     hhi = snapshot.hhi(market, period, source)
-    series_periods = snapshot.periods(market, source)[-10:]
+    bounded_series_points = max(2, min(int(series_points), 60))
+    series_periods = snapshot.periods(market, source)[-bounded_series_points:]
     structure = market_structure(snapshot, market, source)
     data = {
         "brand": record.brand_name,
@@ -45,6 +55,8 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
     }
     if structure:
         data["market_structure"] = structure
+    if bounded_series_points != 10:
+        data["history_points"] = bounded_series_points
     return data
 
 

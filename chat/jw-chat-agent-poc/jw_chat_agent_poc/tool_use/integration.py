@@ -17,7 +17,7 @@ FEATURE_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_AGENT_ENABLED"
 
 
 def external_tool_agent_enabled() -> bool:
-    return os.environ.get(FEATURE_FLAG, "0").lower() in {"1", "true", "yes"}
+    return os.environ.get(FEATURE_FLAG, "1").lower() in {"1", "true", "yes"}
 
 
 def run_external_tool_agent(

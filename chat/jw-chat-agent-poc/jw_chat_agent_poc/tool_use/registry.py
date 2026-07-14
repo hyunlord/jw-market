@@ -196,7 +196,7 @@ def _external_call_envelope(call: ExternalCall, subject: str, metric: str) -> To
 
 def _facts_from_external_call(call: ExternalCall, subject: str, metric: str) -> tuple[EvidenceFact, ...]:
     data = call.render_data
-    rows = tuple(item for item in data.get("items") or () if isinstance(item, dict))
+    rows = _external_rows(data)
     if rows:
         return tuple(_row_fact(call, subject, metric, item, index) for index, item in enumerate(rows[:5], start=1))
     sections = data.get("label_sections")
@@ -215,6 +215,16 @@ def _facts_from_external_call(call: ExternalCall, subject: str, metric: str) -> 
             if nct_id
         )
     return ()
+
+
+def _external_rows(data: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    candidates: Any = data.get("items")
+    payload = data.get("payload")
+    if not isinstance(candidates, list) and isinstance(payload, dict):
+        candidates = payload.get("results") or payload.get("studies")
+    if not isinstance(candidates, list):
+        return ()
+    return tuple(item for item in candidates if isinstance(item, dict))
 
 
 def _row_fact(call: ExternalCall, subject: str, metric: str, item: dict[str, Any], index: int) -> EvidenceFact:

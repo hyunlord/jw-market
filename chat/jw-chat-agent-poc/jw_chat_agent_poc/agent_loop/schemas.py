@@ -88,6 +88,7 @@ def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, 
         {
             "comparison_brand": {"type": "string", "description": "Market member brand from the same strategic mart market; validated by code."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            "history_points": {"type": "integer", "minimum": 2, "maximum": 60},
             "spec": _query_spec_schema(catalog),
         }
     )

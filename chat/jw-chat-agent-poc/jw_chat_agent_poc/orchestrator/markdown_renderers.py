@@ -14,6 +14,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     rank_value,
     table,
 )
+from jw_chat_agent_poc.orchestrator.external_item_projection import public_external_rows
 from jw_chat_agent_poc.orchestrator.markdown_metric_helpers import metric_filter_rows, metric_level_segments_md
 from jw_chat_agent_poc.orchestrator.markdown_news import news_md
 from jw_chat_agent_poc.orchestrator.surface_policy import can_surface_derived_value, cagr_operands_from_data, surface_year
@@ -655,14 +656,8 @@ def _nested_status_message(data: dict[str, Any]) -> str:
 
 
 def generic_external_md(tool: str, data: dict[str, Any]) -> str:
-    rows = []
-    total = data.get("totalCount")
-    if total is not None:
-        rows.append(("totalCount", total))
-    for key, value in list(data.items())[:TABLE_LIMIT]:
-        if key not in {"items", "payload", "totalCount"} and isinstance(value, str | int | float):
-            rows.append((key, value))
-    return table(f"### {cell(tool)}", ("항목", "값"), tuple(rows))
+    rows = public_external_rows(data, limit=TABLE_LIMIT)
+    return table(f"### {cell(tool)}", ("항목", "내용"), rows)
 
 
 def document_md(data: dict[str, Any]) -> str:

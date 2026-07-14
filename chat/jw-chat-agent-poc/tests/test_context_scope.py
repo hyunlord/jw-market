@@ -7,6 +7,7 @@ import pytest
 
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.app import SessionStore
+from jw_chat_agent_poc.service.conversation import ConversationSlots
 from jw_chat_agent_poc.service.context_scope import ContextScope, resolve_context_scope
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.file_search_client import UploadedFileSearchResult
@@ -29,6 +30,31 @@ class _ContaminatingAgent:
             "sources": ["cache"],
             "tool_calls": calls,
         }
+
+
+class _MixedEvidenceAgent:
+    def answer(self, _question: str, _documents=None) -> dict:
+        return {
+            "answer": "UBIST 동아제약 점유율 근거",
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "render_data": {
+                        "brand": "동아제약",
+                        "query_spec": {"source": "ubist"},
+                        "brand_value_series_10pt": [
+                            {"period": "2026-05", "value_krw": 80_385_988_000},
+                        ],
+                    },
+                }
+            ],
+        }
+
+
+def _mixed_evidence_factory(*, external_mode: str = "live") -> _MixedEvidenceAgent:
+    return _MixedEvidenceAgent()
 
 
 def _factory(*, external_mode: str = "live") -> _ContaminatingAgent:
@@ -157,6 +183,91 @@ def test_explicit_mixed_question_keeps_both_sources_and_scope() -> None:
     assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
     assert "document" in result["sources"]
     assert trace["scope"] == "MIXED"
+
+
+def test_named_chso_and_ubist_question_reaches_both_mixed_legs() -> None:
+    question = "업로드한 CHSO의 동아제약 매출과 UBIST 시장의 동아제약 점유율을 비교해줘"
+
+    item = service_app._answer_question(
+        SessionStore(), _resolver(), _factory, question, "live", None, file_context=FILE_CONTEXT
+    )
+
+    result = item["result"]
+    assert result["context_scope"] == "MIXED"
+    assert result["mixed_market_result"]["tool_calls"]
+    assert result["mixed_file_result"]["file_context"] == FILE_CONTEXT.strip()
+
+
+def test_named_chso_and_ubist_question_attaches_source_bound_fusion(monkeypatch) -> None:
+    question = "업로드한 CHSO의 동아제약 매출과 UBIST 시장의 동아제약 점유율을 비교해줘"
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (
+            FILE_CONTEXT,
+            ({"file_name": "CSD.xlsx"},),
+            True,
+            "동아제약 매출 합계는 21,978,584,141원이며 적용 행 수는 348건입니다.",
+            ({"stage": "execution", "status": "ok"},),
+        ),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _resolver(),
+        _mixed_evidence_factory,
+        question,
+        "live",
+        None,
+        file_context=FILE_CONTEXT,
+    )
+
+    analysis = next(
+        call for call in item["result"]["tool_calls"] if call.get("tool") == "bq_analysis"
+    )
+    data = analysis["render_data"]
+    assert data["contract_id"] == "FILE_MARKET_COMPARISON"
+    assert data["source_labels"] == ["FILE", "UBIST"]
+    assert data["never_aggregate_sources"] is True
+    assert data["fusion_mode"] == "side_by_side"
+
+
+def test_mixed_file_leg_uses_inherited_file_slots(monkeypatch) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "mixed-slot-inheritance",
+        "CHSO.xlsx의 Sell Out Standard 시트에서 동아제약 매출 합계는?",
+        "21,978,584,141",
+        slots=ConversationSlots(
+            file_name="CHSO.xlsx",
+            file_measure="VALUES LC SI PRICE 1/2026",
+            file_manufacturer="동아제약",
+            file_sheet="Sell Out Standard",
+        ),
+    )
+    captured: list[str] = []
+
+    def delegated(question: str, *_args, **_kwargs):
+        captured.append(question)
+        return FILE_CONTEXT, ({"file_name": "CHSO.xlsx"},), True, "21,978,584,141", ()
+
+    monkeypatch.setattr(service_app, "_delegated_file_context", delegated)
+
+    item = service_app._answer_question(
+        store,
+        _resolver(),
+        _mixed_evidence_factory,
+        "업로드한 CHSO의 그 값과 UBIST 시장의 동아제약 점유율을 비교해줘",
+        "live",
+        "mixed-slot-inheritance",
+        file_context=FILE_CONTEXT,
+    )
+
+    assert item["result"]["context_scope"] == "MIXED"
+    assert len(captured) == 1
+    assert "CHSO.xlsx" in captured[0]
+    assert "Sell Out Standard 시트" in captured[0]
+    assert "VALUES LC SI PRICE 1/2026" in captured[0]
 
 
 def test_mixed_request_without_explicit_market_anchor_keeps_market_leg_closed() -> None:
@@ -376,6 +487,18 @@ def test_file_schema_does_not_capture_unrelated_market_brand() -> None:
 
     # Then: MIXED M1's file-stickiness fix remains intact.
     assert scope is ContextScope.MARKET
+
+
+def test_named_uploaded_corpus_and_market_source_resolve_to_mixed() -> None:
+    scope = resolve_context_scope(
+        "업로드한 CHSO의 동아제약 매출과 UBIST 시장의 동아제약 점유율을 비교해줘",
+        has_active_file=True,
+        has_market_intent=True,
+        has_market_anchor=True,
+        file_schema_columns=("ATC 4", "MFR NAME KOR", "VALUES LC SI PRICE 1/2026"),
+    )
+
+    assert scope is ContextScope.MIXED
 
 
 def test_mixed_scope_is_composed_without_synthesis_llm(monkeypatch) -> None:
