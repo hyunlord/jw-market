@@ -9,6 +9,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
+from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
@@ -98,6 +99,9 @@ class ToolUseAgent:
         notices: list[str] = []
         status = "ok"
         expanded_members_exposed = False
+        deterministic_plan_hit = False
+        deterministic_plan_kind: str | None = None
+        llm_plan_calls = 0
         for step in range(1, self.max_steps + 1):
             allowed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
             planner_allowed_brands = _planner_allowed_brands(
@@ -120,16 +124,34 @@ class ToolUseAgent:
                 tool_schemas = facade.schemas(planner_allowed_brands)
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
             brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
-            with stage(timing, "llm_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
-                decision = planner.decide(
+            structured_plan = (
+                plan_structured_market_question(
                     question,
-                    tuple(observations),
+                    self.resolver,
+                    period_grounding,
                     tool_schemas,
-                    planner_allowed_brands,
-                    period_grounding.schema_periods,
                 )
-                _record_planner_token_usage(timing, planner)
-                progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
+                if self.planner is None and not observations
+                else None
+            )
+            if structured_plan is not None:
+                with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                    decision = structured_plan.decision
+                    deterministic_plan_hit = True
+                    deterministic_plan_kind = structured_plan.kind
+                    progress.summary = " -> ".join(call.name for call in decision.tool_calls)
+            else:
+                with stage(timing, "llm_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                    decision = planner.decide(
+                        question,
+                        tuple(observations),
+                        tool_schemas,
+                        planner_allowed_brands,
+                        period_grounding.schema_periods,
+                    )
+                    llm_plan_calls += 1
+                    _record_planner_token_usage(timing, planner)
+                    progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
             if _has_market_members(tuple(observations)):
                 expanded_members_exposed = True
             if not decision.tool_calls:
@@ -267,6 +289,10 @@ class ToolUseAgent:
                 "status": status,
                 "steps": len(trace),
                 "tool_calls": len([call for call in calls if call.get("tool") != "agent_calculation"]),
+                "deterministic_plan_hit": deterministic_plan_hit,
+                "deterministic_plan_kind": deterministic_plan_kind,
+                "llm_plan_calls": llm_plan_calls,
+                "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
                 **selection,
             },
             "tool_calls": calls,

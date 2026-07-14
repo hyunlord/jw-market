@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import asdict
 import math
 from typing import Any, Mapping
 
@@ -40,6 +41,7 @@ def metric_render_data(snapshot: MartSnapshot, market: str, source: str, record:
         "level": "Brand",
         "level_segments": level_segments(snapshot.ranked_brands(market, period, source)[:10]),
         "level_top5_trend_series": top_trend(snapshot, market, source, period, record.brand_name),
+        "series_insight": asdict(snapshot.derived.brand_insight(market, source, record.measure, record.brand_name)),
     }
     if structure:
         data["market_structure"] = structure

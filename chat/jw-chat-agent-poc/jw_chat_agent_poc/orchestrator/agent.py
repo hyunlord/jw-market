@@ -12,6 +12,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_tool_use_agent,
     unsupported_brand_result,
 )
+from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agentic import FilterEntry, relevance_filter_entries, relevance_question_text, validate_metric_filters
 from jw_chat_agent_poc.rag import LocalDocumentRag
@@ -90,13 +91,27 @@ class ChatAgent:
         timing = new_timing()
         docs = documents or []
         external_fallback_code: str | None = None
+        source_trap = requested_unavailable_source(question)
 
         def finish(payload: dict[str, Any]) -> dict[str, Any]:
             return _annotate_external_tool_fallback(payload, external_fallback_code)
 
+        if (
+            not docs
+            and source_trap is None
+            and self.agent_loop is None
+            and self.query_layer is not None
+            and preflight_structured_market_question(question, self.resolver) is not None
+        ):
+            loop = build_tool_use_agent(self._agent_loop_dependencies)
+            result = loop.answer(question)
+            diagnostics = result.setdefault("router_diagnostics", {})
+            if isinstance(diagnostics, dict):
+                diagnostics["question_decomposition_bypassed"] = True
+            return finish(result)
+
         with stage(timing, "question_decomposition", "BQ and tool routing"):
             routes = self.router.route(question, has_documents=bool(docs))
-        source_trap = requested_unavailable_source(question)
         agent_source_trap = requested_unavailable_source(question, identity_only=True)
         pre_resolved: BrandResolution | None = None
         if (

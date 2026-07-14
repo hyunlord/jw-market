@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -79,6 +80,12 @@ class MartSnapshot:
 
     records: tuple[MartRecord, ...]
     loaded_at: float
+    derived: Any = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        from jw_chat_agent_poc.tools.query_layer.derived import DerivedSnapshotIndex
+
+        object.__setattr__(self, "derived", DerivedSnapshotIndex.build(self))
 
     def market_id_for_brand(self, brand: str) -> str | None:
         markets = self.market_ids_for_brand(brand)
@@ -152,6 +159,9 @@ class MartSnapshot:
         row = record.metric_history.get(period)
         if not isinstance(row, dict):
             return "missing"
+        raw_value = row.get("raw_value")
+        if isinstance(raw_value, int | float) and not math.isfinite(float(raw_value)):
+            return "missing"
         return _row_status(row)
 
     def value_or_none(self, record: MartRecord, period: str) -> float | None:
@@ -163,7 +173,10 @@ class MartSnapshot:
         if not isinstance(row, dict) or _row_status(row) in FAILED_VALUE_STATUSES:
             return None
         value = row.get("raw_value")
-        return float(value) if isinstance(value, int | float) else None
+        if not isinstance(value, int | float):
+            return None
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
 
     def value(self, record: MartRecord, period: str) -> float | None:
         return self.value_or_none(record, period)
@@ -186,7 +199,8 @@ class MartSnapshot:
             if isinstance(row, dict):
                 share = row.get("ms")
                 if isinstance(share, int | float):
-                    stored_share = float(share)
+                    numeric_share = float(share)
+                    stored_share = numeric_share if math.isfinite(numeric_share) else None
         total = self.market_value_or_none(market_id, period, source, measure)
         if total is None or total == 0:
             return None
@@ -217,7 +231,8 @@ class MartSnapshot:
                 if not (len(period) == 4 and period.isdigit()):
                     period_row = record.metric_history.get(period)
                     if isinstance(period_row, dict) and isinstance(period_row.get("ms"), int | float):
-                        share = float(period_row["ms"])
+                        numeric_share = float(period_row["ms"])
+                        share = numeric_share if math.isfinite(numeric_share) else None
                 if share is None:
                     share = value / total * 100
             rows.append(

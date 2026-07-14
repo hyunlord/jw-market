@@ -17,6 +17,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     source_label,
     table,
 )
+from jw_chat_agent_poc.orchestrator.call_normalization import dedupe_blocked_metric_messages
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_fact_markdown
 from jw_chat_agent_poc.orchestrator.surface_policy import (
@@ -130,6 +131,7 @@ _REQUIRED_METRIC_AXES: Final[dict[str, tuple[RequiredAxis, ...]]] = {
 
 
 def answer_fact_markdown(calls: list[dict[str, Any]], sources: list[str]) -> str:
+    calls = dedupe_blocked_metric_messages(calls)
     blocks: list[str] = ["## 확정 fact set"]
     seen_blocks: set[str] = set()
     required = _required_fact_block(calls)

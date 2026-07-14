@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+from time import perf_counter
+
+import pytest
+
+from jw_chat_agent_poc import ChatAgent
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
+from jw_chat_agent_poc.orchestrator.insight_acceptance import verify_insight_answer
+from jw_chat_agent_poc.orchestrator.market_insights import forbidden_claims
+from jw_chat_agent_poc.orchestrator.provenance import evidence_from_calls
+from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.tools.metrics import MetricsTool
+from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
+
+
+def test_default_agent_executes_structured_plan_without_llm() -> None:
+    layer = _layer()
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 최근 시장점유율 추이")
+
+    metrics = result["agent_loop_metrics"]
+    assert metrics["deterministic_plan_hit"] is True
+    assert metrics["deterministic_plan_kind"] == "brand_share"
+    assert metrics["llm_plan_calls"] == 0
+    assert set(metrics["selected_tools"]) >= {
+        "get_brand_share",
+        "get_brand_sales",
+        "get_brand_series",
+        "get_top_brands",
+    }
+
+
+def test_feature_flag_off_preserves_legacy_planner_path(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_DETERMINISTIC_MARKET_PLANNER_ENABLED", "false")
+    monkeypatch.delenv("GENOS_TOKEN", raising=False)
+    layer = _layer()
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 최근 시장점유율 추이")
+
+    assert result["agent_loop_metrics"]["deterministic_plan_hit"] is False
+    assert result["agent_loop_metrics"]["llm_plan_calls"] >= 1
+
+
+def test_structured_market_question_bypasses_llm_question_router() -> None:
+    class RouterBomb:
+        def route(self, _question: str, has_documents: bool = False):
+            raise AssertionError("structured market question must bypass LLM decomposition")
+
+    layer = _layer()
+    agent = ChatAgent(
+        router=RouterBomb(),
+        resolver=BrandResolver(mode="fixture"),
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 최근 시장점유율 추이")
+
+    assert result["agent_loop_metrics"]["deterministic_plan_hit"] is True
+    assert result["router_diagnostics"]["question_decomposition_bypassed"] is True
+
+
+def test_requested_unavailable_source_precedes_structured_market_preflight() -> None:
+    layer = _layer()
+    agent = ChatAgent(
+        resolver=BrandResolver(mode="fixture"),
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 Cortellis 매출 알려줘")
+
+    assert [call.get("tool") for call in result["tool_calls"]] == ["requested_source_unavailable"]
+    assert result.get("router_diagnostics", {}).get("question_decomposition_bypassed") is not True
+
+
+def test_companion_evidence_renders_one_combined_series_table() -> None:
+    layer = _layer()
+    agent = ChatAgent(
+        resolver=BrandResolver(mode="fixture"),
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 최근 시장점유율 추이")
+
+    assert result["answer"].count("| 기간 | 시장점유율(%) | 처방조제액(억원) | 시장규모(억원) |") == 1
+    assert result["answer"].count("### 분석 기준별 점유율") == 1
+    assert "| 지표 | 값 |" not in result["answer"]
+    assert "| 지표 | 수치(단위 포함) |" in result["answer"]
+    assert "지표 수치는 데이터 표에서 한 번만 확인할 수 있습니다" not in result["answer"]
+    assert result["agent_loop_metrics"]["tool_calls"] == 4
+
+
+@pytest.mark.parametrize(
+    "question",
+    ("리바로 매출 추이", "리바로 시장 상위 5개", "리바로 시장 HHI"),
+)
+def test_structured_insight_tables_never_use_generic_value_headers(question: str) -> None:
+    layer = _layer()
+    agent = ChatAgent(
+        resolver=BrandResolver(mode="fixture"),
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+
+    answer = agent.answer(question)["answer"]
+
+    assert "| 지표 | 값 |" not in answer
+    assert "| 지표 | 수치(단위 포함) |" in answer
+
+
+def test_structured_market_answer_is_fast_deterministic_and_llm_free_for_five_runs() -> None:
+    layer = _layer()
+    agent = ChatAgent(
+        resolver=BrandResolver(mode="fixture"),
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+    answers: list[str] = []
+    elapsed: list[float] = []
+    for _ in range(5):
+        started = perf_counter()
+        result = agent.answer("리바로 최근 시장점유율 추이")
+        elapsed.append(perf_counter() - started)
+        answers.append(result["answer"])
+        assert result["agent_loop_metrics"]["llm_plan_calls"] == 0
+        assert result["agent_loop_metrics"]["tool_calls"] == 4
+
+    assert max(elapsed) < 2.0
+    assert len(set(answers)) == 1
+
+
+def test_twenty_structured_answers_have_verified_evidence_and_no_forbidden_claims() -> None:
+    layer = _layer()
+    agent = ChatAgent(
+        resolver=BrandResolver(mode="fixture"),
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+    questions = (
+        "리바로 최근 시장점유율 추이",
+        "리바로 시장점유율",
+        "리바로 2026-03 점유율",
+        "가드렛 점유율 추이",
+        "가드렛 시장점유율",
+        "리바로 매출 추이",
+        "리바로 처방조제액",
+        "리바로 2026-03 매출",
+        "가드렛 매출 추이",
+        "가드렛 처방조제액",
+        "리바로 성장률",
+        "가드렛 성장률",
+        "리바로 순위",
+        "가드렛 순위 추이",
+        "리바로 시장 상위 5개",
+        "가드렛 상위 10개 브랜드",
+        "리바로 시장 HHI",
+        "가드렛 시장 집중도",
+        "리바로 시장 규모",
+        "리바로와 가드렛 비교",
+    )
+
+    for question in questions:
+        result = agent.answer(question)
+        assert result["agent_loop_metrics"]["deterministic_plan_hit"] is True
+        assert result["agent_loop_metrics"]["llm_plan_calls"] == 0
+        assert result["markdown_response"]["verification"]["status"] == "pass"
+        assert forbidden_claims(result["answer"]) == ()
+        facts = evidence_from_calls(
+            result["tool_calls"],
+            result["markdown_response"]["data_md"],
+        )
+        assert verify_insight_answer(
+            gate="G4",
+            markdown=result["answer"],
+            facts=facts,
+            environment="fixture-20",
+        ).exit_code == 0
+
+
+def _layer() -> StrategicQueryLayer:
+    periods = ("2026-01", "2026-02", "2026-03")
+    values = {
+        "가드렛": (120.0, 125.0, 130.0),
+        "리바로": (80.0, 82.0, 84.0),
+    }
+    totals = tuple(sum(series[index] for series in values.values()) for index in range(len(periods)))
+    records = tuple(_record(brand, series, periods, totals) for brand, series in values.items())
+    return StrategicQueryLayer(reader=StaticStrategicMartReader(records))
+
+
+def _record(
+    brand: str,
+    values: tuple[float, ...],
+    periods: tuple[str, ...],
+    totals: tuple[float, ...],
+) -> MartRecord:
+    history = {
+        period: {
+            "raw_value": values[index] * 100_000_000,
+            "ms": values[index] / totals[index] * 100,
+            "source_status": "OK",
+        }
+        for index, period in enumerate(periods)
+    }
+    return MartRecord(
+        ml_id="ml_006",
+        brand_name=brand,
+        source="ubist",
+        measure="sales",
+        metric_history=history,
+        channel_data={},
+        specialty_data={},
+        dimension_data={},
+        by_dimension={"company": "테스트제약", "molecule": f"{brand}성분"},
+    )
