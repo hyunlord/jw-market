@@ -1,0 +1,64 @@
+{
+  "canonicalization": "json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')",
+  "contracts": [
+    {
+      "id": "brands",
+      "canonical_sha256": "472b4c5ced445efd5a5fe7656c363fdb7d5abd8e4cbf802b2077180c02937b6b",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/brands"
+      },
+      "truth_basis": "Exactly the 25 cache_brands default members; each atc_codes value matches catalog_ml_market.atc_codes_json.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "not deployed; generated with candidate F-080 09b26f213dc9eeef88c8d1b63fc69370dd5fe46a"
+    },
+    {
+      "id": "market_status",
+      "canonical_sha256": "ed7fd426f9c9094a2bbeb3ce37e57b7baafd886f8696e1679afc928d43c5ec2d",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/market-status"
+      },
+      "truth_basis": "28 source observations independently recalculated from mart source values matched the response.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "reference runtime sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    },
+    {
+      "id": "cause_livalo",
+      "canonical_sha256": "e7dcc96e4e5390ca55ae78aff28c04a28956e68cb098d25ac171e7878c81ec3b",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales"
+      },
+      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "not deployed; generated with candidate F-079 a9cc0ca2dec974d7af29e106b43e11c2c304f962"
+    },
+    {
+      "id": "dynamic_general_c10a1_livalo",
+      "canonical_sha256": "78b8bc3ba22db9bd4216e4b9879be8e5b3feb8e213d2e70b1cb4c416da5d28ca",
+      "request": {
+        "method": "POST",
+        "path": "/jw-market-backend-api/api/dynamic-market",
+        "body": {
+          "view": "general",
+          "source": "ubist",
+          "measure": "sales",
+          "filters": {
+            "atc4": [
+              "C10A1"
+            ],
+            "focus_brand_key": "리바로"
+          }
+        }
+      },
+      "truth_basis": "Payload was re-read unchanged from the reference runtime; F-079 and F-080 do not affect this general-view request path.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "reference runtime sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    }
+  ]
+}
