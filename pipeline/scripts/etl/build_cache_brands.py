@@ -14,6 +14,7 @@ from pipeline.scripts.etl.cache_build_common import (
     current_build_sha,
     decode_json,
     dump_payload,
+    insert_rows,
     load_catalog,
     parser,
     payload_size,
@@ -23,6 +24,18 @@ from pipeline.scripts.etl.cache_build_common import (
 from pipeline.scripts.api.metadata import BRAND_METADATA, build_brand_metadata_payload
 from pipeline.scripts.api.brand_source_options import brand_source_options
 from pipeline.scripts.api.deep_analysis_context import public_source_labels
+
+
+def _write_rows(
+    target_table: str,
+    columns: list[str],
+    rows: list[dict[str, object]],
+) -> None:
+    table_name = target_table.rsplit(".", 1)[-1]
+    if table_name == "cache_brands_staging":
+        insert_rows(target_table, columns, rows)
+        return
+    replace_rows(target_table, columns, rows)
 
 
 def _catalog_atc_codes_by_market(ml_market: object) -> dict[str, list[str]]:
@@ -121,7 +134,7 @@ def main() -> None:
             {"strategic_brand": strategic_brand, "ml_market": ml_market}
         ),
     }
-    replace_rows(
+    _write_rows(
         args.target_table,
         ["query_key", "response_json", "payload_size", "build_sha", "input_manifest_json"],
         [row],

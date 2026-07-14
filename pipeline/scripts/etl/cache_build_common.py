@@ -486,6 +486,23 @@ def replace_rows(table: str, columns: list[str], rows: list[dict[str, Any]]) -> 
         conn.close()
 
 
+def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]]) -> None:
+    """Insert rows into a pre-validated empty staging table."""
+    if not rows:
+        return
+    placeholders = ", ".join(["%s"] * len(columns))
+    names = ", ".join(f"`{c}`" for c in columns)
+    sql = f"INSERT INTO {quote_table_name(table)} ({names}) VALUES ({placeholders})"
+    values = [tuple(row.get(col) for col in columns) for row in rows]
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            for value in values:
+                cur.execute(sql, value)
+    finally:
+        conn.close()
+
+
 def display_ukrw(value: float | None) -> str:
     number = safe_float(value)
     return f"{number / 100_000_000:,.1f}억"
