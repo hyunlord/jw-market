@@ -31,7 +31,7 @@ def search_news_call(news: DeepAnalysisNewsTool, brand: str, query: str) -> dict
     data = call.setdefault("render_data", {})
     data["facade_tool"] = "search_news"
     data["filter_entries"] = filters
-    data["provenance"] = {"source": "events/event_brand_scores", "mode": "full_corpus_or_cache_fallback"}
+    data["provenance"] = {"source": "events/event_brand_scores", "mode": "corpus_only"}
     return call
 
 
@@ -47,7 +47,7 @@ def background_news_context_call(news: DeepAnalysisNewsTool, brand: str, relevan
     data["facade_tool"] = "background_news_context"
     data["context_role"] = "background_insight"
     data["filter_entries"] = filters
-    data["provenance"] = {"source": "events/event_brand_scores", "mode": "full_corpus_or_cache_fallback"}
+    data["provenance"] = {"source": "events/event_brand_scores", "mode": "corpus_only"}
     return call
 
 

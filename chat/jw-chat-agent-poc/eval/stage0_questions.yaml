@@ -232,7 +232,7 @@ questions:
   - id: NEWS001
     category: "뉴스"
     question: "리바로 관련 뉴스 알려줘"
-    gold_note: "cache_deep_analysis events 기반 뉴스 목록"
+    gold_note: "events/event_brand_scores corpus 기반 뉴스 목록"
     expected_behavior: supported_text
     gold_keys: []
   - id: NEWS002

@@ -1,15 +1,59 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
+
+import pymysql
+import pytest
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.tools.deep_analysis import (
     DeepAnalysisNewsTool,
+    MariaDbDeepAnalysisNewsReader,
     StaticDeepAnalysisNewsReader,
 )
 from jw_chat_agent_poc.tools.deep_analysis.news_corpus import events_from_corpus_rows
+
+
+class _CorpusCursor:
+    def __init__(self, rows: list[dict[str, Any]] | None = None, error: pymysql.MySQLError | None = None) -> None:
+        self._rows = rows or []
+        self._error = error
+        self.executed_sql: list[str] = []
+
+    def __enter__(self) -> _CorpusCursor:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def execute(self, sql: str, _params: tuple[Any, ...]) -> None:
+        self.executed_sql.append(sql)
+        if self._error is not None:
+            raise self._error
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _CorpusConnection:
+    def __init__(self, cursor: _CorpusCursor) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> _CorpusConnection:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def cursor(self) -> _CorpusCursor:
+        return self._cursor
+
+
+def _patch_corpus_connection(monkeypatch: pytest.MonkeyPatch, cursor: _CorpusCursor) -> None:
+    monkeypatch.setattr(pymysql, "connect", lambda **_kwargs: _CorpusConnection(cursor))
 
 
 def test_corpus_rows_use_full_events_schema_fields() -> None:
@@ -293,7 +337,7 @@ def test_related_news_gracefully_reports_empty_events() -> None:
     result = ChatAgent(news=news).answer("리바로 소식")
 
     assert result["sources"] == ["deep_analysis_events"]
-    assert "관련 뉴스 없음" in result["answer"]
+    assert "관련 뉴스가 없습니다" in result["answer"]
 
 
 def test_news_answers_are_treated_as_deterministic_cache_outputs() -> None:
@@ -313,3 +357,80 @@ def test_news_mode_does_not_inherit_metrics_mode(monkeypatch) -> None:
     tool = DeepAnalysisNewsTool()
 
     assert tool._mode == "fixture"
+
+
+def test_corpus_reader_reports_success_and_records_corpus_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = _CorpusCursor(
+        rows=[
+            {
+                "event_id": 91,
+                "date": "2026-07-01",
+                "title": "리바로 corpus 기사",
+                "summary": "정상 corpus 경로",
+                "body_full": "정상 corpus 경로 본문",
+                "source_name": "약업신문",
+                "source_url": "https://news.example/corpus-only",
+                "category_label": "시장",
+                "impact_score": 80,
+            }
+        ]
+    )
+    _patch_corpus_connection(monkeypatch, cursor)
+
+    call = DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader()).related_news("리바로")
+
+    assert call["render_data"]["status"] == "ok"
+    assert call["render_data"]["news_corpus_state"] == "corpus"
+    assert call["render_data"]["items"][0]["title"] == "리바로 corpus 기사"
+    assert len(cursor.executed_sql) == 1
+
+
+def test_corpus_reader_distinguishes_source_absence_from_query_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = _CorpusCursor(rows=[])
+    _patch_corpus_connection(monkeypatch, cursor)
+
+    call = DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader()).related_news("피타틴")
+
+    assert call["render_data"]["status"] == "no_data"
+    assert call["render_data"]["news_corpus_state"] == "no_data"
+    assert call["render_data"]["message"] == "관련 뉴스가 없습니다"
+    assert len(cursor.executed_sql) == 1
+
+    answer = ChatAgent(news=DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader())).answer("리바로 관련 뉴스")["answer"]
+    assert "관련 뉴스가 없습니다" in answer
+    assert "조회하지 못했습니다" not in answer
+
+
+def test_corpus_reader_reports_sql_error_as_query_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = _CorpusCursor(error=pymysql.MySQLError("synthetic corpus failure"))
+    _patch_corpus_connection(monkeypatch, cursor)
+
+    call = DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader()).related_news("리바로")
+
+    assert call["render_data"]["status"] == "query_failed"
+    assert call["render_data"]["news_corpus_state"] == "query_failed"
+    assert call["render_data"]["message"] == "뉴스를 조회하지 못했습니다. 다시 시도해 주십시오."
+    assert "관련 뉴스가 없습니다" not in call["render_data"]["message"]
+    assert len(cursor.executed_sql) == 1
+
+    answer = ChatAgent(news=DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader())).answer("리바로 관련 뉴스")["answer"]
+    assert "뉴스를 조회하지 못했습니다. 다시 시도해 주십시오." in answer
+    assert "관련 뉴스가 없습니다" not in answer
+
+
+def test_corpus_reader_reports_disabled_without_connecting(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_connect(**_kwargs: Any) -> None:
+        raise AssertionError("disabled corpus must not open a database connection")
+
+    monkeypatch.setattr(pymysql, "connect", fail_connect)
+
+    call = DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader(corpus_enabled=False)).related_news("리바로")
+
+    assert call["render_data"]["status"] == "unsupported"
+    assert call["render_data"]["news_corpus_state"] == "disabled"
+    assert call["render_data"]["message"] == "뉴스 조회 기능이 비활성 상태입니다"
+
+    answer = ChatAgent(news=DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader(corpus_enabled=False))).answer(
+        "리바로 관련 뉴스"
+    )["answer"]
+    assert "뉴스 조회 기능이 비활성 상태입니다" in answer
