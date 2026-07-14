@@ -1011,13 +1011,34 @@ def check_competition_ranking(
             identities.add(identity)
             rows = year_item["rankings"]
             visible = [row for row in rows if isinstance(row, dict) and not row.get("is_others")]
-            ranks = [row.get("rank") for row in visible]
-            expected = list(range(1, len(visible) + 1))
+            ranked_visible = [row for row in visible if row.get("rank") is not None]
+            ranks = [row.get("rank") for row in ranked_visible]
+            expected = list(range(1, len(ranked_visible) + 1))
             if ranks != expected:
                 details.append(
                     f"{entity}|{year}: non-contiguous ranks got={','.join(map(str, ranks))} "
                     f"expected={','.join(map(str, expected))}"
                 )
+                failures += 1
+            canonical_by_year = payload.get("rankings_by_year")
+            canonical = canonical_by_year.get(year) if isinstance(canonical_by_year, dict) else None
+            selected = payload.get("top_brands")
+            expected_visible = (
+                _expected_visible_ranking_rows(
+                    canonical,
+                    selected=selected,
+                    entity=entity,
+                )
+                if isinstance(canonical, list) and isinstance(selected, list)
+                else None
+            )
+            if expected_visible is None or not _ranking_rows_match(
+                visible,
+                expected_visible,
+                entity=entity,
+                abs_tol=abs_tol,
+            ):
+                details.append(f"{entity}|{year}: yearly rankings diverge from rankings_by_year prefix")
                 failures += 1
             try:
                 totals[identity] = sum(float(row["value"]) for row in rows)
@@ -1207,6 +1228,69 @@ def check_f116_correctness(evidence_path: Path, environment: str) -> GateResult:
         environment=environment,
         details=tuple(details),
     )
+
+
+def _expected_visible_ranking_rows(
+    canonical_rows: list[Any],
+    *,
+    selected: list[Any],
+    entity: str,
+) -> list[Any]:
+    selected_ids = {str(item) for item in selected if item != "기타"}
+    selected_ranks = [
+        int(row["rank"])
+        for row in canonical_rows
+        if isinstance(row, dict)
+        and row.get("rank") is not None
+        and _ranking_identity(row, entity) in selected_ids
+    ]
+    max_selected_rank = max(selected_ranks, default=0)
+    ranked = [
+        row
+        for row in canonical_rows
+        if isinstance(row, dict)
+        and isinstance(row.get("rank"), int)
+        and int(row["rank"]) <= max_selected_rank
+    ]
+    unranked_selected = [
+        row
+        for row in canonical_rows
+        if isinstance(row, dict)
+        and not row.get("is_others")
+        and row.get("rank") is None
+        and _ranking_identity(row, entity) in selected_ids
+    ]
+    return [*ranked, *unranked_selected]
+
+
+def _ranking_identity(row: dict[str, Any], entity: str) -> str:
+    if entity == "brand" and row.get("brand_key") is not None:
+        return str(row["brand_key"])
+    return str(row.get(entity))
+
+
+def _ranking_rows_match(
+    yearly_rows: list[dict[str, Any]],
+    canonical_rows: list[Any],
+    *,
+    entity: str,
+    abs_tol: float,
+) -> bool:
+    if len(yearly_rows) != len(canonical_rows):
+        return False
+    for yearly, canonical in zip(yearly_rows, canonical_rows, strict=True):
+        if not isinstance(canonical, dict):
+            return False
+        if yearly.get(entity) != canonical.get(entity) or yearly.get("rank") != canonical.get("rank"):
+            return False
+        try:
+            if abs(float(yearly["value"]) - float(canonical["value"])) > abs_tol:
+                return False
+            if abs(float(yearly["ms_pct"]) - float(canonical["ms_pct"])) > abs_tol:
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+    return True
 
 
 def _run_segment_gate(args: argparse.Namespace) -> GateResult:

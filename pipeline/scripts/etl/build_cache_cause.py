@@ -2,8 +2,9 @@
 """Build spec-aligned cache_cause from Phase 1 strategic marts.
 
 원인분석 payload 계약:
-- brand/company ranking은 "선택 브랜드/회사 + 경쟁 상위 5 + 기타" 구조를
-  유지한다. 선택 대상이 top5 밖이거나 값이 0이어도 명시적으로 포함한다.
+- brand/company ranking은 선택 대상과 경쟁 상위 5가 차지한 실제 연간
+  순위까지 모든 중간 순위를 포함한다. 선택 대상이 top5 밖이거나 값이
+  0이어도 명시적으로 포함한다.
 - level_top5_trend의 "전체" 옵션은 전체 시장 기준이므로 선택 브랜드를
   포함한다. 반대로 개별 segment 옵션은 그 분류 안의 top5+기타만 보여주며
   선택 브랜드를 강제로 끼우지 않는다.
@@ -49,6 +50,7 @@ from cache_build_common import (
     source_list,
 )
 from pipeline.scripts.api.dynamic_market.cause_sections import matrix_growth_value
+from pipeline.scripts.api.dynamic_market.cause_ranking import selected_annual_rank_prefix
 from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     AnalysisLevelBlockKey,
     current_analysis_level_source_epoch,
@@ -363,11 +365,13 @@ def _stacked_ranking(
     target = next((row for row in latest_ranked if target_name and row_identity(row, label_key) == target_name), None)
     target_id = row_identity(target, label_key)
     competitors = [row for row in latest_ranked if row_identity(row, label_key) and row_identity(row, label_key) != target_id]
-    # B1: ranking payload는 선택 대상이 top5 밖이어도 항상 첫 슬롯으로
-    # 포함해야 한다. "현재 top5만"으로 단순화하는 대안은 작은 JW 브랜드를 0
-    # 또는 기타 안에 숨겨 화면 계약(선택+경쟁5+기타)을 깨므로 기각했다.
-    fixed = ([target] if target else []) + competitors[:top_n]
-    fixed_ids = [row_identity(row, label_key) for row in fixed if row_identity(row, label_key)]
+    visible_candidates = ([target] if target else []) + competitors[:top_n]
+    visible_ids = [
+        row_identity(row, label_key)
+        for row in visible_candidates
+        if row_identity(row, label_key)
+    ]
+    visible_id_set = set(visible_ids)
 
     for year in years:
         normalized = deepcopy(by_year[year])
@@ -405,12 +409,19 @@ def _stacked_ranking(
         normalized_by_year[year] = deepcopy(normalized)
 
         row_by_id = {row_identity(row, label_key): row for row in normalized if row_identity(row, label_key)}
-        selected = []
-        for item_id in fixed_ids:
-            row = row_by_id.get(item_id)
-            if row is None:
-                row = _zero_rank_row(item_id, label_key=label_key, target_name=target_name)
-            selected.append(row)
+        annual_order = [
+            str(row_identity(row, label_key))
+            for row in normalized
+            if row_identity(row, label_key) and isinstance(row.get("rank"), int)
+        ]
+        selected_order = selected_annual_rank_prefix(annual_order, visible_id_set)
+        selected = [row_by_id[item_id] for item_id in selected_order]
+        selected.extend(
+            row_by_id.get(item_id)
+            or _zero_rank_row(item_id, label_key=label_key, target_name=target_name)
+            for item_id in visible_ids
+            if item_id not in selected_order
+        )
         selected_ids = {row_identity(row, label_key) for row in selected}
         others = [row for row in normalized if row_identity(row, label_key) not in selected_ids]
         displayed_ms = _sum_optional_complete(row.get("ms_pct") for row in selected)
@@ -438,14 +449,18 @@ def _stacked_ranking(
         yearly.append({"year": year, "rankings": selected})
 
     trend_key = "brands" if label_key == "brand" else "companies"
-    top_brands = [row_identity(row, label_key) for row in (fixed + [_zero_rank_row("기타", label_key=label_key, target_name=None)])]
-    top_brands = [str(name) for name in top_brands if name]
+    emitted_ids: list[str] = []
+    for item in yearly:
+        for row in item["rankings"]:
+            name = row_identity(row, label_key)
+            if name and name not in emitted_ids:
+                emitted_ids.append(str(name))
     series = {
         name: [
             safe_float(next((row.get("value") for row in item["rankings"] if row_identity(row, label_key) == name), None))
             for item in yearly
         ]
-        for name in top_brands
+        for name in emitted_ids
     }
     rankings_by_year = {
         str(year): [
@@ -474,7 +489,7 @@ def _stacked_ranking(
             target_name=target_name,
             top_n=top_n,
         ),
-        "top_brands": top_brands,
+        "top_brands": [*visible_ids, "기타"],
         "series": series,
         "rankings_by_year": rankings_by_year,
         "period_count_by_year": {str(year): period_count_by_year.get(year, 0) for year in years},
