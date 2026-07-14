@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Final, Sequence
@@ -23,6 +24,7 @@ from pipeline.scripts.api.brand_activity_topics import (
 )
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
 
 
 ALIAS_MAPPING_PATH: Final = Path("docs/design/brand_activity/alias/ALIAS_01_MAPPING.json")
@@ -32,6 +34,7 @@ KEYWORD_FILTER_COLUMNS: Final = {
     "interest": "interest",
     "prescription_evolution": "prescription_evolution",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 class TopicRequestError(RuntimeError):
@@ -73,10 +76,10 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
     topic_rows = _fetch_topic_rows()
     topic_index = _topic_brand_index(topic_rows)
     aliases = _alias_lookup()
-    topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows, aliases=aliases)
+    topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows)
     is_sliced = _is_sliced_request(request)
     payload_source = "row_topic_assignment_filtered" if is_sliced else "row_topic_assignment_unfiltered"
-    return {
+    result: dict[str, JsonValue] = {
         "scope": {
             "view": request["view"],
             "market_id": brand_set.market_id,
@@ -117,6 +120,14 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             for choice in brand_set.choices
         ],
     }
+    if not topic_scope:
+        result["reason"] = "no_topic_scope"
+        LOGGER.warning(
+            "brand activity topic scope unavailable: reason=no_topic_scope view=%s market_id=%s",
+            brand_set.view_name,
+            brand_set.market_id,
+        )
+    return result
 
 
 def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -283,24 +294,68 @@ def _topic_scope(
     *,
     brand_set: BrandSetResolution,
     topic_rows: Sequence[dict[str, JsonValue]],
-    aliases: dict[str, str],
 ) -> dict[str, JsonValue]:
-    """Resolve the stored topic scope that backs one brand-set request."""
-    direct_scope_id = f"atc4:{brand_set.market_id}"
-    for row in topic_rows:
-        if _text(row.get("scope_id")) == direct_scope_id:
-            return _scope_catalog_row(row)
-    selected_meta = brand_set.brand_meta.get(brand_set.selected_brand)
-    if selected_meta is None:
-        return {}
-    selected_codes = set(_brand_product_codes(selected_meta, aliases))
-    for row in topic_rows:
-        payload = _json_object(row.get("payload"))
-        for raw_brand in _json_list(payload.get("brands")):
-            brand = _json_object(raw_brand)
-            if normalize_iqvia_en(_text(brand.get("brand"))) in selected_codes:
+    """Resolve one stored scope from the request market catalog."""
+    if brand_set.view_name == "general":
+        market_codes = _atc4_values(brand_set.market_id)
+        direct_scope_id = f"atc4:{market_codes[0]}" if len(market_codes) == 1 else ""
+        for row in topic_rows:
+            if direct_scope_id and _text(row.get("scope_id")) == direct_scope_id:
                 return _scope_catalog_row(row)
+    catalog_codes = set(_catalog_atc4_values(brand_set))
+    if not catalog_codes:
+        return {}
+    candidates: list[tuple[int, dict[str, JsonValue]]] = []
+    for row in topic_rows:
+        row_codes = set(_atc4_values(row.get("atc4_values")))
+        if row_codes and row_codes <= catalog_codes:
+            candidates.append((len(row_codes), row))
+    if not candidates:
+        return {}
+    largest = max(size for size, _row in candidates)
+    winners = [row for size, row in candidates if size == largest]
+    if len(winners) == 1:
+        return _scope_catalog_row(winners[0])
     return {}
+
+
+def _catalog_atc4_values(brand_set: BrandSetResolution) -> tuple[str, ...]:
+    if brand_set.view_name == "general":
+        return _atc4_values(brand_set.market_id)
+    schema = quote_identifier(config.db_name)
+    if brand_set.view_name == "strategic_ml":
+        row = db.fetch_one(
+            f"SELECT atc_codes_json FROM {schema}.`catalog_ml_market` WHERE ml_id = %s LIMIT 1",
+            (brand_set.market_id,),
+        ) or {}
+    elif brand_set.view_name == "strategic_cd":
+        row = db.fetch_one(
+            f"SELECT ml.atc_codes_json FROM {schema}.`catalog_cd_market` cd "
+            f"JOIN {schema}.`catalog_ml_market` ml ON ml.ml_id = cd.ml_id "
+            "WHERE cd.cd_id = %s LIMIT 1",
+            (brand_set.market_id,),
+        ) or {}
+    else:
+        return ()
+    return _atc4_values(row.get("atc_codes_json"))
+
+
+def _atc4_values(value: JsonValue) -> tuple[str, ...]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ()
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            values = text.split(",")
+        else:
+            values = decoded if isinstance(decoded, list) else [decoded]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = [value] if value is not None else []
+    return canonical_atc4_values(item for item in values if str(item).strip())
 
 
 def _scope_catalog_row(row: dict[str, JsonValue]) -> dict[str, JsonValue]:

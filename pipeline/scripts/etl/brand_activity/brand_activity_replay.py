@@ -59,7 +59,7 @@ class TopicOptions:
     axis_per_brand: int = 3
     axis_rows_cap: int = 240
     brand_rows: int = 5
-    brands_per_market: int = 1
+    brands_per_market: int | None = None
     large_market_limit: int = 0
     full_rows: bool = True
     axis_chunk_token_budget: int = 8000
@@ -218,8 +218,6 @@ def _run_topic(options: ReplayOptions) -> dict[str, JsonValue]:
         str(options.topic.axis_rows_cap),
         "--brand-rows",
         str(options.topic.brand_rows),
-        "--brands-per-market",
-        str(options.topic.brands_per_market),
         "--large-market-limit",
         str(options.topic.large_market_limit),
         "--axis-chunk-token-budget",
@@ -236,6 +234,8 @@ def _run_topic(options: ReplayOptions) -> dict[str, JsonValue]:
         options.stage_schema,
         "--full-rows" if options.topic.full_rows else "--capped-rows",
     ]
+    if options.topic.brands_per_market is not None:
+        command.extend(("--brands-per-market", str(options.topic.brands_per_market)))
     completed = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
         raise ReplayError(f"topic stage failed with exit={completed.returncode}: {completed.stderr.strip()}")
@@ -405,7 +405,7 @@ def parse_args(argv: list[str] | None = None) -> ReplayOptions:
     parser.add_argument("--schema-stage", default="jw_brand_activity_stage")
     parser.add_argument("--window", type=_parse_window, default=None)
     parser.add_argument("--audit-dir", type=Path, default=DEFAULT_AUDIT_DIR)
-    parser.add_argument("--brands-per-market", type=int, default=1)
+    parser.add_argument("--brands-per-market", type=int, default=None)
     parser.add_argument("--brand-rows", type=int, default=5)
     parser.add_argument("--axis-per-brand", type=int, default=3)
     parser.add_argument("--large-market-limit", type=int, default=0)
@@ -428,7 +428,7 @@ def parse_args(argv: list[str] | None = None) -> ReplayOptions:
             max_real_calls=int(args.max_real_calls),
             axis_per_brand=int(args.axis_per_brand),
             brand_rows=int(args.brand_rows),
-            brands_per_market=int(args.brands_per_market),
+            brands_per_market=int(args.brands_per_market) if args.brands_per_market is not None else None,
             large_market_limit=int(args.large_market_limit),
             token_env=str(args.token_env),
         ),

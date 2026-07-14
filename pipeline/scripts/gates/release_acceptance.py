@@ -1066,6 +1066,149 @@ def check_competition_ranking(
     )
 
 
+def check_f116_correctness(evidence_path: Path, environment: str) -> GateResult:
+    document = _load_json(evidence_path)
+    if not isinstance(document, dict) or document.get("classification") != "census":
+        raise ValueError("F-116 evidence must be a census object")
+
+    sections = {
+        "specialty": document.get("specialty_observations"),
+        "brand_storage": document.get("brand_storage"),
+        "api": document.get("api_cases"),
+        "canonical": document.get("canonical_cells"),
+        "performance": document.get("performance_cases"),
+    }
+    for label, values in sections.items():
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"F-116 evidence requires non-empty {label} census")
+
+    details: list[str] = []
+    failures = 0
+    checked = 0
+    identities: set[str] = set()
+
+    def identity(item: object, section: str) -> tuple[str, dict[str, Any]]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError(f"F-116 {section} entries require string ids")
+        identifier = f"{section}:{item['id']}"
+        if identifier in identities:
+            raise ValueError(f"duplicate F-116 evidence identity: {identifier}")
+        identities.add(identifier)
+        return identifier, item
+
+    abs_tol = Decimal("0.01")
+    for raw in sections["specialty"]:
+        identifier, item = identity(raw, "specialty")
+        checked += 1
+        try:
+            market_total = Decimal(str(item["market_total"]))
+            specialty_total = Decimal(str(item["specialty_total"]))
+            parent_rows = int(item["parent_rows"])
+            detail_count = int(item["detail_count"])
+            overcount_ratio = Decimal(str(item["overcount_ratio"]))
+        except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+            raise ValueError(f"{identifier}: invalid specialty evidence") from exc
+        if abs(market_total - specialty_total) > abs_tol:
+            details.append(
+                f"{identifier}: specialty total mismatch market={market_total} specialty={specialty_total}"
+            )
+            failures += 1
+        if parent_rows != 0:
+            details.append(f"{identifier}: aggregate parent rows remain={parent_rows}")
+            failures += 1
+        if detail_count <= 0:
+            details.append(f"{identifier}: no detail specialties remain")
+            failures += 1
+        if overcount_ratio > Decimal("1.0000000001"):
+            details.append(f"{identifier}: overcount ratio remains={overcount_ratio}")
+            failures += 1
+
+    for raw in sections["brand_storage"]:
+        identifier, item = identity(raw, "brand_storage")
+        checked += 1
+        expected = item.get("expected_brands")
+        stored = item.get("stored_brands")
+        if not isinstance(expected, list) or not isinstance(stored, list):
+            raise ValueError(f"{identifier}: brand sets must be arrays")
+        if len(set(map(str, expected))) != len(expected) or len(set(map(str, stored))) != len(stored):
+            raise ValueError(f"{identifier}: brand sets must contain unique values")
+        missing = sorted(set(map(str, expected)) - set(map(str, stored)))
+        unexpected = sorted(set(map(str, stored)) - set(map(str, expected)))
+        if missing or unexpected:
+            details.append(
+                f"{identifier}: stored brand census mismatch missing={','.join(missing)} "
+                f"unexpected={','.join(unexpected)}"
+            )
+            failures += 1
+
+    for raw in sections["api"]:
+        identifier, item = identity(raw, "api")
+        checked += 1
+        returned = item.get("returned_brands")
+        expected = item.get("expected_brands")
+        if not isinstance(returned, list) or not isinstance(expected, list):
+            raise ValueError(f"{identifier}: API brand sets must be arrays")
+        if list(map(str, returned)) != list(map(str, expected)) or len(returned) > 6:
+            details.append(
+                f"{identifier}: API selection changed returned={returned!r} expected={expected!r}"
+            )
+            failures += 1
+        try:
+            before_bytes = int(item["response_bytes_before"])
+            after_bytes = int(item["response_bytes_after"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{identifier}: invalid response size evidence") from exc
+        if before_bytes <= 0 or after_bytes <= 0 or after_bytes > before_bytes:
+            details.append(
+                f"{identifier}: response size grew before={before_bytes} after={after_bytes}"
+            )
+            failures += 1
+
+    for raw in sections["canonical"]:
+        identifier, item = identity(raw, "canonical")
+        checked += 1
+        source = item.get("expected_source")
+        brand_value = item.get("brand_value")
+        product_value = item.get("product_value")
+        result_value = item.get("result_value")
+        expected_value = brand_value if source == "brand" else product_value if source == "product" else None
+        if source not in {"brand", "product", "missing"}:
+            raise ValueError(f"{identifier}: invalid expected_source={source!r}")
+        if result_value != expected_value:
+            details.append(
+                f"{identifier}: canonical precedence mismatch source={source} "
+                f"expected={expected_value!r} actual={result_value!r}"
+            )
+            failures += 1
+
+    for raw in sections["performance"]:
+        identifier, item = identity(raw, "performance")
+        checked += 1
+        try:
+            before_ms = float(item["before_ms"])
+            after_ms = float(item["after_ms"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{identifier}: invalid performance evidence") from exc
+        if before_ms <= 0 or after_ms <= 0:
+            raise ValueError(f"{identifier}: performance timings must be positive")
+        ratio = after_ms / before_ms
+        if ratio > 1.2:
+            details.append(f"{identifier}: latency ratio {ratio:.6f} exceeds 1.2")
+            failures += 1
+
+    population = sum(len(values) for values in sections.values())
+    return GateResult(
+        gate="f116_correctness",
+        classification="census",
+        checked=checked,
+        population=population,
+        failures=failures,
+        tolerance="specialty_abs=0.01;brand/api/canonical=exact;latency_ratio<=1.2",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def _run_segment_gate(args: argparse.Namespace) -> GateResult:
     evidence = collect_segment_sum_evidence(args.base_url, timeout_seconds=args.timeout_seconds, env=dict(os.environ))
     write_evidence(args.evidence_output, evidence)
@@ -1156,6 +1299,10 @@ def _parser() -> argparse.ArgumentParser:
     competition.add_argument("--expected-year", action="append", required=True)
     competition.add_argument("--abs-tol", type=float, default=0.01)
     competition.add_argument("--environment", default="local")
+
+    f116 = subparsers.add_parser("f116-correctness")
+    f116.add_argument("--evidence", type=Path, required=True)
+    f116.add_argument("--environment", default="local")
     return parser
 
 
@@ -1187,6 +1334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.abs_tol,
             args.environment,
         ),
+        "f116-correctness": lambda: check_f116_correctness(args.evidence, args.environment),
     }
     try:
         result = handlers[args.command]()

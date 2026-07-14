@@ -120,4 +120,34 @@ def test_topic_stage_uses_current_python_without_uv_network_resolution(monkeypat
         str(replay.REPO_ROOT / "pipeline/scripts/analysis/brand_activity/auto_topic/run_auto_topic.py"),
     ]
     assert "uv" not in captured["command"][:3]
+    assert "--brands-per-market" not in captured["command"]
     assert result["summary"] == {"ok": True}
+
+
+def test_topic_stage_preserves_explicit_brand_cap(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(replay.subprocess, "run", fake_run)
+    options = replay.ReplayOptions(
+        start=replay.Stage.TOPIC,
+        only=replay.Stage.TOPIC,
+        execute=False,
+        save_to_db=False,
+        raw_source=tmp_path / "raw",
+        legacy_raw_source=tmp_path / "legacy",
+        xlsx=tmp_path / "master.xlsx",
+        raw_schema="jw_brand_activity_raw_stage",
+        stage_schema="jw_brand_activity_stage",
+        window=None,
+        audit_dir=tmp_path / "audit",
+        topic=replay.TopicOptions(max_real_calls=0, brands_per_market=11),
+    )
+
+    replay._run_topic(options)
+
+    index = captured["command"].index("--brands-per-market")
+    assert captured["command"][index + 1] == "11"

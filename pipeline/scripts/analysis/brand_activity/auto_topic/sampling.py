@@ -22,7 +22,7 @@ JW_ANCHORS = {
     "WINUF A PLUS",
     "JAQBO",
 }
-DEFAULT_BRANDS_PER_MARKET: Final = 7
+DEFAULT_BRANDS_PER_MARKET: Final[int | None] = None
 
 
 def deterministic_sample(rows: Sequence[KeywordRow], *, limit: int, seed: str) -> list[KeywordRow]:
@@ -31,12 +31,17 @@ def deterministic_sample(rows: Sequence[KeywordRow], *, limit: int, seed: str) -
     return sorted(ranked[:limit], key=lambda row: row.row_id)
 
 
-def choose_sample_brands(rows: Sequence[KeywordRow], *, known_anchors: set[str], max_brands: int) -> tuple[str, ...]:
-    """Pick configured measured brands, preferring top volume, JW anchor, and competitors."""
+def choose_sample_brands(
+    rows: Sequence[KeywordRow],
+    *,
+    known_anchors: set[str],
+    max_brands: int | None = DEFAULT_BRANDS_PER_MARKET,
+) -> tuple[str, ...]:
+    """Pick every measured brand unless an explicit bounded run requests a cap."""
     counts = Counter(row.brand for row in rows)
     if not counts:
         return ()
-    limit = max(1, min(max_brands, len(counts)))
+    limit = len(counts) if max_brands is None else max(1, min(max_brands, len(counts)))
     selected: list[str] = [counts.most_common(1)[0][0]]
     anchor_candidates = [brand for brand in counts if brand in known_anchors and brand not in selected]
     if anchor_candidates and len(selected) < limit:
@@ -57,7 +62,7 @@ def build_market_samples(
     axis_per_brand: int,
     axis_rows_cap: int,
     brand_rows: int,
-    brands_per_market: int,
+    brands_per_market: int | None,
     full_rows: bool = False,
     group_map: dict[str, JsonValue] | None = None,
     axis_lookback_months: int = 12,

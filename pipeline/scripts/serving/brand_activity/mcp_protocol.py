@@ -79,7 +79,7 @@ def _tools() -> list[dict[str, JsonValue]]:
                     "dry_run": {"type": "boolean", "default": True},
                     "save_to_db": {"type": "boolean", "default": False},
                     "max_real_calls": {"type": "integer", "default": 86},
-                    "brands_per_market": {"type": "integer", "default": 1},
+                    "brands_per_market": {"type": "integer", "minimum": 1},
                     "brand_rows": {"type": "integer", "default": 5},
                     "axis_per_brand": {"type": "integer", "default": 3},
                     "large_market_limit": {"type": "integer", "default": 0},

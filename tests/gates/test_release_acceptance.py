@@ -14,6 +14,7 @@ import pytest
 
 from pipeline.scripts.gates.release_acceptance import (
     check_brand_source_evidence,
+    check_f116_correctness,
     check_goldens,
     check_market_growth_evidence,
     check_segment_sum_evidence,
@@ -1291,3 +1292,104 @@ def test_cause_null_integrity_gate_rejects_extreme_numeric_injection(tmp_path: P
     assert result.returncode == 1
     assert "growth: prohibited extreme numeric value=-100.0" in result.stdout
     assert "exit_code=1" in result.stdout
+
+
+def _f116_evidence(
+    tmp_path: Path,
+    *,
+    parent_rows: int = 0,
+    truncate_storage: bool = False,
+    prefer_null: bool = False,
+) -> Path:
+    expected_brands = [f"BRAND-{index}" for index in range(1, 10)]
+    return _write_json(
+        tmp_path / "f116.json",
+        {
+            "classification": "census",
+            "specialty_observations": [
+                {
+                    "id": "ml_003|UBIST|sales",
+                    "market_total": "100.00",
+                    "specialty_total": "100.00",
+                    "parent_rows": parent_rows,
+                    "detail_count": 10,
+                    "overcount_ratio": "1.0",
+                }
+            ],
+            "brand_storage": [
+                {
+                    "id": "ml_003",
+                    "expected_brands": expected_brands,
+                    "stored_brands": expected_brands[:7] if truncate_storage else expected_brands,
+                }
+            ],
+            "api_cases": [
+                {
+                    "id": "guardmet",
+                    "returned_brands": expected_brands[:6],
+                    "expected_brands": expected_brands[:6],
+                    "response_bytes_before": 1200,
+                    "response_bytes_after": 1200,
+                }
+            ],
+            "canonical_cells": [
+                {
+                    "id": "guardmet|class",
+                    "brand_value": None,
+                    "product_value": "DPP-4i+MET",
+                    "result_value": None if prefer_null else "DPP-4i+MET",
+                    "expected_source": "product",
+                }
+            ],
+            "performance_cases": [
+                {"id": "brand-activity", "before_ms": 100.0, "after_ms": 105.0}
+            ],
+        },
+    )
+
+
+def test_f116_correctness_gate_accepts_complete_census(tmp_path: Path) -> None:
+    result = check_f116_correctness(_f116_evidence(tmp_path), "unit")
+
+    assert result.exit_code == 0
+    assert result.checked == 5
+    assert result.population == 5
+    assert result.failures == 0
+
+
+def test_f116_correctness_cli_renders_acceptance_contract(tmp_path: Path) -> None:
+    result = _run(
+        "f116-correctness",
+        "--evidence",
+        str(_f116_evidence(tmp_path)),
+        "--environment",
+        "unit",
+    )
+
+    assert result.returncode == 0
+    assert "gate=f116_correctness" in result.stdout
+    assert "classification=census" in result.stdout
+    assert "checked=5" in result.stdout
+    assert "population=5" in result.stdout
+    assert "missing=fail" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"parent_rows": 1}, "aggregate parent rows remain=1"),
+        ({"truncate_storage": True}, "stored brand census mismatch"),
+        ({"prefer_null": True}, "canonical precedence mismatch"),
+    ],
+)
+def test_f116_correctness_gate_rejects_required_failure_injections(
+    tmp_path: Path,
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    result = check_f116_correctness(_f116_evidence(tmp_path, **kwargs), "failure-injection")
+
+    assert result.exit_code == 1
+    assert result.failures == 1
+    assert any(message in detail for detail in result.details)

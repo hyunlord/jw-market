@@ -65,12 +65,18 @@ def _normalize(value: Any) -> str:
     return normalize_brand_name(value)
 
 
-def _copy_dimensions(target: dict[str, Any], source: pd.Series | None) -> None:
-    if source is None:
-        return
-    for column in DIMENSION_COLUMNS:
-        if column in source.index:
-            target[column] = source.get(column)
+def _dimension_value(source: pd.Series | None, column: str) -> Any:
+    if source is None or column not in source.index:
+        return None
+    value = source.get(column)
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str) and value.strip().lower() in {"", "-", "없음", "nan", "none", "null", "<na>"}:
+        return None
+    return value
 
 
 def _base_row(columns: Iterable[str]) -> dict[str, Any]:
@@ -118,10 +124,12 @@ def _canonical_row(table: pd.DataFrame, products: pd.DataFrame | None, spec: Can
     product_candidate = _candidate_from_products(products, spec, id_col)
     if candidate is not None:
         row.update(candidate.to_dict())
-    elif product_candidate is not None:
-        _copy_dimensions(row, product_candidate)
-    else:
+    elif product_candidate is None:
         raise RuntimeError(f"No catalog/product candidate for {spec.name} ({spec.ml_id}/{spec.cd_id})")
+    for column in DIMENSION_COLUMNS:
+        row[column] = _dimension_value(candidate, column)
+        if row[column] is None:
+            row[column] = _dimension_value(product_candidate, column)
     row["brand_id"] = f"{brand_id_prefix}_{row_index:03d}_{_normalize(spec.name)}"
     row["name"] = spec.name
     row["merge_name"] = spec.name
