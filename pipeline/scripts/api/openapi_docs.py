@@ -590,7 +590,7 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 
 - **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 선택된 window의 audit code 매출 합계에 반영됩니다.
 
-- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 토픽/interest 행을 자르는 필터입니다. `filters.channel.visit_location`과 `filters.channel.specialty`도 호환 입력으로 flat 필드에 정규화됩니다.
+- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `start_date`, `end_date`는 토픽 행을 자르는 필터입니다. `period_start`, `period_end`와 `filters.channel.visit_location`, `filters.channel.specialty`는 호환 입력으로 flat 필드에 정규화됩니다.
 
 - **missing/null 처리:** `filters`와 `filter`를 생략하면 빈 필터 객체입니다. `filters:null` 또는 `filter:null`은 validation error입니다. `filters`와 legacy `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다.
 
@@ -733,6 +733,8 @@ BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE: Final = {
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
     "visit_location": "전체",
     "specialty": "전체",
+    "start_date": "2025-02",
+    "end_date": "2025-05",
     "top_n": 5,
 }
 
@@ -855,6 +857,21 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                             },
                         },
                         "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
+                        "meta": {
+                            "type": "object",
+                            "properties": {
+                                "period": {
+                                    "type": "object",
+                                    "properties": {
+                                        "start_date": {"type": "string"},
+                                        "end_date": {"type": "string"},
+                                        "available_start": {"type": "string"},
+                                        "available_end": {"type": "string"},
+                                    },
+                                },
+                                "reason": {"type": "string", "description": "기간 내 데이터가 없을 때 no_data_in_period."},
+                            },
+                        },
                     },
                 },
                 "example": {
@@ -897,7 +914,15 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                 ],
                             }
                         ],
-                    }
+                    },
+                    "meta": {
+                        "period": {
+                            "start_date": "2025-02",
+                            "end_date": "2025-05",
+                            "available_start": "2024-06",
+                            "available_end": "2026-05",
+                        }
+                    },
                 },
             }
         },

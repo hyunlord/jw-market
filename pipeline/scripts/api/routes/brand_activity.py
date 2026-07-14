@@ -32,6 +32,7 @@ from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
 from pipeline.scripts.api.brand_activity_topic_matrix import (
     TopicRequestError,
     get_topic_brand_payload,
+    get_topic_period_bounds,
 )
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
@@ -138,8 +139,10 @@ def brand_activity_topic(scope_id: str = Path(description="내부 토픽 scope �
                 "specialty": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 진료과 행 필터."},
                 "interest": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 관심도 행 필터."},
                 "prescription_evolution": {"type": ["string", "array"], "items": {"type": "string"}, "description": "처방 변화 행 필터."},
-                "period_start": {"type": "string", "description": "행 필터 시작월 YYYY-MM."},
-                "period_end": {"type": "string", "description": "행 필터 종료월 YYYY-MM."},
+                "start_date": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])$", "description": "행 필터 시작월 YYYY-MM."},
+                "end_date": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])$", "description": "행 필터 종료월 YYYY-MM."},
+                "period_start": {"type": "string", "description": "Legacy 행 필터 시작월 YYYY-MM."},
+                "period_end": {"type": "string", "description": "Legacy 행 필터 종료월 YYYY-MM."},
                 "top_n": {"type": "integer", "description": "브랜드 카드별 상위 토픽 개수. 1~10으로 clamp됩니다."},
             },
             BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE,
@@ -160,7 +163,12 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
         raise HTTPException(status_code=500, detail={"error": "invalid_brand_activity_topic_payload"}) from exc
     if result is None:
         _raise_market_not_found(payload)
-    return _success_response(result, request_normalized=request_normalized)
+    period_meta = _topic_period_metadata(payload, get_topic_period_bounds())
+    response_meta: dict[str, JsonValue] = {"period": period_meta}
+    if _period_filter_active(payload) and not _topic_result_has_data(result):
+        result = {**result, "brands": []}
+        response_meta["reason"] = "no_data_in_period"
+    return _success_response(result, request_normalized=request_normalized, metadata=response_meta)
 
 
 @router.post(
@@ -316,11 +324,41 @@ def _portal_service_request(
     return _service_payload(payload), has_nested_atc4
 
 
-def _success_response(result: dict[str, JsonValue], *, request_normalized: bool) -> dict[str, JsonValue]:
+def _success_response(
+    result: dict[str, JsonValue],
+    *,
+    request_normalized: bool,
+    metadata: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
     response: dict[str, JsonValue] = {"data": result}
+    meta = dict(metadata or {})
     if request_normalized:
-        response["meta"] = {"request_normalized": True}
+        meta["request_normalized"] = True
+    if meta:
+        response["meta"] = meta
     return response
+
+
+def _topic_period_metadata(payload: BrandActivityTopicsRequest, bounds: dict[str, str]) -> dict[str, JsonValue]:
+    available_start = bounds.get("available_start") or ""
+    available_end = bounds.get("available_end") or ""
+    return {
+        "start_date": payload.start_date or available_start,
+        "end_date": payload.end_date or available_end,
+        "available_start": available_start,
+        "available_end": available_end,
+    }
+
+
+def _period_filter_active(payload: BrandActivityTopicsRequest) -> bool:
+    return payload.start_date is not None or payload.end_date is not None
+
+
+def _topic_result_has_data(result: dict[str, JsonValue]) -> bool:
+    brands = result.get("brands")
+    if not isinstance(brands, list):
+        return False
+    return any(isinstance(brand, dict) and int(brand.get("event_count") or 0) > 0 for brand in brands)
 
 
 def _csd_unavailable_response(
