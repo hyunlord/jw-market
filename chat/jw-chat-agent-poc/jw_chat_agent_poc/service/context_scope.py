@@ -57,7 +57,9 @@ def resolve_context_scope(
 
     file_directed = has_file_reference(query)
     if not has_active_file:
-        if file_directed and not (has_market_intent and has_market_anchor and _COMPARISON_RE.search(query)):
+        if file_directed and has_market_intent and has_market_anchor and _COMPARISON_RE.search(query):
+            return ContextScope.MIXED
+        if file_directed:
             return ContextScope.FILE
         return ContextScope.MARKET
     if file_directed and has_market_intent and has_market_anchor and _COMPARISON_RE.search(query):

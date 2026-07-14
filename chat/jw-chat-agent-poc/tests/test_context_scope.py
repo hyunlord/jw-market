@@ -280,6 +280,31 @@ def test_mixed_market_leg_exception_is_reported_as_partial_failure(monkeypatch) 
     assert "조회 오류" in item["result"]["mixed_market_result"]["mixed_leg_error"]
 
 
+def test_mixed_request_without_active_file_preserves_market_result_and_reports_file_absence(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: False)
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (None, (), False, ""),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _resolver(),
+        _factory,
+        "리바로 2025년 4월 매출과 이 보고서의 2026년 전망을 비교해줘",
+        "live",
+        "mixed-file-absent",
+    )
+
+    result = item["result"]
+    assert result["context_scope"] == "MIXED"
+    assert result["mixed_market_result"]["tool_calls"]
+    assert result["mixed_file_result"]["mixed_leg_error"] == "첨부 문서 근거를 가져오지 못했습니다."
+
+
 def test_question_without_file_context_is_unchanged() -> None:
     # Given: a normal market request without uploaded context.
     # When: it is answered.
@@ -304,7 +329,7 @@ def test_question_without_file_context_is_unchanged() -> None:
         ("리바로 매출과 파일 값을 비교", True, False, True, ContextScope.MIXED),
         ("리바로 수치와 문서 결과를 시장 데이터로 대비", True, False, True, ContextScope.MIXED),
         ("리바로 실적과 PDF 결과를 시장 기준으로 비교", True, False, True, ContextScope.MIXED),
-        ("리바로 매출과 이 보고서 전망을 비교", False, False, True, ContextScope.MARKET),
+        ("리바로 매출과 이 보고서 전망을 비교", False, False, True, ContextScope.MIXED),
     ),
 )
 def test_resolve_context_scope(
