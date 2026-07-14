@@ -618,6 +618,137 @@ def _brand_set() -> BrandSetResolution:
     )
 
 
+def test_topic_scope_uses_catalog_atc_membership_not_payload_brand_membership(monkeypatch) -> None:
+    brand_set = _brand_set()
+    strategic = BrandSetResolution(
+        view_name="strategic_ml",
+        market_id="ml_003",
+        selected_brand=brand_set.selected_brand,
+        view=ViewConfig(
+            "mart_strategic_ml_brand_metric",
+            "mart_strategic_ml_market_metric",
+            "ml_id",
+            "ml_name",
+            "brand_ranking_stacked",
+            True,
+        ),
+        market_row={"ml_name": "GUARDLET Market"},
+        brand_rows=(),
+        brand_meta=brand_set.brand_meta,
+        choices=brand_set.choices,
+        candidates=(),
+        ranking_quarter="2025-Q4",
+        applied_filter={},
+    )
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("A10N1", "A10N3"))
+    rows = [
+        {
+            "scope_id": "group:gardlet_family",
+            "atc4_values": json.dumps(["A10N1", "A10N3"]),
+            "payload": json.dumps(
+                {"scope": {"scope_id": "group:gardlet_family"}, "brands": [{"brand": "UNRELATED"}]},
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    scope = topic_matrix._topic_scope(brand_set=strategic, topic_rows=rows)
+
+    assert scope["scope_id"] == "group:gardlet_family"
+
+
+def test_missing_catalog_topic_scope_returns_explicit_reason(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(topic_matrix, "_fetch_topic_rows", lambda: [])
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1",))
+
+    with caplog.at_level("WARNING"):
+        result = topic_matrix.get_topic_brand_payload(
+            {
+                "view": "general",
+                "selected_brand": "리바로",
+                "filter": {"atc4": ["C10A1"]},
+            }
+        )
+
+    assert result is not None
+    assert result["reason"] == "no_topic_scope"
+    assert len(result["brands"]) == 2
+    assert "reason=no_topic_scope" in caplog.text
+
+
+def test_cd_topic_scope_reads_atc_membership_through_ml_catalog(monkeypatch) -> None:
+    brand_set = _brand_set()
+    strategic_cd = BrandSetResolution(
+        view_name="strategic_cd",
+        market_id="cd_003",
+        selected_brand=brand_set.selected_brand,
+        view=ViewConfig(
+            "mart_strategic_cd_brand_metric",
+            "mart_strategic_cd_market_metric",
+            "cd_market_id",
+            "cd_market_name",
+            "brand_ranking_stacked",
+            True,
+        ),
+        market_row={"cd_market_name": "GUARDLET Market"},
+        brand_rows=(),
+        brand_meta=brand_set.brand_meta,
+        choices=brand_set.choices,
+        candidates=(),
+        ranking_quarter="2025-Q4",
+        applied_filter={},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_fetch_one(sql: str, params: tuple[str, ...]) -> dict[str, str]:
+        captured.update({"sql": sql, "params": params})
+        return {"atc_codes_json": '["A10N1", "A10N3"]'}
+
+    monkeypatch.setattr(topic_matrix.db, "fetch_one", fake_fetch_one)
+
+    assert topic_matrix._catalog_atc4_values(strategic_cd) == ("A10N1", "A10N3")
+    assert "JOIN" in str(captured["sql"])
+    assert "catalog_cd_market" in str(captured["sql"])
+    assert "catalog_ml_market" in str(captured["sql"])
+    assert captured["params"] == ("cd_003",)
+
+
+def test_topic_scope_normalizes_catalog_and_stored_atc_codes(monkeypatch) -> None:
+    brand_set = _brand_set()
+    strategic = BrandSetResolution(
+        view_name="strategic_ml",
+        market_id="ml_001",
+        selected_brand=brand_set.selected_brand,
+        view=brand_set.view,
+        market_row=brand_set.market_row,
+        brand_rows=brand_set.brand_rows,
+        brand_meta=brand_set.brand_meta,
+        choices=brand_set.choices,
+        candidates=brand_set.candidates,
+        ranking_quarter=brand_set.ranking_quarter,
+        applied_filter=brand_set.applied_filter,
+    )
+    monkeypatch.setattr(
+        topic_matrix,
+        "_catalog_atc4_values",
+        lambda _brand_set: topic_matrix._atc4_values(["A2B2"]),
+    )
+
+    scope = topic_matrix._topic_scope(
+        brand_set=strategic,
+        topic_rows=[
+            {
+                "scope_id": "atc4:A02B2",
+                "atc4_values": json.dumps(["A02B2"]),
+                "payload": json.dumps({"scope": {"scope_id": "atc4:A02B2"}}),
+            }
+        ],
+    )
+
+    assert scope["scope_id"] == "atc4:A02B2"
+
+
 def _post_topic_row() -> dict[str, str]:
     payload = {
         "scope": {"scope_id": "atc4:C10A1", "atc4_values": ["C10A1"]},

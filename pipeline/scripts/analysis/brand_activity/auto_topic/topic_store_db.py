@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import time
 from typing import Final
 
@@ -22,6 +23,10 @@ from .topic_store import (
 
 TOPICS_TABLE: Final = "mart_brand_activity_topics"
 RUNS_TABLE: Final = "mart_brand_activity_topic_runs"
+STAGING_TOPICS_TABLE: Final = "mart_brand_activity_topics_staging"
+STAGING_RUNS_TABLE: Final = "mart_brand_activity_topic_runs_staging"
+TOPICS_TARGET_ENV: Final = "BRAND_ACTIVITY_TOPICS_TARGET_TABLE"
+RUNS_TARGET_ENV: Final = "BRAND_ACTIVITY_TOPIC_RUNS_TARGET_TABLE"
 COUNT_READBACK_RETRY_LIMIT: Final = 2
 COUNT_READBACK_RETRY_DELAY_SECONDS: Final = 0.2
 
@@ -38,28 +43,66 @@ class StoreSummary:
     count_retry_used: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class TopicTables:
+    topics: str
+    runs: str
+
+
+APPROVED_TOPIC_TABLE_PAIRS: Final[frozenset[TopicTables]] = frozenset(
+    {
+        TopicTables(topics=TOPICS_TABLE, runs=RUNS_TABLE),
+        TopicTables(topics=STAGING_TOPICS_TABLE, runs=STAGING_RUNS_TABLE),
+    }
+)
+
+
+def resolve_topic_tables() -> TopicTables:
+    """Resolve one approved live or staging table pair from the environment."""
+    topics = os.environ.get(TOPICS_TARGET_ENV, TOPICS_TABLE).strip()
+    runs = os.environ.get(RUNS_TARGET_ENV, RUNS_TABLE).strip()
+    pair = TopicTables(topics=topics, runs=runs)
+    if pair not in APPROVED_TOPIC_TABLE_PAIRS:
+        raise TopicStoreError(
+            "topic target tables must be the approved live or staging pair: "
+            f"topics={topics!r}, runs={runs!r}"
+        )
+    return pair
+
+
 def ensure_topic_tables(connection: pymysql.connections.Connection, *, schema: str = SCHEMA) -> None:
     """Create API-facing topic result tables inside the isolated schema."""
     safe_schema = validated_stage_schema(schema)
+    tables = resolve_topic_tables()
     with connection.cursor() as cursor:
-        for statement in topic_table_ddl(safe_schema):
+        for statement in topic_table_ddl(safe_schema, tables=tables):
             cursor.execute(statement)
-        for statement in topic_table_migration_ddl(safe_schema):
+        for statement in topic_table_migration_ddl(safe_schema, tables=tables):
             cursor.execute(statement)
 
 
-def topic_table_ddl(schema: str = SCHEMA) -> tuple[str, str]:
+def topic_table_ddl(
+    schema: str = SCHEMA,
+    *,
+    tables: TopicTables | None = None,
+) -> tuple[str, str]:
     """Return DDL for the topic payload and run metadata tables."""
     safe_schema = validated_stage_schema(schema)
-    return (_topics_ddl(safe_schema), _runs_ddl(safe_schema))
+    target = tables or resolve_topic_tables()
+    return (_topics_ddl(safe_schema, target.topics), _runs_ddl(safe_schema, target.runs))
 
 
-def topic_table_migration_ddl(schema: str = SCHEMA) -> tuple[str, ...]:
+def topic_table_migration_ddl(
+    schema: str = SCHEMA,
+    *,
+    tables: TopicTables | None = None,
+) -> tuple[str, ...]:
     """Return idempotent schema evolution statements for existing topic marts."""
     safe_schema = validated_stage_schema(schema)
+    target = tables or resolve_topic_tables()
     return (
         f"""
-        ALTER TABLE `{safe_schema}`.`{RUNS_TABLE}`
+        ALTER TABLE `{safe_schema}`.`{target.runs}`
         ADD COLUMN IF NOT EXISTS input_fingerprint CHAR(64) NULL AFTER sha256
         """,
     )
@@ -74,16 +117,20 @@ def upsert_topic_results(
 ) -> StoreSummary:
     """Upsert one measured run and its API-ready market payloads."""
     safe_schema = validated_stage_schema(schema)
+    tables = resolve_topic_tables()
     ensure_topic_tables(connection, schema=safe_schema)
     with connection.cursor() as cursor:
-        cursor.execute(_run_upsert_sql(safe_schema), _run_tuple(run))
-        cursor.executemany(_topic_upsert_sql(safe_schema), [_topic_tuple(record, run.run_id) for record in records])
+        cursor.execute(_run_upsert_sql(safe_schema, tables.runs), _run_tuple(run))
+        cursor.executemany(
+            _topic_upsert_sql(safe_schema, tables.topics),
+            [_topic_tuple(record, run.run_id) for record in records],
+        )
     connection.commit()
     with connection.cursor() as cursor:
         stored_run_rows, run_count_retry_used = _count_rows_with_bounded_retry(
             cursor,
             safe_schema,
-            RUNS_TABLE,
+            tables.runs,
             "run_id",
             run.run_id,
             expected_rows_present=True,
@@ -91,7 +138,7 @@ def upsert_topic_results(
         stored_topic_rows, topic_count_retry_used = _count_rows_with_bounded_retry(
             cursor,
             safe_schema,
-            TOPICS_TABLE,
+            tables.topics,
             "run_id",
             run.run_id,
             expected_rows_present=bool(records),
@@ -146,10 +193,10 @@ def store_summary_json(summary: StoreSummary) -> dict[str, JsonValue]:
     }
 
 
-def _topics_ddl(schema: str) -> str:
+def _topics_ddl(schema: str, table: str = TOPICS_TABLE) -> str:
     """Return the topic payload table DDL."""
     return f"""
-        CREATE TABLE IF NOT EXISTS `{schema}`.`{TOPICS_TABLE}` (
+        CREATE TABLE IF NOT EXISTS `{schema}`.`{table}` (
             scope_id VARCHAR(128) NOT NULL PRIMARY KEY,
             display_name VARCHAR(255) NOT NULL,
             atc4_values JSON NOT NULL,
@@ -163,10 +210,10 @@ def _topics_ddl(schema: str) -> str:
     """
 
 
-def _runs_ddl(schema: str) -> str:
+def _runs_ddl(schema: str, table: str = RUNS_TABLE) -> str:
     """Return the topic run metadata table DDL."""
     return f"""
-        CREATE TABLE IF NOT EXISTS `{schema}`.`{RUNS_TABLE}` (
+        CREATE TABLE IF NOT EXISTS `{schema}`.`{table}` (
             run_id VARCHAR(160) NOT NULL PRIMARY KEY,
             created_at DATETIME NOT NULL,
             model_id VARCHAR(128) NOT NULL,
@@ -186,10 +233,10 @@ def _runs_ddl(schema: str) -> str:
     """
 
 
-def _run_upsert_sql(schema: str) -> str:
+def _run_upsert_sql(schema: str, table: str = RUNS_TABLE) -> str:
     """Return the run metadata upsert statement."""
     return f"""
-        INSERT INTO `{schema}`.`{RUNS_TABLE}`
+        INSERT INTO `{schema}`.`{table}`
         (run_id, created_at, model_id, serving_id, route, total_prompt_tokens, total_completion_tokens,
          est_cost_usd, market_count, brand_count, axis_compound_count, brand_specific_dup_count, sha256,
          input_fingerprint)
@@ -211,10 +258,10 @@ def _run_upsert_sql(schema: str) -> str:
     """
 
 
-def _topic_upsert_sql(schema: str) -> str:
+def _topic_upsert_sql(schema: str, table: str = TOPICS_TABLE) -> str:
     """Return the topic payload upsert statement."""
     return f"""
-        INSERT INTO `{schema}`.`{TOPICS_TABLE}`
+        INSERT INTO `{schema}`.`{table}`
         (scope_id, display_name, atc4_values, quality_grade, source_row_count, payload, run_id)
         VALUES ({", ".join(["%s"] * 7)})
         ON DUPLICATE KEY UPDATE

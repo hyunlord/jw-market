@@ -84,7 +84,7 @@ class JobConfig:
     stage_schema: str = SCHEMA
     raw_schema: str = "jw_brand_activity_raw_stage"
     max_real_calls: int = 350
-    brands_per_market: int = 10000
+    brands_per_market: int | None = None
     large_market_limit: int = 0
     request_timeout_seconds: int = 60
     poll_interval_seconds: int = 30
@@ -251,11 +251,12 @@ def _start_run(config: JobConfig, *, post_json: PostJson) -> str:
         "dry_run": False,
         "save_to_db": True,
         "max_real_calls": config.max_real_calls,
-        "brands_per_market": config.brands_per_market,
         "large_market_limit": config.large_market_limit,
         "stage_schema": config.stage_schema,
         "raw_schema": config.raw_schema,
     }
+    if config.brands_per_market is not None:
+        arguments["brands_per_market"] = config.brands_per_market
     last_error: Exception | None = None
     for attempt in (1, 2):
         try:
@@ -337,7 +338,7 @@ def _config_from_env() -> JobConfig:
         stage_schema=os.environ.get("TOPIC_STAGE_SCHEMA", SCHEMA),
         raw_schema=os.environ.get("TOPIC_RAW_SCHEMA", "jw_brand_activity_raw_stage"),
         max_real_calls=max_real_calls,
-        brands_per_market=_int_env("TOPIC_BRANDS_PER_MARKET", 10000),
+        brands_per_market=_optional_int_env("TOPIC_BRANDS_PER_MARKET"),
         large_market_limit=_int_env("TOPIC_LARGE_MARKET_LIMIT", 0),
         request_timeout_seconds=_int_env("TOPIC_REQUEST_TIMEOUT_SECONDS", 60),
         poll_interval_seconds=_int_env("TOPIC_POLL_INTERVAL_SECONDS", 30),
@@ -362,6 +363,12 @@ def _int_env(key: str, default: int) -> int:
     """Read an integer env var with a default."""
     value = os.environ.get(key)
     return int(value) if value else default
+
+
+def _optional_int_env(key: str) -> int | None:
+    """Read an optional positive integer without imposing a storage cap."""
+    value = os.environ.get(key)
+    return int(value) if value else None
 
 
 def _int(value: Any) -> int:

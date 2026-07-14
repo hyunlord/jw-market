@@ -118,6 +118,15 @@ def test_choose_sample_brands_allows_configured_limit_above_seven() -> None:
     assert selected == ("LIVALOZET", "ATOZET", "ROSUZET", "CRESTOR", "LIPITOR", "EZETROL", "MINOR1", "MINOR2")
 
 
+def test_choose_sample_brands_defaults_to_every_market_brand() -> None:
+    rows = [_row(index, "A10N1", f"BRAND{index:02d}") for index in range(12)]
+
+    selected = choose_sample_brands(rows, known_anchors=set())
+
+    assert len(selected) == 12
+    assert set(selected) == {f"BRAND{index:02d}" for index in range(12)}
+
+
 def test_prompt_manifest_declares_single_concept_and_distinct_brand_topic_policy() -> None:
     manifest = prompt_template_manifest()
     label_policy = manifest["label_policy"]

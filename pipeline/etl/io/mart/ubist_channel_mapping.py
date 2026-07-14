@@ -23,6 +23,15 @@ INTERNAL_MEDICINE_DETAIL_SPECIALTIES = (
     "분리되지 않은 내과",
 )
 
+UBIST_SPECIALTY_HIERARCHIES = {
+    STANDALONE_INTERNAL_MEDICINE_SPECIALTY: INTERNAL_MEDICINE_DETAIL_SPECIALTIES,
+}
+
+
+def aggregate_specialty_labels() -> frozenset[str]:
+    """Return raw specialty labels that duplicate their catalogued children."""
+    return frozenset(UBIST_SPECIALTY_HIERARCHIES)
+
 
 @dataclass(frozen=True)
 class UbistChannel:

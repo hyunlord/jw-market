@@ -62,7 +62,6 @@ def test_wf307_step_starts_dry_run_and_returns_result(monkeypatch) -> None:
             "dry_run": True,
             "save_to_db": False,
             "max_real_calls": 0,
-            "brands_per_market": 1,
             "large_market_limit": 0,
             "stage_schema": "jw_brand_activity_stage",
             "raw_schema": "jw_brand_activity_raw_stage",

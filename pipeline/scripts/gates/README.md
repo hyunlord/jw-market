@@ -174,3 +174,21 @@ rows, including `기타`, must independently reconcile to the same annual market
 total. The expected years are explicit, so a year missing from both entity
 payloads cannot disappear from the census. Missing years, null shares, and
 empty censuses fail closed.
+
+## F-116 specialty, topic storage, and canonical precedence
+
+The F-116 gate consumes one tracked or audit-packaged census document. It checks
+that strategic specialty totals no longer include aggregate parents, topic
+storage contains the complete measured brand population while the API remains
+bounded to six brands, canonical dimensions use field-level non-null fallback,
+and measured latency stays within 1.2x of baseline.
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py f116-correctness \
+  --evidence /tmp/f116_correctness.json \
+  --environment test2
+```
+
+The evidence must come from independent mart SQL and live API observations.
+Reusing one generated payload as both actual and expected is not acceptance
+evidence.
