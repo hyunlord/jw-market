@@ -74,6 +74,23 @@ class MeasureRequest:
     label: str = ""
 
 
+def fetch_sql_schema_columns(
+    conversation_id: str,
+    sources: Sequence[SqlFileSource],
+) -> tuple[str, ...]:
+    """Return the source column names visible to the file SQL planner."""
+
+    names: list[str] = []
+    for source in sources[: _max_schema_tables()]:
+        schema = _fetch_schema(source, conversation_id)
+        names.extend(
+            str(column.get("source_name") or "").strip()
+            for column in _schema_columns(schema)
+            if str(column.get("source_name") or "").strip()
+        )
+    return tuple(dict.fromkeys(names))
+
+
 def query_uploaded_sql(
     question: str,
     conversation_id: str,

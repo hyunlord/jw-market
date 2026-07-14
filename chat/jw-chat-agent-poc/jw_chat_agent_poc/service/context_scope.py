@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 
 
@@ -29,6 +30,14 @@ _COMPARISON_RE = re.compile(
     r"(?:비교|대비|맞는지|차이|함께|결합)",
     re.IGNORECASE,
 )
+_ATC4_CODE_RE = re.compile(r"(?<![A-Z0-9])[A-Z]\d{2}[A-Z]\d(?![A-Z0-9])", re.IGNORECASE)
+_EXPLICIT_MARKET_TERMS = (
+    "시장 데이터",
+    "전체 시장",
+    "시장 기준",
+    "db에서",
+    "mart에서",
+)
 
 
 def file_reference_terms() -> tuple[str, ...]:
@@ -52,19 +61,50 @@ def resolve_context_scope(
     is_fresh_upload: bool = False,
     has_market_intent: bool = False,
     has_market_anchor: bool = False,
+    file_schema_columns: Sequence[str] = (),
 ) -> ContextScope:
     """Resolve the request's data boundary before any market routing occurs."""
 
     file_directed = has_file_reference(query)
+    explicit_market = _has_explicit_market_reference(query)
+    schema_directed = matches_file_schema(query, file_schema_columns)
     if not has_active_file:
         if file_directed and has_market_intent and has_market_anchor and _COMPARISON_RE.search(query):
             return ContextScope.MIXED
         if file_directed:
             return ContextScope.FILE
         return ContextScope.MARKET
+    if schema_directed and not explicit_market:
+        return ContextScope.FILE
     if file_directed and has_market_intent and has_market_anchor and _COMPARISON_RE.search(query):
         return ContextScope.MIXED
     if not file_directed and has_market_intent and has_market_anchor:
         return ContextScope.MARKET
     # Fresh uploads and unresolved references remain in the file boundary.
     return ContextScope.FILE
+
+
+def _has_explicit_market_reference(query: str) -> bool:
+    normalized = re.sub(r"\s+", " ", query).strip().casefold()
+    return any(term in normalized for term in _EXPLICIT_MARKET_TERMS)
+
+
+def matches_file_schema(query: str, columns: Sequence[str]) -> bool:
+    if not columns:
+        return False
+    normalized_columns = tuple(
+        re.sub(r"[^a-z0-9가-힣]+", "", column.casefold())
+        for column in columns
+    )
+    has_atc4_axis = any("atc4" in column for column in normalized_columns)
+    has_manufacturer_axis = any(
+        any(term in column for term in ("mfr", "manufacturer", "제조사", "업체"))
+        for column in normalized_columns
+    )
+    if has_atc4_axis and _ATC4_CODE_RE.search(query):
+        return True
+    return bool(
+        has_manufacturer_axis
+        and _COMPARISON_RE.search(query)
+        and re.search(r"[가-힣A-Za-z0-9]+(?:과|와)\s*[가-힣A-Za-z0-9]+", query)
+    )

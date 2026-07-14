@@ -348,6 +348,36 @@ def test_resolve_context_scope(
     ) is expected
 
 
+def test_file_schema_atc4_and_manufacturer_columns_take_priority_over_market_signal() -> None:
+    # Given: an active workbook exposes ATC4 and manufacturer columns.
+    # When: the question uses an ATC4 code and two manufacturer values.
+    scope = resolve_context_scope(
+        "A02B2에서 동아제약과 동화약품 비교",
+        has_active_file=True,
+        has_market_intent=True,
+        has_market_anchor=True,
+        file_schema_columns=("ATC 4", "MFR NAME KOR", "VALUES LC SI PRICE 1/2026"),
+    )
+
+    # Then: those terms are interpreted as workbook axes, not a market route.
+    assert scope is ContextScope.FILE
+
+
+def test_file_schema_does_not_capture_unrelated_market_brand() -> None:
+    # Given: the workbook has no brand column or Livalo value axis.
+    # When: the user asks a market-only Livalo question in the same session.
+    scope = resolve_context_scope(
+        "리바로 최근 매출 추이",
+        has_active_file=True,
+        has_market_intent=True,
+        has_market_anchor=True,
+        file_schema_columns=("ATC 4", "MFR NAME KOR", "VALUES LC SI PRICE 1/2026"),
+    )
+
+    # Then: MIXED M1's file-stickiness fix remains intact.
+    assert scope is ContextScope.MARKET
+
+
 def test_mixed_scope_is_composed_without_synthesis_llm(monkeypatch) -> None:
     monkeypatch.setattr(
         GenosClient,
