@@ -1,0 +1,10 @@
+{
+  "owner": "jw chat golden contract registry",
+  "rule": "A hash without its request and truth basis is not a golden contract. Mock output is never a truth basis.",
+  "contract_files": [
+    "file_sql_goldens.json",
+    "market_goldens.json",
+    "relational_goldens.json",
+    "performance_baselines.json"
+  ]
+}

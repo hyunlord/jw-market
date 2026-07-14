@@ -18,12 +18,18 @@ def test_file_sql_goldens_have_independent_source_truth() -> None:
     assert contracts
     for contract in contracts:
         assert contract["gate_enabled"] is True
-        assert contract["request"]
+        assert contract["request"]["kind"]
+        assert contract["request"]["exact"]
         assert contract["truth_basis_status"] == "confirmed"
-        assert "Original XLSX direct reproduction" in contract["truth_basis"]
-        assert "mock" not in contract["truth_basis"].casefold()
-        assert len(contract["source"]["file_sha256"]) == 64
-        assert contract["source"]["data_row_count"] > 0
+        assert contract["truth_basis"]["independent_of_observation"] is True
+        assert contract["truth_basis"]["type"] != "mock_fixture"
+        assert contract["generation_method"]["description"]
+        assert contract["measurement_context"]["file_sha256"]
+
+        source = contract.get("source")
+        if source is not None:
+            assert len(source["file_sha256"]) == 64
+            assert source["data_row_count"] > 0
 
 
 def test_chso_r05a0_golden_records_correct_label_values_and_population() -> None:
