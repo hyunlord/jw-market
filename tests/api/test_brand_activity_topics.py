@@ -6,6 +6,7 @@ import sys
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -32,6 +33,15 @@ INTERNAL_BRAND_KEYS = {
     "brand_specific_dedup_count",
     "brand_specific_dedup_log",
 }
+
+
+@pytest.fixture(autouse=True)
+def topic_period_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
 
 
 def test_topics_endpoint_projects_public_contract_when_rows_exist(monkeypatch) -> None:
@@ -103,7 +113,18 @@ def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected, "meta": {"request_normalized": True}}
+    assert response.json() == {
+        "data": expected,
+        "meta": {
+            "period": {
+                "start_date": "2024-06",
+                "end_date": "2026-05",
+                "available_start": "2024-06",
+                "available_end": "2026-05",
+            },
+            "request_normalized": True,
+        },
+    }
     assert "market_id" not in captured
     assert captured["filters"]["atc4"] == ["C10A1"]
     assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
@@ -139,6 +160,162 @@ def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
     assert captured["specialty"] == ["Cardio"]
     assert captured["interest"] == ["VERY USEFUL", "SOMEWHAT USEFUL"]
     assert captured["prescription_evolution"] == ["increase"]
+
+
+def test_post_topics_route_accepts_canonical_period_and_returns_applied_bounds(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_get_topic_brand_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return {"scope": {"sliced": True}, "brands": [{"event_count": 4}]}
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "start_date": "2025-02",
+            "end_date": "2025-05",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["period_start"] == "2025-02"
+    assert captured["period_end"] == "2025-05"
+    assert response.json()["meta"]["period"] == {
+        "start_date": "2025-02",
+        "end_date": "2025-05",
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+
+
+def test_post_topics_route_keeps_legacy_period_keys_compatible(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda payload: captured.update(payload) or {"scope": {"sliced": True}, "brands": [{"event_count": 1}]},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "period_start": "2025-02",
+            "period_end": "2025-05",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["start_date"] == "2025-02"
+    assert captured["end_date"] == "2025-05"
+
+
+def test_post_topics_route_resolves_open_period_against_available_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda _payload: {"scope": {"sliced": True}, "brands": [{"event_count": 1}]},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+    client = TestClient(app)
+    base = {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}}
+
+    start_only = client.post("/api/brand-activity/topics", json={**base, "start_date": "2025-02"}).json()
+    end_only = client.post("/api/brand-activity/topics", json={**base, "end_date": "2025-05"}).json()
+    unfiltered = client.post("/api/brand-activity/topics", json=base).json()
+
+    assert start_only["meta"]["period"]["end_date"] == "2026-05"
+    assert end_only["meta"]["period"]["start_date"] == "2024-06"
+    assert unfiltered["meta"]["period"] == {
+        "start_date": "2024-06",
+        "end_date": "2026-05",
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+
+
+def test_post_topics_route_rejects_invalid_or_reversed_period() -> None:
+    client = TestClient(app)
+    base = {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}}
+
+    invalid = client.post("/api/brand-activity/topics", json={**base, "start_date": "2025-2"})
+    reversed_period = client.post(
+        "/api/brand-activity/topics",
+        json={**base, "start_date": "2025-06", "end_date": "2025-05"},
+    )
+
+    assert invalid.status_code == 422
+    assert "YYYY-MM" in invalid.text
+    assert reversed_period.status_code == 422
+
+
+def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda _payload: {"scope": {"sliced": True}, "brands": [{"event_count": 0, "topic_shares": []}]},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "start_date": "2023-01",
+            "end_date": "2023-02",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["brands"] == []
+    assert response.json()["meta"]["reason"] == "no_data_in_period"
+
+
+def test_topic_period_bounds_reads_indexable_month_extrema(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_one(sql: str, params=None) -> dict[str, str]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return {"available_start": "2024-06", "available_end": "2026-05"}
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_one", fake_fetch_one)
+
+    assert topic_matrix.get_topic_period_bounds() == {
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+    assert "MIN(period_ym)" in captured["sql"]
+    assert "MAX(period_ym)" in captured["sql"]
+    assert "km_keyword_event_stage" in captured["sql"]
+    assert captured["params"] is None
 
 
 def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeypatch) -> None:
