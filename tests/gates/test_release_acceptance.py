@@ -156,6 +156,163 @@ def test_golden_gate_rejects_missing_endpoint_identity(tmp_path: Path) -> None:
     assert "population=1" in result.stdout
 
 
+def test_growth_windows_gate_rejects_identical_windows(tmp_path: Path) -> None:
+    window = {
+        "period_start": "2021-01",
+        "period_end": "2026-05",
+        "market_start": 100.0,
+        "market_end": 130.0,
+        "market_growth": 30.0,
+        "by_brand": {
+            "top_contributors": [{"contribution_value": 30.0}],
+            "others_total": 0.0,
+        },
+        "by_company": {
+            "top_contributors": [{"contribution_value": 30.0}],
+            "others_total": 0.0,
+        },
+    }
+    evidence = _write_json(
+        tmp_path / "growth.json",
+        {
+            "classification": "sample",
+            "cases": [
+                {
+                    "id": "A10N1|ubist|sales",
+                    "expected_period_starts": {
+                        "1y": "2025-06",
+                        "2y": "2024-06",
+                        "3y": "2023-06",
+                        "4y": "2022-06",
+                        "5y": "2021-06",
+                    },
+                    "expected_market_starts": {
+                        key: float(index)
+                        for index, key in enumerate(
+                            ("1y", "2y", "3y", "4y", "5y"),
+                            start=1,
+                        )
+                    },
+                    "expected_truncated_windows": [],
+                    "windows": {key: dict(window) for key in ("1y", "2y", "3y", "4y", "5y")},
+                }
+            ],
+        },
+    )
+
+    result = _run(
+        "growth-windows",
+        "--evidence",
+        str(evidence),
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "gate=growth_windows" in result.stdout
+    assert "classification=sample" in result.stdout
+    assert "failures=" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def test_growth_windows_gate_rejects_duplicate_complete_windows_when_later_windows_are_truncated(
+    tmp_path: Path,
+) -> None:
+    keys = ("1y", "2y", "3y", "4y", "5y")
+    starts = ("2025-06", "2024-06", "2023-01", "2023-01", "2023-01")
+    windows = {}
+    for key, start in zip(keys, starts, strict=True):
+        contribution = 10.0 if key in {"1y", "2y"} else 20.0
+        windows[key] = {
+            "period_start": start,
+            "period_end": "2026-05",
+            "market_start": 100.0,
+            "market_end": 100.0 + contribution,
+            "market_growth": contribution,
+            "by_brand": {
+                "top_contributors": [{"contribution_value": contribution}],
+                "others_total": 0.0,
+            },
+            "by_company": {
+                "top_contributors": [{"contribution_value": contribution}],
+                "others_total": 0.0,
+            },
+        }
+        if key in {"3y", "4y", "5y"}:
+            windows[key]["period_start_actual"] = start
+            windows[key]["reason"] = "earliest_available"
+    evidence = _write_json(
+        tmp_path / "growth.json",
+        {
+            "classification": "sample",
+            "cases": [
+                {
+                    "id": "A10N1|ubist|sales",
+                    "expected_period_starts": dict(zip(keys, starts, strict=True)),
+                    "expected_market_starts": {key: 100.0 for key in keys},
+                    "expected_truncated_windows": ["3y", "4y", "5y"],
+                    "windows": windows,
+                }
+            ],
+        },
+    )
+
+    result = _run("growth-windows", "--evidence", str(evidence), "--environment", "mixed-history")
+
+    assert result.returncode == 1
+    assert "non-truncated contribution payloads are not distinct" in result.stdout
+
+
+def test_growth_windows_gate_accepts_distinct_reconciled_windows(tmp_path: Path) -> None:
+    keys = ("1y", "2y", "3y", "4y", "5y")
+    starts = ("2025-06", "2024-06", "2023-06", "2022-06", "2021-06")
+    windows = {}
+    for index, (key, start) in enumerate(zip(keys, starts, strict=True), start=1):
+        market_start = float(index * 10)
+        contribution = float(index)
+        windows[key] = {
+            "period_start": start,
+            "period_end": "2026-05",
+            "market_start": market_start,
+            "market_end": market_start + contribution,
+            "market_growth": contribution,
+            "by_brand": {
+                "top_contributors": [{"contribution_value": contribution}],
+                "others_total": 0.0,
+            },
+            "by_company": {
+                "top_contributors": [{"contribution_value": contribution}],
+                "others_total": 0.0,
+            },
+        }
+    evidence = _write_json(
+        tmp_path / "growth.json",
+        {
+            "classification": "sample",
+            "cases": [
+                {
+                    "id": "A10N1|ubist|sales",
+                    "expected_period_starts": dict(zip(keys, starts, strict=True)),
+                    "expected_market_starts": {
+                        key: float(index * 10) for index, key in enumerate(keys, start=1)
+                    },
+                    "expected_truncated_windows": [],
+                    "windows": windows,
+                }
+            ],
+        },
+    )
+
+    result = _run("growth-windows", "--evidence", str(evidence), "--environment", "local")
+
+    assert result.returncode == 0
+    assert "gate=growth_windows" in result.stdout
+    assert "checked=1" in result.stdout
+    assert "population=1" in result.stdout
+    assert "failures=0" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
 def test_tracked_golden_contracts_have_exact_identity_set_and_truth_metadata() -> None:
     document = json.loads(
         (ROOT / "tests" / "api" / "api_golden_contracts.json").read_text(encoding="utf-8")

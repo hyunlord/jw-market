@@ -112,28 +112,65 @@ def display_matrix_rows(
     )
 
 
-def growth_contribution(brands: tuple[BrandMetric, ...], *, focus: BrandMetric | None) -> dict[str, Any]:
+def growth_contribution(
+    brands: tuple[BrandMetric, ...],
+    *,
+    focus: BrandMetric | None,
+    source: str,
+) -> dict[str, Any]:
     periods = sorted({str(point["period"]) for brand in brands for point in brand.monthly_series})
     if len(periods) < 2:
         return _empty_growth()
+    payload = _growth_payload(brands, periods=periods, focus=focus)
+    stride = 12 if source.strip().lower() == "ubist" else 4
+    windows: dict[str, dict[str, Any]] = {}
+    for years in range(1, 6):
+        required_points = stride * years
+        truncated = len(periods) < required_points
+        window_periods = periods if truncated else periods[-required_points:]
+        window = _growth_payload(brands, periods=window_periods, focus=focus)
+        if truncated:
+            window["period_start_actual"] = window_periods[0]
+            window["reason"] = "earliest_available"
+        windows[f"{years}y"] = window
+    payload["windows"] = windows
+    return payload
+
+
+def _growth_payload(
+    brands: tuple[BrandMetric, ...],
+    *,
+    periods: list[str],
+    focus: BrandMetric | None,
+) -> dict[str, Any]:
     start, end = periods[0], periods[-1]
     market_start = sum(history(brand).get(start, 0.0) for brand in brands)
     market_end = sum(history(brand).get(end, 0.0) for brand in brands)
-    contributors = [_contributor(brand, start=start, end=end, focus=focus, market_growth=market_end - market_start) for brand in brands]
+    contributors = [
+        _contributor(
+            brand,
+            start=start,
+            end=end,
+            focus=focus,
+            market_growth=market_end - market_start,
+        )
+        for brand in brands
+    ]
     company_contributors = [_company_contributor(item) for item in contributors]
     ranked = sorted(contributors, key=lambda item: abs(float(item["contribution"])), reverse=True)
     ranked_companies = sorted(company_contributors, key=lambda item: abs(float(item["contribution"])), reverse=True)
-    payload = {
+    return {
         "period_start": start,
         "period_end": end,
         "market_start": market_start,
         "market_end": market_end,
         "market_growth": market_end - market_start,
         "by_brand": {"top_contributors": ranked[:8], "others_total": sum(c["contribution"] for c in ranked[8:])},
-        "by_company": {"top_contributors": ranked_companies[:8], "others_total": sum(c["contribution"] for c in ranked_companies[8:])},
+        "by_company": {
+            "top_contributors": ranked_companies[:8],
+            "others_total": sum(c["contribution"] for c in ranked_companies[8:]),
+        },
     }
-    payload["windows"] = {key: dict(payload) for key in ("1y", "2y", "3y", "4y", "5y")}
-    return payload
 
 
 def kpi(

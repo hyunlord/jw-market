@@ -24,7 +24,11 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
 )
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.cause_sections import display_matrix_rows, matrix_rows
+from pipeline.scripts.api.dynamic_market.cause_sections import (
+    display_matrix_rows,
+    growth_contribution,
+    matrix_rows,
+)
 from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import (
@@ -61,6 +65,115 @@ def test_compute_cagr_accepts_iqvia_quarter_periods() -> None:
 def test_month_distance_accepts_month_and_quarter_periods() -> None:
     assert month_distance("2024-01", "2024-12") == 11
     assert month_distance("2025-Q1", "2026-Q2") == 15
+
+
+def test_general_growth_contribution_uses_distinct_source_period_windows() -> None:
+    periods = tuple(
+        f"{year}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    )[:65]
+    brands = (
+        BrandMetric(
+            "focus",
+            "Focus",
+            "A10N1",
+            0.0,
+            0.0,
+            1,
+            periods[-1],
+            0.0,
+            tuple(
+                {"period": period, "value": float(index)}
+                for index, period in enumerate(periods, start=1)
+            ),
+        ),
+        BrandMetric(
+            "other",
+            "Other",
+            "A10N1",
+            0.0,
+            0.0,
+            2,
+            periods[-1],
+            0.0,
+            tuple(
+                {"period": period, "value": float(index * index)}
+                for index, period in enumerate(periods, start=1)
+            ),
+        ),
+    )
+
+    payload = growth_contribution(brands, focus=brands[0], source="ubist")
+
+    assert [payload["windows"][f"{years}y"]["period_start"] for years in range(1, 6)] == [
+        periods[-12],
+        periods[-24],
+        periods[-36],
+        periods[-48],
+        periods[-60],
+    ]
+    assert len(
+        {
+            payload["windows"][f"{years}y"]["by_brand"]["top_contributors"][0]["contribution_value"]
+            for years in range(1, 6)
+        }
+    ) == 5
+
+
+def test_general_growth_contribution_marks_truncated_history_without_zero_fallback() -> None:
+    periods = ("2025-01", "2025-02", "2025-03")
+    brand = BrandMetric(
+        "focus",
+        "Focus",
+        "A10N1",
+        60.0,
+        100.0,
+        1,
+        periods[-1],
+        30.0,
+        tuple(
+            {"period": period, "value": float(index * 10)}
+            for index, period in enumerate(periods, start=1)
+        ),
+    )
+
+    payload = growth_contribution((brand,), focus=brand, source="ubist")
+
+    for window in payload["windows"].values():
+        assert window["period_start"] == "2025-01"
+        assert window["period_start_actual"] == "2025-01"
+        assert window["reason"] == "earliest_available"
+        assert window["market_start"] == 10.0
+
+
+def test_general_growth_contribution_uses_quarterly_iqvia_stride() -> None:
+    periods = tuple(
+        f"{year}-Q{quarter}"
+        for year in range(2021, 2027)
+        for quarter in range(1, 5)
+    )[:21]
+    brand = BrandMetric(
+        "focus",
+        "Focus",
+        "A10N1",
+        0.0,
+        100.0,
+        1,
+        periods[-1],
+        21.0,
+        tuple({"period": period, "value": float(index)} for index, period in enumerate(periods, start=1)),
+    )
+
+    payload = growth_contribution((brand,), focus=brand, source="iqvia_nsa")
+
+    assert [payload["windows"][f"{years}y"]["period_start"] for years in range(1, 6)] == [
+        periods[-4],
+        periods[-8],
+        periods[-12],
+        periods[-16],
+        periods[-20],
+    ]
 
 
 def test_cause_time_cagr_helpers_accept_iqvia_quarter_periods() -> None:
