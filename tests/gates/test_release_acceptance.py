@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
 import sys
+from threading import Thread
+
+import pytest
+
+from pipeline.scripts.gates.release_acceptance import check_goldens
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +43,53 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 def _write_json(path: Path, value: object) -> Path:
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def _golden_contract(identifier: str, payload: object) -> dict[str, object]:
+    return {
+        "id": identifier,
+        "canonical_sha256": _canonical_sha(payload),
+        "request": {"method": "GET", "path": f"/api/{identifier}"},
+        "truth_basis": "fixture truth",
+        "measured_at": "2026-07-14T00:00:00+09:00",
+        "database": "fixture",
+        "runtime_provenance": "sha256:fixture",
+    }
+
+
+@contextmanager
+def _live_api(responses: dict[str, bytes]) -> Iterator[str]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self._respond()
+
+        def do_POST(self) -> None:
+            self._respond()
+
+        def _respond(self) -> None:
+            body = responses.get(self.path)
+            if body is None:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 def test_strict_logs_fail_on_error_and_check_every_expected_pod(tmp_path: Path) -> None:
@@ -92,68 +147,99 @@ def test_population_gate_rejects_empty_candidates(tmp_path: Path) -> None:
     assert "exit_code=1" in result.stdout
 
 
-def test_golden_gate_requires_every_expected_identity_and_exact_hash(tmp_path: Path) -> None:
-    contracts = []
-    observations = []
-    for index in range(4):
-        identifier = f"endpoint-{index}"
-        expected_payload = {"value": index}
-        observed_payload = expected_payload if index < 3 else {"value": 999}
-        contracts.append(
-            {
-                "id": identifier,
-                "canonical_sha256": _canonical_sha(expected_payload),
-                "request": {"method": "GET", "path": f"/api/{identifier}"},
-                "truth_basis": "fixture truth",
-                "measured_at": "2026-07-14T00:00:00+09:00",
-                "database": "fixture",
-                "runtime_provenance": "sha256:fixture",
-            }
-        )
-        observations.append({"id": identifier, "payload": observed_payload})
+@pytest.mark.parametrize(
+    "target",
+    ["brands", "market_status", "cause_livalo", "dynamic_general_c10a1_livalo"],
+)
+def test_golden_gate_rejects_corrupted_expected_hash_for_each_identity(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    payloads = {
+        identifier: {"id": identifier}
+        for identifier in ("brands", "market_status", "cause_livalo", "dynamic_general_c10a1_livalo")
+    }
+    contracts = [_golden_contract(identifier, payload) for identifier, payload in payloads.items()]
+    target_contract = next(contract for contract in contracts if contract["id"] == target)
+    target_contract["canonical_sha256"] = "0" * 64
+    contracts_path = _write_json(tmp_path / "contracts.json", {"contracts": contracts})
+    responses = {
+        f"/api/{identifier}": json.dumps(payload).encode()
+        for identifier, payload in payloads.items()
+    }
 
+    with _live_api(responses) as base_url:
+        result = check_goldens(contracts_path, base_url, "failure-injection")
+
+    assert result.exit_code == 1
+    assert result.checked == 4
+    assert result.population == 4
+    assert result.failures == 1
+    assert any(target in detail for detail in result.details)
+
+
+def test_golden_gate_rejects_unreachable_live_api(tmp_path: Path) -> None:
+    payload = {"ok": True}
+    contracts_path = _write_json(
+        tmp_path / "contracts.json", {"contracts": [_golden_contract("required", payload)]}
+    )
+
+    result = check_goldens(contracts_path, "http://127.0.0.1:1", "failure-injection")
+
+    assert result.exit_code == 1
+    assert result.checked == 1
+    assert result.population == 1
+    assert result.failures == 1
+    assert any("live request failed" in detail for detail in result.details)
+
+
+def test_golden_gate_rejects_empty_live_response(tmp_path: Path) -> None:
+    payload = {"ok": True}
+    contracts_path = _write_json(
+        tmp_path / "contracts.json", {"contracts": [_golden_contract("required", payload)]}
+    )
+
+    with _live_api({"/api/required": b""}) as base_url:
+        result = check_goldens(contracts_path, base_url, "failure-injection")
+
+    assert result.exit_code == 1
+    assert result.checked == 1
+    assert result.population == 1
+    assert result.failures == 1
+    assert any("empty response body" in detail for detail in result.details)
+
+
+def test_golden_cli_rejects_untracked_contract_and_observation_files(tmp_path: Path) -> None:
     result = _run(
         "goldens",
+        "--base-url",
+        "http://127.0.0.1:1",
         "--contracts",
-        str(_write_json(tmp_path / "contracts.json", {"contracts": contracts})),
+        str(tmp_path / "contracts.json"),
         "--observations",
-        str(_write_json(tmp_path / "observations.json", observations)),
+        str(tmp_path / "observations.json"),
+    )
+
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_golden_cli_fails_when_tracked_live_requests_are_unreachable() -> None:
+    result = _run(
+        "goldens",
+        "--base-url",
+        "http://127.0.0.1:1",
+        "--timeout-seconds",
+        "0.1",
         "--environment",
         "failure-injection",
     )
 
     assert result.returncode == 1
-    assert "endpoint-3" in result.stdout
-    assert "gate=api_goldens" in result.stdout
     assert "checked=4" in result.stdout
     assert "population=4" in result.stdout
-    assert "failures=1" in result.stdout
+    assert "failures=4" in result.stdout
     assert "exit_code=1" in result.stdout
-
-
-def test_golden_gate_rejects_missing_endpoint_identity(tmp_path: Path) -> None:
-    payload = {"ok": True}
-    contract = {
-        "id": "required",
-        "canonical_sha256": _canonical_sha(payload),
-        "request": {"method": "GET", "path": "/required"},
-        "truth_basis": "fixture truth",
-        "measured_at": "2026-07-14T00:00:00+09:00",
-        "database": "fixture",
-        "runtime_provenance": "sha256:fixture",
-    }
-    result = _run(
-        "goldens",
-        "--contracts",
-        str(_write_json(tmp_path / "contracts.json", {"contracts": [contract]})),
-        "--observations",
-        str(_write_json(tmp_path / "observations.json", [])),
-    )
-
-    assert result.returncode == 1
-    assert "missing identities: required" in result.stdout
-    assert "checked=0" in result.stdout
-    assert "population=1" in result.stdout
 
 
 def test_growth_windows_gate_rejects_identical_windows(tmp_path: Path) -> None:
@@ -395,7 +481,7 @@ def test_tracked_golden_contracts_have_exact_identity_set_and_truth_metadata() -
         assert contract["runtime_provenance"]
 
 
-def test_golden_gate_passes_only_when_all_contracts_match(tmp_path: Path) -> None:
+def test_golden_gate_passes_only_when_all_live_responses_match(tmp_path: Path) -> None:
     payloads = {"a": {"value": 1}, "b": {"value": 2}}
     contracts = [
         {
@@ -409,23 +495,19 @@ def test_golden_gate_passes_only_when_all_contracts_match(tmp_path: Path) -> Non
         }
         for identifier, payload in payloads.items()
     ]
-    observations = [
-        {"id": identifier, "payload": payload} for identifier, payload in payloads.items()
-    ]
+    contracts_path = _write_json(tmp_path / "contracts.json", {"contracts": contracts})
+    responses = {
+        f"/api/{identifier}": json.dumps(payload).encode()
+        for identifier, payload in payloads.items()
+    }
 
-    result = _run(
-        "goldens",
-        "--contracts",
-        str(_write_json(tmp_path / "contracts.json", {"contracts": contracts})),
-        "--observations",
-        str(_write_json(tmp_path / "observations.json", observations)),
-    )
+    with _live_api(responses) as base_url:
+        result = check_goldens(contracts_path, base_url, "failure-injection")
 
-    assert result.returncode == 0
-    assert "checked=2" in result.stdout
-    assert "population=2" in result.stdout
-    assert "failures=0" in result.stdout
-    assert "exit_code=0" in result.stdout
+    assert result.exit_code == 0
+    assert result.checked == 2
+    assert result.population == 2
+    assert result.failures == 0
 
 
 def test_segment_sum_sample_requires_every_expected_level(tmp_path: Path) -> None:

@@ -5,9 +5,9 @@ release checks. Every command emits the machine-readable acceptance fields and
 returns a non-zero status for missing input, an empty census, mismatched API
 goldens, strict log matches, or incomplete segment levels.
 
-The runner consumes evidence captured by deployment automation. It does not
-open cluster or database connections itself, which keeps it runnable in a
-clean clone and prevents a local test from claiming an unmeasured live pass.
+The golden command calls the supplied runtime directly. Other commands consume
+evidence captured by deployment automation and do not open cluster or database
+connections themselves.
 
 ## Safe push
 
@@ -27,22 +27,17 @@ required release ancestry.
 
 ## API goldens
 
-Capture each response as an item in a JSON array:
-
-```json
-[{"id":"brands","payload":{"data":[]}}]
-```
-
-Then run:
+Run the four tracked requests directly against the candidate runtime:
 
 ```bash
 python3 pipeline/scripts/gates/release_acceptance.py goldens \
-  --contracts tests/api/api_golden_contracts.json \
-  --observations /path/to/api_observations.json \
+  --base-url http://candidate-runtime:8000 \
   --environment test2
 ```
 
-The observation identity set must exactly equal the four tracked contracts.
+Expected hashes come only from `tests/api/api_golden_contracts.json`. The
+command does not accept observation or alternate-contract files. Connection
+errors, HTTP errors, malformed JSON, and empty responses all fail the gate.
 
 ## Strict logs
 

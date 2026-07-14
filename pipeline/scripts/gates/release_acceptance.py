@@ -8,11 +8,17 @@ from pathlib import Path
 import re
 import sys
 from typing import Any, Callable, Sequence
+from urllib.error import URLError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 
 
 STRICT_LOG_PATTERN = re.compile(r"Traceback|(?:^|\s)ERROR(?:\s|:|$)|(?:^|\s)5[0-9]{2}(?:\s|$)")
 IDENTITY_FIELDS = ("market", "period", "source", "measure", "level")
 PERIOD_TOKEN = re.compile(r"^\d{4}(?:-(?:0[1-9]|1[0-2]|Q[1-4]))?$")
+TRACKED_GOLDEN_CONTRACTS = (
+    Path(__file__).resolve().parents[3] / "tests" / "api" / "api_golden_contracts.json"
+)
 
 
 @dataclass(frozen=True)
@@ -75,12 +81,47 @@ def _unique_by_id(items: object, *, label: str) -> dict[str, dict[str, Any]]:
     return indexed
 
 
-def check_goldens(contracts_path: Path, observations_path: Path, environment: str) -> GateResult:
+def _fetch_live_payload(contract: dict[str, Any], base_url: str, timeout_seconds: float) -> Any:
+    request_spec = contract.get("request")
+    if not isinstance(request_spec, dict):
+        raise ValueError("contract request must be a JSON object")
+    method = str(request_spec.get("method", "")).upper()
+    path = request_spec.get("path")
+    if method not in {"GET", "POST"} or not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError("contract request requires GET/POST and an absolute path")
+    body = request_spec.get("body")
+    data = None
+    headers: dict[str, str] = {}
+    if method == "POST":
+        data = json.dumps(
+            body,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+        headers["Content-Type"] = "application/json"
+    url = urljoin(f"{base_url.rstrip('/')}/", path.lstrip("/"))
+    request = Request(url, data=data, headers=headers, method=method)
+    with urlopen(request, timeout=timeout_seconds) as response:
+        raw = response.read()
+    if not raw.strip():
+        raise ValueError("empty response body")
+    payload = json.loads(raw)
+    if payload is None or payload == {} or payload == []:
+        raise ValueError("empty response payload")
+    return payload
+
+
+def check_goldens(
+    contracts_path: Path,
+    base_url: str,
+    environment: str,
+    timeout_seconds: float = 30.0,
+) -> GateResult:
     contract_document = _load_json(contracts_path)
     if not isinstance(contract_document, dict):
         raise ValueError("contracts document must be a JSON object")
     contracts = _unique_by_id(contract_document.get("contracts"), label="contract")
-    observations = _unique_by_id(_load_json(observations_path), label="observation")
     required_metadata = (
         "canonical_sha256",
         "request",
@@ -91,16 +132,7 @@ def check_goldens(contracts_path: Path, observations_path: Path, environment: st
     )
     details: list[str] = []
     failures = 0
-    expected_ids = set(contracts)
-    observed_ids = set(observations)
-    missing = sorted(expected_ids - observed_ids)
-    unexpected = sorted(observed_ids - expected_ids)
-    if missing:
-        details.append(f"missing identities: {','.join(missing)}")
-        failures += len(missing)
-    if unexpected:
-        details.append(f"unexpected identities: {','.join(unexpected)}")
-        failures += len(unexpected)
+    checked = 0
 
     for identifier, contract in contracts.items():
         absent_metadata = [field for field in required_metadata if not contract.get(field)]
@@ -108,14 +140,14 @@ def check_goldens(contracts_path: Path, observations_path: Path, environment: st
             details.append(f"{identifier}: missing contract metadata {','.join(absent_metadata)}")
             failures += 1
             continue
-        observation = observations.get(identifier)
-        if observation is None:
-            continue
-        if "payload" not in observation:
-            details.append(f"{identifier}: observation payload missing")
+        checked += 1
+        try:
+            payload = _fetch_live_payload(contract, base_url, timeout_seconds)
+        except (URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            details.append(f"{identifier}: live request failed: {exc}")
             failures += 1
             continue
-        actual = _canonical_sha(observation["payload"])
+        actual = _canonical_sha(payload)
         expected = str(contract["canonical_sha256"])
         if actual != expected:
             details.append(f"{identifier}: canonical sha mismatch expected={expected} actual={actual}")
@@ -124,7 +156,7 @@ def check_goldens(contracts_path: Path, observations_path: Path, environment: st
     return GateResult(
         gate="api_goldens",
         classification="census",
-        checked=len(observations),
+        checked=checked,
         population=len(contracts),
         failures=failures,
         tolerance="exact canonical sha256",
@@ -640,8 +672,8 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     goldens = subparsers.add_parser("goldens")
-    goldens.add_argument("--contracts", type=Path, required=True)
-    goldens.add_argument("--observations", type=Path, required=True)
+    goldens.add_argument("--base-url", required=True)
+    goldens.add_argument("--timeout-seconds", type=float, default=30.0)
     goldens.add_argument("--environment", default="local")
 
     logs = subparsers.add_parser("strict-logs")
@@ -679,7 +711,12 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     handlers: dict[str, Callable[[], GateResult]] = {
-        "goldens": lambda: check_goldens(args.contracts, args.observations, args.environment),
+        "goldens": lambda: check_goldens(
+            TRACKED_GOLDEN_CONTRACTS,
+            args.base_url,
+            args.environment,
+            args.timeout_seconds,
+        ),
         "strict-logs": lambda: check_strict_logs(args.expected_pod, args.pod_log, args.environment),
         "population": lambda: check_population(args.candidates, args.census, args.environment),
         "segment-sum": lambda: check_segment_sums(

@@ -110,6 +110,9 @@ changed goldens:
 - F-080 tests require all 25 default brand rows to receive their ATC lists from
   the market catalog and reject missing catalog ATCs.
 
-This file is the tracked hash registry. Live hash collection remains an
-explicit deployment gate because clean-clone tests have no candidate API or d2
-credentials and must not report an unmeasured live PASS.
+This file is the tracked hash registry. The release acceptance gate reads the
+expected hashes from `tests/api/api_golden_contracts.json`, calls every request
+against the supplied runtime URL, and hashes each JSON response immediately.
+It does not accept a captured-response file or an alternate contract path.
+Clean-clone tests have no candidate API or d2 credentials and therefore must
+not report an unmeasured live PASS.
