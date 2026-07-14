@@ -47,21 +47,21 @@ distinguish an empty pod census, a log retrieval failure, no matches, and real
 strict matches. Historical one-pod fail-open grep scripts are evidence, not
 reusable gates.
 
-## Historical TSV goldens
+## Live backend goldens
 
-Historical audits that already contain `production_goldens.tsv` can be checked
-without rewriting their evidence:
+The all-four wrapper calls each backend endpoint at gate time and compares the
+canonical response hash with the tracked contract registry:
 
 ```bash
-python3 pipeline/scripts/gates/release_acceptance.py golden-tsv \
-  --observations /path/to/production_goldens.tsv \
-  --expected-count 5 --environment production
+pipeline/scripts/gates/all_four_v2_verify_audit.sh \
+  https://jwai-dev.jwhealthcare.com production
 ```
 
-The command prints each identity and the measured numerator/denominator. A
-4/5 input remains red; callers must not lower the expected count to match it.
-`all_four_v2_verify_audit.sh` is the tracked wrapper for that historical
-artifact shape.
+Expected hashes are read only from
+`tests/gates/chat_backend_live_goldens.json`, which must be tracked in the same
+Git repository. Historical observation files are evidence only and cannot be
+used as either expected values or live observations. Contracts without an
+owner-confirmed truth basis remain disabled and are reported as observations.
 
 ## Independent population census
 

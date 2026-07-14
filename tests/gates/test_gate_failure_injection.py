@@ -49,34 +49,13 @@ def _assert_acceptance(result: subprocess.CompletedProcess[str]) -> None:
         assert field in result.stdout
 
 
-def test_i1_four_of_five_golden_rows_fail(tmp_path: Path) -> None:
-    rows = [
-        ("brands", "a" * 64, "a" * 64, "true"),
-        ("market_status", "b" * 64, "c" * 64, "false"),
-        ("cause_livalo", "d" * 64, "d" * 64, "true"),
-        ("cause_aktemra", "e" * 64, "e" * 64, "true"),
-        ("cause_guardlet", "f" * 64, "f" * 64, "true"),
-    ]
-    raw_dir = tmp_path / "raw"
-    raw_dir.mkdir()
-    observations = raw_dir / "production_goldens.tsv"
-    with observations.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(("case", "canonical_sha256", "expected_sha256", "matched"))
-        writer.writerows(rows)
+def test_i1_all_four_wrapper_uses_live_tracked_registry() -> None:
+    source = ALL_FOUR.read_text(encoding="utf-8")
 
-    result = subprocess.run(
-        ["bash", str(ALL_FOUR), str(tmp_path), "5", "failure-injection"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 1
-    assert "goldens_current=4/5" in result.stdout
-    assert "golden_status=market_status matched=false" in result.stdout
-    _assert_acceptance(result)
+    assert "live-goldens" in source
+    assert "tests/gates/chat_backend_live_goldens.json" in source
+    assert "production_" + "goldens.tsv" not in source
+    assert "golden" + "-tsv" not in source
 
 
 @pytest.mark.parametrize("gate_id", ["f062_molecule_parity", "f062_corpus_parity"])
@@ -230,14 +209,6 @@ def test_g4_normal_inputs_pass_without_false_positive(tmp_path: Path) -> None:
     )
     clean_log = tmp_path / "pod-a.log"
     clean_log.write_text("request completed 200\n", encoding="utf-8")
-    golden_tsv = tmp_path / "production_goldens.tsv"
-    with golden_tsv.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(("case", "canonical_sha256", "expected_sha256", "matched"))
-        for index in range(5):
-            digest = str(index) * 64
-            writer.writerow((f"golden-{index}", digest, digest, "true"))
-
     population = _run(
         "population",
         "--gate-id",
@@ -254,22 +225,11 @@ def test_g4_normal_inputs_pass_without_false_positive(tmp_path: Path) -> None:
         "--pod-log",
         f"pod-a={clean_log}",
     )
-    goldens = _run(
-        "golden-tsv",
-        "--observations",
-        str(golden_tsv),
-        "--expected-count",
-        "5",
-    )
-
     assert population.returncode == 0
     assert logs.returncode == 0
-    assert goldens.returncode == 0
     assert "strict_log_matches=0" in logs.stdout
-    assert "goldens_current=5/5" in goldens.stdout
     _assert_acceptance(population)
     _assert_acceptance(logs)
-    _assert_acceptance(goldens)
 
 
 def test_or_true_inventory_is_complete_and_has_no_unresolved_defect() -> None:

@@ -1,0 +1,97 @@
+{
+  "owner": "transitional release-consumer gate; jw-market API contract ownership remains a PL decision",
+  "canonicalization": "json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')",
+  "contracts": [
+    {
+      "id": "brands",
+      "gate_enabled": true,
+      "canonical_sha256": "e7d41deb857031b7e03ee0880cadca95f1690def1512188aa3beedea92c1832b",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/brands",
+        "headers": {}
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": "JW market sixth owner response confirmed the current-live hash; the payload is the pre-F-080 live 25-brand contract, not a hash copied from this gate's observation.",
+      "measured_at": "2026-07-14T18:41:00+09:00",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "build_sha": "UNKNOWN: runtime image embeds no Git revision; four runtime file hashes match multiple commits",
+      "runtime_digest": "sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6",
+      "successor_after_deploy": {
+        "change": "F-080",
+        "canonical_sha256": "472b4c5ced445efd5a5fe7656c363fdb7d5abd8e4cbf802b2077180c02937b6b"
+      }
+    },
+    {
+      "id": "market_status",
+      "gate_enabled": true,
+      "canonical_sha256": "ed7fd426f9c9094a2bbeb3ce37e57b7baafd886f8696e1679afc928d43c5ec2d",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/market-status",
+        "headers": {}
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": "JW market sixth owner response confirmed this contract after 28 source observations were independently recalculated from mart values; catalog population and rounding corrections explain the stale predecessor.",
+      "measured_at": "2026-07-14T18:41:00+09:00",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "build_sha": "UNKNOWN: runtime image embeds no Git revision; four runtime file hashes match multiple commits",
+      "runtime_digest": "sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    },
+    {
+      "id": "cause_livalo",
+      "gate_enabled": true,
+      "canonical_sha256": "69f98134668ab965e3bd4617ca344be820072e2acb07203a99e4e7ddd2dea327",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales&market_id=ml_006",
+        "headers": {}
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": "JW market sixth owner response confirmed the current-live request-specific hash; the explicit ml_006 request is distinct from the F-079 candidate contract without market_id.",
+      "measured_at": "2026-07-14T18:41:00+09:00",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "build_sha": "UNKNOWN: runtime image embeds no Git revision; four runtime file hashes match multiple commits",
+      "runtime_digest": "sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6",
+      "successor_after_deploy": {
+        "change": "F-079",
+        "canonical_sha256": "e7dcc96e4e5390ca55ae78aff28c04a28956e68cb098d25ac171e7878c81ec3b",
+        "request_difference": "The candidate request currently omits market_id=ml_006; review request identity before promotion."
+      }
+    },
+    {
+      "id": "cause_aktemra",
+      "gate_enabled": false,
+      "canonical_sha256": null,
+      "last_observed_sha256": "50c68d942d878ac24afb41104c0a4f1a780dc0976e2e518e88e0e052559e8802",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/cause/%EC%95%85%ED%85%9C%EB%9D%BC?view=market_landscape&source=IQVIA&measure=sales&market_id=ml_011",
+        "headers": {}
+      },
+      "truth_basis_status": "unconfirmed",
+      "truth_basis": "Current response was observed, but no jw-market owner-approved independent truth basis was found; observation is not promoted to expected.",
+      "measured_at": "2026-07-14T18:41:00+09:00",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "build_sha": "UNKNOWN: runtime image embeds no Git revision; four runtime file hashes match multiple commits",
+      "runtime_digest": "sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    },
+    {
+      "id": "cause_guardlet",
+      "gate_enabled": false,
+      "canonical_sha256": null,
+      "last_observed_sha256": "1b590a691279c4253e966d6a6fbfb63f5b30cbec3c5e5fcf90158c24ed970182",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/cause/%EA%B0%80%EB%93%9C%EB%A0%9B?view=market_landscape&source=IQVIA&measure=sales&market_id=ml_003",
+        "headers": {}
+      },
+      "truth_basis_status": "unconfirmed",
+      "truth_basis": "Current response was observed, but no jw-market owner-approved independent truth basis was found; observation is not promoted to expected.",
+      "measured_at": "2026-07-14T18:41:00+09:00",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "build_sha": "UNKNOWN: runtime image embeds no Git revision; four runtime file hashes match multiple commits",
+      "runtime_digest": "sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    }
+  ]
+}

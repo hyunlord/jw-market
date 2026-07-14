@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 from typing import Any, Callable, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlsplit
+from urllib.request import Request, urlopen
 
 
 STRICT_LOG_PATTERN = re.compile(r"Traceback|(?:^|\s)ERROR(?:\s|:|$)|(?:^|\s)5[0-9]{2}(?:\s|$)")
@@ -142,59 +145,159 @@ def check_goldens(contracts_path: Path, observations_path: Path, environment: st
     )
 
 
-def check_golden_tsv(
-    observations_path: Path,
-    expected_count: int,
-    environment: str,
-    gate_id: str,
-) -> GateResult:
-    if expected_count <= 0:
-        raise ValueError("expected golden count must be positive")
-    with observations_path.open(encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle, delimiter="\t"))
-    required = {"case", "canonical_sha256", "expected_sha256", "matched"}
-    if not rows:
-        return GateResult(
-            gate=gate_id,
-            classification="census",
-            checked=0,
-            population=expected_count,
-            failures=expected_count,
-            tolerance="exact canonical sha256",
-            environment=environment,
-            details=("goldens_current=0/0", "empty golden observations are a failure"),
-        )
-    missing_columns = required - set(rows[0])
-    if missing_columns:
-        raise ValueError(f"golden TSV missing columns: {','.join(sorted(missing_columns))}")
+def _require_tracked_file(repo_root: Path, path: Path) -> Path:
+    root = repo_root.resolve(strict=True)
+    resolved = path.resolve(strict=True)
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("contract registry must be inside the repository") from exc
+    tracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(relative)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if tracked.returncode != 0:
+        raise ValueError("contract registry must be tracked by git")
+    return resolved
 
+
+def _live_contracts(contracts_path: Path) -> tuple[list[dict[str, Any]], set[str]]:
+    document = _load_json(contracts_path)
+    if not isinstance(document, dict):
+        raise ValueError("contracts document must be a JSON object")
+    contracts = list(_unique_by_id(document.get("contracts"), label="contract").values())
+    required_metadata = (
+        "request",
+        "truth_basis_status",
+        "truth_basis",
+        "measured_at",
+        "database",
+        "build_sha",
+        "runtime_digest",
+    )
+    enabled_ids: set[str] = set()
+    for contract in contracts:
+        identifier = contract["id"]
+        absent = [field for field in required_metadata if not contract.get(field)]
+        if absent:
+            raise ValueError(f"{identifier}: missing contract metadata {','.join(absent)}")
+        request = contract["request"]
+        if not isinstance(request, dict) or request.get("method") != "GET":
+            raise ValueError(f"{identifier}: live golden request must use GET")
+        path = request.get("path")
+        if not isinstance(path, str) or not path.startswith("/") or urlsplit(path).netloc:
+            raise ValueError(f"{identifier}: request path must be an absolute-path reference")
+        if contract.get("gate_enabled") is True:
+            if contract.get("truth_basis_status") != "confirmed":
+                raise ValueError(f"{identifier}: enabled contract requires confirmed truth basis")
+            digest = contract.get("canonical_sha256")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError(f"{identifier}: enabled contract requires canonical_sha256")
+            enabled_ids.add(identifier)
+            continue
+        if contract.get("truth_basis_status") != "unconfirmed":
+            raise ValueError(f"{identifier}: disabled contract must be truth_basis_status=unconfirmed")
+        if contract.get("canonical_sha256") is not None:
+            raise ValueError(f"{identifier}: unconfirmed contract must not define an expected hash")
+    return contracts, enabled_ids
+
+
+def check_live_goldens(
+    repo_root: Path,
+    contracts_path: Path,
+    base_url: str,
+    timeout: float,
+    environment: str,
+) -> GateResult:
+    tracked_path = _require_tracked_file(repo_root, contracts_path)
+    contracts, enabled_ids = _live_contracts(tracked_path)
     details: list[str] = []
-    exact = 0
-    failures = abs(expected_count - len(rows))
-    seen: set[str] = set()
-    for row in rows:
-        identifier = str(row["case"])
-        if not identifier or identifier in seen:
-            details.append(f"golden_status={identifier or '<empty>'} matched=false reason=invalid_identity")
+    population = len(enabled_ids)
+    failures = 0
+    if population == 0:
+        details.append("empty enabled golden population is a failure")
+        failures = 1
+
+    parsed_base = urlsplit(base_url)
+    if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
+        raise ValueError("base URL must use http or https and include a host")
+    normalized_base = base_url.rstrip("/") + "/"
+    checked = 0
+    for contract in contracts:
+        identifier = contract["id"]
+        enabled = identifier in enabled_ids
+        request_contract = contract["request"]
+        path = str(request_contract["path"])
+        url = urljoin(normalized_base, path.lstrip("/"))
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "jw-market-tracked-golden-gate/20260714",
+        }
+        declared_headers = request_contract.get("headers", {})
+        if not isinstance(declared_headers, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in declared_headers.items()
+        ):
+            raise ValueError(f"{identifier}: request headers must be a string map")
+        headers.update(declared_headers)
+        checked += int(enabled)
+        try:
+            with urlopen(Request(url, headers=headers, method="GET"), timeout=timeout) as response:
+                status = response.status
+                body = response.read()
+        except HTTPError as exc:
+            status = exc.code
+            body = exc.read()
+        except (TimeoutError, URLError, OSError) as exc:
+            label = "golden_http" if enabled else "golden_observation"
+            details.append(f"{label}={identifier} status=unreachable bytes=0 error={type(exc).__name__}")
+            failures += int(enabled)
+            continue
+
+        if not enabled:
+            try:
+                observed_sha = _canonical_sha(json.loads(body)) if status == 200 else "unavailable"
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                observed_sha = "invalid_json"
+            details.append(
+                f"golden_observation={identifier} status={status} bytes={len(body)} "
+                f"actual={observed_sha} expected=unconfirmed request=GET {path}"
+            )
+            continue
+
+        details.append(
+            f"golden_http={identifier} status={status} bytes={len(body)} "
+            f"request=GET {path}"
+        )
+        if status != 200:
+            details.append(f"golden_status={identifier} matched=false reason=http_{status}")
             failures += 1
             continue
-        seen.add(identifier)
-        actual = str(row["canonical_sha256"])
-        expected = str(row["expected_sha256"])
-        declared = str(row["matched"]).strip().lower()
-        matched = actual == expected and declared == "true"
-        exact += int(matched)
-        failures += int(not matched)
+        try:
+            payload = json.loads(body)
+            actual = _canonical_sha(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            details.append(
+                f"golden_status={identifier} matched=false reason=invalid_json "
+                f"error={type(exc).__name__}"
+            )
+            failures += 1
+            continue
+        expected = str(contract["canonical_sha256"])
+        matched = actual == expected
         details.append(
             f"golden_status={identifier} matched={'true' if matched else 'false'} "
             f"actual={actual} expected={expected}"
         )
-    details.append(f"goldens_current={exact}/{len(rows)}")
+        failures += int(not matched)
+
     return GateResult(
-        gate=gate_id,
+        gate="live_api_goldens",
         classification="census",
-        checked=len(rows),
-        population=expected_count,
+        checked=checked,
+        population=population,
         failures=failures,
         tolerance="exact canonical sha256",
         environment=environment,
@@ -658,11 +761,12 @@ def _parser() -> argparse.ArgumentParser:
     goldens.add_argument("--observations", type=Path, required=True)
     goldens.add_argument("--environment", default="local")
 
-    golden_tsv = subparsers.add_parser("golden-tsv")
-    golden_tsv.add_argument("--observations", type=Path, required=True)
-    golden_tsv.add_argument("--expected-count", type=int, required=True)
-    golden_tsv.add_argument("--gate-id", default="all_four_goldens")
-    golden_tsv.add_argument("--environment", default="local")
+    live_goldens = subparsers.add_parser("live-goldens")
+    live_goldens.add_argument("--repo-root", type=Path, required=True)
+    live_goldens.add_argument("--contracts", type=Path, required=True)
+    live_goldens.add_argument("--base-url", required=True)
+    live_goldens.add_argument("--timeout", type=float, default=30.0)
+    live_goldens.add_argument("--environment", default="runtime")
 
     logs = subparsers.add_parser("strict-logs")
     logs.add_argument("--expected-pod", action="append", default=[])
@@ -696,11 +800,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     handlers: dict[str, Callable[[], GateResult]] = {
         "goldens": lambda: check_goldens(args.contracts, args.observations, args.environment),
-        "golden-tsv": lambda: check_golden_tsv(
-            args.observations,
-            args.expected_count,
+        "live-goldens": lambda: check_live_goldens(
+            args.repo_root,
+            args.contracts,
+            args.base_url,
+            args.timeout,
             args.environment,
-            args.gate_id,
         ),
         "strict-logs": lambda: check_strict_logs(args.expected_pod, args.pod_log, args.environment),
         "population": lambda: check_population(

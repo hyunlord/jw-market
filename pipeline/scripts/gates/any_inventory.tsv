@@ -1,0 +1,7 @@
+file_line	classification	basis	remediation
+pipeline/scripts/api/dynamic_market/analysis_level_block_contract.py:37	normal	The contract asks whether at least one analysis-level value is non-empty.	None; existential any() matches the contract.
+pipeline/scripts/etl/brand_activity/csd_validation.py:125	normal	Validation rejects a row only when no candidate field contains normalized text.	None; existential any() matches the contract.
+pipeline/scripts/gates/release_acceptance.py:523	normal	The gate rejects the list when at least one expected-truncated-window item is not a string.	None; any invalid member must fail the whole input.
+tests/api/test_deep_analysis_context_contract.py:110	normal	The test requires at least one recorded SQL statement to read catalog_cd_market.	None; this is an intentional existence assertion.
+tests/api/test_deep_analysis_context_contract.py:111	normal	The test requires at least one recorded SQL statement to read mart_strategic_cd_brand_metric.	None; this is an intentional existence assertion.
+tests/etl/test_cache_build_common_import_contract.py:19	normal	The AST test detects whether at least one alias in an import names pandas.	None; this is an intentional existence predicate.
