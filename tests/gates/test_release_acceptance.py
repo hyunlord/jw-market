@@ -1474,6 +1474,7 @@ def _f116_evidence(
     parent_rows: int = 0,
     truncate_storage: bool = False,
     prefer_null: bool = False,
+    headline_market_total: str = "100.00",
 ) -> Path:
     expected_brands = [f"BRAND-{index}" for index in range(1, 10)]
     return _write_json(
@@ -1484,6 +1485,7 @@ def _f116_evidence(
                 {
                     "id": "ml_003|UBIST|sales",
                     "market_total": "100.00",
+                    "headline_market_total": headline_market_total,
                     "specialty_total": "100.00",
                     "parent_rows": parent_rows,
                     "detail_count": 10,
@@ -1553,6 +1555,7 @@ def test_f116_correctness_cli_renders_acceptance_contract(tmp_path: Path) -> Non
     ("kwargs", "message"),
     [
         ({"parent_rows": 1}, "aggregate parent rows remain=1"),
+        ({"headline_market_total": "101.00"}, "headline market total mismatch"),
         ({"truncate_storage": True}, "stored brand census mismatch"),
         ({"prefer_null": True}, "canonical precedence mismatch"),
     ],
