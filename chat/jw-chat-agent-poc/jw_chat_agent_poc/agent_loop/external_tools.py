@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from jw_chat_agent_poc.agentic import FilterEntry
 from jw_chat_agent_poc.orchestrator.external_notices import external_unavailable_for_missing_molecule, seeded_false_positive_notice
@@ -23,6 +23,27 @@ class AgentLoopResolution(Protocol):
     canonical_brand: str
     molecule_en: tuple[str, ...]
     is_combo: bool
+
+
+_MFDS_PRODUCT_FORM_PREFIXES: Final[tuple[str, ...]] = (
+    "정",
+    "캡슐",
+    "주",
+    "시럽",
+    "액",
+    "산",
+    "과립",
+    "겔",
+    "크림",
+    "연고",
+    "패치",
+    "서방",
+    "구강",
+    "점안",
+    "흡입",
+    "현탁",
+    "프리필드",
+)
 
 
 def search_news_call(news: DeepAnalysisNewsTool, brand: str, query: str) -> dict:
@@ -261,9 +282,20 @@ def _first_matching_mfds_item(call: ExternalCall, brand: str) -> dict[str, Any] 
     brand_key = _normal_key(brand)
     for item in _mfds_items(call):
         name = _normal_key(item.get("ITEM_NAME") or item.get("itemName") or "")
-        if brand_key and brand_key in name:
+        if _is_mfds_product_family_match(name, brand_key):
             return item
     return None
+
+
+def _is_mfds_product_family_match(product_name: str, canonical_brand: str) -> bool:
+    if not canonical_brand or not product_name.startswith(canonical_brand):
+        return False
+    suffix = product_name[len(canonical_brand) :]
+    if not suffix:
+        return True
+    if suffix[0].isdigit() or suffix[0] in "(-[/":
+        return True
+    return suffix.startswith(_MFDS_PRODUCT_FORM_PREFIXES)
 
 
 def _has_mfds_items(call: ExternalCall) -> bool:

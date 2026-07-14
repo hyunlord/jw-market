@@ -10,6 +10,7 @@ class RequestedSource:
     label: str
     tokens: tuple[str, ...]
     alternative_label: str
+    identity_tokens: tuple[str, ...] | None = None
 
 
 REQUESTED_SOURCE_REGISTRY: tuple[RequestedSource, ...] = (
@@ -36,6 +37,7 @@ REQUESTED_SOURCE_REGISTRY: tuple[RequestedSource, ...] = (
         label="NCCN/가이드라인",
         tokens=("nccn", "가이드라인", "치료 지침", "guideline"),
         alternative_label="HIRA/보유 내부 지표",
+        identity_tokens=("nccn",),
     ),
 )
 
@@ -51,10 +53,15 @@ _CORTELLIS_UNSUPPORTED_CLAIM_RE = re.compile(
 _SOURCE_HEADING_RE = re.compile(r"\n##\s*(?:출처|처리\s*시간)\b")
 
 
-def requested_unavailable_source(question: str) -> RequestedSource | None:
+def requested_unavailable_source(
+    question: str,
+    *,
+    identity_only: bool = False,
+) -> RequestedSource | None:
     question_lower = question.lower()
     for source in REQUESTED_SOURCE_REGISTRY:
-        if any(token.lower() in question_lower for token in source.tokens):
+        tokens = source.identity_tokens or source.tokens if identity_only else source.tokens
+        if any(token.lower() in question_lower for token in tokens):
             return source
     return None
 

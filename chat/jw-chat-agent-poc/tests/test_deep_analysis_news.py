@@ -409,12 +409,12 @@ def test_corpus_reader_reports_sql_error_as_query_failed(monkeypatch: pytest.Mon
 
     assert call["render_data"]["status"] == "query_failed"
     assert call["render_data"]["news_corpus_state"] == "query_failed"
-    assert call["render_data"]["message"] == "뉴스를 조회하지 못했습니다. 다시 시도해 주십시오."
+    assert call["render_data"]["message"] == "뉴스 조회에 실패했습니다."
     assert "관련 뉴스가 없습니다" not in call["render_data"]["message"]
     assert len(cursor.executed_sql) == 1
 
     answer = ChatAgent(news=DeepAnalysisNewsTool(reader=MariaDbDeepAnalysisNewsReader())).answer("리바로 관련 뉴스")["answer"]
-    assert "뉴스를 조회하지 못했습니다. 다시 시도해 주십시오." in answer
+    assert "뉴스 조회에 실패했습니다." in answer
     assert "관련 뉴스가 없습니다" not in answer
 
 

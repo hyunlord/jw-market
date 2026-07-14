@@ -640,6 +640,24 @@ def _is_web_search_only(tool_calls: list[dict[str, Any]] | None) -> bool:
     return True
 
 
+def _is_tool_use_agent_result(agent_result: dict[str, Any]) -> bool:
+    diagnostics = agent_result.get("router_diagnostics")
+    return isinstance(diagnostics, dict) and diagnostics.get("mode") == "tool_use_agent"
+
+
+def _verified_tool_use_agent_answer(agent_result: dict[str, Any]) -> str:
+    answer = str(agent_result.get("answer") or "확인 가능한 근거가 없어 답변할 수 없습니다.")
+    markdown_response = agent_result.get("markdown_response")
+    if not isinstance(markdown_response, dict):
+        return FAIL_CLOSED_TEXT
+    fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    allowed = tuple(str(value) for value in markdown_response.get("allowed_numbers", ()) if value is not None)
+    strict_numbers = strict_allowed_numbers(fact_md, allowed)
+    if not answer_has_only_fact_numbers(answer, strict_numbers):
+        return FAIL_CLOSED_TEXT
+    return cleanup_markdown_answer(answer)
+
+
 @dataclass(frozen=True, slots=True)
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
@@ -652,6 +670,9 @@ class GenosClient:
         markdown_response = agent_result.get("markdown_response")
         timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
         file_context = _uploaded_file_context(agent_result)
+        if _is_tool_use_agent_result(agent_result):
+            yield from chunk_text(_verified_tool_use_agent_answer(agent_result))
+            return
         if self.token and isinstance(markdown_response, dict):
             tool_calls = agent_result.get("tool_calls")
             verified_calls = tool_calls if isinstance(tool_calls, list) else []
