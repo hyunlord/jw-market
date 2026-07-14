@@ -334,7 +334,7 @@ def test_cached_cause_response_recomputes_growth_from_legacy_value_aliases(value
 
 
 def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:
-    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v5-source-windowed-growth-company-rankings"
+    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v6-contiguous-strategic-rankings"
 
 
 def _metrics(

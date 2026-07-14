@@ -12,6 +12,7 @@ from threading import Thread
 
 import pytest
 
+from pipeline.scripts.api.market_scope.archive_metrics import annual_ranking_payload
 from pipeline.scripts.gates.release_acceptance import (
     check_brand_source_evidence,
     check_f116_correctness,
@@ -908,6 +909,48 @@ def test_competition_ranking_gate_checks_every_entity_year(tmp_path: Path) -> No
     assert "exit_code=0" in result.stdout
 
 
+def test_competition_ranking_gate_accepts_market_scope_brand_ids_with_display_names(
+    tmp_path: Path,
+) -> None:
+    histories = {
+        "id-a": {"2025-01": 50.0, "2026-01": 60.0},
+        "id-b": {"2025-01": 30.0, "2026-01": 20.0},
+        "id-c": {"2025-01": 20.0, "2026-01": 20.0},
+    }
+    observations = {
+        "brand": annual_ranking_payload(
+            histories,
+            label_key="brand_key",
+            focus_id="id-a",
+            display_names={"id-a": "Brand A", "id-b": "Brand B", "id-c": "Brand C"},
+        ),
+        "company": annual_ranking_payload(
+            histories,
+            label_key="company",
+            focus_id="id-a",
+        ),
+    }
+
+    result = _run(
+        "competition-ranking",
+        "--observations",
+        str(_write_json(tmp_path / "rankings.json", observations)),
+        "--abs-tol",
+        "0.01",
+        "--expected-year",
+        "2025",
+        "--expected-year",
+        "2026",
+        "--environment",
+        "market-scope-fixture",
+    )
+
+    assert result.returncode == 0
+    assert "checked=4" in result.stdout
+    assert "failures=0" in result.stdout
+    assert "exit_code=0" in result.stdout
+
+
 def test_competition_ranking_gate_fails_when_one_rank_is_removed(tmp_path: Path) -> None:
     observations = _competition_rankings()
     del observations["brand"]["yearly"][0]["rankings"][1]
@@ -928,7 +971,89 @@ def test_competition_ranking_gate_fails_when_one_rank_is_removed(tmp_path: Path)
 
     assert result.returncode == 1
     assert "brand|2025: non-contiguous ranks got=1,3 expected=1,2" in result.stdout
-    assert "failures=2" in result.stdout
+    assert "failures=3" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+def test_competition_ranking_gate_fails_when_yearly_diverges_from_rankings_by_year(tmp_path: Path) -> None:
+    observations = _competition_rankings()
+    observations["brand"]["yearly"][0]["rankings"].pop(1)
+
+    result = _run(
+        "competition-ranking",
+        "--observations",
+        str(_write_json(tmp_path / "rankings.json", observations)),
+        "--abs-tol",
+        "0.01",
+        "--expected-year",
+        "2025",
+        "--expected-year",
+        "2026",
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert "brand|2025: yearly rankings diverge from rankings_by_year prefix" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+@pytest.mark.parametrize("entity", ("brand", "company"))
+def test_competition_ranking_gate_fails_when_real_zero_row_is_removed(
+    tmp_path: Path,
+    entity: str,
+) -> None:
+    observations = _competition_rankings()
+    rows = observations[entity]["yearly"][0]["rankings"]
+    rows.pop(next(index for index, row in enumerate(rows) if row.get("value") == 0.0))
+
+    result = _run(
+        "competition-ranking",
+        "--observations",
+        str(_write_json(tmp_path / "rankings.json", observations)),
+        "--abs-tol",
+        "0.01",
+        "--expected-year",
+        "2025",
+        "--expected-year",
+        "2026",
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert f"{entity}|2025: yearly rankings diverge from rankings_by_year prefix" in result.stdout
+    assert "exit_code=1" in result.stdout
+
+
+@pytest.mark.parametrize("entity", ("brand", "company"))
+def test_competition_ranking_gate_fails_when_selected_tail_is_folded_into_others(
+    tmp_path: Path,
+    entity: str,
+) -> None:
+    observations = _competition_rankings()
+    rows = observations[entity]["yearly"][0]["rankings"]
+    removed = rows.pop(2)
+    others = next(row for row in rows if row.get("is_others"))
+    others["value"] += removed["value"]
+    others["ms_pct"] += removed["ms_pct"]
+
+    result = _run(
+        "competition-ranking",
+        "--observations",
+        str(_write_json(tmp_path / "rankings.json", observations)),
+        "--abs-tol",
+        "0.01",
+        "--expected-year",
+        "2025",
+        "--expected-year",
+        "2026",
+        "--environment",
+        "failure-injection",
+    )
+
+    assert result.returncode == 1
+    assert f"{entity}|2025: yearly rankings diverge from rankings_by_year prefix" in result.stdout
     assert "exit_code=1" in result.stdout
 
 
@@ -940,14 +1065,29 @@ def _competition_rankings() -> dict[str, object]:
                 {labels[0]: "A", "rank": 1, "value": 50.0, "ms_pct": 50.0, "is_others": False},
                 {labels[0]: "B", "rank": 2, "value": 30.0, "ms_pct": 30.0, "is_others": False},
                 {labels[0]: "C", "rank": 3, "value": 10.0, "ms_pct": 10.0, "is_others": False},
+                {labels[0]: "Zero", "rank": None, "value": 0.0, "ms_pct": 0.0, "is_others": False},
                 {labels[0]: labels[1], "rank": None, "value": 10.0, "ms_pct": 10.0, "is_others": True},
             ],
         }
 
+    brand_yearly = [year(2025, ("brand", "기타", "company")), year(2026, ("brand", "기타", "company"))]
+    company_yearly = [year(2025, ("company", "기타", "brand")), year(2026, ("company", "기타", "brand"))]
     return {
-        "brand": {"yearly": [year(2025, ("brand", "기타", "company")), year(2026, ("brand", "기타", "company"))]},
+        "brand": {
+            "yearly": brand_yearly,
+            "top_brands": ["A", "B", "C", "Zero", "기타"],
+            "rankings_by_year": {
+                str(item["year"]): [dict(row) for row in item["rankings"]]
+                for item in brand_yearly
+            },
+        },
         "company": {
-            "yearly": [year(2025, ("company", "기타", "brand")), year(2026, ("company", "기타", "brand"))]
+            "yearly": company_yearly,
+            "top_brands": ["A", "B", "C", "Zero", "기타"],
+            "rankings_by_year": {
+                str(item["year"]): [dict(row) for row in item["rankings"]]
+                for item in company_yearly
+            },
         },
     }
 

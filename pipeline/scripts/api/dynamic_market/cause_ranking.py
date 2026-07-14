@@ -94,9 +94,7 @@ def _ranking(
     for year, totals in sorted(totals_by_year.items()):
         market = sum(totals.values())
         annual_order = sorted(totals, key=lambda key: (-totals[key], key))
-        selected_ranks = [rank for rank, key in enumerate(annual_order, start=1) if key in selected]
-        max_selected_rank = max(selected_ranks, default=0)
-        ordered_keys = annual_order[:max_selected_rank]
+        ordered_keys = selected_annual_rank_prefix(annual_order, selected)
         rows = [
             _ranking_row(
                 key=key,
@@ -123,11 +121,18 @@ def _ranking(
         "years": [item["year"] for item in yearly],
         "yearly": yearly,
         collection_key: series,
-        "top_brands": [str(item[entity_key]) for item in series],
+        "top_brands": [names[key] for key in visible_keys],
         "series": {str(item[entity_key]): [point["value"] for point in item["yearly_values"]] for item in series},
         "rankings_by_year": {str(item["year"]): item["rankings"] for item in yearly},
         "period_count_by_year": period_count_by_year,
     }
+
+
+def selected_annual_rank_prefix(annual_order: list[str], selected_keys: set[str]) -> list[str]:
+    """Return every annual rank through the lowest-ranked selected entity."""
+
+    selected_ranks = [rank for rank, key in enumerate(annual_order, start=1) if key in selected_keys]
+    return annual_order[: max(selected_ranks, default=0)]
 
 
 def _ranking_row(
