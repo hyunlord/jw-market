@@ -1,0 +1,33 @@
+{
+  "owner": "chat file SQL contract",
+  "rule": "A golden requires an exact request, source workbook identity, calculation method, and independent source-of-truth evidence. Mock output is never a truth basis.",
+  "contracts": [
+    {
+      "id": "chso_r05a0_manufacturer_sell_out_compare_2026_01",
+      "gate_enabled": true,
+      "request": "ATC4 R05A0에서 동아제약과 동화약품의 sell-out 금액 비교",
+      "source": {
+        "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01",
+        "sheet_name": "Sell Out  Standard",
+        "data_row_count": 12268,
+        "column_count": 252,
+        "measure_column": "VALUES LC SI PRICE\n1/2026"
+      },
+      "calculation": {
+        "filters": {
+          "ATC 4": "R05A0_COLD PREPARATIONS",
+          "MFR NAME KOR": ["동화약품", "동아제약"]
+        },
+        "aggregate": "SUM(VALUES LC SI PRICE 1/2026) GROUP BY MFR NAME KOR"
+      },
+      "expected": [
+        {"manufacturer": "동화약품", "value": 3853883875, "applied_rows": 22},
+        {"manufacturer": "동아제약", "value": 3315233364, "applied_rows": 17}
+      ],
+      "truth_basis_status": "confirmed",
+      "truth_basis": "Original XLSX direct reproduction recorded by audit 8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044; exhaustive comparison across 60 amount columns and 148 ATC4 values found this value pair only for R05A0.",
+      "measured_at": "2026-07-14T20:54:13+09:00"
+    }
+  ]
+}
