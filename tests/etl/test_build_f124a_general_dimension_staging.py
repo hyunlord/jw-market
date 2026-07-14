@@ -81,6 +81,18 @@ def test_verify_may_parquet_requires_expected_sha(tmp_path: Path) -> None:
         raise AssertionError("wrong parquet digest must fail")
 
 
+def test_prepare_may_input_root_exposes_only_verified_partition(tmp_path: Path) -> None:
+    verified = tmp_path / "source" / "year=2026" / "month=05" / "data.parquet"
+    verified.parent.mkdir(parents=True)
+    verified.write_bytes(b"verified-may")
+
+    input_root = stage.prepare_may_input_root(verified, tmp_path / "spool")
+
+    linked = input_root / "year=2026" / "month=05" / "data.parquet"
+    assert linked.resolve() == verified.resolve()
+    assert list(input_root.glob("year=*/month=*/data.parquet")) == [linked]
+
+
 def test_copy_live_table_preserves_rows_in_bounded_batches(monkeypatch) -> None:
     conn = FakeConnection(insert_counts=[2, 1, 0], fetch_results=[{"max_id": 2}, {"max_id": 3}])
     existing = {stage.F124A_LIVE_TABLE}

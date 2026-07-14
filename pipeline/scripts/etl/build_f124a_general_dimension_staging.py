@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 from typing import Any, Final, Sequence
 
 import pymysql
@@ -61,6 +62,16 @@ def verify_may_parquet(ubist_dir: Path, expected_sha256: str) -> Path:
     if digest != expected_sha256:
         raise RuntimeError(f"May UBIST parquet sha256 mismatch: actual={digest} expected={expected_sha256}")
     return parquet
+
+
+def prepare_may_input_root(parquet: Path, spool_dir: Path) -> Path:
+    """Expose only the verified May partition to the shared UBIST reader."""
+    input_root = spool_dir / "verified-may-input"
+    shutil.rmtree(input_root, ignore_errors=True)
+    linked_parquet = input_root / "year=2026" / "month=05" / "data.parquet"
+    linked_parquet.parent.mkdir(parents=True)
+    linked_parquet.symlink_to(parquet.resolve())
+    return input_root
 
 
 def create_and_copy_live_table(
@@ -165,7 +176,7 @@ def build_and_merge_may_rows(
 def run(args: argparse.Namespace) -> dict[str, Any]:
     guard_f124a_target(args.target_db, args.target_table)
     parquet = verify_may_parquet(args.ubist_dir, args.expected_sha256)
-    os.environ["S4_UBIST_DIR"] = str(args.ubist_dir)
+    os.environ["S4_UBIST_DIR"] = str(prepare_may_input_root(parquet, args.spool_dir))
     os.environ["S4_INPUT_MODE"] = "raw"
 
     conn = _connect_admin()
