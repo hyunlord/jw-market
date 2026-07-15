@@ -8,7 +8,6 @@ import re
 from typing import Any
 
 from pipeline.etl.io.mart.momentum import compute_market_share_momentum
-from pipeline.scripts.api.dynamic_market.cause_ranking import selected_annual_rank_prefix
 from pipeline.scripts.api.market_scope.periods import sort_periods
 
 
@@ -51,28 +50,19 @@ def annual_ranking_payload(
         else []
     )
     yearly = [_yearly_selection(year, ranked_by_year[year], visible_ids, label_key=label_key) for year in years]
-    emitted_ids = list(
-        dict.fromkeys(
-            str(row[label_key])
-            for item in yearly
-            for row in item["rankings"]
-            if row.get(label_key) and not row.get("is_others")
-        )
-    )
     labels = [*visible_ids, "기타"]
-    series_labels = [*emitted_ids, "기타"]
     trend_key = "brands" if label_key == "brand_key" else "companies"
     return {
         "years": years,
         "yearly": yearly,
-        trend_key: _latest_trends(years, ranked_by_year, emitted_ids, label_key=label_key),
+        trend_key: _latest_trends(years, ranked_by_year, visible_ids, label_key=label_key),
         "top_brands": labels,
         "series": {
             label: [
                 _selected_value(item["rankings"], label, label_key=label_key)
                 for item in yearly
             ]
-            for label in series_labels
+            for label in labels
         },
         "rankings_by_year": {str(year): ranked_by_year[year] for year in years},
         "period_count_by_year": {str(year): _period_counts(histories).get(year, 0) for year in years},
@@ -237,18 +227,7 @@ def _yearly_selection(
     label_key: str,
 ) -> dict[str, Any]:
     row_by_id = {str(row[label_key]): row for row in ranked_rows if row.get(label_key)}
-    annual_order = [
-        str(row[label_key])
-        for row in ranked_rows
-        if row.get(label_key) and isinstance(row.get("rank"), int)
-    ]
-    selected_order = selected_annual_rank_prefix(annual_order, set(visible_ids))
-    selected = [row_by_id[item_id] for item_id in selected_order]
-    selected.extend(
-        row_by_id[item_id]
-        for item_id in visible_ids
-        if item_id not in selected_order and item_id in row_by_id
-    )
+    selected = [row_by_id[item_id] for item_id in visible_ids if item_id in row_by_id]
     selected_ids = {str(row[label_key]) for row in selected}
     others = [row for row in ranked_rows if str(row.get(label_key)) not in selected_ids]
     displayed_ms = sum(float(row.get("ms_pct") or 0.0) for row in selected)
