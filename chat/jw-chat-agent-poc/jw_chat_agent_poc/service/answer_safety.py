@@ -39,6 +39,15 @@ _FILE_QUERY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{1,}|[가-힣]{2,}")
 _FILE_QUERY_STOP_WORDS = frozenset(
     {"업로드", "파일", "모두", "사용해서", "비교해줘", "알려줘", "그리고", "대한", "기준"}
 )
+_GLOBAL_CLINICAL_FACT_RE = re.compile(
+    r"^-\s*(?P<subject>.+?):\s*글로벌 임상시험\s*=\s*"
+    r"(?P<nct>NCT\d+)\s*·\s*(?P<detail>.+?)\s*"
+    r"\[ClinicalTrials\.gov 임상시험 정보\]\s*$"
+)
+_DOMESTIC_CLINICAL_FACT_RE = re.compile(
+    r"^-\s*(?P<subject>.+?)\s*\((?P<date>\d{8})\):\s*국내 임상시험\s*=\s*"
+    r"(?P<item>.+?)\s*\[식약처 의약품 정보\]\s*$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +248,9 @@ def fallback_fact_answer(markdown_response: Any) -> str:
     if not isinstance(markdown_response, dict):
         return "확정 데이터만으로 답변을 구성할 수 있는 정보가 제한적입니다."
     fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    clinical_answer = _external_clinical_fallback_answer(fact_md)
+    if clinical_answer:
+        return clinical_answer
     lines = list(dict.fromkeys(mandatory_fact_lines(fact_md)))
     if not lines:
         lines = list(dict.fromkeys(_table_fact_lines(_non_news_fact_markdown(fact_md))))
@@ -260,6 +272,77 @@ def fallback_fact_answer(markdown_response: Any) -> str:
     if source_line:
         parts.append(source_line)
     return "\n\n".join(parts)
+
+
+def _external_clinical_fallback_answer(fact_md: str) -> str:
+    """Render exact clinical registry evidence when final LLM expression is unavailable."""
+    global_rows: list[tuple[str, str, str, str]] = []
+    domestic_rows: list[tuple[str, str, str]] = []
+    for line in fact_md.splitlines():
+        global_match = _GLOBAL_CLINICAL_FACT_RE.match(line.strip())
+        if global_match:
+            detail = global_match.group("detail").strip()
+            title, separator, url = detail.rpartition(" · ")
+            if not separator or not url.startswith(("http://", "https://")):
+                title, url = detail, "-"
+            global_rows.append(
+                (
+                    global_match.group("subject").strip(),
+                    global_match.group("nct").strip(),
+                    title.strip(),
+                    url.strip(),
+                )
+            )
+            continue
+        domestic_match = _DOMESTIC_CLINICAL_FACT_RE.match(line.strip())
+        if domestic_match:
+            domestic_rows.append(
+                (
+                    domestic_match.group("subject").strip(),
+                    domestic_match.group("date").strip(),
+                    domestic_match.group("item").strip(),
+                )
+            )
+    if not global_rows or not domestic_rows:
+        return ""
+
+    first_global = global_rows[0]
+    first_domestic = domestic_rows[0]
+    parts = [
+        (
+            "확인된 등록 근거를 보면, 글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다. "
+            f"글로벌 등록에는 {first_global[2]}, 국내 등록에는 {first_domestic[2]} 등이 포함됩니다."
+        ),
+        (
+            "다만 이 등록정보는 연구·품목과 등록일을 보여주는 근거이며, "
+            "임상 성공, 허가 완료 또는 현재 개발 단계를 뜻하지 않습니다."
+        ),
+        "## 근거 데이터",
+        "### 글로벌 임상 등록",
+        "| 대상 | 임상시험 번호 | 연구 | 링크 |",
+        "| --- | --- | --- | --- |",
+    ]
+    parts.extend(
+        f"| {_markdown_cell(subject)} | {_markdown_cell(nct)} | {_markdown_cell(title)} | {_markdown_cell(url)} |"
+        for subject, nct, title, url in global_rows
+    )
+    parts.extend(
+        (
+            "",
+            "### 국내 식약처 임상 등록",
+            "| 대상 | 등록일 | 품목 |",
+            "| --- | --- | --- |",
+        )
+    )
+    parts.extend(
+        f"| {_markdown_cell(subject)} | {_markdown_cell(date)} | {_markdown_cell(item)} |"
+        for subject, date, item in domestic_rows
+    )
+    return "\n".join(parts)
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ").strip()
 
 
 def _csd_activity_fallback_answer(lines: list[str], source_line: str) -> str:
