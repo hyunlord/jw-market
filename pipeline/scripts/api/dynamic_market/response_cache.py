@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 from numbers import Real
 import threading
 import time
@@ -40,6 +41,10 @@ DEFAULT_PRUNE_GRACE_SECONDS = 300
 DEFAULT_PRUNE_BATCH_LIMIT = 100
 _BUILD_SEMAPHORE = threading.BoundedSemaphore(3)
 PersistenceScheduler = Callable[[Callable[[], None]], None]
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 
 class DynamicMarketOverloadedError(RuntimeError):
@@ -223,25 +228,37 @@ class DynamicResponseCache:
         *,
         persistence_scheduler: PersistenceScheduler | None = None,
     ) -> dict[str, Any]:
+        started = time.perf_counter() if _stage_timing_enabled() else None
         request_json = canonical_request_json(request)
+        request_ms = (time.perf_counter() - started) * 1000 if started is not None else None
+        source_started = time.perf_counter() if started is not None else None
         source_epoch = self._store.source_epoch()
+        source_epoch_ms = (time.perf_counter() - source_started) * 1000 if source_started is not None else None
         cache_key = hashlib.sha256(
             f"{CACHE_SCHEMA_VERSION}\n{source_epoch}\n{request_json}".encode("utf-8")
         ).hexdigest()
         deadline = time.monotonic() + self._wait_timeout_seconds
         while True:
+            claim_started = time.perf_counter() if started is not None else None
             claim = self._store.claim(
                 cache_key=cache_key,
                 request_json=request_json,
                 source_epoch=source_epoch,
             )
+            claim_ms = (time.perf_counter() - claim_started) * 1000 if claim_started is not None else None
             if claim.action == "hit" and claim.response_json is not None:
                 payload = json.loads(_decode_cached_response(claim.response_json))
                 if not isinstance(payload, dict):
                     raise DynamicResponseCacheUnavailable("cached dynamic response is not an object")
+                if started is not None:
+                    logger.info(
+                        "market_latency_cache action=hit cache_key=%s request_ms=%.3f source_epoch_ms=%.3f claim_ms=%.3f total_ms=%.3f",
+                        cache_key[:12], request_ms or 0.0, source_epoch_ms or 0.0, claim_ms or 0.0,
+                        (time.perf_counter() - started) * 1000,
+                    )
                 return payload
             if claim.action == "build" and claim.lease_owner is not None:
-                return self._build(
+                payload = self._build(
                     cache_key=cache_key,
                     request_json=request_json,
                     source_epoch=source_epoch,
@@ -249,6 +266,13 @@ class DynamicResponseCache:
                     builder=builder,
                     persistence_scheduler=persistence_scheduler,
                 )
+                if started is not None:
+                    logger.info(
+                        "market_latency_cache action=build cache_key=%s request_ms=%.3f source_epoch_ms=%.3f claim_ms=%.3f total_ms=%.3f",
+                        cache_key[:12], request_ms or 0.0, source_epoch_ms or 0.0, claim_ms or 0.0,
+                        (time.perf_counter() - started) * 1000,
+                    )
+                return payload
             if time.monotonic() >= deadline:
                 raise DynamicMarketOverloadedError("timed out waiting for an identical dynamic-market request")
             time.sleep(self._poll_interval_seconds)

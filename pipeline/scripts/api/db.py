@@ -3,14 +3,29 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
 import os
+import re
 from threading import Condition, Lock
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import Any
 
 import pymysql
 
 from pipeline.scripts.api.config import get_settings
+
+
+logger = logging.getLogger(__name__)
+_FROM_TABLE_RE = re.compile(r"\bFROM\s+([`\w.]+)", re.IGNORECASE)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _sql_table(sql: str) -> str:
+    match = _FROM_TABLE_RE.search(sql)
+    return match.group(1) if match else "unknown"
 
 
 @dataclass(frozen=True)
@@ -209,21 +224,52 @@ def borrow_read_connection() -> Iterator[pymysql.connections.Connection]:
 
 
 def fetch_all(sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+    started = perf_counter() if _stage_timing_enabled() else None
     with borrow_read_connection() as conn:
         with conn.cursor() as cur:
+            execute_started = perf_counter() if started is not None else None
             cur.execute(sql, params or ())
-            return list(cur.fetchall())
+            execute_ms = (perf_counter() - execute_started) * 1000 if execute_started is not None else None
+            fetch_started = perf_counter() if started is not None else None
+            rows = list(cur.fetchall())
+            fetch_ms = (perf_counter() - fetch_started) * 1000 if fetch_started is not None else None
+    if started is not None:
+        logger.info(
+            "market_latency_db op=fetch_all table=%s execute_ms=%.3f fetch_ms=%.3f rows=%d total_ms=%.3f",
+            _sql_table(sql),
+            execute_ms or 0.0,
+            fetch_ms or 0.0,
+            len(rows),
+            (perf_counter() - started) * 1000,
+        )
+    return rows
 
 
 def iter_rows(sql: str, params: Sequence[Any] | None = None, *, batch_size: int = 500) -> Iterator[dict[str, Any]]:
+    started = perf_counter() if _stage_timing_enabled() else None
     with borrow_read_connection() as conn:
         with conn.cursor(pymysql.cursors.SSDictCursor) as cur:
+            execute_started = perf_counter() if started is not None else None
             cur.execute(sql, params or ())
+            execute_ms = (perf_counter() - execute_started) * 1000 if execute_started is not None else None
+            rows_count = 0
             while True:
+                fetch_started = perf_counter() if started is not None else None
                 rows = cur.fetchmany(batch_size)
+                fetch_ms = (perf_counter() - fetch_started) * 1000 if fetch_started is not None else None
                 if not rows:
                     break
+                rows_count += len(rows)
                 yield from rows
+    if started is not None:
+        logger.info(
+            "market_latency_db op=iter_rows table=%s execute_ms=%.3f fetch_ms=%.3f rows=%d total_ms=%.3f",
+            _sql_table(sql),
+            execute_ms or 0.0,
+            (perf_counter() - started) * 1000 - (execute_ms or 0.0),
+            rows_count,
+            (perf_counter() - started) * 1000,
+        )
 
 
 def fetch_one(sql: str, params: Sequence[Any] | None = None) -> dict[str, Any] | None:
