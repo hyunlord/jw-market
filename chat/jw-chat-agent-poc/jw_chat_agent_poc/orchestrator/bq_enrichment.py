@@ -361,10 +361,13 @@ def _patient_count(calls: list[Call]) -> tuple[str, Decimal] | None:
         for child in nested:
             child_data = child.get("render_data") if isinstance(child, dict) else None
             items = child_data.get("items") if isinstance(child_data, dict) else None
+            request = child_data.get("request") if isinstance(child_data, dict) else None
+            request_year = str(request.get("year") or "").strip() if isinstance(request, dict) else ""
             for item in items if isinstance(items, list) else []:
                 value = _decimal(item.get("ptntCnt")) if isinstance(item, dict) else None
-                if value is not None:
-                    return str(item.get("year") or item.get("yyyy") or ""), value
+                period = str(item.get("year") or item.get("yyyy") or request_year).strip()
+                if value is not None and period:
+                    return period, value
     return None
 
 

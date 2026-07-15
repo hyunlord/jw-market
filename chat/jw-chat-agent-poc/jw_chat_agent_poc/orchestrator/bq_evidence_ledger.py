@@ -125,9 +125,11 @@ def _tabular_rows(source: str, tool: str, data: Mapping[str, Any]) -> list[dict[
 
 def _item_rows(source: str, tool: str, data: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    request = _mapping(data.get("request"))
+    request_period = str(request.get("year") or "").strip()
     for item in _mappings(data.get("items")):
         patient_count = item.get("ptntCnt")
-        patient_period = str(item.get("year") or item.get("yyyy") or "").strip()
+        patient_period = str(item.get("year") or item.get("yyyy") or request_period).strip()
         if patient_count is not None and patient_period:
             rows.append(
                 {

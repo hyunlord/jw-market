@@ -151,6 +151,39 @@ def test_c2_ledger_keeps_channel_and_specialty_rows_distinct() -> None:
     validate_bq_analysis_call(call)
 
 
+def test_a3_uses_hira_request_year_for_patient_evidence() -> None:
+    market = _series_call("ubist")
+    market["render_data"]["sales_krw"] = 12_000_000_000
+    call = build_bq_analysis_call(
+        "A3",
+        [
+            market,
+            {
+                "tool": "get_disease_stats",
+                "source": "hira_disease",
+                "render_data": {
+                    "calls": [
+                        {
+                            "render_data": {
+                                "request": {"sickCd": "E78", "year": "2024"},
+                                "items": [{"inpatOpat": "외래", "ptntCnt": 1_305_727}],
+                            }
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+
+    assert call is not None
+    assert call["render_data"]["patient_period"] == "2024"
+    assert any(
+        row.get("source") == "HIRA" and row.get("period") == "2024"
+        for row in call["render_data"]["evidence_ledger"]
+    )
+    validate_bq_analysis_call(call)
+
+
 def test_d1_reports_activity_change_and_honest_topic_gap() -> None:
     call = build_bq_analysis_call(
         "D1",
