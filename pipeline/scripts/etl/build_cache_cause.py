@@ -1246,9 +1246,14 @@ def _dimension_value(row: dict[str, Any], level: str) -> str | None:
 
 
 def _dimension_values(row: dict[str, Any], level: str) -> list[str]:
+    dimension_values_cache = row.setdefault("__dimension_values_cache", {})
+    if isinstance(dimension_values_cache, dict) and level in dimension_values_cache:
+        return dimension_values_cache[level]
     if level == "Brand":
         value = row.get("brand_name") or row.get("brand_key")
-        return _split_atomic_dimension(level, value)
+        values = _split_atomic_dimension(level, value)
+        dimension_values_cache[level] = values
+        return values
     by_dimension = row.get("__by_dimension")
     if by_dimension is None:
         by_dimension = decode_json(row.get("by_dimension"))
@@ -1266,27 +1271,38 @@ def _dimension_values(row: dict[str, Any], level: str) -> list[str]:
             continue
         value = by_dimension.get(candidate)
         if value not in (None, "", [], {}):
-            return _split_atomic_dimension(level, value)
-    return []
+            values = _split_atomic_dimension(level, value)
+            dimension_values_cache[level] = values
+            return values
+    values = []
+    dimension_values_cache[level] = values
+    return values
 
 
 def _dimension_series_map(row: dict[str, Any], field: str | None) -> dict[str, Any]:
     if not field:
         return {}
+    series_map_cache = row.setdefault("__dimension_series_map_cache", {})
+    if isinstance(series_map_cache, dict) and field in series_map_cache:
+        return series_map_cache[field]
     dimension_data = row.get("__dimension_data")
     if dimension_data is None:
         dimension_data = decode_json(row.get("dimension_data"))
         row["__dimension_data"] = dimension_data
     if not isinstance(dimension_data, dict):
-        return {}
+        series_map_cache[field] = {}
+        return series_map_cache[field]
     series_map = dimension_data.get(field)
     if not isinstance(series_map, dict):
-        return {}
-    return {
+        series_map_cache[field] = {}
+        return series_map_cache[field]
+    values = {
         str(label): series
         for label, series in series_map.items()
         if not _is_excluded_dimension_label(label) and isinstance(series, dict)
     }
+    series_map_cache[field] = values
+    return values
 
 
 def _has_dimension_field(row: dict[str, Any], field: str | None) -> bool:
