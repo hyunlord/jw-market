@@ -27,6 +27,17 @@ CLINICAL_REGISTRY_FACT_MD = "\n".join(
     ]
 )
 
+CLINICAL_REGISTRY_TABLE_FACT_MD = "\n".join(
+    [
+        "## 확정 fact set",
+        "### 임상시험 fact",
+        "| 출처 | 시험/식별자 | 제목/제품 | 상태 | 단계 |",
+        "| --- | --- | --- | --- | --- |",
+        "| clinicaltrials_v2_search | NCT07626840 | Livalozet Versus High-intensity Statin | NOT_YET_RECRUITING | PHASE4 |",
+        "| clinicaltrials_v2_search | NCT02250976 | Fixed-dose Combination of Pitavastatin and Ezetimibe | COMPLETED | PHASE1 |",
+    ]
+)
+
 ADVERSE_EVENT_FACT_MD = (
     "- pitavastatin (2026-03-31): FAERS 자발보고 내 이상반응 = "
     "FAERS 보고 26558911 · 2026-03-31 · 보고 반응: Acute kidney injury, "
@@ -75,6 +86,33 @@ def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps
     assert "Study to Compare the Efficacy and Safety" in revised
 
     report = claim_policy_report(revised, CLINICAL_REGISTRY_FACT_MD)
+    assert "external_clinical_registry" in report["active_fact_types"]
+    assert report["forbidden_claims_remaining"] == ()
+
+
+def test_clinical_registry_policy_covers_current_fact_table_and_removes_live_overclaims() -> None:
+    answer = "\n".join(
+        [
+            "리바로는 다양한 임상시험을 통해 안전성과 유효성을 지속적으로 검증하고 있습니다.",
+            "이 연구들은 환자에게 최적의 치료 옵션을 제공하는 폭넓은 임상 포트폴리오를 보여줍니다.",
+            "| 임상시험 번호 | 연구 제목 |",
+            "| --- | --- |",
+            "| NCT07626840 | Livalozet Versus High-intensity Statin |",
+            "| NCT02250976 | Fixed-dose Combination of Pitavastatin and Ezetimibe |",
+        ]
+    )
+
+    revised = apply_claim_policy("리바로 임상시험", answer, CLINICAL_REGISTRY_TABLE_FACT_MD)
+
+    assert "안전성과 유효성을 지속적으로 검증" not in revised
+    assert "최적의 치료 옵션" not in revised
+    assert "폭넓은 임상 포트폴리오" not in revised
+    assert "ClinicalTrials.gov 등록정보에서 글로벌 임상시험 2건" in revised
+    assert "결과·효과·안전성 확정이나 개발 성공을 뜻하지는 않습니다" in revised
+    assert "NCT07626840" in revised
+    assert "NCT02250976" in revised
+
+    report = claim_policy_report(revised, CLINICAL_REGISTRY_TABLE_FACT_MD)
     assert "external_clinical_registry" in report["active_fact_types"]
     assert report["forbidden_claims_remaining"] == ()
 

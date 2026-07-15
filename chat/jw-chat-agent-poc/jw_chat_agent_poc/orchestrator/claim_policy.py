@@ -59,12 +59,14 @@ _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
         r"보조적\s*치료\s*가능성|처방\s*영역.{0,20}확장|"
         r"안전성(?:을)?\s*확보|약제\s*특성.{0,8}검증|"
         r"임상(?:적)?\s*유용성.{0,8}(?:확인|입증)|혈관\s*건강\s*개선\s*가능성|"
-        r"적응증\s*확대|신뢰할\s*수\s*있는\s*치료\s*옵션)"
+        r"적응증\s*확대|신뢰할\s*수\s*있는\s*치료\s*옵션|최적의\s*치료\s*옵션|"
+        r"안전성.{0,8}유효성.{0,16}검증)"
     ),
     "registry_market_inference": re.compile(
         r"(시장\s*선점|복약\s*편의성.{0,20}(?:확대|증가|높)|"
         r"신약.{0,20}(?:등장|출시).{0,20}시사|경쟁(?:이|은)?\s*(?:심화|격화)|"
-        r"가능성(?:을)?\s*시사|효율성(?:을)?\s*극대화|방향으로\s*진화)"
+        r"가능성(?:을)?\s*시사|효율성(?:을)?\s*극대화|방향으로\s*진화|"
+        r"폭넓은\s*임상\s*포트폴리오)"
     ),
 }
 
@@ -166,9 +168,15 @@ def _is_news_context(fact_md: str) -> bool:
 
 
 def _is_external_clinical_registry(fact_md: str) -> bool:
-    return "[ClinicalTrials.gov 임상시험 정보]" in fact_md or bool(
+    legacy_registry = "[ClinicalTrials.gov 임상시험 정보]" in fact_md or bool(
         re.search(r"국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]", fact_md)
     )
+    current_registry_table = (
+        "### 임상시험 fact" in fact_md
+        and "clinicaltrials_v2_search" in fact_md
+        and bool(re.search(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE))
+    )
+    return legacy_registry or current_registry_table
 
 
 def _is_external_adverse_event(fact_md: str) -> bool:
