@@ -1356,14 +1356,27 @@ def _dimension_channel_series_map(row: dict[str, Any], field: str | None, source
         row["__dimension_channel_data"] = dimension_channel_data
     if not isinstance(dimension_channel_data, dict):
         return {}
-    field_data = dimension_channel_data.get(field)
+    field_cache = row.setdefault("__dimension_channel_field_cache", {})
+    if isinstance(field_cache, dict) and field in field_cache:
+        field_data = field_cache[field]
+    else:
+        raw_field_data = dimension_channel_data.get(field)
+        field_data = (
+            {
+                str(label).strip(): channel_map
+                for label, channel_map in raw_field_data.items()
+                if not _is_excluded_dimension_label(str(label).strip())
+                and isinstance(channel_map, dict)
+            }
+            if isinstance(raw_field_data, dict)
+            else {}
+        )
+        if isinstance(field_cache, dict):
+            field_cache[field] = field_data
     if not isinstance(field_data, dict):
         return {}
     result: dict[str, dict[str, Any]] = {}
-    for label, channel_map in field_data.items():
-        label_text = str(label).strip()
-        if _is_excluded_dimension_label(label_text) or not isinstance(channel_map, dict):
-            continue
+    for label_text, channel_map in field_data.items():
         matched_series: list[dict[str, Any]] = []
         unmatched_series: list[dict[str, Any]] = []
         for raw_channel, series in channel_map.items():
