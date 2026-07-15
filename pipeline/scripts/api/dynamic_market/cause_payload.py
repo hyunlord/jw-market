@@ -300,6 +300,7 @@ def _target_customer_competition_by_channel(
         periods=periods,
         channels=[str(channel) for channel in channels if str(channel)],
         series_value_cache=analysis_sections.get("series_value_cache"),
+        channel_rows_cache=analysis_sections.get("channel_rows_cache"),
     )
 
 

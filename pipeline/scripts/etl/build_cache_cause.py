@@ -110,6 +110,10 @@ _SeriesObservedCache = dict[
     tuple[int, tuple[str, ...]],
     tuple[dict[str, Any], array, tuple[bool, ...]],
 ]
+_ChannelRowsCache = dict[
+    tuple[int, str, str, tuple[str, ...]],
+    tuple[list[dict[str, Any]], list[dict[str, Any]]],
+]
 _AnnualRankRows = tuple[dict[int, list[dict[str, Any]]], dict[int, int]]
 _AnnualRankRowsCache = dict[tuple[int, str], _AnnualRankRows]
 
@@ -1844,9 +1848,16 @@ def _rows_for_channel(
     periods: list[str],
     *,
     series_value_cache: _SeriesValueCache | None = None,
+    channel_rows_cache: _ChannelRowsCache | None = None,
 ) -> list[dict[str, Any]]:
     if channel == "전체":
         return rows
+
+    cache_key = (id(rows), source, channel, tuple(periods))
+    if channel_rows_cache is not None:
+        cached = channel_rows_cache.get(cache_key)
+        if cached is not None and cached[0] is rows:
+            return cached[1]
 
     filtered: list[dict[str, Any]] = []
     for row in rows:
@@ -1875,6 +1886,8 @@ def _rows_for_channel(
             (tuple(periods), True): [history[period] for period in periods],
         }
         filtered.append(clone)
+    if channel_rows_cache is not None:
+        channel_rows_cache[cache_key] = (rows, filtered)
     return filtered
 
 
@@ -2164,8 +2177,9 @@ def _with_overall_level_options(
     periods: list[str],
     series_value_cache: _SeriesValueCache | None = None,
     series_observed_cache: _SeriesObservedCache | None = None,
+    channel_rows_cache: _ChannelRowsCache | None = None,
 ) -> dict[str, Any]:
-    channel_rows_cache: dict[str, list[dict[str, Any]]] = {}
+    local_channel_rows_cache: dict[str, list[dict[str, Any]]] = {}
     channel_total_series_cache: dict[str, list[float]] = {}
     available_specialty_fields = (
         _available_specialty_dimension_fields(rows)
@@ -2184,16 +2198,17 @@ def _with_overall_level_options(
                 continue
             if any(isinstance(segment, dict) and segment.get("name") == "전체" for segment in segments):
                 continue
-            if channel not in channel_rows_cache:
-                channel_rows_cache[channel] = _rows_for_channel(
+            if channel not in local_channel_rows_cache:
+                local_channel_rows_cache[channel] = _rows_for_channel(
                     rows,
                     source,
                     channel,
                     periods,
                     series_value_cache=series_value_cache,
+                    channel_rows_cache=channel_rows_cache,
                 )
                 channel_total_series_cache[channel] = _total_series_for_rows(
-                    channel_rows_cache[channel],
+                    local_channel_rows_cache[channel],
                     periods,
                     series_observed_cache=series_observed_cache,
                 )
@@ -2266,6 +2281,7 @@ def _build_analysis_levels_from_mart(
     use_latest_valid_share: bool = False,
     series_value_cache: _SeriesValueCache | None = None,
     series_observed_cache: _SeriesObservedCache | None = None,
+    channel_rows_cache: _ChannelRowsCache | None = None,
     resolved_levels: set[str] | None = None,
     resolved_periods: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -2337,6 +2353,7 @@ def _build_analysis_levels_from_mart(
         periods=periods,
         series_value_cache=series_value_cache,
         series_observed_cache=series_observed_cache,
+        channel_rows_cache=channel_rows_cache,
     )
     if overall_started:
         logger.info(
@@ -3147,6 +3164,7 @@ def _target_customer_competition(
     periods: list[str],
     channels: list[str] | None = None,
     series_value_cache: _SeriesValueCache | None = None,
+    channel_rows_cache: _ChannelRowsCache | None = None,
 ) -> dict[str, Any]:
     targets = channels or _channels_for_source(source)
     target_type = "채널"
@@ -3159,6 +3177,7 @@ def _target_customer_competition(
             target,
             periods,
             series_value_cache=series_value_cache,
+            channel_rows_cache=channel_rows_cache,
         )
         selected = _display_brand_rows(channel_rows, target_name=target_name, top_n=5, include_others=True)
         row_by_brand = {_row_brand(row): row for row in channel_rows if _row_brand(row)}
@@ -3375,6 +3394,7 @@ def _level_top5_trend(
     channel: str = "전체",
     use_latest_valid_share: bool = False,
     series_value_cache: _SeriesValueCache | None = None,
+    channel_rows_cache: _ChannelRowsCache | None = None,
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
@@ -3388,6 +3408,7 @@ def _level_top5_trend(
         channel,
         periods,
         series_value_cache=series_value_cache,
+        channel_rows_cache=channel_rows_cache,
     )
     full_market_series: list[float] | None = None
     overall_brand_payload_cache: dict[tuple[float | None, ...], list[dict[str, Any]]] = {}
@@ -3485,6 +3506,7 @@ def _level_top5_trend(
                     source=source,
                     channel=channel,
                     series_value_cache=series_value_cache,
+                    channel_rows_cache=channel_rows_cache,
                 )
             )
             segment_total_series = segment.get("value_series") or _total_series_for_rows(segment_rows, periods)
@@ -3707,6 +3729,7 @@ def build_response(
     include_all_d3_options = bool(brand_row.get("is_jw") or brand_row.get("is_target"))
     analysis_series_value_cache: _SeriesValueCache = {}
     analysis_series_observed_cache: _SeriesObservedCache = {}
+    analysis_channel_rows_cache: _ChannelRowsCache = {}
     block_epoch = current_analysis_level_source_epoch()
     precomputed_block = (
         load_analysis_level_block(
@@ -3741,6 +3764,7 @@ def build_response(
             resolved_periods=resolved_periods,
             series_value_cache=analysis_series_value_cache,
             series_observed_cache=analysis_series_observed_cache,
+            channel_rows_cache=analysis_channel_rows_cache,
         )
     else:
         resolved_levels = None
@@ -3837,6 +3861,7 @@ def build_response(
                     resolved_periods=resolved_periods,
                     series_value_cache=analysis_series_value_cache,
                     series_observed_cache=analysis_series_observed_cache,
+                    channel_rows_cache=analysis_channel_rows_cache,
                 )
             clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
             if not include_all_d3_options:
@@ -3849,6 +3874,7 @@ def build_response(
         periods=periods,
         channels=target_customer_channels,
         series_value_cache=analysis_series_value_cache,
+        channel_rows_cache=analysis_channel_rows_cache,
     )
     level_top5_trend = _level_top5_trend(
         analysis_levels,
@@ -3857,6 +3883,7 @@ def build_response(
         brand_row.get("brand_name"),
         rows_by_level=LEVEL_ROW_GROUPS_CACHE[analysis_cache_key],
         include_all_options=include_all_d3_options,
+        channel_rows_cache=analysis_channel_rows_cache,
     )
     target_customer_competition = target_customer_competition_by_channel
     if precomputed_block is not None:
