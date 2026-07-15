@@ -2090,3 +2090,45 @@ def test_combined_clinical_evidence_bypasses_slow_final_llm(monkeypatch) -> None
     assert "글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다" in answer
     assert "NCT00257686" in answer
     assert "HL040XC정" in answer
+
+
+def test_complete_concentration_evidence_bypasses_slow_final_llm(monkeypatch) -> None:
+    def unexpected_final_llm(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
+        raise AssertionError("complete HHI and CR5 evidence must not wait for final LLM synthesis")
+
+    monkeypatch.setattr(GenosClient, "_chat_text", unexpected_final_llm)
+    client = GenosClient(token="dummy-token")
+    tool_calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "period": "2026-05",
+                "hhi": 253.62,
+                "level_segments": [
+                    {"rank": 1, "brand": "로수젯", "ms_recent_pct": 9.126493992011786},
+                    {"rank": 2, "brand": "리피토", "ms_recent_pct": 6.127772606529449},
+                    {"rank": 3, "brand": "리바로젯", "ms_recent_pct": 5.116717910777399},
+                    {"rank": 4, "brand": "아토젯", "ms_recent_pct": 4.948762740580882},
+                    {"rank": 5, "brand": "로수바미브", "ms_recent_pct": 4.1960520158172825},
+                ],
+            },
+        }
+    ]
+    agent_result = {
+        "answer": "",
+        "markdown_response": {"fact_md": "HHI = 253.62\nCR5 = 29.52%", "allowed_numbers": ["253.62", "29.52"]},
+        "tool_calls": tool_calls,
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "HHI 253.62" in answer
+    assert "CR5 29.52%" in answer
+    assert "29.53%" not in answer

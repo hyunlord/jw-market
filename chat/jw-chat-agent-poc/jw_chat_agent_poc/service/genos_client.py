@@ -713,6 +713,18 @@ def _has_combined_clinical_registry_evidence(
     return "글로벌 임상시험 = NCT" in fact_md and "국내 임상시험 =" in fact_md
 
 
+def _deterministic_concentration_answer(
+    question: str,
+    tool_calls: list[dict[str, Any]],
+) -> str:
+    if not any(token in question for token in ("집중도", "HHI", "CR")):
+        return ""
+    answer = enforce_market_answer_contract(question, "", tool_calls)
+    if "HHI " not in answer or "CR5 " not in answer:
+        return ""
+    return answer
+
+
 def _verified_tool_use_agent_answer(agent_result: dict[str, Any]) -> str:
     answer = str(agent_result.get("answer") or "확인 가능한 근거가 없어 답변할 수 없습니다.")
     markdown_response = agent_result.get("markdown_response")
@@ -780,6 +792,20 @@ class GenosClient:
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            concentration_answer = _deterministic_concentration_answer(question, verified_calls)
+            if concentration_answer:
+                with stage(
+                    timing,
+                    "final_deterministic_concentration_path",
+                    "verified HHI and CR5 answer rendering",
+                ):
+                    answer = ensure_file_absence_statement(
+                        question,
+                        concentration_answer,
+                        file_context,
+                    )
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
             fast_answer = deterministic_top_n_share_answer(question, fact_md, verified_calls)
             if fast_answer:
                 with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
