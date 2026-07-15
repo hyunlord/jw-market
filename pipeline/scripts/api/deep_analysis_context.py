@@ -81,6 +81,7 @@ def resolve_deep_analysis_context(
     view_kind: str,
     market_id: str | None,
     source: str | None,
+    _candidate_cache: dict[tuple[str, str, str], object] | None = None,
 ) -> DeepAnalysisContext:
     """Resolve exactly one serving context or return all valid alternatives."""
 
@@ -90,7 +91,7 @@ def resolve_deep_analysis_context(
     candidates = (
         _general_contexts(brand)
         if normalized_view == "general"
-        else _strategic_contexts(brand, normalized_view)
+        else _strategic_contexts(brand, normalized_view, candidate_cache=_candidate_cache)
     )
     available = _public_contexts(candidates)
     if not candidates:
@@ -277,8 +278,16 @@ def _general_rows(brand: str) -> list[dict[str, Any]]:
 def _strategic_contexts(
     brand: str,
     view_kind: Literal["strategic_ml", "strategic_cd"],
+    *,
+    candidate_cache: dict[tuple[str, str, str], object] | None = None,
 ) -> tuple[DeepAnalysisContext, ...]:
-    catalog_rows = _strategic_catalog_rows(brand, view_kind)
+    catalog_key = ("catalog", view_kind, brand)
+    if candidate_cache is not None and catalog_key in candidate_cache:
+        catalog_rows = cast(list[dict[str, Any]], candidate_cache[catalog_key])
+    else:
+        catalog_rows = _strategic_catalog_rows(brand, view_kind)
+        if candidate_cache is not None:
+            candidate_cache[catalog_key] = catalog_rows
     if not catalog_rows:
         return ()
     identities = {
@@ -295,17 +304,29 @@ def _strategic_contexts(
     base = catalog_rows[0]
     matched_brand_key = str(base.get("brand_key") or brand)
     matched_brand_name = str(base.get("brand_name") or brand)
-    mart_rows = _strategic_mart_rows(
-        requested_brand=brand,
-        brand_key=matched_brand_key,
-        brand_name=matched_brand_name,
-        view_kind=view_kind,
-    )
+    mart_key = ("mart", view_kind, f"{brand}\x00{matched_brand_key}\x00{matched_brand_name}")
+    if candidate_cache is not None and mart_key in candidate_cache:
+        mart_rows = cast(list[dict[str, Any]], candidate_cache[mart_key])
+    else:
+        mart_rows = _strategic_mart_rows(
+            requested_brand=brand,
+            brand_key=matched_brand_key,
+            brand_name=matched_brand_name,
+            view_kind=view_kind,
+        )
+        if candidate_cache is not None:
+            candidate_cache[mart_key] = mart_rows
     data_pairs = {
         (str(row.get("market_id") or ""), str(row.get("source") or ""))
         for row in mart_rows
     }
-    brand_available_sources = _brand_available_sources(brand, matched_brand_key, matched_brand_name)
+    sources_key = ("sources", view_kind, f"{brand}\x00{matched_brand_key}\x00{matched_brand_name}")
+    if candidate_cache is not None and sources_key in candidate_cache:
+        brand_available_sources = cast(tuple[str, ...], candidate_cache[sources_key])
+    else:
+        brand_available_sources = _brand_available_sources(brand, matched_brand_key, matched_brand_name)
+        if candidate_cache is not None:
+            candidate_cache[sources_key] = brand_available_sources
     contexts: list[DeepAnalysisContext] = []
     for row in catalog_rows:
         market = str(row.get("market_id") or "")
