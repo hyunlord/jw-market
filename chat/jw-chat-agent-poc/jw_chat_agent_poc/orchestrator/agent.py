@@ -91,6 +91,10 @@ class ChatAgent:
     def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
         timing = new_timing()
         docs = documents or []
+        conversation_fallback = _conversation_fallback(question) if not docs else None
+        if conversation_fallback is not None:
+            conversation_fallback["timing"] = timing
+            return conversation_fallback
         external_fallback_code: str | None = None
         source_trap = requested_unavailable_source(question)
         agent_source_trap = requested_unavailable_source(question, identity_only=True)
@@ -725,6 +729,69 @@ def _brand_clarification_result(question: str) -> dict[str, Any]:
         "answer": message,
         "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
         "sources": [],
+    }
+
+
+_DATA_INTENT_TOKENS = (
+    "매출",
+    "점유",
+    "시장",
+    "순위",
+    "성분",
+    "질환",
+    "환자",
+    "임상",
+    "허가",
+    "특허",
+    "부작용",
+    "뉴스",
+    "파일",
+    "분석",
+)
+
+
+def _conversation_fallback(question: str) -> dict[str, Any] | None:
+    normalized = re.sub(r"[\s!?.,~]+", " ", question.casefold()).strip()
+    if not normalized:
+        return None
+
+    answer: str | None = None
+    intent = "conversation"
+    if normalized in {"안녕", "안녕하세요", "반가워", "반갑습니다", "하이", "hi", "hello"}:
+        answer = "안녕하세요! 의약품 시장 분석을 도와드릴게요. 궁금한 브랜드나 시장을 말씀해 주세요."
+        intent = "greeting"
+    elif normalized in {"고마워", "고맙습니다", "감사해", "감사합니다", "thanks", "thank you"}:
+        answer = "도움이 됐다니 다행이에요. 이어서 궁금한 시장이나 브랜드를 말씀해 주세요."
+        intent = "thanks"
+    elif any(token in normalized for token in ("뭐 할 수", "무엇을 할 수", "어떤 걸 할 수", "기능 알려")):
+        answer = (
+            "브랜드 매출과 점유율 추이, 경쟁 구도, 임상시험·허가·특허·부작용, 최신 이슈를 확인할 수 있어요. "
+            "첨부한 파일의 집계와 비교 분석도 가능합니다."
+        )
+        intent = "capabilities"
+    elif "날씨" in normalized:
+        answer = "날씨는 제 분석 범위가 아니에요. 대신 의약품 시장의 브랜드 매출·점유율이나 경쟁 현황은 확인해 드릴 수 있어요."
+        intent = "out_of_scope"
+    elif (
+        re.fullmatch(r"\S+(?:은|는|이|가)?\s+어때", normalized)
+        and not any(token in normalized for token in _DATA_INTENT_TOKENS)
+    ):
+        subject = normalized.split()[0].removesuffix("은").removesuffix("는").removesuffix("이").removesuffix("가")
+        answer = f"{subject}의 매출 추이, 경쟁 구도, 임상·허가 현황 중 어떤 내용이 궁금하세요?"
+        intent = "market_clarification"
+
+    if answer is None:
+        return None
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [{"intent": intent, "status": "answered_without_data"}],
+        "router_diagnostics": {"mode": "deterministic", "scope": intent},
+        "tool_calls": [],
+        "answer": answer,
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "sources": [],
+        "conversation_fallback_ready": True,
     }
 
 

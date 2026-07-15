@@ -1488,8 +1488,27 @@ def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     if result.get("context_scope") == ContextScope.MIXED.value:
         return _compute_mixed_final_answer(question, result, conversation_id)
-    client = GenosClient()
     timing = ensure_timing(result)
+    if result.get("conversation_fallback_ready"):
+        timing_payload = finish(timing)
+        answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=[],
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=[],
+            timing=timing_payload,
+            trace=trace,
+            sources=(),
+            conversation_id=conversation_id,
+        )
+    client = GenosClient()
     if result.get("general_view_ready"):
         timing_payload = finish(timing)
         markdown_response = result.get("markdown_response")
