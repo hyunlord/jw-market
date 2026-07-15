@@ -27,15 +27,15 @@
     },
     {
       "id": "cause_livalo",
-      "canonical_sha256": "e7dcc96e4e5390ca55ae78aff28c04a28956e68cb098d25ac171e7878c81ec3b",
+      "canonical_sha256": "746247256baa8865e47b4c93afb44eee0e613753487c6ebb17a2a3dde404b91c",
       "request": {
         "method": "GET",
         "path": "/jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales"
       },
-      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류.",
-      "measured_at": "2026-07-14",
+      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류; F-123 preserves strategic brand-ranking continuity, expanding the first yearly ranking from 7 to 11 entries.",
+      "measured_at": "2026-07-15",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "not deployed; generated with candidate F-079 a9cc0ca2dec974d7af29e106b43e11c2c304f962"
+      "runtime_provenance": "test2 generation 530, image sha256:ce95d66f049e3a69c31a16c5df3def1e144c3ec0a3e58e9d0c8715a95de062a0, integrated F-123/F-127 commit 5b7aadfb0884913ad3877bf5d6884e71d8f73ee3, PL re-approved 2026-07-15"
     },
     {
       "id": "dynamic_general_c10a1_livalo",
