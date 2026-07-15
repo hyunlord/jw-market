@@ -40,27 +40,42 @@ def provenance_rows_from_fact_markdown(fact_md: str) -> tuple[ProvenanceRow, ...
     return dedupe_rows(rows)
 
 
-def provenance_row_from_file_context(file_context: str) -> ProvenanceRow | None:
+def provenance_rows_from_file_context(file_context: str) -> tuple[ProvenanceRow, ...]:
     if not file_context.strip():
-        return None
+        return ()
     sql_marker = "## 업로드 파일 SQL 결과"
     provenance_context = (
         file_context.split(sql_marker, 1)[1]
         if sql_marker in file_context
         else file_context
     )
-    filename = next(
-        (
+    filenames = tuple(
+        dict.fromkeys(
             match.group(1).strip()
             for pattern in _FILE_NAME_PATTERNS
-            if (match := pattern.search(provenance_context)) is not None
-        ),
-        "",
+            for match in pattern.finditer(provenance_context)
+            if match.group(1).strip()
+        )
     )
-    source = f"업로드 파일({filename})" if filename else "업로드 파일"
+    if not filenames:
+        filenames = ("",)
     if sql_marker in file_context:
-        return ProvenanceRow(source=source)
-    return ProvenanceRow(source=source, view="파일")
+        return tuple(
+            ProvenanceRow(source=f"업로드 파일({filename})" if filename else "업로드 파일")
+            for filename in filenames
+        )
+    return tuple(
+        ProvenanceRow(
+            source=f"업로드 파일({filename})" if filename else "업로드 파일",
+            view="파일",
+        )
+        for filename in filenames
+    )
+
+
+def provenance_row_from_file_context(file_context: str) -> ProvenanceRow | None:
+    rows = provenance_rows_from_file_context(file_context)
+    return rows[0] if rows else None
 
 
 def _rows_from_seven_field_fact(fact_md: str) -> list[ProvenanceRow]:

@@ -125,6 +125,19 @@ def test_file_source_uses_the_same_seven_field_renderer() -> None:
     assert "- 업로드 파일:" not in block
 
 
+def test_multi_file_sources_render_one_row_per_file() -> None:
+    block = deterministic_source_block(
+        "",
+        file_context=(
+            "[1] pdrn_survey.xlsx\n성별 변수 SQ1과 연령 변수 SQ2가 있다.\n\n"
+            "[2] dyslipidemia_di.xlsx\nCVOT와 LDL-C 강하 효과 항목이 있다."
+        ),
+    )
+
+    assert block.count("업로드 파일(pdrn_survey.xlsx)") == 1
+    assert block.count("업로드 파일(dyslipidemia_di.xlsx)") == 1
+
+
 def test_i1_final_cleanup_blocks_every_internal_provenance_label() -> None:
     raw = (
         "## 출처\n"

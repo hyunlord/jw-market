@@ -5,7 +5,7 @@ from typing import Any
 
 from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
 from jw_chat_agent_poc.orchestrator.provenance_facts import (
-    provenance_row_from_file_context,
+    provenance_rows_from_file_context,
     provenance_rows_from_fact_markdown,
 )
 from jw_chat_agent_poc.orchestrator.provenance_model import (
@@ -43,9 +43,9 @@ def provenance_source_block_from_facts(fact_md: str, *, file_context: str = "") 
 
 
 def _render_source_rows(rows: list[ProvenanceRow], *, file_context: str) -> str:
-    file_row = provenance_row_from_file_context(file_context)
-    if file_row is not None:
+    file_rows = provenance_rows_from_file_context(file_context)
+    if file_rows:
         if rows == [ProvenanceRow()]:
             rows.clear()
-        rows.append(file_row)
+        rows.extend(file_rows)
     return render_provenance_table("## 출처", merge_public_source_rows(rows))

@@ -34,6 +34,13 @@ DOCX_FILE_CONTEXT = (
     "The approval code is NAR-7712, and the unique evidence token is QA_E2E_DOCX_20260710_NAR7712.\n"
 )
 
+MULTI_FILE_CONTEXT = (
+    "[1] pdrn_survey.xlsx\n"
+    "성별 변수 SQ1과 연령 변수 SQ2가 있다.\n\n"
+    "[2] dyslipidemia_di.xlsx\n"
+    "CVOT와 LDL-C 강하 효과 항목이 있다.\n"
+)
+
 FAITHFUL_ANSWER = (
     "Project Dawn Beacon의 처리시간 감소율은 37.8%이며, 승인코드는 NAR-7712입니다. "
     "자료의 고유 토큰은 QA_E2E_DOCX_20260710_NAR7712입니다.\n\n"
@@ -78,6 +85,19 @@ def test_markdown_messages_file_instruction_is_conditional() -> None:
     assert "부분 검색 컨텍스트만으로 정보가 없다고 단정하지 않는다" in with_file[0]["content"]
     assert "원문 표기 그대로" not in without_file[0]["content"]
     assert "업로드 파일 컨텍스트" in with_file[1]["content"]
+
+
+def test_markdown_messages_require_each_file_in_multi_file_answers() -> None:
+    messages = GenosClient._markdown_messages(
+        "두 업로드 파일을 모두 사용해서 파일별로 비교해줘",
+        {"fact_md": ""},
+        "",
+        MULTI_FILE_CONTEXT,
+    )
+
+    prompt = "\n".join(message["content"] for message in messages)
+    assert "각 업로드 파일의 근거를 최소 1개씩" in prompt
+    assert "파일별로 구분" in prompt
 
 
 def test_markdown_messages_do_not_offer_legacy_mixed_synthesis() -> None:
