@@ -50,6 +50,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     append_deterministic_source_block,
     cleanup_markdown_answer,
     ensure_file_absence_statement,
+    ensure_multi_file_evidence_coverage,
     ensure_file_page_evidence,
     ensure_hira_patient_summary,
     ensure_natural_fact_lead,
@@ -1596,6 +1597,11 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = ensure_file_page_evidence(
+        question,
+        safe_answer,
+        str(result.get("file_context") or ""),
+    )
+    safe_answer = ensure_multi_file_evidence_coverage(
         question,
         safe_answer,
         str(result.get("file_context") or ""),

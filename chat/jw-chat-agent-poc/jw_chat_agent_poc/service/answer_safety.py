@@ -27,6 +27,18 @@ _RAW_LEVEL_TOP_LINE_RE = re.compile(
     r"(?P<rank>\d+위)\s+(?P<name>.+?)\s+시장점유율\s+"
     r"(?P<share>-?\d+(?:\.\d+)?%)\s+매출\s+(?P<sales>-?\d+(?:\.\d+)?억원)\s*$"
 )
+_MULTI_FILE_REQUEST_RE = re.compile(
+    r"(?:두|여러|모든)\s*(?:업로드\s*)?파일|(?:업로드\s*)?파일(?:을|를)?\s*모두|파일별",
+    re.IGNORECASE,
+)
+_FILE_CONTEXT_BLOCK_RE = re.compile(
+    r"^\[(?:\d+)\]\s+([^\n]+)\n(.*?)(?=^\[(?:\d+)\]\s+|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_FILE_QUERY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{1,}|[가-힣]{2,}")
+_FILE_QUERY_STOP_WORDS = frozenset(
+    {"업로드", "파일", "모두", "사용해서", "비교해줘", "알려줘", "그리고", "대한", "기준"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +189,49 @@ def ensure_file_page_evidence(question: str, answer: str, file_context: str) -> 
         return answer
     excerpt = "\n\n".join(block[:1800] for block in evidence)
     return cleanup_markdown_answer(f"{answer}\n\n### 지정 페이지 원문 근거\n{excerpt}")
+
+
+def ensure_multi_file_evidence_coverage(question: str, answer: str, file_context: str) -> str:
+    """Append bounded verbatim evidence for every file in an explicit multi-file request."""
+
+    if not _MULTI_FILE_REQUEST_RE.search(question):
+        return answer
+    blocks: dict[str, list[str]] = {}
+    for match in _FILE_CONTEXT_BLOCK_RE.finditer((file_context or "").strip()):
+        filename = re.sub(r"\s+\(document_id=.*\)\s*$", "", match.group(1)).strip()
+        if filename:
+            blocks.setdefault(filename, []).extend(
+                line.strip() for line in match.group(2).splitlines() if line.strip()
+            )
+    if len(blocks) < 2:
+        return answer
+
+    query_tokens = {
+        token.casefold()
+        for token in _FILE_QUERY_TOKEN_RE.findall(question)
+        if token.casefold() not in _FILE_QUERY_STOP_WORDS
+    }
+    evidence_lines = []
+    for filename, lines in blocks.items():
+        ranked = sorted(
+            enumerate(lines),
+            key=lambda item: (
+                -sum(token in item[1].casefold() for token in query_tokens),
+                item[0],
+            ),
+        )
+        excerpt = ranked[0][1] if ranked else ""
+        if len(excerpt) > 700:
+            excerpt = excerpt[:697].rstrip() + "..."
+        evidence_lines.append(f"- **{filename}**: {excerpt or '검색 근거가 비어 있습니다.'}")
+
+    section = "## 파일별 근거 확인\n" + "\n".join(evidence_lines)
+    source_index = answer.find("## 출처")
+    if source_index < 0:
+        return cleanup_markdown_answer(f"{answer}\n\n{section}")
+    before = answer[:source_index].rstrip()
+    source = answer[source_index:].lstrip()
+    return cleanup_markdown_answer(f"{before}\n\n{section}\n\n{source}")
 
 
 def fallback_fact_answer(markdown_response: Any) -> str:

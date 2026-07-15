@@ -17,6 +17,7 @@ from jw_chat_agent_poc.service.genos_client import (
 )
 from jw_chat_agent_poc.service.answer_safety import (
     answer_has_only_fact_numbers,
+    ensure_multi_file_evidence_coverage,
     ensure_file_absence_statement,
     fact_token_allowed,
     strict_allowed_numbers,
@@ -98,6 +99,32 @@ def test_markdown_messages_require_each_file_in_multi_file_answers() -> None:
     prompt = "\n".join(message["content"] for message in messages)
     assert "각 업로드 파일의 근거를 최소 1개씩" in prompt
     assert "파일별로 구분" in prompt
+
+
+def test_multi_file_coverage_appends_grounded_evidence_for_every_file() -> None:
+    answer = (
+        "PDRN 파일에는 성별과 연령 변수가 있습니다.\n\n"
+        "## 출처\n| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |"
+    )
+
+    covered = ensure_multi_file_evidence_coverage(
+        "두 업로드 파일을 모두 사용해서 CVOT·LDL-C와 PDRN 성별·연령을 비교해줘",
+        answer,
+        MULTI_FILE_CONTEXT,
+    )
+
+    assert "## 파일별 근거 확인" in covered
+    assert "pdrn_survey.xlsx" in covered
+    assert "dyslipidemia_di.xlsx" in covered
+    assert "성별 변수 SQ1" in covered
+    assert "CVOT와 LDL-C" in covered
+    assert covered.index("## 파일별 근거 확인") < covered.index("## 출처")
+
+
+def test_single_file_answer_does_not_gain_multi_file_evidence_section() -> None:
+    answer = "승인코드는 NAR-7712입니다."
+
+    assert ensure_multi_file_evidence_coverage("이 파일을 요약해줘", answer, DOCX_FILE_CONTEXT) == answer
 
 
 def test_markdown_messages_do_not_offer_legacy_mixed_synthesis() -> None:
