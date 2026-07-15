@@ -1625,6 +1625,29 @@ def test_hira_patient_summary_is_added_for_patient_questions_when_missing() -> N
     assert "0.03%" in revised
 
 
+def test_hira_patient_summary_adds_natural_lead_before_existing_table() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 내용 |
+| --- | --- |
+| HIRA 환자수 | 고지혈증(E78) 2024년 외래 남: 1,305,727명 |
+| HIRA 환자수 | 고지혈증(E78) 2024년 외래 여: 1,910,492명 |
+"""
+    answer = """| 질병코드 | 연도 | 구분 | 성별 | 환자수(명) | 출처 |
+| --- | --- | --- | --- | --- | --- |
+| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |
+| E78 | 2024 | 외래 | 여 | 1,910,492 | 건강보험심사평가원 |
+"""
+
+    revised = ensure_hira_patient_summary("고지혈증 환자수", answer, fact_md)
+
+    assert revised.startswith(
+        "HIRA 기준 고지혈증(E78) 2024년 외래 남 환자수는 1,305,727명입니다."
+    )
+    assert "외래 여 환자수는 1,910,492명입니다." in revised
+    assert revised.find("HIRA 기준") < revised.find("| 질병코드 |")
+    assert "| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |" in revised
+
+
 def test_hira_patient_unavailable_notice_is_added_when_live_call_returns_no_counts() -> None:
     fact_md = """### 필수 답변 fact
 | 구분 | 내용 |

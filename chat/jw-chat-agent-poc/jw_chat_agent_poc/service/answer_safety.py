@@ -1245,6 +1245,12 @@ def ensure_hira_patient_summary(question: str, answer: str, fact_md: str) -> str
     answer_numbers = set(_plain_number_tokens(answer))
     line_numbers = {token for line in lines for token in _hira_patient_count_tokens(line)}
     if answer_numbers & line_numbers:
+        prose = "\n".join(line for line in answer.splitlines() if not line.lstrip().startswith("|"))
+        if set(_plain_number_tokens(prose)) & line_numbers:
+            return answer
+        natural_lines = presentable_mandatory_lines(lines[:3])
+        if natural_lines and all(not line.startswith("- HIRA 환자수:") for line in natural_lines):
+            return cleanup_markdown_answer(f"{' '.join(natural_lines)}\n\n{answer}")
         return answer
     summary = "\n".join(lines[:3])
     return cleanup_markdown_answer(_insert_before_timing_or_source(answer, summary))
