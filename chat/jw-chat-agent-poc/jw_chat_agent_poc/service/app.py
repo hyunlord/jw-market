@@ -1662,15 +1662,15 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             identity_only=external_tool_agent_result,
         )
     safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
+    safe_answer = ensure_hira_patient_summary(question, safe_answer, fact_md)
+    safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+    safe_answer = ensure_natural_fact_lead(question, safe_answer, fact_md)
     if not file_context_fact and market_contract_allowed:
         safe_answer = enforce_market_answer_contract(
             question,
             safe_answer,
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )
-    safe_answer = ensure_hira_patient_summary(question, safe_answer, fact_md)
-    safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    safe_answer = ensure_natural_fact_lead(question, safe_answer, fact_md)
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
     # notice/source appenders above so no path bypasses terminology scrubbing.
     safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
