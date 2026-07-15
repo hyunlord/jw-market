@@ -1073,7 +1073,7 @@ def test_tool_use_agent_answer_uses_guarded_markdown_generation_when_configured(
     assert calls == [("마운자로 성분", agent_result["markdown_response"]["fact_md"])]
 
 
-def test_tool_use_agent_answer_without_final_token_remains_deterministic() -> None:
+def test_tool_use_agent_answer_without_final_token_remains_natural_and_deterministic() -> None:
     agent_result = {
         "answer": "- 리바로: 성분 = pitavastatin [로컬 시장 DB 성분 정보]",
         "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
@@ -1086,7 +1086,33 @@ def test_tool_use_agent_answer_without_final_token_remains_deterministic() -> No
 
     answer = "".join(GenosClient(token=None).stream_answer("리바로 성분", agent_result))
 
-    assert answer == agent_result["answer"]
+    assert answer == (
+        "리바로의 주성분은 pitavastatin입니다.\n\n"
+        "## 근거 데이터\n\n"
+        "- 리바로: 성분 = pitavastatin [로컬 시장 DB 성분 정보]"
+    )
+
+
+def test_disease_identity_answer_is_natural_without_reclassifying_as_ingredient() -> None:
+    agent_result = {
+        "answer": "- E78: 질병명/상병코드 = 지질단백질대사장애 및 기타 지질증 [건강보험심사평가원 통계]",
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "tool_calls": [],
+        "markdown_response": {
+            "fact_md": "- E78: 질병명/상병코드 = 지질단백질대사장애 및 기타 지질증 [건강보험심사평가원 통계]",
+            "data_md": "",
+        },
+    }
+
+    answer = "".join(GenosClient(token=None).stream_answer("리바로 질환", agent_result))
+
+    assert answer == (
+        "리바로는 건강보험심사평가원 통계 기준 상병코드 E78, "
+        "질병명 '지질단백질대사장애 및 기타 지질증'에 해당합니다.\n\n"
+        "## 근거 데이터\n\n"
+        "- E78: 질병명/상병코드 = 지질단백질대사장애 및 기타 지질증 [건강보험심사평가원 통계]"
+    )
+    assert "성분" not in answer
 
 
 def test_numeric_evidence_preserves_decimal_without_inventing_zero() -> None:

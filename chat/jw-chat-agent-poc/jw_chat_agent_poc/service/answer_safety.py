@@ -48,6 +48,13 @@ _DOMESTIC_CLINICAL_FACT_RE = re.compile(
     r"^-\s*(?P<subject>.+?)\s*\((?P<date>\d{8})\):\s*국내 임상시험\s*=\s*"
     r"(?P<item>.+?)\s*\[식약처 의약품 정보\]\s*$"
 )
+_INGREDIENT_IDENTITY_FACT_RE = re.compile(
+    r"^-\s*(?P<brand>.+?):\s*성분\s*=\s*(?P<ingredient>.+?)\s*\[(?P<source>.+?)\]\s*$"
+)
+_DISEASE_IDENTITY_FACT_RE = re.compile(
+    r"^-\s*(?P<code>[A-Z]\d{2}(?:\.\d+)?)\s*:\s*질병명/상병코드\s*=\s*"
+    r"(?P<disease>.+?)\s*\[(?P<source>.+?)\]\s*$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +612,22 @@ def ensure_natural_fact_lead(question: str, answer: str, fact_md: str) -> str:
     """Prepend grounded prose when a market answer still starts as a fact dump."""
 
     first_line = next((line.strip() for line in answer.splitlines() if line.strip()), "")
+    ingredient_question = re.fullmatch(r"\s*[^\s]+\s+(?:성분|주성분)\s*[?.!。？！]*\s*", question)
+    ingredient_fact = _INGREDIENT_IDENTITY_FACT_RE.fullmatch(first_line)
+    if ingredient_question and ingredient_fact:
+        lead = (
+            f"{ingredient_fact.group('brand')}의 주성분은 "
+            f"{ingredient_fact.group('ingredient')}입니다."
+        )
+        return cleanup_markdown_answer("\n\n".join((lead, "## 근거 데이터", answer)))
+    disease_question = re.fullmatch(r"\s*(?P<brand>[^\s]+)\s+(?:질환|질병)\s*[?.!。？！]*\s*", question)
+    disease_fact = _DISEASE_IDENTITY_FACT_RE.fullmatch(first_line)
+    if disease_question and disease_fact:
+        lead = (
+            f"{disease_question.group('brand')}는 {disease_fact.group('source')} 기준 상병코드 "
+            f"{disease_fact.group('code')}, 질병명 '{disease_fact.group('disease')}'에 해당합니다."
+        )
+        return cleanup_markdown_answer("\n\n".join((lead, "## 근거 데이터", answer)))
     if any(token in question for token in ("경쟁", "구도", "상위")):
         if first_line.startswith(("조회 결과에서", f"{question.split(maxsplit=1)[0]} 경쟁구도를 보면")):
             return answer

@@ -812,6 +812,8 @@ class GenosClient:
                         )
                     )
                     return
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            verified_answer = ensure_natural_fact_lead(question, verified_answer, fact_md)
             yield from chunk_text(verified_answer)
             return
         if self.token and isinstance(markdown_response, dict):
