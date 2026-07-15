@@ -2136,12 +2136,14 @@ def _build_analysis_levels_from_mart(
     channels_override: list[str] | None = None,
     use_latest_valid_share: bool = False,
     series_value_cache: _SeriesValueCache | None = None,
+    series_observed_cache: _SeriesObservedCache | None = None,
     resolved_levels: set[str] | None = None,
     resolved_periods: list[str] | None = None,
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
-    series_observed_cache: _SeriesObservedCache = {}
+    if series_observed_cache is None:
+        series_observed_cache = {}
     if resolved_levels is None:
         level_resolution_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
         enabled_levels = set(_strategic_levels(market, rows))
@@ -3543,6 +3545,8 @@ def build_response(
         else None
     )
     include_all_d3_options = bool(brand_row.get("is_jw") or brand_row.get("is_target"))
+    analysis_series_value_cache: _SeriesValueCache = {}
+    analysis_series_observed_cache: _SeriesObservedCache = {}
     block_epoch = current_analysis_level_source_epoch()
     precomputed_block = (
         load_analysis_level_block(
@@ -3575,6 +3579,8 @@ def build_response(
             channels_override=channels_override,
             resolved_levels=resolved_levels,
             resolved_periods=resolved_periods,
+            series_value_cache=analysis_series_value_cache,
+            series_observed_cache=analysis_series_observed_cache,
         )
     else:
         resolved_levels = None
@@ -3668,6 +3674,8 @@ def build_response(
                 channels_override=analysis_level_market_channels,
                 resolved_levels=resolved_levels,
                 resolved_periods=resolved_periods,
+                series_value_cache=analysis_series_value_cache,
+                series_observed_cache=analysis_series_observed_cache,
             )
         clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
         if not include_all_d3_options:
