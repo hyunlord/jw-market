@@ -1197,6 +1197,11 @@ def _response_levels(
 ) -> list[str]:
     """Return only the analysis levels enabled by the market catalog."""
     enabled_levels = set(_strategic_levels(market, rows))
+    return _ordered_response_levels(enabled_levels)
+
+
+def _ordered_response_levels(enabled_levels: set[str]) -> list[str]:
+    """Return response-order levels from an already-resolved enabled set."""
     enabled_levels.add("Brand")
     ordered_levels = ["Class", "Class 1", "Class 2", *CAUSE_LEVELS_V091[1:]]
     ordered_levels = [*ordered_levels, FISH_OIL_LEVEL]
@@ -2102,9 +2107,8 @@ def _build_analysis_levels_from_mart(
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
-    levels = _response_levels(market, view_source_id, rows)
     enabled_levels = set(_strategic_levels(market, rows))
-    enabled_levels.add("Brand")
+    levels = _ordered_response_levels(enabled_levels)
     periods = _history_periods(rows, source)
     data: dict[str, Any] = {}
     channels = channels_override or _channels_for_source(source)
