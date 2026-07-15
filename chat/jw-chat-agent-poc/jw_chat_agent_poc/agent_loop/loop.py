@@ -152,7 +152,11 @@ class ToolUseAgent:
                     period_grounding,
                     tool_schemas,
                 )
-                if bq_plan is None and self.planner is None and not observations
+                if (
+                    bq_plan is None
+                    and not observations
+                    and (self.planner is None or _is_explicit_quarter_sales_question(question))
+                )
                 else None
             )
             if bq_plan is not None:
@@ -386,6 +390,17 @@ class ToolUseAgent:
 
 def _bq_source_label(source: str) -> str:
     return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
+
+
+def _is_explicit_quarter_sales_question(question: str) -> bool:
+    plan = strict_query_plan(question, "")
+    if plan is None or len(plan.specs) != 1 or len(plan.metadata) != 1:
+        return False
+    if plan.metadata[0].get("contract_intent") != "quarter_metric":
+        return False
+    if plan.specs[0].get("metrics") != ["sales"]:
+        return False
+    return not any(token in question for token in ("비교", "각각", "추이", "변화", "증감", "대비", "차이"))
 
 
 def _record_planner_token_usage(timing: dict[str, Any], planner: ToolPlanner) -> None:

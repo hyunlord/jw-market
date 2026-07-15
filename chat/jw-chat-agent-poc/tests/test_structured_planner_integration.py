@@ -14,6 +14,11 @@ from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 
 
+class _PlannerBomb:
+    def decide(self, *_args, **_kwargs):
+        raise AssertionError("explicit single-period sales must bypass the injected LLM planner")
+
+
 def test_default_agent_executes_structured_plan_without_llm() -> None:
     layer = _layer()
     agent = ToolUseAgent(
@@ -34,6 +39,23 @@ def test_default_agent_executes_structured_plan_without_llm() -> None:
         "get_brand_series",
         "get_top_brands",
     }
+
+
+def test_explicit_quarter_sales_bypasses_injected_llm_planner() -> None:
+    layer = _layer()
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        planner=_PlannerBomb(),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 2026년 1분기 매출")
+
+    metrics = result["agent_loop_metrics"]
+    assert metrics["deterministic_plan_hit"] is True
+    assert metrics["deterministic_plan_kind"] == "brand_sales"
+    assert metrics["llm_plan_calls"] == 0
 
 
 def test_feature_flag_off_preserves_legacy_planner_path(monkeypatch) -> None:
