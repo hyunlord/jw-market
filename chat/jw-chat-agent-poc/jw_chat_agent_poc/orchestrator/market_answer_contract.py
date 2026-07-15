@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Final
 
+from jw_chat_agent_poc.orchestrator.markdown_formatting import precise_eok_value
 from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     MISSING_LABEL,
@@ -337,12 +338,13 @@ def _historical_brand_metric_answer(question: str, calls: Sequence[Mapping[str, 
         period = str(data.get("period") or data.get("requested_period") or "").strip()
         if not brand or not period:
             continue
-        value = _decimal(data.get("sales_억원") or data.get("value_억원"))
-        if value is None:
-            value = _krw_to_eok(data.get("sales_krw") or data.get("value_krw") or data.get("value"))
-        if value is None:
+        value = precise_eok_value(
+            data.get("sales_억원") or data.get("value_억원"),
+            data.get("sales_krw") or data.get("value_krw") or data.get("value"),
+        )
+        if not value:
             continue
-        return f"{period} {brand} 매출은 {value:,.2f}억원입니다."
+        return f"{period} {brand} 매출은 {value}입니다."
     return ""
 
 

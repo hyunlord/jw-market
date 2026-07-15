@@ -81,6 +81,21 @@ def test_single_period_sales_fast_path_accepts_the_production_fact_renderer() ->
     assert answer == "2025-Q2 리바로 매출은 242.72억원입니다."
 
 
+def test_single_period_sales_fast_path_preserves_raw_monthly_precision() -> None:
+    call = _sales_call(period="2025-04", sales=83.184115)
+    call["render_data"]["sales_krw"] = 8_318_411_500
+    fact_md = answer_fact_markdown([call], ["UBIST"])
+
+    answer = deterministic_single_period_sales_answer(
+        "리바로 2025년 4월 매출",
+        fact_md,
+        [call],
+    )
+
+    assert "| 매출 | 83.18억원 |" in fact_md
+    assert answer == "2025-04 리바로 매출은 83.184115억원입니다."
+
+
 def test_single_period_sales_fast_path_checks_later_duplicate_metric_fact() -> None:
     fact_md = """### 리바로 지표 fact
 | 항목 | 값 |

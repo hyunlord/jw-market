@@ -372,7 +372,7 @@ def test_historical_sales_uses_structured_value_without_llm_interpretation() -> 
         ],
     )
 
-    assert answer.startswith("2025-04 리바로 매출은 83.18억원입니다.")
+    assert answer.startswith("2025-04 리바로 매출은 83.184115억원입니다.")
     assert "장악력" not in answer
     assert "| 억원 |" in answer
 

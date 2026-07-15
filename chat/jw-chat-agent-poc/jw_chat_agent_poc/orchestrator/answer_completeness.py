@@ -5,7 +5,12 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Final, Sequence
 
-from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value, pct_value, rank_value
+from jw_chat_agent_poc.orchestrator.markdown_formatting import (
+    eok_value,
+    pct_value,
+    precise_eok_value,
+    rank_value,
+)
 
 
 COMPLETENESS_INTENTS: Final[tuple[str, ...]] = (
@@ -168,8 +173,13 @@ def deterministic_single_period_sales_answer(
         period = str(data.get("period") or "").strip()
         if not brand or brand not in question or period != requested_period:
             continue
-        sales_text = eok_value(data.get("sales_억원"), data.get("sales_krw"))
-        if not sales_text or not _verified_metric_fact(fact_md, brand, period, sales_text):
+        fact_sales_text = eok_value(data.get("sales_억원"), data.get("sales_krw"))
+        sales_text = precise_eok_value(data.get("sales_억원"), data.get("sales_krw"))
+        if (
+            not sales_text
+            or not fact_sales_text
+            or not _verified_metric_fact(fact_md, brand, period, fact_sales_text)
+        ):
             continue
         matches.append((brand, sales_text))
     if len(matches) != 1:

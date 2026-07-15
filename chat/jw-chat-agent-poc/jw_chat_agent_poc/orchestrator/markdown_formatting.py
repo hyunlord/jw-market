@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from html import escape
 from collections.abc import Iterable
 from typing import Any, Final
@@ -67,6 +68,25 @@ def eok_value(eok: Any, krw: Any) -> str:
     if isinstance(krw, int | float):
         return f"{float(krw) / 100_000_000:,.2f}억원"
     return ""
+
+
+def precise_eok_value(eok: Any, krw: Any) -> str:
+    """Render source precision for explicit single-period answers."""
+
+    value: Decimal
+    try:
+        if isinstance(krw, (int, float, Decimal)) and not isinstance(krw, bool):
+            value = Decimal(str(krw)) / Decimal("100000000")
+        elif isinstance(eok, (int, float, Decimal)) and not isinstance(eok, bool):
+            value = Decimal(str(eok))
+        else:
+            return ""
+    except InvalidOperation:
+        return ""
+    if not value.is_finite():
+        return ""
+    text = f"{value:,f}".rstrip("0").rstrip(".")
+    return f"{text}억원"
 
 
 def latest_series_eok(series: Any) -> str:
