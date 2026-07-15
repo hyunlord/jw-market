@@ -27,6 +27,12 @@ CLINICAL_REGISTRY_FACT_MD = "\n".join(
     ]
 )
 
+ADVERSE_EVENT_FACT_MD = (
+    "- pitavastatin (2026-03-31): FAERS 자발보고 내 이상반응 = "
+    "FAERS 보고 26558911 · 2026-03-31 · 보고 반응: Acute kidney injury, "
+    "Diabetic ketoacidosis, Lactic acidosis [FDA 이상반응 보고 정보]"
+)
+
 
 def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps_evidence() -> None:
     answer = "\n".join(
@@ -71,6 +77,22 @@ def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps
     report = claim_policy_report(revised, CLINICAL_REGISTRY_FACT_MD)
     assert "external_clinical_registry" in report["active_fact_types"]
     assert report["forbidden_claims_remaining"] == ()
+
+
+def test_adverse_event_policy_never_presents_report_id_as_report_count() -> None:
+    answer = """Pitavastatin의 FAERS 보고 건수는 26,558,911건입니다.
+| 기준일 | 대상 성분 | FAERS 보고 건수 | 보고된 주요 이상반응 |
+| --- | --- | --- | --- |
+| 2026-03-31 | pitavastatin | 26,558,911 | Acute kidney injury, Diabetic ketoacidosis, Lactic acidosis |
+"""
+
+    revised = apply_claim_policy("pitavastatin 부작용", answer, ADVERSE_EVENT_FACT_MD)
+
+    assert "26,558,911건" not in revised
+    assert "FAERS 보고 건수" not in revised
+    assert "보고 ID이며 건수가 아닙니다" in revised
+    assert "| pitavastatin | 26558911 | 2026-03-31 | Acute kidney injury, Diabetic ketoacidosis, Lactic acidosis |" in revised
+    assert "자발보고는 약물과 반응의 인과관계를 입증하지 않습니다" in revised
 
 
 @pytest.mark.parametrize(

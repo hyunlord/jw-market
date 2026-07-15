@@ -99,6 +99,14 @@ class ChannelFact:
     sales: str
 
 
+@dataclass(frozen=True, slots=True)
+class AdverseEventFact:
+    subject: str
+    report_id: str
+    report_date: str
+    reactions: str
+
+
 def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
     """Remove interpretation claims that are not supported by the supplied fact types."""
 
@@ -109,6 +117,9 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
         if fact_type == "channel_cross_section":
             support_md = "\n\n".join(part for part in (fact_md.strip(), revised.strip()) if part)
             revised = _rewrite_channel_cross_section(question, revised, support_md)
+            continue
+        if fact_type == "external_adverse_event":
+            revised = _rewrite_external_adverse_event(revised, fact_md)
             continue
         claims = FORBIDDEN_BY_FACT_TYPE.get(fact_type, ())
         revised, removed = _drop_forbidden_claim_sentences(revised, claims)
@@ -158,6 +169,10 @@ def _is_external_clinical_registry(fact_md: str) -> bool:
     return "[ClinicalTrials.gov 임상시험 정보]" in fact_md or bool(
         re.search(r"국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]", fact_md)
     )
+
+
+def _is_external_adverse_event(fact_md: str) -> bool:
+    return "[FDA 이상반응 보고 정보]" in fact_md and "FAERS 자발보고" in fact_md
 
 
 def _active_fact_types(body: str, fact_md: str) -> tuple[str, ...]:
@@ -325,6 +340,47 @@ def _timing_block(body: str) -> str:
     return body[match.start() :].strip()
 
 
+_ADVERSE_EVENT_FACT_RE: Final = re.compile(
+    r"(?m)^-\s*(?P<subject>.+?)\s*\((?P<date>\d{4}-\d{2}-\d{2})\):\s*"
+    r"FAERS\s*자발보고\s*내\s*이상반응\s*=\s*FAERS\s*보고\s*"
+    r"(?P<report_id>\d+)\s*·\s*(?P=date)\s*·\s*보고\s*반응:\s*"
+    r"(?P<reactions>.+?)\s*\[FDA\s*이상반응\s*보고\s*정보\]\s*$"
+)
+
+
+def _adverse_event_facts(fact_md: str) -> tuple[AdverseEventFact, ...]:
+    return tuple(
+        AdverseEventFact(
+            subject=match.group("subject").strip(),
+            report_id=match.group("report_id"),
+            report_date=match.group("date"),
+            reactions=match.group("reactions").strip(),
+        )
+        for match in _ADVERSE_EVENT_FACT_RE.finditer(fact_md)
+    )
+
+
+def _rewrite_external_adverse_event(body: str, fact_md: str) -> str:
+    facts = _adverse_event_facts(fact_md)
+    if not facts:
+        return body
+    subjects = ", ".join(dict.fromkeys(fact.subject for fact in facts))
+    rows = [
+        "| 대상 성분 | FAERS 보고 ID | 보고일 | 보고 반응 |",
+        "| --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {fact.subject} | {fact.report_id} | {fact.report_date} | {fact.reactions} |"
+        for fact in facts
+    )
+    summary = (
+        f"FDA FAERS에서 {subjects} 관련 자발보고 {len(facts)}건이 조회됐습니다. "
+        "아래 숫자는 각 보고 ID이며 건수가 아닙니다. "
+        "또한 자발보고는 약물과 반응의 인과관계를 입증하지 않습니다."
+    )
+    return "\n\n".join((summary, "\n".join(rows), _timing_block(body))).strip()
+
+
 def _cleanup_policy_markdown(markdown: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", markdown).strip()
 
@@ -352,6 +408,7 @@ _FACT_TYPE_DETECTORS: Final[dict[str, Callable[[str], bool]]] = {
     "brand_share_delta": _is_brand_share_delta,
     "news_context": _is_news_context,
     "external_clinical_registry": _is_external_clinical_registry,
+    "external_adverse_event": _is_external_adverse_event,
 }
 
 _SAFE_REPLACEMENTS: Final[dict[str, Callable[[str, str], str]]] = {
