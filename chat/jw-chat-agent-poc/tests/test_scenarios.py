@@ -503,6 +503,42 @@ def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
     assert study["protocolSection"]["armsInterventionsModule"]["interventions"][0]["name"] == "Pitavastatin"
 
 
+def test_clinicaltrials_live_search_uses_structured_content_when_text_is_empty(monkeypatch):
+    def fake_post(url, json, headers, timeout):
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [],
+                    "structuredContent": {
+                        "result": {
+                            "studies": [
+                                {
+                                    "NCTId": "NCT05537948",
+                                    "briefTitle": "Efficacy and Safety of Pitavastatin",
+                                    "overallStatus": "ACTIVE_NOT_RECRUITING",
+                                    "url": "https://clinicaltrials.gov/study/NCT05537948",
+                                }
+                            ],
+                            "totalCount": 1,
+                        }
+                    },
+                },
+            }
+        )
+
+    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://ct-mcp/json")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
+
+    call = ExternalApiClient(mode="live", timeout_s=1).clinicaltrials_v2_search("pitavastatin")
+
+    assert call.status == "live"
+    assert call.render_data["payload"]["totalCount"] == 1
+    assert call.render_data["nct_ids"] == ["NCT05537948"]
+    assert call.render_data["briefTitle"] == "Efficacy and Safety of Pitavastatin"
+
+
 def test_clinicaltrials_live_search_fails_closed_on_mcp_error(monkeypatch):
     def fake_post(url, json, headers, timeout):
         raise requests.Timeout("network down")

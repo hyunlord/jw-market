@@ -580,7 +580,12 @@ def _clinicaltrials_failed_call(params: dict[str, str], mcp_tool: str, reason: s
 
 
 def _clinicaltrials_call_from_mcp(params: dict[str, str], mcp_tool: str, result: McpToolResult, url: str, elapsed: float) -> ExternalCall:
-    payload = _clinicaltrials_mcp_payload(result.content_text)
+    structured_payload = _mcp_payload(result)
+    payload = (
+        structured_payload
+        if isinstance(structured_payload, dict) and isinstance(structured_payload.get("studies"), list)
+        else _clinicaltrials_mcp_payload(result.content_text)
+    )
     studies = payload.get("studies", [])
     render_data = {
         "request": params,
