@@ -41,6 +41,24 @@ def test_feature_flag_routes_unclassified_external_question_to_tool_agent(monkey
     assert "pitavastatin" in result["answer"]
 
 
+def test_external_tool_agent_receives_and_returns_request_timing(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_tool_agent(*_args, **kwargs):
+        captured["timing"] = kwargs.get("timing")
+        payload = _agent_payload(status="ok", fallback_code=None)
+        payload["timing"] = kwargs["timing"]
+        return payload
+
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(agent_module, "run_external_tool_agent", fake_tool_agent)
+
+    result = ChatAgent(router=BQRouter()).answer("리바로 성분 알려줘")
+
+    assert isinstance(captured["timing"], dict)
+    assert result["timing"] is captured["timing"]
+
+
 def test_tool_agent_is_enabled_by_default_for_external_question(monkeypatch) -> None:
     # Given: no runtime override is present and the tool agent returns verified evidence.
     monkeypatch.delenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", raising=False)

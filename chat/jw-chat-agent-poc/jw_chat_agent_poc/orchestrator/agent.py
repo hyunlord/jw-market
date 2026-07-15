@@ -109,6 +109,7 @@ class ChatAgent:
                 tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
                     question,
                     pre_resolved,
+                    timing=timing,
                 )
                 if tool_result is not None:
                     return finish(tool_result)
@@ -141,6 +142,7 @@ class ChatAgent:
             tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
                 question,
                 pre_resolved,
+                timing=timing,
             )
             if tool_result is not None:
                 return finish(tool_result)
@@ -390,6 +392,8 @@ class ChatAgent:
         self,
         question: str,
         pre_resolved: BrandResolution | None,
+        *,
+        timing: Timing | None = None,
     ) -> tuple[dict[str, Any] | None, BrandResolution | None, str | None]:
         fixture_alias_check = getattr(self.resolver, "has_fixture_alias", None)
         should_pre_resolve = not callable(fixture_alias_check) or fixture_alias_check(question)
@@ -400,7 +404,12 @@ class ChatAgent:
                 pre_resolved = None
         if pre_resolved is not None and pre_resolved.requires_market_clarification:
             return _market_ambiguity_result(question, pre_resolved), pre_resolved, None
-        tool_result = run_external_tool_agent(question, resolver=self.resolver, external=self.external)
+        tool_result = run_external_tool_agent(
+            question,
+            resolver=self.resolver,
+            external=self.external,
+            timing=timing,
+        )
         diagnostics = tool_result.get("router_diagnostics")
         fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
         if fallback_code in {

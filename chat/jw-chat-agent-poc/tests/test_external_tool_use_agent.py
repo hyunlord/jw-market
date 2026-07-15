@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
@@ -188,6 +189,45 @@ def test_agent_executor_runs_all_forced_tools_before_accepting_complete_evidence
     assert calls == ["clinical", "permission"]
     assert [call["tool"] for call in result.tool_calls] == ["clinical", "permission"]
     assert provider.calls == 0
+
+
+def test_agent_executor_records_the_external_tool_stage_and_evidence_count() -> None:
+    timing = new_timing()
+    events: list[dict[str, object]] = []
+    provider = _ChoiceSequence((ToolChoice("clinicaltrials_v2_search", {}, "run", call_id="call-1"),))
+    spec = ToolSpec(
+        name="clinicaltrials_v2_search",
+        description="verified clinical fixture",
+        input_model=_NoInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=True,
+            preview="verified",
+            evidence=(_fact(),),
+            raw=None,
+            error_code=None,
+            error_message=None,
+        ),
+        timeout_s=1.0,
+        tags=("clinicaltrials_mcp",),
+    )
+
+    with stage_event_sink(events.append):
+        result = AgentExecutor(provider=provider, timing=timing).run(
+            user_text="리바로 임상시험",
+            tools=(spec,),
+        )
+
+    assert result.status == "ok"
+    assert timing["stages"] == [
+        {
+            "name": "tool:clinicaltrials_v2_search",
+            "elapsed_ms": timing["stages"][0]["elapsed_ms"],
+            "detail": "리바로 임상시험",
+        }
+    ]
+    assert events[-1]["name"] == "임상 데이터 조회"
+    assert events[-1]["status"] == "done"
+    assert events[-1]["summary"] == "근거 1건 확인"
 
 
 def test_exact_clinical_permission_competitor_question_forces_valid_contract_tools() -> None:

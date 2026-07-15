@@ -5,6 +5,7 @@ import os
 import re
 from typing import Any, Final
 
+from jw_chat_agent_poc.common.timing import Timing
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_text
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
@@ -37,6 +38,7 @@ def run_external_tool_agent(
     resolver: BrandResolver,
     external: ExternalApiClient,
     provider: ToolChoiceProvider | None = None,
+    timing: Timing | None = None,
 ) -> dict[str, Any]:
     registry = ExternalToolRegistry(resolver=resolver, external=external)
     selected_provider = provider or GenosToolChoiceProvider.from_env()
@@ -51,10 +53,11 @@ def run_external_tool_agent(
         completion_policy=_external_evidence_complete,
         best_effort=True,
         forced_choices=forced_choices,
+        timing=timing,
     ).run(user_text=question, tools=registry.list_for_query(question))
     if result.fallback_code is not None:
         LOGGER.info("external tool agent fallback code=%s", result.fallback_code.value)
-    return _agent_result_payload(question, result)
+    return _agent_result_payload(question, result, timing=timing)
 
 
 def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple[ToolChoice, ...]:
@@ -184,8 +187,13 @@ def _external_evidence_complete(
     return ledger.is_complete() and tool_use_evidence_complete(user_text, tool_calls)
 
 
-def _agent_result_payload(question: str, result: AgentResult) -> dict[str, Any]:
-    return {
+def _agent_result_payload(
+    question: str,
+    result: AgentResult,
+    *,
+    timing: Timing | None = None,
+) -> dict[str, Any]:
+    payload = {
         "question": question,
         "resolution": None,
         "decomposition": [{"intent": "external_tool_agent", "status": result.status}],
@@ -206,3 +214,6 @@ def _agent_result_payload(question: str, result: AgentResult) -> dict[str, Any]:
             "fallback_code": result.fallback_code.value if result.fallback_code else None,
         },
     }
+    if timing is not None:
+        payload["timing"] = timing
+    return payload

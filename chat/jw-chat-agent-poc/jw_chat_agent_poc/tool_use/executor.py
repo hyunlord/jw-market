@@ -9,6 +9,7 @@ from typing import Protocol
 from pydantic import BaseModel, ValidationError
 import requests
 
+from jw_chat_agent_poc.common.timing import Timing, stage
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolEnvelope, ToolTrace
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider, ToolProviderConfigurationError
@@ -37,6 +38,7 @@ class AgentExecutor:
     completion_policy: CompletionPolicy | None = None
     best_effort: bool = False
     forced_choices: tuple[ToolChoice, ...] = ()
+    timing: Timing | None = None
 
     def run(self, *, user_text: str, tools: tuple[ToolSpec, ...]) -> AgentResult:
         ledger = EvidenceLedger()
@@ -116,7 +118,13 @@ class AgentExecutor:
                 traces.append(ToolTrace(step=step, tool=choice.name, status="schema_invalid", fallback_code=FallbackCode.SCHEMA_INVALID, message="tool arguments rejected"))
                 return _terminal("tool argument schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
             try:
-                envelope = _execute_with_timeout(spec, payload)
+                with stage(self.timing, f"tool:{spec.name}", user_text) as progress:
+                    envelope = _execute_with_timeout(spec, payload)
+                    progress.summary = (
+                        f"근거 {len(envelope.evidence)}건 확인"
+                        if envelope.ok and envelope.evidence
+                        else "확인된 근거 없음"
+                    )
             except (FutureTimeoutError, requests.Timeout):
                 if not self.best_effort:
                     traces.append(ToolTrace(step=step, tool=choice.name, status="timeout", fallback_code=FallbackCode.TOOL_TIMEOUT, message="tool timeout"))
