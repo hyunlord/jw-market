@@ -97,6 +97,23 @@ def test_series_values_with_observed_preserves_zero_and_missing() -> None:
     assert observed == (True, False)
 
 
+def test_safe_float_avoids_conversion_for_native_finite_numbers(monkeypatch) -> None:
+    calls = 0
+    original_float = builtins.float
+    float_type = type(12.5)
+
+    def count_float(value: float | int | str = 0.0) -> float:
+        nonlocal calls
+        calls += 1
+        return original_float(value)
+
+    monkeypatch.setattr(builtins, "float", count_float)
+
+    assert isinstance(12.5, float_type)
+    assert cause.safe_float(12.5) == 12.5
+    assert calls == 0
+
+
 def test_segment_rows_reuses_one_observed_series_pass_for_group_and_total(monkeypatch) -> None:
     row = {
         "brand_name": "Brand A",
