@@ -13,6 +13,7 @@ from pipeline.scripts.api import deep_analysis_runtime
 class _FakeCursor:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self._rows = rows
+        self._position = 0
 
     def __enter__(self) -> _FakeCursor:
         return self
@@ -25,6 +26,11 @@ class _FakeCursor:
 
     def fetchall(self) -> list[dict[str, Any]]:
         return list(self._rows)
+
+    def fetchmany(self, size: int) -> list[dict[str, Any]]:
+        rows = self._rows[self._position : self._position + size]
+        self._position += len(rows)
+        return list(rows)
 
 
 class _FakeConnection:
@@ -43,7 +49,7 @@ class _FakeConnection:
     def autocommit(self, value: bool) -> None:
         self.autocommit_values.append(value)
 
-    def cursor(self) -> _FakeCursor:
+    def cursor(self, _cursorclass=None) -> _FakeCursor:
         return _FakeCursor(self._rows)
 
     def ping(self, *, reconnect: bool) -> None:
@@ -76,6 +82,29 @@ def test_initialized_pool_reuses_one_physical_connection_for_sequential_reads(mo
         db.close_pool()
 
     assert created[0].closed is True
+
+
+def test_iter_rows_reuses_initialized_pool_connection(monkeypatch) -> None:
+    rows = [{"brand_key": "guardlet", "rank": 1}, {"brand_key": "mounjaro", "rank": 2}]
+    created: list[_FakeConnection] = []
+
+    def fake_connect() -> _FakeConnection:
+        connection = _FakeConnection(rows)
+        created.append(connection)
+        return connection
+
+    monkeypatch.setattr(db, "connect", fake_connect)
+    db.init_pool(max_size=1)
+    try:
+        first = list(db.iter_rows("SELECT brand_key, rank FROM mart", batch_size=1))
+        second = list(db.iter_rows("SELECT brand_key, rank FROM mart", batch_size=1))
+
+        assert first == rows
+        assert second == rows
+        assert len(created) == 1
+        assert db.pool_stats().connections_created == 1
+    finally:
+        db.close_pool()
 
 
 def test_pool_bounds_concurrent_physical_connections(monkeypatch) -> None:
