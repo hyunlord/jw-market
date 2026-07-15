@@ -113,6 +113,23 @@ def test_dimension_channel_series_preserves_unmatched_periods_when_merging() -> 
     }
 
 
+def test_dimension_channel_series_keeps_string_period_compatibility() -> None:
+    row = {
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "병원": {"202601": {"raw_value": 10.0}},
+                    "의원": {202601: {"raw_value": 20.0}},
+                }
+            }
+        }
+    }
+
+    assert build_cache_cause._dimension_channel_series_map(
+        row, "class", "UBIST", "병원"
+    ) == {"A": {"202601": {"raw_value": 10.0}}}
+
+
 def test_dimension_channel_series_sums_multiple_matching_channels() -> None:
     row = {
         "dimension_channel_data": {

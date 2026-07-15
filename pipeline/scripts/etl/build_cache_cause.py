@@ -1365,17 +1365,27 @@ def _dimension_channel_series_map(row: dict[str, Any], field: str | None, source
         if _is_excluded_dimension_label(label_text) or not isinstance(channel_map, dict):
             continue
         matched_series: list[dict[str, Any]] = []
-        unmatched_periods: set[str] = set()
+        unmatched_series: list[dict[str, Any]] = []
         for raw_channel, series in channel_map.items():
             if not isinstance(series, dict):
                 continue
             if _channel_matches(raw_channel, source, channel):
                 matched_series.append(series)
             else:
-                unmatched_periods.update(str(period) for period in series)
-        if len(matched_series) == 1 and unmatched_periods.issubset(matched_series[0]):
-            result[label_text] = matched_series[0]
-            continue
+                unmatched_series.append(series)
+        if len(matched_series) == 1:
+            matched = matched_series[0]
+            if all(series.keys() <= matched.keys() for series in unmatched_series):
+                result[label_text] = matched
+                continue
+            unmatched_periods = {
+                str(period)
+                for series in unmatched_series
+                for period in series
+            }
+            if unmatched_periods.issubset(matched):
+                result[label_text] = matched
+                continue
         if matched_series:
             merged = {
                 period: {"raw_value": 0.0}
