@@ -49,6 +49,26 @@ def test_target_customer_competition_forwards_request_series_cache(monkeypatch) 
     assert captured["cache"] is series_cache
 
 
+def test_period_rank_series_reuses_request_local_cache() -> None:
+    rows = [{"brand_name": "A", "metric_history": {"2026-01": {"raw_value": 1.0}}}]
+    periods = ["2026-01"]
+    cache = {}
+
+    first = cause_builder._period_rank_series_by_brand(
+        rows,
+        periods,
+        rank_series_cache=cache,
+    )
+    second = cause_builder._period_rank_series_by_brand(
+        rows,
+        periods,
+        rank_series_cache=cache,
+    )
+
+    assert second is first
+    assert len(cache) == 1
+
+
 def test_analysis_level_channels_match_requires_same_ordered_channels() -> None:
     analysis_levels = {"channels": ["전체", "의원"]}
 
@@ -240,6 +260,7 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     rows = [{"brand_key": "same-a", "brand_name": "Same A", "company_name": "Same Co"}]
     build_calls = []
     trend_calls = []
+    competition_calls = []
 
     monkeypatch.setattr(cause_builder, "strategic_channel_totals_context", lambda _rows: nullcontext())
     monkeypatch.setattr(cause_builder, "resolve_market_channels", lambda **_: {})
@@ -257,7 +278,11 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     monkeypatch.setattr(cause_builder, "_company_hhi_from_rows", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cause_builder, "_data_period_coverage", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cause_builder, "_growth_contribution_payload", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(cause_builder, "_target_customer_competition", lambda **_: {})
+    def fake_target_customer_competition(**kwargs):
+        competition_calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(cause_builder, "_target_customer_competition", fake_target_customer_competition)
     def fake_level_top5_trend(*_args, **kwargs):
         trend_calls.append(kwargs)
         return {"by_level": {}}
@@ -315,3 +340,4 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     assert result is not None
     assert len(build_calls) == 1
     assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]
+    assert competition_calls[0]["rank_series_cache"] is trend_calls[0]["rank_series_cache"]

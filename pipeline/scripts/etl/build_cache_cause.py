@@ -114,6 +114,10 @@ _ChannelRowsCache = dict[
     tuple[int, str, str, tuple[str, ...]],
     tuple[list[dict[str, Any]], list[dict[str, Any]]],
 ]
+_RankSeriesCache = dict[
+    tuple[int, tuple[str, ...]],
+    dict[str, list[int | None]],
+]
 _AnnualRankRows = tuple[dict[int, list[dict[str, Any]]], dict[int, int]]
 _AnnualRankRowsCache = dict[tuple[int, str], _AnnualRankRows]
 
@@ -3123,8 +3127,19 @@ def _market_share_series(value_series: list[float], total_series: list[float]) -
     ]
 
 
-def _period_rank_series_by_brand(rows: list[dict[str, Any]], periods: list[str]) -> dict[str, list[int | None]]:
+def _period_rank_series_by_brand(
+    rows: list[dict[str, Any]],
+    periods: list[str],
+    *,
+    rank_series_cache: _RankSeriesCache | None = None,
+) -> dict[str, list[int | None]]:
     """Return each brand's rank for every display period."""
+
+    cache_key = (id(rows), tuple(periods))
+    if rank_series_cache is not None:
+        cached = rank_series_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     brand_values: dict[str, list[float]] = defaultdict(lambda: [0.0 for _ in periods])
     brand_complete: dict[str, list[bool]] = defaultdict(lambda: [True for _ in periods])
@@ -3153,6 +3168,8 @@ def _period_rank_series_by_brand(rows: list[dict[str, Any]], periods: list[str])
         )
         for rank, (brand, _value) in enumerate(ranked, start=1):
             ranks[brand][idx] = rank
+    if rank_series_cache is not None:
+        rank_series_cache[cache_key] = ranks
     return ranks
 
 
@@ -3165,6 +3182,7 @@ def _target_customer_competition(
     channels: list[str] | None = None,
     series_value_cache: _SeriesValueCache | None = None,
     channel_rows_cache: _ChannelRowsCache | None = None,
+    rank_series_cache: _RankSeriesCache | None = None,
 ) -> dict[str, Any]:
     targets = channels or _channels_for_source(source)
     target_type = "채널"
@@ -3182,7 +3200,11 @@ def _target_customer_competition(
         selected = _display_brand_rows(channel_rows, target_name=target_name, top_n=5, include_others=True)
         row_by_brand = {_row_brand(row): row for row in channel_rows if _row_brand(row)}
         total_series = _total_series_for_rows(channel_rows, period_tail)
-        rank_series_by_brand = _period_rank_series_by_brand(channel_rows, period_tail)
+        rank_series_by_brand = _period_rank_series_by_brand(
+            channel_rows,
+            period_tail,
+            rank_series_cache=rank_series_cache,
+        )
         selected_series: list[list[float]] = []
         trend_brands = []
         composition = []
@@ -3305,6 +3327,7 @@ def _level_trend_brand_payloads(
     target_name: str | None,
     total_series: list[float],
     use_latest_valid_share: bool = False,
+    rank_series_cache: _RankSeriesCache | None = None,
 ) -> list[dict[str, Any]]:
     brand_entries = _display_brand_rows(
         option_rows,
@@ -3313,7 +3336,11 @@ def _level_trend_brand_payloads(
         include_others=True,
     ) if option_rows else []
     row_by_brand = {_row_brand(row): row for row in option_rows if _row_brand(row)}
-    rank_series_by_brand = _period_rank_series_by_brand(option_rows, periods)
+    rank_series_by_brand = _period_rank_series_by_brand(
+        option_rows,
+        periods,
+        rank_series_cache=rank_series_cache,
+    )
     selected_series: list[list[float | None]] = []
     brands_in_value = []
     for entry in brand_entries:
@@ -3395,6 +3422,7 @@ def _level_top5_trend(
     use_latest_valid_share: bool = False,
     series_value_cache: _SeriesValueCache | None = None,
     channel_rows_cache: _ChannelRowsCache | None = None,
+    rank_series_cache: _RankSeriesCache | None = None,
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
@@ -3460,6 +3488,7 @@ def _level_top5_trend(
                     target_name=target_name,
                     total_series=overall_value_series,
                     use_latest_valid_share=use_latest_valid_share,
+                    rank_series_cache=rank_series_cache,
                 )
                 overall_brand_payload_cache[overall_series_key] = overall_brands_in_value
             overall_item = {
@@ -3529,6 +3558,7 @@ def _level_top5_trend(
                         target_name=None,
                         total_series=segment_total_series,
                         use_latest_valid_share=use_latest_valid_share,
+                        rank_series_cache=rank_series_cache,
                     ),
                 }
             if total_value is None:
@@ -3730,6 +3760,7 @@ def build_response(
     analysis_series_value_cache: _SeriesValueCache = {}
     analysis_series_observed_cache: _SeriesObservedCache = {}
     analysis_channel_rows_cache: _ChannelRowsCache = {}
+    analysis_rank_series_cache: _RankSeriesCache = {}
     block_epoch = current_analysis_level_source_epoch()
     precomputed_block = (
         load_analysis_level_block(
@@ -3875,6 +3906,7 @@ def build_response(
         channels=target_customer_channels,
         series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
+        rank_series_cache=analysis_rank_series_cache,
     )
     level_top5_trend = _level_top5_trend(
         analysis_levels,
@@ -3885,6 +3917,7 @@ def build_response(
         include_all_options=include_all_d3_options,
         series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
+        rank_series_cache=analysis_rank_series_cache,
     )
     target_customer_competition = target_customer_competition_by_channel
     if precomputed_block is not None:
