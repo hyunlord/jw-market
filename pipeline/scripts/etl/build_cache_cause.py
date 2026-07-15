@@ -2001,10 +2001,20 @@ def _rows_for_dimension_segments(
     return indexed
 
 
-def _total_series_for_rows(rows: list[dict[str, Any]], periods: list[str]) -> list[float]:
+def _total_series_for_rows(
+    rows: list[dict[str, Any]],
+    periods: list[str],
+    *,
+    series_observed_cache: _SeriesObservedCache | None = None,
+) -> list[float]:
     totals = [0.0 for _ in periods]
     for row in rows:
-        series = _series_for_row(row, periods, scaled_sales=True)
+        series = _series_for_row(
+            row,
+            periods,
+            scaled_sales=True,
+            series_observed_cache=series_observed_cache,
+        )
         for idx, value in enumerate(series):
             totals[idx] += value
     return [round(value, 4) for value in totals]
@@ -2095,6 +2105,7 @@ def _with_overall_level_options(
     channels: list[str],
     periods: list[str],
     series_value_cache: _SeriesValueCache | None = None,
+    series_observed_cache: _SeriesObservedCache | None = None,
 ) -> dict[str, Any]:
     channel_rows_cache: dict[str, list[dict[str, Any]]] = {}
     channel_total_series_cache: dict[str, list[float]] = {}
@@ -2121,6 +2132,7 @@ def _with_overall_level_options(
                 channel_total_series_cache[channel] = _total_series_for_rows(
                     channel_rows_cache[channel],
                     periods,
+                    series_observed_cache=series_observed_cache,
                 )
             channel_total_series = channel_total_series_cache[channel]
             option_sum_series = _sum_segment_value_series(segments, periods)
@@ -2256,6 +2268,7 @@ def _build_analysis_levels_from_mart(
         channels=channels,
         periods=periods,
         series_value_cache=series_value_cache,
+        series_observed_cache=series_observed_cache,
     )
     if overall_started:
         logger.info(
@@ -2328,12 +2341,25 @@ def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
     }
 
 
-def _series_for_row(row: dict[str, Any], periods: list[str], *, scaled_sales: bool) -> list[float]:
+def _series_for_row(
+    row: dict[str, Any],
+    periods: list[str],
+    *,
+    scaled_sales: bool,
+    series_observed_cache: _SeriesObservedCache | None = None,
+) -> list[float]:
     cache_key = (tuple(periods), scaled_sales)
     series_cache = row.setdefault("__series_cache", {})
     if cache_key in series_cache:
         return series_cache[cache_key]
     history = _metric_history(row)
+    if series_observed_cache is not None:
+        observed_key = (id(history), tuple(periods))
+        cached = series_observed_cache.get(observed_key)
+        if cached is not None and cached[0] is history:
+            values = [round(value, 4) for value in cached[1]]
+            series_cache[cache_key] = values
+            return values
     values = []
     for period in periods:
         value = _value_from_period_item(history.get(period))
