@@ -71,7 +71,7 @@ generation, but they must not replace the default-cache membership contract.
 ## `/api/cause/리바로`
 
 - Canonical SHA-256:
-  `e7dcc96e4e5390ca55ae78aff28c04a28956e68cb098d25ac171e7878c81ec3b`
+  `746247256baa8865e47b4c93afb44eee0e613753487c6ebb17a2a3dde404b91c`
 - Request:
   `GET /jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales`
 - Headers: no custom request headers
@@ -82,6 +82,10 @@ generation, but they must not replace the default-cache membership contract.
     `미분류` for both Class and Molecule.
   - The total market value, competitor count, and Ox/Gx payload remain
     unchanged.
+  - F-123 preserves strategic ranking continuity across years. This expands
+    the first yearly ranking from 7 to 11 entries and exposes the additional
+    `로바젯`, `리피로우`, `아토르바`, and `크레스토` series. PL re-approved
+    the resulting canonical payload on `2026-07-15`.
 
 The Class and Molecule share sums can differ from exactly 100 by the sum of
 individually rounded four-decimal shares. They must not be renormalized to hide
