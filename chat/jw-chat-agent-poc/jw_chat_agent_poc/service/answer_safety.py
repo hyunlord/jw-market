@@ -307,11 +307,13 @@ def _external_clinical_fallback_answer(fact_md: str) -> str:
         return ""
 
     first_global = global_rows[0]
-    first_domestic = domestic_rows[0]
+    highlighted_domestic = ", ".join(row[2] for row in domestic_rows[:3])
+    domestic_remainder = " 등" if len(domestic_rows) > 3 else ""
     parts = [
         (
             "확인된 등록 근거를 보면, 글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다. "
-            f"글로벌 등록에는 {first_global[2]}, 국내 등록에는 {first_domestic[2]} 등이 포함됩니다."
+            f"글로벌 등록에는 {first_global[2]} 연구가 포함됩니다. "
+            f"국내 식약처 임상 등록에서는 {highlighted_domestic}{domestic_remainder}가 확인됩니다."
         ),
         (
             "다만 이 등록정보는 연구·품목과 등록일을 보여주는 근거이며, "

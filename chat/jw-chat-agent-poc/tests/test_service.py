@@ -2049,3 +2049,44 @@ def test_combined_clinical_timeout_fallback_keeps_global_and_domestic_evidence(m
     assert "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨)" in answer.replace(", ", ",")
     assert "YH14700" in answer
     assert "임상 성공, 허가 완료 또는 현재 개발 단계를 뜻하지 않습니다" in answer
+
+
+def test_combined_clinical_evidence_bypasses_slow_final_llm(monkeypatch) -> None:
+    fact_md = "\n".join(
+        (
+            "- pitavastatin: 글로벌 임상시험 = NCT00257686 · Pitavastatin versus pravastatin "
+            "· https://clinicaltrials.gov/study/NCT00257686 [ClinicalTrials.gov 임상시험 정보]",
+            "- 고지혈증 (20120118): 국내 임상시험 = "
+            "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨) [식약처 의약품 정보]",
+        )
+    )
+
+    def unexpected_final_llm(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
+        raise AssertionError("combined registry evidence must not wait for final LLM synthesis")
+
+    monkeypatch.setattr(GenosClient, "_chat_text", unexpected_final_llm)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {
+            "fact_md": fact_md,
+            "allowed_numbers": ["NCT00257686", "20120118"],
+        },
+        "tool_calls": [
+            {"tool": "clinicaltrials_v2_search", "source": "clinicaltrials_mcp"},
+            {"tool": "mfds_clinical_trial_kr", "source": "nedrug_mcp"},
+            {"tool": "web_search", "source": "web_search"},
+        ],
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "고지혈증 질환의 임상·허가심사 단계 경쟁약물 현황을 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다" in answer
+    assert "NCT00257686" in answer
+    assert "HL040XC정" in answer

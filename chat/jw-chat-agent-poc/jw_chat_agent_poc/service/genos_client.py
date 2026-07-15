@@ -702,6 +702,17 @@ def _is_tool_use_agent_result(agent_result: dict[str, Any]) -> bool:
     return isinstance(diagnostics, dict) and diagnostics.get("mode") == "tool_use_agent"
 
 
+def _has_combined_clinical_registry_evidence(
+    tool_calls: list[dict[str, Any]],
+    markdown_response: dict[str, Any],
+) -> bool:
+    tools = {str(call.get("tool") or "") for call in tool_calls}
+    if not {"clinicaltrials_v2_search", "mfds_clinical_trial_kr"}.issubset(tools):
+        return False
+    fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    return "글로벌 임상시험 = NCT" in fact_md and "국내 임상시험 =" in fact_md
+
+
 def _verified_tool_use_agent_answer(agent_result: dict[str, Any]) -> str:
     answer = str(agent_result.get("answer") or "확인 가능한 근거가 없어 답변할 수 없습니다.")
     markdown_response = agent_result.get("markdown_response")
@@ -739,6 +750,13 @@ class GenosClient:
                 if fact_md.strip():
                     tool_calls = agent_result.get("tool_calls")
                     verified_calls = tool_calls if isinstance(tool_calls, list) else []
+                    if _has_combined_clinical_registry_evidence(verified_calls, markdown_response):
+                        yield from chunk_text(
+                            cleanup_markdown_answer(
+                                finalized_fallback_fact_answer(question, markdown_response)
+                            )
+                        )
+                        return
                     yield from chunk_text(
                         cleanup_markdown_answer(
                             self._markdown_answer(
