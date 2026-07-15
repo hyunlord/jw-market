@@ -113,25 +113,31 @@ def test_openfda_adverse_event_request_uses_dedicated_live_tool() -> None:
     }
 
 
-def test_mcp_specs_use_verified_service_defaults_and_direct_urls(monkeypatch) -> None:
+def test_mcp_specs_use_verified_gateway_resources_and_env_urls(monkeypatch) -> None:
     monkeypatch.delenv("CLINICAL_TRIALS_MCP_RESOURCE_ID", raising=False)
     monkeypatch.delenv("OPENFDA_MCP_RESOURCE_ID", raising=False)
     monkeypatch.delenv("HIRA_MCP_RESOURCE_ID", raising=False)
     monkeypatch.delenv("NEDRUG_MCP_RESOURCE_ID", raising=False)
-    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://code-serving-112:8080/json")
-    monkeypatch.setenv("OPENFDA_MCP_URL", "http://code-serving-127:8080/json")
-    monkeypatch.setenv("HIRA_MCP_URL", "http://code-serving-190:8080/json")
-    monkeypatch.setenv("NEDRUG_MCP_URL", "http://code-serving-196:8080/json")
+    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://llmops-gateway-api-service:8080/mcp/169/mcp")
+    monkeypatch.setenv("OPENFDA_MCP_URL", "http://llmops-gateway-api-service:8080/mcp/184/mcp")
+    monkeypatch.setenv("NEDRUG_MCP_URL", "http://llmops-gateway-api-service:8080/mcp/250/mcp")
+    monkeypatch.setenv("HIRA_MCP_URL", "http://llmops-gateway-api-service:8080/mcp/253/mcp")
 
     clinical = _mcp_tool_spec("clinicaltrials_v2_search", {"query.intr": "pitavastatin"})
     openfda = _mcp_tool_spec("openfda_label_search", {"search": 'openfda.substance_name:"PITAVASTATIN"'})
     hira = _mcp_tool_spec("hira_disease_name_code", {"sickCd": "고지혈증"})
     nedrug = _mcp_tool_spec("mfds_permission_search", {"brand": "리바로"})
 
-    assert (clinical["resource_id"], clinical["mcp_tool"]) == ("112", "search_studies")
-    assert (openfda["resource_id"], openfda["mcp_tool"]) == ("127", "search_drug_labels")
-    assert (hira["resource_id"], hira["mcp_tool"]) == ("190", "search_disease_code")
-    assert (nedrug["resource_id"], nedrug["mcp_tool"]) == ("196", "search_drug_permission_list")
+    assert (clinical["resource_id"], clinical["mcp_tool"]) == ("169", "search_studies")
+    assert (openfda["resource_id"], openfda["mcp_tool"]) == ("184", "search_drug_labels")
+    assert (nedrug["resource_id"], nedrug["mcp_tool"]) == ("250", "search_drug_permission_list")
+    assert (hira["resource_id"], hira["mcp_tool"]) == ("253", "search_disease_code")
+
+    client = ExternalApiClient(mode="live")
+    assert client._mcp_url(clinical["resource_id"], clinical["source"]) == "http://llmops-gateway-api-service:8080/mcp/169/mcp"
+    assert client._mcp_url(openfda["resource_id"], openfda["source"]) == "http://llmops-gateway-api-service:8080/mcp/184/mcp"
+    assert client._mcp_url(nedrug["resource_id"], nedrug["source"]) == "http://llmops-gateway-api-service:8080/mcp/250/mcp"
+    assert client._mcp_url(hira["resource_id"], hira["source"]) == "http://llmops-gateway-api-service:8080/mcp/253/mcp"
 
 
 def test_main_ingredient_spec_uses_mart_then_mfds_fallback_method(monkeypatch) -> None:
