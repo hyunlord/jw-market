@@ -29,6 +29,11 @@ FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
         "causal_market_impact_without_metric",
         "news_claim_elevation",
     ),
+    "external_clinical_registry": (
+        "clinical_evidence",
+        "registry_outcome_elevation",
+        "registry_market_inference",
+    ),
 }
 
 _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
@@ -49,6 +54,15 @@ _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
     "quantified_sales_impact": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|영향으로|기인해).{0,40}(?:매출|점유율).{0,20}\d[\d,.]*(?:억원|%|%p).{0,20}(?:증가|감소|상승|하락)"),
     "causal_market_impact_without_metric": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|기인|유발|견인|주도).{0,40}(?:매출|점유율|시장|처방)"),
     "news_claim_elevation": re.compile(r"(뉴스|이슈|기사).{0,80}(?:입증|증명|확인됨|확인됐|달성)"),
+    "registry_outcome_elevation": re.compile(
+        r"(혈관\s*보호\s*효과|안전성\s*프로파일|임상(?:적)?\s*이점|"
+        r"보조적\s*치료\s*가능성|처방\s*영역.{0,20}확장)"
+    ),
+    "registry_market_inference": re.compile(
+        r"(시장\s*선점|복약\s*편의성.{0,20}(?:확대|증가|높)|"
+        r"신약.{0,20}(?:등장|출시).{0,20}시사|경쟁(?:이|은)?\s*(?:심화|격화)|"
+        r"가능성(?:을)?\s*시사)"
+    ),
 }
 
 _CHANNEL_FACT_RE: Final = re.compile(r"(?m)^\|\s*channel\s+상위\s*\|")
@@ -135,6 +149,12 @@ def _is_brand_share_delta(fact_md: str) -> bool:
 
 def _is_news_context(fact_md: str) -> bool:
     return bool(_NEWS_CONTEXT_RE.search(fact_md))
+
+
+def _is_external_clinical_registry(fact_md: str) -> bool:
+    return "[ClinicalTrials.gov 임상시험 정보]" in fact_md or bool(
+        re.search(r"국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]", fact_md)
+    )
 
 
 def _active_fact_types(body: str, fact_md: str) -> tuple[str, ...]:
@@ -306,12 +326,32 @@ def _cleanup_policy_markdown(markdown: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", markdown).strip()
 
 
+def _clinical_registry_safe_summary(_question: str, fact_md: str) -> str:
+    global_count = len(set(re.findall(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE)))
+    domestic_count = len(
+        re.findall(r"(?m)^-\s*.+?:\s*국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]\s*$", fact_md)
+    )
+    observed: list[str] = []
+    if global_count:
+        observed.append(f"ClinicalTrials.gov 등록정보에서 글로벌 임상시험 {global_count}건")
+    if domestic_count:
+        observed.append(f"식약처 등록정보에서 국내 임상시험 {domestic_count}건")
+    if not observed:
+        return ""
+    return (
+        f"{'과 '.join(observed)}이 확인됩니다. "
+        "이는 연구 등록과 제목을 보여주는 근거이며, 결과·효과·안전성 확정이나 개발 성공을 뜻하지는 않습니다."
+    )
+
+
 _FACT_TYPE_DETECTORS: Final[dict[str, Callable[[str], bool]]] = {
     "channel_cross_section": _is_channel_cross_section,
     "brand_share_delta": _is_brand_share_delta,
     "news_context": _is_news_context,
+    "external_clinical_registry": _is_external_clinical_registry,
 }
 
 _SAFE_REPLACEMENTS: Final[dict[str, Callable[[str, str], str]]] = {
     "channel_cross_section": _channel_safe_summary,
+    "external_clinical_registry": _clinical_registry_safe_summary,
 }

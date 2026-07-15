@@ -5,6 +5,7 @@ import pytest
 from jw_chat_agent_poc.orchestrator.claim_policy import (
     FORBIDDEN_BY_FACT_TYPE,
     apply_claim_policy,
+    claim_policy_report,
 )
 
 
@@ -18,6 +19,40 @@ CHANNEL_FACT_MD = "\n".join(
         "| channel 상위 | 3위 상급종합병원 시장점유율 4.49% 매출 17.64억원 |",
     ]
 )
+
+CLINICAL_REGISTRY_FACT_MD = "\n".join(
+    [
+        "- pitavastatin: 글로벌 임상시험 = NCT00257686 · Study to Compare the Efficacy and Safety of Pitavastatin and Pravastatin in Elderly Patients · https://clinicaltrials.gov/study/NCT00257686 [ClinicalTrials.gov 임상시험 정보]",
+        "- 고지혈증 (20120928): 국내 임상시험 = YH14700 [식약처 의약품 정보]",
+    ]
+)
+
+
+def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps_evidence() -> None:
+    answer = "\n".join(
+        [
+            "리바로는 폭넓은 환자군에서 임상적 근거를 확보했고 장기적인 혈관 보호 효과를 입증했습니다.",
+            "이 결과는 안전성 프로파일을 강화하고 향후 시장 선점 경쟁을 주도할 가능성을 시사합니다.",
+            "| 임상시험 번호 | 연구 제목 |",
+            "| --- | --- |",
+            "| NCT00257686 | Study to Compare the Efficacy and Safety of Pitavastatin and Pravastatin in Elderly Patients |",
+        ]
+    )
+
+    revised = apply_claim_policy("리바로 임상시험", answer, CLINICAL_REGISTRY_FACT_MD)
+
+    for forbidden in ("임상적 근거", "입증", "혈관 보호 효과", "안전성 프로파일", "시장 선점", "가능성을 시사"):
+        assert forbidden not in revised
+    assert "ClinicalTrials.gov 등록정보에서 글로벌 임상시험 1건" in revised
+    assert "식약처 등록정보에서 국내 임상시험 1건" in revised
+    assert "연구 등록과 제목을 보여주는 근거" in revised
+    assert "결과·효과·안전성 확정이나 개발 성공을 뜻하지는 않습니다" in revised
+    assert "NCT00257686" in revised
+    assert "Study to Compare the Efficacy and Safety" in revised
+
+    report = claim_policy_report(revised, CLINICAL_REGISTRY_FACT_MD)
+    assert "external_clinical_registry" in report["active_fact_types"]
+    assert report["forbidden_claims_remaining"] == ()
 
 
 @pytest.mark.parametrize(
