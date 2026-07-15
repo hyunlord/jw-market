@@ -1626,6 +1626,25 @@ def _segment_rows_for_level(
             if is_observed:
                 observed_periods[period] = True
 
+    def add_observed_series_to_targets(
+        targets: list[dict[str, list[float]]],
+        series: dict[str, Any],
+        *,
+        also_add_to: dict[str, list[float]] | None = None,
+    ) -> None:
+        values, observed = _series_values_with_observed(
+            series,
+            periods,
+            cache=series_observed_cache,
+        )
+        for period, value, is_observed in zip(periods, values, observed):
+            if also_add_to is not None:
+                also_add_to[period][0] += value
+            for target in targets:
+                target[period][0] += value
+            if is_observed:
+                observed_periods[period] = True
+
     for row in rows:
         if _is_class_level(level) and _row_is_class_excluded(row):
             continue
@@ -1670,20 +1689,17 @@ def _segment_rows_for_level(
             names = [UNCLASSIFIED_DIMENSION_NAME]
         if isinstance(dual_channel_data, dict) and len(names) != 1:
             continue
+        targets = []
         for name in names:
-            grouped.setdefault(name, {period: [0.0] for period in periods})
+            targets.append(grouped.setdefault(name, {period: [0.0] for period in periods}))
         if channel == "전체":
             history = _metric_history(row)
             if history:
-                add_observed_series(totals, history)
-                for name in names:
-                    add_observed_series(grouped[name], history)
+                add_observed_series_to_targets(targets, history, also_add_to=totals)
             continue
 
         if isinstance(dual_channel_data, dict):
-            add_observed_series(totals, dual_channel_data)
-            for name in names:
-                add_observed_series(grouped[name], dual_channel_data)
+            add_observed_series_to_targets(targets, dual_channel_data, also_add_to=totals)
             continue
 
         channel_data = row.get("__channel_data")
@@ -1696,9 +1712,7 @@ def _segment_rows_for_level(
             if not _channel_matches(raw_channel, source, channel):
                 continue
             if isinstance(series, dict):
-                add_observed_series(totals, series)
-                for name in names:
-                    add_observed_series(grouped[name], series)
+                add_observed_series_to_targets(targets, series, also_add_to=totals)
 
     latest_observed_period = next(
         (period for period in reversed(periods) if observed_periods[period]),

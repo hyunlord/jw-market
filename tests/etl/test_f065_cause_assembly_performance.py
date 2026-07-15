@@ -347,6 +347,38 @@ def test_level_top5_reuses_overall_channel_rows_across_levels(monkeypatch) -> No
     assert set(payload["by_level"]) == {"Class", "Molecule"}
 
 
+def test_multi_value_fallback_updates_targets_in_one_series_pass(monkeypatch) -> None:
+    row = {
+        "brand_name": "Brand A",
+        "brand_key": "brand-a",
+        "by_dimension": {"strength_pack": "10mg | 20mg"},
+        "metric_history": {"2025-01": {"raw_value": 10.0}},
+        "dimension_data": {},
+    }
+    calls = 0
+    original = cause._series_values_with_observed
+
+    def count_observed_series(*args: Any, **kwargs: Any) -> tuple[Any, tuple[bool, ...]]:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cause, "_series_values_with_observed", count_observed_series)
+
+    segments = cause._segment_rows_for_level(
+        rows=[row],
+        level="용량",
+        periods=["2025-01"],
+        source="UBIST",
+        channel="전체",
+        target_name=None,
+        top_n=None,
+    )
+
+    assert [segment["value_series"] for segment in segments] == [[10.0], [10.0]]
+    assert calls == 1
+
+
 def test_response_composer_does_not_walk_the_complete_payload_twice() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cache_to_response.compose_cached_json)))
     deep_format_calls = [
