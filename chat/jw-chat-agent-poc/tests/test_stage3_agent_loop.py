@@ -1106,6 +1106,63 @@ def test_hira_procedure_and_web_search_fixture_tools_render_payloads() -> None:
     assert "https://example.com/livalo-detailing" in result["markdown_response"]["data_md"]
 
 
+def test_non_bq_external_tools_use_the_parallel_batch_executor(monkeypatch) -> None:
+    from jw_chat_agent_poc.agent_loop import loop as agent_loop_module
+
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        name="get_procedure_stats",
+                        arguments={"brand": "리바로", "query": "MM302 진료행위 통계"},
+                        reason="진료행위 통계 확인",
+                    ),
+                    ToolCallPlan(
+                        name="web_search",
+                        arguments={"brand": "리바로", "query": "리바로 경쟁제품 동향"},
+                        reason="외부 웹 검색 확인",
+                    ),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    original_execute_tool_batch = agent_loop_module.execute_tool_batch
+    captured_batches: list[tuple[str, ...]] = []
+
+    def capture_batch(plans, execute, **kwargs):
+        captured_batches.append(tuple(plan.name for plan in plans))
+        return original_execute_tool_batch(plans, execute, **kwargs)
+
+    monkeypatch.setattr(agent_loop_module, "execute_tool_batch", capture_batch)
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(
+            metrics=metrics,
+            resolver=BrandResolver(),
+            planner=planner,
+            external=ExternalApiClient(mode="fixture"),
+        ),
+    )
+
+    result = agent.answer("리바로 MM302 진료행위와 경쟁제품 동향을 같이 확인해줘")
+
+    assert captured_batches == [("get_procedure_stats", "web_search")]
+    assert {"get_procedure_stats", "web_search"}.issubset(set(_tool_names(result)))
+    tool_stages = {
+        stage["name"]: stage
+        for stage in result["timing"]["stages"]
+        if stage["name"].startswith("tool:")
+    }
+    assert set(tool_stages) >= {"tool:get_procedure_stats", "tool:web_search"}
+    assert "mode=parallel" in tool_stages["tool:get_procedure_stats"]["detail"]
+    assert "mode=parallel" in tool_stages["tool:web_search"]["detail"]
+    assert any(stage["name"] == "tool_batch" for stage in result["timing"]["stages"])
+
+
 def test_mfds_clinical_broad_rows_are_filtered_from_evidence() -> None:
     result = clinical_call(_ExternalResolution(canonical_brand="리바로", molecule_en=("pitavastatin",)), _ClinicalBroadExternal())
     calls = result["render_data"]["calls"]

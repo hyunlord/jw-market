@@ -9,7 +9,7 @@ from typing import Any
 
 from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
-from jw_chat_agent_poc.agent_loop.parallel_execution import TimedExecution, execute_tool_batch
+from jw_chat_agent_poc.agent_loop.parallel_execution import execute_tool_batch
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
@@ -191,29 +191,30 @@ class ToolUseAgent:
                 break
             batch: list[AgentObservation] = []
             duplicate = False
-            if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
+            is_bq_batch = bool(
+                deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:")
+            )
+            if is_bq_batch:
                 with stage(timing, "tool_batch", f"step={step}; bounded independent support tools"):
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
                     )
             else:
-                serial_batch: list[TimedExecution[ToolExecution]] = []
-                for plan in decision.tool_calls:
-                    with stage(timing, f"tool:{plan.name}", f"step={step}"):
-                        execution = _execute_grounded(facade, plan)
-                    serial_batch.append(TimedExecution(plan, execution, 0.0, "serial"))
-                execution_batch = tuple(serial_batch)
+                with stage(timing, "tool_batch", f"step={step}; independent support tools"):
+                    execution_batch = execute_tool_batch(
+                        decision.tool_calls,
+                        lambda plan: _execute_grounded(facade, plan),
+                    )
             for timed_execution in execution_batch:
                 plan = timed_execution.plan
                 execution = timed_execution.result
-                if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
-                    add_stage(
-                        timing,
-                        f"tool:{plan.name}",
-                        timed_execution.elapsed_ms,
-                        f"step={step}; mode={timed_execution.mode}",
-                    )
+                add_stage(
+                    timing,
+                    f"tool:{plan.name}",
+                    timed_execution.elapsed_ms,
+                    f"step={step}; mode={timed_execution.mode}",
+                )
                 key = _fingerprint(ToolCallPlan(name=plan.name, arguments=execution.arguments, reason=plan.reason))
                 if key in seen:
                     duplicate = True
@@ -228,7 +229,7 @@ class ToolUseAgent:
             trace.append(_trace_step(step, decision, tuple(batch)))
             if duplicate:
                 break
-            if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
+            if is_bq_batch:
                 break
             if _observation_is_sufficient_for_final_answer(question, tuple(observations), tuple(batch)):
                 break
