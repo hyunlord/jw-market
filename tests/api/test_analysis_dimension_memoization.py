@@ -1,5 +1,7 @@
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import _general_dimensions_from_metrics
 from pipeline.scripts.api.dynamic_market.general_analysis_levels import cause_builder
+from pipeline.scripts.api.dynamic_market import analysis_levels
+from pipeline.scripts.api.dynamic_market.types import MarketDefinition
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
 
 
@@ -130,3 +132,59 @@ def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
 
     assert len(calls) == 1
     assert result["by_level"]["Class"]["values"][0]["brands_in_value"] == result["by_level"]["Molecule"]["values"][0]["brands_in_value"]
+
+
+def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch) -> None:
+    rows = [{"brand_key": "a", "brand_name": "A"}]
+    build_calls = []
+
+    monkeypatch.setattr(analysis_levels, "build_analysis_rows", lambda **_: rows)
+    monkeypatch.setattr(analysis_levels, "resolve_market_channels", lambda **_: {"specialty_channels": ["전문"]})
+    monkeypatch.setattr(cause_builder, "_channels_for_source", lambda _source: ["전체"])
+    monkeypatch.setattr(cause_builder, "_strategic_levels", lambda _market, _rows: {"Class"})
+    monkeypatch.setattr(cause_builder, "_history_periods", lambda _rows, _source: ["2026-01"])
+
+    def fake_build(**kwargs):
+        build_calls.append(kwargs)
+        return {
+            "levels": ["Class"],
+            "periods_monthly": ["2026-01"],
+            "data": {"Class": {"segments": [], "by_channel": {"전체": [], "전문": []}}},
+        }
+
+    monkeypatch.setattr(cause_builder, "_build_analysis_levels_from_mart", fake_build)
+    monkeypatch.setattr(cause_builder, "_ensure_split_class_alias", lambda value: value)
+    monkeypatch.setattr(cause_builder, "_level_rows_by_segment", lambda *_: {})
+    monkeypatch.setattr(cause_builder, "_level_top5_trend", lambda *_args, **_kwargs: {"by_level": {}})
+    monkeypatch.setattr(cause_builder, "_analysis_level_market_status_by_channel", lambda **_: {})
+    monkeypatch.setattr(cause_builder, "_ensure_analysis_level_market_status_contract", lambda value: value)
+
+    definition = MarketDefinition(
+        view="strategic",
+        filter_echo={},
+        source="ubist",
+        measure="sales",
+        market_catalog_row={"ml_id": "ml_001"},
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 1.0},),
+        brands=(),
+    )
+
+    result = analysis_levels.build_analysis_level_sections(
+        definition=definition,
+        metrics=metrics,
+        focus=None,
+        mart_db="jw_mart",
+    )
+
+    assert result is not None
+    assert len(build_calls) == 2
+    assert build_calls[0]["series_value_cache"] is build_calls[1]["series_value_cache"]
+    assert build_calls[0]["series_observed_cache"] is build_calls[1]["series_observed_cache"]
