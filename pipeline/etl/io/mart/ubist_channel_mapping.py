@@ -10,9 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from pipeline.etl.io.ubist_specialties import (
-    INTERNAL_MEDICINE_DETAIL_SPECIALTIES,
-    STANDALONE_INTERNAL_MEDICINE_SPECIALTY,
     aggregate_specialty_labels,
+    detail_specialty_labels,
 )
 
 
@@ -85,7 +84,7 @@ UBIST_SPECIALTY_MAPPING: dict[str, dict[str, Any]] = {
         # 기각 대안: 별도 IM 채널을 유지하면 PL이 제거하라고 한 standalone 내과
         # 슬롯이 다시 노출된다. IGF를 FM/GP 2개로만 두면 세부 내과 포함 요청을
         # 만족하지 못한다.
-        "raw_values": ("가정의학과(FM)", "일반의(GP)", *INTERNAL_MEDICINE_DETAIL_SPECIALTIES),
+        "raw_values": ("가정의학과(FM)", "일반의(GP)", *detail_specialty_labels()),
     },
     # Existing catalog target slots still contain these UBIST specialties.
     "Neuro": {
@@ -128,7 +127,7 @@ def parse_channel_code(code: str | None) -> UbistChannel | None:
 def raw_pair_to_channel_code(facility_raw: Any, specialty_raw: Any) -> str | None:
     facility_text = str(facility_raw or "").strip()
     specialty_text = str(specialty_raw or "").strip()
-    if specialty_text == STANDALONE_INTERNAL_MEDICINE_SPECIALTY:
+    if specialty_text in aggregate_specialty_labels():
         return None
     facility_abbr = next(
         (

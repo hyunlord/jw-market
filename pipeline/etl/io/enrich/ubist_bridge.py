@@ -86,7 +86,10 @@ def ubist_join_sql(customer_dict: dict[str, object], *, ubist_glob: str, ingeste
         default="Unknown",
         contains=True,
     )
-    specialty_filter = duckdb_excludes_catalog_values("u.진료과", aggregate_specialty_labels())
+    specialty_filter = duckdb_excludes_catalog_values(
+        "u.진료과",
+        aggregate_specialty_labels(customer_dict),
+    )
     ingested = now_iso(ingested_at).replace("'", "''")
     return (
         "SELECT DISTINCT "

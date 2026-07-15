@@ -61,6 +61,12 @@ def test_ubist_producer_drops_only_aggregate_specialty_before_mapping(
             "일반의": "IGF",
             "내분비": "Endo",
         },
+        "ubist_specialty_hierarchies": {
+            "내과(IM)": [
+                "내분비(Endocrinology IM)",
+                "분리되지 않은 내과",
+            ]
+        },
     }
     enriched_root = tmp_path / "enriched"
     enriched_path = enriched_root / "ml_id=ml_test" / "data.parquet"
@@ -100,3 +106,69 @@ def test_ubist_producer_drops_only_aggregate_specialty_before_mapping(
     corrected_total = sum(periods["2026-05"]["raw_value"] for periods in specialty_history.values())
     expected_total_without_parent = 10.0 + 40.0 + 20.0 + 30.0
     assert corrected_total / expected_total_without_parent == 1.0
+
+
+def test_ubist_producer_uses_catalogued_aggregate_label_without_literal_dependency(
+    tmp_path,
+) -> None:
+    raw_path = tmp_path / "raw.parquet"
+    pd.DataFrame(
+        [
+            {
+                "제품": "테스트정",
+                "종별": "의원",
+                "진료과": specialty,
+                "period_yyyymm": "2026-05",
+                "rx_amt": amount,
+                "rx_cnt": amount,
+                "rx_qty": amount,
+                "source_file": "fixture.xlsx",
+                "source_sheet": "Sheet1",
+                "source_row_no": row_no,
+                "약품코드": "DRUG1",
+            }
+            for row_no, (specialty, amount) in enumerate(
+                [("카탈로그 부모", 100.0), ("카탈로그 자식", 10.0)],
+                start=1,
+            )
+        ]
+    ).to_parquet(raw_path, index=False)
+    products = pd.DataFrame(
+        [
+            {
+                "product_id": "product-1",
+                "ml_id": "ml_test",
+                "ubist_product_key": "테스트정",
+                "ubist_product_title": "테스트정",
+                "brand_key": "brand-1",
+                "strength_bracket_code": None,
+                "molecule": "M1",
+            }
+        ]
+    )
+    customer_dict = {
+        "ubist_channel": {"의원": "CL"},
+        "ubist_specialty": {
+            "카탈로그 부모": "PARENT",
+            "카탈로그 자식": "CHILD",
+        },
+        "ubist_specialty_hierarchies": {
+            "카탈로그 부모": ["카탈로그 자식"],
+        },
+    }
+    enriched_path = tmp_path / "enriched" / "ml_id=ml_test" / "data.parquet"
+
+    rows, _ = write_ubist_ml(
+        products,
+        customer_dict,
+        enriched_path,
+        ubist_glob=str(raw_path),
+        ingested_at="2026-07-15T00:00:00+09:00",
+    )
+
+    assert rows == 1
+    with duckdb.connect() as connection:
+        assert connection.execute(
+            "SELECT specialty, SUM(raw_rx_amt) FROM read_parquet(?) GROUP BY specialty",
+            [str(enriched_path)],
+        ).fetchall() == [("CHILD", 10.0)]
