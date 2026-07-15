@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
-from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls, enforce_answer_contract, evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import (
+    CONTRACT_REQUIRED_TOOLS,
+    answer_contract_backfill_tool_calls,
+    enforce_answer_contract,
+    evaluate_answer_contract,
+)
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
+
+
+def test_clinical_evidence_does_not_require_market_metric() -> None:
+    assert CONTRACT_REQUIRED_TOOLS["clinical_evidence"] == ("mfds_permission_search",)
 
 
 TREND_FACT_MD = """## 확정 fact set

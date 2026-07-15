@@ -4,8 +4,11 @@ from jw_chat_agent_poc.orchestrator.markdown_renderers import generic_external_m
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
 from jw_chat_agent_poc.tool_use.registry import _external_call_envelope
+from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
+from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 from jw_chat_agent_poc.tools.external import ExternalCall
+from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external.client import (
     _mcp_external_call,
     _mcp_payload,
@@ -108,6 +111,52 @@ def test_openfda_adverse_event_request_uses_dedicated_live_tool() -> None:
         "limit": 5,
         "sort": "receivedate:desc",
     }
+
+
+def test_mcp_specs_use_verified_service_defaults_and_direct_urls(monkeypatch) -> None:
+    monkeypatch.delenv("CLINICAL_TRIALS_MCP_RESOURCE_ID", raising=False)
+    monkeypatch.delenv("OPENFDA_MCP_RESOURCE_ID", raising=False)
+    monkeypatch.delenv("HIRA_MCP_RESOURCE_ID", raising=False)
+    monkeypatch.delenv("NEDRUG_MCP_RESOURCE_ID", raising=False)
+    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://code-serving-112:8080/json")
+    monkeypatch.setenv("OPENFDA_MCP_URL", "http://code-serving-127:8080/json")
+    monkeypatch.setenv("HIRA_MCP_URL", "http://code-serving-190:8080/json")
+    monkeypatch.setenv("NEDRUG_MCP_URL", "http://code-serving-196:8080/json")
+
+    clinical = _mcp_tool_spec("clinicaltrials_v2_search", {"query.intr": "pitavastatin"})
+    openfda = _mcp_tool_spec("openfda_label_search", {"search": 'openfda.substance_name:"PITAVASTATIN"'})
+    hira = _mcp_tool_spec("hira_disease_name_code", {"sickCd": "고지혈증"})
+    nedrug = _mcp_tool_spec("mfds_permission_search", {"brand": "리바로"})
+
+    assert (clinical["resource_id"], clinical["mcp_tool"]) == ("112", "search_studies")
+    assert (openfda["resource_id"], openfda["mcp_tool"]) == ("127", "search_drug_labels")
+    assert (hira["resource_id"], hira["mcp_tool"]) == ("190", "search_disease_code")
+    assert (nedrug["resource_id"], nedrug["mcp_tool"]) == ("196", "search_drug_permission_list")
+
+
+def test_main_ingredient_spec_uses_mart_then_mfds_fallback_method(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    calls: list[str] = []
+
+    def fake_main_ingredient(brand: str) -> ExternalCall:
+        calls.append(brand)
+        return ExternalCall(
+            tool="mfds_main_ingredient",
+            source="nedrug_mcp",
+            status="live",
+            summary_text="주성분 확인",
+            render_data={"items": [{"MTRAL_NM": "TIRZEPATIDE"}]},
+        )
+
+    monkeypatch.setattr(external, "mfds_main_ingredient", fake_main_ingredient)
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=external)
+    spec = next(item for item in registry.list_for_query("주성분") if item.name == "get_drug_main_ingredient")
+
+    envelope = spec.execute(spec.input_model.model_validate({"brand": "마운자로"}))
+
+    assert calls == ["마운자로"]
+    assert envelope.ok is True
+    assert envelope.evidence[0].source_locator == "TIRZEPATIDE"
 
 
 def test_openfda_adverse_event_text_becomes_public_evidence() -> None:

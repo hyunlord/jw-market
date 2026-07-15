@@ -46,7 +46,7 @@ _MI_IMPLICATION_CONTRACTS: Final[frozenset[str]] = frozenset(
 
 CONTRACT_REQUIRED_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "patent_exclusivity": ("search_patent", "mfds_patent"),
-    "clinical_evidence": ("get_brand_metric", "mfds_permission_search"),
+    "clinical_evidence": ("mfds_permission_search",),
     "news_ei": ("search_news",),
     "change_drivers": ("search_news", "get_brand_metric", "market_scope"),
     "sales_activity_link": ("get_brand_metric", "csd_activity_trend"),

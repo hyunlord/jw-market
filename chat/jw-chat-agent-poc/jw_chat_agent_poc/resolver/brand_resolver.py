@@ -43,6 +43,10 @@ class BrandMembershipReader(Protocol):
     def brand_memberships(self) -> tuple[dict[str, str], ...]: ...
 
 
+class BrandMoleculeReader(Protocol):
+    def brand_molecules(self) -> tuple[dict[str, str], ...]: ...
+
+
 class BrandResolver:
     def __init__(
         self,
@@ -50,6 +54,7 @@ class BrandResolver:
         mode: str | None = None,
         brand_reader: MetricsCacheReader | None = None,
         membership_reader: BrandMembershipReader | None = None,
+        molecule_reader: BrandMoleculeReader | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
         path = fixture_path or Path(__file__).resolve().parents[1] / "fixtures" / "brand_catalog.json"
@@ -58,6 +63,7 @@ class BrandResolver:
         self._fixture_items = items
         self._mode = mode or os.environ.get("CHAT_RESOLVER_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
         self._membership_reader = membership_reader
+        self._molecule_reader = molecule_reader
         ttl = ttl_seconds or int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(brand_reader, ttl_seconds=ttl) if brand_reader is not None else shared_metrics_cache(ttl)
 
@@ -191,6 +197,29 @@ class BrandResolver:
                 pair = (str(membership.get("market_id") or ""), str(membership.get("market_name") or ""))
                 if pair[0] and pair not in item["market_memberships"]:
                     item["market_memberships"].append(pair)
+        if self._molecule_reader is not None:
+            molecule_by_brand: dict[str, list[str]] = {}
+            for row in self._molecule_reader.brand_molecules():
+                molecule = str(row.get("molecule_display") or row.get("molecule_norm") or "").strip()
+                if not molecule:
+                    continue
+                for key in (row.get("brand_name"), row.get("brand_key"), row.get("brand")):
+                    normalized_key = self._normalize(str(key or ""))
+                    if normalized_key:
+                        molecules = molecule_by_brand.setdefault(normalized_key, [])
+                        if molecule.casefold() not in {value.casefold() for value in molecules}:
+                            molecules.append(molecule)
+            for item in merged.values():
+                aliases = (item["canonical_brand"], *item.get("aliases", []))
+                additions: list[str] = []
+                for alias in aliases:
+                    additions.extend(molecule_by_brand.get(self._normalize(str(alias)), []))
+                existing = item.setdefault("molecule_en", [])
+                for molecule in additions:
+                    if molecule.casefold() not in {value.casefold() for value in existing}:
+                        existing.append(molecule)
+                if additions and "mart_brand_molecule" not in item["support_source"]:
+                    item["support_source"] = f"{item['support_source']}+mart_brand_molecule"
         return list(merged.values())
 
     @staticmethod

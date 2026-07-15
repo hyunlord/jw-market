@@ -18,6 +18,14 @@ class StaticMembershipReader:
         return self.rows
 
 
+class StaticMoleculeReader:
+    def __init__(self, rows: tuple[dict[str, str], ...]) -> None:
+        self.rows = rows
+
+    def brand_molecules(self) -> tuple[dict[str, str], ...]:
+        return self.rows
+
+
 def _cache_reader() -> StaticMetricsCacheReader:
     return StaticMetricsCacheReader(
         cache_brands=[{"brand": "리바로", "market_id": "strategy_006", "market_name": "스타틴 시장"}],
@@ -57,6 +65,32 @@ def test_cache_brand_metadata_wins_over_catalog_membership() -> None:
     assert resolution.support_source.startswith("cache_brands")
 
 
+def test_cache_resolver_adds_mart_molecule_without_erasing_sidecar() -> None:
+    molecule_reader = StaticMoleculeReader(
+        (
+            {"brand_name": "리바로", "brand_key": "리바로", "molecule_display": "pitavastatin", "molecule_norm": "pitavastatin"},
+            {"brand_name": "마운자로", "brand_key": "마운자로", "molecule_display": "TIRZEPATIDE", "molecule_norm": "tirzepatide"},
+        )
+    )
+    memberships = StaticMembershipReader(
+        ({"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨병 시장"},)
+    )
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=_cache_reader(),
+        membership_reader=memberships,
+        molecule_reader=molecule_reader,
+    )
+
+    rivaro = resolver.resolve("리바로", allow_default=False)
+    mounjaro = resolver.resolve("마운자로", allow_default=False)
+
+    assert rivaro.molecule_en == ("pitavastatin",)
+    assert mounjaro.molecule_en == ("TIRZEPATIDE",)
+    assert "mart_brand_molecule" in rivaro.support_source
+    assert "mart_brand_molecule" in mounjaro.support_source
+
+
 def test_unknown_brand_remains_unsupported_with_catalog_membership() -> None:
     memberships = StaticMembershipReader(
         ({"brand": "피타틴", "market_id": "ml_006", "market_name": "스타틴 시장"},)
@@ -74,6 +108,7 @@ def test_factory_wires_catalog_as_membership_reader(monkeypatch: pytest.MonkeyPa
     assert dependencies.query_layer is not None
     assert dependencies.resolver._membership_reader is not dependencies.query_layer
     assert dependencies.resolver._membership_reader.__class__.__name__ == "TtlCatalogMembershipReader"
+    assert dependencies.resolver._molecule_reader.__class__.__name__ == "TtlBrandMoleculeReader"
 
 
 @pytest.mark.parametrize(

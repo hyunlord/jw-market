@@ -94,9 +94,13 @@ class ExternalToolRegistry:
     def _mfds_main_ingredient(self, payload: BaseModel) -> ToolEnvelope:
         request = BrandInput.model_validate(payload.model_dump())
         canonical = self._canonical_brand(request.brand)
-        call = self._external.mfds_permission_search(canonical)
+        call = self._external.mfds_main_ingredient(canonical)
         item = _first_matching_mfds_item(call, canonical)
-        ingredient = None if item is None else item.get("ITEM_INGR_NAME") or item.get("MAIN_INGR_ENG")
+        ingredient = None if item is None else item.get("ITEM_INGR_NAME") or item.get("MAIN_INGR_ENG") or item.get("MTRAL_NM")
+        if ingredient is None:
+            payload = call.render_data.get("items", [])
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                ingredient = payload[0].get("MTRAL_NM") or payload[0].get("MAIN_INGR_ENG") or payload[0].get("ITEM_INGR_NAME")
         if not ingredient:
             return ToolEnvelope(
                 ok=False,

@@ -17,6 +17,10 @@ OPENFDA_MCP_RESOURCE_ENV = "OPENFDA_MCP_RESOURCE_ID"
 NEDRUG_MCP_RESOURCE_ENV = "NEDRUG_MCP_RESOURCE_ID"
 HIRA_MCP_RESOURCE_ENV = "HIRA_MCP_RESOURCE_ID"
 CLINICAL_TRIALS_MCP_RESOURCE_ENV = "CLINICAL_TRIALS_MCP_RESOURCE_ID"
+OPENFDA_MCP_URL_ENV = "OPENFDA_MCP_URL"
+NEDRUG_MCP_URL_ENV = "NEDRUG_MCP_URL"
+HIRA_MCP_URL_ENV = "HIRA_MCP_URL"
+CLINICAL_TRIALS_MCP_URL_ENV = "CLINICAL_TRIALS_MCP_URL"
 WEB_SEARCH_PROVIDER_ENV = "WEB_SEARCH_PROVIDER"
 TAVILY_API_KEY_ENV = "TAVILY_API_KEY"
 SERPER_API_KEY_ENV = "SERPER_API_KEY"
@@ -37,14 +41,20 @@ WEB_SEARCH_SOURCE = "web_search"
 WEB_SEARCH_MAX_RESULTS = 5
 TAVILY_TIMEOUT_CAP_S = 5
 DEFAULT_MCP_GATEWAY_BASE = "http://llmops-gateway-api-service:8080"
-OPENFDA_MCP_DEFAULT_RESOURCE = "184"
-NEDRUG_MCP_DEFAULT_RESOURCE = "250"
-HIRA_MCP_DEFAULT_RESOURCE = "253"
-CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE = "169"
+OPENFDA_MCP_DEFAULT_RESOURCE = "127"
+NEDRUG_MCP_DEFAULT_RESOURCE = "196"
+HIRA_MCP_DEFAULT_RESOURCE = "190"
+CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE = "112"
 OPENFDA_MCP_SOURCE = "openfda_mcp"
 NEDRUG_MCP_SOURCE = "nedrug_mcp"
 HIRA_MCP_SOURCE = "hira_mcp"
 CLINICAL_TRIALS_MCP_SOURCE = "clinicaltrials_mcp"
+MCP_DIRECT_URL_ENV_BY_SOURCE = {
+    OPENFDA_MCP_SOURCE: OPENFDA_MCP_URL_ENV,
+    NEDRUG_MCP_SOURCE: NEDRUG_MCP_URL_ENV,
+    HIRA_MCP_SOURCE: HIRA_MCP_URL_ENV,
+    CLINICAL_TRIALS_MCP_SOURCE: CLINICAL_TRIALS_MCP_URL_ENV,
+}
 
 def resolve_patent_ingredient_query(text: str) -> str | None:
     normalized = " ".join(str(text or "").casefold().replace("-", " ").split())
@@ -92,6 +102,11 @@ class ExternalApiClient:
 
     def mfds_composition(self, item_seq: str) -> ExternalCall:
         return self._fixture_or_live("mfds_composition", {"item_seq": item_seq})
+
+    def mfds_main_ingredient(self, brand: str) -> ExternalCall:
+        if self.mode != "live":
+            return self.mfds_permission_search(brand)
+        return self._live_mcp_call("mfds_main_ingredient", {"brand": brand})
 
     def mfds_easy_drug(self, item_seq: str) -> ExternalCall:
         return self._fixture_or_live("mfds_easy_drug", {"item_seq": item_seq})
@@ -247,7 +262,7 @@ class ExternalApiClient:
 
     def _live_mcp_call(self, tool: str, params: dict[str, str]) -> ExternalCall:
         spec = _mcp_tool_spec(tool, params)
-        url = self._mcp_url(spec["resource_id"])
+        url = self._mcp_url(spec["resource_id"], spec["source"])
         start = time.monotonic()
         try:
             result = McpJsonClient(url, timeout_s=self.timeout_s).call_tool(spec["mcp_tool"], spec["arguments"])
@@ -259,7 +274,12 @@ class ExternalApiClient:
         elapsed = round((time.monotonic() - start) * 1000, 1)
         return _mcp_external_call(tool, spec["source"], params, spec["mcp_tool"], result, url, elapsed)
 
-    def _mcp_url(self, resource_id: str) -> str:
+    def _mcp_url(self, resource_id: str, source: str | None = None) -> str:
+        direct_env = MCP_DIRECT_URL_ENV_BY_SOURCE.get(source or "")
+        if direct_env:
+            direct_url = os.environ.get(direct_env, "").strip()
+            if direct_url:
+                return direct_url.rstrip("/")
         return f"{self.mcp_gateway_base}/mcp/{resource_id}/mcp"
 
     def _live_web_search(
@@ -414,6 +434,8 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
             return _nedrug_spec(tool, "get_drug_permission_detail", {"item_seq": params.get("item_seq"), "limit": 5})
         case "mfds_composition":
             return _nedrug_spec(tool, "get_drug_main_ingredient", {"item_seq": params.get("item_seq"), "limit": 5})
+        case "mfds_main_ingredient":
+            return _nedrug_spec(tool, "get_drug_main_ingredient", {"prduct": params.get("brand"), "limit": 10})
         case "mfds_easy_drug":
             return _nedrug_spec(tool, "search_easy_drug_info", {"item_seq": params.get("item_seq"), "limit": 5})
         case "mfds_clinical_trial_kr":
