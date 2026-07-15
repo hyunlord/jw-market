@@ -241,7 +241,13 @@ def _first_optional_float(*values: Any) -> float | None:
 
 
 def _optional_row_value(row: dict[str, Any]) -> float | None:
-    return _first_optional_float(row.get("raw_value"), row.get("value"), row.get("sales"))
+    parsed = safe_float(row.get("raw_value"))
+    if parsed is not None:
+        return parsed
+    parsed = safe_float(row.get("value"))
+    if parsed is not None:
+        return parsed
+    return safe_float(row.get("sales"))
 
 
 def _optional_row_share(row: dict[str, Any]) -> float | None:

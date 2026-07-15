@@ -11,6 +11,21 @@ sys.path.insert(0, str(ROOT / "pipeline" / "scripts" / "etl"))
 from pipeline.scripts.etl import build_cache_cause
 
 
+def test_optional_row_value_uses_inline_fallback_order(monkeypatch) -> None:
+    row = {"raw_value": None, "value": "12.5", "sales": 99.0}
+    calls = 0
+
+    def count_helper(*_values: object) -> float | None:
+        nonlocal calls
+        calls += 1
+        return 12.5
+
+    monkeypatch.setattr(build_cache_cause, "_first_optional_float", count_helper)
+
+    assert build_cache_cause._optional_row_value(row) == 12.5
+    assert calls == 0
+
+
 def test_add_series_parses_each_period_once_for_shared_targets(monkeypatch) -> None:
     periods = ["2026-01", "2026-02"]
     series = {
