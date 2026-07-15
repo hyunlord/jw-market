@@ -1282,7 +1282,9 @@ def _load_market_strength(
 
 
 def _formal_brand_factors(brand: str, context: DeepAnalysisContext) -> dict[str, list[dict]]:
+    started = perf_counter() if _stage_timing_enabled() else None
     fallback = fallback_brand_choices(context.brand_key, context.brand_name)
+    resolve_started = perf_counter() if started is not None else None
     try:
         choices = _resolve_context_brand_choices(context)
     except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
@@ -1290,17 +1292,37 @@ def _formal_brand_factors(brand: str, context: DeepAnalysisContext) -> dict[str,
         choices = fallback
     if not choices:
         choices = fallback
+    resolve_ms = (perf_counter() - resolve_started) * 1000 if resolve_started is not None else None
     brand_keys = [choice.brand_key for choice in choices]
+    elements_started = perf_counter() if started is not None else None
     cached = _load_cached_brand_elements_read_only(brand_keys)
+    elements_ms = (perf_counter() - elements_started) * 1000 if elements_started is not None else None
+    strength_started = perf_counter() if started is not None else None
     strengths = _load_market_strength(brand_keys, context)
+    strength_ms = (perf_counter() - strength_started) * 1000 if strength_started is not None else None
     choices_by_source = {"iqvia": (), "ubist": (), context.source: choices}
-    return build_brand_factors(
+    build_started = perf_counter() if started is not None else None
+    payload = build_brand_factors(
         choices_by_source,
         selected_brand_key=context.brand_key,
         cached_elements_by_key=cached,
         selected_factors=_empty_brand_factors(),
         strength_by_source_by_key=strengths,
     )
+    if started is not None:
+        logger.info(
+            "market_latency_deep_factors brand=%s view=%s choices=%d resolve_ms=%.3f "
+            "elements_ms=%.3f strength_ms=%.3f build_ms=%.3f total_ms=%.3f",
+            brand,
+            context.view_kind,
+            len(choices),
+            resolve_ms or 0.0,
+            elements_ms or 0.0,
+            strength_ms or 0.0,
+            (perf_counter() - build_started) * 1000 if build_started is not None else 0.0,
+            (perf_counter() - started) * 1000,
+        )
+    return payload
 
 
 def _brand_factors_have_strength(value: object) -> bool:
