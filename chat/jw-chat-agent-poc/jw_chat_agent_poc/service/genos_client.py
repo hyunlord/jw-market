@@ -508,6 +508,38 @@ def _ensure_mfds_permit_date_answer(question: str, markdown: str, fact_md: str) 
     )
 
 
+def _ensure_mfds_clinical_evidence_answer(question: str, markdown: str, fact_md: str) -> str:
+    if not re.search(r"임상|허가", question):
+        return markdown
+    rows = tuple(
+        match.groups()
+        for match in re.finditer(
+            r"(?m)^-\s*(.+?)\s+\((\d{8})\):\s*국내 임상시험\s*=\s*(.+?)\s+"
+            r"\[식약처 의약품 정보\]\s*$",
+            fact_md,
+        )
+    )
+    missing_rows = tuple(row for row in rows if row[2] not in markdown)
+    if not missing_rows:
+        return markdown
+    highlighted = ", ".join(row[2] for row in missing_rows[:3])
+    remainder = " 등" if len(missing_rows) > 3 else ""
+    table = "\n".join(
+        (
+            "**국내 식약처 임상 등록 근거**",
+            "",
+            "| 질환 | 등록일 | 품목·개발 코드 |",
+            "|---|---:|---|",
+            *(f"| {subject} | {period} | {item} |" for subject, period, item in missing_rows),
+        )
+    )
+    lead = (
+        f"국내 식약처 임상 등록에서는 {highlighted}{remainder}가 확인됩니다. "
+        "아래 내용은 등록 품목과 일자를 보여주는 근거이며, 임상 성공이나 현재 개발 단계까지 뜻하지는 않습니다."
+    )
+    return _insert_before_first_table(markdown, f"{lead}\n\n{table}")
+
+
 def _fact_lookup_markdown(markdown_response: dict[str, Any]) -> str:
     parts: list[str] = []
     for key in ("fact_md", "data_md", "markdown"):
@@ -896,6 +928,7 @@ class GenosClient:
             answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = ensure_natural_fact_lead(question, answer, fact_md)
         answer = _ensure_mfds_permit_date_answer(question, answer, fact_md)
+        answer = _ensure_mfds_clinical_evidence_answer(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)

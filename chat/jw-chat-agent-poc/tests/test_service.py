@@ -1958,3 +1958,49 @@ def test_tool_use_permission_date_adds_prose_when_date_only_appears_in_table(mon
     answer = "".join(client.stream_answer("리바로 허가일", agent_result))
 
     assert answer.index("식약처 허가일은 20050106입니다") < answer.index("| 품목명 |")
+
+
+def test_combined_clinical_answer_restores_mfds_rows_dropped_by_final_synthesis(monkeypatch) -> None:
+    fact_md = "\n".join(
+        (
+            "- hyperlipidemia: 글로벌 임상시험 = NCT04097990 · Fatty acid study "
+            "[ClinicalTrials.gov 임상시험 정보]",
+            "- 고지혈증 (20120118): 국내 임상시험 = "
+            "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨) [식약처 의약품 정보]",
+            "- 고지혈증 (20120928): 국내 임상시험 = YH14700 [식약처 의약품 정보]",
+            "- 고지혈증 (20121210): 국내 임상시험 = YH16410 [식약처 의약품 정보]",
+        )
+    )
+    global_only = (
+        "글로벌 임상에서는 NCT04097990 연구가 확인됩니다.\n\n"
+        "| 임상시험 번호 | 연구 |\n"
+        "|---|---|\n"
+        "| NCT04097990 | Fatty acid study |"
+    )
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda _self, _messages: global_only)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {
+            "fact_md": fact_md,
+            "allowed_numbers": ["NCT04097990", "20120118", "20120928", "20121210"],
+        },
+        "tool_calls": [
+            {"tool": "clinicaltrials_v2_search", "source": "clinicaltrials_mcp"},
+            {"tool": "mfds_clinical_trial_kr", "source": "nedrug_mcp"},
+        ],
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "국내 식약처 임상 등록에서는" in answer
+    assert "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨)" in answer.replace(", ", ",")
+    assert "YH14700" in answer
+    assert "YH16410" in answer
+    assert answer.index("국내 식약처 임상 등록에서는") < answer.index("| 임상시험 번호 |")
