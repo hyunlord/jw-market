@@ -177,6 +177,7 @@ def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
 def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch) -> None:
     rows = [{"brand_key": "a", "brand_name": "A"}]
     build_calls = []
+    trend_calls = []
 
     monkeypatch.setattr(analysis_levels, "build_analysis_rows", lambda **_: rows)
     monkeypatch.setattr(analysis_levels, "resolve_market_channels", lambda **_: {"specialty_channels": ["전문"]})
@@ -195,7 +196,11 @@ def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch
     monkeypatch.setattr(cause_builder, "_build_analysis_levels_from_mart", fake_build)
     monkeypatch.setattr(cause_builder, "_ensure_split_class_alias", lambda value: value)
     monkeypatch.setattr(cause_builder, "_level_rows_by_segment", lambda *_: {})
-    monkeypatch.setattr(cause_builder, "_level_top5_trend", lambda *_args, **_kwargs: {"by_level": {}})
+    def fake_level_top5_trend(*_args, **kwargs):
+        trend_calls.append(kwargs)
+        return {"by_level": {}}
+
+    monkeypatch.setattr(cause_builder, "_level_top5_trend", fake_level_top5_trend)
     monkeypatch.setattr(cause_builder, "_analysis_level_market_status_by_channel", lambda **_: {})
     monkeypatch.setattr(cause_builder, "_ensure_analysis_level_market_status_contract", lambda value: value)
 
@@ -233,6 +238,7 @@ def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch
 def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkeypatch) -> None:
     rows = [{"brand_key": "same-a", "brand_name": "Same A", "company_name": "Same Co"}]
     build_calls = []
+    trend_calls = []
 
     monkeypatch.setattr(cause_builder, "strategic_channel_totals_context", lambda _rows: nullcontext())
     monkeypatch.setattr(cause_builder, "resolve_market_channels", lambda **_: {})
@@ -251,7 +257,11 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     monkeypatch.setattr(cause_builder, "_data_period_coverage", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cause_builder, "_growth_contribution_payload", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(cause_builder, "_target_customer_competition", lambda **_: {})
-    monkeypatch.setattr(cause_builder, "_level_top5_trend", lambda *_args, **_kwargs: {"by_level": {}})
+    def fake_level_top5_trend(*_args, **kwargs):
+        trend_calls.append(kwargs)
+        return {"by_level": {}}
+
+    monkeypatch.setattr(cause_builder, "_level_top5_trend", fake_level_top5_trend)
     monkeypatch.setattr(cause_builder, "_analysis_level_market_status_by_channel", lambda **_: {})
     monkeypatch.setattr(cause_builder, "_ensure_analysis_level_market_status_contract", lambda value: value)
     monkeypatch.setattr(cause_builder, "_matrix_payload", lambda *_args, **_kwargs: {})
@@ -303,3 +313,4 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
 
     assert result is not None
     assert len(build_calls) == 1
+    assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]

@@ -3883,6 +3883,7 @@ def build_response(
         brand_row.get("brand_name"),
         rows_by_level=LEVEL_ROW_GROUPS_CACHE[analysis_cache_key],
         include_all_options=include_all_d3_options,
+        series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
     )
     target_customer_competition = target_customer_competition_by_channel
