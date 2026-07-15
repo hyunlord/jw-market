@@ -100,3 +100,33 @@ def test_general_dimensions_reuse_request_rows() -> None:
         "channel_data": analysis_row["channel_data"],
         "channel_specialty_matrix": analysis_row["channel_specialty_matrix"],
     }
+
+
+def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
+    calls = []
+
+    def fake_payload(**kwargs):
+        calls.append(kwargs)
+        return [{"brand": "A", "value_recent": 1.0}]
+
+    monkeypatch.setattr(cause_builder, "_level_trend_brand_payloads", fake_payload)
+    analysis_levels = {
+        "levels": ["Class", "Molecule"],
+        "periods_monthly": ["2026-01"],
+        "data": {
+            "Class": {"by_channel": {"전체": [{"name": "전체", "is_overall": True, "value_series": [1.0]}]}},
+            "Molecule": {"by_channel": {"전체": [{"name": "전체", "is_overall": True, "value_series": [1.0]}]}},
+        },
+    }
+    rows = [{"brand_name": "A", "metric_history": {"2026-01": {"raw_value": 1.0}}}]
+
+    result = cause_builder._level_top5_trend(
+        analysis_levels,
+        rows,
+        "UBIST",
+        None,
+        channel="전체",
+    )
+
+    assert len(calls) == 1
+    assert result["by_level"]["Class"]["values"][0]["brands_in_value"] == result["by_level"]["Molecule"]["values"][0]["brands_in_value"]

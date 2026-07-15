@@ -3145,6 +3145,7 @@ def _level_top5_trend(
         series_value_cache=series_value_cache,
     )
     full_market_series = _total_series_for_rows(full_market_rows, periods)
+    overall_brand_payload_cache: dict[tuple[float | None, ...], list[dict[str, Any]]] = {}
     for level in levels:
         segment_rows_by_name = (
             _rows_for_dimension_segments(
@@ -3180,6 +3181,21 @@ def _level_top5_trend(
             if not overall_value_series:
                 overall_value_series = _total_series_for_rows(channel_rows, periods)
             overall_value = safe_float(overall_value_series[-1] if overall_value_series else None)
+            overall_series_key = tuple(overall_value_series)
+            overall_brands_in_value = overall_brand_payload_cache.get(overall_series_key)
+            if overall_brands_in_value is None:
+                overall_brands_in_value = _level_trend_brand_payloads(
+                    option_rows=channel_rows,
+                    periods=periods,
+                    # B2: 전체 옵션은 "전체 시장 기준" 뷰다. 여기서는 선택
+                    # 브랜드가 top5 밖이어도 들어가야 하므로 target_name을
+                    # 전달한다. 전체 옵션을 일반 segment처럼 처리하면 운영의
+                    # 전체 시장 기준 chart8과 달라져 기각했다.
+                    target_name=target_name,
+                    total_series=overall_value_series,
+                    use_latest_valid_share=use_latest_valid_share,
+                )
+                overall_brand_payload_cache[overall_series_key] = overall_brands_in_value
             overall_item = {
                     "value": "전체",
                     "is_default": True,
@@ -3187,17 +3203,7 @@ def _level_top5_trend(
                     "total_value": overall_value,
                     "total_volume": overall_value,
                     "ms_pct": 100.0 if overall_value is not None else None,
-                    "brands_in_value": _level_trend_brand_payloads(
-                        option_rows=channel_rows,
-                        periods=periods,
-                        # B2: 전체 옵션은 "전체 시장 기준" 뷰다. 여기서는 선택
-                        # 브랜드가 top5 밖이어도 들어가야 하므로 target_name을
-                        # 전달한다. 전체 옵션을 일반 segment처럼 처리하면 운영의
-                        # 전체 시장 기준 chart8과 달라져 기각했다.
-                        target_name=target_name,
-                        total_series=overall_value_series,
-                        use_latest_valid_share=use_latest_valid_share,
-                    ),
+                    "brands_in_value": overall_brands_in_value,
                 }
             if overall_value is None:
                 overall_item["data_quality"] = {"available": False, "reason": "no_data"}
