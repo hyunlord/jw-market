@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import inspect
 import json
 from pathlib import Path
@@ -167,6 +168,38 @@ def test_channel_rows_seed_series_cache_for_total_reduction(monkeypatch) -> None
     assert totals == [10.0, 20.0]
     assert calls_after_channel_rows == 2
     assert calls == calls_after_channel_rows
+
+
+def test_latest_top_trends_ranks_each_year_once(monkeypatch) -> None:
+    years = [2023, 2024, 2025]
+    normalized_by_year = {
+        year: [
+            {"brand": "Target", "value": 30.0, "is_others": False},
+            {"brand": "Other", "value": 20.0, "is_others": False},
+            {"brand": "Third", "value": 10.0, "is_others": False},
+        ]
+        for year in years
+    }
+    sort_calls = 0
+    original_sorted = builtins.sorted
+
+    def count_sorted(*args: Any, **kwargs: Any) -> list[Any]:
+        nonlocal sort_calls
+        sort_calls += 1
+        return original_sorted(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "sorted", count_sorted)
+
+    trends = cause._latest_top_trends(
+        years=years,
+        normalized_by_year=normalized_by_year,
+        label_key="brand",
+        target_name="Target",
+        top_n=1,
+    )
+
+    assert [trend["brand"] for trend in trends] == ["Target", "Other", "기타"]
+    assert sort_calls == len(years)
 
 
 def test_analysis_level_builds_reuse_shared_series_caches(monkeypatch) -> None:
