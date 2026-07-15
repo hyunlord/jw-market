@@ -173,8 +173,13 @@ def _is_external_clinical_registry(fact_md: str) -> bool:
     )
     current_registry_table = (
         "### 임상시험 fact" in fact_md
-        and "clinicaltrials_v2_search" in fact_md
-        and bool(re.search(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE))
+        and (
+            (
+                "clinicaltrials_v2_search" in fact_md
+                and bool(re.search(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE))
+            )
+            or "mfds_clinical_trial_kr" in fact_md
+        )
     )
     return legacy_registry or current_registry_table
 
@@ -395,9 +400,13 @@ def _cleanup_policy_markdown(markdown: str) -> str:
 
 def _clinical_registry_safe_summary(_question: str, fact_md: str) -> str:
     global_count = len(set(re.findall(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE)))
-    domestic_count = len(
+    legacy_domestic_count = len(
         re.findall(r"(?m)^-\s*.+?:\s*국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]\s*$", fact_md)
     )
+    table_domestic_count = len(
+        re.findall(r"(?m)^\|\s*mfds_clinical_trial_kr\s*\|", fact_md)
+    )
+    domestic_count = legacy_domestic_count + table_domestic_count
     observed: list[str] = []
     if global_count:
         observed.append(f"ClinicalTrials.gov 등록정보에서 글로벌 임상시험 {global_count}건")

@@ -38,6 +38,17 @@ CLINICAL_REGISTRY_TABLE_FACT_MD = "\n".join(
     ]
 )
 
+DOMESTIC_CLINICAL_REGISTRY_TABLE_FACT_MD = "\n".join(
+    [
+        "## 확정 fact set",
+        "### 임상시험 fact",
+        "| 출처 | 시험/식별자 | 제목/제품 | 상태 | 단계 |",
+        "| --- | --- | --- | --- | --- |",
+        "| mfds_clinical_trial_kr | 2026071501 | 리바로 안전성 연구 | 진행 중 | 3상 |",
+        "| mfds_clinical_trial_kr | 2026071502 | 피타바스타틴 병용 연구 | 종료 | 2상 |",
+    ]
+)
+
 ADVERSE_EVENT_FACT_MD = (
     "- pitavastatin (2026-03-31): FAERS 자발보고 내 이상반응 = "
     "FAERS 보고 26558911 · 2026-03-31 · 보고 반응: Acute kidney injury, "
@@ -113,6 +124,37 @@ def test_clinical_registry_policy_covers_current_fact_table_and_removes_live_ove
     assert "NCT02250976" in revised
 
     report = claim_policy_report(revised, CLINICAL_REGISTRY_TABLE_FACT_MD)
+    assert "external_clinical_registry" in report["active_fact_types"]
+    assert report["forbidden_claims_remaining"] == ()
+
+
+def test_clinical_registry_policy_covers_domestic_only_current_fact_table() -> None:
+    answer = "\n".join(
+        [
+            "리바로는 임상시험을 통해 안전성과 유효성을 지속적으로 검증하고 있습니다.",
+            "환자에게 최적의 치료 옵션을 제공하는 폭넓은 임상 포트폴리오를 보여줍니다.",
+            "| 시험 식별자 | 연구 제목 |",
+            "| --- | --- |",
+            "| 2026071501 | 리바로 안전성 연구 |",
+            "| 2026071502 | 피타바스타틴 병용 연구 |",
+        ]
+    )
+
+    revised = apply_claim_policy(
+        "리바로 국내 임상시험",
+        answer,
+        DOMESTIC_CLINICAL_REGISTRY_TABLE_FACT_MD,
+    )
+
+    assert "안전성과 유효성을 지속적으로 검증" not in revised
+    assert "최적의 치료 옵션" not in revised
+    assert "폭넓은 임상 포트폴리오" not in revised
+    assert "식약처 등록정보에서 국내 임상시험 2건" in revised
+    assert "ClinicalTrials.gov 등록정보" not in revised
+    assert "2026071501" in revised
+    assert "2026071502" in revised
+
+    report = claim_policy_report(revised, DOMESTIC_CLINICAL_REGISTRY_TABLE_FACT_MD)
     assert "external_clinical_registry" in report["active_fact_types"]
     assert report["forbidden_claims_remaining"] == ()
 
