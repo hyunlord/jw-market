@@ -95,6 +95,54 @@ def test_series_values_with_observed_preserves_zero_and_missing() -> None:
     assert observed == (True, False)
 
 
+def test_analysis_level_builds_reuse_shared_series_caches(monkeypatch) -> None:
+    rows = [
+        {
+            "brand_name": "Brand A",
+            "brand_key": "brand-a",
+            "metric_history": {"2025-01": {"raw_value": 10.0}},
+            "by_dimension": {"class": "Class A"},
+            "dimension_data": {},
+            "dimension_channel_data": {},
+            "dimension_specialty_data": {},
+            "channel_data": {},
+            "overlay_data": {},
+        }
+    ]
+    value_cache: cause._SeriesValueCache = {}
+    observed_cache: cause._SeriesObservedCache = {}
+    calls = 0
+    original = cause._optional_value_from_period_item
+
+    def count_optional_value(item: object) -> float | None:
+        nonlocal calls
+        calls += 1
+        return original(item)
+
+    monkeypatch.setattr(cause, "_optional_value_from_period_item", count_optional_value)
+    kwargs = {
+        "rows": rows,
+        "source": "UBIST",
+        "market": {"analyze_class": 1},
+        "view_source_id": "synthetic",
+        "target_name": None,
+        "fallback_level_top5": {},
+        "channels_override": ["전체"],
+        "resolved_levels": {"Class"},
+        "resolved_periods": ["2025-01"],
+        "series_value_cache": value_cache,
+        "series_observed_cache": observed_cache,
+    }
+
+    first = cause._build_analysis_levels_from_mart(**kwargs)
+    first_calls = calls
+    second = cause._build_analysis_levels_from_mart(**kwargs)
+
+    assert first == second
+    assert first_calls > 0
+    assert calls == first_calls
+
+
 def test_build_response_does_not_compute_unused_others_display_rows() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cause.build_response)))
     display_calls = [
