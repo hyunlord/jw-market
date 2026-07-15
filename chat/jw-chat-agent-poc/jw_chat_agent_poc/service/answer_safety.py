@@ -621,13 +621,25 @@ def ensure_natural_fact_lead(question: str, answer: str, fact_md: str) -> str:
         )
         return cleanup_markdown_answer("\n\n".join((lead, "## 근거 데이터", answer)))
     disease_question = re.fullmatch(r"\s*(?P<brand>[^\s]+)\s+(?:질환|질병)\s*[?.!。？！]*\s*", question)
-    disease_fact = _DISEASE_IDENTITY_FACT_RE.fullmatch(first_line)
+    disease_fact = next(
+        (
+            match
+            for line in fact_md.splitlines()
+            if (match := _DISEASE_IDENTITY_FACT_RE.fullmatch(line.strip())) is not None
+        ),
+        None,
+    )
     if disease_question and disease_fact:
         lead = (
             f"{disease_question.group('brand')}는 {disease_fact.group('source')} 기준 상병코드 "
             f"{disease_fact.group('code')}, 질병명 '{disease_fact.group('disease')}'에 해당합니다."
         )
-        return cleanup_markdown_answer("\n\n".join((lead, "## 근거 데이터", answer)))
+        evidence = disease_fact.group(0)
+        source_start = re.search(r"(?m)^##\s*출처\s*$", answer)
+        source_block = answer[source_start.start() :].strip() if source_start else ""
+        return cleanup_markdown_answer(
+            "\n\n".join(part for part in (lead, "## 근거 데이터", evidence, source_block) if part)
+        )
     if any(token in question for token in ("경쟁", "구도", "상위")):
         if first_line.startswith(("조회 결과에서", f"{question.split(maxsplit=1)[0]} 경쟁구도를 보면")):
             return answer

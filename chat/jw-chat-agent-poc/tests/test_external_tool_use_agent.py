@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
+from jw_chat_agent_poc.service.answer_safety import ensure_natural_fact_lead
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
@@ -1113,6 +1114,32 @@ def test_disease_identity_answer_is_natural_without_reclassifying_as_ingredient(
         "- E78: 질병명/상병코드 = 지질단백질대사장애 및 기타 지질증 [건강보험심사평가원 통계]"
     )
     assert "성분" not in answer
+
+
+def test_disease_identity_answer_replaces_contaminated_synthesis_but_keeps_sources() -> None:
+    fact_md = "- E78: 질병명/상병코드 = 지질단백질대사장애 및 기타 지질증 [건강보험심사평가원 통계]"
+    contaminated = (
+        "리바로는 피타바스타틴 성분의 치료제입니다. 웹 검색에서 안전성도 확인했습니다.\n\n"
+        "## 출처\n\n"
+        "| 출처 | 기준기간 |\n"
+        "| --- | --- |\n"
+        "| HIRA | 해당 없음 |"
+    )
+
+    revised = ensure_natural_fact_lead("리바로 질환", contaminated, fact_md)
+
+    assert revised == (
+        "리바로는 건강보험심사평가원 통계 기준 상병코드 E78, "
+        "질병명 '지질단백질대사장애 및 기타 지질증'에 해당합니다.\n\n"
+        "## 근거 데이터\n\n"
+        "- E78: 질병명/상병코드 = 지질단백질대사장애 및 기타 지질증 [건강보험심사평가원 통계]\n\n"
+        "## 출처\n\n"
+        "| 출처 | 기준기간 |\n"
+        "| --- | --- |\n"
+        "| HIRA | 해당 없음 |"
+    )
+    assert "피타바스타틴" not in revised
+    assert "웹 검색" not in revised
 
 
 def test_numeric_evidence_preserves_decimal_without_inventing_zero() -> None:
