@@ -122,6 +122,7 @@ def test_openfda_adverse_event_text_becomes_public_evidence() -> None:
             "    drugs[1]:\n"
             "      - name: LIVALO\n"
             "        characterization: concomitant\n"
+            "        generic_name: PITAVASTATIN CALCIUM\n"
             "    reactions[2]{term,outcome}:\n"
             "      Myalgia,Recovered\n"
             "      Dizziness,Unknown\n"
@@ -154,6 +155,46 @@ def test_openfda_adverse_event_text_becomes_public_evidence() -> None:
     assert "pitavastatin: 부작용 =" not in answer
 
 
+def test_openfda_adverse_event_rejects_reports_for_a_different_drug() -> None:
+    result = McpToolResult(
+        content_text=(
+            "total_results: 2\n"
+            "adverse_events[2]:\n"
+            '  - safety_report_id: "unrelated-report"\n'
+            "    report_date: 2026-03-31\n"
+            "    drugs[1]:\n"
+            "      - name: TYLENOL\n"
+            "        generic_name: ACETAMINOPHEN\n"
+            "    reactions[1]{term,outcome}:\n"
+            "      Headache,Unknown\n"
+            '  - safety_report_id: "pitavastatin-report"\n'
+            "    report_date: 2026-03-30\n"
+            "    drugs[1]:\n"
+            "      - name: LIVALO\n"
+            "        generic_name: PITAVASTATIN CALCIUM\n"
+            "    reactions[1]{term,outcome}:\n"
+            "      Myalgia,Recovered\n"
+        ),
+        raw_result={"content": []},
+    )
+
+    call = _mcp_external_call(
+        "openfda_label_search",
+        "openfda_mcp",
+        {"search": 'openfda.substance_name:"PITAVASTATIN"', "evidence_type": "adverse_event"},
+        "search_drug_adverse_events",
+        result,
+        "http://gateway/mcp/184/mcp",
+        10.0,
+    )
+    envelope = _external_call_envelope(call, "pitavastatin", "FAERS 자발보고 내 이상반응")
+
+    assert envelope.ok is True
+    assert len(envelope.evidence) == 1
+    assert "pitavastatin-report" in str(envelope.evidence[0].source_locator)
+    assert all("unrelated-report" not in str(fact.source_locator) for fact in envelope.evidence)
+
+
 def test_openfda_adverse_event_preserves_structured_mcp_results() -> None:
     result = McpToolResult(
         content_text="",
@@ -166,6 +207,14 @@ def test_openfda_adverse_event_preserves_structured_mcp_results() -> None:
                             "safety_report_id": "30000001",
                             "date": "2026-04-01",
                             "reaction_terms": ["Headache"],
+                            "patient": {
+                                "drug": [
+                                    {
+                                        "medicinalproduct": "LIVALO",
+                                        "openfda": {"generic_name": ["PITAVASTATIN CALCIUM"]},
+                                    }
+                                ]
+                            },
                         }
                     ],
                 }
@@ -189,6 +238,33 @@ def test_openfda_adverse_event_preserves_structured_mcp_results() -> None:
     assert envelope.ok is True
     assert "FAERS 보고 30000001" in str(envelope.evidence[0].source_locator)
     assert "보고 반응: Headache" in str(envelope.evidence[0].source_locator)
+
+
+def test_clinicaltrials_evidence_keeps_nct_identifier_title_and_url() -> None:
+    call = ExternalCall(
+        tool="clinicaltrials_v2_search",
+        source="clinicaltrials_mcp",
+        status="live",
+        summary_text="임상시험 1건",
+        render_data={
+            "payload": {
+                "studies": [
+                    {
+                        "NCTId": "NCT01234567",
+                        "briefTitle": "Pitavastatin Cardiovascular Outcomes Study",
+                        "url": "https://clinicaltrials.gov/study/NCT01234567",
+                    }
+                ]
+            }
+        },
+    )
+
+    envelope = _external_call_envelope(call, "pitavastatin", "글로벌 임상시험")
+    locator = str(envelope.evidence[0].source_locator)
+
+    assert "NCT01234567" in locator
+    assert "Pitavastatin Cardiovascular Outcomes Study" in locator
+    assert "https://clinicaltrials.gov/study/NCT01234567" in locator
 
 
 def test_payload_results_are_promoted_to_external_evidence() -> None:

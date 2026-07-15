@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from decimal import Decimal
 from functools import partial
@@ -216,6 +217,8 @@ def _external_call_envelope(call: ExternalCall, subject: str, metric: str) -> To
 def _facts_from_external_call(call: ExternalCall, subject: str, metric: str) -> tuple[EvidenceFact, ...]:
     data = call.render_data
     rows = _external_rows(data)
+    if _is_adverse_event_call(data):
+        rows = tuple(row for row in rows if _adverse_report_matches_subject(row, subject))
     if rows:
         fallback_period = _request_period(data)
         return tuple(
@@ -248,6 +251,54 @@ def _external_rows(data: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     if not isinstance(candidates, list):
         return ()
     return tuple(item for item in candidates if isinstance(item, dict))
+
+
+def _is_adverse_event_call(data: dict[str, Any]) -> bool:
+    mcp = data.get("mcp")
+    return isinstance(mcp, dict) and mcp.get("tool") == "search_drug_adverse_events"
+
+
+def _adverse_report_matches_subject(item: dict[str, Any], subject: str) -> bool:
+    target = _normalized_drug_term(subject)
+    if not target:
+        return False
+    return any(
+        term == target or term.startswith(f"{target} ") or target.startswith(f"{term} ")
+        for term in (_normalized_drug_term(value) for value in _adverse_drug_terms(item))
+        if term
+    )
+
+
+def _adverse_drug_terms(item: dict[str, Any]) -> tuple[str, ...]:
+    terms: list[str] = []
+    drug_names = item.get("drug_names")
+    if isinstance(drug_names, list):
+        terms.extend(str(value) for value in drug_names if value)
+
+    patient = item.get("patient")
+    drugs = patient.get("drug") if isinstance(patient, dict) else None
+    if not isinstance(drugs, list):
+        return tuple(terms)
+    for drug in drugs:
+        if not isinstance(drug, dict):
+            continue
+        medicinal_product = drug.get("medicinalproduct")
+        if medicinal_product:
+            terms.append(str(medicinal_product))
+        openfda = drug.get("openfda")
+        if not isinstance(openfda, dict):
+            continue
+        for key in ("generic_name", "substance_name", "brand_name"):
+            value = openfda.get(key)
+            if isinstance(value, list):
+                terms.extend(str(entry) for entry in value if entry)
+            elif value:
+                terms.append(str(value))
+    return tuple(terms)
+
+
+def _normalized_drug_term(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", " ", value.casefold()).strip()
 
 
 def _row_fact(
@@ -309,6 +360,16 @@ def _item_locator(item: dict[str, Any]) -> str | None:
         reactions = item.get("reaction_terms")
         if isinstance(reactions, list) and reactions:
             parts.append(f"보고 반응: {', '.join(str(value) for value in reactions)}")
+        return " · ".join(parts)
+    nct_id = str(item.get("NCTId") or item.get("nctId") or "").strip()
+    if nct_id:
+        parts = [nct_id]
+        trial_title = str(item.get("briefTitle") or item.get("title") or "").strip()
+        if trial_title:
+            parts.append(trial_title)
+        trial_url = str(item.get("url") or item.get("clinicaltrials_url") or "").strip()
+        if trial_url:
+            parts.append(trial_url)
         return " · ".join(parts)
     title = str(item.get("title") or "").strip()
     url = str(item.get("url") or "").strip()

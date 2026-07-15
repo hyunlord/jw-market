@@ -232,11 +232,14 @@ def test_tool_catalog_has_descriptions_for_all_19_tools() -> None:
     assert all("when not" in description for description in descriptions)
 
 
-def test_tool_descriptions_route_unqualified_trials_global_and_latest_web_as_news() -> None:
+def test_tool_descriptions_route_trials_and_web_topics_without_misclassifying_guidelines() -> None:
     descriptions = {record.name: record.description for record in TOOL_DESCRIPTION_CATALOG}
 
     assert "비한정" in descriptions["clinicaltrials_v2_search"]
     assert "비한정" in descriptions["mfds_clinical_trial_kr"]
+    assert "가이드라인" in descriptions["web_search"]
+    assert "최신 가이드라인은 topic=general" in descriptions["web_search"]
+    assert "뉴스" in descriptions["web_search"]
     assert "topic=news" in descriptions["web_search"]
 
 
@@ -371,6 +374,14 @@ def test_openfda_tool_requires_planner_to_choose_label_or_adverse_evidence(monke
                             "date": "2026-03-31",
                             "reaction_terms": ["Myalgia"],
                             "title": "FAERS report 26558911",
+                            "patient": {
+                                "drug": [
+                                    {
+                                        "medicinalproduct": "LIVALO",
+                                        "openfda": {"generic_name": ["PITAVASTATIN CALCIUM"]},
+                                    }
+                                ]
+                            },
                         }
                     ]
                 },

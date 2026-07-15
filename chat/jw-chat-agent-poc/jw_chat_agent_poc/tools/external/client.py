@@ -679,6 +679,12 @@ def _openfda_adverse_mcp_payload(text: str) -> dict[str, Any]:
             current["drug_names"].append(name)
             in_reactions = False
             continue
+        if stripped.startswith(("generic_name:", "substance_name:", "brand_name:")):
+            name = stripped.split(":", 1)[1].strip().strip("[]\"'")
+            if name:
+                current["drug_names"].append(name)
+            in_reactions = False
+            continue
         if line.startswith("    report_date:"):
             current["date"] = stripped.split(":", 1)[1].strip().strip('"')
         elif line.startswith("    serious:"):
