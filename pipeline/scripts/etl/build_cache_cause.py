@@ -3233,7 +3233,7 @@ def _level_top5_trend(
         periods,
         series_value_cache=series_value_cache,
     )
-    full_market_series = _total_series_for_rows(full_market_rows, periods)
+    full_market_series: list[float] | None = None
     overall_brand_payload_cache: dict[tuple[float | None, ...], list[dict[str, Any]]] = {}
     for level in levels:
         segment_rows_by_name = (
@@ -3356,10 +3356,14 @@ def _level_top5_trend(
             if total_value is None:
                 segment_item["data_quality"] = {"available": False, "reason": "no_data"}
             values.append(segment_item)
-        overall_total = (
-            safe_float(overall_value_series[-1])
+        if not overall_value_series and full_market_series is None and periods:
+            full_market_series = _total_series_for_rows(full_market_rows, periods)
+        overall_total = safe_float(
+            overall_value_series[-1]
             if overall_value_series
-            else safe_float(full_market_series[-1] if full_market_series else None)
+            else full_market_series[-1]
+            if full_market_series
+            else None
         )
         fallback_total = _sum_optional_complete(item.get("total_value") for item in values)
         by_level[level] = {

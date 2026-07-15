@@ -106,12 +106,14 @@ def test_general_dimensions_reuse_request_rows() -> None:
 
 def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
     calls = []
+    total_series_calls = []
 
     def fake_payload(**kwargs):
         calls.append(kwargs)
         return [{"brand": "A", "value_recent": 1.0}]
 
     monkeypatch.setattr(cause_builder, "_level_trend_brand_payloads", fake_payload)
+    monkeypatch.setattr(cause_builder, "_total_series_for_rows", lambda *_args, **_kwargs: total_series_calls.append(True) or [1.0])
     analysis_levels = {
         "levels": ["Class", "Molecule"],
         "periods_monthly": ["2026-01"],
@@ -131,6 +133,7 @@ def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
     )
 
     assert len(calls) == 1
+    assert total_series_calls == []
     assert result["by_level"]["Class"]["values"][0]["brands_in_value"] == result["by_level"]["Molecule"]["values"][0]["brands_in_value"]
 
 
