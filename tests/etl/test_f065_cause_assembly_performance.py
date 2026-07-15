@@ -512,6 +512,15 @@ def test_segment_level_invariants_are_resolved_once_per_call(monkeypatch) -> Non
     assert calls == 1
 
 
+def test_available_specialty_fields_scans_rows_once_as_a_presence_index() -> None:
+    rows = [
+        {"dimension_specialty_data": {}},
+        {"dimension_specialty_data": {"molecule": {"Molecule A": {}}}},
+    ]
+
+    assert cause._available_specialty_dimension_fields(rows) == {"molecule"}
+
+
 def test_channel_bucket_reuses_same_raw_channel() -> None:
     cause._channel_bucket.cache_clear()
 
