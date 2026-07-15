@@ -144,6 +144,33 @@ def test_period_value_reads_dict_fallback_inline(monkeypatch) -> None:
     assert calls == 0
 
 
+def test_total_series_reuses_observed_period_cache(monkeypatch) -> None:
+    periods = ["2025-01", "2025-02"]
+    history = {
+        periods[0]: {"raw_value": 10.0},
+        periods[1]: {"raw_value": 20.0},
+    }
+    row = {"metric_history": history}
+    observed_cache: dict[object, object] = {}
+    cause._series_values_with_observed(history, periods, cache=observed_cache)
+
+    calls = 0
+
+    def count_value(item: object) -> float:
+        nonlocal calls
+        calls += 1
+        return 0.0
+
+    monkeypatch.setattr(cause, "_value_from_period_item", count_value)
+
+    assert cause._total_series_for_rows(
+        [row],
+        periods,
+        series_observed_cache=observed_cache,
+    ) == [10.0, 20.0]
+    assert calls == 0
+
+
 def test_segment_rows_reuses_one_observed_series_pass_for_group_and_total(monkeypatch) -> None:
     row = {
         "brand_name": "Brand A",
