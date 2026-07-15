@@ -130,6 +130,15 @@ def test_segment_rows_uses_channel_map_without_rechecking_field_presence(monkeyp
     assert segments[0]["value_series"] == [10.0]
 
 
+def test_is_class_level_reuses_pure_level_classification() -> None:
+    cause._is_class_level.cache_clear()
+
+    assert cause._is_class_level("Class") is True
+    assert cause._is_class_level("Class") is True
+    assert cause._is_class_level.cache_info().hits == 1
+    assert cause._is_class_level.cache_info().misses == 1
+
+
 def test_safe_float_avoids_conversion_for_native_finite_numbers(monkeypatch) -> None:
     calls = 0
     original_float = builtins.float
