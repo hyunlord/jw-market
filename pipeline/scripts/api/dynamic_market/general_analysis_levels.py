@@ -87,6 +87,7 @@ def build_general_analysis_level_sections(
             metrics=metrics,
             focus=focus,
             mart_db=mart_db,
+            reuse_general_dimensions=True,
         )
     except (MySQLError, RuntimeError, TypeError, ValueError, OSError):
         rows = _rows_from_metrics(metrics=metrics, focus=focus)
