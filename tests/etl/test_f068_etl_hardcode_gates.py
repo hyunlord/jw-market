@@ -240,3 +240,34 @@ def test_class1_rows_are_not_silently_dropped() -> None:
         "split-5",
         "split-6",
     ]
+
+
+def test_analysis_level_builder_reuses_resolved_plan(monkeypatch) -> None:
+    rows = [_row(generic="ARB", class_1="Statin/CCB", class_2="Statin/CCB")]
+    calls = {"levels": 0, "periods": 0}
+
+    def fail_levels(*_args: object, **_kwargs: object) -> list[str]:
+        calls["levels"] += 1
+        raise AssertionError("resolved levels should be reused")
+
+    def fail_periods(*_args: object, **_kwargs: object) -> list[str]:
+        calls["periods"] += 1
+        raise AssertionError("resolved periods should be reused")
+
+    monkeypatch.setattr(build_cache_cause, "_strategic_levels", fail_levels)
+    monkeypatch.setattr(build_cache_cause, "_history_periods", fail_periods)
+
+    payload = build_cache_cause._build_analysis_levels_from_mart(
+        rows=rows,
+        source="UBIST",
+        market=_market(),
+        view_source_id=None,
+        target_name=None,
+        fallback_level_top5={},
+        channels_override=["전체"],
+        resolved_levels={"Class", "Class 1", "Molecule"},
+        resolved_periods=["2026-01"],
+    )
+
+    assert payload["periods_monthly"] == ["2026-01"]
+    assert calls == {"levels": 0, "periods": 0}
