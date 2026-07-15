@@ -1648,6 +1648,60 @@ def test_hira_patient_summary_adds_natural_lead_before_existing_table() -> None:
     assert "| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |" in revised
 
 
+def test_genos_final_answer_keeps_hira_natural_lead_before_table(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="고지혈증",
+        calls=[
+            {
+                "tool": "hira_disease_hospitalization_outpatient_stats",
+                "source": "hira_disease",
+                "render_data": {
+                    "request": {"year": "2024"},
+                    "items": [
+                        {
+                            "inpatOpat": "외래 남",
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            "ptntCnt": 1_305_727,
+                        },
+                        {
+                            "inpatOpat": "외래 여",
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            "ptntCnt": 1_910_492,
+                        },
+                    ],
+                },
+            }
+        ],
+        sources=["hira_disease"],
+    )
+
+    def stream_chat(_self: GenosClient, _messages: list[dict[str, str]]):
+        yield (
+            "**질병 입원/외래 통계 (2024)**\n"
+            "| 질병코드 | 질병명 | 구분 | 환자수 | 출처 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| E78 | 지질단백질대사장애 및 기타 지질증 | 외래 남 | 1,305,727 | 건강보험심사평가원 |\n"
+            "| E78 | 지질단백질대사장애 및 기타 지질증 | 외래 여 | 1,910,492 | 건강보험심사평가원 |"
+        )
+
+    monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            "고지혈증 환자수",
+            {"markdown_response": response.to_dict()},
+        )
+    )
+
+    first_table = answer.index("| 질병코드 |")
+    lead = answer[:first_table]
+    assert "1305727명" in lead
+    assert "1910492명" in lead
+    assert "| E78 | 지질단백질대사장애 및 기타 지질증 | 외래 남 | 1,305,727 |" in answer
+
+
 def test_hira_patient_unavailable_notice_is_added_when_live_call_returns_no_counts() -> None:
     fact_md = """### 필수 답변 fact
 | 구분 | 내용 |
