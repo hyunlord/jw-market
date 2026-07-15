@@ -1509,8 +1509,13 @@ def _measure_labels(source: str) -> dict[str, str | None]:
 
 def _value_from_period_item(item: Any) -> float:
     if isinstance(item, dict):
-        value = _optional_row_value(item)
-        return value if value is not None else 0.0
+        parsed = safe_float(item.get("raw_value"))
+        if parsed is not None:
+            return parsed
+        parsed = safe_float(item.get("value"))
+        if parsed is not None:
+            return parsed
+        return safe_float(item.get("sales")) or 0.0
     return safe_float(item) or 0.0
 
 
