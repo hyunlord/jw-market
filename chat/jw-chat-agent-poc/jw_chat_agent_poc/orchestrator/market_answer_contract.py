@@ -330,6 +330,8 @@ def _brand_comparison_answer(question: str, calls: Sequence[Mapping[str, Any]]) 
 
 
 def _historical_brand_metric_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if "분기" in question or re.search(r"20\d{2}-?Q[1-4]", question, flags=re.IGNORECASE):
+        return ""
     if "매출" not in question or not re.search(r"20\d{2}(?:년|-)\s*(?:0?[1-9]|1[0-2])(?:월)?", question):
         return ""
     for call in calls:

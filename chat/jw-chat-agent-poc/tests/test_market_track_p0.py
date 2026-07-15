@@ -723,6 +723,7 @@ def test_quarter_metric_does_not_render_query_plan_as_a_source_row() -> None:
                     "metric": "sales",
                     "period": "2025-Q2",
                     "sales_억원": 242.72,
+                    "sales_krw": 24_272_468_115.55,
                     "query_spec": {
                         "view": "market_landscape",
                         "filters": {"brand": "리바로", "period": "2025-Q2"},
@@ -737,6 +738,7 @@ def test_quarter_metric_does_not_render_query_plan_as_a_source_row() -> None:
     assert provenance_rows == [
         "| UBIST | 2025-Q2 | 전략뷰 | 요청 브랜드의 전략 시장 | 555 | 전체 | 억원 |"
     ]
+    assert answer.startswith("2025-Q2 리바로 매출은 242.72억원입니다.")
     assert "2026-05" not in answer
 
 
