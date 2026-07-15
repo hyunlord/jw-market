@@ -79,6 +79,24 @@ def test_b1_does_not_invent_movement_for_missing_or_actual_zero_share_delta() ->
     assert "-0.00%p" not in insight
 
 
+def test_b1_keeps_real_movement_while_omitting_missing_and_zero_deltas() -> None:
+    top = _top_call()
+    trend = top["render_data"]["level_top5_trend_series"]
+    trend[0]["share_delta_pctp"] = None
+    trend[1]["share_delta_pctp"] = 0.0
+    trend[2]["share_delta_pctp"] = -1.0
+
+    call = build_bq_analysis_call("B1", [_series_call("ubist"), top])
+
+    assert call is not None
+    insight = call["render_data"]["insights"][0]
+    assert "경쟁A -1.00%p 하락" in insight
+    assert "리바로" not in insight.split("시장 성장분 중 브랜드 몫은", maxsplit=1)[1]
+    assert "로수젯" not in insight.split("시장 성장분 중 브랜드 몫은", maxsplit=1)[1]
+    assert "+0.00%p" not in insight
+    assert "-0.00%p" not in insight
+
+
 def test_b1_ledger_binds_waterfall_to_top5_trend_rows() -> None:
     call = build_bq_analysis_call("B1", [_series_call("ubist"), _top_call()])
 
