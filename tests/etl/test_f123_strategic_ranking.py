@@ -50,7 +50,15 @@ def _rows(values: tuple[int, ...]) -> list[dict[str, object]]:
     ]
 
 
-def test_market_scope_recompute_uses_the_same_contiguous_annual_prefix() -> None:
+def test_market_scope_recompute_restores_visible_only_series() -> None:
+    """F-134: the strategic competition Tracker emits only the selected brand plus its
+    top competitors (visible_ids = select+5), NOT the F-123 contiguous rank prefix.
+
+    Non-visible brands (here F, ranked 7th in the latest year) must never be pulled into
+    the tracker series just because they occupy an intermediate rank in an earlier year.
+    cause_ranking continuity (contiguous prefix, golden 74624725) is intentionally kept
+    separate and is covered by test_strategic_stacked_ranking_emits_contiguous_annual_prefix.
+    """
     histories = {
         name: {"2022-01": float(old), "2023-01": float(new)}
         for name, old, new in zip(
@@ -63,11 +71,15 @@ def test_market_scope_recompute_uses_the_same_contiguous_annual_prefix() -> None
 
     result = annual_ranking_payload(histories, label_key="brand_key", focus_id="A")
 
+    # visible_ids = latest-year (2023) top-6 with focus first = [A, B, C, D, E, G]; F (2023 rank 7) excluded.
     rows_2022 = [row for row in result["yearly"][0]["rankings"] if not row["is_others"]]
-    assert [row["rank"] for row in rows_2022] == [1, 2, 3, 4, 5, 6, 7]
-    assert [row["brand_key"] for row in rows_2022] == ["A", "B", "C", "D", "E", "F", "G"]
+    assert [row["brand_key"] for row in rows_2022] == ["A", "B", "C", "D", "E", "G"]
+    # 2022 ranks of the visible set: G is rank 7 in 2022; the non-visible rank-6 brand (F) is not shown.
+    assert [row["rank"] for row in rows_2022] == [1, 2, 3, 4, 5, 7]
     assert result["top_brands"] == ["A", "B", "C", "D", "E", "G", "기타"]
-    assert "F" in result["series"]
+    # G-1 / G-6: series is exactly the 6 visible + 기타; the widened emitted set (incl. F) must not return.
+    assert set(result["series"]) == {"A", "B", "C", "D", "E", "G", "기타"}
+    assert "F" not in result["series"]
 
 
 @pytest.mark.parametrize("label_key", ("brand_key", "company"))
