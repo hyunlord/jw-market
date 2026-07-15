@@ -95,6 +95,45 @@ def test_series_values_with_observed_preserves_zero_and_missing() -> None:
     assert observed == (True, False)
 
 
+def test_segment_rows_reuses_one_observed_series_pass_for_group_and_total(monkeypatch) -> None:
+    row = {
+        "brand_name": "Brand A",
+        "brand_key": "brand-a",
+        "by_dimension": {"class": "Class A"},
+        "dimension_data": {
+            "class": {"Class A": {"2025-01": {"raw_value": 10.0}}},
+        },
+        "dimension_channel_data": {},
+        "dimension_specialty_data": {},
+        "channel_data": {},
+        "metric_history": {"2025-01": {"raw_value": 10.0}},
+    }
+    calls = 0
+    original = cause._series_values_with_observed
+
+    def count_observed_series(*args: Any, **kwargs: Any) -> tuple[Any, tuple[bool, ...]]:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cause, "_series_values_with_observed", count_observed_series)
+
+    segments = cause._segment_rows_for_level(
+        rows=[row],
+        level="Class",
+        periods=["2025-01"],
+        source="UBIST",
+        channel="전체",
+        target_name=None,
+        top_n=None,
+    )
+
+    assert segments[0]["value_series"] == [10.0]
+    assert segments[0]["series_pct"] == [100.0]
+    assert segments[0]["recent_share_pct"] == 100.0
+    assert calls == 1
+
+
 def test_analysis_level_builds_reuse_shared_series_caches(monkeypatch) -> None:
     rows = [
         {
