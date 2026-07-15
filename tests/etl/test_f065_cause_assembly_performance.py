@@ -78,6 +78,23 @@ def test_annual_rank_rows_reuse_one_neutral_reduction_per_label() -> None:
     assert neutral_a["value"] == 30.0
 
 
+def test_series_values_with_observed_preserves_zero_and_missing() -> None:
+    series = {
+        "2025-01": {"raw_value": 0.0},
+        "2025-02": {"raw_value": None},
+    }
+    cache: cause._SeriesObservedCache = {}
+
+    values, observed = cause._series_values_with_observed(
+        series,
+        ["2025-01", "2025-02"],
+        cache=cache,
+    )
+
+    assert list(values) == [0.0, 0.0]
+    assert observed == (True, False)
+
+
 def test_build_response_does_not_compute_unused_others_display_rows() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cause.build_response)))
     display_calls = [

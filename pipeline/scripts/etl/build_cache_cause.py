@@ -106,6 +106,10 @@ _SeriesValueCache = dict[
     tuple[int, tuple[str, ...]],
     tuple[dict[str, Any], array],
 ]
+_SeriesObservedCache = dict[
+    tuple[int, tuple[str, ...]],
+    tuple[dict[str, Any], array, tuple[bool, ...]],
+]
 _AnnualRankRows = tuple[dict[int, list[dict[str, Any]]], dict[int, int]]
 _AnnualRankRowsCache = dict[tuple[int, str], _AnnualRankRows]
 
@@ -1529,6 +1533,31 @@ def _series_values(
     return values
 
 
+def _series_values_with_observed(
+    series: dict[str, Any],
+    periods: list[str],
+    *,
+    cache: _SeriesObservedCache | None = None,
+) -> tuple[array, tuple[bool, ...]]:
+    """Convert a period series once while preserving missing-vs-zero state."""
+    key = (id(series), tuple(periods))
+    if cache is not None:
+        cached = cache.get(key)
+        if cached is not None and cached[0] is series:
+            return cached[1], cached[2]
+    values = array("d")
+    observed: list[bool] = []
+    for period in periods:
+        item = series.get(period)
+        parsed = _optional_value_from_period_item(item)
+        observed.append(parsed is not None)
+        values.append(parsed if parsed is not None else 0.0)
+    result = (values, tuple(observed))
+    if cache is not None:
+        cache[key] = (series, values, result[1])
+    return result
+
+
 def _add_series(
     target: dict[str, list[float]],
     series: dict[str, Any],
@@ -1561,15 +1590,21 @@ def _segment_rows_for_level(
     top_n: int | None = 5,
     use_latest_valid_share: bool = False,
     series_value_cache: _SeriesValueCache | None = None,
+    series_observed_cache: _SeriesObservedCache | None = None,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, list[float]]] = {}
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
     observed_periods = {period: False for period in periods}
 
     def add_observed_series(target: dict[str, list[float]], series: dict[str, Any]) -> None:
-        _add_series(target, series, periods, series_value_cache=series_value_cache)
-        for period in periods:
-            if _period_item_is_observed(series.get(period)):
+        values, observed = _series_values_with_observed(
+            series,
+            periods,
+            cache=series_observed_cache,
+        )
+        for period, value, is_observed in zip(periods, values, observed):
+            target[period][0] += value
+            if is_observed:
                 observed_periods[period] = True
 
     for row in rows:
@@ -2106,6 +2141,7 @@ def _build_analysis_levels_from_mart(
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
+    series_observed_cache: _SeriesObservedCache = {}
     if resolved_levels is None:
         level_resolution_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
         enabled_levels = set(_strategic_levels(market, rows))
@@ -2147,6 +2183,7 @@ def _build_analysis_levels_from_mart(
                     top_n=None if channel == "전체" and level != "Brand" else 5,
                     use_latest_valid_share=use_latest_valid_share,
                     series_value_cache=series_value_cache,
+                    series_observed_cache=series_observed_cache,
                 )
                 for channel in channels
             }
