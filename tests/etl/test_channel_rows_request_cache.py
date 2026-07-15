@@ -1,4 +1,11 @@
 import json
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "pipeline" / "scripts" / "etl"))
 
 from pipeline.scripts.etl import build_cache_cause as cause
 
