@@ -1843,3 +1843,36 @@ def test_answer_question_does_not_guess_unbound_anaphora() -> None:
     assert item["result"]["conversation_reference_unresolved"] is True
     assert "어느 브랜드" in item["result"]["answer"]
     assert FakeAgent.calls == []
+
+
+def test_tool_use_permission_date_survives_final_synthesis(monkeypatch) -> None:
+    fact_md = (
+        "- 리바로정1밀리그램(피타바스타틴칼슘수화물) (20050106): 허가 품목 = "
+        "리바로정1밀리그램(피타바스타틴칼슘수화물) · 허가일 20050106 · "
+        "제이더블유중외제약(주) · 성분 Pitavastatin Calcium Hydrate "
+        "[식약처 의약품 정보]"
+    )
+
+    monkeypatch.setattr(
+        GenosClient,
+        "_chat_text",
+        lambda _self, _messages: (
+            "**리바로 허가 정보**\n\n"
+            "* **품목명:** 리바로정1밀리그램(피타바스타틴칼슘수화물)\n"
+            "* **업체명:** 제이더블유중외제약(주)\n"
+            "* **성분:** Pitavastatin Calcium Hydrate"
+        ),
+    )
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {"fact_md": fact_md, "allowed_numbers": ["20050106"]},
+        "tool_calls": [{"tool": "mfds_permission_search", "source": "nedrug_mcp"}],
+    }
+
+    answer = "".join(client.stream_answer("리바로 허가일", agent_result))
+
+    assert "허가일은 20050106" in answer
+    assert "리바로정1밀리그램" in answer
+    assert "제이더블유중외제약" in answer

@@ -484,6 +484,25 @@ def _insert_before_first_table(markdown: str, block: str) -> str:
     return cleanup_markdown_answer("\n\n".join((cleaned_block, markdown)))
 
 
+def _ensure_mfds_permit_date_answer(question: str, markdown: str, fact_md: str) -> str:
+    if not re.search(r"허가\s*(?:일|날짜)", question):
+        return markdown
+    match = re.search(
+        r"(?m)^-\s*(?P<subject>.+?)\s+\((?P<date>\d{8})\):[^\n]*?허가일\s+(?P=date)(?:\s|·|\[|$)",
+        fact_md,
+    )
+    if match is None:
+        return markdown
+    permit_date = match.group("date")
+    if permit_date in markdown:
+        return markdown
+    subject = match.group("subject").strip()
+    return _insert_before_first_table(
+        markdown,
+        f"{subject}의 식약처 허가일은 {permit_date}입니다.",
+    )
+
+
 def _fact_lookup_markdown(markdown_response: dict[str, Any]) -> str:
     parts: list[str] = []
     for key in ("fact_md", "data_md", "markdown"):
@@ -789,10 +808,12 @@ class GenosClient:
                 raw_interpretation = self._chat_text(messages)
         except requests.RequestException:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
-            return _apply_final_claim_controls(question, fallback, fact_md)
+            fallback = _apply_final_claim_controls(question, fallback, fact_md)
+            return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
         if not raw_interpretation:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
-            return _apply_final_claim_controls(question, fallback, fact_md)
+            fallback = _apply_final_claim_controls(question, fallback, fact_md)
+            return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
         # Fast final path: the primary markdown prompt already receives trend_fact_md
         # and explicitly asks for trend prose. Avoid a second pre-safety LLM call;
         # deterministic guards below keep verified facts and numeric safety.
@@ -869,6 +890,7 @@ class GenosClient:
         if not file_context:
             answer = _apply_final_claim_controls(question, answer, fact_md)
         answer = ensure_natural_fact_lead(question, answer, fact_md)
+        answer = _ensure_mfds_permit_date_answer(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
