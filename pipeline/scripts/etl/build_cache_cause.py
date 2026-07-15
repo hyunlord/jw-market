@@ -2377,6 +2377,12 @@ def _trim_analysis_levels(analysis_levels: dict[str, Any], limit: int = 5) -> di
     return trimmed
 
 
+def _analysis_level_channels_match(analysis_levels: dict[str, Any], channels: list[str]) -> bool:
+    """Return whether a channel-specific build would use the existing channel order."""
+    configured_channels = analysis_levels.get("channels")
+    return isinstance(configured_channels, list) and configured_channels == channels
+
+
 def _growth_ms_matrix(ei_rows: Any) -> dict[str, Any]:
     rows = ei_rows if isinstance(ei_rows, list) else []
     output = []
@@ -3805,28 +3811,29 @@ def build_response(
     analysis_level_market_channels = target_customer_channels or _channels_for_source(source_api)
     clone_analysis_levels = analysis_levels
     if analysis_level_market_channels and precomputed_block is None:
-        clone_levels_key = (analysis_cache_key, "analysis_level_market_status", tuple(analysis_level_market_channels))
-        if clone_levels_key not in ANALYSIS_LEVELS_BY_CHANNEL_CACHE:
-            if resolved_levels is None:
-                resolved_levels = set(_strategic_levels(market_catalog_row, sibling_rows))
-            if resolved_periods is None:
-                resolved_periods = _history_periods(sibling_rows, source_api)
-            ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key] = _build_analysis_levels_from_mart(
-                rows=sibling_rows,
-                source=source_api,
-                market=market_catalog_row,
-                view_source_id=analysis_view_id,
-                target_name=None,
-                fallback_level_top5=level_top5,
-                channels_override=analysis_level_market_channels,
-                resolved_levels=resolved_levels,
-                resolved_periods=resolved_periods,
-                series_value_cache=analysis_series_value_cache,
-                series_observed_cache=analysis_series_observed_cache,
-            )
-        clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
-        if not include_all_d3_options:
-            clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
+        if not _analysis_level_channels_match(analysis_levels, analysis_level_market_channels):
+            clone_levels_key = (analysis_cache_key, "analysis_level_market_status", tuple(analysis_level_market_channels))
+            if clone_levels_key not in ANALYSIS_LEVELS_BY_CHANNEL_CACHE:
+                if resolved_levels is None:
+                    resolved_levels = set(_strategic_levels(market_catalog_row, sibling_rows))
+                if resolved_periods is None:
+                    resolved_periods = _history_periods(sibling_rows, source_api)
+                ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key] = _build_analysis_levels_from_mart(
+                    rows=sibling_rows,
+                    source=source_api,
+                    market=market_catalog_row,
+                    view_source_id=analysis_view_id,
+                    target_name=None,
+                    fallback_level_top5=level_top5,
+                    channels_override=analysis_level_market_channels,
+                    resolved_levels=resolved_levels,
+                    resolved_periods=resolved_periods,
+                    series_value_cache=analysis_series_value_cache,
+                    series_observed_cache=analysis_series_observed_cache,
+                )
+            clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
+            if not include_all_d3_options:
+                clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
 
     target_customer_competition_by_channel = _target_customer_competition(
         rows=sibling_rows,
