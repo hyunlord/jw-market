@@ -1134,17 +1134,22 @@ def _market_levels(market: dict[str, Any] | None) -> list[str]:
 def _class_level_axes(rows: list[dict[str, Any]] | None) -> list[str]:
     if not rows:
         return ["Class"]
-    values = [
-        (
-            tuple(_dimension_values(row, "Class")),
-            tuple(_dimension_values(row, "Class 1")),
-            tuple(_dimension_values(row, "Class 2")),
-        )
-        for row in rows
-    ]
-    has_class_1 = any(class_1 for _, class_1, _ in values)
-    has_class_2 = any(class_2 for _, _, class_2 in values)
-    has_generic = any(generic for generic, _, _ in values)
+    has_class_1 = False
+    has_class_2 = False
+    has_generic = False
+    generic_equals_class_2 = True
+    class_1_equals_class_2 = True
+    for row in rows:
+        generic = tuple(_dimension_values(row, "Class"))
+        class_1 = tuple(_dimension_values(row, "Class 1"))
+        class_2 = tuple(_dimension_values(row, "Class 2"))
+        has_class_1 = has_class_1 or bool(class_1)
+        has_class_2 = has_class_2 or bool(class_2)
+        has_generic = has_generic or bool(generic)
+        if generic or class_2:
+            generic_equals_class_2 = generic_equals_class_2 and generic == class_2
+        if class_1 or class_2:
+            class_1_equals_class_2 = class_1_equals_class_2 and class_1 == class_2
     if not has_class_1 and not has_class_2:
         return ["Class"]
     if not has_generic:
@@ -1154,16 +1159,8 @@ def _class_level_axes(rows: list[dict[str, Any]] | None) -> list[str]:
             if available
         ]
 
-    generic_equals_class_2 = has_class_2 and all(
-        generic == class_2
-        for generic, _, class_2 in values
-        if generic or class_2
-    )
-    class_1_equals_class_2 = has_class_1 and has_class_2 and all(
-        class_1 == class_2
-        for _, class_1, class_2 in values
-        if class_1 or class_2
-    )
+    generic_equals_class_2 = has_class_2 and generic_equals_class_2
+    class_1_equals_class_2 = has_class_1 and has_class_2 and class_1_equals_class_2
     if generic_equals_class_2:
         return [
             level
@@ -2107,9 +2104,25 @@ def _build_analysis_levels_from_mart(
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
+    level_resolution_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
     enabled_levels = set(_strategic_levels(market, rows))
+    if level_resolution_started:
+        logger.info(
+            "market_latency_analysis_resolve_levels levels=%s rows=%s ms=%.3f",
+            len(enabled_levels),
+            len(rows),
+            (perf_counter() - level_resolution_started) * 1000,
+        )
     levels = _ordered_response_levels(enabled_levels)
+    periods_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
     periods = _history_periods(rows, source)
+    if periods_started:
+        logger.info(
+            "market_latency_analysis_history_periods periods=%s rows=%s ms=%.3f",
+            len(periods),
+            len(rows),
+            (perf_counter() - periods_started) * 1000,
+        )
     data: dict[str, Any] = {}
     channels = channels_override or _channels_for_source(source)
     for level in levels:
