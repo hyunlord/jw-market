@@ -11,7 +11,7 @@ import requests
 
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolEnvelope, ToolTrace
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
-from jw_chat_agent_poc.tool_use.provider import ToolChoiceProvider, ToolProviderConfigurationError
+from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider, ToolProviderConfigurationError
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 
@@ -35,16 +35,23 @@ class AgentExecutor:
     provider: ToolChoiceProvider
     max_steps: int = 6
     completion_policy: CompletionPolicy | None = None
+    best_effort: bool = False
 
     def run(self, *, user_text: str, tools: tuple[ToolSpec, ...]) -> AgentResult:
         ledger = EvidenceLedger()
         traces: list[ToolTrace] = []
         tool_calls: list[dict] = []
+        tool_policy = (
+            "질문에서 요청한 근거 유형마다 관련 도구를 독립적으로 시도한다. "
+            "한 도구가 실패하거나 비어도 다른 관련 도구를 계속 호출하고, 검증된 결과만 사용한다. "
+            if self.best_effort
+            else "필요한 경우에만 tool 을 호출한다. "
+        )
         messages: list[dict] = [
             {
                 "role": "system",
                 "content": (
-                    "필요한 경우에만 tool 을 호출한다. 수치, 날짜, 점유율은 tool 근거가 없으면 추정하지 않는다. "
+                    f"{tool_policy}수치, 날짜, 점유율은 tool 근거가 없으면 추정하지 않는다. "
                     "내부 테이블명, 캐시 키, 시스템 용어를 노출하지 않는다. 근거가 없으면 확인 불가라고 답한다."
                 ),
             },
@@ -69,6 +76,8 @@ class AgentExecutor:
                     tool_calls=tuple(tool_calls),
                 )
                 if ledger.is_complete() and not answer_complete:
+                    if self.best_effort:
+                        return _verified_result(ledger, traces, tool_calls, status="ok")
                     traces.append(
                         ToolTrace(
                             step=step,
@@ -103,8 +112,17 @@ class AgentExecutor:
             try:
                 envelope = _execute_with_timeout(spec, payload)
             except (FutureTimeoutError, requests.Timeout):
-                traces.append(ToolTrace(step=step, tool=choice.name, status="timeout", fallback_code=FallbackCode.TOOL_TIMEOUT, message="tool timeout"))
-                return _terminal("tool timeout", FallbackCode.TOOL_TIMEOUT, traces, tool_calls)
+                if not self.best_effort:
+                    traces.append(ToolTrace(step=step, tool=choice.name, status="timeout", fallback_code=FallbackCode.TOOL_TIMEOUT, message="tool timeout"))
+                    return _terminal("tool timeout", FallbackCode.TOOL_TIMEOUT, traces, tool_calls)
+                envelope = ToolEnvelope(
+                    ok=False,
+                    preview="tool timeout",
+                    evidence=(),
+                    raw=None,
+                    error_code=FallbackCode.TOOL_TIMEOUT.value,
+                    error_message="도구 조회 시간이 초과되었습니다.",
+                )
             except (requests.RequestException, ValidationError, KeyError, TypeError, ValueError) as exc:
                 LOGGER.warning("tool-use execution failed tool=%s error=%s", choice.name, exc)
                 traces.append(ToolTrace(step=step, tool=choice.name, status="schema_invalid", fallback_code=FallbackCode.SCHEMA_INVALID, message=type(exc).__name__))
@@ -116,6 +134,10 @@ class AgentExecutor:
             tool_calls.append({"tool": spec.name, "source": spec.tags[0] if spec.tags else "tool_use", "status": "ok" if envelope.ok else "error", "summary_text": public_preview, "render_data": safe_envelope})
             traces.append(ToolTrace(step=step, tool=spec.name, status="ok" if envelope.ok else "no_evidence", fallback_code=None if envelope.ok else FallbackCode.VERIFICATION_FAIL, message=public_preview))
             if not envelope.ok or not ledger.is_complete():
+                if self.best_effort:
+                    call_id = choice.call_id or f"tool-call-{step}"
+                    messages.extend(_tool_exchange(choice, spec, safe_envelope, call_id))
+                    continue
                 return _terminal(envelope.error_message or "도구 근거가 비었습니다.", FallbackCode.VERIFICATION_FAIL, traces, tool_calls)
             answer_complete = _is_complete(
                 self.completion_policy,
@@ -125,39 +147,11 @@ class AgentExecutor:
                 tool_calls=tuple(tool_calls),
             )
             if answer_complete:
-                return AgentResult(
-                    status="ok",
-                    answer=render_evidence_answer(tuple(ledger.facts)),
-                    tool_calls=tuple(tool_calls),
-                    sources=ledger.sources(),
-                    traces=tuple(traces),
-                    fallback_code=None,
-                )
+                return _verified_result(ledger, traces, tool_calls, status="ok")
             call_id = choice.call_id or f"tool-call-{step}"
-            messages.extend(
-                (
-                    {
-                        "role": "assistant",
-                        "content": choice.message or None,
-                        "tool_calls": [
-                            {
-                                "id": call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": spec.name,
-                                    "arguments": json.dumps(choice.arguments, ensure_ascii=False, sort_keys=True),
-                                },
-                            }
-                        ],
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": spec.name,
-                        "content": json.dumps(safe_envelope, ensure_ascii=False, sort_keys=True),
-                    },
-                )
-            )
+            messages.extend(_tool_exchange(choice, spec, safe_envelope, call_id))
+        if self.best_effort and ledger.is_complete():
+            return _verified_result(ledger, traces, tool_calls, status="ok")
         return _terminal("tool-use step limit exceeded", FallbackCode.STEP_LIMIT, traces, tool_calls)
 
 
@@ -176,6 +170,53 @@ def _is_complete(
 
 def _terminal(message: str, code: FallbackCode, traces: list[ToolTrace], calls: list[dict]) -> AgentResult:
     return AgentResult(status="fallback", answer=message, tool_calls=tuple(calls), sources=(), traces=tuple(traces), fallback_code=code)
+
+
+def _verified_result(
+    ledger: EvidenceLedger,
+    traces: list[ToolTrace],
+    calls: list[dict],
+    *,
+    status: str,
+) -> AgentResult:
+    return AgentResult(
+        status=status,
+        answer=render_evidence_answer(tuple(ledger.facts)),
+        tool_calls=tuple(calls),
+        sources=ledger.sources(),
+        traces=tuple(traces),
+        fallback_code=None,
+    )
+
+
+def _tool_exchange(
+    choice: ToolChoice,
+    spec: ToolSpec,
+    safe_envelope: dict[str, object],
+    call_id: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    return (
+        {
+            "role": "assistant",
+            "content": choice.message or None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "arguments": json.dumps(choice.arguments, ensure_ascii=False, sort_keys=True),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": spec.name,
+            "content": json.dumps(safe_envelope, ensure_ascii=False, sort_keys=True),
+        },
+    )
 
 
 def _public_preview(envelope: ToolEnvelope) -> str:

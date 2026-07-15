@@ -33,6 +33,7 @@ def run_external_tool_agent(
     result = AgentExecutor(
         provider=selected_provider,
         completion_policy=_external_evidence_complete,
+        best_effort=True,
     ).run(user_text=question, tools=registry.list_for_query(question))
     if result.fallback_code is not None:
         LOGGER.info("external tool agent fallback code=%s", result.fallback_code.value)

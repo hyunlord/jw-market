@@ -13,7 +13,7 @@ from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
-from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
+from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete, tool_use_requirements
 from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoice
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tool_use.registry import _external_call_envelope
@@ -492,6 +492,51 @@ def test_integration_requires_clinical_evidence_for_short_korean_intent() -> Non
         "local_molecule_lookup",
         "clinicaltrials_v2_search",
     ]
+
+
+def test_pure_external_competitor_question_selects_external_tool_without_market_metric() -> None:
+    question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘"
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "hyperlipidemia competitors"},
+                "fetch competing clinical programs",
+                call_id="call-1",
+            ),
+            ToolChoice(
+                "mfds_permission_search",
+                {"brand": "리바로"},
+                "fetch permission evidence",
+                call_id="call-2",
+            ),
+            ToolChoice(
+                "local_molecule_lookup",
+                {"brand": "리바로"},
+                "fetch ingredient evidence",
+                call_id="call-3",
+            ),
+        )
+    )
+
+    payload = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=provider,
+    )
+
+    tools = [call["tool"] for call in payload["tool_calls"]]
+    assert payload["router_diagnostics"]["fallback_code"] is None
+    assert tools == ["clinicaltrials_v2_search", "mfds_permission_search", "local_molecule_lookup"]
+    assert "get_brand_metric" not in tools
+
+
+def test_combined_clinical_permission_question_requests_both_external_sources() -> None:
+    requirements = tool_use_requirements("고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘")
+
+    assert [requirement.label for requirement in requirements] == ["허가 정보", "글로벌 임상시험", "성분"]
+    assert all("get_brand_metric" not in requirement.alternatives for requirement in requirements)
 
 
 def test_integration_requires_orangebook_evidence_for_korean_expiry_intent() -> None:

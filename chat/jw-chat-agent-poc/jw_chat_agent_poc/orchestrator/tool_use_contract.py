@@ -39,6 +39,8 @@ def tool_use_requirements(question: str) -> tuple[ToolUseRequirement, ...]:
     requirements: list[ToolUseRequirement] = []
     if is_hira_disease_question(question):
         requirements.extend(_hira_requirements(lowered))
+    if any(token in lowered for token in ("허가", "permission", "approval")):
+        requirements.append(_one("허가 정보", "mfds_permission_search"))
     if any(token in lowered for token in ("부작용", "이상반응", "adverse", "side effect")):
         requirements.append(
             ToolUseRequirement(

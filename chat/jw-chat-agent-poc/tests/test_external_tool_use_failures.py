@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import Event
 
 from pydantic import BaseModel
+import requests
 
 from jw_chat_agent_poc.service.answer_safety import FAIL_CLOSED_TEXT
 from jw_chat_agent_poc.service.genos_client import GenosClient
@@ -67,6 +68,136 @@ def test_agent_executor_rejects_empty_evidence_without_retrying_generation() -> 
     assert result.status == "fallback"
     assert result.fallback_code is FallbackCode.VERIFICATION_FAIL
     assert provider.calls == 1
+
+
+def test_agent_executor_best_effort_continues_after_empty_tool() -> None:
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("empty_tool", {}, "try empty source", call_id="call-1"),
+            ToolChoice("evidence_tool", {}, "try available source", call_id="call-2"),
+        )
+    )
+    empty = ToolSpec(
+        name="empty_tool",
+        description="empty source",
+        input_model=EmptyInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=False,
+            preview="no evidence",
+            evidence=(),
+            raw={"items": []},
+            error_code="NO_EVIDENCE",
+            error_message="근거 없음",
+        ),
+        timeout_s=1.0,
+        tags=("external",),
+    )
+    evidence = ToolSpec(
+        name="evidence_tool",
+        description="available source",
+        input_model=EmptyInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=True,
+            preview="verified",
+            evidence=(_fact(),),
+            raw=None,
+            error_code=None,
+            error_message=None,
+        ),
+        timeout_s=1.0,
+        tags=("external",),
+    )
+
+    result = AgentExecutor(provider=provider, best_effort=True).run(
+        user_text="여러 외부 근거",
+        tools=(empty, evidence),
+    )
+
+    assert result.status == "ok"
+    assert result.fallback_code is None
+    assert provider.calls == 2
+    assert [call["tool"] for call in result.tool_calls] == ["empty_tool", "evidence_tool"]
+    assert "pitavastatin" in result.answer
+
+
+def test_agent_executor_best_effort_continues_after_tool_timeout() -> None:
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("timeout_tool", {}, "try slow source", call_id="call-1"),
+            ToolChoice("evidence_tool", {}, "try available source", call_id="call-2"),
+        )
+    )
+
+    def raise_timeout(_payload: BaseModel) -> ToolEnvelope:
+        raise requests.Timeout("fixture timeout")
+
+    timeout = ToolSpec(
+        name="timeout_tool",
+        description="slow source",
+        input_model=EmptyInput,
+        execute=raise_timeout,
+        timeout_s=1.0,
+        tags=("external",),
+    )
+    evidence = ToolSpec(
+        name="evidence_tool",
+        description="available source",
+        input_model=EmptyInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=True,
+            preview="verified",
+            evidence=(_fact(),),
+            raw=None,
+            error_code=None,
+            error_message=None,
+        ),
+        timeout_s=1.0,
+        tags=("external",),
+    )
+
+    result = AgentExecutor(provider=provider, best_effort=True).run(
+        user_text="여러 외부 근거",
+        tools=(timeout, evidence),
+    )
+
+    assert result.status == "ok"
+    assert [call["tool"] for call in result.tool_calls] == ["timeout_tool", "evidence_tool"]
+    assert "pitavastatin" in result.answer
+
+
+def test_agent_executor_best_effort_publishes_partial_verified_evidence() -> None:
+    provider = _ChoiceSequence(
+        (
+            ToolChoice("evidence_tool", {}, "fetch available evidence", call_id="call-1"),
+            ToolChoice(None, {}, "no more usable tools", call_id=None),
+        )
+    )
+    evidence = ToolSpec(
+        name="evidence_tool",
+        description="available source",
+        input_model=EmptyInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=True,
+            preview="verified",
+            evidence=(_fact(),),
+            raw=None,
+            error_code=None,
+            error_message=None,
+        ),
+        timeout_s=1.0,
+        tags=("external",),
+    )
+
+    result = AgentExecutor(
+        provider=provider,
+        best_effort=True,
+        completion_policy=lambda **_kwargs: False,
+    ).run(user_text="일부 외부 근거", tools=(evidence,))
+
+    assert result.status == "ok"
+    assert result.fallback_code is None
+    assert [call["tool"] for call in result.tool_calls] == ["evidence_tool"]
+    assert "pitavastatin" in result.answer
 
 
 def test_agent_executor_does_not_publish_raw_provider_preview() -> None:

@@ -7,12 +7,37 @@ from jw_chat_agent_poc.orchestrator.answer_contract import (
     enforce_answer_contract,
     evaluate_answer_contract,
 )
+from jw_chat_agent_poc.service.runtime_provenance import _required_tools
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
 
 
 def test_clinical_evidence_does_not_require_market_metric() -> None:
-    assert CONTRACT_REQUIRED_TOOLS["clinical_evidence"] == ("mfds_permission_search",)
+    required = CONTRACT_REQUIRED_TOOLS["clinical_evidence"]
+
+    assert "get_brand_metric" not in required
+    assert set(required) == {
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "mfds_permission_search",
+        "openfda_label_search",
+    }
+
+
+def test_pure_external_competitor_question_requires_only_external_tools() -> None:
+    status = evaluate_answer_contract("고지혈증 임상·허가심사 경쟁약물", "", {})
+
+    assert status["structural_contract"] == "clinical_evidence"
+    required = _required_tools(status)
+    assert "get_brand_metric" not in required
+    assert "clinicaltrials_v2_search" in required
+    assert "mfds_permission_search" in required
+
+
+def test_market_question_still_requires_market_metric() -> None:
+    status = {"structural_contract": "trend", "status": "not_applicable"}
+
+    assert _required_tools(status) == ("get_brand_metric",)
 
 
 TREND_FACT_MD = """## 확정 fact set
@@ -764,6 +789,32 @@ def test_common_unavailable_gate_honors_top_level_tool_error() -> None:
     )
 
     assert "도구 조회(web_search)가 실패했습니다" in revised
+
+
+def test_common_unavailable_gate_preserves_success_when_another_external_tool_fails() -> None:
+    answer = "ClinicalTrials에서 pitavastatin 임상시험 1건을 확인했습니다. MFDS 조회는 실패했습니다."
+    calls = (
+        {
+            "tool": "clinicaltrials_v2_search",
+            "status": "ok",
+            "render_data": {"ok": True, "evidence": [{"metric": "글로벌 임상시험"}]},
+        },
+        {
+            "tool": "mfds_permission_search",
+            "status": "error",
+            "render_data": {"ok": False, "evidence": []},
+        },
+    )
+
+    revised = apply_common_unavailable_response(
+        "고지혈증 임상·허가 경쟁약물",
+        answer,
+        {"fact_md": "확정 fact: ClinicalTrials pitavastatin 임상시험 1건\nMFDS 조회 실패"},
+        tool_calls=calls,
+        connected_source_mode=True,
+    )
+
+    assert revised == answer
 
 
 def test_source_trap_gate_compacts_final_answer_once_common_5step_exists() -> None:

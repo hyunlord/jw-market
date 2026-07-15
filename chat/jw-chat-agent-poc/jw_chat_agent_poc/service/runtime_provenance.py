@@ -178,16 +178,6 @@ def _quality_taxonomy(
                 "reason": "requested_unconnected_csd_source",
             }
 
-    required_tools = _required_tools(answer_contract_status)
-    missing_tools = tuple(tool for tool in required_tools if tool not in tools_called)
-    if required_tools and len(missing_tools) == len(required_tools):
-        return {
-            "label": "not_invoked",
-            "required_tools": required_tools,
-            "tools_called": tuple(tools_called),
-            "reason": "detected_contract_without_related_tool",
-        }
-
     empty_calls = _empty_result_calls(result)
     if empty_calls:
         return {"label": "empty_result", "calls": empty_calls, "reason": "tool_status_empty"}

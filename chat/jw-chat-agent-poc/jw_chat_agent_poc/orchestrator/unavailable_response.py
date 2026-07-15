@@ -249,6 +249,8 @@ def _four_stage_unavailable_gate(
         return None
     calls = tuple(tool_calls)
     if connected_source_mode:
+        if _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
+            return _cleanup(answer)
         failed = tuple(
             _public_tool_name(call)
             for call in calls
