@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import os
+from time import perf_counter
 from typing import Annotated, Any, Final, Literal
 from urllib.parse import unquote
 
@@ -43,6 +44,10 @@ from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 KST = timezone(timedelta(hours=9))
 GENERAL_CACHE_TTL_DAYS: Final[int] = 35
@@ -1372,6 +1377,8 @@ def deep_analysis(
         Query(description="[신규 계약] 요청 시장의 단일 데이터 소스"),
     ] = None,
 ) -> dict:
+    timing_enabled = _stage_timing_enabled()
+    route_started = perf_counter() if timing_enabled else None
     if request is not None and "atc4" in request.query_params:
         raise HTTPException(
             status_code=422,
@@ -1395,6 +1402,7 @@ def deep_analysis(
         )
     view_name = str(view_kind) if formal_contract else _normalize_deep_view(view)
     try:
+        compose_started = perf_counter() if timing_enabled else None
         if formal_contract:
             try:
                 context = resolve_deep_analysis_context(
@@ -1410,11 +1418,13 @@ def deep_analysis(
             payload, row = _compose_general_view_payload(brand)
         else:
             payload, row = _compose_strategic_view_payload(brand)
+        compose_ms = (perf_counter() - compose_started) * 1000 if compose_started is not None else None
     except CompactBrandLookupAmbiguous as exc:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand}) from exc
     payload["generated_at"] = _format_generated_at(row.get("updated_at"))
     data = payload.setdefault("data", {})
     if isinstance(data, dict):
+        events_started = perf_counter() if timing_enabled else None
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
         cached_events = row.get("_events")
         events = cached_events if isinstance(cached_events, list) else _load_deep_events(matched_brand)
@@ -1498,9 +1508,24 @@ def deep_analysis(
                 selected_factors=selected_factors,
                 strength_by_source_by_key=strength_by_source,
             )
+        events_ms = (perf_counter() - events_started) * 1000 if events_started is not None else None
     non_finite_paths: list[str] = []
     normalized = normalize_json_value(payload, on_non_finite=non_finite_paths.append)
     if non_finite_paths:
         logger.warning("deep_analysis_non_finite_normalized brand=%s view=%s paths=%s", brand, view_name, non_finite_paths)
-    json.dumps(normalized, ensure_ascii=False, allow_nan=False)
+    serialize_started = perf_counter() if timing_enabled else None
+    serialized_payload = json.dumps(normalized, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    serialize_ms = (perf_counter() - serialize_started) * 1000 if serialize_started is not None else None
+    if timing_enabled and route_started is not None:
+        logger.info(
+            "market_latency_stage path=deep brand=%s view=%s compose_ms=%.3f events_factors_ms=%.3f "
+            "serialize_ms=%.3f total_ms=%.3f payload_bytes=%d",
+            brand,
+            view_name,
+            compose_ms or 0.0,
+            events_ms or 0.0,
+            serialize_ms or 0.0,
+            (perf_counter() - route_started) * 1000,
+            len(serialized_payload),
+        )
     return normalized
