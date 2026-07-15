@@ -114,6 +114,21 @@ def test_safe_float_avoids_conversion_for_native_finite_numbers(monkeypatch) -> 
     assert calls == 0
 
 
+def test_optional_period_value_reads_dict_fallback_inline(monkeypatch) -> None:
+    calls = 0
+    original = cause._optional_row_value
+
+    def count_optional_row_value(row: dict[str, Any]) -> float | None:
+        nonlocal calls
+        calls += 1
+        return original(row)
+
+    monkeypatch.setattr(cause, "_optional_row_value", count_optional_row_value)
+
+    assert cause._optional_value_from_period_item({"raw_value": 12.5}) == 12.5
+    assert calls == 0
+
+
 def test_segment_rows_reuses_one_observed_series_pass_for_group_and_total(monkeypatch) -> None:
     row = {
         "brand_name": "Brand A",
