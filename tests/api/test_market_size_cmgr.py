@@ -417,6 +417,25 @@ def test_cached_cause_response_recomputes_growth_from_legacy_value_aliases(value
     assert payload["data"]["market_size_series"][1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
 
 
+def test_cached_cause_response_nulls_first_growth_point_when_series_is_already_points() -> None:
+    cached = {
+        "data": {
+            "market_size_series": [
+                {"period": "2021-06", "value": 10.0, "mom_growth_pct": 46.4, "cqgr": 46.4},
+                {"period": "2021-07", "value": 11.0, "mom_growth_pct": -2.01, "cqgr": -2.01},
+            ]
+        }
+    }
+
+    payload = compose_cached_json(cached, measure="sales", source="UBIST")
+
+    points = payload["data"]["market_size_series"]
+    assert points[0]["mom_growth_pct"] is None
+    assert points[0]["cqgr"] is None
+    assert points[1]["mom_growth_pct"] == -2.01
+    assert points[1]["cqgr"] == -2.01
+
+
 def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:
     assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v6-contiguous-rankings-range-baseline"
 

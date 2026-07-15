@@ -57,9 +57,26 @@ def _series_dict_to_points(
     return points
 
 
+def _null_first_growth_point(value: Any) -> Any:
+    """Make the first returned market-growth point a non-computed baseline."""
+
+    if not isinstance(value, list):
+        return value
+    points = [dict(item) if isinstance(item, dict) else item for item in value]
+    if not points or not isinstance(points[0], dict):
+        return points
+    points[0]["mom_growth_pct"] = None
+    for key in ("cmgr", "cqgr"):
+        if key in points[0]:
+            points[0][key] = None
+    return points
+
+
 def _frontend_shape_aliases(key: str, value: Any, source: str | None) -> Any:
     if key == "market_size_series" and isinstance(value, dict):
-        return _series_dict_to_points(value, value_key="value", source=source)
+        return _null_first_growth_point(_series_dict_to_points(value, value_key="value", source=source))
+    if key == "market_size_series" and isinstance(value, list):
+        return _null_first_growth_point(value)
     if key == "hhi_series_5y" and isinstance(value, dict):
         return _series_dict_to_points(value, value_key="hhi")
     if key in {"ei_ms_matrix", "growth_contribution_ms_matrix"} and isinstance(value, list):
