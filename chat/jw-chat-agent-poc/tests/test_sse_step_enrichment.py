@@ -77,6 +77,32 @@ def test_mixed_stage_names_are_user_facing() -> None:
     ]
 
 
+def test_file_schema_and_tool_steps_hide_internal_names() -> None:
+    events: list[dict] = []
+    with timing.stage(None, "file_schema_probe", "active uploaded file schema check", sink=events.append):
+        pass
+    with timing.stage(None, "tool:clinicaltrials_v2_search", "molecule_trend", sink=events.append):
+        pass
+    with timing.stage(None, "tool:mfds_permission_search", "리바로", sink=events.append):
+        pass
+    with timing.stage(None, "tool:get_brand_metric", "metric=sales", sink=events.append):
+        pass
+
+    started = events[::2]
+    assert [event["name"] for event in started] == [
+        "첨부 파일 구조 분석",
+        "임상 데이터 조회",
+        "식약처 허가 정보 확인",
+        "시장 데이터 집계",
+    ]
+    assert started[0]["detail"] == "파일의 시트와 열 확인"
+    assert started[1]["detail"] == "성분 기준 임상시험 확인"
+    public_text = str([{"name": event["name"], "detail": event["detail"]} for event in started])
+    assert "file_schema_probe" not in public_text
+    assert "clinicaltrials_v2_search" not in public_text
+    assert "mfds_permission_search" not in public_text
+
+
 class _WaitingLimiter:
     def __init__(self) -> None:
         self.released = False

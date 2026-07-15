@@ -43,6 +43,7 @@ _PUBLIC_STAGE_NAMES = {
     "queue_wait": "대기 중",
     "question_classification": "질문 분류",
     "file_session_probe": "첨부 파일 확인",
+    "file_schema_probe": "첨부 파일 구조 분석",
     "mixed_file_leg": "첨부 문서 조회",
     "mixed_market_leg": "시장 데이터 조회",
     "question_decomposition": "질문 분해",
@@ -63,6 +64,23 @@ _PUBLIC_STAGE_NAMES = {
     "chart_generation": "차트 준비",
 }
 
+_PUBLIC_TOOL_NAMES = {
+    "get_brand_metric": "시장 데이터 집계",
+    "get_market_landscape": "경쟁 구도 조회",
+    "clinicaltrials_v2_search": "임상 데이터 조회",
+    "clinical_scope_notice": "임상 조회 범위 확인",
+    "competitor_molecule_candidates": "경쟁 성분 확인",
+    "mfds_clinical_trial_kr": "국내 임상 정보 확인",
+    "mfds_permission_search": "식약처 허가 정보 확인",
+    "mfds_patent": "의약품 특허 정보 확인",
+    "mfds_fda_orangebook": "FDA 특허 정보 확인",
+    "openfda_label_search": "FDA 안전성 정보 확인",
+    "openfda_combo_label_search": "FDA 복합제 안전성 정보 확인",
+    "hira_disease": "건강보험 환자 정보 확인",
+    "matching_policy_notice": "의약품 일치 기준 확인",
+    "web_search": "최신 웹 자료 검색",
+}
+
 
 @dataclass(slots=True)
 class StageProgress:
@@ -71,6 +89,7 @@ class StageProgress:
 _PUBLIC_STAGE_DETAILS = {
     "request processing": "전체 처리 진행",
     "active uploaded file check": "현재 대화의 첨부 파일 확인",
+    "active uploaded file schema check": "파일의 시트와 열 확인",
     "uploaded file retrieval": "첨부 문서 근거 조회",
     "market fact retrieval": "시장 데이터 근거 조회",
     "view selection": "시장 기준 판정",
@@ -90,12 +109,16 @@ _PUBLIC_STAGE_DETAILS = {
     "GenOS expression plus safety": "표현 생성 및 검증",
     "markdown cleanup": "표기 정리",
     "fact-backed chart spec": "fact 기반 차트 준비",
+    "molecule_trend": "성분 기준 임상시험 확인",
+    "combo_and": "복합 성분 임상시험 확인",
+    "metric=sales": "매출 데이터 확인",
 }
 
 
 def _public_stage_name(name: str) -> str:
     if name.startswith("tool:"):
-        return f"도구 실행({name.removeprefix('tool:')})"
+        tool_name = name.removeprefix("tool:")
+        return _PUBLIC_TOOL_NAMES.get(tool_name, "관련 데이터 조회")
     return _PUBLIC_STAGE_NAMES.get(name, name)
 
 
