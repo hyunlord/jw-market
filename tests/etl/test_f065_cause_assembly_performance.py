@@ -413,6 +413,31 @@ def test_segment_level_invariants_are_resolved_once_per_call(monkeypatch) -> Non
     assert calls == 1
 
 
+def test_dimension_segment_index_resolves_class_level_once(monkeypatch) -> None:
+    calls = 0
+    original = cause._is_class_level
+
+    def count_class_level(level: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(level)
+
+    monkeypatch.setattr(cause, "_is_class_level", count_class_level)
+    rows = [
+        {
+            "brand_name": f"Brand {index}",
+            "by_dimension": {"class": "Class A"},
+            "metric_history": {"2025-01": {"raw_value": 10.0}},
+            "dimension_data": {},
+        }
+        for index in range(3)
+    ]
+
+    cause._rows_for_dimension_segments(rows, "Class", ["2025-01"])
+
+    assert calls == 1
+
+
 def test_response_composer_does_not_walk_the_complete_payload_twice() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cache_to_response.compose_cached_json)))
     deep_format_calls = [
