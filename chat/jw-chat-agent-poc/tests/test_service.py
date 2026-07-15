@@ -425,6 +425,62 @@ def test_compute_final_answer_preserves_verified_tool_use_evidence(
     assert "현재 확인 불가" not in final.text
 
 
+def test_compute_final_answer_restores_hira_patient_lead_before_table(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="고지혈증",
+        calls=[
+            {
+                "tool": "hira_disease_hospitalization_outpatient_stats",
+                "source": "hira_disease",
+                "render_data": {
+                    "request": {"year": "2024"},
+                    "items": [
+                        {
+                            "inpatOpat": "외래 남",
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            "ptntCnt": 1_305_727,
+                        },
+                        {
+                            "inpatOpat": "외래 여",
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            "ptntCnt": 1_910_492,
+                        },
+                    ],
+                },
+            }
+        ],
+        sources=["hira_disease"],
+    )
+    table_only = """| 질병코드 | 연도 | 구분 | 성별 | 환자수(명) | 출처 |
+| --- | --- | --- | --- | ---: | --- |
+| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |
+| E78 | 2024 | 외래 | 여 | 1,910,492 | 건강보험심사평가원 |"""
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        yield table_only
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    final = compute_final_answer(
+        "고지혈증 환자수",
+        {
+            "answer": "",
+            "markdown_response": response.to_dict(),
+            "tool_calls": [],
+            "sources": ["hira_disease"],
+            "router_diagnostics": {"mode": "tool_use_agent"},
+        },
+        "hira-patient-lead",
+    )
+
+    first_table = final.text.index("| 질병코드 |")
+    lead = final.text[:first_table]
+    assert "1305727명" in lead
+    assert "1910492명" in lead
+    assert "| E78 | 2024 | 외래 | 남 | 1,305,727 |" in final.text
+
+
 def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatch) -> None:
     def fail_direct_dependencies(*, external_mode: str = "fixture"):
         raise AssertionError("document questions must keep the ChatAgent/RAG facade")
