@@ -174,6 +174,7 @@ def build_general_analysis_level_sections(
         "level_top5_trend": level_top5_trend,
         "rows": canonical_rows,
         "ubist_channel_context": ubist_channel_context,
+        "series_value_cache": series_value_cache,
     }
 
 

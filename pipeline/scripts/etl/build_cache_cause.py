@@ -3146,13 +3146,20 @@ def _target_customer_competition(
     target_name: str | None,
     periods: list[str],
     channels: list[str] | None = None,
+    series_value_cache: _SeriesValueCache | None = None,
 ) -> dict[str, Any]:
     targets = channels or _channels_for_source(source)
     target_type = "채널"
     period_tail = periods[-10:]
     views = []
     for target in targets:
-        channel_rows = _rows_for_channel(rows, source, target, periods)
+        channel_rows = _rows_for_channel(
+            rows,
+            source,
+            target,
+            periods,
+            series_value_cache=series_value_cache,
+        )
         selected = _display_brand_rows(channel_rows, target_name=target_name, top_n=5, include_others=True)
         row_by_brand = {_row_brand(row): row for row in channel_rows if _row_brand(row)}
         total_series = _total_series_for_rows(channel_rows, period_tail)
@@ -3841,6 +3848,7 @@ def build_response(
         target_name=brand_row.get("brand_name"),
         periods=periods,
         channels=target_customer_channels,
+        series_value_cache=analysis_series_value_cache,
     )
     level_top5_trend = _level_top5_trend(
         analysis_levels,
