@@ -3590,7 +3590,7 @@ def build_response(
         ei_market_key=market_row.get("id"),
     )
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
-    periods = _history_periods(sibling_rows, source_api)
+    periods = resolved_periods if resolved_periods is not None else _history_periods(sibling_rows, source_api)
     hhi_points = _annual_share_hhi_from_rows(
         sibling_rows,
         label_key="brand",
