@@ -1516,7 +1516,13 @@ def _value_from_period_item(item: Any) -> float:
 
 def _optional_value_from_period_item(item: Any) -> float | None:
     if isinstance(item, dict):
-        return _optional_row_value(item)
+        parsed = safe_float(item.get("raw_value"))
+        if parsed is not None:
+            return parsed
+        parsed = safe_float(item.get("value"))
+        if parsed is not None:
+            return parsed
+        return safe_float(item.get("sales"))
     return safe_float(item)
 
 
