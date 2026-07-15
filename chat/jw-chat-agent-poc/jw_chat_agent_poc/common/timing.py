@@ -66,6 +66,10 @@ _PUBLIC_STAGE_NAMES = {
 
 _PUBLIC_TOOL_NAMES = {
     "get_brand_metric": "시장 데이터 집계",
+    "get_brand_sales": "브랜드 매출 조회",
+    "get_brand_share": "브랜드 점유율 확인",
+    "get_brand_series": "브랜드 추이 확인",
+    "get_top_brands": "상위 브랜드 확인",
     "get_market_landscape": "경쟁 구도 조회",
     "clinicaltrials_v2_search": "임상 데이터 조회",
     "clinical_scope_notice": "임상 조회 범위 확인",

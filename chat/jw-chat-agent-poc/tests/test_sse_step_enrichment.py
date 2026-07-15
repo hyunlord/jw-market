@@ -103,6 +103,25 @@ def test_file_schema_and_tool_steps_hide_internal_names() -> None:
     assert "mfds_permission_search" not in public_text
 
 
+def test_runtime_market_tool_names_have_specific_public_labels() -> None:
+    events: list[dict] = []
+    expected = {
+        "get_brand_sales": "브랜드 매출 조회",
+        "get_brand_share": "브랜드 점유율 확인",
+        "get_brand_series": "브랜드 추이 확인",
+        "get_top_brands": "상위 브랜드 확인",
+    }
+
+    for raw_name in expected:
+        with timing.stage(None, f"tool:{raw_name}", "리바로", sink=events.append):
+            pass
+
+    started = events[::2]
+    assert [event["name"] for event in started] == list(expected.values())
+    public_text = str([event["name"] for event in started])
+    assert not any(raw_name in public_text for raw_name in expected)
+
+
 class _WaitingLimiter:
     def __init__(self) -> None:
         self.released = False
