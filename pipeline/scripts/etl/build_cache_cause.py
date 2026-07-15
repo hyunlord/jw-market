@@ -1607,6 +1607,10 @@ def _segment_rows_for_level(
     grouped: dict[str, dict[str, list[float]]] = {}
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
     observed_periods = {period: False for period in periods}
+    is_class_level = _is_class_level(level)
+    field = LEVEL_FIELD_BY_LABEL.get(level)
+    is_all_channel = channel == "전체"
+    is_ubist_channel = channel != "전체" and source == "UBIST"
 
     def add_observed_series(
         target: dict[str, list[float]],
@@ -1646,14 +1650,13 @@ def _segment_rows_for_level(
                 observed_periods[period] = True
 
     for row in rows:
-        if _is_class_level(level) and _row_is_class_excluded(row):
+        if is_class_level and _row_is_class_excluded(row):
             continue
-        field = LEVEL_FIELD_BY_LABEL.get(level)
-        dimension_field_present = _has_dimension_field(row, field) if channel == "전체" else False
-        dimension_series = _dimension_series_map(row, field) if channel == "전체" else {}
+        dimension_field_present = _has_dimension_field(row, field) if is_all_channel else False
+        dimension_series = _dimension_series_map(row, field) if is_all_channel else {}
         dimension_specialty_present = (
             _has_dimension_specialty_field(row, field)
-            if channel != "전체" and source == "UBIST"
+            if is_ubist_channel
             else False
         )
         dimension_specialty_series = (
@@ -1666,10 +1669,10 @@ def _segment_rows_for_level(
             if channel != "전체" and not dimension_specialty_present
             else None
         )
-        use_dimension_channel = channel != "전체" and not isinstance(dual_channel_data, dict)
+        use_dimension_channel = not is_all_channel and not isinstance(dual_channel_data, dict)
         dimension_channel_present = _has_dimension_channel_field(row, field) if use_dimension_channel else False
         dimension_channel_series = _dimension_channel_series_map(row, field, source, channel) if use_dimension_channel else {}
-        active_dimension_series = dimension_series if channel == "전체" else (dimension_specialty_series or dimension_channel_series)
+        active_dimension_series = dimension_series if is_all_channel else (dimension_specialty_series or dimension_channel_series)
         if active_dimension_series:
             for name, series in active_dimension_series.items():
                 grouped.setdefault(name, {period: [0.0] for period in periods})
@@ -1692,7 +1695,7 @@ def _segment_rows_for_level(
         targets = []
         for name in names:
             targets.append(grouped.setdefault(name, {period: [0.0] for period in periods}))
-        if channel == "전체":
+        if is_all_channel:
             history = _metric_history(row)
             if history:
                 add_observed_series_to_targets(targets, history, also_add_to=totals)
