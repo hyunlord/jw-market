@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from pipeline.scripts.api.composers.number_format import DISPLAY_KEY_SUFFIXES, format_number
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, growth_endpoint_meta
+from pipeline.scripts.api.market_growth import (
+    fixed_five_year_growth_series,
+    growth_endpoint_meta,
+    null_first_growth_point,
+)
 from pipeline.scripts.api.utils import loads_json_maybe
 
 
@@ -59,7 +63,9 @@ def _series_dict_to_points(
 
 def _frontend_shape_aliases(key: str, value: Any, source: str | None) -> Any:
     if key == "market_size_series" and isinstance(value, dict):
-        return _series_dict_to_points(value, value_key="value", source=source)
+        return null_first_growth_point(_series_dict_to_points(value, value_key="value", source=source))
+    if key == "market_size_series" and isinstance(value, list):
+        return null_first_growth_point(value)
     if key == "hhi_series_5y" and isinstance(value, dict):
         return _series_dict_to_points(value, value_key="hhi")
     if key in {"ei_ms_matrix", "growth_contribution_ms_matrix"} and isinstance(value, list):

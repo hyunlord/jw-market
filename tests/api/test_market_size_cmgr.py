@@ -16,7 +16,11 @@ from pipeline.scripts.api.dynamic_market.cause_payload import build_market_meta
 from pipeline.scripts.api.dynamic_market.cause_time import market_size_series
 from pipeline.scripts.api.dynamic_market.response_cache import CACHE_SCHEMA_VERSION
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, MarketDefinition, PeriodRange
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, growth_endpoint_meta
+from pipeline.scripts.api.market_growth import (
+    fixed_five_year_growth_series,
+    growth_endpoint_meta,
+    null_first_growth_point,
+)
 from pipeline.scripts.api.market_scope.legacy_shape import market_size_series_payload
 from pipeline.scripts.etl.build_cache_cause import market_size_series_with_yoy
 
@@ -415,6 +419,125 @@ def test_cached_cause_response_recomputes_growth_from_legacy_value_aliases(value
 
     expected = ((121.0 / 100.0) ** (12 / 60) - 1) * 100
     assert payload["data"]["market_size_series"][1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
+
+
+def test_cached_cause_response_nulls_first_growth_point_when_series_is_already_points() -> None:
+    # F-131d: legacy cached payloads can arrive as precomputed point lists that
+    # bypass dict-to-point recomputation. The composer boundary must still null
+    # the first growth point (path ④).
+    cached = {
+        "data": {
+            "market_size_series": [
+                {"period": "2021-06", "value": 10.0, "mom_growth_pct": 46.4, "cqgr": 46.4},
+                {"period": "2021-07", "value": 11.0, "mom_growth_pct": -2.01, "cqgr": -2.01},
+            ]
+        }
+    }
+
+    payload = compose_cached_json(cached, measure="sales", source="UBIST")
+
+    points = payload["data"]["market_size_series"]
+    assert points[0]["mom_growth_pct"] is None
+    assert points[0]["cqgr"] is None
+    assert points[1]["mom_growth_pct"] == -2.01
+    assert points[1]["cqgr"] == -2.01
+    assert points[0]["value"] == 10.0
+    assert points[1]["value"] == 11.0
+
+
+def test_null_first_growth_point_handles_list_and_mapping_with_cmgr_cqgr() -> None:
+    # F-131f canonical helper: single enforcement point for every return path.
+    listed = null_first_growth_point(
+        [
+            {"period": "2021-06", "value": 10.0, "mom_growth_pct": 5.0, "cmgr": 5.0, "cqgr": 5.0},
+            {"period": "2021-07", "value": 11.0, "mom_growth_pct": -2.01, "cmgr": -2.01, "cqgr": -2.01},
+        ]
+    )
+    assert listed[0]["mom_growth_pct"] is None
+    assert listed[0]["cmgr"] is None
+    assert listed[0]["cqgr"] is None
+    assert listed[0]["value"] == 10.0
+    assert listed[1] == {
+        "period": "2021-07",
+        "value": 11.0,
+        "mom_growth_pct": -2.01,
+        "cmgr": -2.01,
+        "cqgr": -2.01,
+    }
+
+    mapped = null_first_growth_point(
+        {
+            "2021-07": {"value": 11.0, "mom_growth_pct": -2.01},
+            "2021-06": {"value": 10.0, "mom_growth_pct": 5.0},
+        }
+    )
+    assert mapped["2021-06"]["mom_growth_pct"] is None
+    assert mapped["2021-06"]["value"] == 10.0
+    assert mapped["2021-07"]["mom_growth_pct"] == -2.01
+
+
+def test_null_first_growth_point_picks_earliest_period_when_unsorted() -> None:
+    listed = null_first_growth_point(
+        [
+            {"period": "2021-07", "value": 11.0, "mom_growth_pct": -2.01},
+            {"period": "2021-06", "value": 10.0, "mom_growth_pct": 5.0},
+        ]
+    )
+    by_period = {point["period"]: point for point in listed}
+    assert by_period["2021-06"]["mom_growth_pct"] is None
+    assert by_period["2021-07"]["mom_growth_pct"] == -2.01
+
+
+def test_dynamic_market_size_series_nulls_first_point_beyond_five_years() -> None:
+    # Path ①: even when the earliest period predates the five-year baseline,
+    # the returned first element carries no growth value.
+    metrics = _metrics(
+        source="ubist",
+        periods=("2019-01", "2021-05", "2026-05"),
+        values=(80.0, 100.0, 121.0),
+    )
+
+    points = market_size_series(metrics)
+
+    assert points[0]["period"] == "2019-01"
+    assert points[0]["mom_growth_pct"] is None
+    assert points[0]["value"] == 80.0
+    assert points[-1]["mom_growth_pct"] is not None
+
+
+def test_scoped_market_size_payload_nulls_first_growth_point() -> None:
+    # Path ②: legacy scoped recompute shape (the range-less screen path).
+    payload = market_size_series_payload(
+        {"2021-05": 100.0, "2026-05": 121.0},
+        source="UBIST",
+    )
+
+    assert payload["2021-05"]["mom_growth_pct"] is None
+    assert payload["2021-05"]["value"] == 100.0
+    assert payload["2026-05"]["mom_growth_pct"] is not None
+
+
+def test_static_cache_market_size_series_nulls_first_growth_point() -> None:
+    # Path ③: cache emission dict shape (reflected on cache regeneration).
+    payload = market_size_series_with_yoy(
+        {"2021-05": 100.0, "2026-05": 121.0},
+    )
+
+    assert payload["2021-05"]["mom_growth_pct"] is None
+    assert payload["2021-05"]["value"] == 100.0
+    assert payload["2026-05"]["mom_growth_pct"] is not None
+
+
+def test_null_first_growth_point_removal_would_reexpose_value() -> None:
+    # G-6 negative guard: without the enforcement the precomputed first value
+    # survives, proving the helper is the thing keeping it null.
+    raw = [
+        {"period": "2021-06", "value": 10.0, "mom_growth_pct": 46.4},
+        {"period": "2021-07", "value": 11.0, "mom_growth_pct": -2.01},
+    ]
+    assert raw[0]["mom_growth_pct"] == 46.4  # unenforced state still has a value
+    enforced = null_first_growth_point(raw)
+    assert enforced[0]["mom_growth_pct"] is None
 
 
 def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:

@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
+from typing import Any
+
+
+GROWTH_POINT_KEYS: tuple[str, ...] = ("mom_growth_pct", "cmgr", "cqgr")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,3 +122,65 @@ def _number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value)
+
+
+def _null_growth_fields(point: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``point`` with all growth metrics forced to ``None``."""
+
+    updated = dict(point)
+    updated["mom_growth_pct"] = None
+    for key in ("cmgr", "cqgr"):
+        if key in updated:
+            updated[key] = None
+    return updated
+
+
+def _first_point_index(points: list[Any]) -> int | None:
+    """Return the index of the earliest-period point, or 0 when unlabeled."""
+
+    labeled = [
+        (str(point["period"]), index)
+        for index, point in enumerate(points)
+        if isinstance(point, Mapping) and point.get("period") is not None
+    ]
+    if labeled:
+        return min(labeled)[1]
+    return 0 if points else None
+
+
+def null_first_growth_point(series: Any) -> Any:
+    """Force the first returned market-growth point to a non-computed baseline.
+
+    The earliest period in a returned ``market_size_series`` cannot carry a
+    valid compounded growth (it *is* the range baseline), yet cached list
+    payloads and precomputed dict payloads can surface a computed value there.
+    This is the single canonical enforcement point shared by every return
+    boundary (dynamic ``cause_time``, ``legacy_shape`` scoped recompute,
+    ``build_cache_cause`` cache emission, and the ``cache_to_response``
+    composer) so the contract holds regardless of how the series was produced.
+
+    ``mom_growth_pct``/``cmgr``/``cqgr`` on the first point become ``None``;
+    the underlying value and every later point are left untouched. Accepts a
+    list of period-point dicts or a ``period -> point`` mapping and returns the
+    same container kind (a shallow copy).
+    """
+
+    if isinstance(series, Mapping):
+        if not series:
+            return series
+        first_period = min(series, key=lambda period: str(period))
+        first_point = series[first_period]
+        if not isinstance(first_point, Mapping):
+            return series
+        updated = dict(series)
+        updated[first_period] = _null_growth_fields(dict(first_point))
+        return updated
+    if isinstance(series, list):
+        if not series:
+            return series
+        points = [dict(item) if isinstance(item, Mapping) else item for item in series]
+        first_index = _first_point_index(points)
+        if first_index is not None and isinstance(points[first_index], dict):
+            points[first_index] = _null_growth_fields(points[first_index])
+        return points
+    return series

@@ -56,7 +56,7 @@ from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     current_analysis_level_source_epoch,
     load_analysis_level_block,
 )
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, null_first_growth_point
 from pipeline.scripts.api.metadata.ml_market_meta import BRAND_METADATA
 from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT_LEVEL, is_iron_iv_dimension_market
 from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
@@ -3260,7 +3260,7 @@ def market_size_series_with_yoy(series: dict[str, Any]) -> dict[str, dict[str, f
             "yoy_growth_pct": yoy_series.get(str(period)),
             "mom_growth_pct": mom_series.get(str(period)),
         }
-    return output
+    return null_first_growth_point(output)
 
 
 def latest_market_series_payload(series: dict[str, Any]) -> dict[str, Any]:

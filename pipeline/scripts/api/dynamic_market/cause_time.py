@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 from pipeline.scripts.api.dynamic_market.aggregator import month_distance
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, null_first_growth_point
 
 
 SOURCE_LABELS = {"ubist": "UBIST", "iqvia_nsa": "IQVIA"}
@@ -52,7 +52,7 @@ def market_size_series(metrics: AggregatedMetrics) -> list[dict[str, Any]]:
         if "sales_krw" not in point:
             point["sales_krw"] = totals[period]
         series.append(point)
-    return series
+    return null_first_growth_point(series)
 
 
 def hhi_series(brands: tuple[BrandMetric, ...], *, source: str | None = None) -> list[dict[str, Any]]:

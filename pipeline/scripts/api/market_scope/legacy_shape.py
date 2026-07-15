@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, null_first_growth_point
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,10 +30,11 @@ def market_size_series_payload(
 
     yoy_series = market_yoy_series(market_size)
     mom_series = market_cmgr_series(market_size, source=source)
-    return {
+    payload = {
         period: {"value": value, "yoy_growth_pct": yoy_series[period], "mom_growth_pct": mom_series[period]}
         for period, value in market_size.items()
     }
+    return null_first_growth_point(payload)
 
 
 def market_yoy_series(market_size: Mapping[str, float]) -> dict[str, float | None]:
