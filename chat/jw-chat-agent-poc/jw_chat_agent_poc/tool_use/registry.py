@@ -172,12 +172,12 @@ class ExternalToolRegistry:
 
     def _clinical_kr(self, payload: BaseModel) -> ToolEnvelope:
         request = ClinicalQueryInput.model_validate(payload.model_dump())
-        call = self._external.mfds_clinical_trial_kr(request.query)
+        call = self._external.mfds_clinical_trial_kr(request.query, query_type=request.query_type)
         return _external_call_envelope(call, request.query, "국내 임상시험")
 
     def _clinical_global(self, payload: BaseModel) -> ToolEnvelope:
         request = ClinicalQueryInput.model_validate(payload.model_dump())
-        call = self._external.clinicaltrials_v2_search(request.query)
+        call = self._external.clinicaltrials_v2_search(request.query, query_type=request.query_type)
         return _external_call_envelope(call, request.query, "글로벌 임상시험")
 
     def _web_search(self, payload: BaseModel) -> ToolEnvelope:

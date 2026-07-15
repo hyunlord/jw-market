@@ -228,8 +228,8 @@ def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug(
     choices = _deterministic_tool_choices(question, BrandResolver())
 
     assert [(choice.name, choice.arguments) for choice in choices] == [
-        ("clinicaltrials_v2_search", {"query": "고지혈증"}),
-        ("mfds_clinical_trial_kr", {"query": "고지혈증"}),
+        ("clinicaltrials_v2_search", {"query": "hyperlipidemia", "query_type": "condition"}),
+        ("mfds_clinical_trial_kr", {"query": "고지혈증", "query_type": "condition"}),
         ("web_search", {"query": question, "brand": None, "topic": "general"}),
     ]
 

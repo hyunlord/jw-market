@@ -111,11 +111,23 @@ class ExternalApiClient:
     def mfds_easy_drug(self, item_seq: str) -> ExternalCall:
         return self._fixture_or_live("mfds_easy_drug", {"item_seq": item_seq})
 
-    def mfds_clinical_trial_kr(self, keyword: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_clinical_trial_kr", {"keyword": keyword})
+    def mfds_clinical_trial_kr(
+        self,
+        keyword: str,
+        *,
+        query_type: Literal["intervention", "condition"] = "intervention",
+    ) -> ExternalCall:
+        params = {"query.condition": keyword} if query_type == "condition" else {"keyword": keyword}
+        return self._fixture_or_live("mfds_clinical_trial_kr", params)
 
-    def clinicaltrials_v2_search(self, query_intr: str) -> ExternalCall:
-        return self._fixture_or_live("clinicaltrials_v2_search", {"query.intr": query_intr})
+    def clinicaltrials_v2_search(
+        self,
+        query_intr: str,
+        *,
+        query_type: Literal["intervention", "condition"] = "intervention",
+    ) -> ExternalCall:
+        key = "query.condition" if query_type == "condition" else "query.intr"
+        return self._fixture_or_live("clinicaltrials_v2_search", {key: query_intr})
 
     def openfda_label_search(
         self,
@@ -403,11 +415,16 @@ class ExternalApiClient:
 def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
     match tool:
         case "clinicaltrials_v2_search":
+            condition = params.get("query.condition")
             return {
                 "resource_id": os.environ.get(CLINICAL_TRIALS_MCP_RESOURCE_ENV, CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE),
                 "source": CLINICAL_TRIALS_MCP_SOURCE,
                 "mcp_tool": "search_studies",
-                "arguments": {"intervention": params.get("query.intr", ""), "pageSize": 5},
+                "arguments": (
+                    {"condition": condition, "pageSize": 5}
+                    if condition
+                    else {"intervention": params.get("query.intr", ""), "pageSize": 5}
+                ),
             }
         case "openfda_label_search":
             ingredient = _openfda_active_ingredient(params)
@@ -439,7 +456,15 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
         case "mfds_easy_drug":
             return _nedrug_spec(tool, "search_easy_drug_info", {"item_seq": params.get("item_seq"), "limit": 5})
         case "mfds_clinical_trial_kr":
-            return _nedrug_spec(tool, "search_clinical_test_info", {"goods_name": params.get("keyword"), "limit": 5})
+            return _nedrug_spec(
+                tool,
+                "search_clinical_test_info",
+                {
+                    "clinic_exam_title": params.get("query.condition"),
+                    "goods_name": params.get("keyword"),
+                    "limit": 5,
+                },
+            )
         case "mfds_patent":
             return _nedrug_spec(tool, "search_korea_drug_patent", {"item_name": params.get("item_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
         case "mfds_fda_orangebook":
@@ -578,7 +603,7 @@ def _clinicaltrials_call_from_mcp(params: dict[str, str], mcp_tool: str, result:
         tool="clinicaltrials_v2_search",
         source=CLINICAL_TRIALS_MCP_SOURCE,
         status="live",
-        summary_text=f"ClinicalTrials MCP에서 {params.get('query.intr', '')} 관련 NCT 원문 결과를 확인했습니다: {','.join(nct_ids[:3])}",
+        summary_text=f"ClinicalTrials MCP에서 {params.get('query.intr') or params.get('query.condition', '')} 관련 NCT 원문 결과를 확인했습니다: {','.join(nct_ids[:3])}",
         render_data={**render_data, "nct_ids": nct_ids, "briefTitle": _first_study_value(studies, "briefTitle"), "overallStatus": _first_study_value(studies, "overallStatus")},
         safe_url=url,
         elapsed_ms=elapsed,

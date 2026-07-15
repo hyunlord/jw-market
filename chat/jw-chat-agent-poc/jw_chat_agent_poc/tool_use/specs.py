@@ -74,6 +74,7 @@ class ClinicalQueryInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     query: str
+    query_type: Literal["intervention", "condition"] = "intervention"
 
 
 class DiseaseCodeInput(BaseModel):

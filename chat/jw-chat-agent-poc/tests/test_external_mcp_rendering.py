@@ -140,6 +140,20 @@ def test_mcp_specs_use_verified_gateway_resources_and_env_urls(monkeypatch) -> N
     assert client._mcp_url(hira["resource_id"], hira["source"]) == "http://llmops-gateway-api-service:8080/mcp/253/mcp"
 
 
+def test_clinical_disease_queries_use_condition_slots() -> None:
+    global_spec = _mcp_tool_spec(
+        "clinicaltrials_v2_search",
+        {"query.condition": "hyperlipidemia"},
+    )
+    domestic_spec = _mcp_tool_spec(
+        "mfds_clinical_trial_kr",
+        {"query.condition": "고지혈증"},
+    )
+
+    assert global_spec["arguments"] == {"condition": "hyperlipidemia", "pageSize": 5}
+    assert domestic_spec["arguments"] == {"clinic_exam_title": "고지혈증", "limit": 5}
+
+
 def test_main_ingredient_spec_uses_mart_then_mfds_fallback_method(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
     calls: list[str] = []

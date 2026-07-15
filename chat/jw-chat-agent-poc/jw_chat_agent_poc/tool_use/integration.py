@@ -22,6 +22,11 @@ from jw_chat_agent_poc.tools.external import ExternalApiClient
 LOGGER = logging.getLogger(__name__)
 FEATURE_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_AGENT_ENABLED"
 FORCE_CONTRACT_CALLS_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS"
+_CLINICAL_DISEASE_ALIASES: Final[dict[str, str]] = {
+    "고지혈증": "hyperlipidemia",
+}
+
+
 def external_tool_agent_enabled() -> bool:
     return os.environ.get(FEATURE_FLAG, "1").lower() in {"1", "true", "yes"}
 
@@ -128,8 +133,16 @@ def _deterministic_arguments(
     if tool_name in {"local_molecule_lookup", "get_drug_main_ingredient", "mfds_permission_search"}:
         return {"brand": brand} if brand is not None else None
     if tool_name in {"clinicaltrials_v2_search", "mfds_clinical_trial_kr"}:
-        query = ingredient or disease_query
-        return {"query": query} if query is not None else None
+        if ingredient is not None:
+            return {"query": ingredient}
+        if disease_query is None:
+            return None
+        query = (
+            _CLINICAL_DISEASE_ALIASES.get(disease_query, disease_query)
+            if tool_name == "clinicaltrials_v2_search"
+            else disease_query
+        )
+        return {"query": query, "query_type": "condition"}
     if tool_name == "openfda_label_search":
         if ingredient is None:
             return None
