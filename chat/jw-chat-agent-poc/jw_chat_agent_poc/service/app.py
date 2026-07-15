@@ -43,6 +43,7 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
+from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
@@ -1157,7 +1158,12 @@ def _answer_existing_without_pending(
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
-    if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
+    if (
+        use_direct_agent_loop
+        and should_use_agent_loop(question)
+        and not documents
+        and not tool_use_requirements(question)
+    ):
         return _answer_direct_agent_loop(question, external_mode)
     if should_use_agent_loop(question):
         with stage(None, "question_classification", "agent setup"):

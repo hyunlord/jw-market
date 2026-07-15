@@ -360,7 +360,12 @@ def test_answer_question_external_contract_uses_chat_agent_facade_before_direct_
         ),
     )
 
-    for question in ("리바로 임상시험", "리바로 특허 만료일"):
+    questions = (
+        "리바로 임상시험",
+        "리바로 특허 만료일",
+        "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 .",
+    )
+    for question in questions:
         item = service_app._answer_question(
             SessionStore(),
             _market_scope_resolver(),
@@ -378,6 +383,8 @@ def test_answer_question_external_contract_uses_chat_agent_facade_before_direct_
         ("리바로 임상시험", "answered"),
         ("live", "factory"),
         ("리바로 특허 만료일", "answered"),
+        ("live", "factory"),
+        (questions[2], "answered"),
     ]
 
 
