@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import inspect
 import json
 import logging
 import os
@@ -1466,12 +1467,11 @@ def deep_analysis(
                 }
         else:
             context_candidate_cache: dict[tuple[str, str, str], object] = {}
+            resolver_kwargs = {}
+            if "candidate_cache" in inspect.signature(_resolve_brand_factor_choices).parameters:
+                resolver_kwargs["candidate_cache"] = context_candidate_cache
             brand_choices_by_source, brand_factor_meta = _resolve_brand_factor_choices(
-                row,
-                brand,
-                None,
-                selected_factors,
-                candidate_cache=context_candidate_cache,
+                row, brand, None, selected_factors, **resolver_kwargs
             )
             unavailable_factor_sources = {
                 source_name: meta
