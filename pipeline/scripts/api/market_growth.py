@@ -22,11 +22,18 @@ def compound_period_growth_pct(
     *,
     periods_per_year: int,
 ) -> float | None:
-    """Return annualized compound growth over the actual elapsed periods."""
+    """Return per-period compound growth over the actual elapsed periods.
+
+    PL contract (F-133): the growth metric is the compound growth **per elapsed
+    period** — ``(current / baseline) ** (1 / elapsed_periods) - 1`` — not an
+    annualized rate. ``periods_per_year`` is retained for caller/signature
+    compatibility but no longer scales the exponent, so early points no longer
+    spike from annualizing one or two elapsed periods.
+    """
 
     if previous is None or previous <= 0 or current is None or current < 0 or elapsed_periods <= 0:
         return None
-    return (math.pow(current / previous, periods_per_year / elapsed_periods) - 1) * 100
+    return (math.pow(current / previous, 1 / elapsed_periods) - 1) * 100
 
 
 def fixed_five_year_growth_series(
