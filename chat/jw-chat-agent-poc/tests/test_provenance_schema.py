@@ -245,3 +245,21 @@ def test_merging_public_source_rows_does_not_modify_answer_body() -> None:
 
     assert revised.split("## 출처", 1)[0].strip() == answer
     assert "30.33%" in revised
+
+
+def test_external_tool_bullets_preserve_actual_source_identity() -> None:
+    fact_md = """- pitavastatin: 글로벌 임상시험 = NCT00257686 · Study to Compare Pitavastatin and Pravastatin · https://clinicaltrials.gov/study/NCT00257686 [ClinicalTrials.gov 임상시험 정보]
+- 고지혈증 (20120118): 국내 임상시험 = HL040XC정 [식약처 의약품 정보]
+- pitavastatin: 이상반응 = myalgia [FDA 이상반응 보고 정보]
+- 고지혈증: 환자수 = 1,305,727명 [건강보험심사평가원 통계]
+- 고지혈증 임상 현황: 웹 검색 = [국내진출 임박한 고지혈증 신약](https://example.test/clinical) [웹 검색 결과]
+"""
+
+    block = deterministic_source_block(fact_md)
+
+    assert "| ClinicalTrials.gov |" in block
+    assert "| 식약처 의약품 정보 |" in block
+    assert "| FDA 이상반응 보고 정보 |" in block
+    assert "| HIRA 질병정보서비스 |" in block
+    assert "| 뉴스/이슈 「국내진출 임박한 고지혈증 신약」 https://example.test/clinical |" in block
+    assert "| external |" not in block

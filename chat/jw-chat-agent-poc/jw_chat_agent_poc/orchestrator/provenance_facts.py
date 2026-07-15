@@ -22,6 +22,12 @@ _FILE_NAME_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"^\s*업로드\s*파일\s+([^\s:]+)", re.MULTILINE),
     re.compile(r"^\s*(?:filename|file_name)\s*[:=]\s*([^\n]+)", re.MULTILINE | re.IGNORECASE),
 )
+_EXTERNAL_BULLET_LABEL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[-*]\s+.+?\[(?P<label>ClinicalTrials\.gov 임상시험 정보|식약처 의약품 정보|"
+    r"(?:OpenFDA|FDA)[^\]]*|HIRA[^\]]*|건강보험심사평가원[^\]]*|웹 검색 결과)\]\s*$",
+    re.IGNORECASE,
+)
+_MARKDOWN_LINK_RE: Final[re.Pattern[str]] = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 
 
 def provenance_rows_from_fact_markdown(fact_md: str) -> tuple[ProvenanceRow, ...]:
@@ -118,7 +124,36 @@ def _rows_from_external_facts(fact_md: str) -> list[ProvenanceRow]:
         if url:
             citation = f"{citation} {url}"
         rows.append(normalized_row(source=citation, period=date))
+    rows.extend(_rows_from_external_tool_bullets(fact_md))
     return _external_source_rows(fact_md, rows)
+
+
+def _rows_from_external_tool_bullets(fact_md: str) -> list[ProvenanceRow]:
+    rows: list[ProvenanceRow] = []
+    for line in fact_md.splitlines():
+        match = _EXTERNAL_BULLET_LABEL_RE.match(line)
+        if match is None:
+            continue
+        label = match.group("label")
+        label_fold = label.casefold()
+        if label_fold.startswith("clinicaltrials.gov"):
+            source = "ClinicalTrials.gov"
+        elif label == "식약처 의약품 정보":
+            source = label
+        elif label_fold.startswith(("openfda", "fda")):
+            source = label
+        elif "hira" in label_fold or "건강보험심사평가원" in label:
+            source = "HIRA 질병정보서비스"
+        else:
+            links = _MARKDOWN_LINK_RE.findall(line)
+            title, url = links[-1] if links else ("", "")
+            source = "뉴스/이슈"
+            if title:
+                source = f"{source} 「{title}」"
+            if url:
+                source = f"{source} {url}"
+        rows.append(normalized_row(source=source, period=period_range(period_tokens(line))))
+    return rows
 
 
 def _external_source_rows(fact_md: str, rows: list[ProvenanceRow]) -> list[ProvenanceRow]:
@@ -156,7 +191,12 @@ def _replace_generic_external_rows(
     if not external_rows:
         return list(rows)
     detailed_families = {_source_family(row.source) for row in external_rows}
-    kept = [row for row in rows if _source_family(row.source) not in detailed_families]
+    kept = [
+        row
+        for row in rows
+        if row.source.casefold() not in {"external", "외부 api"}
+        and _source_family(row.source) not in detailed_families
+    ]
     return [*kept, *external_rows]
 
 
