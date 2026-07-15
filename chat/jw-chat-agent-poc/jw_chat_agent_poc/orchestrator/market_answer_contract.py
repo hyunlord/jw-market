@@ -218,7 +218,7 @@ def _brand_market_size_answer(question: str, calls: Sequence[Mapping[str, Any]])
         market_id = str(data.get("market_id") or data.get("market") or "").lower()
         if "market_landscape" not in view and not market_id.startswith("ml_"):
             continue
-        brand = str(data.get("anchor_brand") or "").strip()
+        brand = str(data.get("anchor_brand") or data.get("brand") or "").strip()
         amount = eok_value(
             data.get("market_size_억원"),
             data.get("market_size_recent_krw"),

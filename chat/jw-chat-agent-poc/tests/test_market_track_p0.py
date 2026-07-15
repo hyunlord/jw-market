@@ -748,17 +748,17 @@ def test_brand_market_size_uses_verified_scope_fact_instead_of_channel_dump() ->
         answer="2026-05 기준 리바로 채널별 매출은 로수젯 195.24억원 순입니다.",
         tool_calls=[
             {
-                "tool": "get_market_landscape",
+                "tool": "get_brand_metric",
                 "source": "UBIST",
                 "render_data": {
-                    "anchor_brand": "리바로",
+                    "brand": "리바로",
+                    "metric": "market_top_brands",
                     "market_id": "ml_006",
                     "market_name": "ml_006",
                     "period": "2026-05",
                     "market_size_recent_krw": 213_925_043_319.36026,
                     "market_size_억원": 2_139.25,
                     "total_brands_in_market": 555,
-                    "view_type": "market_landscape",
                 },
             }
         ],
