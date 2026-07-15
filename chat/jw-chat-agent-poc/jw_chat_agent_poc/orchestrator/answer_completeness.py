@@ -125,6 +125,100 @@ def deterministic_top_n_share_answer(
     return answer if contract_block and _surface_complete("top_n_share_sum", answer, contract_block) else ""
 
 
+def deterministic_single_period_sales_answer(
+    question: str,
+    fact_md: str,
+    tool_calls: Sequence[dict[str, Any]],
+) -> str:
+    """Render one verified sales value without a final LLM call."""
+
+    if not any(token in question for token in ("매출", "판매")):
+        return ""
+    if any(
+        token in question
+        for token in (
+            "비교",
+            "각각",
+            "추이",
+            "변화",
+            "증감",
+            "최근",
+            "대비",
+            "차이",
+            "점유율",
+            "시장규모",
+            "순위",
+        )
+    ):
+        return ""
+    requested_period = _explicit_period(question)
+    if not requested_period:
+        return ""
+    matches: list[tuple[str, str]] = []
+    failed_statuses = {"error", "query_failed", "unsupported", "mapping_failed", "missing"}
+    for call in tool_calls:
+        if str(call.get("tool") or "") != "get_brand_metric":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict) or str(data.get("metric") or "") != "sales":
+            continue
+        if str(data.get("status") or "ok").lower() in failed_statuses:
+            continue
+        brand = str(data.get("brand") or data.get("requested_brand") or "").strip()
+        period = str(data.get("period") or "").strip()
+        if not brand or brand not in question or period != requested_period:
+            continue
+        sales_text = eok_value(data.get("sales_억원"), data.get("sales_krw"))
+        if not sales_text or not _verified_metric_fact(fact_md, brand, period, sales_text):
+            continue
+        matches.append((brand, sales_text))
+    if len(matches) != 1:
+        return ""
+    brand, sales_text = matches[0]
+    return f"{requested_period} {brand} 매출은 {sales_text}입니다."
+
+
+def _explicit_period(question: str) -> str:
+    compact = re.sub(r"\s+", "", question)
+    quarter = re.search(r"(20\d{2})(?:년)?([1-4])분기", compact)
+    if quarter:
+        return f"{quarter.group(1)}-Q{quarter.group(2)}"
+    canonical_quarter = re.search(r"(20\d{2})-?Q([1-4])", compact, flags=re.IGNORECASE)
+    if canonical_quarter:
+        return f"{canonical_quarter.group(1)}-Q{canonical_quarter.group(2)}"
+    month = re.search(r"(20\d{2})년(1[0-2]|[1-9])월", compact)
+    if month:
+        return f"{month.group(1)}-{int(month.group(2)):02d}"
+    canonical_month = re.search(r"(20\d{2})-(1[0-2]|0[1-9])", compact)
+    if canonical_month:
+        return canonical_month.group(0)
+    year = re.search(r"(20\d{2})년", compact)
+    return year.group(1) if year else ""
+
+
+def _verified_metric_fact(fact_md: str, brand: str, period: str, sales_text: str) -> bool:
+    heading = re.search(
+        rf"^###\s+{re.escape(brand)}\s+지표 fact\s*$",
+        fact_md,
+        flags=re.MULTILINE,
+    )
+    if heading is None:
+        return False
+    section = fact_md[heading.end() :]
+    section = section.split("\n### ", 1)[0]
+    rows: dict[str, str] = {}
+    for line in section.splitlines():
+        cells = _cells(line)
+        if len(cells) >= 2:
+            rows[cells[0]] = cells[1]
+    return (
+        rows.get("브랜드/시장") == brand
+        and rows.get("지표") == "sales"
+        and rows.get("기간") == period
+        and rows.get("매출") == sales_text
+    )
+
+
 def comparison_subjects(question: str) -> tuple[str, ...]:
     """Return the explicit operands of a brand-comparison question."""
 

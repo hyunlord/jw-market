@@ -19,7 +19,10 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers a
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels, table
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
+from jw_chat_agent_poc.orchestrator.answer_completeness import (
+    deterministic_single_period_sales_answer,
+    deterministic_top_n_share_answer,
+)
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
@@ -804,6 +807,32 @@ class GenosClient:
                         concentration_answer,
                         file_context,
                     )
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+            single_period_sales_answer = deterministic_single_period_sales_answer(
+                question,
+                fact_md,
+                verified_calls,
+            )
+            if single_period_sales_answer:
+                with stage(
+                    timing,
+                    "final_deterministic_single_period_sales_path",
+                    "verified single-period sales answer rendering",
+                ):
+                    answer = _apply_final_claim_controls(question, single_period_sales_answer, fact_md)
+                    answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
+                    if not file_context:
+                        answer = apply_common_unavailable_response(
+                            question,
+                            answer,
+                            markdown_response,
+                            tool_calls=verified_calls,
+                        )
+                        answer = apply_requested_source_trap_gate(question, answer)
+                    answer = ensure_file_absence_statement(question, answer, file_context)
+                    if not file_context:
+                        answer = enforce_market_answer_contract(question, answer, verified_calls)
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             fast_answer = deterministic_top_n_share_answer(question, fact_md, verified_calls)
