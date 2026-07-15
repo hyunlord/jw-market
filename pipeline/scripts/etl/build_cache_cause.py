@@ -1964,10 +1964,11 @@ def _rows_for_dimension_segments(
     row-selection contract of ``_rows_for_dimension``.
     """
 
+    is_class_level = _is_class_level(level)
     field = LEVEL_FIELD_BY_LABEL.get(level)
     indexed: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if _is_class_level(level) and _row_is_class_excluded(row):
+        if is_class_level and _row_is_class_excluded(row):
             continue
 
         dimension_series = _dimension_series_map(row, field)
