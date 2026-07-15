@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import os
 from pathlib import Path
@@ -244,13 +244,29 @@ def _empty_result_calls(result: Mapping[str, Any]) -> tuple[dict[str, str], ...]
     tool_calls = result.get("tool_calls")
     if not isinstance(tool_calls, list):
         return ()
+    recovered_tools = {
+        str(call.get("tool") or "")
+        for call in tool_calls
+        if isinstance(call, Mapping) and _call_has_evidence(call)
+    }
     for call in tool_calls:
         if not isinstance(call, Mapping):
             continue
         status = call.get("status")
-        if isinstance(status, str) and status in _EMPTY_TOOL_STATUSES:
+        tool = str(call.get("tool") or "")
+        if isinstance(status, str) and status in _EMPTY_TOOL_STATUSES and tool not in recovered_tools:
             calls.append({"tool": str(call.get("tool") or ""), "status": status})
     return tuple(calls)
+
+
+def _call_has_evidence(call: Mapping[str, Any]) -> bool:
+    if call.get("status") != "ok":
+        return False
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping) or render_data.get("ok") is False:
+        return False
+    evidence = render_data.get("evidence")
+    return isinstance(evidence, Sequence) and not isinstance(evidence, (str, bytes)) and bool(evidence)
 
 
 def _assembly_gap_reason(
