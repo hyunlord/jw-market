@@ -742,6 +742,35 @@ def test_quarter_metric_does_not_render_query_plan_as_a_source_row() -> None:
     assert "2026-05" not in answer
 
 
+def test_brand_market_size_uses_verified_scope_fact_instead_of_channel_dump() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로 시장 규모",
+        answer="2026-05 기준 리바로 채널별 매출은 로수젯 195.24억원 순입니다.",
+        tool_calls=[
+            {
+                "tool": "get_market_landscape",
+                "source": "UBIST",
+                "render_data": {
+                    "anchor_brand": "리바로",
+                    "market_id": "ml_006",
+                    "market_name": "ml_006",
+                    "period": "2026-05",
+                    "market_size_recent_krw": 213_925_043_319.36026,
+                    "market_size_억원": 2_139.25,
+                    "total_brands_in_market": 555,
+                    "view_type": "market_landscape",
+                },
+            }
+        ],
+    )
+
+    assert answer.startswith(
+        "2026-05 리바로가 속한 전략 시장의 시장규모는 2,139.25억원입니다."
+    )
+    assert "채널별 매출" not in answer
+    assert "ml_006" not in answer
+
+
 def test_file_sql_only_answer_is_outside_market_contract() -> None:
     original = "업로드 파일 집계 결과는 690건, 2,679,529입니다."
 

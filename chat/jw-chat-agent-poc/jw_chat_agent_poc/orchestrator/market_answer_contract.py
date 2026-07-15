@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Final
 
-from jw_chat_agent_poc.orchestrator.markdown_formatting import precise_eok_value
+from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value, precise_eok_value
 from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     MISSING_LABEL,
@@ -47,6 +47,8 @@ def enforce_market_answer_contract(
         contracted = _restrained_interpretation_answer(question, relevant_calls)
     if not contracted:
         contracted = _strategy_market_answer(question, relevant_calls)
+    if not contracted:
+        contracted = _brand_market_size_answer(question, relevant_calls)
     if not contracted:
         contracted = _concentration_answer(question, relevant_calls)
     if not contracted:
@@ -202,6 +204,30 @@ def _strategy_market_answer(question: str, calls: Sequence[Mapping[str, Any]]) -
         period = str(data.get("period") or data.get("requested_period") or "").strip()
         prefix = f"{period} " if period else ""
         return f"{prefix}{name}의 전략뷰 시장규모는 {amount:,.6f}억원입니다."
+    return ""
+
+
+def _brand_market_size_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if not re.search(r"시장\s*규모", question) or re.search(
+        r"\bml_\d+\b", question, re.IGNORECASE
+    ):
+        return ""
+    for call in calls:
+        data = _render_data(call)
+        view = str(data.get("view_type") or data.get("view") or "").lower()
+        market_id = str(data.get("market_id") or data.get("market") or "").lower()
+        if "market_landscape" not in view and not market_id.startswith("ml_"):
+            continue
+        brand = str(data.get("anchor_brand") or "").strip()
+        amount = eok_value(
+            data.get("market_size_억원"),
+            data.get("market_size_recent_krw"),
+        )
+        if not brand or not amount:
+            continue
+        period = str(data.get("period") or data.get("requested_period") or "").strip()
+        prefix = f"{period} " if period else ""
+        return f"{prefix}{brand}가 속한 전략 시장의 시장규모는 {amount}입니다."
     return ""
 
 
