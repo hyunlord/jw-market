@@ -233,6 +233,7 @@ def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch
     assert len(build_calls) == 2
     assert build_calls[0]["series_value_cache"] is build_calls[1]["series_value_cache"]
     assert build_calls[0]["series_observed_cache"] is build_calls[1]["series_observed_cache"]
+    assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]
 
 
 def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkeypatch) -> None:

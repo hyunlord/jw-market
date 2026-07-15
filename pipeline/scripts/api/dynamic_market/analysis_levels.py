@@ -105,6 +105,7 @@ def build_analysis_level_sections(
             rows_by_level=rows_by_level,
             include_all_options=bool(focus),
             channel="전체",
+            series_value_cache=series_value_cache,
             channel_rows_cache=channel_rows_cache,
         )
         market_status_channels = _market_status_channels(
