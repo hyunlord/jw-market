@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from decimal import Decimal
 
 import requests
 
@@ -56,6 +57,8 @@ from jw_chat_agent_poc.service.genos_client import (
     _web_search_unverified_section,
 )
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
+from jw_chat_agent_poc.tool_use.contracts import EvidenceFact
+from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 
 
 def test_metric_answer_is_markdown_with_deterministic_table() -> None:
@@ -1646,6 +1649,47 @@ def test_hira_patient_summary_adds_natural_lead_before_existing_table() -> None:
     assert "외래 여 환자수는 1,910,492명입니다." in revised
     assert revised.find("HIRA 기준") < revised.find("| 질병코드 |")
     assert "| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |" in revised
+
+
+def test_hira_patient_summary_reads_tool_use_renderer_evidence() -> None:
+    facts = (
+        EvidenceFact(
+            fact_id="hira:1",
+            subject="E78",
+            metric="질병 입원/외래 통계",
+            value=Decimal("1305727"),
+            unit=None,
+            period="2024",
+            source_name="건강보험심사평가원 통계",
+            source_locator="지질단백질대사장애 및 기타 지질증 · 외래 · 남",
+            raw_ref="hira:1",
+        ),
+        EvidenceFact(
+            fact_id="hira:2",
+            subject="E78",
+            metric="질병 입원/외래 통계",
+            value=Decimal("1910492"),
+            unit=None,
+            period="2024",
+            source_name="건강보험심사평가원 통계",
+            source_locator="지질단백질대사장애 및 기타 지질증 · 외래 · 여",
+            raw_ref="hira:2",
+        ),
+    )
+    fact_md = render_evidence_answer(facts)
+    answer = """| 질병코드 | 연도 | 구분 | 성별 | 환자수(명) | 출처 |
+| --- | --- | --- | --- | --- | --- |
+| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |
+| E78 | 2024 | 외래 | 여 | 1,910,492 | 건강보험심사평가원 |
+"""
+
+    revised = ensure_hira_patient_summary("고지혈증 환자수", answer, fact_md)
+
+    assert revised.startswith(
+        "HIRA 기준 지질단백질대사장애 및 기타 지질증(E78) 2024년 외래 남 환자수는 1,305,727명입니다."
+    )
+    assert "외래 여 환자수는 1,910,492명입니다." in revised
+    assert revised.find("HIRA 기준") < revised.find("| 질병코드 |")
 
 
 def test_genos_final_answer_keeps_hira_natural_lead_before_table(monkeypatch) -> None:

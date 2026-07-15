@@ -1740,6 +1740,32 @@ def _hira_patient_summary_lines(fact_md: str) -> tuple[str, ...]:
     lines = [line for line in mandatory_fact_lines(fact_md) if "HIRA 환자수" in line]
     if lines:
         return tuple(lines)
+    tool_lines: list[str] = []
+    tool_fact_pattern = re.compile(
+        r"^-\s+(?P<code>[A-Z]\d+[A-Z0-9.]*)\s+\((?P<year>20\d{2})\):\s+"
+        r"질병 입원/외래 통계\s*=\s*(?P<count>\d[\d,]*)\s+"
+        r"\[건강보험심사평가원 통계\s+·\s+(?P<locator>[^\]]+)\]$"
+    )
+    for raw in fact_md.splitlines():
+        match = tool_fact_pattern.match(raw.strip())
+        if not match:
+            continue
+        locator = tuple(
+            part.strip()
+            for part in match.group("locator").split(" · ")
+            if part.strip()
+        )
+        if len(locator) < 2:
+            continue
+        disease, segment, *qualifiers = locator
+        segment_label = " ".join((segment, *qualifiers))
+        count = f'{int(match.group("count").replace(",", "")):,}'
+        tool_lines.append(
+            f"- HIRA 환자수: {disease}({match.group('code')}) "
+            f"{match.group('year')}년 {segment_label}: {count}명"
+        )
+    if tool_lines:
+        return tuple(dict.fromkeys(tool_lines))
     parsed: list[str] = []
     in_table = False
     for raw in fact_md.splitlines():
