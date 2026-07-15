@@ -72,6 +72,8 @@ def build_analysis_level_sections(
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
         ubist_channel_context = resolve_market_channels(rows=rows, market=dict(market), measure=metrics.measure)
+    resolved_levels = set(cause_builder._strategic_levels(dict(market), rows))
+    resolved_periods = cause_builder._history_periods(rows, source_api)
     try:
         analysis_levels = cause_builder._build_analysis_levels_from_mart(
             rows=rows,
@@ -81,6 +83,8 @@ def build_analysis_level_sections(
             target_name=None,
             fallback_level_top5={},
             channels_override=analysis_level_channels,
+            resolved_levels=resolved_levels,
+            resolved_periods=resolved_periods,
         )
         analysis_levels = cause_builder._ensure_split_class_alias(analysis_levels)
         rows_by_level = cause_builder._level_rows_by_segment(
@@ -112,6 +116,8 @@ def build_analysis_level_sections(
                     target_name=None,
                     fallback_level_top5={},
                     channels_override=market_status_channels,
+                    resolved_levels=resolved_levels,
+                    resolved_periods=resolved_periods,
                 )
             )
         market_status = cause_builder._ensure_analysis_level_market_status_contract(

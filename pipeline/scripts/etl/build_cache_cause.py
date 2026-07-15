@@ -2101,28 +2101,36 @@ def _build_analysis_levels_from_mart(
     channels_override: list[str] | None = None,
     use_latest_valid_share: bool = False,
     series_value_cache: _SeriesValueCache | None = None,
+    resolved_levels: set[str] | None = None,
+    resolved_periods: list[str] | None = None,
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
-    level_resolution_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
-    enabled_levels = set(_strategic_levels(market, rows))
-    if level_resolution_started:
-        logger.info(
-            "market_latency_analysis_resolve_levels levels=%s rows=%s ms=%.3f",
-            len(enabled_levels),
-            len(rows),
-            (perf_counter() - level_resolution_started) * 1000,
-        )
+    if resolved_levels is None:
+        level_resolution_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
+        enabled_levels = set(_strategic_levels(market, rows))
+        if level_resolution_started:
+            logger.info(
+                "market_latency_analysis_resolve_levels levels=%s rows=%s ms=%.3f",
+                len(enabled_levels),
+                len(rows),
+                (perf_counter() - level_resolution_started) * 1000,
+            )
+    else:
+        enabled_levels = set(resolved_levels)
     levels = _ordered_response_levels(enabled_levels)
-    periods_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
-    periods = _history_periods(rows, source)
-    if periods_started:
-        logger.info(
-            "market_latency_analysis_history_periods periods=%s rows=%s ms=%.3f",
-            len(periods),
-            len(rows),
-            (perf_counter() - periods_started) * 1000,
-        )
+    if resolved_periods is None:
+        periods_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
+        periods = _history_periods(rows, source)
+        if periods_started:
+            logger.info(
+                "market_latency_analysis_history_periods periods=%s rows=%s ms=%.3f",
+                len(periods),
+                len(rows),
+                (perf_counter() - periods_started) * 1000,
+            )
+    else:
+        periods = list(resolved_periods)
     data: dict[str, Any] = {}
     channels = channels_override or _channels_for_source(source)
     for level in levels:
@@ -3518,6 +3526,8 @@ def build_response(
         analysis_levels = deepcopy(precomputed_block.analysis_levels)
         ANALYSIS_LEVELS_CACHE[analysis_cache_key] = deepcopy(analysis_levels)
     elif analysis_cache_key not in ANALYSIS_LEVELS_CACHE:
+        resolved_levels = set(_strategic_levels(market_catalog_row, sibling_rows))
+        resolved_periods = _history_periods(sibling_rows, source_api)
         ANALYSIS_LEVELS_CACHE[analysis_cache_key] = _build_analysis_levels_from_mart(
             rows=sibling_rows,
             source=source_api,
@@ -3526,7 +3536,12 @@ def build_response(
             target_name=None,
             fallback_level_top5=level_top5,
             channels_override=channels_override,
+            resolved_levels=resolved_levels,
+            resolved_periods=resolved_periods,
         )
+    else:
+        resolved_levels = None
+        resolved_periods = None
     if precomputed_block is None:
         analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_CACHE[analysis_cache_key]))
     if analysis_cache_key not in LEVEL_ROW_GROUPS_CACHE:
@@ -3602,6 +3617,10 @@ def build_response(
     if analysis_level_market_channels and precomputed_block is None:
         clone_levels_key = (analysis_cache_key, "analysis_level_market_status", tuple(analysis_level_market_channels))
         if clone_levels_key not in ANALYSIS_LEVELS_BY_CHANNEL_CACHE:
+            if resolved_levels is None:
+                resolved_levels = set(_strategic_levels(market_catalog_row, sibling_rows))
+            if resolved_periods is None:
+                resolved_periods = _history_periods(sibling_rows, source_api)
             ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key] = _build_analysis_levels_from_mart(
                 rows=sibling_rows,
                 source=source_api,
@@ -3610,6 +3629,8 @@ def build_response(
                 target_name=None,
                 fallback_level_top5=level_top5,
                 channels_override=analysis_level_market_channels,
+                resolved_levels=resolved_levels,
+                resolved_periods=resolved_periods,
             )
         clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
         if not include_all_d3_options:
