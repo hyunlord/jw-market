@@ -659,6 +659,22 @@ def _resolve_deterministic_select(
                 group_suffix = f" GROUP BY {manufacturer_query} ORDER BY total_value DESC"
                 resolved.extend(("manufacturer", "subjects"))
         else:
+            if re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE):
+                product = _find_column(
+                    columns,
+                    r"(?:^|\b)product(?:\s+name)?(?:\b|$)|제품(?:명)?",
+                )
+                if product is None:
+                    missing.append("제품")
+                else:
+                    product_query = str(product.get("query_name") or "")
+                    select_prefix = f"{product_query}, "
+                    group_suffix = (
+                        f" GROUP BY {product_query} ORDER BY total_value DESC"
+                    )
+                    if top_n := _top_n_limit(question):
+                        group_suffix += f" LIMIT {top_n}"
+                    resolved.append("product")
             subject = _single_manufacturer_subject(question)
             if subject:
                 if manufacturer is None:
@@ -704,6 +720,17 @@ def _resolve_deterministic_select(
             tuple(dict.fromkeys(resolved)),
         )
     return best_failure
+
+
+def _top_n_limit(question: str) -> int | None:
+    match = re.search(
+        r"(?:상위\s*(\d+)\s*(?:개|건)?|top\s*(\d+))",
+        question,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return min(max(int(match.group(1) or match.group(2)), 1), 100)
 
 
 def _measure_label(intent: str) -> str:

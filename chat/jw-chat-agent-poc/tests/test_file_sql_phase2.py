@@ -16,6 +16,7 @@ def _wide_chso_schema() -> dict:
         for index in range(1, 253)
     ]
     columns[1] = {"query_name": "c2", "source_name": "MFR NAME KOR"}
+    columns[2] = {"query_name": "c3", "source_name": "PRODUCT NAME KOR"}
     columns[11] = {"query_name": "c12", "source_name": "ATC 4"}
     columns[71] = {
         "query_name": "c72",
@@ -485,6 +486,19 @@ def test_compound_atc4_compare_plans_all_slots() -> None:
     assert "c12 LIKE 'A02B2\\_%' ESCAPE '\\'" in plan["sql"]
     assert "c2 IN ('동아제약', '동화약품')" in plan["sql"]
     assert "SUM(c72)" in plan["sql"]
+
+
+def test_product_top_n_sellout_groups_by_product_name() -> None:
+    plan = file_sql_query._deterministic_select(
+        "제품별 2026년 1월 sell-out 합계 상위 10개",
+        (_wide_chso_schema(),),
+    )
+
+    assert plan is not None
+    assert "SELECT c3, SUM(c72) AS total_value" in plan["sql"]
+    assert "GROUP BY c3" in plan["sql"]
+    assert "ORDER BY total_value DESC" in plan["sql"]
+    assert plan["sql"].endswith("LIMIT 10")
 
 
 def test_unsupported_measure_fails_closed_before_planner(monkeypatch) -> None:
