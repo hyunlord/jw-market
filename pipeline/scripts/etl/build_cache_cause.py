@@ -1796,7 +1796,9 @@ def _rows_for_channel(
         clone["metric_history"] = history
         clone["__metric_history"] = history
         clone.pop("__latest_history_item", None)
-        clone.pop("__series_cache", None)
+        clone["__series_cache"] = {
+            (tuple(periods), True): [history[period] for period in periods],
+        }
         filtered.append(clone)
     return filtered
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from pathlib import Path
 import sys
 import textwrap
@@ -132,6 +133,40 @@ def test_segment_rows_reuses_one_observed_series_pass_for_group_and_total(monkey
     assert segments[0]["series_pct"] == [100.0]
     assert segments[0]["recent_share_pct"] == 100.0
     assert calls == 1
+
+
+def test_channel_rows_seed_series_cache_for_total_reduction(monkeypatch) -> None:
+    periods = ["2025-01", "2025-02"]
+    row = {
+        "brand_name": "Brand A",
+        "brand_key": "brand-a",
+        "channel_data": json.dumps(
+            {
+                "상급종합병원": {
+                    "2025-01": {"raw_value": 10.0},
+                    "2025-02": {"raw_value": 20.0},
+                }
+            },
+            ensure_ascii=False,
+        ),
+    }
+    calls = 0
+    original = cause._value_from_period_item
+
+    def count_value(item: object) -> float:
+        nonlocal calls
+        calls += 1
+        return original(item)
+
+    monkeypatch.setattr(cause, "_value_from_period_item", count_value)
+
+    channel_rows = cause._rows_for_channel([row], "UBIST", "상급종병", periods)
+    calls_after_channel_rows = calls
+    totals = cause._total_series_for_rows(channel_rows, periods)
+
+    assert totals == [10.0, 20.0]
+    assert calls_after_channel_rows == 2
+    assert calls == calls_after_channel_rows
 
 
 def test_analysis_level_builds_reuse_shared_series_caches(monkeypatch) -> None:
