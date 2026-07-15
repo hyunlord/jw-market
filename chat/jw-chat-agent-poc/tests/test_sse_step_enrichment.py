@@ -103,6 +103,36 @@ def test_file_schema_and_tool_steps_hide_internal_names() -> None:
     assert "mfds_permission_search" not in public_text
 
 
+def test_runtime_planning_steps_have_user_facing_labels() -> None:
+    events: list[dict] = []
+    stages = (
+        ("deterministic_plan", "브랜드=리바로; 기간=2025-04"),
+        ("answer_contract_preflight", "required fact backfill"),
+        ("bq_analysis", "BQ analysis synthesis"),
+        ("tool_batch", "parallel tool execution"),
+    )
+
+    for name, detail in stages:
+        with timing.stage(None, name, detail, sink=events.append):
+            pass
+
+    started = events[::2]
+    assert [event["name"] for event in started] == [
+        "조회 계획 확정",
+        "필수 근거 확인",
+        "시장 분석 정리",
+        "관련 데이터 조회",
+    ]
+    assert [event["detail"] for event in started] == [
+        "브랜드=리바로; 기간=2025-04",
+        "필수 근거 보강",
+        "시장 분석 결과 정리",
+        "관련 자료 병렬 조회",
+    ]
+    public_text = str([{"name": event["name"], "detail": event["detail"]} for event in started])
+    assert not any(name in public_text for name, _detail in stages)
+
+
 def test_runtime_market_tool_names_have_specific_public_labels() -> None:
     events: list[dict] = []
     expected = {
