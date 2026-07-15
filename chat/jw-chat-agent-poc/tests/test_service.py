@@ -228,6 +228,39 @@ def test_compute_final_answer_replaces_internal_csd_facts_after_agent_loop(monke
     assert "CSD 세부 미지원" not in final.text
 
 
+def test_compute_final_answer_keeps_natural_competition_lead_after_all_contracts(monkeypatch) -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
+| Brand 상위 | 2위 리피토 시장점유율 6.13% 매출 131.09억원 |
+| Brand 상위 | 3위 리바로젯 시장점유율 5.12% 매출 109.46억원 |
+"""
+    generated = """구체적으로는 로수젯 시장점유율 9.13%, 매출 195.24억원입니다.
+
+| 순위 | 브랜드 | 점유율 | 매출 |
+| --- | --- | --- | --- |
+| 1위 | 로수젯 | 9.13% | 195.24억원 |
+| 2위 | 리피토 | 6.13% | 131.09억원 |
+| 3위 | 리바로젯 | 5.12% | 109.46억원 |
+"""
+
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))
+    final = compute_final_answer(
+        "리바로 경쟁구도 어떻게 변하고 있어",
+        {
+            "answer": "",
+            "markdown_response": {"fact_md": fact_md},
+            "tool_calls": [{"tool": "get_top_brands", "render_data": {"status": "ok"}}],
+            "sources": ["UBIST"],
+        },
+        "natural-competition",
+    )
+
+    assert final.text.startswith("리바로 경쟁구도를 보면 로수젯이 9.13%(195.24억원)로 선두이며")
+    assert "| 1위 | 로수젯 | 9.13% | 195.24억원 |" in final.text
+
+
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

@@ -50,6 +50,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     cleanup_markdown_answer,
     ensure_file_absence_statement,
     ensure_file_page_evidence,
+    ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
     replace_internal_fact_dump,
@@ -1616,6 +1617,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             safe_answer,
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )
+    safe_answer = ensure_natural_fact_lead(question, safe_answer, fact_md)
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
     # notice/source appenders above so no path bypasses terminology scrubbing.
     safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
