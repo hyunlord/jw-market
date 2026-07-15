@@ -679,7 +679,7 @@ def _openfda_adverse_mcp_payload(text: str) -> dict[str, Any]:
             current["drug_names"].append(name)
             in_reactions = False
             continue
-        if stripped.startswith(("generic_name:", "substance_name:", "brand_name:")):
+        if re.match(r"^(?:generic_name|substance_name|brand_name)(?:\[[^\]]+\])?:", stripped):
             name = stripped.split(":", 1)[1].strip().strip("[]\"'")
             if name:
                 current["drug_names"].append(name)
@@ -749,7 +749,11 @@ def _apply_mcp_key_value(target: dict[str, Any], text: str) -> None:
     match = re.match(r"(?P<key>[A-Za-z_]+)(?:\[[^\]]+\])?:\s*(?P<value>.*)$", text)
     if not match:
         return
-    key = match.group("key")
+    key = {
+        "NCTId": "nctId",
+        "briefTitle": "title",
+        "overallStatus": "status",
+    }.get(match.group("key"), match.group("key"))
     value = match.group("value").strip().strip('"')
     if key in {"clinicaltrials_url", "nctId", "title", "status", "studyType", "sponsor", "startDate", "url"}:
         target[key] = value

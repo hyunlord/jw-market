@@ -195,6 +195,38 @@ def test_openfda_adverse_event_rejects_reports_for_a_different_drug() -> None:
     assert all("unrelated-report" not in str(fact.source_locator) for fact in envelope.evidence)
 
 
+def test_openfda_adverse_event_accepts_indexed_generic_name_fields() -> None:
+    result = McpToolResult(
+        content_text=(
+            "total_results: 1\n"
+            "adverse_events[1]:\n"
+            '  - safety_report_id: "pitavastatin-indexed"\n'
+            "    report_date: 2026-03-30\n"
+            "    drugs[1]:\n"
+            "      - name: LIVALO\n"
+            "        generic_name[1]: PITAVASTATIN CALCIUM\n"
+            "    reactions[1]{term,outcome}:\n"
+            "      Myalgia,Recovered\n"
+        ),
+        raw_result={"content": []},
+    )
+
+    call = _mcp_external_call(
+        "openfda_label_search",
+        "openfda_mcp",
+        {'search': 'openfda.substance_name:"PITAVASTATIN"', "evidence_type": "adverse_event"},
+        "search_drug_adverse_events",
+        result,
+        "http://gateway/mcp/184/mcp",
+        10.0,
+    )
+    envelope = _external_call_envelope(call, "pitavastatin", "FAERS 자발보고 내 이상반응")
+
+    assert envelope.ok is True
+    assert len(envelope.evidence) == 1
+    assert "pitavastatin-indexed" in str(envelope.evidence[0].source_locator)
+
+
 def test_openfda_adverse_event_preserves_structured_mcp_results() -> None:
     result = McpToolResult(
         content_text="",
@@ -265,6 +297,36 @@ def test_clinicaltrials_evidence_keeps_nct_identifier_title_and_url() -> None:
     assert "NCT01234567" in locator
     assert "Pitavastatin Cardiovascular Outcomes Study" in locator
     assert "https://clinicaltrials.gov/study/NCT01234567" in locator
+
+
+def test_clinicaltrials_text_parser_accepts_canonical_field_names() -> None:
+    result = McpToolResult(
+        content_text=(
+            "studies[1]:\n"
+            "  - NCTId: NCT07654321\n"
+            "    briefTitle: Pitavastatin Outcomes Study\n"
+            "    overallStatus: RECRUITING\n"
+            "    clinicaltrials_url: https://clinicaltrials.gov/study/NCT07654321\n"
+        ),
+        raw_result={"content": []},
+    )
+
+    call = _mcp_external_call(
+        "clinicaltrials_v2_search",
+        "clinicaltrials_mcp",
+        {"query.intr": "pitavastatin"},
+        "search_clinical_trials",
+        result,
+        "http://gateway/mcp/169/mcp",
+        10.0,
+    )
+    envelope = _external_call_envelope(call, "pitavastatin", "글로벌 임상시험")
+    locator = str(envelope.evidence[0].source_locator)
+
+    assert envelope.ok is True
+    assert "NCT07654321" in locator
+    assert "Pitavastatin Outcomes Study" in locator
+    assert "https://clinicaltrials.gov/study/NCT07654321" in locator
 
 
 def test_payload_results_are_promoted_to_external_evidence() -> None:
