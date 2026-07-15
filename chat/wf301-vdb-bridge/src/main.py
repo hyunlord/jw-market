@@ -1852,6 +1852,11 @@ def _context_from_hits(
         provenance = _hit_provenance(hit)
         if str(provenance.get("source_channel") or "") == pdf_vlm.SOURCE_CHANNEL:
             vlm_pages.add((int(hit.get("doc_id") or 0), hit.get("i_page")))
+    remaining_documents = {
+        int(hit.get("doc_id") or 0)
+        for hit in hits
+        if str(hit.get("text") or "").strip()
+    }
     index = 0
     for hit in hits:
         text = str(hit.get("text") or "").strip()
@@ -1881,7 +1886,12 @@ def _context_from_hits(
         remaining = char_limit - used_chars
         if remaining <= 0:
             break
-        clipped = text[:remaining]
+        if doc_id in remaining_documents:
+            per_document_limit = max(remaining // len(remaining_documents), 1)
+            remaining_documents.remove(doc_id)
+        else:
+            per_document_limit = remaining
+        clipped = text[: min(remaining, per_document_limit)]
         used_chars += len(clipped)
         source_channel = str(provenance.get("source_channel") or "native_text")
         label = " [image-derived extraction]" if source_channel == pdf_vlm.SOURCE_CHANNEL else ""
@@ -1966,7 +1976,20 @@ def _search_document_hits(
             limit=limit,
         )
     )
-    return _unique_hits(hits)
+    unique_hits = _unique_hits(hits)
+    covered_document_ids = {int(hit.get("doc_id") or 0) for hit in unique_hits}
+    for document_id in doc_ids[:limit]:
+        if document_id in covered_document_ids:
+            continue
+        supplemental = weaviate_ops.search_target_chunks(
+            client,
+            vector=vector,
+            doc_ids=[document_id],
+            limit=1,
+        )
+        unique_hits = _unique_hits([*unique_hits, *supplemental])
+        covered_document_ids.update(int(hit.get("doc_id") or 0) for hit in supplemental)
+    return _diverse_top_hits(unique_hits, doc_ids, limit)
 
 
 def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1980,6 +2003,39 @@ def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen.add(identity)
         unique.append(hit)
     return unique
+
+
+def _diverse_top_hits(
+    hits: list[dict[str, Any]],
+    document_ids: list[int],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    first_by_document: dict[int, dict[str, Any]] = {}
+    for hit in hits:
+        first_by_document.setdefault(int(hit.get("doc_id") or 0), hit)
+    selected = [
+        first_by_document[document_id]
+        for document_id in document_ids[:limit]
+        if document_id in first_by_document
+    ]
+    selected_ids = {id(hit) for hit in selected}
+    selected.extend(hit for hit in hits if id(hit) not in selected_ids)
+    return selected[:limit]
+
+
+def _rows_requested_by_file_name(
+    question: str,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized_question = question.casefold()
+    requested: list[dict[str, Any]] = []
+    for row in rows:
+        file_name = str(row.get("file_name") or "").casefold()
+        if file_name and file_name in normalized_question:
+            requested.append(row)
+    return requested or rows
 
 
 def _retrieval_scope_marker(question: str) -> str:
@@ -2099,7 +2155,8 @@ def search(req: SearchRequest) -> SearchResponse:
             workflow_id=req.workflow_id,
             session_id=session_id,
         )
-        vdb_rows = [row for row in rows if row.get("storage_route") != "sql"]
+        retrieval_rows = _rows_requested_by_file_name(req.question, rows)
+        vdb_rows = [row for row in retrieval_rows if row.get("storage_route") != "sql"]
         if settings.WIKI_ENABLED and vdb_rows and not directed_retrieval:
             pages = session_wiki.read_ready_pages(
                 conn, req.workflow_id, session_id, vdb_rows
@@ -2111,10 +2168,10 @@ def search(req: SearchRequest) -> SearchResponse:
                 )
             elif session_wiki.should_trigger(vdb_rows):
                 session_wiki.trigger_compile_async(req.workflow_id, session_id)
-    sql_sources = _sql_sources_from_rows(rows)
+    sql_sources = _sql_sources_from_rows(retrieval_rows)
     doc_ids = [
         int(row["document_id"])
-        for row in rows
+        for row in retrieval_rows
         if row.get("storage_route") != "sql"
     ]
     if not rows:
