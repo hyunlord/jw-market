@@ -1456,6 +1456,7 @@ def _series_periods_from_channel_map(channel_map: dict[str, Any]) -> list[str]:
     return sorted(periods, key=period_key)
 
 
+@lru_cache(maxsize=32)
 def _channel_bucket(raw: Any, source: str) -> str | None:
     text = str(raw or "").strip()
     if not text:
