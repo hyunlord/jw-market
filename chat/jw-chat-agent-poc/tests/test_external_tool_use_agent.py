@@ -428,6 +428,115 @@ def test_web_registry_forwards_planner_selected_news_topic() -> None:
     assert external.topics == ["news"]
 
 
+def test_mfds_clinical_toolspec_preserves_structured_response_as_evidence() -> None:
+    class _StructuredMfdsClinicalClient(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+
+        def mfds_clinical_trial_kr(self, keyword: str, *, query_type: str = "intervention") -> ExternalCall:
+            del query_type
+            return ExternalCall(
+                tool="mfds_clinical_trial_kr",
+                source="nedrug_mcp",
+                status="live",
+                summary_text="MFDS clinical row",
+                render_data={
+                    "items": [
+                        {
+                            "GOODS_NAME": "고지혈증 치료제",
+                            "CLINIC_STEP_NAME": "3상",
+                            "CLNC_TEST_SN": "2026071501",
+                        }
+                    ],
+                    "request": {"query_type": "condition"},
+                },
+            )
+
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=_StructuredMfdsClinicalClient())
+    spec = next(spec for spec in registry.list_for_query("고지혈증 국내 임상시험") if spec.name == "mfds_clinical_trial_kr")
+
+    envelope = spec.execute(spec.input_model.model_validate({"query": "고지혈증", "query_type": "condition"}))
+
+    assert envelope.ok is True
+    assert [(fact.metric, fact.source_name, fact.source_locator) for fact in envelope.evidence] == [
+        ("국내 임상시험", "식약처 의약품 정보", "고지혈증 치료제")
+    ]
+
+
+def test_agent_executor_preserves_successful_mfds_clinical_result() -> None:
+    class _StructuredMfdsClinicalClient(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+
+        def mfds_clinical_trial_kr(self, keyword: str, *, query_type: str = "intervention") -> ExternalCall:
+            del query_type
+            return ExternalCall(
+                tool="mfds_clinical_trial_kr",
+                source="nedrug_mcp",
+                status="live",
+                summary_text=f"{keyword} MFDS clinical row",
+                render_data={
+                    "items": [
+                        {
+                            "GOODS_NAME": "고지혈증 치료제",
+                            "CLINIC_STEP_NAME": "3상",
+                            "CLNC_TEST_SN": "2026071501",
+                        }
+                    ]
+                },
+            )
+
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=_StructuredMfdsClinicalClient())
+    spec = next(spec for spec in registry.list_for_query("고지혈증 국내 임상시험") if spec.name == "mfds_clinical_trial_kr")
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "mfds_clinical_trial_kr",
+                {"query": "고지혈증", "query_type": "condition"},
+                "fetch domestic clinical evidence",
+                call_id="call-1",
+            ),
+        )
+    )
+
+    result = AgentExecutor(provider=provider).run(user_text="고지혈증 국내 임상시험", tools=(spec,))
+
+    assert result.status == "ok"
+    assert result.fallback_code is None
+    assert [(trace.tool, trace.status, trace.fallback_code) for trace in result.traces] == [
+        ("mfds_clinical_trial_kr", "ok", None)
+    ]
+    assert "고지혈증 치료제" in result.answer
+
+
+def test_registry_forwards_mfds_clinical_condition_and_default_intervention() -> None:
+    class _CapturingMfdsClinicalClient(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+            self.calls: list[tuple[str, str]] = []
+
+        def mfds_clinical_trial_kr(self, keyword: str, *, query_type: str = "intervention") -> ExternalCall:
+            self.calls.append((keyword, query_type))
+            return ExternalCall(
+                tool="mfds_clinical_trial_kr",
+                source="nedrug_mcp",
+                status="live",
+                summary_text="MFDS clinical row",
+                render_data={"items": [{"GOODS_NAME": keyword}]},
+            )
+
+    external = _CapturingMfdsClinicalClient()
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=external)
+    spec = next(spec for spec in registry.list_for_query("MFDS 임상시험") if spec.name == "mfds_clinical_trial_kr")
+
+    condition = spec.execute(spec.input_model.model_validate({"query": "고지혈증", "query_type": "condition"}))
+    intervention = spec.execute(spec.input_model.model_validate({"query": "리바로"}))
+
+    assert condition.ok is True
+    assert intervention.ok is True
+    assert external.calls == [("고지혈증", "condition"), ("리바로", "intervention")]
+
+
 def test_fixture_tool_pack_executes_all_19_specs_with_evidence() -> None:
     # Given: schema-valid fixture inputs for every registered external tool.
     payloads: dict[str, dict[str, str]] = {
