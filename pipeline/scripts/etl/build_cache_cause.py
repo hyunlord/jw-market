@@ -1602,7 +1602,12 @@ def _segment_rows_for_level(
     totals: dict[str, list[float]] = {period: [0.0] for period in periods}
     observed_periods = {period: False for period in periods}
 
-    def add_observed_series(target: dict[str, list[float]], series: dict[str, Any]) -> None:
+    def add_observed_series(
+        target: dict[str, list[float]],
+        series: dict[str, Any],
+        *,
+        also_add_to: dict[str, list[float]] | None = None,
+    ) -> None:
         values, observed = _series_values_with_observed(
             series,
             periods,
@@ -1610,6 +1615,8 @@ def _segment_rows_for_level(
         )
         for period, value, is_observed in zip(periods, values, observed):
             target[period][0] += value
+            if also_add_to is not None:
+                also_add_to[period][0] += value
             if is_observed:
                 observed_periods[period] = True
 
@@ -1641,8 +1648,7 @@ def _segment_rows_for_level(
         if active_dimension_series:
             for name, series in active_dimension_series.items():
                 grouped.setdefault(name, {period: [0.0] for period in periods})
-                add_observed_series(grouped[name], series)
-                add_observed_series(totals, series)
+                add_observed_series(grouped[name], series, also_add_to=totals)
             continue
         if dimension_field_present and dimension_series:
             continue
