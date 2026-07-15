@@ -3,18 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final
 
-STANDALONE_INTERNAL_MEDICINE_SPECIALTY = "내과(IM)"
-INTERNAL_MEDICINE_DETAIL_SPECIALTIES = (
-    "알레르기(Allergy IM)",
-    "내분비(Endocrinology IM)",
-    "순환기(Cardiology IM)",
-    "신장(Nephrology IM)",
-    "류마티스(Rheumatology IM)",
-    "소화기(Gastroenterology IM)",
-    "감염(Infection Disease IM)",
-    "혈액종양(Hemoto Oncology IM)",
-    "호흡기(Pulmonology IM)",
-    "분리되지 않은 내과",
+from pipeline.etl.io.ubist_specialties import (
+    aggregate_specialty_labels,
+    detail_specialty_labels,
 )
 OTHERS_SPECIALTY = "Others(병원,보건기관, 그 외 요양기관)"
 FACILITY_ONLY_CATCH_ALL_FACILITIES: Final[frozenset[str]] = frozenset({"Semi", "OT"})
@@ -93,7 +84,7 @@ TARGET_SPECIALTY_MAPPING: dict[str, dict[str, Any]] = {
         "raw_values": (
             "가정의학과(FM)",
             "일반의(GP)",
-            *INTERNAL_MEDICINE_DETAIL_SPECIALTIES,
+            *detail_specialty_labels(),
         ),
     },
     "Neuro": {
@@ -142,7 +133,7 @@ def target_facility_abbr_for_raw(facility_raw: Any) -> str | None:
 
 def target_specialty_abbr_for_raw(specialty_raw: Any) -> str | None:
     text = str(specialty_raw or "").strip()
-    if text == STANDALONE_INTERNAL_MEDICINE_SPECIALTY:
+    if text in aggregate_specialty_labels():
         return None
     return next(
         (

@@ -9,6 +9,7 @@ import pandas as pd
 
 from pipeline.etl.io.enrich.normalize import clean_scalar
 from pipeline.etl.io.enrich.schema import ENRICHED_COLUMNS
+from pipeline.etl.io.ubist_specialties import aggregate_specialty_labels
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -41,6 +42,15 @@ def duckdb_case_map(
         else:
             clauses.append(f"WHEN cast({expr} as varchar) = '{raw_sql}' THEN '{val_sql}'")
     return f"CASE {' '.join(clauses)} ELSE '{default}' END"
+
+
+def duckdb_excludes_catalog_values(expr: str, values: frozenset[str]) -> str:
+    """Build an exact-match exclusion predicate for catalogued raw labels."""
+    escaped_values = (value.replace("'", "''") for value in sorted(values))
+    literals = ", ".join(f"'{value}'" for value in escaped_values)
+    if not literals:
+        return "TRUE"
+    return f"coalesce(trim(cast({expr} as varchar)), '') NOT IN ({literals})"
 
 
 def register_products(con: duckdb.DuckDBPyConnection, products: pd.DataFrame) -> None:
@@ -76,6 +86,10 @@ def ubist_join_sql(customer_dict: dict[str, object], *, ubist_glob: str, ingeste
         default="Unknown",
         contains=True,
     )
+    specialty_filter = duckdb_excludes_catalog_values(
+        "u.진료과",
+        aggregate_specialty_labels(customer_dict),
+    )
     ingested = now_iso(ingested_at).replace("'", "''")
     return (
         "SELECT DISTINCT "
@@ -106,7 +120,8 @@ def ubist_join_sql(customer_dict: dict[str, object], *, ubist_glob: str, ingeste
         ") AS source_row_id, "
         f"'{ingested}' AS ingested_at "
         f"FROM read_parquet('{ubist_glob}') AS u "
-        f"JOIN product_bridge AS p ON {product_key} = p.product_key"
+        f"JOIN product_bridge AS p ON {product_key} = p.product_key "
+        f"WHERE {specialty_filter}"
     )
 
 

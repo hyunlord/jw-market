@@ -90,6 +90,7 @@ def enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any], *
             by_dimension = deepcopy(row.get("by_dimension") or {})
             if not clean_dimension_label(by_dimension.get(field)):
                 by_dimension[field] = label
+        applied_specialty_codes: set[str] = set()
         for product in products:
             if not isinstance(product, dict):
                 continue
@@ -103,9 +104,11 @@ def enhance_strategic_dimensions(row: dict[str, Any], context: dict[str, Any], *
                 channel_map = (((code_channel_history.get(code) or {}).get(field) or {}).get(product_label) or {})
                 for channel, series in channel_map.items():
                     fill_dimension_channel_series(dimension_channel_data, existing_dimension_channel_data, channel_data, field, product_label, str(channel), series)
-            specialty_map = (((code_specialty_history.get(code) or {}).get(field) or {}).get(product_label) or {})
-            for specialty_channel, series in specialty_map.items():
-                fill_dimension_specialty_series(dimension_specialty_data, field, product_label, str(specialty_channel), series)
+            if code not in applied_specialty_codes:
+                specialty_map = (((code_specialty_history.get(code) or {}).get(field) or {}).get(product_label) or {})
+                for specialty_channel, series in specialty_map.items():
+                    fill_dimension_specialty_series(dimension_specialty_data, field, product_label, str(specialty_channel), series)
+                applied_specialty_codes.add(code)
     row.update({"dimension_data": dimension_data, "dimension_channel_data": dimension_channel_data, "dimension_specialty_data": dimension_specialty_data, "by_dimension": by_dimension})
     return apply_iron_iv_dimension_rule(row, market_id=market_id)
 

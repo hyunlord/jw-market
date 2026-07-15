@@ -179,10 +179,11 @@ null shares, and empty censuses fail closed.
 ## F-116 specialty, topic storage, and canonical precedence
 
 The F-116 gate consumes one tracked or audit-packaged census document. It checks
-that strategic specialty totals no longer include aggregate parents, topic
-storage contains the complete measured brand population while the API remains
-bounded to six brands, canonical dimensions use field-level non-null fallback,
-and measured latency stays within 1.2x of baseline.
+that strategic specialty totals no longer include aggregate parents and match
+both the corresponding dimension total and the independently read market-size
+headline. It also checks that topic storage contains the complete measured brand
+population while the API remains bounded to six brands, canonical dimensions use
+field-level non-null fallback, and measured latency stays within 1.2x of baseline.
 
 ```bash
 python3 pipeline/scripts/gates/release_acceptance.py f116-correctness \

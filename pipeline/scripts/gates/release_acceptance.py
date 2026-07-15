@@ -1150,6 +1150,7 @@ def check_f116_correctness(evidence_path: Path, environment: str) -> GateResult:
         checked += 1
         try:
             market_total = Decimal(str(item["market_total"]))
+            headline_market_total = Decimal(str(item["headline_market_total"]))
             specialty_total = Decimal(str(item["specialty_total"]))
             parent_rows = int(item["parent_rows"])
             detail_count = int(item["detail_count"])
@@ -1159,6 +1160,12 @@ def check_f116_correctness(evidence_path: Path, environment: str) -> GateResult:
         if abs(market_total - specialty_total) > abs_tol:
             details.append(
                 f"{identifier}: specialty total mismatch market={market_total} specialty={specialty_total}"
+            )
+            failures += 1
+        if abs(headline_market_total - specialty_total) > abs_tol:
+            details.append(
+                f"{identifier}: headline market total mismatch "
+                f"market={headline_market_total} specialty={specialty_total}"
             )
             failures += 1
         if parent_rows != 0:
