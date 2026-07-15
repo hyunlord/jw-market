@@ -28,6 +28,7 @@ def test_generic_external_renderer_projects_item_evidence_without_provider_envel
                 "ITEM_SEQ": "internal-row-id",
                 "ITEM_NAME": "리바로정1밀리그램",
                 "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+                "ITEM_PERMIT_DATE": "20050106",
             }
         ],
     }
@@ -38,10 +39,39 @@ def test_generic_external_renderer_projects_item_evidence_without_provider_envel
     # Then: useful item evidence is visible while raw envelope and row IDs stay private.
     assert "리바로정1밀리그램" in markdown
     assert "Pitavastatin Calcium Hydrate" in markdown
+    assert "20050106" in markdown
     assert "resultCode" not in markdown
     assert "totalCount" not in markdown
     assert "ITEM_SEQ" not in markdown
     assert "internal-row-id" not in markdown
+
+
+def test_mfds_permission_evidence_preserves_permit_date_and_company() -> None:
+    call = ExternalCall(
+        tool="mfds_permission_search",
+        source="nedrug_mcp",
+        status="live",
+        summary_text="식약처 허가 품목 1건",
+        render_data={
+            "items": [
+                {
+                    "ITEM_SEQ": "200500287",
+                    "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+                    "ITEM_PERMIT_DATE": "20050106",
+                    "ENTP_NAME": "제이더블유중외제약(주)",
+                    "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+                }
+            ]
+        },
+    )
+
+    envelope = _external_call_envelope(call, "리바로", "허가 품목")
+    evidence = envelope.evidence[0]
+
+    assert evidence.period == "20050106"
+    assert evidence.source_locator is not None
+    assert "허가일 20050106" in evidence.source_locator
+    assert "제이더블유중외제약(주)" in evidence.source_locator
 
 
 def test_mfds_permission_provenance_is_not_labeled_as_patent() -> None:

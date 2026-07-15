@@ -316,7 +316,11 @@ def _row_fact(
 ) -> EvidenceFact:
     value = next((_decimal_or_none(item.get(key)) for key in ("value", "rank", "ptntCnt") if item.get(key) not in (None, "")), None)
     period = next(
-        (str(item[key]) for key in ("published_date", "date", "period", "year") if item.get(key)),
+        (
+            str(item[key])
+            for key in ("published_date", "date", "period", "year", "ITEM_PERMIT_DATE", "APPROVAL_TIME")
+            if item.get(key)
+        ),
         fallback_period,
     )
     return EvidenceFact(
@@ -395,6 +399,20 @@ def _item_locator(item: dict[str, Any]) -> str | None:
             value = str(item.get(key) or "").strip()
             if value:
                 parts.append(f"{label} {value}")
+        return " · ".join(parts)
+    permit_date = str(item.get("ITEM_PERMIT_DATE") or "").strip()
+    if permit_date:
+        parts = []
+        product = str(item.get("ITEM_NAME") or item.get("GOODS_NAME") or "").strip()
+        if product:
+            parts.append(product)
+        parts.append(f"허가일 {permit_date}")
+        company = str(item.get("ENTP_NAME") or "").strip()
+        if company:
+            parts.append(company)
+        ingredient = str(item.get("ITEM_INGR_NAME") or "").strip()
+        if ingredient:
+            parts.append(f"성분 {ingredient}")
         return " · ".join(parts)
     keys = (
         "title", "ITEM_NAME", "itemName", "briefTitle", "sickNm", "st5Nm",
