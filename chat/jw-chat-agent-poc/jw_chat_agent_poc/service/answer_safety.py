@@ -429,33 +429,54 @@ def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str)
         return ""
     trend_rows = [_parse_top_trend_line(line) for line in lines]
     trend_rows = [row for row in trend_rows if row]
-    leader = rows[0]["brand"]
-    followers = ", ".join(row["brand"] for row in rows[1:4])
+    leader = rows[0]
+    followers = rows[1:4]
+    follower_names = ", ".join(row["brand"] for row in followers)
     trend_sentence = _top_trend_sentence(trend_rows)
     insight_sentence = _competitive_insight_sentence(lines)
     intro = (
-        f"조회 결과에서 {_subject_with_particle(leader)} 선두이고"
-        + (f", {followers} 등이 뒤따르는 경쟁 구도입니다." if followers else " 경쟁 구도를 형성합니다.")
+        f"조회 결과에서 {_subject_with_particle(leader['brand'])} 선두를 지키고 있으며, "
+        f"{leader['brand']} 시장점유율 {leader['share']}%(매출 {leader['sales']}억원)입니다."
+        + (f" {follower_names} 등이 뒤따르고 있어 경쟁 구도가 이어지고 있습니다." if followers else "")
         + (f" {trend_sentence}" if trend_sentence else "")
         + (f" {insight_sentence}" if insight_sentence else "")
         + " 이 신호는 상위권 점유율·매출 변화에서 드러나는 경쟁 압력의 근거로 해석할 수 있습니다."
     )
+    verified_values = ", ".join(
+        f"{row['brand']} 시장점유율 {row['share']}%, 매출 {row['sales']}억원" for row in rows
+    )
+    detail_sentence = f"구체적으로는 {verified_values}입니다."
     table = [
         "| 순위 | 브랜드 | 점유율 | 매출 |",
         "| --- | --- | ---: | ---: |",
     ]
     for row in rows:
         table.append(f"| {row['rank']}위 | {row['brand']} | {row['share']}% | {row['sales']}억원 |")
-    verified_values = ", ".join(
-        f"{row['brand']} 시장점유율 {row['share']}%, 매출 {row['sales']}억원" for row in rows
-    )
-    parts = [intro, f"확인된 값은 {verified_values}입니다.", "\n".join(table)]
+    parts = [intro, detail_sentence, "\n".join(table)]
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))
     if source_line:
         parts.append(source_line)
     return "\n\n".join(parts)
+
+
+def ensure_natural_fact_lead(question: str, answer: str, fact_md: str) -> str:
+    """Prepend grounded prose when a sales answer starts with a heading or table."""
+
+    if "매출" not in question or not any(token in question for token in ("최근", "어때", "현황", "추이")):
+        return answer
+    first_line = next((line.strip() for line in answer.splitlines() if line.strip()), "")
+    if first_line and not first_line.startswith(("#", "|")):
+        return answer
+    fact = _brand_metric_fact(fact_md)
+    if not fact:
+        return answer
+    lead = (
+        f"{fact['brand']}는 {fact['period']} 기준 매출 {fact['sales']}억원을 기록하고 있으며, "
+        f"시장점유율 {fact['share']}%와 순위 {fact['rank']}으로 확인됩니다."
+    )
+    return cleanup_markdown_answer("\n\n".join((lead, answer)))
 
 
 def _sales_delta_fallback_answer(lines: list[str], fact_md: str, source_line: str) -> str:

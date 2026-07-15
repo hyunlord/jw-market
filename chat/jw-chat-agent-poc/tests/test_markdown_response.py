@@ -21,6 +21,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     dedupe_repeated_hira_patient_counts,
     ensure_competitive_movement_analysis,
     ensure_judgment_insight,
+    ensure_natural_fact_lead,
     ensure_causal_structure,
     ensure_hira_patient_summary,
     ensure_hira_sales_link_analysis,
@@ -2427,9 +2428,39 @@ def test_fallback_fact_answer_summarizes_top_brand_trend() -> None:
 
     answer = fallback_fact_answer({"fact_md": fact_md})
 
+    assert answer.startswith("조회 결과에서 로수젯이 선두를 지키고 있으며")
+    assert "시장점유율 9.17%(매출 206.85억원)" in answer.split("\n\n", 1)[0]
+    assert "확인된 값은" not in answer
     assert "상승 폭이 큰 쪽은 리바로젯(+0.53%p)입니다" in answer
     assert "하락 폭이 큰 쪽은 리피토(-0.56%p)입니다" in answer
     assert "상위권 점유율·매출 변화" in answer
+
+
+def test_natural_fact_lead_precedes_existing_sales_table_without_replacing_it() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | 리바로 2026-05 매출 80.39억원 시장점유율 3.52% 순위 7/516 |
+"""
+    answer = """### 리바로 핵심 지표 (2026-05)
+| 지표 | 값 |
+| --- | --- |
+| 매출 | 80.39억원 |
+| 시장점유율 | 3.52% |
+
+### 뉴스/이슈
+- 관련 뉴스가 이어지고 있습니다.
+"""
+
+    revised = ensure_natural_fact_lead("리바로 최근 매출 어때", answer, fact_md)
+
+    assert revised.startswith(
+        "리바로는 2026-05 기준 매출 80.39억원을 기록하고 있으며, "
+        "시장점유율 3.52%와 순위 7/516으로 확인됩니다."
+    )
+    assert "### 리바로 핵심 지표 (2026-05)" in revised
+    assert "| 매출 | 80.39억원 |" in revised
+    assert "### 뉴스/이슈" in revised
 
 
 def test_fallback_fact_answer_uses_agent2_insight_signals() -> None:
