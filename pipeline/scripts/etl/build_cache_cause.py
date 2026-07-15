@@ -1481,6 +1481,7 @@ def _channel_bucket(raw: Any, source: str) -> str | None:
     return None
 
 
+@lru_cache(maxsize=128)
 def _channel_matches(raw: Any, source: str, channel: str) -> bool:
     bucket = _channel_bucket(raw, source)
     if channel == UBIST_TGH_FACILITY_CHANNEL:
