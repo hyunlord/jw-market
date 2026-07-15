@@ -2067,6 +2067,23 @@ def _dimension_specialty_total_series(
     return [round(value, 4) for value in totals]
 
 
+def _available_specialty_dimension_fields(rows: list[dict[str, Any]]) -> set[str]:
+    available: set[str] = set()
+    for row in rows:
+        dimension_specialty_data = row.get("__dimension_specialty_data")
+        if dimension_specialty_data is None:
+            dimension_specialty_data = decode_json(row.get("dimension_specialty_data"))
+            row["__dimension_specialty_data"] = dimension_specialty_data
+        if not isinstance(dimension_specialty_data, dict):
+            continue
+        available.update(
+            field
+            for field in SPECIALTY_DIMENSION_FIELDS
+            if isinstance(dimension_specialty_data.get(field), dict)
+        )
+    return available
+
+
 def _sum_segment_value_series(
     segments: list[dict[str, Any]],
     periods: list[str],
@@ -2112,6 +2129,11 @@ def _with_overall_level_options(
 ) -> dict[str, Any]:
     channel_rows_cache: dict[str, list[dict[str, Any]]] = {}
     channel_total_series_cache: dict[str, list[float]] = {}
+    available_specialty_fields = (
+        _available_specialty_dimension_fields(rows)
+        if source == "UBIST"
+        else set()
+    )
     for level, level_data in data.items():
         if not isinstance(level_data, dict):
             continue
@@ -2139,13 +2161,18 @@ def _with_overall_level_options(
                 )
             channel_total_series = channel_total_series_cache[channel]
             option_sum_series = _sum_segment_value_series(segments, periods)
-            exact_dimension_total_series = _dimension_specialty_total_series(
-                rows=rows,
-                level=level,
-                source=source,
-                channel=channel,
-                periods=periods,
-                series_value_cache=series_value_cache,
+            field = LEVEL_FIELD_BY_LABEL.get(level)
+            exact_dimension_total_series = (
+                _dimension_specialty_total_series(
+                    rows=rows,
+                    level=level,
+                    source=source,
+                    channel=channel,
+                    periods=periods,
+                    series_value_cache=series_value_cache,
+                )
+                if field in available_specialty_fields
+                else None
             )
             value_series = (
                 exact_dimension_total_series
