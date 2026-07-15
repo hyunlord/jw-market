@@ -1145,6 +1145,8 @@ def _call_fact_block(
     tool = str(call.get("tool") or "")
     if tool == "deep_analysis_related_news":
         return _news_facts(data)
+    if tool == "bq_analysis":
+        return _bq_analysis_facts(data)
     if tool == "portfolio_decline_analysis":
         return _portfolio_decline_facts(data)
     if tool in {"get_brand_metric", "get_market_landscape", "agent_calculation", "unsupported_metric"}:
@@ -1179,6 +1181,14 @@ def _news_facts(data: dict[str, Any]) -> str:
         message = data.get("message") or "관련 뉴스 없음"
         return table("### 인사이트 근거 fact - 뉴스/이슈", ("항목", "값"), (("상태", message),))
     return table("### 인사이트 근거 fact - 뉴스/이슈", ("날짜", "제목", "출처", "URL", "요약", "매칭 발췌"), tuple(rows))
+
+
+def _bq_analysis_facts(data: dict[str, Any]) -> str:
+    blocks = [_generic_facts("bq_analysis", data)]
+    news_refs = data.get("news_refs")
+    if isinstance(news_refs, list) and news_refs:
+        blocks.append(_news_facts({"items": news_refs}))
+    return "\n\n".join(block for block in blocks if block)
 
 
 def _portfolio_decline_facts(data: dict[str, Any]) -> str:

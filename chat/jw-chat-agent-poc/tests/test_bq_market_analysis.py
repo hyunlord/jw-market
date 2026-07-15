@@ -4,6 +4,7 @@ import pytest
 
 from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import validate_bq_analysis_call
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 
 
 def test_a1_reports_each_source_separately_with_long_window_growth() -> None:
@@ -218,6 +219,34 @@ def test_e1_keeps_only_news_with_complete_identity() -> None:
     assert call["render_data"]["news_refs"] == [
         {"title": "리바로 기사", "date": "2026-05-01", "source": "약업신문", "url": "https://news.example/1"}
     ]
+
+
+def test_e1_renders_complete_news_identity_in_answer_facts() -> None:
+    call = build_bq_analysis_call(
+        "E1",
+        [
+            {
+                "tool": "deep_analysis_related_news",
+                "render_data": {
+                    "items": [
+                        {
+                            "title": "리바로 기사",
+                            "date": "2026-05-01",
+                            "source": "약업신문",
+                            "url": "https://news.example/1",
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert call is not None
+    rendered = answer_fact_markdown([call], ["NEWS"])
+    assert "리바로 기사" in rendered
+    assert "2026-05-01" in rendered
+    assert "약업신문" in rendered
+    assert "https://news.example/1" in rendered
 
 
 def test_e2_fuses_grounded_sources_without_aggregation_or_causal_overclaim() -> None:
