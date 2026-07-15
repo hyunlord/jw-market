@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import math
 import os
-from typing import Any
+from typing import Any, Final
 
 import pymysql
+
+_FLOAT_TYPE: Final[type[float]] = float
 
 
 def mariadb_connect() -> pymysql.connections.Connection:
@@ -22,13 +24,15 @@ def mariadb_connect() -> pymysql.connections.Connection:
 
 
 def safe_float(value: Any) -> float | None:
+    if isinstance(value, _FLOAT_TYPE):
+        return value if math.isfinite(value) else None
     try:
         if value is None:
             return None
         number = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
-    if math.isnan(number) or math.isinf(number):
+    if not math.isfinite(number):
         return None
     return number
 
