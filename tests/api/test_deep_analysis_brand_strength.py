@@ -175,6 +175,38 @@ def test_strategic_mart_lookup_falls_back_to_compact_brand(monkeypatch) -> None:
     assert any("REPLACE" in sql and params == ["리바로브이"] for sql, params in calls)
 
 
+def test_strategic_mart_lookup_projects_only_runtime_columns(monkeypatch) -> None:
+    queries: list[str] = []
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        queries.append(sql)
+        return []
+
+    monkeypatch.setattr(deep_analysis_runtime.db, "fetch_all", fake_fetch_all)
+
+    assert deep_analysis_runtime._brand_rows("ABC") == []
+    assert len(queries) == 2
+    for sql in queries:
+        assert "SELECT *" not in sql
+        assert "brand_key" in sql
+        assert "brand_name" in sql
+        assert "ml_id" in sql
+        assert "computed_at" in sql
+
+    catalog_queries: list[str] = []
+
+    def fake_fetch_one(sql: str, _params: list[str]) -> None:
+        catalog_queries.append(sql)
+        return None
+
+    monkeypatch.setattr(deep_analysis_runtime.db, "fetch_one", fake_fetch_one)
+    assert deep_analysis_runtime._market_catalog("ml_003") == {}
+    assert "SELECT *" not in catalog_queries[0]
+    assert "name" in catalog_queries[0]
+    assert "data_source" in catalog_queries[0]
+    assert "atc_codes_json" in catalog_queries[0]
+
+
 def test_strategic_mart_lookup_rejects_ambiguous_compact_matches(monkeypatch) -> None:
     # Given: compact fallback would match multiple mart brand labels.
     def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
