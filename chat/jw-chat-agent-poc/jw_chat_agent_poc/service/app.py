@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from jw_chat_agent_poc.agent_loop import should_use_agent_loop
+from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
 from jw_chat_agent_poc.common.periods import (
     canonical_periods,
@@ -1196,8 +1196,10 @@ def _answer_existing_without_pending(
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     with stage(None, "question_classification", "agent setup"):
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
-    with stage(None, "question_decomposition", "BQ and tool routing"):
-        routes = dependencies.router.route(question, has_documents=False)
+    routes = ()
+    if not is_explicit_quarter_sales_question(question):
+        with stage(None, "question_decomposition", "BQ and tool routing"):
+            routes = dependencies.router.route(question, has_documents=False)
     if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
         try:
             dependencies.resolver.resolve(question, allow_default=False)

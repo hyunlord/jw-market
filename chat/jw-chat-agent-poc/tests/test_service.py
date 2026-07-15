@@ -19,7 +19,7 @@ from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
-from jw_chat_agent_poc.resolver import UnsupportedBrandError
+from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
@@ -311,6 +311,38 @@ def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatc
     assert captured["resolved"] == ("리바로 경쟁 구도 변화", False)
     assert captured["built_with"] == "loop-deps"
     assert captured["loop_question"] == "리바로 경쟁 구도 변화"
+
+
+def test_direct_agent_loop_bypasses_question_router_for_explicit_quarter_sales(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class RouterBomb:
+        def route(self, _question: str, *, has_documents: bool = False):
+            raise AssertionError("explicit quarter sales must bypass LLM question decomposition")
+
+    class Dependencies:
+        router = RouterBomb()
+        resolver = BrandResolver(mode="fixture")
+
+        def agent_loop_dependencies(self):
+            return "quarter-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            captured["loop_question"] = question
+            return {"answer": "242.72억원", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+
+    result = service_app._answer_direct_agent_loop("리바로 2025년 2분기 매출", "live")
+
+    assert result["answer"] == "242.72억원"
+    assert captured["loop_question"] == "리바로 2025년 2분기 매출"
 
 
 def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:

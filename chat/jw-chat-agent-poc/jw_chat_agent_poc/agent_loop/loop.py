@@ -155,7 +155,7 @@ class ToolUseAgent:
                 if (
                     bq_plan is None
                     and not observations
-                    and (self.planner is None or _is_explicit_quarter_sales_question(question))
+                    and (self.planner is None or is_explicit_quarter_sales_question(question))
                 )
                 else None
             )
@@ -392,7 +392,7 @@ def _bq_source_label(source: str) -> str:
     return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
 
 
-def _is_explicit_quarter_sales_question(question: str) -> bool:
+def is_explicit_quarter_sales_question(question: str) -> bool:
     plan = strict_query_plan(question, "")
     if plan is None or len(plan.specs) != 1 or len(plan.metadata) != 1:
         return False
