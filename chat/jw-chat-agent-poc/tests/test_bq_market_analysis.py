@@ -63,6 +63,22 @@ def test_b1_explains_which_competitors_gained_and_lost_share() -> None:
     assert "경쟁A -1.00%p 하락" in insight
 
 
+def test_b1_does_not_invent_movement_for_missing_or_actual_zero_share_delta() -> None:
+    top = _top_call()
+    trend = top["render_data"]["level_top5_trend_series"]
+    trend[0]["share_delta_pctp"] = None
+    trend[1]["share_delta_pctp"] = 0.0
+    trend[2]["share_delta_pctp"] = None
+
+    call = build_bq_analysis_call("B1", [_series_call("ubist"), top])
+
+    assert call is not None
+    insight = call["render_data"]["insights"][0]
+    assert "점유율은" not in insight
+    assert "+0.00%p" not in insight
+    assert "-0.00%p" not in insight
+
+
 def test_b1_ledger_binds_waterfall_to_top5_trend_rows() -> None:
     call = build_bq_analysis_call("B1", [_series_call("ubist"), _top_call()])
 
