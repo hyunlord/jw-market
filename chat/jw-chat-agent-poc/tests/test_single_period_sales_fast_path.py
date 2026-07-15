@@ -83,7 +83,7 @@ def test_single_period_sales_fast_path_accepts_the_production_fact_renderer() ->
 
 def test_single_period_sales_fast_path_preserves_raw_monthly_precision() -> None:
     call = _sales_call(period="2025-04", sales=83.184115)
-    call["render_data"]["sales_krw"] = 8_318_411_500
+    call["render_data"]["sales_krw"] = 8_318_411_526.5
     fact_md = answer_fact_markdown([call], ["UBIST"])
 
     answer = deterministic_single_period_sales_answer(
@@ -94,6 +94,16 @@ def test_single_period_sales_fast_path_preserves_raw_monthly_precision() -> None
 
     assert "| 매출 | 83.18억원 |" in fact_md
     assert answer == "2025-04 리바로 매출은 83.184115억원입니다."
+
+
+def test_single_period_sales_fast_path_keeps_quarter_at_two_decimals() -> None:
+    call = _sales_call()
+    call["render_data"]["sales_krw"] = 24_272_468_115.55
+    fact_md = answer_fact_markdown([call], ["UBIST"])
+
+    answer = deterministic_single_period_sales_answer(QUESTION, fact_md, [call])
+
+    assert answer == "2025-Q2 리바로 매출은 242.72억원입니다."
 
 
 def test_single_period_sales_fast_path_checks_later_duplicate_metric_fact() -> None:

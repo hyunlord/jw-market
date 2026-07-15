@@ -174,7 +174,11 @@ def deterministic_single_period_sales_answer(
         if not brand or brand not in question or period != requested_period:
             continue
         fact_sales_text = eok_value(data.get("sales_억원"), data.get("sales_krw"))
-        sales_text = precise_eok_value(data.get("sales_억원"), data.get("sales_krw"))
+        sales_text = (
+            eok_value(data.get("sales_억원"), data.get("sales_krw"))
+            if "-Q" in period
+            else precise_eok_value(data.get("sales_억원"), data.get("sales_krw"))
+        )
         if (
             not sales_text
             or not fact_sales_text

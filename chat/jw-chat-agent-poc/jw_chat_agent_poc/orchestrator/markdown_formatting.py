@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
 from collections.abc import Iterable
 from typing import Any, Final
@@ -70,7 +70,7 @@ def eok_value(eok: Any, krw: Any) -> str:
     return ""
 
 
-def precise_eok_value(eok: Any, krw: Any) -> str:
+def precise_eok_value(eok: Any, krw: Any, *, decimal_places: int = 6) -> str:
     """Render source precision for explicit single-period answers."""
 
     value: Decimal
@@ -81,6 +81,10 @@ def precise_eok_value(eok: Any, krw: Any) -> str:
             value = Decimal(str(eok))
         else:
             return ""
+        value = value.quantize(
+            Decimal(1).scaleb(-decimal_places),
+            rounding=ROUND_HALF_UP,
+        )
     except InvalidOperation:
         return ""
     if not value.is_finite():
