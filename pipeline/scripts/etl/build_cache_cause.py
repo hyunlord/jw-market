@@ -1683,8 +1683,8 @@ def _segment_rows_for_level(
             else None
         )
         use_dimension_channel = not is_all_channel and not isinstance(dual_channel_data, dict)
-        dimension_channel_present = _has_dimension_channel_field(row, field) if use_dimension_channel else False
         dimension_channel_series = _dimension_channel_series_map(row, field, source, channel) if use_dimension_channel else {}
+        dimension_channel_present = bool(dimension_channel_series)
         active_dimension_series = dimension_series if is_all_channel else (dimension_specialty_series or dimension_channel_series)
         if active_dimension_series:
             for name, series in active_dimension_series.items():

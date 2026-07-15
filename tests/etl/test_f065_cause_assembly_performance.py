@@ -97,6 +97,39 @@ def test_series_values_with_observed_preserves_zero_and_missing() -> None:
     assert observed == (True, False)
 
 
+def test_segment_rows_uses_channel_map_without_rechecking_field_presence(monkeypatch) -> None:
+    row = {
+        "brand_key": "A",
+        "metric_history": {"2026-01": {"raw_value": 10.0}},
+        "dimension_data": {},
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "병원": {"2026-01": {"raw_value": 10.0}},
+                },
+            },
+        },
+    }
+
+    def fail_redundant_presence_probe(*_args, **_kwargs):
+        raise AssertionError("dimension channel presence must come from the mapped result")
+
+    monkeypatch.setattr(cause, "_has_dimension_channel_field", fail_redundant_presence_probe)
+
+    segments = cause._segment_rows_for_level(
+        rows=[row],
+        level="Class",
+        periods=["2026-01"],
+        source="UBIST",
+        channel="병원",
+        target_name=None,
+        top_n=None,
+    )
+
+    assert segments[0]["name"] == "A"
+    assert segments[0]["value_series"] == [10.0]
+
+
 def test_safe_float_avoids_conversion_for_native_finite_numbers(monkeypatch) -> None:
     calls = 0
     original_float = builtins.float
