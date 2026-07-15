@@ -20,9 +20,12 @@ from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime
 from functools import lru_cache
+import logging
+import os
 from pathlib import Path
 import re
 import sys
+from time import perf_counter
 from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -62,6 +65,12 @@ from pipeline.scripts.etl.iron_iv_dimensions import FE_CONTENT_FIELD, FE_CONTENT
 from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
 
 period_key = lru_cache(maxsize=None)(period_key)
+
+logger = logging.getLogger(__name__)
+
+
+def _latency_stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 UBIST_TGH_FACILITY_CHANNEL = "(상급종병 + 종병)"
@@ -2100,6 +2109,7 @@ def _build_analysis_levels_from_mart(
     data: dict[str, Any] = {}
     channels = channels_override or _channels_for_source(source)
     for level in levels:
+        level_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
         if level in enabled_levels:
             by_channel = {
                 channel: _segment_rows_for_level(
@@ -2118,6 +2128,14 @@ def _build_analysis_levels_from_mart(
         else:
             by_channel = {channel: [] for channel in channels}
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}
+        if level_started:
+            logger.info(
+                "market_latency_analysis_level level=%s channels=%s ms=%.3f",
+                level,
+                len(channels),
+                (perf_counter() - level_started) * 1000,
+            )
+    overall_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
     data = _with_overall_level_options(
         data=data,
         rows=rows,
@@ -2126,6 +2144,13 @@ def _build_analysis_levels_from_mart(
         periods=periods,
         series_value_cache=series_value_cache,
     )
+    if overall_started:
+        logger.info(
+            "market_latency_analysis_overall_options levels=%s channels=%s ms=%.3f",
+            len(levels),
+            len(channels),
+            (perf_counter() - overall_started) * 1000,
+        )
     data = _with_ms_level_options(data)
     return _normalize_segment_name_lists({
         "levels": levels,
