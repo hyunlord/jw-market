@@ -726,7 +726,12 @@ def _latest_top_trends(
     def identity(row: dict[str, Any]) -> str | None:
         return row_identity(row, label_key)
 
+    ranked_by_year: dict[int, list[dict[str, Any]]] = {}
+
     def ranked_rows(year: int) -> list[dict[str, Any]]:
+        cached = ranked_by_year.get(year)
+        if cached is not None:
+            return cached
         rows = [
             row
             for row in normalized_by_year.get(year, [])
@@ -747,6 +752,7 @@ def _latest_top_trends(
         )
         for index, row in enumerate(ranked, start=1):
             row.setdefault("rank", index)
+        ranked_by_year[year] = ranked
         return ranked
 
     latest_ranked = ranked_rows(latest_year)
