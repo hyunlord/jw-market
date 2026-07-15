@@ -12,6 +12,7 @@ from jw_chat_agent_poc.orchestrator.agent import HIRA_DISEASE_MAPPINGS
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.router import BQRouter
 from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external.mcp_client import McpClientError
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "jw_chat_agent_poc" / "fixtures"
@@ -254,11 +255,13 @@ def test_document_rag_upload_search_and_citation():
     assert "first-line" in rag_call["summary_text"]
 
 
-def test_no_data_boundary_for_sales_impact():
+def test_sales_impact_uses_csd_activity_without_claiming_unobserved_detail():
     result = ChatAgent().answer("리바로 영업활동 Impact는?")
     assert result["sources"] == ["cache"]
-    assert "현재 데이터로 답변 불가" in result["answer"]
-    assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
+    assert "현재 데이터로 답변 불가" not in result["answer"]
+    assert "CSD 월별 aggregate 콜수/활동량" in result["answer"]
+    assert "impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다" in result["answer"]
+    assert [call["tool"] for call in result["tool_calls"]] == ["csd_activity_trend", "get_brand_metric"]
     assert "84.93" in result["answer"]
 
 
@@ -306,19 +309,12 @@ def test_external_redaction_masks_service_key():
 
 
 def test_live_error_redacts_service_key_in_summary_and_render_data(monkeypatch):
-    monkeypatch.setenv("DATA_GO_KR_KEY", "SECRETKEY")
+    monkeypatch.setenv("NEDRUG_MCP_URL", "http://mcp-nedrug/mcp?serviceKey=SECRETKEY")
 
-    def fake_get(url, timeout):
-        class Response:
-            status_code = 503
-            text = ""
+    def fail_mcp(_self, _name, _arguments):
+        raise McpClientError("503 Server Error for serviceKey=SECRETKEY")
 
-            def raise_for_status(self):
-                raise requests.HTTPError(f"503 Server Error for url: {url}")
-
-        return Response()
-
-    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.get", fake_get)
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.McpJsonClient.call_tool", fail_mcp)
 
     call = ExternalApiClient(mode="live", timeout_s=1).mfds_patent("pitavastatin")
 
@@ -327,34 +323,34 @@ def test_live_error_redacts_service_key_in_summary_and_render_data(monkeypatch):
     assert "SECRETKEY" not in call.render_data["error"]
     assert "serviceKey=<redacted>" in call.summary_text
     assert "serviceKey=<redacted>" in call.render_data["error"]
+    assert call.safe_url == "http://mcp-nedrug/mcp?serviceKey=<redacted>"
 
 
 def test_live_hira_response_preserves_request_year(monkeypatch):
-    monkeypatch.setenv("DATA_GO_KR_KEY", "SECRETKEY")
+    def fake_post(url, json, headers, timeout):
+        assert json["params"]["arguments"]["year"] == "2024"
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [],
+                    "structuredContent": {
+                        "result": [
+                            {
+                                "inpatOpat": "외래",
+                                "sickCd": "I10",
+                                "sickNm": "본태성 고혈압",
+                                "ptntCnt": "3769201",
+                            }
+                        ]
+                    },
+                },
+            }
+        )
 
-    def fake_get(url, timeout):
-        assert "year=2024" in url
-
-        class Response:
-            status_code = 200
-            text = (
-                "<response>"
-                "<header><resultCode>00</resultCode></header>"
-                "<body><items><item>"
-                "<inpatOpat>외래</inpatOpat>"
-                "<sickCd>I10</sickCd>"
-                "<sickNm>본태성 고혈압</sickNm>"
-                "<ptntCnt>3769201</ptntCnt>"
-                "</item></items><totalCount>1</totalCount></body>"
-                "</response>"
-            )
-
-            def raise_for_status(self):
-                return None
-
-        return Response()
-
-    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.get", fake_get)
+    monkeypatch.setenv("HIRA_MCP_URL", "http://hira-mcp/json")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
 
     call = ExternalApiClient(mode="live", timeout_s=1).hira_disease_hospitalization_outpatient_stats("I10")
 

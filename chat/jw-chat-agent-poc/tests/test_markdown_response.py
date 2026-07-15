@@ -3293,16 +3293,20 @@ def test_clinical_answer_keeps_notice_and_renders_external_table() -> None:
     assert "\n\n## 주의\n- 리바로젯 임상은" in answer
 
 
-def test_no_data_answer_is_markdown_graceful() -> None:
+def test_sales_activity_answer_keeps_observed_csd_and_market_evidence_separate() -> None:
     result = ChatAgent().answer("리바로 영업활동 Impact는?")
 
     answer = result["answer"]
 
     assert result["sources"] == ["cache"]
-    assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
+    assert [call["tool"] for call in result["tool_calls"]] == ["csd_activity_trend", "get_brand_metric"]
     assert not answer.startswith("## 답변")
     assert "**요약:**" not in answer
-    assert "현재 데이터로 답변 불가" in answer
+    assert "CSD 월별 aggregate 콜수/활동량" in answer
+    assert "2026-03" in answer
+    assert "2026-05" in answer
+    assert "impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다" in answer
+    assert "현재 데이터로 답변 불가" not in answer
     assert "84.93" in answer
     assert "## 출처" in answer
 

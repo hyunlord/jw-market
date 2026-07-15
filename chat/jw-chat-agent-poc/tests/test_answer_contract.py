@@ -257,16 +257,17 @@ def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
     assert revised.index("## 영업-매출 연계 분석 설계") < revised.index("## 출처")
 
 
-def test_structural_contract_backfill_requests_metric_proxy() -> None:
+def test_structural_contract_backfill_requests_metric_and_csd_activity() -> None:
     plans = answer_contract_backfill_tool_calls(
         "악템라 영업활동 Impact와 매출 연계성을 분석해줘",
         "악템라",
         [],
     )
 
-    assert len(plans) == 1
-    assert plans[0].name == "get_metric"
-    assert plans[0].arguments == {"brand": "악템라", "measure": "sales", "period": "latest"}
+    assert [(plan.name, plan.arguments) for plan in plans] == [
+        ("get_metric", {"brand": "악템라", "measure": "sales", "period": "latest"}),
+        ("csd_activity_trend", {"brand": "악템라"}),
+    ]
 
 
 def test_structural_contract_backfill_skips_existing_metric_proxy() -> None:

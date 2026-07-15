@@ -275,16 +275,18 @@ class ExternalApiClient:
     def _live_mcp_call(self, tool: str, params: dict[str, str]) -> ExternalCall:
         spec = _mcp_tool_spec(tool, params)
         url = self._mcp_url(spec["resource_id"], spec["source"])
+        safe_url = self.redact_url(url)
         start = time.monotonic()
         try:
             result = McpJsonClient(url, timeout_s=self.timeout_s).call_tool(spec["mcp_tool"], spec["arguments"])
         except McpClientError as exc:
             elapsed = round((time.monotonic() - start) * 1000, 1)
+            safe_reason = self.redact_url(exc.message)
             if tool == "clinicaltrials_v2_search":
-                return _clinicaltrials_failed_call(params, spec["mcp_tool"], exc.message, url, elapsed)
-            return _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], exc.message, url, elapsed)
+                return _clinicaltrials_failed_call(params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
+            return _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
         elapsed = round((time.monotonic() - start) * 1000, 1)
-        return _mcp_external_call(tool, spec["source"], params, spec["mcp_tool"], result, url, elapsed)
+        return _mcp_external_call(tool, spec["source"], params, spec["mcp_tool"], result, safe_url, elapsed)
 
     def _mcp_url(self, resource_id: str, source: str | None = None) -> str:
         direct_env = MCP_DIRECT_URL_ENV_BY_SOURCE.get(source or "")
