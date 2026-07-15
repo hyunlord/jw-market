@@ -616,6 +616,8 @@ def _resolve_brand_factor_choices(
     requested_brand: str,
     atc4: str | None,
     selected_factors: dict,
+    *,
+    candidate_cache: dict[tuple[str, str, str], object] | None = None,
 ) -> tuple[dict[str, tuple], dict[str, dict[str, object]]]:
     matched_brand = str(row.get("brand") or row.get("brand_key") or requested_brand)
     selected_brand_key = str(row.get("brand_key") or matched_brand)
@@ -638,6 +640,7 @@ def _resolve_brand_factor_choices(
                     view_kind="strategic_ml",
                     market_id=strategic_market_id,
                     source=response_source,
+                    _candidate_cache=candidate_cache,
                 )
                 choices = _resolve_context_brand_choices(context)
             elif market_atc4:
@@ -1462,11 +1465,13 @@ def deep_analysis(
                     "reason": "해당 시장 컨텍스트의 강점 데이터가 아직 생성되지 않음",
                 }
         else:
+            context_candidate_cache: dict[tuple[str, str, str], object] = {}
             brand_choices_by_source, brand_factor_meta = _resolve_brand_factor_choices(
                 row,
                 brand,
                 None,
                 selected_factors,
+                candidate_cache=context_candidate_cache,
             )
             unavailable_factor_sources = {
                 source_name: meta
