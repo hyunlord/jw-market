@@ -117,6 +117,26 @@ def test_structured_plan_preserves_canonical_explicit_period(
     assert expected_period in grounding.schema_periods
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 2025년 4월 매출",
+        "리바로 2025년 2분기 매출",
+        "리바로 2025-Q2 매출",
+    ),
+)
+def test_exact_period_sales_plan_fetches_only_the_requested_metric(question: str) -> None:
+    resolver = BrandResolver(mode="fixture")
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
+
+    plan = plan_structured_market_question(question, resolver, grounding, schemas)
+
+    assert plan is not None
+    assert plan.kind == "brand_sales"
+    assert [call.name for call in plan.decision.tool_calls] == ["get_brand_sales"]
+
+
 def test_query_tool_descriptions_require_context_companions() -> None:
     schemas = tool_schemas(
         ("리바로",),

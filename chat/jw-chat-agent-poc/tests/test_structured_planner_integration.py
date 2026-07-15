@@ -56,6 +56,7 @@ def test_explicit_quarter_sales_bypasses_injected_llm_planner() -> None:
     assert metrics["deterministic_plan_hit"] is True
     assert metrics["deterministic_plan_kind"] == "brand_sales"
     assert metrics["llm_plan_calls"] == 0
+    assert metrics["selected_tools"] == ["get_brand_sales"]
 
 
 def test_feature_flag_off_preserves_legacy_planner_path(monkeypatch) -> None:

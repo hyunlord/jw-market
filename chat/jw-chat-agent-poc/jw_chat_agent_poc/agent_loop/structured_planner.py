@@ -130,7 +130,11 @@ def plan_structured_market_question(
     else:
         assert metric is not None
         kind = metric.name
-        tools = metric.tools
+        tools = (
+            ("get_brand_sales",)
+            if _is_exact_period_sales_question(question, metric, grounding)
+            else metric.tools
+        )
     if not set(tools).issubset(available_tools):
         return None
     slots = QuerySlots(
@@ -181,6 +185,31 @@ def _period(question: str, grounding: AgentPeriodGrounding) -> str:
 def _limit(question: str) -> int:
     match = re.search(r"(?:상위|top)\s*(\d{1,2})", question, re.IGNORECASE)
     return max(1, min(int(match.group(1)), 20)) if match else 5
+
+
+def _is_exact_period_sales_question(
+    question: str,
+    metric: MetricSpec,
+    grounding: AgentPeriodGrounding,
+) -> bool:
+    if metric.name != "brand_sales" or not grounding.pre_resolved_periods:
+        return False
+    return not any(
+        token in question
+        for token in (
+            "비교",
+            "각각",
+            "추이",
+            "변화",
+            "증감",
+            "최근",
+            "대비",
+            "차이",
+            "점유율",
+            "시장규모",
+            "순위",
+        )
+    )
 
 
 def _call(tool: str, slots: QuerySlots) -> ToolCallPlan:
