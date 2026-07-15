@@ -1276,6 +1276,8 @@ def _stream_resolving_session_events(
 
     def emit_step(event: dict[str, Any]) -> None:
         item = indexed_step(event)
+        item["raw_name"] = item.get("name", "")
+        item["raw_detail"] = item.get("detail", "")
         events.put({"type": "step", "item": item})
 
     def run_worker() -> None:

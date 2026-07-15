@@ -156,5 +156,23 @@ def test_question_received_is_first_for_immediate_slot(monkeypatch) -> None:
     monkeypatch.setattr(service_app, "_sse_events_from_final_answer", lambda _answer: iter(("event: done\ndata: ok\n\n",)))
     events = list(_stream_resolving_session_events(SessionStore(), object(), object(), "q", "live", None, limiter=None))
     steps = _step_payloads(events)
-    assert steps[0]["raw_name"] == "question_received"
+    assert steps[0]["raw_name"] == "질문 접수"
     assert [step["status"] for step in steps[:2]] == ["started", "done"]
+
+
+def test_stream_step_boundary_never_exposes_internal_stage_labels(monkeypatch) -> None:
+    def answer_question(*args, **kwargs):
+        with timing.stage(None, "file_schema_probe", "active uploaded file schema check"):
+            pass
+        return {"question": "q", "result": {"answer": "ok", "sources": [], "tool_calls": []}, "conversation_id": "c"}
+
+    monkeypatch.setattr(service_app, "_answer_question", answer_question)
+    monkeypatch.setattr(service_app, "compute_final_answer", lambda *args: type("Answer", (), {"text": "ok", "sources": [], "charts": [], "timing": {}, "trace": {}})())
+    monkeypatch.setattr(service_app, "_sse_events_from_final_answer", lambda _answer: iter(("event: done\ndata: ok\n\n",)))
+
+    events = list(_stream_resolving_session_events(SessionStore(), object(), object(), "q", "live", None, limiter=None))
+    schema_steps = [step for step in _step_payloads(events) if step["name"] == "첨부 파일 구조 분석"]
+
+    assert schema_steps
+    assert {step["raw_name"] for step in schema_steps} == {"첨부 파일 구조 분석"}
+    assert {step["raw_detail"] for step in schema_steps} == {"파일의 시트와 열 확인"}
