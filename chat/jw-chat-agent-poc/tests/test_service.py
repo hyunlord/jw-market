@@ -269,11 +269,10 @@ def test_compute_final_answer_keeps_verified_market_size_after_claim_policy(monk
 | channel 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
 | channel 상위 | 2위 의원 시장점유율 3.36% 매출 41.09억원 |
 """
-    generated = (
-        "2026-05 기준 리바로 채널별 매출은 로수젯 195.24억원, 의원 41.09억원 순입니다. "
-        "채널 내 시장점유율은 로수젯 9.13%, 의원 3.36% 순입니다."
-    )
-    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))
+    def unexpected_stream(*_args):
+        raise AssertionError("simple verified market size must not invoke synthesis LLM")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_stream)
 
     final = compute_final_answer(
         "리바로 시장 규모",
@@ -306,6 +305,40 @@ def test_compute_final_answer_keeps_verified_market_size_after_claim_policy(monk
         "2026-05 리바로가 속한 전략 시장의 시장규모는 2,139.25억원입니다."
     )
     assert "채널별 매출" not in final.text
+
+
+def test_compute_final_answer_keeps_synthesis_for_market_size_analysis(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def stream_answer(*_args):
+        calls["count"] += 1
+        return iter(("시장 규모 변화는 추가 기간 근거를 함께 봐야 합니다.",))
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    compute_final_answer(
+        "리바로 시장 규모 변화 분석",
+        {
+            "answer": "",
+            "context_scope": "MARKET",
+            "markdown_response": {"fact_md": ""},
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "render_data": {
+                        "brand": "리바로",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "market_size_억원": 2_139.25,
+                    },
+                }
+            ],
+            "sources": ["UBIST"],
+        },
+        "market-size-analysis",
+    )
+
+    assert calls["count"] == 1
 
 
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:

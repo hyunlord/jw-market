@@ -1596,7 +1596,14 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     file_context_fact = _file_context_fact(result)
     market_contract_allowed = result.get("context_scope") != ContextScope.FILE.value
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "").strip()
-    if deterministic_file_answer:
+    deterministic_market_answer = (
+        _deterministic_simple_market_answer(question, result)
+        if market_contract_allowed and not file_context_fact
+        else ""
+    )
+    if deterministic_market_answer:
+        generated_answer = deterministic_market_answer
+    elif deterministic_file_answer:
         generated_answer = deterministic_file_answer
     else:
         try:
@@ -1796,6 +1803,24 @@ def _compute_mixed_final_answer(
         conversation_id=conversation_id,
         file_sources=file_final.file_sources,
     )
+
+
+def _deterministic_simple_market_answer(question: str, result: dict) -> str:
+    normalized = re.sub(r"\s+", " ", question).strip()
+    if not re.search(r"시장\s*규모", normalized):
+        return ""
+    if any(
+        token in normalized
+        for token in ("추이", "변화", "증감", "왜", "원인", "전망", "비교", "경쟁", "채널", "분석")
+    ):
+        return ""
+    calls = result.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+    contracted = enforce_market_answer_contract(normalized, "", calls).strip()
+    if "시장규모" not in contracted and "지원되지 않는 시장 매핑" not in contracted:
+        return ""
+    return contracted
 
 
 def _finalize_mixed_leg(
