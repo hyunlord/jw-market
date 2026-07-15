@@ -34,10 +34,15 @@ def build_analysis_rows(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     mart_db: str,
+    reuse_general_dimensions: bool = False,
 ) -> list[dict[str, Any]]:
     """Return cache-cause mart rows enriched for analysis-level builders."""
 
-    general_dimensions = _general_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
+    general_dimensions = (
+        _general_dimensions_from_metrics(metrics)
+        if reuse_general_dimensions
+        else _general_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
+    )
     sidecar_dimensions = _general_sidecar_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
     strategic_dimensions = _strategic_dimensions_by_brand(
         definition=definition,
@@ -53,6 +58,24 @@ def build_analysis_rows(
         strategic_dimensions=strategic_dimensions,
     )
     return rows
+
+
+def _general_dimensions_from_metrics(metrics: AggregatedMetrics) -> dict[tuple[str, str], dict[str, Any]]:
+    """Reuse general dimension fields already loaded by the request aggregator."""
+
+    dimensions: dict[tuple[str, str], dict[str, Any]] = {}
+    for brand in metrics.all_brands:
+        dimensions[(brand.brand_key, brand.atc4_code)] = {
+            key: brand.analysis_row.get(key)
+            for key in (
+                "by_dimension",
+                "dimension_data",
+                "dimension_channel_data",
+                "channel_data",
+                "channel_specialty_matrix",
+            )
+        }
+    return dimensions
 
 
 def _general_dimensions_by_pair(
