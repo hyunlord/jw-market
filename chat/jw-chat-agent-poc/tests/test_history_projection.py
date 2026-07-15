@@ -456,7 +456,7 @@ def test_dead_network_timeout_requeue_is_bounded_by_status_error_and_time(monkey
 
     statement, params = connection.cursor_instance.statements[-1]
     assert "status='dead'" in statement
-    assert "last_error LIKE 'NetworkTimeout:%'" in statement
+    assert "last_error LIKE 'NetworkTimeout:%%'" in statement
     assert "updated_at >= %s AND updated_at <= %s" in statement
     assert params == (since, until)
     assert requeued == 3

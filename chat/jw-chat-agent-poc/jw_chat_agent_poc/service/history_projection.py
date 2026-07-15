@@ -361,7 +361,7 @@ class MySQLProjectionOutbox:
                     UPDATE {self._table_name}
                     SET status='retry', attempts=0, next_attempt_at=NOW(), updated_at=NOW()
                     WHERE status='dead'
-                      AND last_error LIKE 'NetworkTimeout:%'
+                      AND last_error LIKE 'NetworkTimeout:%%'
                       AND updated_at >= %s AND updated_at <= %s
                     """,
                     (since, until),
