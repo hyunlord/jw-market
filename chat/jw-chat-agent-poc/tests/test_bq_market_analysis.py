@@ -53,6 +53,16 @@ def test_b1_computes_share_of_growth_decomposition_and_gain_loss() -> None:
     assert data["chart_payloads"][0]["chart_type"] == "waterfall"
 
 
+def test_b1_explains_which_competitors_gained_and_lost_share() -> None:
+    call = build_bq_analysis_call("B1", [_series_call("ubist"), _top_call()])
+
+    assert call is not None
+    insight = call["render_data"]["insights"][0]
+    assert "리바로 +0.91%p 상승" in insight
+    assert "로수젯 -1.00%p" in insight
+    assert "경쟁A -1.00%p 하락" in insight
+
+
 def test_b1_ledger_binds_waterfall_to_top5_trend_rows() -> None:
     call = build_bq_analysis_call("B1", [_series_call("ubist"), _top_call()])
 

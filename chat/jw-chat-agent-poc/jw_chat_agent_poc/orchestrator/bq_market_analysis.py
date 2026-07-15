@@ -100,6 +100,7 @@ def _competition_result(series_call: Call, calls: list[Call]) -> dict[str, Any] 
         }
         for row in trend_rows if row.get("brand")
     ]
+    share_movement = _share_movement_insight(gain_loss)
     source = _source_label(series_call)
     return {
         "source": source, "period": f"{start_period}~{end_period}",
@@ -111,6 +112,7 @@ def _competition_result(series_call: Call, calls: list[Call]) -> dict[str, Any] 
             f"{source} {start_period}~{end_period} 브랜드 성장률 {_pct(brand_rate)}와 "
             f"시장 성장률 {_pct(market_rate)}의 차이는 {_pctp(decomposition.excess_growth)}이며, "
             f"시장 성장분 중 브랜드 몫은 {_pct(contribution)}입니다."
+            f"{share_movement}"
         ),
         "chart": {
             "chart_type": "waterfall", "title": f"{source} 브랜드별 점유율 변화", "source": source,
@@ -119,6 +121,25 @@ def _competition_result(series_call: Call, calls: list[Call]) -> dict[str, Any] 
             "datasets": [{"label": "점유율 변화(%p)", "unit": "%p", "data": [row["share_delta_pctp"] for row in gain_loss]}],
         },
     }
+
+
+def _share_movement_insight(gain_loss: list[dict[str, Any]]) -> str:
+    gainers = [
+        f"{row['brand']} {row['share_delta_pctp']:+.2f}%p"
+        for row in gain_loss
+        if row.get("share_delta_pctp") is not None and row["share_delta_pctp"] > 0
+    ]
+    decliners = [
+        f"{row['brand']} {row['share_delta_pctp']:+.2f}%p"
+        for row in gain_loss
+        if row.get("share_delta_pctp") is not None and row["share_delta_pctp"] < 0
+    ]
+    movements = []
+    if gainers:
+        movements.append(f"점유율은 {'·'.join(gainers)} 상승")
+    if decliners:
+        movements.append(f"{'·'.join(decliners)} 하락")
+    return "" if not movements else f" {'했고, '.join(movements)}했습니다."
 
 
 def _cohort_position(calls: list[Call]) -> Call | None:
