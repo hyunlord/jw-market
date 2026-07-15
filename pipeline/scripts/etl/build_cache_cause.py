@@ -732,21 +732,21 @@ def _latest_top_trends(
         cached = ranked_by_year.get(year)
         if cached is not None:
             return cached
-        rows = [
-            row
-            for row in normalized_by_year.get(year, [])
-            if identity(row)
-            and not row.get("is_others")
-            and (
-                (safe_float(row.get("value")) is not None and safe_float(row.get("value")) > 0)
-                or bool(target_name and identity(row) == target_name)
-            )
-        ]
+        values: dict[int, float | None] = {}
+        rows = []
+        for row in normalized_by_year.get(year, []):
+            row_id = identity(row)
+            if not row_id or row.get("is_others"):
+                continue
+            value = safe_float(row.get("value"))
+            if (value is not None and value > 0) or bool(target_name and row_id == target_name):
+                values[id(row)] = value
+                rows.append(row)
         ranked = sorted(
             rows,
             key=lambda item: (
-                safe_float(item.get("value")) is not None,
-                safe_float(item.get("value")) or 0.0,
+                values[id(item)] is not None,
+                values[id(item)] or 0.0,
             ),
             reverse=True,
         )
