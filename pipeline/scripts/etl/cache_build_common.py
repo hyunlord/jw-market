@@ -107,6 +107,7 @@ def _window_start(annual: list[tuple[int, float]], end_year: int, target_years: 
     return earlier[0] if earlier else None
 
 
+@lru_cache(maxsize=512)
 def _period_ordinal(period: str) -> tuple[int, int] | None:
     """Return (ordinal, periods_per_year) for monthly/quarterly period labels."""
     text = str(period)

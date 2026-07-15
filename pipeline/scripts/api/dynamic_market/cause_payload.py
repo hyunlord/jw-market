@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import logging
+import os
 from pathlib import Path
 import sys
+from time import perf_counter
 from typing import Any
 
 from pipeline.scripts.api.config import config
@@ -31,6 +34,13 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 from pipeline.scripts.api.market_growth import growth_endpoint_meta
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+
+
+logger = logging.getLogger(__name__)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 
 ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
@@ -87,6 +97,8 @@ def build_cause_data(
 ) -> dict[str, Any]:
     """Build all direct ``data`` keys expected by the cause renderer."""
 
+    timing_enabled = _stage_timing_enabled()
+    started = perf_counter() if timing_enabled else None
     series = market_size_series(metrics)
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
     hhi = hhi_series(metrics.all_brands, source=metrics.source)
@@ -96,6 +108,13 @@ def build_cause_data(
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     company_hhi = company_hhi_series(metrics.all_brands, source=metrics.source)
+    if timing_enabled and started is not None:
+        logger.info(
+            "market_latency_compose_stage section=base_metrics ms=%.3f brands=%d",
+            (perf_counter() - started) * 1000,
+            len(metrics.all_brands),
+        )
+    analysis_started = perf_counter() if timing_enabled else None
     levels = empty_analysis_levels(series)
     analysis_sections = build_analysis_level_sections(
         definition=definition,
@@ -104,18 +123,31 @@ def build_cause_data(
         mart_db=config.db_name,
         period_range=period_range,
     )
+    if timing_enabled and analysis_started is not None:
+        logger.info(
+            "market_latency_compose_stage section=analysis_levels ms=%.3f present=%s",
+            (perf_counter() - analysis_started) * 1000,
+            bool(analysis_sections),
+        )
     if analysis_sections:
         levels = analysis_sections["analysis_levels"]
     ubist_channels = _general_ubist_channels(metrics)
     if analysis_sections and isinstance(analysis_sections.get("ubist_channel_context"), dict):
         ubist_channels = _ubist_channels_from_context(analysis_sections["ubist_channel_context"], fallback=ubist_channels)
     target_channels = _general_target_customer_channels(metrics=metrics, ubist_channels=ubist_channels)
+    competition_started = perf_counter() if timing_enabled else None
     target_competition_by_channel = _target_customer_competition_by_channel(
         analysis_sections=analysis_sections,
         metrics=metrics,
         focus=focus,
         channels=target_channels,
     )
+    if timing_enabled and competition_started is not None:
+        logger.info(
+            "market_latency_compose_stage section=target_competition ms=%.3f channels=%d",
+            (perf_counter() - competition_started) * 1000,
+            len(target_channels),
+        )
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     matrix_payload = {
         "data": display_matrix,
@@ -267,6 +299,8 @@ def _target_customer_competition_by_channel(
         target_name=focus.brand_name if focus else None,
         periods=periods,
         channels=[str(channel) for channel in channels if str(channel)],
+        series_value_cache=analysis_sections.get("series_value_cache"),
+        channel_rows_cache=analysis_sections.get("channel_rows_cache"),
     )
 
 

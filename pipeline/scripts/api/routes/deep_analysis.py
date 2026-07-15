@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import inspect
 import json
 import logging
 import os
+from time import perf_counter
 from typing import Annotated, Any, Final, Literal
 from urllib.parse import unquote
 
@@ -42,6 +44,10 @@ from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 KST = timezone(timedelta(hours=9))
 GENERAL_CACHE_TTL_DAYS: Final[int] = 35
@@ -616,6 +622,8 @@ def _resolve_brand_factor_choices(
     requested_brand: str,
     atc4: str | None,
     selected_factors: dict,
+    *,
+    candidate_cache: dict[tuple[str, str, str], object] | None = None,
 ) -> tuple[dict[str, tuple], dict[str, dict[str, object]]]:
     matched_brand = str(row.get("brand") or row.get("brand_key") or requested_brand)
     selected_brand_key = str(row.get("brand_key") or matched_brand)
@@ -638,6 +646,7 @@ def _resolve_brand_factor_choices(
                     view_kind="strategic_ml",
                     market_id=strategic_market_id,
                     source=response_source,
+                    _candidate_cache=candidate_cache,
                 )
                 choices = _resolve_context_brand_choices(context)
             elif market_atc4:
@@ -706,6 +715,7 @@ def _resolve_context_brand_choices(context: DeepAnalysisContext) -> tuple:
         source=context.db_source,
         rank_by_latest_period=True,
         resolved_context=context,
+        restrict_strategic_to_ranking=True,
     )
     return resolution.choices if resolution and resolution.choices else ()
 
@@ -1273,7 +1283,9 @@ def _load_market_strength(
 
 
 def _formal_brand_factors(brand: str, context: DeepAnalysisContext) -> dict[str, list[dict]]:
+    started = perf_counter() if _stage_timing_enabled() else None
     fallback = fallback_brand_choices(context.brand_key, context.brand_name)
+    resolve_started = perf_counter() if started is not None else None
     try:
         choices = _resolve_context_brand_choices(context)
     except (BrandSetInputError, BrandSetResolutionError, KeyError, ValueError, IndexError, pymysql.MySQLError):
@@ -1281,17 +1293,37 @@ def _formal_brand_factors(brand: str, context: DeepAnalysisContext) -> dict[str,
         choices = fallback
     if not choices:
         choices = fallback
+    resolve_ms = (perf_counter() - resolve_started) * 1000 if resolve_started is not None else None
     brand_keys = [choice.brand_key for choice in choices]
+    elements_started = perf_counter() if started is not None else None
     cached = _load_cached_brand_elements_read_only(brand_keys)
+    elements_ms = (perf_counter() - elements_started) * 1000 if elements_started is not None else None
+    strength_started = perf_counter() if started is not None else None
     strengths = _load_market_strength(brand_keys, context)
+    strength_ms = (perf_counter() - strength_started) * 1000 if strength_started is not None else None
     choices_by_source = {"iqvia": (), "ubist": (), context.source: choices}
-    return build_brand_factors(
+    build_started = perf_counter() if started is not None else None
+    payload = build_brand_factors(
         choices_by_source,
         selected_brand_key=context.brand_key,
         cached_elements_by_key=cached,
         selected_factors=_empty_brand_factors(),
         strength_by_source_by_key=strengths,
     )
+    if started is not None:
+        logger.info(
+            "market_latency_deep_factors brand=%s view=%s choices=%d resolve_ms=%.3f "
+            "elements_ms=%.3f strength_ms=%.3f build_ms=%.3f total_ms=%.3f",
+            brand,
+            context.view_kind,
+            len(choices),
+            resolve_ms or 0.0,
+            elements_ms or 0.0,
+            strength_ms or 0.0,
+            (perf_counter() - build_started) * 1000 if build_started is not None else 0.0,
+            (perf_counter() - started) * 1000,
+        )
+    return payload
 
 
 def _brand_factors_have_strength(value: object) -> bool:
@@ -1368,6 +1400,8 @@ def deep_analysis(
         Query(description="[신규 계약] 요청 시장의 단일 데이터 소스"),
     ] = None,
 ) -> dict:
+    timing_enabled = _stage_timing_enabled()
+    route_started = perf_counter() if timing_enabled else None
     if request is not None and "atc4" in request.query_params:
         raise HTTPException(
             status_code=422,
@@ -1391,6 +1425,7 @@ def deep_analysis(
         )
     view_name = str(view_kind) if formal_contract else _normalize_deep_view(view)
     try:
+        compose_started = perf_counter() if timing_enabled else None
         if formal_contract:
             try:
                 context = resolve_deep_analysis_context(
@@ -1406,14 +1441,20 @@ def deep_analysis(
             payload, row = _compose_general_view_payload(brand)
         else:
             payload, row = _compose_strategic_view_payload(brand)
+        compose_ms = (perf_counter() - compose_started) * 1000 if compose_started is not None else None
     except CompactBrandLookupAmbiguous as exc:
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand}) from exc
     payload["generated_at"] = _format_generated_at(row.get("updated_at"))
     data = payload.setdefault("data", {})
+    events_ms = None
+    factors_ms = None
     if isinstance(data, dict):
+        events_started = perf_counter() if timing_enabled else None
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
         cached_events = row.get("_events")
         events = cached_events if isinstance(cached_events, list) else _load_deep_events(matched_brand)
+        events_ms = (perf_counter() - events_started) * 1000 if events_started is not None else None
+        factors_started = perf_counter() if timing_enabled else None
         if formal_contract:
             data["events"] = events
             if not data.get("forecast"):
@@ -1462,11 +1503,12 @@ def deep_analysis(
                     "reason": "해당 시장 컨텍스트의 강점 데이터가 아직 생성되지 않음",
                 }
         else:
+            context_candidate_cache: dict[tuple[str, str, str], object] = {}
+            resolver_kwargs = {}
+            if "candidate_cache" in inspect.signature(_resolve_brand_factor_choices).parameters:
+                resolver_kwargs["candidate_cache"] = context_candidate_cache
             brand_choices_by_source, brand_factor_meta = _resolve_brand_factor_choices(
-                row,
-                brand,
-                None,
-                selected_factors,
+                row, brand, None, selected_factors, **resolver_kwargs
             )
             unavailable_factor_sources = {
                 source_name: meta
@@ -1493,9 +1535,25 @@ def deep_analysis(
                 selected_factors=selected_factors,
                 strength_by_source_by_key=strength_by_source,
             )
+        factors_ms = (perf_counter() - factors_started) * 1000 if factors_started is not None else None
     non_finite_paths: list[str] = []
     normalized = normalize_json_value(payload, on_non_finite=non_finite_paths.append)
     if non_finite_paths:
         logger.warning("deep_analysis_non_finite_normalized brand=%s view=%s paths=%s", brand, view_name, non_finite_paths)
-    json.dumps(normalized, ensure_ascii=False, allow_nan=False)
+    serialize_started = perf_counter() if timing_enabled else None
+    serialized_payload = json.dumps(normalized, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    serialize_ms = (perf_counter() - serialize_started) * 1000 if serialize_started is not None else None
+    if timing_enabled and route_started is not None:
+        logger.info(
+            "market_latency_stage path=deep brand=%s view=%s compose_ms=%.3f events_ms=%.3f factors_ms=%.3f "
+            "serialize_ms=%.3f total_ms=%.3f payload_bytes=%d",
+            brand,
+            view_name,
+            compose_ms or 0.0,
+            events_ms or 0.0,
+            factors_ms or 0.0,
+            serialize_ms or 0.0,
+            (perf_counter() - route_started) * 1000,
+            len(serialized_payload),
+        )
     return normalized

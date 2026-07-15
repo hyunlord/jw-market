@@ -118,6 +118,7 @@ def resolve_brand_set(
     source: str = SOURCE,
     rank_by_latest_period: bool = False,
     resolved_context: DeepAnalysisContext | None = None,
+    restrict_strategic_to_ranking: bool = False,
 ) -> BrandSetResolution | None:
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
@@ -158,10 +159,21 @@ def resolve_brand_set(
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
-    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source))
+    market_row = None
+    ranked_brand_keys: tuple[str, ...] | None = None
+    if restrict_strategic_to_ranking and view_name in {"strategic_ml", "strategic_cd"} and not raw_filter_payload:
+        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+        if market_row is not None:
+            ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+            ranked_brand_keys = _ranking_brand_keys(ranking, selected_brand=resolved_selected_brand)
+    if ranked_brand_keys:
+        brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source, brand_keys=ranked_brand_keys))
+    else:
+        brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source))
     if not brand_rows:
         return None
-    market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+    if market_row is None:
+        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
     if market_row is None:
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
@@ -368,18 +380,30 @@ def _brand_set_context_error(
     )
 
 
-def _fetch_brand_rows(view: ViewConfig, market_id: str, *, source: str = SOURCE) -> list[JsonMap]:
+def _fetch_brand_rows(
+    view: ViewConfig,
+    market_id: str,
+    *,
+    source: str = SOURCE,
+    brand_keys: Sequence[str] | None = None,
+) -> list[JsonMap]:
     is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
     overlay = "overlay_data" if view.has_is_jw else "NULL AS overlay_data"
     audit_code_matrix = "audit_code_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS audit_code_matrix"
+    key_clause = ""
+    params: list[object] = [market_id, source, RANKING_MEASURE]
+    if brand_keys:
+        key_clause = f" AND brand_key IN ({_placeholders(brand_keys)})"
+        params.extend(brand_keys)
     return db.fetch_all(
         f"""
         SELECT DISTINCT brand_key, brand_name, {is_jw}, by_dimension, {overlay}, metric_history, {audit_code_matrix}
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
+          {key_clause}
         ORDER BY brand_key
         """,
-        (market_id, source, RANKING_MEASURE),
+        tuple(params),
     )
 
 
@@ -610,6 +634,19 @@ def _ranking_for_quarter(row: JsonMap, ranking_column: str, quarters: Sequence[s
 def _ranking_items(ranking: JsonMap) -> list[JsonMap]:
     items = ranking.get("items")
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _ranking_brand_keys(ranking: JsonMap, *, selected_brand: str) -> tuple[str, ...]:
+    """Return the selected brand plus the first five ranked competitors."""
+
+    keys: list[str] = [selected_brand]
+    for item in _ranking_items(ranking):
+        key = text(item.get("brand_key"))
+        if key and key not in keys:
+            keys.append(key)
+        if len(keys) == MAX_BRAND_SET_SIZE:
+            break
+    return tuple(keys) if len(keys) == MAX_BRAND_SET_SIZE else ()
 
 
 def _text_values(*values: Any) -> tuple[str, ...]:

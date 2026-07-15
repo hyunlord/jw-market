@@ -100,6 +100,33 @@ def test_brand_available_sources_key_miss_falls_back(monkeypatch) -> None:
     assert len(calls) == 2
 
 
+def test_strategic_context_candidate_cache_reuses_shared_queries(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_all(sql: str, _params: Any) -> list[dict[str, Any]]:
+        calls.append(sql)
+        if "catalog_strategic_brand" in sql:
+            return [{"brand_key": "선택브랜드", "brand_name": "선택브랜드", "market_id": "ml_003", "market_name": "당뇨", "data_source": "both"}]
+        if "mart_strategic_ml_brand_metric" in sql:
+            return [{"market_id": "ml_003", "source": "ubist"}, {"market_id": "ml_003", "source": "iqvia_nsa"}]
+        if "mart_general_brand_metric" in sql:
+            return [{"source": "ubist"}, {"source": "iqvia_nsa"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+    cache: dict[str, Any] = {}
+    first = deep_analysis_context.resolve_deep_analysis_context(
+        brand="선택브랜드", view_kind="strategic_ml", market_id="ml_003", source="ubist", _candidate_cache=cache
+    )
+    second = deep_analysis_context.resolve_deep_analysis_context(
+        brand="선택브랜드", view_kind="strategic_ml", market_id="ml_003", source="iqvia", _candidate_cache=cache
+    )
+
+    assert first.source == "ubist"
+    assert second.source == "iqvia"
+    assert len(calls) == 3
+
+
 def test_resolve_brand_set_reuses_resolved_context(monkeypatch) -> None:
     def forbidden_resolve(**kwargs: Any) -> DeepAnalysisContext:
         raise AssertionError("resolve_deep_analysis_context must not re-run with resolved_context")

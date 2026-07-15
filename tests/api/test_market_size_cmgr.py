@@ -40,7 +40,7 @@ def test_ubist_growth_keeps_one_range_baseline_and_uses_elapsed_months() -> None
     }
     expected = (
         (Decimal("82054035370") / Decimal("90209049371"))
-        ** (Decimal(12) / Decimal(56))
+        ** (Decimal(1) / Decimal(56))
         - Decimal(1)
     ) * Decimal(100)
     assert results["2026-02"].value == pytest.approx(float(expected), abs=0.0001)
@@ -64,7 +64,7 @@ def test_iqvia_growth_keeps_one_range_baseline_and_uses_elapsed_quarters() -> No
         "2025-Q4": 18,
         "2026-Q1": 19,
     }
-    expected = ((121.0 / 100.0) ** (4 / 19) - 1) * 100
+    expected = ((121.0 / 100.0) ** (1 / 19) - 1) * 100
     assert results["2026-Q1"].value == pytest.approx(expected)
 
 
@@ -117,7 +117,7 @@ def test_dynamic_market_size_series_uses_range_baseline_growth(
 
     points = market_size_series(metrics)
 
-    expected = ((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100
+    expected = ((121.0 / 100.0) ** (1 / elapsed_periods) - 1) * 100
     assert points[0]["mom_growth_pct"] is None
     assert points[1]["mom_growth_pct"] == pytest.approx(expected)
 
@@ -159,7 +159,7 @@ def test_dynamic_market_size_series_uses_earliest_value_and_actual_elapsed_month
 
     points = market_size_series(metrics)
 
-    assert points[1]["mom_growth_pct"] == pytest.approx(((121.0 / 100.0) ** (12 / 40) - 1) * 100)
+    assert points[1]["mom_growth_pct"] == pytest.approx(((121.0 / 100.0) ** (1 / 40) - 1) * 100)
 
 
 @pytest.mark.parametrize(
@@ -193,7 +193,7 @@ def test_growth_skips_missing_baseline_period_but_preserves_actual_zero() -> Non
     )["2026-05"]
 
     assert missing.baseline_period == "2022-05"
-    assert missing.value == pytest.approx(((121.0 / 100.0) ** (12 / 48) - 1) * 100)
+    assert missing.value == pytest.approx(((121.0 / 100.0) ** (1 / 48) - 1) * 100)
     assert actual_zero.reason == "zero_baseline"
     assert actual_zero.value is None
 
@@ -329,7 +329,7 @@ def test_scoped_market_size_payload_matches_dynamic_growth_definition(
 
     points = market_size_series_payload(market_size, source=source)
 
-    expected = ((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100
+    expected = ((121.0 / 100.0) ** (1 / elapsed_periods) - 1) * 100
     assert points[periods[0]]["mom_growth_pct"] is None
     assert points[periods[1]]["mom_growth_pct"] == pytest.approx(expected)
 
@@ -350,7 +350,7 @@ def test_static_market_size_payload_adds_rounded_growth_without_changing_old_key
 
     points = market_size_series_with_yoy(market_size)
 
-    expected = round(((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100, 4)
+    expected = round(((121.0 / 100.0) ** (1 / elapsed_periods) - 1) * 100, 4)
     assert points[periods[0]]["mom_growth_pct"] is None
     assert points[periods[1]]["mom_growth_pct"] == expected
     assert {key: value for key, value in points[periods[1]].items() if key != "mom_growth_pct"} == {
@@ -389,7 +389,7 @@ def test_cached_cause_response_recomputes_growth_without_rebuilding_cache(
         "end_period": periods[1],
         "reason": "latest_available",
     }
-    expected = ((121.0 / 100.0) ** (periods_per_year / elapsed_periods) - 1) * 100
+    expected = ((121.0 / 100.0) ** (1 / elapsed_periods) - 1) * 100
     assert points[0]["mom_growth_pct"] is None
     assert points[1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
     assert {key: value for key, value in points[1].items() if key != "mom_growth_pct"} == {
@@ -413,8 +413,27 @@ def test_cached_cause_response_recomputes_growth_from_legacy_value_aliases(value
 
     payload = compose_cached_json(cached, measure="sales", source="UBIST")
 
-    expected = ((121.0 / 100.0) ** (12 / 60) - 1) * 100
+    expected = ((121.0 / 100.0) ** (1 / 60) - 1) * 100
     assert payload["data"]["market_size_series"][1]["mom_growth_pct"] == pytest.approx(expected, abs=0.0001)
+
+
+def test_cached_cause_response_nulls_first_growth_point_when_series_is_already_points() -> None:
+    cached = {
+        "data": {
+            "market_size_series": [
+                {"period": "2021-06", "value": 10.0, "mom_growth_pct": 46.4, "cqgr": 46.4},
+                {"period": "2021-07", "value": 11.0, "mom_growth_pct": -2.01, "cqgr": -2.01},
+            ]
+        }
+    }
+
+    payload = compose_cached_json(cached, measure="sales", source="UBIST")
+
+    points = payload["data"]["market_size_series"]
+    assert points[0]["mom_growth_pct"] is None
+    assert points[0]["cqgr"] is None
+    assert points[1]["mom_growth_pct"] == -2.01
+    assert points[1]["cqgr"] == -2.01
 
 
 def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:

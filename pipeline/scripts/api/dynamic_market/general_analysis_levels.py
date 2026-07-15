@@ -87,6 +87,7 @@ def build_general_analysis_level_sections(
             metrics=metrics,
             focus=focus,
             mart_db=mart_db,
+            reuse_general_dimensions=True,
         )
     except (MySQLError, RuntimeError, TypeError, ValueError, OSError):
         rows = _rows_from_metrics(metrics=metrics, focus=focus)
@@ -112,6 +113,7 @@ def build_general_analysis_level_sections(
     )
     build_channels = list(dict.fromkeys([*channels, *status_channels]))
     series_value_cache: cause_builder._SeriesValueCache = {}
+    channel_rows_cache: cause_builder._ChannelRowsCache = {}
     precomputed = _load_precomputed_general_block(
         definition=definition,
         source=source_api,
@@ -131,6 +133,7 @@ def build_general_analysis_level_sections(
                 channels_override=build_channels,
                 use_latest_valid_share=True,
                 series_value_cache=series_value_cache,
+                channel_rows_cache=channel_rows_cache,
             ),
             specs,
         )
@@ -150,6 +153,7 @@ def build_general_analysis_level_sections(
             channel="전체",
             use_latest_valid_share=True,
             series_value_cache=series_value_cache,
+            channel_rows_cache=channel_rows_cache,
         ),
         specs,
     )
@@ -173,6 +177,8 @@ def build_general_analysis_level_sections(
         "level_top5_trend": level_top5_trend,
         "rows": canonical_rows,
         "ubist_channel_context": ubist_channel_context,
+        "series_value_cache": series_value_cache,
+        "channel_rows_cache": channel_rows_cache,
     }
 
 

@@ -18,6 +18,11 @@ from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 logger = logging.getLogger(__name__)
 
+_STRATEGIC_BRAND_RUNTIME_COLUMNS = (
+    "brand_key, brand_name, ml_id, source, measure, is_jw, is_target, computed_at"
+)
+_STRATEGIC_MARKET_RUNTIME_COLUMNS = "name, data_source, atc_codes_json"
+
 
 def _compact_sql(column: str) -> str:
     return f"REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')"
@@ -25,8 +30,8 @@ def _compact_sql(column: str) -> str:
 
 def _brand_rows(brand: str) -> list[dict[str, Any]]:
     rows = db.fetch_all(
-        """
-        SELECT *
+        f"""
+        SELECT {_STRATEGIC_BRAND_RUNTIME_COLUMNS}
         FROM mart_strategic_ml_brand_metric
         WHERE brand_name = %s
         ORDER BY ml_id, source, measure
@@ -40,7 +45,7 @@ def _brand_rows(brand: str) -> list[dict[str, Any]]:
         return []
     candidates = db.fetch_all(
         f"""
-        SELECT *
+        SELECT {_STRATEGIC_BRAND_RUNTIME_COLUMNS}
         FROM mart_strategic_ml_brand_metric
         WHERE {_compact_sql('brand_name')} = %s
         ORDER BY brand_name, ml_id, source, measure
@@ -52,7 +57,10 @@ def _brand_rows(brand: str) -> list[dict[str, Any]]:
 
 
 def _market_catalog(ml_id: str) -> dict[str, Any]:
-    return db.fetch_one("SELECT * FROM catalog_ml_market WHERE ml_id = %s LIMIT 1", [ml_id]) or {}
+    return db.fetch_one(
+        f"SELECT {_STRATEGIC_MARKET_RUNTIME_COLUMNS} FROM catalog_ml_market WHERE ml_id = %s LIMIT 1",
+        [ml_id],
+    ) or {}
 
 
 def build_strategic_row(brand: str) -> dict[str, Any] | None:

@@ -11,6 +11,21 @@ sys.path.insert(0, str(ROOT / "pipeline" / "scripts" / "etl"))
 from pipeline.scripts.etl import build_cache_cause
 
 
+def test_optional_row_value_uses_inline_fallback_order(monkeypatch) -> None:
+    row = {"raw_value": None, "value": "12.5", "sales": 99.0}
+    calls = 0
+
+    def count_helper(*_values: object) -> float | None:
+        nonlocal calls
+        calls += 1
+        return 12.5
+
+    monkeypatch.setattr(build_cache_cause, "_first_optional_float", count_helper)
+
+    assert build_cache_cause._optional_row_value(row) == 12.5
+    assert calls == 0
+
+
 def test_add_series_parses_each_period_once_for_shared_targets(monkeypatch) -> None:
     periods = ["2026-01", "2026-02"]
     series = {
@@ -67,7 +82,69 @@ def test_dimension_channel_series_is_reduced_once_per_row(monkeypatch) -> None:
     second = build_cache_cause._dimension_channel_series_map(row, "class", "UBIST", "병원")
 
     assert first == second
-    assert calls == 2
+    assert first == {
+        "A": {
+            "2026-01": {"raw_value": 10.0},
+            "2026-02": {"raw_value": 20.0},
+        }
+    }
+    assert calls == 0
+
+
+def test_dimension_channel_series_preserves_unmatched_periods_when_merging() -> None:
+    row = {
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "병원": {"2026-01": {"raw_value": 10.0}},
+                    "의원": {"2026-01": {"raw_value": 20.0}, "2026-02": {"raw_value": 30.0}},
+                }
+            }
+        }
+    }
+
+    assert build_cache_cause._dimension_channel_series_map(
+        row, "class", "UBIST", "병원"
+    ) == {
+        "A": {
+            "2026-01": {"raw_value": 10.0},
+            "2026-02": {"raw_value": 0.0},
+        }
+    }
+
+
+def test_dimension_channel_series_keeps_string_period_compatibility() -> None:
+    row = {
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "병원": {"202601": {"raw_value": 10.0}},
+                    "의원": {202601: {"raw_value": 20.0}},
+                }
+            }
+        }
+    }
+
+    assert build_cache_cause._dimension_channel_series_map(
+        row, "class", "UBIST", "병원"
+    ) == {"A": {"202601": {"raw_value": 10.0}}}
+
+
+def test_dimension_channel_series_sums_multiple_matching_channels() -> None:
+    row = {
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "상급종합병원": {"2026-01": {"raw_value": 10.0}},
+                    "상급종병": {"2026-01": {"raw_value": 5.0}},
+                }
+            }
+        }
+    }
+
+    assert build_cache_cause._dimension_channel_series_map(
+        row, "class", "UBIST", "상급종병"
+    ) == {"A": {"2026-01": {"raw_value": 15.0}}}
 
 
 def test_overall_level_options_reuse_channel_rows_across_levels(monkeypatch) -> None:
