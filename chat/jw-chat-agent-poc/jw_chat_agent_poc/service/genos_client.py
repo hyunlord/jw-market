@@ -494,7 +494,12 @@ def _ensure_mfds_permit_date_answer(question: str, markdown: str, fact_md: str) 
     if match is None:
         return markdown
     permit_date = match.group("date")
-    if permit_date in markdown:
+    prose_lines: list[str] = []
+    for line in markdown.splitlines():
+        if line.strip().startswith("|"):
+            break
+        prose_lines.append(line)
+    if permit_date in "\n".join(prose_lines):
         return markdown
     subject = match.group("subject").strip()
     return _insert_before_first_table(

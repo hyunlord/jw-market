@@ -1932,3 +1932,29 @@ def test_tool_use_permission_date_survives_final_synthesis(monkeypatch) -> None:
     assert "허가일은 20050106" in answer
     assert "리바로정1밀리그램" in answer
     assert "제이더블유중외제약" in answer
+
+
+def test_tool_use_permission_date_adds_prose_when_date_only_appears_in_table(monkeypatch) -> None:
+    fact_md = (
+        "- 리바로정1밀리그램(피타바스타틴칼슘수화물) (20050106): 허가 품목 = "
+        "리바로정1밀리그램(피타바스타틴칼슘수화물) · 허가일 20050106 · "
+        "제이더블유중외제약(주) · 성분 Pitavastatin Calcium Hydrate "
+        "[식약처 의약품 정보]"
+    )
+    table_only = (
+        "| 품목명 | 허가일 | 업체명 |\n"
+        "|---|---:|---|\n"
+        "| 리바로정1밀리그램(피타바스타틴칼슘수화물) | 20050106 | 제이더블유중외제약(주) |"
+    )
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda _self, _messages: table_only)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {"fact_md": fact_md, "allowed_numbers": ["20050106"]},
+        "tool_calls": [{"tool": "mfds_permission_search", "source": "nedrug_mcp"}],
+    }
+
+    answer = "".join(client.stream_answer("리바로 허가일", agent_result))
+
+    assert answer.index("식약처 허가일은 20050106입니다") < answer.index("| 품목명 |")
