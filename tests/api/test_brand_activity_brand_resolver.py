@@ -295,6 +295,54 @@ def test_livalo_strategic_resolution_reads_ubist_mart_rows(monkeypatch) -> None:
     assert calls == [("brand", ("ml_006", "ubist", "sales")), ("market", ("ml_006", "ubist", "sales"))]
 
 
+def test_strategic_resolution_can_restrict_rows_to_market_ranking(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_fetch_one(_sql: str, params: tuple[object, ...]) -> dict[str, object]:
+        calls.append(("market", params))
+        return {
+            "ml_id": "ml_003",
+            "ml_name": "시장",
+            "market_size_series": {},
+            "brand_ranking_stacked": {"2026-05": [{"brand_key": f"b{i}", "rank": i} for i in range(1, 7)]},
+        }
+
+    def fake_fetch_all(_sql: str, params: tuple[object, ...]) -> tuple[dict[str, object], ...]:
+        calls.append(("brand", params))
+        assert params[:3] == ("ml_003", "ubist", "sales")
+        assert set(params[3:]) == {"선택", "b1", "b2", "b3", "b4", "b5"}
+        return tuple(
+            {
+                "brand_key": key,
+                "brand_name": key,
+                "is_jw": 1,
+                "by_dimension": {"products": []},
+                "overlay_data": {},
+                "metric_history": {"2026-05": {"rank": rank, "raw_value": 100.0}},
+                "audit_code_matrix": None,
+            }
+            for rank, key in enumerate(("선택", "b1", "b2", "b3", "b4", "b5"), 1)
+        )
+
+    context = type("Context", (), {"market_id": "ml_003", "brand_key": "선택", "db_source": "ubist"})()
+    monkeypatch.setattr(resolver.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(resolver.db, "fetch_all", fake_fetch_all)
+    result = resolver.resolve_brand_set(
+        view_name="strategic_ml",
+        market_id="ml_003",
+        selected_brand="선택",
+        filter_payload={},
+        source="ubist",
+        rank_by_latest_period=True,
+        resolved_context=context,
+        restrict_strategic_to_ranking=True,
+    )
+
+    assert result is not None
+    assert [choice.brand_key for choice in result.choices] == ["선택", "b1", "b2", "b3", "b4", "b5"]
+    assert [kind for kind, _ in calls] == ["market", "brand"]
+
+
 def test_ambiguous_ml_brand_preserves_409_context_contract(monkeypatch) -> None:
     error = DeepAnalysisContextError(
         status_code=409,
