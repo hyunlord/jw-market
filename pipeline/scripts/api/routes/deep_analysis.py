@@ -1423,11 +1423,15 @@ def deep_analysis(
         raise HTTPException(status_code=404, detail={"error": "brand_not_found", "brand": brand}) from exc
     payload["generated_at"] = _format_generated_at(row.get("updated_at"))
     data = payload.setdefault("data", {})
+    events_ms = None
+    factors_ms = None
     if isinstance(data, dict):
         events_started = perf_counter() if timing_enabled else None
         matched_brand = str(row.get("brand") or row.get("brand_key") or brand)
         cached_events = row.get("_events")
         events = cached_events if isinstance(cached_events, list) else _load_deep_events(matched_brand)
+        events_ms = (perf_counter() - events_started) * 1000 if events_started is not None else None
+        factors_started = perf_counter() if timing_enabled else None
         if formal_contract:
             data["events"] = events
             if not data.get("forecast"):
@@ -1508,7 +1512,7 @@ def deep_analysis(
                 selected_factors=selected_factors,
                 strength_by_source_by_key=strength_by_source,
             )
-        events_ms = (perf_counter() - events_started) * 1000 if events_started is not None else None
+        factors_ms = (perf_counter() - factors_started) * 1000 if factors_started is not None else None
     non_finite_paths: list[str] = []
     normalized = normalize_json_value(payload, on_non_finite=non_finite_paths.append)
     if non_finite_paths:
@@ -1518,12 +1522,13 @@ def deep_analysis(
     serialize_ms = (perf_counter() - serialize_started) * 1000 if serialize_started is not None else None
     if timing_enabled and route_started is not None:
         logger.info(
-            "market_latency_stage path=deep brand=%s view=%s compose_ms=%.3f events_factors_ms=%.3f "
+            "market_latency_stage path=deep brand=%s view=%s compose_ms=%.3f events_ms=%.3f factors_ms=%.3f "
             "serialize_ms=%.3f total_ms=%.3f payload_bytes=%d",
             brand,
             view_name,
             compose_ms or 0.0,
             events_ms or 0.0,
+            factors_ms or 0.0,
             serialize_ms or 0.0,
             (perf_counter() - route_started) * 1000,
             len(serialized_payload),
