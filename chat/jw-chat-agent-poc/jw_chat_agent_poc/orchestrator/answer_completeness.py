@@ -197,26 +197,27 @@ def _explicit_period(question: str) -> str:
 
 
 def _verified_metric_fact(fact_md: str, brand: str, period: str, sales_text: str) -> bool:
-    heading = re.search(
+    headings = re.finditer(
         rf"^###\s+{re.escape(brand)}\s+지표 fact\s*$",
         fact_md,
         flags=re.MULTILINE,
     )
-    if heading is None:
-        return False
-    section = fact_md[heading.end() :]
-    section = section.split("\n### ", 1)[0]
-    rows: dict[str, str] = {}
-    for line in section.splitlines():
-        cells = _cells(line)
-        if len(cells) >= 2:
-            rows[cells[0]] = cells[1]
-    return (
-        rows.get("브랜드/시장") == brand
-        and rows.get("지표") == "sales"
-        and rows.get("기간") == period
-        and rows.get("매출") == sales_text
-    )
+    for heading in headings:
+        section = fact_md[heading.end() :]
+        section = section.split("\n### ", 1)[0]
+        rows: dict[str, str] = {}
+        for line in section.splitlines():
+            cells = _cells(line)
+            if len(cells) >= 2:
+                rows[cells[0]] = cells[1]
+        if (
+            rows.get("브랜드/시장") == brand
+            and rows.get("지표") == "sales"
+            and rows.get("기간") == period
+            and rows.get("매출") == sales_text
+        ):
+            return True
+    return False
 
 
 def comparison_subjects(question: str) -> tuple[str, ...]:

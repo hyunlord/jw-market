@@ -81,6 +81,28 @@ def test_single_period_sales_fast_path_accepts_the_production_fact_renderer() ->
     assert answer == "2025-Q2 리바로 매출은 242.72억원입니다."
 
 
+def test_single_period_sales_fast_path_checks_later_duplicate_metric_fact() -> None:
+    fact_md = """### 리바로 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| 브랜드/시장 | 리바로 |
+| 지표 | query_spec |
+| 기간 | 2026-05 |
+
+### 리바로 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| 브랜드/시장 | 리바로 |
+| 지표 | sales |
+| 기간 | 2025-Q2 |
+| 매출 | 242.72억원 |
+"""
+
+    answer = deterministic_single_period_sales_answer(QUESTION, fact_md, [_sales_call()])
+
+    assert answer == "2025-Q2 리바로 매출은 242.72억원입니다."
+
+
 def test_single_period_sales_stage_uses_a_user_facing_label() -> None:
     assert _public_stage_name("final_deterministic_single_period_sales_path") == "답변 작성"
     assert (
