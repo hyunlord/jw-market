@@ -470,6 +470,17 @@ def test_segment_level_invariants_are_resolved_once_per_call(monkeypatch) -> Non
     assert calls == 1
 
 
+def test_channel_bucket_reuses_same_raw_channel() -> None:
+    cause._channel_bucket.cache_clear()
+
+    assert cause._channel_bucket("상급종합병원", "UBIST") == "상급종병"
+    assert cause._channel_bucket("상급종합병원", "UBIST") == "상급종병"
+
+    info = cause._channel_bucket.cache_info()
+    assert info.misses == 1
+    assert info.hits == 1
+
+
 def test_dimension_segment_index_resolves_class_level_once(monkeypatch) -> None:
     calls = 0
     original = cause._is_class_level
