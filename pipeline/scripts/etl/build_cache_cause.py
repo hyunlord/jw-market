@@ -1866,6 +1866,46 @@ def _rows_for_dimension(
     return filtered
 
 
+def _rows_for_dimension_segments(
+    rows: list[dict[str, Any]],
+    level: str,
+    periods: list[str],
+    *,
+    series_value_cache: _SeriesValueCache | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Index rows for every dimension segment in one pass.
+
+    The analysis-level trend builder asks for several segments from the same
+    row set. For the overall channel, the segment membership and optional
+    dimension-sidecar history can be materialized once without changing the
+    row-selection contract of ``_rows_for_dimension``.
+    """
+
+    field = LEVEL_FIELD_BY_LABEL.get(level)
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if _is_class_level(level) and _row_is_class_excluded(row):
+            continue
+
+        dimension_series = _dimension_series_map(row, field)
+        if dimension_series:
+            for segment_name, series in dimension_series.items():
+                indexed.setdefault(segment_name, []).append(
+                    _clone_with_metric_history(
+                        row,
+                        _history_from_period_series(
+                            series,
+                            periods,
+                            series_value_cache=series_value_cache,
+                        ),
+                    )
+                )
+            continue
+        for segment_name in _dimension_values(row, level):
+            indexed.setdefault(segment_name, []).append(row)
+    return indexed
+
+
 def _total_series_for_rows(rows: list[dict[str, Any]], periods: list[str]) -> list[float]:
     totals = [0.0 for _ in periods]
     for row in rows:
@@ -3106,6 +3146,16 @@ def _level_top5_trend(
     )
     full_market_series = _total_series_for_rows(full_market_rows, periods)
     for level in levels:
+        segment_rows_by_name = (
+            _rows_for_dimension_segments(
+                rows,
+                level,
+                periods,
+                series_value_cache=series_value_cache,
+            )
+            if channel == "전체"
+            else None
+        )
         all_level_segments = analysis_levels.get("data", {}).get(level, {}).get("by_channel", {}).get(channel) or []
         overall_segment = next(
             (segment for segment in all_level_segments if isinstance(segment, dict) and segment.get("is_overall")),
@@ -3173,14 +3223,18 @@ def _level_top5_trend(
                     }
                 )
                 continue
-            segment_rows = _rows_for_dimension(
-                rows,
-                level,
-                segment_name,
-                periods,
-                source=source,
-                channel=channel,
-                series_value_cache=series_value_cache,
+            segment_rows = (
+                segment_rows_by_name.get(segment_name, [])
+                if segment_rows_by_name is not None
+                else _rows_for_dimension(
+                    rows,
+                    level,
+                    segment_name,
+                    periods,
+                    source=source,
+                    channel=channel,
+                    series_value_cache=series_value_cache,
+                )
             )
             segment_total_series = segment.get("value_series") or _total_series_for_rows(segment_rows, periods)
             if len(segment_total_series) != len(periods):
