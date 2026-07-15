@@ -47,6 +47,26 @@ def test_file_query_without_grounded_plan_fails_closed_without_llm(monkeypatch) 
     assert "확보되어야" not in outcome.answer_md
 
 
+def test_broad_sellout_analysis_asks_for_a_grounded_dimension(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: _chso_schema(),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "셀아웃 데이터 분석해줘",
+        "conversation-1",
+        (_source(),),
+    )
+
+    assert outcome.status == "unsupported_query"
+    assert "어떤 기준으로 분석할까요?" in outcome.answer_md
+    assert "2026년 1월 총 sell-out 금액" in outcome.answer_md
+    assert "제조사별 합계" in outcome.answer_md
+    assert "파일의 열 이름을 확인" not in outcome.answer_md
+
+
 def test_legacy_llm_sql_generation_seam_is_structurally_disabled() -> None:
     with pytest.raises(RuntimeError, match="LLM file SQL generation is disabled"):
         file_sql_query._generate_select("자유 SQL을 만들어줘", (_chso_schema(),))

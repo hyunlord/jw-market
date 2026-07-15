@@ -164,7 +164,7 @@ def query_uploaded_sql(
         resolution = _resolve_deterministic_select(question, schemas)
         plan = resolution.plan
         if plan is None:
-            answer = _missing_plan_answer(resolution.missing_slots)
+            answer = _missing_plan_answer(resolution.missing_slots, question=question)
             trace.append(
                 {
                     "stage": "planner",
@@ -715,10 +715,25 @@ def _measure_label(intent: str) -> str:
     }.get(intent, "요청한 지표")
 
 
-def _missing_plan_answer(missing_slots: Sequence[str]) -> str:
+def _missing_plan_answer(
+    missing_slots: Sequence[str],
+    *,
+    question: str = "",
+) -> str:
     labels = tuple(dict.fromkeys(value for value in missing_slots if value))
     if labels == ("집계 대상",):
         return "무엇의 합계인지 명확하지 않습니다. 제조사 또는 측정 항목을 지정해 주세요."
+    normalized_question = question.casefold()
+    if labels == ("요청한 조건",) and (
+        "셀아웃" in normalized_question
+        or "sell-out" in normalized_question
+        or "sell out" in normalized_question
+    ):
+        return (
+            "셀아웃 데이터는 확인했습니다. 어떤 기준으로 분석할까요? "
+            "예를 들어 2026년 1월 총 sell-out 금액, 제조사별 합계, "
+            "제품별 상위 10개처럼 질문해 주세요."
+        )
     if len(labels) == 1 and labels[0] != "요청한 조건":
         return file_absence_answer("unsupported", subject=labels[0])
     detail = ", ".join(labels) if labels else "요청한 조건"
