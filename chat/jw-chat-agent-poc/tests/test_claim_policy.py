@@ -33,6 +33,9 @@ def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps
         [
             "리바로는 폭넓은 환자군에서 임상적 근거를 확보했고 장기적인 혈관 보호 효과를 입증했습니다.",
             "이 결과는 안전성 프로파일을 강화하고 향후 시장 선점 경쟁을 주도할 가능성을 시사합니다.",
+            "글로벌 임상시험을 통해 안전성을 확보하고 약제 특성을 검증해 왔으며 임상적 유용성을 확인했습니다.",
+            "경동맥 연구는 혈관 건강 개선 가능성과 적응증 확대를 보여주며 신뢰할 수 있는 치료 옵션임을 시사합니다.",
+            "고지혈증 치료제는 복합 처방 효율성을 극대화하는 방향으로 진화하고 있습니다.",
             "| 임상시험 번호 | 연구 제목 |",
             "| --- | --- |",
             "| NCT00257686 | Study to Compare the Efficacy and Safety of Pitavastatin and Pravastatin in Elderly Patients |",
@@ -41,7 +44,22 @@ def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps
 
     revised = apply_claim_policy("리바로 임상시험", answer, CLINICAL_REGISTRY_FACT_MD)
 
-    for forbidden in ("임상적 근거", "입증", "혈관 보호 효과", "안전성 프로파일", "시장 선점", "가능성을 시사"):
+    for forbidden in (
+        "임상적 근거",
+        "입증",
+        "혈관 보호 효과",
+        "안전성 프로파일",
+        "시장 선점",
+        "가능성을 시사",
+        "안전성을 확보",
+        "약제 특성을 검증",
+        "임상적 유용성을 확인",
+        "혈관 건강 개선 가능성",
+        "적응증 확대",
+        "신뢰할 수 있는 치료 옵션",
+        "효율성을 극대화",
+        "방향으로 진화",
+    ):
         assert forbidden not in revised
     assert "ClinicalTrials.gov 등록정보에서 글로벌 임상시험 1건" in revised
     assert "식약처 등록정보에서 국내 임상시험 1건" in revised
