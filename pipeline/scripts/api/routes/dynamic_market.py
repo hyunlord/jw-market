@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -51,6 +54,11 @@ from pipeline.scripts.api.openapi_docs import (
 
 router = APIRouter()
 _dynamic_response_cache = dynamic_response_cache
+logger = logging.getLogger(__name__)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 
 @router.post(
@@ -85,6 +93,8 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                     return _empty_strategic_response(payload, effective_view)
                 raise
             analysis_level = _strategic_analysis_level_from_top_level_atc4(payload)
+            started = perf_counter() if _stage_timing_enabled() else None
+            strategic_started = perf_counter() if started is not None else None
             envelope = success_envelope(
                 get_strategic_payload(
                     cache=_dynamic_response_cache,
@@ -98,6 +108,13 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                     period_range=_period_range(payload),
                 )
             )
+            if started is not None:
+                logger.info(
+                    "market_latency_stage path=strategic view=%s source=%s measure=%s payload_ms=%.3f total_ms=%.3f",
+                    effective_view, payload.source, payload.measure,
+                    (perf_counter() - strategic_started) * 1000,
+                    (perf_counter() - started) * 1000,
+                )
             return _with_view_echo(envelope, effective_view)
         except DynamicMarketPeriodNoDataError:
             return _empty_period_response(payload, effective_view)
@@ -127,12 +144,16 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
 
 
 def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, Any]:
+    started = perf_counter() if _stage_timing_enabled() else None
     aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
     period_range = _period_range(payload)
+    resolve_started = perf_counter() if started is not None else None
     try:
         definition = _resolve_definition(payload)
         _enforce_scope_size_limit(definition, limit=config.dynamic_max_brand_rows)
+        resolve_ms = (perf_counter() - resolve_started) * 1000 if resolve_started is not None else 0.0
+        aggregate_started = perf_counter() if started is not None else None
         metrics = aggregator.aggregate(
             brands=definition.brands,
             source=definition.source,
@@ -145,6 +166,7 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
             strategic_market_id=definition.strategic_market_id,
             selected_brand_key=getattr(definition, "focus_brand_key", None),
         )
+        aggregate_ms = (perf_counter() - aggregate_started) * 1000 if aggregate_started is not None else 0.0
         if (period_range.start is not None or period_range.end is not None) and not metrics.monthly_series:
             return _empty_period_response(payload, "general")
     except DynamicMarketScopeTooBroadError as exc:
@@ -159,8 +181,19 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
         ) from exc
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
+    compose_started = perf_counter() if started is not None else None
     result = composer.compose(definition=definition, metrics=metrics, period_range=period_range)
-    return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+    compose_ms = (perf_counter() - compose_started) * 1000 if compose_started is not None else 0.0
+    serialize_started = perf_counter() if started is not None else None
+    response = compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+    serialize_ms = (perf_counter() - serialize_started) * 1000 if serialize_started is not None else 0.0
+    if started is not None:
+        logger.info(
+            "market_latency_stage path=general view=%s source=%s measure=%s resolve_ms=%.3f aggregate_ms=%.3f compose_ms=%.3f serialize_ms=%.3f total_ms=%.3f",
+            definition.view, definition.source, definition.measure, resolve_ms, aggregate_ms,
+            compose_ms, serialize_ms, (perf_counter() - started) * 1000,
+        )
+    return response
 
 
 def _period_range(payload: DynamicMarketRequest) -> PeriodRange:
