@@ -481,6 +481,17 @@ def test_channel_bucket_reuses_same_raw_channel() -> None:
     assert info.hits == 1
 
 
+def test_channel_match_reuses_same_raw_channel() -> None:
+    cause._channel_matches.cache_clear()
+
+    assert cause._channel_matches("상급종합병원", "UBIST", "상급종병") is True
+    assert cause._channel_matches("상급종합병원", "UBIST", "상급종병") is True
+
+    info = cause._channel_matches.cache_info()
+    assert info.misses == 1
+    assert info.hits == 1
+
+
 def test_dimension_segment_index_resolves_class_level_once(monkeypatch) -> None:
     calls = 0
     original = cause._is_class_level
