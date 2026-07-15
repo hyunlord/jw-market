@@ -2463,6 +2463,31 @@ def test_natural_fact_lead_precedes_existing_sales_table_without_replacing_it() 
     assert "### 뉴스/이슈" in revised
 
 
+def test_natural_fact_lead_precedes_verified_competition_table_without_replacing_it() -> None:
+    answer = """구체적으로는 로수젯 시장점유율 9.13%, 매출 195.24억원입니다.
+
+| 순위 | 브랜드 | 점유율 | 매출 |
+| --- | --- | --- | --- |
+| 1위 | 로수젯 | 9.13% | 195.24억원 |
+| 2위 | 리피토 | 6.13% | 131.09억원 |
+| 3위 | 리바로젯 | 5.12% | 109.46억원 |
+
+관련 이슈 맥락
+
+- 뉴스: 경쟁 관련 기사
+"""
+
+    revised = ensure_natural_fact_lead("리바로 경쟁구도 어떻게 변하고 있어", answer, "")
+
+    assert revised.startswith(
+        "리바로 경쟁구도를 보면 로수젯이 9.13%(195.24억원)로 선두이며, "
+        "리피토·리바로젯이 뒤를 잇고 있습니다."
+    )
+    assert "| 1위 | 로수젯 | 9.13% | 195.24억원 |" in revised
+    assert "관련 이슈 맥락" in revised
+    assert "- 뉴스: 경쟁 관련 기사" in revised
+
+
 def test_fallback_fact_answer_uses_agent2_insight_signals() -> None:
     fact_md = """### 필수 답변 fact
 | 구분 | 반드시 반영할 내용 |

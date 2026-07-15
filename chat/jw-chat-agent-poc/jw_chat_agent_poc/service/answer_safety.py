@@ -462,21 +462,48 @@ def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str)
 
 
 def ensure_natural_fact_lead(question: str, answer: str, fact_md: str) -> str:
-    """Prepend grounded prose when a sales answer starts with a heading or table."""
+    """Prepend grounded prose when a market answer still starts as a fact dump."""
 
-    if "매출" not in question or not any(token in question for token in ("최근", "어때", "현황", "추이")):
-        return answer
     first_line = next((line.strip() for line in answer.splitlines() if line.strip()), "")
-    if first_line and not first_line.startswith(("#", "|")):
-        return answer
-    fact = _brand_metric_fact(fact_md)
-    if not fact:
-        return answer
-    lead = (
-        f"{fact['brand']}는 {fact['period']} 기준 매출 {fact['sales']}억원을 기록하고 있으며, "
-        f"시장점유율 {fact['share']}%와 순위 {fact['rank']}으로 확인됩니다."
-    )
-    return cleanup_markdown_answer("\n\n".join((lead, answer)))
+    if any(token in question for token in ("경쟁", "구도", "상위")):
+        if first_line.startswith(("조회 결과에서", f"{question.split(maxsplit=1)[0]} 경쟁구도를 보면")):
+            return answer
+        rows = _competition_table_rows(answer)
+        if rows:
+            leader = rows[0]
+            followers = "·".join(row[1] for row in rows[1:3])
+            subject = question.split(maxsplit=1)[0]
+            lead = (
+                f"{subject} 경쟁구도를 보면 {_subject_with_particle(leader[1])} {leader[2]}({leader[3]})로 선두이며"
+                + (f", {_subject_with_particle(followers)} 뒤를 잇고 있습니다." if followers else ".")
+                + " 관련 순위와 이슈는 아래 표와 뉴스에서 확인할 수 있습니다."
+            )
+            return cleanup_markdown_answer("\n\n".join((lead, answer)))
+    if "매출" in question and any(token in question for token in ("최근", "어때", "현황", "추이")):
+        if first_line and not first_line.startswith(("#", "|")):
+            return answer
+        fact = _brand_metric_fact(fact_md)
+        if fact:
+            lead = (
+                f"{fact['brand']}는 {fact['period']} 기준 매출 {fact['sales']}억원을 기록하고 있으며, "
+                f"시장점유율 {fact['share']}%와 순위 {fact['rank']}으로 확인됩니다."
+            )
+            return cleanup_markdown_answer("\n\n".join((lead, answer)))
+    return answer
+
+
+def _competition_table_rows(answer: str) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    for line in answer.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 4 or not re.fullmatch(r"\d+위?", cells[0]):
+            continue
+        if not re.fullmatch(r"\d+(?:\.\d+)?%", cells[2]):
+            continue
+        if not re.fullmatch(r"\d+(?:,\d{3})*(?:\.\d+)?억원", cells[3]):
+            continue
+        rows.append((cells[0], cells[1], cells[2], cells[3]))
+    return rows
 
 
 def _sales_delta_fallback_answer(lines: list[str], fact_md: str, source_line: str) -> str:

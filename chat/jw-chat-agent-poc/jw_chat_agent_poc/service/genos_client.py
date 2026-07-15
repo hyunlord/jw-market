@@ -843,9 +843,9 @@ class GenosClient:
         answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = dedupe_brand_metric_sentence(answer, fact_md)
         answer = replace_internal_fact_dump(question, answer, markdown_response)
-        answer = ensure_natural_fact_lead(question, answer, fact_md)
         if not file_context:
             answer = _apply_final_claim_controls(question, answer, fact_md)
+        answer = ensure_natural_fact_lead(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
