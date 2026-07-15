@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
@@ -58,12 +59,13 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
         resolution = resolver.resolve(question, allow_default=False)
     except UnsupportedBrandError:
         resolution = None
-    brand = resolution.canonical_brand if resolution is not None else question.strip()
+    brand = resolution.canonical_brand if resolution is not None else _explicit_brand_query(question)
     ingredient = (
         resolution.molecule_en[0]
         if resolution is not None and resolution.molecule_en
-        else question.strip()
+        else None
     )
+    disease_query = _disease_query(question)
 
     contract = evaluate_answer_contract(question, "", None)
     contract_key = str(contract.get("structural_contract") or contract.get("intent") or "")
@@ -78,10 +80,12 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
         preferred = _preferred_requirement_tool(requirement.alternatives)
         if preferred is not None and preferred not in requested:
             requested.append(preferred)
+    if combined_clinical_review and resolution is None and "web_search" not in requested:
+        requested.append("web_search")
 
     choices: list[ToolChoice] = []
     for tool_name in requested:
-        arguments = _deterministic_arguments(tool_name, question, brand, ingredient)
+        arguments = _deterministic_arguments(tool_name, question, brand, ingredient, disease_query)
         if arguments is None:
             continue
         choices.append(
@@ -105,6 +109,11 @@ def _preferred_requirement_tool(alternatives: frozenset[str]) -> str | None:
         "mfds_patent",
         "mfds_fda_orangebook",
         "web_search",
+        "hira_disease_name_code",
+        "hira_disease_hospitalization_outpatient_stats",
+        "hira_disease_gender_age_stats",
+        "hira_disease_institution_class_stats",
+        "hira_disease_area_stats",
     )
     return next((name for name in preference if name in alternatives), None)
 
@@ -112,23 +121,43 @@ def _preferred_requirement_tool(alternatives: frozenset[str]) -> str | None:
 def _deterministic_arguments(
     tool_name: str,
     question: str,
-    brand: str,
-    ingredient: str,
+    brand: str | None,
+    ingredient: str | None,
+    disease_query: str | None,
 ) -> dict[str, Any] | None:
     if tool_name in {"local_molecule_lookup", "get_drug_main_ingredient", "mfds_permission_search"}:
-        return {"brand": brand}
+        return {"brand": brand} if brand is not None else None
     if tool_name in {"clinicaltrials_v2_search", "mfds_clinical_trial_kr"}:
-        return {"query": ingredient if ingredient != question.strip() else question.strip()}
+        query = ingredient or disease_query
+        return {"query": query} if query is not None else None
     if tool_name == "openfda_label_search":
+        if ingredient is None:
+            return None
         evidence_type = "adverse_event" if any(token in question.casefold() for token in ("부작용", "이상반응", "adverse")) else "label"
         return {"ingredient": ingredient, "evidence_type": evidence_type}
     if tool_name in {"mfds_patent", "mfds_fda_orangebook"}:
-        return {"ingredient": ingredient}
+        return {"ingredient": ingredient} if ingredient is not None else None
     if tool_name == "web_search":
         return {"query": question, "brand": brand, "topic": "general"}
     if tool_name.startswith("hira_disease_"):
-        return {"sick_cd": hira_disease_code_for_text(question) or question, "year": "2024"}
+        sick_cd = hira_disease_code_for_text(brand or question)
+        return {"sick_cd": sick_cd, "year": "2024"} if sick_cd is not None else None
     return None
+
+
+def _disease_query(question: str) -> str | None:
+    """Extract a disease phrase without forwarding the full user sentence as a drug name."""
+
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", question)
+    suffixes = ("증", "병", "암", "염", "장애")
+    return next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)
+
+
+def _explicit_brand_query(question: str) -> str | None:
+    """Keep short brand-only requests usable without treating full sentences as brands."""
+
+    match = re.fullmatch(r"\s*([가-힣A-Za-z0-9+_-]{2,40})\s+(?:성분|주성분)\s*[?.!。？！]*\s*", question)
+    return match.group(1) if match is not None else None
 
 
 def _external_evidence_complete(

@@ -190,7 +190,7 @@ def test_agent_executor_runs_all_forced_tools_before_accepting_complete_evidence
     assert provider.calls == 0
 
 
-def test_exact_clinical_permission_competitor_question_forces_every_contract_tool() -> None:
+def test_exact_clinical_permission_competitor_question_forces_valid_contract_tools() -> None:
     question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
 
     choices = _deterministic_tool_choices(question, BrandResolver())
@@ -198,9 +198,7 @@ def test_exact_clinical_permission_competitor_question_forces_every_contract_too
     assert [choice.name for choice in choices] == [
         "clinicaltrials_v2_search",
         "mfds_clinical_trial_kr",
-        "mfds_permission_search",
-        "openfda_label_search",
-        "local_molecule_lookup",
+        "web_search",
     ]
     assert all(choice.call_id and choice.call_id.startswith("contract-") for choice in choices)
     assert [choice.name for choice in _deterministic_tool_choices("리바로 임상실험", BrandResolver())] == [
@@ -208,6 +206,31 @@ def test_exact_clinical_permission_competitor_question_forces_every_contract_too
     ]
     assert [choice.name for choice in _deterministic_tool_choices("마운자로 성분", BrandResolver())] == [
         "local_molecule_lookup"
+    ]
+
+
+def test_disease_identity_question_uses_hira_mapping_instead_of_molecule_lookup() -> None:
+    choices = _deterministic_tool_choices("리바로 질환", BrandResolver())
+
+    assert choices == (
+        ToolChoice(
+            "hira_disease_name_code",
+            {"sick_cd": "E78", "year": "2024"},
+            "contract requires hira_disease_name_code",
+            call_id="contract-1",
+        ),
+    )
+
+
+def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug() -> None:
+    question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
+
+    choices = _deterministic_tool_choices(question, BrandResolver())
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        ("clinicaltrials_v2_search", {"query": "고지혈증"}),
+        ("mfds_clinical_trial_kr", {"query": "고지혈증"}),
+        ("web_search", {"query": question, "brand": None, "topic": "general"}),
     ]
 
 
@@ -230,9 +253,7 @@ def test_force_contract_flag_prevents_empty_tool_calls_for_exact_live_question(m
     assert [call["tool"] for call in payload["tool_calls"]] == [
         "clinicaltrials_v2_search",
         "mfds_clinical_trial_kr",
-        "mfds_permission_search",
-        "openfda_label_search",
-        "local_molecule_lookup",
+        "web_search",
     ]
     assert payload["tool_calls"]
 
@@ -875,12 +896,35 @@ def test_genos_provider_parses_strict_tool_call(monkeypatch) -> None:
     assert posted["json"]["tool_choice"] == "auto"
 
 
-def test_tool_use_agent_answer_bypasses_genos_markdown_generation(monkeypatch) -> None:
-    # Given: a completed tool-use result and a configured final-answer token.
-    def unexpected_markdown(*_args, **_kwargs) -> str:
-        raise AssertionError("completed tool evidence must bypass final LLM generation")
+def test_tool_use_agent_answer_uses_guarded_markdown_generation_when_configured(monkeypatch) -> None:
+    # Given: completed external evidence and a configured final-answer token.
+    calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(GenosClient, "_markdown_answer", unexpected_markdown)
+    def natural_markdown(_self, question: str, markdown_response: dict, *_args, **_kwargs) -> str:
+        calls.append((question, str(markdown_response["fact_md"])))
+        return "마운자로의 주성분은 TIRZEPATIDE입니다.\n\n## 1. 근거 데이터\n\n- 로컬 시장 DB에서 확인했습니다."
+
+    monkeypatch.setattr(GenosClient, "_markdown_answer", natural_markdown)
+    agent_result = {
+        "answer": "- 마운자로: 성분 = TIRZEPATIDE [로컬 시장 DB 성분 정보]",
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "tool_calls": [],
+        "markdown_response": {
+            "fact_md": "- 마운자로: 성분 = TIRZEPATIDE [로컬 시장 DB 성분 정보]",
+            "data_md": "",
+        },
+    }
+
+    # When: the service streams the verified answer.
+    answer = "".join(GenosClient(token="dummy-token").stream_answer("마운자로 성분", agent_result))
+
+    # Then: verified facts enter the normal natural-language synthesis path.
+    assert answer.startswith("마운자로의 주성분은 TIRZEPATIDE입니다.")
+    assert "## 1. 근거 데이터" in answer
+    assert calls == [("마운자로 성분", agent_result["markdown_response"]["fact_md"])]
+
+
+def test_tool_use_agent_answer_without_final_token_remains_deterministic() -> None:
     agent_result = {
         "answer": "- 리바로: 성분 = pitavastatin [로컬 시장 DB 성분 정보]",
         "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
@@ -891,10 +935,8 @@ def test_tool_use_agent_answer_bypasses_genos_markdown_generation(monkeypatch) -
         },
     }
 
-    # When: the service streams the completed answer.
-    answer = "".join(GenosClient(token="dummy-token").stream_answer("리바로 성분", agent_result))
+    answer = "".join(GenosClient(token=None).stream_answer("리바로 성분", agent_result))
 
-    # Then: the deterministic answer is relayed unchanged.
     assert answer == agent_result["answer"]
 
 

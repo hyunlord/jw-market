@@ -672,6 +672,25 @@ class GenosClient:
         timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
         file_context = _uploaded_file_context(agent_result)
         if _is_tool_use_agent_result(agent_result):
+            diagnostics = agent_result.get("router_diagnostics")
+            fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
+            if self.token and fallback_code is None and isinstance(markdown_response, dict):
+                fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+                if fact_md.strip():
+                    tool_calls = agent_result.get("tool_calls")
+                    verified_calls = tool_calls if isinstance(tool_calls, list) else []
+                    yield from chunk_text(
+                        cleanup_markdown_answer(
+                            self._markdown_answer(
+                                question,
+                                markdown_response,
+                                timing,
+                                verified_calls,
+                                file_context,
+                            )
+                        )
+                    )
+                    return
             yield from chunk_text(_verified_tool_use_agent_answer(agent_result))
             return
         if self.token and isinstance(markdown_response, dict):

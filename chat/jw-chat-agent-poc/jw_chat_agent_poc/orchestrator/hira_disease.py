@@ -114,7 +114,9 @@ def hira_disease_anchor_brand(question: str) -> str | None:
 
 
 def is_hira_disease_question(question: str) -> bool:
-    return any(
+    normalized = question.strip().rstrip(".?!。？！").strip()
+    disease_identity = normalized.endswith(("질환", "질병"))
+    return disease_identity or any(
         token in question
         for token in (
             "환자수",

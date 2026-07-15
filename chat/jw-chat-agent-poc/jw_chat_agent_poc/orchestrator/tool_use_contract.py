@@ -115,6 +115,9 @@ def tool_call_status(call: Mapping[str, Any]) -> str:
 
 def _hira_requirements(lowered: str) -> tuple[ToolUseRequirement, ...]:
     statistics = "hira_disease_hospitalization_outpatient_stats"
+    normalized = lowered.strip().rstrip(".?!。？！").strip()
+    if normalized.endswith(("질환", "질병")):
+        return (_one("HIRA 질병명", "hira_disease_name_code"),)
     if "추이" in lowered:
         return (
             ToolUseRequirement(
