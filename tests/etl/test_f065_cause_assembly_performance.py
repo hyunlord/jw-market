@@ -521,6 +521,26 @@ def test_available_specialty_fields_scans_rows_once_as_a_presence_index() -> Non
     assert cause._available_specialty_dimension_fields(rows) == {"molecule"}
 
 
+def test_segment_rows_preserves_period_alignment_for_array_accumulation() -> None:
+    row = {
+        "brand_name": "Brand A",
+        "brand_key": "brand-a",
+        "by_dimension": {"class": "Class A"},
+        "metric_history": {
+            "2025-01": {"raw_value": 10.0},
+            "2025-02": {"raw_value": 25.0},
+        },
+    }
+
+    segments = cause._segment_rows_for_level(
+        rows=[row], level="Class", periods=["2025-01", "2025-02"],
+        source="UBIST", channel="전체", target_name=None, top_n=None,
+    )
+
+    assert segments[0]["value_series"] == [10.0, 25.0]
+    assert segments[0]["series_pct"] == [100.0, 100.0]
+
+
 def test_channel_bucket_reuses_same_raw_channel() -> None:
     cause._channel_bucket.cache_clear()
 

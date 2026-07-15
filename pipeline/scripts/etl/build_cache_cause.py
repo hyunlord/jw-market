@@ -1618,8 +1618,8 @@ def _segment_rows_for_level(
     series_value_cache: _SeriesValueCache | None = None,
     series_observed_cache: _SeriesObservedCache | None = None,
 ) -> list[dict[str, Any]]:
-    grouped: dict[str, dict[str, list[float]]] = {}
-    totals: dict[str, list[float]] = {period: [0.0] for period in periods}
+    grouped: dict[str, list[float]] = {}
+    totals = [0.0 for _ in periods]
     observed_periods = {period: False for period in periods}
     is_class_level = _is_class_level(level)
     field = LEVEL_FIELD_BY_LABEL.get(level)
@@ -1627,39 +1627,39 @@ def _segment_rows_for_level(
     is_ubist_channel = channel != "전체" and source == "UBIST"
 
     def add_observed_series(
-        target: dict[str, list[float]],
+        target: list[float],
         series: dict[str, Any],
         *,
-        also_add_to: dict[str, list[float]] | None = None,
+        also_add_to: list[float] | None = None,
     ) -> None:
         values, observed = _series_values_with_observed(
             series,
             periods,
             cache=series_observed_cache,
         )
-        for period, value, is_observed in zip(periods, values, observed):
-            target[period][0] += value
+        for index, (period, value, is_observed) in enumerate(zip(periods, values, observed)):
+            target[index] += value
             if also_add_to is not None:
-                also_add_to[period][0] += value
+                also_add_to[index] += value
             if is_observed:
                 observed_periods[period] = True
 
     def add_observed_series_to_targets(
-        targets: list[dict[str, list[float]]],
+        targets: list[list[float]],
         series: dict[str, Any],
         *,
-        also_add_to: dict[str, list[float]] | None = None,
+        also_add_to: list[float] | None = None,
     ) -> None:
         values, observed = _series_values_with_observed(
             series,
             periods,
             cache=series_observed_cache,
         )
-        for period, value, is_observed in zip(periods, values, observed):
+        for index, (period, value, is_observed) in enumerate(zip(periods, values, observed)):
             if also_add_to is not None:
-                also_add_to[period][0] += value
+                also_add_to[index] += value
             for target in targets:
-                target[period][0] += value
+                target[index] += value
             if is_observed:
                 observed_periods[period] = True
 
@@ -1689,7 +1689,7 @@ def _segment_rows_for_level(
         active_dimension_series = dimension_series if is_all_channel else (dimension_specialty_series or dimension_channel_series)
         if active_dimension_series:
             for name, series in active_dimension_series.items():
-                grouped.setdefault(name, {period: [0.0] for period in periods})
+                grouped.setdefault(name, [0.0 for _ in periods])
                 add_observed_series(grouped[name], series, also_add_to=totals)
             continue
         if dimension_field_present and dimension_series:
@@ -1708,7 +1708,7 @@ def _segment_rows_for_level(
             continue
         targets = []
         for name in names:
-            targets.append(grouped.setdefault(name, {period: [0.0] for period in periods}))
+            targets.append(grouped.setdefault(name, [0.0 for _ in periods]))
         if is_all_channel:
             history = _metric_history(row)
             if history:
@@ -1735,10 +1735,15 @@ def _segment_rows_for_level(
         (period for period in reversed(periods) if observed_periods[period]),
         None,
     )
+    latest_observed_index = (
+        periods.index(latest_observed_period)
+        if latest_observed_period is not None
+        else None
+    )
 
     ranked = sorted(
         grouped.items(),
-        key=lambda item: item[1][latest_observed_period][0] if latest_observed_period else 0.0,
+        key=lambda item: item[1][latest_observed_index] if latest_observed_index is not None else 0.0,
         reverse=True,
     )
     if target_name:
@@ -1746,7 +1751,7 @@ def _segment_rows_for_level(
             ranked,
             key=lambda item: (
                 item[0] != target_name,
-                -(item[1][latest_observed_period][0] if latest_observed_period else 0.0),
+                -(item[1][latest_observed_index] if latest_observed_index is not None else 0.0),
             ),
         )
     selected = ranked if top_n is None else ranked[:top_n]
@@ -1755,15 +1760,15 @@ def _segment_rows_for_level(
     missing_periods = [period for period in periods if not observed_periods[period]]
     for rank, (name, series_map) in enumerate(selected, start=1):
         value_series = [
-            round(series_map[period][0], 4) if observed_periods[period] else None
-            for period in periods
+            round(series_map[index], 4) if observed_periods[period] else None
+            for index, period in enumerate(periods)
         ]
         series_pct = []
-        for period, value in zip(periods, value_series):
+        for index, (period, value) in enumerate(zip(periods, value_series)):
             if value is None:
                 series_pct.append(None)
                 continue
-            total = totals[period][0]
+            total = totals[index]
             series_pct.append(round(value / total * 100, 4) if total else 0.0)
         segment = {
                 "name": name,
@@ -1773,7 +1778,7 @@ def _segment_rows_for_level(
                     if latest_observed_period is None
                     else _latest_valid_share_pct(
                         value_series,
-                        [totals[period][0] if observed_periods[period] else None for period in periods],
+                        [totals[index] if observed_periods[period] else None for index, period in enumerate(periods)],
                     )
                     if use_latest_valid_share
                     else series_pct[-1] if series_pct else None
