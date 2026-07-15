@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from pipeline.scripts.etl.phase29_events import (
     _filter_cut_b_rows,
     _filter_news_exposure_rows,
@@ -123,3 +125,52 @@ def test_query_events_applies_policy_predicate_in_source_sql() -> None:
     )
     assert "workflow_196_rev5674" in select_params
     assert "기타" in select_params
+
+
+def test_query_events_does_not_run_global_count_before_filtered_select() -> None:
+    conn = _FakeConn()
+
+    _query_events(  # type: ignore[arg-type]
+        conn,
+        "리바로",
+        min_score=50,
+        lookback_months=6,
+        limit=10,
+    )
+
+    assert all("SELECT COUNT(*) AS cnt FROM event_brand_scores" not in sql for sql in conn.statements)
+
+
+def test_cut_a_fetches_one_broad_candidate_set_for_retry_selection(monkeypatch) -> None:
+    from pipeline.scripts.etl import phase29_events
+
+    rows = [
+        {
+            "event_id": f"e{index}",
+            "news_id": f"n{index}",
+            "brand_name": "리바로",
+            "brand_canonical": "리바로",
+            "score": 80,
+            "tag": "자본/경영",
+            "source_processor": None,
+            "published_date": date.today() - timedelta(days=index),
+            "title": f"distinct event {index}",
+        }
+        for index in range(5)
+    ]
+    calls: list[tuple[int, int | None]] = []
+
+    def fake_query(_conn, _brand, *, min_score, lookback_months, limit, derivation=None):
+        calls.append((min_score, lookback_months))
+        assert limit is None
+        assert derivation is None
+        return rows
+
+    monkeypatch.setattr(phase29_events, "_query_events", fake_query)
+
+    events, lookback, threshold = phase29_events.get_brand_events_cut_a(object(), "리바로")
+
+    assert len(events) == 5
+    assert lookback == 6
+    assert threshold == 50
+    assert calls == [(0, None)]

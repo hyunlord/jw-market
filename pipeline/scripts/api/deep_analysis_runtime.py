@@ -11,6 +11,7 @@ import pymysql
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.deep_analysis_serving import ForecastBlock, load_forecast_block_by_key
+from pipeline.scripts.api.deep_analysis_request_cache import current_request_cache
 from pipeline.scripts.etl import build_cache_deep_analysis as builder
 from pipeline.scripts.etl.phase29_events import build_events_for_cache
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
@@ -197,12 +198,20 @@ def _section_by_combo(section: object) -> dict[str, Any]:
 
 
 def _event_payload(brand: str) -> dict[str, Any]:
+    request_cache = current_request_cache()
+    if request_cache is not None:
+        found, cached = request_cache.value("deep_events", (brand,))
+        if found:
+            return cached
     try:
         with db.borrow_read_connection() as conn:
-            return build_events_for_cache(conn, brand)
+            payload = build_events_for_cache(conn, brand)
     except pymysql.MySQLError:
         logger.warning("deep_analysis_events_unavailable brand=%s", brand, exc_info=True)
-        return {"cut_a": [], "cut_b": []}
+        payload = {"cut_a": [], "cut_b": []}
+    if request_cache is not None:
+        request_cache.store_value("deep_events", (brand,), payload)
+    return payload
 
 
 def load_events(brand: str) -> list[dict[str, Any]]:

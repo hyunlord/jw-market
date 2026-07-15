@@ -9,6 +9,7 @@ deep-analysis cache and reads scores without recalculating or modifying them.
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import re
 from datetime import date, datetime
@@ -260,11 +261,6 @@ def _query_events(
     limit: int | None,
     derivation: str | None = None,
 ) -> list[dict[str, Any]]:
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) AS cnt FROM event_brand_scores")
-        if int(cur.fetchone()["cnt"] or 0) == 0:
-            return []
-
     where = [
         "s.brand_canonical = %s",
         "s.score >= %s",
@@ -296,6 +292,7 @@ def _query_events(
             s.reason,
             s.mirrored_from_jw_brands,
             s.summary AS event_summary,
+            CURRENT_DATE AS _query_current_date,
             n.title,
             n.summary,
             n.body,
@@ -330,11 +327,22 @@ def get_brand_events_cut_a(
     formatted: list[dict[str, Any]] = []
     final_lookback: int | None = None
     final_threshold: int | None = None
+    candidate_rows = _query_events(
+        conn,
+        brand,
+        min_score=0,
+        lookback_months=None,
+        limit=None,
+    )
 
     for lookback_months in lookback_candidates:
         threshold = 50
         while threshold >= 0:
-            rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=None)
+            rows = _filter_cut_a_candidates(
+                candidate_rows,
+                min_score=threshold,
+                lookback_months=lookback_months,
+            )
             exposed_rows = _filter_news_exposure_rows(rows)[:target_max]
             formatted = [
                 format_event(row, cut_threshold=max(threshold, _news_cutoff(row)))
@@ -350,6 +358,50 @@ def get_brand_events_cut_a(
             break
 
     return formatted, final_lookback, final_threshold
+
+
+def _filter_cut_a_candidates(
+    rows: list[dict[str, Any]],
+    *,
+    min_score: int,
+    lookback_months: int | None,
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if int(row.get("score") or 0) >= min_score
+        and _within_lookback(
+            row.get("published_date"),
+            lookback_months,
+            reference_date=row.get("_query_current_date"),
+        )
+    ]
+
+
+def _within_lookback(value: Any, lookback_months: int | None, *, reference_date: Any = None) -> bool:
+    if lookback_months is None:
+        return True
+    if isinstance(value, datetime):
+        published = value.date()
+    elif isinstance(value, date):
+        published = value
+    else:
+        try:
+            published = datetime.fromisoformat(str(value)[:10]).date()
+        except (TypeError, ValueError):
+            return False
+    if isinstance(reference_date, datetime):
+        today = reference_date.date()
+    elif isinstance(reference_date, date):
+        today = reference_date
+    else:
+        today = date.today()
+    month_index = today.year * 12 + today.month - 1 - lookback_months
+    cutoff_year = month_index // 12
+    cutoff_month = month_index % 12 + 1
+    cutoff_day = min(today.day, calendar.monthrange(cutoff_year, cutoff_month)[1])
+    cutoff = date(cutoff_year, cutoff_month, cutoff_day)
+    return published >= cutoff
 
 
 def get_brand_events_cut_b(

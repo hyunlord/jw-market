@@ -17,6 +17,7 @@ if __package__ in {None, ""}:
 
 from pipeline.scripts.api.config import config  # noqa: E402
 from pipeline.scripts.api.db import close_pool, init_pool  # noqa: E402
+from pipeline.scripts.api.deep_analysis_request_cache import request_cache_scope  # noqa: E402
 from pipeline.scripts.api.openapi_docs import install_openapi_overrides  # noqa: E402
 from pipeline.scripts.api.routes import brand_activity, brands, cause, deep_analysis, dynamic_market, health, market_filter, market_scope, market_status  # noqa: E402
 
@@ -58,6 +59,23 @@ app = FastAPI(
     root_path=config.external_path_prefix,
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def deep_analysis_request_cache_middleware(request, call_next):
+    if "/api/deep-analysis/" not in request.url.path:
+        return await call_next(request)
+    with request_cache_scope() as cache:
+        response = await call_next(request)
+    stats = cache.stats()
+    logger.info(
+        "deep_analysis_request_cache query_hits=%d query_misses=%d value_hits=%d value_misses=%d",
+        stats.query_hits,
+        stats.query_misses,
+        stats.value_hits,
+        stats.value_misses,
+    )
+    return response
 
 app.add_middleware(
     CORSMiddleware,

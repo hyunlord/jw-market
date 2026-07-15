@@ -8,6 +8,7 @@ import pymysql
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api import deep_analysis_runtime
+from pipeline.scripts.api.deep_analysis_request_cache import request_cache_scope
 
 
 class _FakeCursor:
@@ -237,6 +238,27 @@ def test_deep_analysis_events_use_the_read_pool_without_changing_payload(monkeyp
         assert db.pool_stats().connections_created == 1
     finally:
         db.close_pool()
+
+
+def test_deep_analysis_events_are_request_local_memoized(monkeypatch) -> None:
+    expected = {"cut_a": [{"title": "event"}], "cut_b": []}
+    calls = 0
+
+    def fake_build(_connection, _brand):
+        nonlocal calls
+        calls += 1
+        return expected
+
+    monkeypatch.setattr(deep_analysis_runtime, "build_events_for_cache", fake_build)
+    monkeypatch.setattr(db, "borrow_read_connection", lambda: _FakeConnection([]))
+
+    with request_cache_scope() as cache:
+        first = deep_analysis_runtime._event_payload("가드렛")
+        second = deep_analysis_runtime._event_payload("가드렛")
+
+    assert first == second == expected
+    assert calls == 1
+    assert cache.stats().value_hits == 1
 
 
 def test_uninitialized_pool_preserves_standalone_connection_lifecycle(monkeypatch) -> None:

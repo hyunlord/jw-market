@@ -11,6 +11,7 @@ from typing import Any
 import pymysql
 
 from pipeline.scripts.api.config import get_settings
+from pipeline.scripts.api.deep_analysis_request_cache import current_request_cache
 
 
 @dataclass(frozen=True)
@@ -209,10 +210,19 @@ def borrow_read_connection() -> Iterator[pymysql.connections.Connection]:
 
 
 def fetch_all(sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+    request_cache = current_request_cache()
+    if request_cache is not None:
+        found, rows = request_cache.query(sql, params)
+        if found:
+            assert rows is not None
+            return rows
     with borrow_read_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params or ())
-            return list(cur.fetchall())
+            rows = list(cur.fetchall())
+    if request_cache is not None:
+        request_cache.store_query(sql, params, rows)
+    return rows
 
 
 def iter_rows(sql: str, params: Sequence[Any] | None = None, *, batch_size: int = 500) -> Iterator[dict[str, Any]]:
