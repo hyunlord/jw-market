@@ -107,6 +107,44 @@ def _prompt_fact_markdown(fact_md: str) -> str:
     return "\n\n".join(unique_blocks)
 
 
+def _is_clinical_only_prompt(question: str, fact_md: str, file_context: str) -> bool:
+    """Use the compact profile only when the request and evidence are purely clinical."""
+
+    if file_context.strip() or not re.search(r"임상|clinical", question, re.IGNORECASE):
+        return False
+    if re.search(r"매출|점유|시장|경쟁|뉴스|허가|특허|부작용|환자", question):
+        return False
+    if "### 임상시험 fact" not in fact_md:
+        return False
+    return not re.search(r"^### .*(?:매출|시장|점유|뉴스|허가|특허|부작용|환자|웹 검색)", fact_md, re.MULTILINE)
+
+
+def _clinical_only_messages(question: str, fact_md: str) -> list[dict[str, str]]:
+    """Build a concise clinical prompt without unrelated market-analysis rules."""
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "너는 JW 시장분석 채팅 에이전트다. 제공된 임상시험 등록정보만 근거로 사람에게 설명하듯 자연스러운 한국어 Markdown 답변을 쓴다. "
+                "핵심을 한두 문장으로 먼저 설명하고, 이어서 확인된 임상시험의 NCT 식별자·제목·상태·단계를 근거로 정리한다. "
+                "등록정보는 임상 성공이나 치료 효과를 입증하지 않으므로 그 한계를 짧게 밝힌다. "
+                "확정 fact의 표는 자연어 본문 뒤에 보조 근거로 유지한다. 새 수치·사실·원인·효과를 만들지 않는다. "
+                "내부 도구명과 처리용어를 쓰지 않고 출처 섹션은 작성하지 않는다. 출처는 시스템이 별도로 붙인다."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"질문: {question}\n\n"
+                "확정 임상시험 fact:\n"
+                f"{_prompt_fact_markdown(fact_md) or '- 없음'}\n\n"
+                "작성 형식: 자연어 설명을 먼저 쓰고, 확인된 임상시험 표와 데이터 한계를 이어서 제시한다."
+            ),
+        },
+    ]
+
+
 def _repair_answer_with_verified_facts(answer: str, strict_numbers: tuple[str, ...], mandatory_lines: tuple[str, ...]) -> str:
     """Remove unsafe numeric lines while preserving the LLM's analysis whenever possible."""
 
@@ -1038,6 +1076,8 @@ class GenosClient:
         file_context: str = "",
     ) -> list[dict[str, str]]:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+        if _is_clinical_only_prompt(question, fact_md, file_context):
+            return _clinical_only_messages(question, fact_md)
         prompt_fact_md = _prompt_fact_markdown(fact_md)
         mandatory_md = mandatory_fact_block(fact_md)
         uploaded_md = file_context.strip() or "- 없음"

@@ -143,6 +143,33 @@ def test_final_answer_prompt_sends_each_verified_fact_section_once() -> None:
     assert user_prompt.count("### 상위 브랜드 월별 MS fact") == 1
 
 
+def test_clinical_only_prompt_omits_unrelated_market_instructions() -> None:
+    """Given only clinical facts, When prompting, Then market-only rules are omitted."""
+
+    messages = GenosClient._markdown_messages(
+        "리바로 임상시험",
+        {
+            "fact_md": (
+                "### 임상시험 fact\n"
+                "| 출처 | 시험/식별자 | 제목/제품 | 상태 | 단계 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| ClinicalTrials.gov | NCT07626840 | 리바로젯 비교 연구 | RECRUITING | Phase 4 |"
+            )
+        },
+    )
+    system_prompt = messages[0]["content"]
+    user_prompt = messages[1]["content"]
+
+    assert "임상시험 등록정보" in system_prompt
+    assert "NCT 식별자" in system_prompt
+    assert "사람에게 설명하듯" in system_prompt
+    assert "새 수치·사실·원인" in system_prompt
+    assert "share-of-growth" not in system_prompt
+    assert "상위 브랜드 월별 MS" not in system_prompt
+    assert "업로드 파일" not in system_prompt
+    assert "NCT07626840" in user_prompt
+
+
 def test_mandatory_retry_prompt_preserves_insight_and_fact_boundaries() -> None:
     """Given missing required facts, When retrying, Then the retry prompt still asks for causal insight."""
 
