@@ -114,6 +114,27 @@ def test_stream_answer_bypasses_final_llm_and_keeps_provenance(monkeypatch) -> N
     ]
 
 
+def test_tool_use_agent_single_period_sales_still_bypasses_final_llm(monkeypatch) -> None:
+    def unexpected_llm(*_args, **_kwargs) -> str:
+        raise AssertionError("tool-use routing must not hide the verified sales fast path")
+
+    monkeypatch.setattr(GenosClient, "_markdown_answer", unexpected_llm)
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            QUESTION,
+            {
+                "markdown_response": _markdown_response(),
+                "tool_calls": [_sales_call()],
+                "router_diagnostics": {"mode": "tool_use_agent"},
+            },
+        )
+    )
+
+    assert answer.startswith("2025-Q2 리바로 매출은 242.72억원입니다.")
+    assert "| UBIST | 2025-Q2 |" in answer
+
+
 def test_mismatched_fact_and_tool_use_existing_llm_path(monkeypatch) -> None:
     calls = 0
 

@@ -753,62 +753,12 @@ class GenosClient:
         markdown_response = agent_result.get("markdown_response")
         timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
         file_context = _uploaded_file_context(agent_result)
-        if _is_tool_use_agent_result(agent_result):
-            verified_answer = _verified_tool_use_agent_answer(agent_result)
-            if verified_answer == FAIL_CLOSED_TEXT:
-                yield from chunk_text(verified_answer)
-                return
-            diagnostics = agent_result.get("router_diagnostics")
-            fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
-            if self.token and fallback_code is None and isinstance(markdown_response, dict):
-                fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
-                if fact_md.strip():
-                    tool_calls = agent_result.get("tool_calls")
-                    verified_calls = tool_calls if isinstance(tool_calls, list) else []
-                    if _has_combined_clinical_registry_evidence(verified_calls, markdown_response):
-                        yield from chunk_text(
-                            cleanup_markdown_answer(
-                                finalized_fallback_fact_answer(question, markdown_response)
-                            )
-                        )
-                        return
-                    yield from chunk_text(
-                        cleanup_markdown_answer(
-                            self._markdown_answer(
-                                question,
-                                markdown_response,
-                                timing,
-                                verified_calls,
-                                file_context,
-                            )
-                        )
-                    )
-                    return
-            yield from chunk_text(verified_answer)
-            return
-        if self.token and isinstance(markdown_response, dict):
-            tool_calls = agent_result.get("tool_calls")
-            verified_calls = tool_calls if isinstance(tool_calls, list) else []
-            if _requires_deterministic_external_relay(verified_calls):
-                answer = _deterministic_external_relay_answer(markdown_response)
-                answer = replace_internal_fact_dump(question, answer, markdown_response)
-                yield from chunk_text(cleanup_markdown_answer(answer))
-                return
+        diagnostics = agent_result.get("router_diagnostics")
+        fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
+        tool_calls = agent_result.get("tool_calls")
+        verified_calls = tool_calls if isinstance(tool_calls, list) else []
+        if self.token and fallback_code is None and isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
-            concentration_answer = _deterministic_concentration_answer(question, verified_calls)
-            if concentration_answer:
-                with stage(
-                    timing,
-                    "final_deterministic_concentration_path",
-                    "verified HHI and CR5 answer rendering",
-                ):
-                    answer = ensure_file_absence_statement(
-                        question,
-                        concentration_answer,
-                        file_context,
-                    )
-                yield from chunk_text(cleanup_markdown_answer(answer))
-                return
             single_period_sales_answer = deterministic_single_period_sales_answer(
                 question,
                 fact_md,
@@ -833,6 +783,56 @@ class GenosClient:
                     answer = ensure_file_absence_statement(question, answer, file_context)
                     if not file_context:
                         answer = enforce_market_answer_contract(question, answer, verified_calls)
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+        if _is_tool_use_agent_result(agent_result):
+            verified_answer = _verified_tool_use_agent_answer(agent_result)
+            if verified_answer == FAIL_CLOSED_TEXT:
+                yield from chunk_text(verified_answer)
+                return
+            if self.token and fallback_code is None and isinstance(markdown_response, dict):
+                fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+                if fact_md.strip():
+                    if _has_combined_clinical_registry_evidence(verified_calls, markdown_response):
+                        yield from chunk_text(
+                            cleanup_markdown_answer(
+                                finalized_fallback_fact_answer(question, markdown_response)
+                            )
+                        )
+                        return
+                    yield from chunk_text(
+                        cleanup_markdown_answer(
+                            self._markdown_answer(
+                                question,
+                                markdown_response,
+                                timing,
+                                verified_calls,
+                                file_context,
+                            )
+                        )
+                    )
+                    return
+            yield from chunk_text(verified_answer)
+            return
+        if self.token and isinstance(markdown_response, dict):
+            if _requires_deterministic_external_relay(verified_calls):
+                answer = _deterministic_external_relay_answer(markdown_response)
+                answer = replace_internal_fact_dump(question, answer, markdown_response)
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            concentration_answer = _deterministic_concentration_answer(question, verified_calls)
+            if concentration_answer:
+                with stage(
+                    timing,
+                    "final_deterministic_concentration_path",
+                    "verified HHI and CR5 answer rendering",
+                ):
+                    answer = ensure_file_absence_statement(
+                        question,
+                        concentration_answer,
+                        file_context,
+                    )
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             fast_answer = deterministic_top_n_share_answer(question, fact_md, verified_calls)
