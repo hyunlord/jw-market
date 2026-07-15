@@ -15,6 +15,7 @@ from pipeline.etl.io.catalog.target.text import (
     normalize_text,
     ubist_customer_label,
 )
+from pipeline.etl.io.ubist_specialties import aggregate_specialty_labels
 
 def selected_master_rows(
     cd_id: str,
@@ -49,6 +50,10 @@ def load_ubist_sales(path: Path) -> pd.DataFrame:
             "val": "rx_amt",
         },
     )
+    aggregate_mask = sales["specialty"].astype(str).str.strip().isin(
+        aggregate_specialty_labels()
+    )
+    sales = sales.loc[~aggregate_mask].copy()
     sales["_brand_key"] = sales["brand"].map(normalize_text)
     sales["_product_key"] = sales["product_name"].map(normalize_text)
     sales["_manufacturer_key"] = sales["manufacturer"].map(normalize_manufacturer)
