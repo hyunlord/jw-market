@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
 from jw_chat_agent_poc.common.periods import (
     canonical_periods,
     first_explicit_period_cue,
@@ -1197,7 +1198,13 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     with stage(None, "question_classification", "agent setup"):
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
     routes = ()
-    if not is_explicit_quarter_sales_question(question):
+    structured_plan = None
+    if callable(getattr(dependencies.resolver, "resolve_many", None)):
+        structured_plan = preflight_structured_market_question(question, dependencies.resolver)
+    if (
+        not is_explicit_quarter_sales_question(question)
+        and structured_plan is None
+    ):
         with stage(None, "question_decomposition", "BQ and tool routing"):
             routes = dependencies.router.route(question, has_documents=False)
     if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):

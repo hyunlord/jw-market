@@ -345,6 +345,38 @@ def test_direct_agent_loop_bypasses_question_router_for_explicit_quarter_sales(m
     assert captured["loop_question"] == "리바로 2025년 2분기 매출"
 
 
+def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class RouterBomb:
+        def route(self, _question: str, *, has_documents: bool = False):
+            raise AssertionError("structured top-five question must bypass LLM question decomposition")
+
+    class Dependencies:
+        router = RouterBomb()
+        resolver = BrandResolver(mode="fixture")
+
+        def agent_loop_dependencies(self):
+            return "top-five-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            captured["loop_question"] = question
+            return {"answer": "29.52% / HHI 253.62", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+
+    result = service_app._answer_direct_agent_loop("리바로 시장 상위 5개와 HHI, CR5를 알려줘", "live")
+
+    assert result["answer"] == "29.52% / HHI 253.62"
+    assert captured["loop_question"] == "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
+
+
 def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
     def fail_build_loop(_dependencies):
         raise AssertionError("requested-source trap must not enter direct agent loop")
