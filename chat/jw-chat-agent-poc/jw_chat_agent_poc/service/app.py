@@ -1421,8 +1421,16 @@ def _sse_busy_events():
 def _sse_events_from_final_answer(final_answer: FinalAnswer):
     if final_answer.conversation_id:
         yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
-    yield f"event: sources\ndata: {','.join(source_labels(final_answer.sources))}\n\n"
     public_file_sources = _project_public_file_sources(final_answer.file_sources)
+    labels = source_labels(final_answer.sources)
+    for item in public_file_sources:
+        file_name = (
+            str(item.get("file_name") or "").replace("\n", " ").replace(",", "，").strip()
+        )
+        label = f"업로드 문서: {file_name}" if file_name else ""
+        if label and label not in labels:
+            labels.append(label)
+    yield f"event: sources\ndata: {','.join(labels)}\n\n"
     if public_file_sources:
         yield _sse_json_event("file_sources", list(public_file_sources))
     yield from iter_markdown_sse_events(final_answer.text)

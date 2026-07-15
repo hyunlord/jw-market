@@ -296,6 +296,22 @@ def test_sse_emits_file_sources_event_only_when_present() -> None:
     assert "event: sources" in plain
 
 
+def test_sse_source_labels_keep_each_uploaded_file_visible() -> None:
+    items = (
+        {"file_name": "sales_january.xlsx", "document_id": 101},
+        {"file_name": "sales_february.xlsx", "document_id": 202},
+    )
+
+    body = "".join(_sse_events_from_final_answer(_final_answer(items)))
+    sources_event = body.split("event: sources\ndata: ", 1)[1].split("\n\n", 1)[0]
+
+    assert "업로드 문서" in sources_event
+    assert "sales_january.xlsx" in sources_event
+    assert "sales_february.xlsx" in sources_event
+    assert "101" not in sources_event
+    assert "202" not in sources_event
+
+
 class _EchoAgent:
     def __init__(self, *, external_mode: str = "live") -> None:
         self.external_mode = external_mode
