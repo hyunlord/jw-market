@@ -299,6 +299,7 @@ def _target_customer_competition_by_channel(
         target_name=focus.brand_name if focus else None,
         periods=periods,
         channels=[str(channel) for channel in channels if str(channel)],
+        series_value_cache=analysis_sections.get("series_value_cache"),
     )
 
 

@@ -21,6 +21,34 @@ def test_dimension_helpers_reuse_request_row_values() -> None:
     assert first_series is second_series
 
 
+def test_target_customer_competition_forwards_request_series_cache(monkeypatch) -> None:
+    rows = [{"brand_name": "A", "brand_key": "a"}]
+    series_cache = {}
+    captured = {}
+
+    def fake_rows_for_channel(*args, **kwargs):
+        captured["cache"] = kwargs.get("series_value_cache")
+        return []
+
+    monkeypatch.setattr(cause_builder, "_rows_for_channel", fake_rows_for_channel)
+    monkeypatch.setattr(cause_builder, "_display_brand_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cause_builder, "_total_series_for_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cause_builder, "_period_rank_series_by_brand", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cause_builder, "_channel_data_quality", lambda *_args, **_kwargs: {})
+
+    result = cause_builder._target_customer_competition(
+        rows=rows,
+        source="UBIST",
+        target_name=None,
+        periods=["2026-01"],
+        channels=["의원"],
+        series_value_cache=series_cache,
+    )
+
+    assert result["views"]
+    assert captured["cache"] is series_cache
+
+
 def test_analysis_level_channels_match_requires_same_ordered_channels() -> None:
     analysis_levels = {"channels": ["전체", "의원"]}
 
