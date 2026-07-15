@@ -1249,6 +1249,7 @@ def _is_excluded_dimension_label(value: Any) -> bool:
     return "제외" in text and not text.startswith("비제외")
 
 
+@lru_cache(maxsize=16)
 def _is_class_level(level: str) -> bool:
     return str(level or "").strip().lower().replace("_", " ").startswith("class")
 
