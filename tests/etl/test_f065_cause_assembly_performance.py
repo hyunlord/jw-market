@@ -202,6 +202,37 @@ def test_latest_top_trends_ranks_each_year_once(monkeypatch) -> None:
     assert sort_calls == len(years)
 
 
+def test_latest_top_trends_parses_values_once_per_year(monkeypatch) -> None:
+    years = [2023, 2024, 2025]
+    normalized_by_year = {
+        year: [
+            {"brand": "Target", "value": 30.0, "ms_pct": 60.0, "is_others": False},
+            {"brand": "Other", "value": 20.0, "ms_pct": 30.0, "is_others": False},
+            {"brand": "Third", "value": 10.0, "ms_pct": 10.0, "is_others": False},
+        ]
+        for year in years
+    }
+    calls = 0
+    original_safe_float = cause.safe_float
+
+    def count_safe_float(value: object) -> float | None:
+        nonlocal calls
+        calls += 1
+        return original_safe_float(value)
+
+    monkeypatch.setattr(cause, "safe_float", count_safe_float)
+
+    cause._latest_top_trends(
+        years=years,
+        normalized_by_year=normalized_by_year,
+        label_key="brand",
+        target_name="Target",
+        top_n=1,
+    )
+
+    assert calls == len(years) * 13
+
+
 def test_analysis_level_builds_reuse_shared_series_caches(monkeypatch) -> None:
     rows = [
         {
