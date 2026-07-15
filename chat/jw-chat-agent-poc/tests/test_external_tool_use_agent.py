@@ -12,7 +12,8 @@ from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
-from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
+import jw_chat_agent_poc.tool_use.integration as integration_module
+from jw_chat_agent_poc.tool_use.integration import _deterministic_tool_choices, run_external_tool_agent
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete, tool_use_requirements
 from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoice
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
@@ -148,6 +149,92 @@ def test_agent_executor_stops_before_final_llm_when_evidence_is_complete() -> No
     assert provider.calls == 1
     assert "pitavastatin" in result.answer
     assert "resultCode" not in result.answer
+
+
+def test_agent_executor_runs_all_forced_tools_before_accepting_complete_evidence() -> None:
+    calls: list[str] = []
+    provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))
+
+    def spec(name: str) -> ToolSpec:
+        return ToolSpec(
+            name=name,
+            description=name,
+            input_model=_NoInput,
+            execute=lambda _payload: (
+                calls.append(name)
+                or ToolEnvelope(
+                    ok=True,
+                    preview=name,
+                    evidence=(_fact(),),
+                    raw=None,
+                    error_code=None,
+                    error_message=None,
+                )
+            ),
+            timeout_s=1.0,
+            tags=("external",),
+        )
+
+    result = AgentExecutor(
+        provider=provider,
+        best_effort=True,
+        forced_choices=(
+            ToolChoice("clinical", {}, "required clinical", call_id="forced-1"),
+            ToolChoice("permission", {}, "required permission", call_id="forced-2"),
+        ),
+    ).run(user_text="임상과 허가", tools=(spec("clinical"), spec("permission")))
+
+    assert result.status == "ok"
+    assert calls == ["clinical", "permission"]
+    assert [call["tool"] for call in result.tool_calls] == ["clinical", "permission"]
+    assert provider.calls == 0
+
+
+def test_exact_clinical_permission_competitor_question_forces_every_contract_tool() -> None:
+    question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
+
+    choices = _deterministic_tool_choices(question, BrandResolver())
+
+    assert [choice.name for choice in choices] == [
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "mfds_permission_search",
+        "openfda_label_search",
+        "local_molecule_lookup",
+    ]
+    assert all(choice.call_id and choice.call_id.startswith("contract-") for choice in choices)
+    assert [choice.name for choice in _deterministic_tool_choices("리바로 임상실험", BrandResolver())] == [
+        "clinicaltrials_v2_search"
+    ]
+    assert [choice.name for choice in _deterministic_tool_choices("마운자로 성분", BrandResolver())] == [
+        "local_molecule_lookup"
+    ]
+
+
+def test_force_contract_flag_prevents_empty_tool_calls_for_exact_live_question(monkeypatch) -> None:
+    question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
+    provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setattr(
+        integration_module.GenosToolChoiceProvider,
+        "from_env",
+        classmethod(lambda cls: provider),
+    )
+
+    payload = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "mfds_permission_search",
+        "openfda_label_search",
+        "local_molecule_lookup",
+    ]
+    assert payload["tool_calls"]
 
 
 def test_agent_executor_continues_when_completion_policy_requires_final_tool() -> None:

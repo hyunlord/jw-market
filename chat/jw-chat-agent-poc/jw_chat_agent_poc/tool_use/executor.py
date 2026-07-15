@@ -36,6 +36,7 @@ class AgentExecutor:
     max_steps: int = 6
     completion_policy: CompletionPolicy | None = None
     best_effort: bool = False
+    forced_choices: tuple[ToolChoice, ...] = ()
 
     def run(self, *, user_text: str, tools: tuple[ToolSpec, ...]) -> AgentResult:
         ledger = EvidenceLedger()
@@ -59,14 +60,19 @@ class AgentExecutor:
         ]
         by_name = {tool.name: tool for tool in tools}
         answer_complete = False
-        for step in range(1, self.max_steps + 1):
-            try:
-                choice = self.provider.choose(user_text=user_text, messages=messages, tools=[tool.openai_schema() for tool in tools])
-            except requests.Timeout:
-                return _terminal("tool timeout", FallbackCode.TOOL_TIMEOUT, traces, tool_calls)
-            except (ToolProviderConfigurationError, requests.RequestException, KeyError, TypeError, ValueError) as exc:
-                LOGGER.warning("tool-use provider schema invalid: %s", exc)
-                return _terminal("provider schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
+        forced_choices = list(self.forced_choices)
+        total_steps = max(self.max_steps, len(forced_choices) + 1)
+        for step in range(1, total_steps + 1):
+            if forced_choices:
+                choice = forced_choices.pop(0)
+            else:
+                try:
+                    choice = self.provider.choose(user_text=user_text, messages=messages, tools=[tool.openai_schema() for tool in tools])
+                except requests.Timeout:
+                    return _terminal("tool timeout", FallbackCode.TOOL_TIMEOUT, traces, tool_calls)
+                except (ToolProviderConfigurationError, requests.RequestException, KeyError, TypeError, ValueError) as exc:
+                    LOGGER.warning("tool-use provider schema invalid: %s", exc)
+                    return _terminal("provider schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
             if choice.name is None:
                 answer_complete = _is_complete(
                     self.completion_policy,
@@ -146,7 +152,7 @@ class AgentExecutor:
                 spec=spec,
                 tool_calls=tuple(tool_calls),
             )
-            if answer_complete:
+            if answer_complete and not forced_choices:
                 return _verified_result(ledger, traces, tool_calls, status="ok")
             call_id = choice.call_id or f"tool-call-{step}"
             messages.extend(_tool_exchange(choice, spec, safe_envelope, call_id))
