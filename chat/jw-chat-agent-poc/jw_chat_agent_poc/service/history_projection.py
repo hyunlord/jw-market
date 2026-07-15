@@ -235,11 +235,13 @@ class MySQLProjectionOutbox:
         table_name: str = "jw_chat_agent_history_projection_outbox",
         default_user_id: int | None = None,
         max_attempts: int = 5,
+        session_writer: SessionProjectionWriter | None = None,
     ) -> None:
         self._config = config
         self._table_name = table_name
         self._default_user_id = default_user_id
         self._max_attempts = max_attempts
+        self._session_writer = session_writer
 
     def enqueue(
         self,
@@ -267,6 +269,7 @@ class MySQLProjectionOutbox:
             else self._default_user_id
         )
         headers = projection_context.http_headers if projection_context is not None else {}
+        created_at = datetime.now(UTC)
         payload = {
             "question": question_text,
             "answer": answer_text,
@@ -274,7 +277,7 @@ class MySQLProjectionOutbox:
             "sources": list(sources),
             "trace": dict(trace),
             "timing": dict(timing),
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": created_at.isoformat(),
         }
         with self._connect() as connection:
             with connection.cursor() as cursor:
@@ -302,6 +305,32 @@ class MySQLProjectionOutbox:
                     ),
                 )
             connection.commit()
+        if portal_user_id is not None and self._session_writer is not None:
+            job = ProjectionJob(
+                outbox_id=source_log_id,
+                turn=CompletedTurn(
+                    source_log_id=source_log_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    turn_index=turn_index,
+                    question=question_text,
+                    answer=answer_text,
+                    charts=tuple(dict(chart) for chart in charts),
+                    sources=tuple(sources),
+                    trace=dict(trace),
+                    timing=dict(timing),
+                    created_at=created_at,
+                ),
+                projection_version=PROJECTION_VERSION,
+                trace_id=trace_id,
+                span_id=span_id,
+                portal_user_id=portal_user_id,
+                request_headers=dict(headers),
+                attempts=0,
+            )
+            active = self._session_writer.active_service()
+            self._session_writer.upsert_hidden(job, active)
+            self._session_writer.mark_displayed(job)
 
     def claim_next(self) -> ProjectionJob | None:
         with self._connect() as connection:
@@ -622,12 +651,13 @@ class HistoryProjectionRuntime:
         if db_config is None or not endpoint or not all(mongo_values.values()):
             raise RuntimeError("history projection is enabled but required configuration is incomplete")
         default_user_id = _optional_positive_int(os.environ.get("PROJECTION_DEFAULT_USER_ID"))
+        session_writer = MySQLSessionProjectionWriter(db_config, endpoint=endpoint)
         outbox = MySQLProjectionOutbox(
             db_config,
             default_user_id=default_user_id,
             max_attempts=_positive_int_env("HISTORY_PROJECTION_MAX_ATTEMPTS", default=5),
+            session_writer=session_writer,
         )
-        session_writer = MySQLSessionProjectionWriter(db_config, endpoint=endpoint)
         mongo_writer = PyMongoProjectionWriter(
             host=mongo_values["HISTORY_PROJECTION_MONGO_HOST"],
             port=int(mongo_values["HISTORY_PROJECTION_MONGO_PORT"]),

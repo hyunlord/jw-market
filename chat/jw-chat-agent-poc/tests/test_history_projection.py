@@ -418,6 +418,33 @@ def test_outbox_enqueue_has_idempotency_guard_and_its_own_commit(monkeypatch) ->
     assert connection.commits == 1
 
 
+def test_outbox_enqueue_makes_portal_session_visible_without_waiting_for_worker(monkeypatch) -> None:
+    connection = _Connection()
+    events: list[str] = []
+    session_writer = _SessionWriter(events)
+    outbox = MySQLProjectionOutbox(
+        ProjectionDbConfig("db", 3306, "jw_mart", "user", "password"),
+        session_writer=session_writer,
+    )
+    monkeypatch.setattr(outbox, "_connect", lambda: connection)
+
+    outbox.enqueue(
+        source_log_id=41,
+        session_id=_turn().session_id,
+        turn_index=1,
+        question_text=_turn().question,
+        answer_text=_turn().answer,
+        charts=_turn().charts,
+        sources=_turn().sources,
+        trace=_turn().trace,
+        timing=_turn().timing,
+        projection_context=ProjectionRequestContext(85, {}),
+    )
+
+    assert connection.commits == 1
+    assert events == ["upsert_hidden", "mark_displayed"]
+
+
 def test_outbox_failure_retries_then_dead_letters(monkeypatch) -> None:
     connection = _Connection()
     outbox = MySQLProjectionOutbox(
