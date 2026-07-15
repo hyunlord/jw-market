@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
@@ -128,7 +129,7 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
             ("매출", eok_value(data.get("sales_억원"), data.get("sales_krw")), "render_data.sales_krw"),
             (
                 "시장규모",
-                eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw")) or _latest_market_size(data),
+                _market_size_value(data) or _latest_market_size(data),
                 "render_data.market_size_recent_krw",
             ),
             (
@@ -155,6 +156,27 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
     )
     rows.extend(_series_insight_values(data.get("series_insight")))
     return rows
+
+
+def _market_size_value(data: dict[str, Any]) -> str:
+    value = eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw"))
+    market_id = str(data.get("market_id") or data.get("market") or "").lower()
+    view = str(data.get("view_type") or data.get("view") or "").lower()
+    if not (market_id.startswith("ml_") or "market_landscape" in view):
+        return value
+
+    raw = data.get("market_size_억원")
+    divisor = Decimal("1")
+    if raw is None:
+        raw = data.get("market_size_recent_krw")
+        divisor = Decimal("100000000")
+    try:
+        amount = Decimal(str(raw)) / divisor
+    except (InvalidOperation, TypeError, ValueError):
+        return value
+    if not amount.is_finite():
+        return value
+    return f"{amount:,.6f}억원"
 
 
 def _series_insight_values(raw: Any) -> list[tuple[str, str, str]]:

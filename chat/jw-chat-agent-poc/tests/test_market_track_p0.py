@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.service.runtime_provenance import _ungrounded_numbers
 
 
 TOP_FACT = """### 상위 브랜드 점유율 추이 fact
@@ -100,6 +102,28 @@ def test_strategy_identifier_keeps_strategy_view_and_public_name() -> None:
     assert "2,106.715575억원" in answer
     assert "ml_006" not in answer
     assert "market_landscape" not in answer
+
+
+def test_strategy_market_size_precision_is_grounded_by_raw_market_fact() -> None:
+    call = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_006",
+            "market_name": "리바로·리바로젯 시장",
+            "view_type": "market_landscape",
+            "period": "2025-04",
+            "market_size_억원": 2106.71557456,
+        },
+    }
+    question = "ml_006 2025-04 시장규모"
+    answer = enforce_market_answer_contract(question=question, answer="", tool_calls=[call])
+    response = MarkdownResponseBuilder().build(brand="", calls=[call], sources=["UBIST"]).to_dict()
+
+    assert "2,106.715575억원" in answer
+    assert _ungrounded_numbers(answer, response) == ()
 
 
 def test_unsupported_region_repurchase_never_falls_back_to_market_totals() -> None:
