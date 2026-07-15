@@ -212,11 +212,10 @@ class ProjectionProcessor:
         active = self._session_writer.active_service()
         if job.portal_user_id is not None:
             self._session_writer.upsert_hidden(job, active)
+            self._session_writer.mark_displayed(job)
         documents = build_projection_documents(job, active, pod=self._pod, ip=self._ip)
         if not self._mongo_writer.upsert_and_verify(job, documents):
             raise RuntimeError("Mongo projection triple verification failed")
-        if job.portal_user_id is not None:
-            self._session_writer.mark_displayed(job)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +350,25 @@ class MySQLProjectionOutbox:
                     (status, attempts, message, delay, job.outbox_id),
                 )
             connection.commit()
+
+    def requeue_dead_network_timeouts(self, *, since: datetime, until: datetime) -> int:
+        if since >= until:
+            raise ValueError("requeue time window must have since before until")
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE {self._table_name}
+                    SET status='retry', attempts=0, next_attempt_at=NOW(), updated_at=NOW()
+                    WHERE status='dead'
+                      AND last_error LIKE 'NetworkTimeout:%'
+                      AND updated_at >= %s AND updated_at <= %s
+                    """,
+                    (since, until),
+                )
+                requeued = int(cursor.rowcount)
+            connection.commit()
+        return requeued
 
     def _set_status(self, outbox_id: int, status: str, error: str | None, *, completed: bool = False) -> None:
         completed_sql = ", completed_at=NOW()" if completed else ""
@@ -491,7 +509,18 @@ class MySQLSessionProjectionWriter:
 class PyMongoProjectionWriter:
     _COLLECTIONS = ("genos_service_trace", "chat-api_request", "chat-api_response")
 
-    def __init__(self, *, host: str, port: int, database: str, username: str, password: str) -> None:
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        database: str,
+        username: str,
+        password: str,
+        server_selection_timeout_ms: int = MONGO_SERVER_SELECTION_TIMEOUT_MS,
+        connect_timeout_ms: int = MONGO_CONNECT_TIMEOUT_MS,
+        socket_timeout_ms: int = MONGO_SOCKET_TIMEOUT_MS,
+    ) -> None:
         from pymongo import MongoClient
 
         self._client = MongoClient(
@@ -500,9 +529,9 @@ class PyMongoProjectionWriter:
             username=username,
             password=password,
             authSource=database,
-            serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
-            connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
-            socketTimeoutMS=MONGO_SOCKET_TIMEOUT_MS,
+            serverSelectionTimeoutMS=server_selection_timeout_ms,
+            connectTimeoutMS=connect_timeout_ms,
+            socketTimeoutMS=socket_timeout_ms,
             retryWrites=True,
         )
         self._database = self._client[database]
@@ -593,7 +622,11 @@ class HistoryProjectionRuntime:
         if db_config is None or not endpoint or not all(mongo_values.values()):
             raise RuntimeError("history projection is enabled but required configuration is incomplete")
         default_user_id = _optional_positive_int(os.environ.get("PROJECTION_DEFAULT_USER_ID"))
-        outbox = MySQLProjectionOutbox(db_config, default_user_id=default_user_id)
+        outbox = MySQLProjectionOutbox(
+            db_config,
+            default_user_id=default_user_id,
+            max_attempts=_positive_int_env("HISTORY_PROJECTION_MAX_ATTEMPTS", default=5),
+        )
         session_writer = MySQLSessionProjectionWriter(db_config, endpoint=endpoint)
         mongo_writer = PyMongoProjectionWriter(
             host=mongo_values["HISTORY_PROJECTION_MONGO_HOST"],
@@ -601,6 +634,18 @@ class HistoryProjectionRuntime:
             database=mongo_values["HISTORY_PROJECTION_MONGO_DATABASE"],
             username=mongo_values["HISTORY_PROJECTION_MONGO_USERNAME"],
             password=mongo_values["HISTORY_PROJECTION_MONGO_PASSWORD"],
+            server_selection_timeout_ms=_positive_int_env(
+                "HISTORY_PROJECTION_MONGO_SERVER_SELECTION_TIMEOUT_MS",
+                default=MONGO_SERVER_SELECTION_TIMEOUT_MS,
+            ),
+            connect_timeout_ms=_positive_int_env(
+                "HISTORY_PROJECTION_MONGO_CONNECT_TIMEOUT_MS",
+                default=MONGO_CONNECT_TIMEOUT_MS,
+            ),
+            socket_timeout_ms=_positive_int_env(
+                "HISTORY_PROJECTION_MONGO_SOCKET_TIMEOUT_MS",
+                default=MONGO_SOCKET_TIMEOUT_MS,
+            ),
         )
         pod, ip = runtime_identity()
         processor = ProjectionProcessor(session_writer, mongo_writer, pod=pod, ip=ip)
@@ -744,6 +789,14 @@ def _optional_positive_int(raw: str | None) -> int | None:
     value = int(raw)
     if value <= 0:
         raise ValueError("configured user id must be positive")
+    return value
+
+
+def _positive_int_env(name: str, *, default: int) -> int:
+    raw = os.environ.get(name)
+    value = default if raw is None or not raw.strip() else int(raw)
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
     return value
 
 

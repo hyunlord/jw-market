@@ -21,6 +21,7 @@ from jw_chat_agent_poc.service.history_projection import (
     build_projection_documents,
     sanitize_http_headers,
     trusted_portal_user_id,
+    _positive_int_env,
 )
 from jw_chat_agent_poc.service.app import create_app
 from jw_chat_agent_poc.service.conversation_history import MySQLConversationHistoryStore, _DbConfig
@@ -147,40 +148,50 @@ def _assemble_like_get_chat_log(service_trace: dict, request_doc: dict, response
 
 
 class _SessionWriter:
-    def __init__(self) -> None:
+    def __init__(self, events: list[str] | None = None) -> None:
         self.displayed = False
         self.upserted = False
+        self.events = events
 
     def active_service(self) -> ActiveChatService:
         return ActiveChatService(91, 181, 838, "lz0h_sv3e_2qk2")
 
     def upsert_hidden(self, job: ProjectionJob, _active: ActiveChatService) -> None:
         self.upserted = True
+        if self.events is not None:
+            self.events.append("upsert_hidden")
 
     def mark_displayed(self, job: ProjectionJob) -> None:
         self.displayed = True
+        if self.events is not None:
+            self.events.append("mark_displayed")
 
 
 class _MongoWriter:
-    def __init__(self, *, complete: bool = True) -> None:
+    def __init__(self, *, complete: bool = True, events: list[str] | None = None) -> None:
         self.complete = complete
         self.jobs: list[tuple[str, str]] = []
+        self.events = events
 
     def upsert_and_verify(self, job: ProjectionJob, _documents: tuple[dict, dict, dict]) -> bool:
         self.jobs.append((job.trace_id, job.span_id))
+        if self.events is not None:
+            self.events.append("mongo")
         return self.complete
 
 
-def test_session_becomes_visible_only_after_mongo_triple_verifies() -> None:
-    session_writer = _SessionWriter()
-    mongo_writer = _MongoWriter(complete=False)
+def test_session_becomes_visible_before_mongo_and_stays_visible_when_projection_fails() -> None:
+    events: list[str] = []
+    session_writer = _SessionWriter(events)
+    mongo_writer = _MongoWriter(complete=False, events=events)
     processor = ProjectionProcessor(session_writer, mongo_writer, pod="pod", ip="10.0.0.1")
 
     with pytest.raises(RuntimeError, match="triple verification failed"):
         processor.process(_job())
 
     assert session_writer.upserted is True
-    assert session_writer.displayed is False
+    assert session_writer.displayed is True
+    assert events == ["upsert_hidden", "mark_displayed", "mongo"]
 
     mongo_writer.complete = True
     processor.process(_job())
@@ -209,6 +220,15 @@ def test_mongo_projection_timeouts_remain_bounded_but_allow_slow_upserts() -> No
     assert MONGO_CONNECT_TIMEOUT_MS == 3000
     assert MONGO_SERVER_SELECTION_TIMEOUT_MS == 3000
     assert MONGO_SOCKET_TIMEOUT_MS == 10000
+
+
+def test_projection_retry_settings_are_positive_env_values(monkeypatch) -> None:
+    monkeypatch.setenv("HISTORY_PROJECTION_MONGO_SOCKET_TIMEOUT_MS", "30000")
+    assert _positive_int_env("HISTORY_PROJECTION_MONGO_SOCKET_TIMEOUT_MS", default=10000) == 30000
+
+    monkeypatch.setenv("HISTORY_PROJECTION_MONGO_SOCKET_TIMEOUT_MS", "0")
+    with pytest.raises(ValueError, match="positive integer"):
+        _positive_int_env("HISTORY_PROJECTION_MONGO_SOCKET_TIMEOUT_MS", default=10000)
 
 
 class _HistoryStore:
@@ -413,6 +433,34 @@ def test_outbox_failure_retries_then_dead_letters(monkeypatch) -> None:
     outbox.fail(replace(_job(), attempts=1), RuntimeError("still unavailable"))
     second_params = connection.cursor_instance.statements[-1][1]
     assert second_params is not None and second_params[0] == "dead"
+
+
+class _RequeueCursor(_Cursor):
+    rowcount = 3
+
+
+class _RequeueConnection(_Connection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cursor_instance = _RequeueCursor()
+
+
+def test_dead_network_timeout_requeue_is_bounded_by_status_error_and_time(monkeypatch) -> None:
+    connection = _RequeueConnection()
+    outbox = MySQLProjectionOutbox(ProjectionDbConfig("db", 3306, "jw_mart", "user", "password"))
+    monkeypatch.setattr(outbox, "_connect", lambda: connection)
+    since = datetime(2026, 7, 15, 16, 31)
+    until = datetime(2026, 7, 15, 17, 19)
+
+    requeued = outbox.requeue_dead_network_timeouts(since=since, until=until)
+
+    statement, params = connection.cursor_instance.statements[-1]
+    assert "status='dead'" in statement
+    assert "last_error LIKE 'NetworkTimeout:%'" in statement
+    assert "updated_at >= %s AND updated_at <= %s" in statement
+    assert params == (since, until)
+    assert requeued == 3
+    assert connection.commits == 1
 
 
 class _DisplayedCursor(_Cursor):
