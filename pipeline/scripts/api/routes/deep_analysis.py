@@ -715,6 +715,7 @@ def _resolve_context_brand_choices(context: DeepAnalysisContext) -> tuple:
         source=context.db_source,
         rank_by_latest_period=True,
         resolved_context=context,
+        restrict_strategic_to_ranking=True,
     )
     return resolution.choices if resolution and resolution.choices else ()
 
