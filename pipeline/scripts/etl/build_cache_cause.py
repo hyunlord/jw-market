@@ -1364,16 +1364,26 @@ def _dimension_channel_series_map(row: dict[str, Any], field: str | None, source
         label_text = str(label).strip()
         if _is_excluded_dimension_label(label_text) or not isinstance(channel_map, dict):
             continue
-        merged = {period: {"raw_value": 0.0} for period in _series_periods_from_channel_map(channel_map)}
-        matched = False
+        matched_series: list[dict[str, Any]] = []
+        unmatched_periods: set[str] = set()
         for raw_channel, series in channel_map.items():
-            if not _channel_matches(raw_channel, source, channel) or not isinstance(series, dict):
+            if not isinstance(series, dict):
                 continue
-            matched = True
-            for period, item in series.items():
-                merged.setdefault(period, {"raw_value": 0.0})
-                merged[period]["raw_value"] += _value_from_period_item(item)
-        if matched:
+            if _channel_matches(raw_channel, source, channel):
+                matched_series.append(series)
+            else:
+                unmatched_periods.update(str(period) for period in series)
+        if len(matched_series) == 1 and unmatched_periods.issubset(matched_series[0]):
+            result[label_text] = matched_series[0]
+            continue
+        if matched_series:
+            merged = {
+                period: {"raw_value": 0.0}
+                for period in _series_periods_from_channel_map(channel_map)
+            }
+            for series in matched_series:
+                for period, item in series.items():
+                    merged[period]["raw_value"] += _value_from_period_item(item)
             result[label_text] = merged
     if isinstance(series_cache, dict):
         series_cache[cache_key] = result

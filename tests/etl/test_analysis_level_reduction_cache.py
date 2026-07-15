@@ -82,7 +82,52 @@ def test_dimension_channel_series_is_reduced_once_per_row(monkeypatch) -> None:
     second = build_cache_cause._dimension_channel_series_map(row, "class", "UBIST", "병원")
 
     assert first == second
-    assert calls == 2
+    assert first == {
+        "A": {
+            "2026-01": {"raw_value": 10.0},
+            "2026-02": {"raw_value": 20.0},
+        }
+    }
+    assert calls == 0
+
+
+def test_dimension_channel_series_preserves_unmatched_periods_when_merging() -> None:
+    row = {
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "병원": {"2026-01": {"raw_value": 10.0}},
+                    "의원": {"2026-01": {"raw_value": 20.0}, "2026-02": {"raw_value": 30.0}},
+                }
+            }
+        }
+    }
+
+    assert build_cache_cause._dimension_channel_series_map(
+        row, "class", "UBIST", "병원"
+    ) == {
+        "A": {
+            "2026-01": {"raw_value": 10.0},
+            "2026-02": {"raw_value": 0.0},
+        }
+    }
+
+
+def test_dimension_channel_series_sums_multiple_matching_channels() -> None:
+    row = {
+        "dimension_channel_data": {
+            "class": {
+                "A": {
+                    "상급종합병원": {"2026-01": {"raw_value": 10.0}},
+                    "상급종병": {"2026-01": {"raw_value": 5.0}},
+                }
+            }
+        }
+    }
+
+    assert build_cache_cause._dimension_channel_series_map(
+        row, "class", "UBIST", "상급종병"
+    ) == {"A": {"2026-01": {"raw_value": 15.0}}}
 
 
 def test_overall_level_options_reuse_channel_rows_across_levels(monkeypatch) -> None:
