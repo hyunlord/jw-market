@@ -304,15 +304,15 @@ def _topic_scope(
     topic_rows: Sequence[dict[str, JsonValue]],
 ) -> dict[str, JsonValue]:
     """Resolve one stored scope from the request market catalog."""
-    if brand_set.view_name == "general":
+    catalog_codes = set(_catalog_atc4_values(brand_set))
+    if not catalog_codes:
+        return {}
+    if brand_set.view_name == "general" and len(catalog_codes) == 1:
         market_codes = _atc4_values(brand_set.market_id)
         direct_scope_id = f"atc4:{market_codes[0]}" if len(market_codes) == 1 else ""
         for row in topic_rows:
             if direct_scope_id and _text(row.get("scope_id")) == direct_scope_id:
                 return _scope_catalog_row(row)
-    catalog_codes = set(_catalog_atc4_values(brand_set))
-    if not catalog_codes:
-        return {}
     candidates: list[tuple[int, dict[str, JsonValue]]] = []
     for row in topic_rows:
         row_codes = set(_atc4_values(row.get("atc4_values")))
