@@ -31,6 +31,7 @@ _ROW_SERIES_FIELDS: Final[tuple[str, ...]] = (
     "hhi_series",
     "level_top5_trend",
 )
+_PeriodBounds = tuple[int | None, int | None]
 
 
 def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRange) -> list[dict[str, Any]]:
@@ -39,11 +40,12 @@ def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRang
     copied = [dict(row) for row in rows]
     if period_range.start is None and period_range.end is None:
         return copied
+    bounds = _period_bounds(period_range)
     for row in copied:
         for field in _ROW_SERIES_FIELDS:
             if field not in row or row[field] in (None, ""):
                 continue
-            row[field] = _trim_encoded_value(row[field], period_range)
+            row[field] = _trim_encoded_value(row[field], bounds)
         row.pop("__metric_history", None)
         row.pop("__extended_metric_history", None)
     return copied
@@ -52,37 +54,41 @@ def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRang
 def trim_period_payload(value: Any, period_range: PeriodRange) -> Any:
     """Project every nested period-keyed mapping and period-point list without inventing values."""
 
+    return _trim_period_payload(value, _period_bounds(period_range))
+
+
+def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
     if isinstance(value, Mapping):
         items = list(value.items())
         period_items = [(_period_interval(str(key)), key, item) for key, item in items]
         if items and all(interval is not None for interval, _key, _item in period_items):
             return {
-                str(key): trim_period_payload(item, period_range)
+                str(key): _trim_period_payload(item, bounds)
                 for interval, key, item in period_items
-                if interval is not None and _overlaps(interval, period_range)
+                if interval is not None and _overlaps(interval, bounds)
             }
-        return {str(key): trim_period_payload(item, period_range) for key, item in items}
+        return {str(key): _trim_period_payload(item, bounds) for key, item in items}
     if isinstance(value, list):
         if value and all(isinstance(item, Mapping) and _point_period(item) is not None for item in value):
             return [
-                trim_period_payload(item, period_range)
+                _trim_period_payload(item, bounds)
                 for item in value
                 if (period := _point_period(item)) is not None
                 and (interval := _period_interval(period)) is not None
-                and _overlaps(interval, period_range)
+                and _overlaps(interval, bounds)
             ]
-        return [trim_period_payload(item, period_range) for item in value]
+        return [_trim_period_payload(item, bounds) for item in value]
     return value
 
 
-def _trim_encoded_value(value: Any, period_range: PeriodRange) -> Any:
+def _trim_encoded_value(value: Any, bounds: _PeriodBounds) -> Any:
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
         except json.JSONDecodeError:
             return value
-        return json.dumps(trim_period_payload(decoded, period_range), ensure_ascii=False, sort_keys=True)
-    return trim_period_payload(value, period_range)
+        return json.dumps(_trim_period_payload(decoded, bounds), ensure_ascii=False, sort_keys=True)
+    return _trim_period_payload(value, bounds)
 
 
 def _point_period(item: Mapping[str, Any]) -> str | None:
@@ -111,9 +117,14 @@ def _period_interval(value: str) -> tuple[int, int] | None:
     return year * 12, year * 12 + 11
 
 
-def _overlaps(interval: tuple[int, int], period_range: PeriodRange) -> bool:
+def _period_bounds(period_range: PeriodRange) -> _PeriodBounds:
     start_interval = _period_interval(period_range.start) if period_range.start else None
     end_interval = _period_interval(period_range.end) if period_range.end else None
     start = start_interval[0] if start_interval else None
     end = end_interval[1] if end_interval else None
+    return start, end
+
+
+def _overlaps(interval: tuple[int, int], bounds: _PeriodBounds) -> bool:
+    start, end = bounds
     return (start is None or interval[1] >= start) and (end is None or interval[0] <= end)
