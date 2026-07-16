@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jw_chat_agent_poc.agent_loop.tools import ToolExecution
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 from jw_chat_agent_poc.service.runtime_provenance import _empty_result_calls, _ungrounded_numbers, trace_envelope
@@ -74,6 +75,32 @@ def test_exact_monthly_sales_is_grounded_by_successful_structured_tool_value() -
             "2025-04 리바로 매출은 83.184115억원입니다.",
             markdown_response,
             [call],
+        )
+        == ()
+    )
+
+
+def test_successful_execution_preserves_status_for_runtime_numeric_grounding() -> None:
+    call = {
+        "tool": "get_brand_metric",
+        "source": "UBIST",
+        "render_data": {
+            "brand": "리바로",
+            "metric": "sales",
+            "period": "2025-04",
+            "sales_억원": 83.184115,
+            "sales_krw": 8_318_411_526.5,
+        },
+    }
+
+    execution = ToolExecution("ok", "리바로 sales query-layer", call, {"period": "2025-04"})
+
+    assert execution.call["status"] == "ok"
+    assert (
+        _ungrounded_numbers(
+            "2025-04 리바로 매출은 83.184115억원입니다.",
+            {"allowed_numbers": (), "fact_md": "", "data_md": ""},
+            [execution.call],
         )
         == ()
     )

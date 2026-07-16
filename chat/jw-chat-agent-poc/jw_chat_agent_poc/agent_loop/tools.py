@@ -46,6 +46,9 @@ class ToolExecution:
     call: dict[str, Any]
     arguments: Mapping[str, str]
 
+    def __post_init__(self) -> None:
+        self.call.setdefault("status", self.status)
+
 
 class AgentToolFacade:
     def __init__(
