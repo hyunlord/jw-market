@@ -38,6 +38,9 @@ _PREDECODED_ROW_SERIES_FIELDS: Final[frozenset[str]] = frozenset(
         "dimension_specialty_data",
     }
 )
+_JSON_SCALAR_TYPES: Final[frozenset[type[Any]]] = frozenset(
+    {str, int, float, bool, type(None)}
+)
 _PeriodBounds = tuple[int | None, int | None]
 
 
@@ -66,8 +69,24 @@ def trim_period_payload(value: Any, period_range: PeriodRange) -> Any:
 
 
 def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
-    if isinstance(value, Mapping):
-        items = list(value.items())
+    value_type = type(value)
+    mapping_value: Mapping[Any, Any] | None = None
+    list_value: list[Any] | None = None
+    if value_type is dict:
+        mapping_value = value
+    elif value_type is list:
+        list_value = value
+    elif value_type in _JSON_SCALAR_TYPES:
+        return value
+    elif isinstance(value, Mapping):
+        mapping_value = value
+    elif isinstance(value, list):
+        list_value = value
+    else:
+        return value
+
+    if mapping_value is not None:
+        items = list(mapping_value.items())
         period_items = [(_period_interval(str(key)), key, item) for key, item in items]
         if items and all(interval is not None for interval, _key, _item in period_items):
             return {
@@ -76,17 +95,20 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                 if interval is not None and _overlaps(interval, bounds)
             }
         return {str(key): _trim_period_payload(item, bounds) for key, item in items}
-    if isinstance(value, list):
-        if value and all(isinstance(item, Mapping) and _point_period(item) is not None for item in value):
-            return [
-                _trim_period_payload(item, bounds)
-                for item in value
-                if (period := _point_period(item)) is not None
-                and (interval := _period_interval(period)) is not None
-                and _overlaps(interval, bounds)
-            ]
-        return [_trim_period_payload(item, bounds) for item in value]
-    return value
+
+    assert list_value is not None
+    if list_value and all(
+        (type(item) is dict or isinstance(item, Mapping)) and _point_period(item) is not None
+        for item in list_value
+    ):
+        return [
+            _trim_period_payload(item, bounds)
+            for item in list_value
+            if (period := _point_period(item)) is not None
+            and (interval := _period_interval(period)) is not None
+            and _overlaps(interval, bounds)
+        ]
+    return [_trim_period_payload(item, bounds) for item in list_value]
 
 
 def _trim_encoded_value(value: Any, bounds: _PeriodBounds, decoded_value: Any = None) -> Any:

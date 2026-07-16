@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import UserDict
 import json
 
 from pipeline.scripts.api.dynamic_market import period_window as period_window_module
@@ -174,3 +175,46 @@ def test_trim_period_rows_reuses_predecoded_dimension_series(monkeypatch) -> Non
     for field, decoded in decoded_by_field.items():
         assert result[field] == json.dumps(expected, ensure_ascii=False, sort_keys=True)
         assert result[f"__{field}"] is decoded
+
+
+def test_trim_period_payload_skips_mapping_protocol_for_json_scalars(monkeypatch) -> None:
+    checks: list[type[object]] = []
+
+    class MappingProbeMeta(type):
+        def __instancecheck__(cls, instance: object) -> bool:
+            checks.append(type(instance))
+            return False
+
+    class MappingProbe(metaclass=MappingProbeMeta):
+        pass
+
+    monkeypatch.setattr(period_window_module, "Mapping", MappingProbe)
+
+    result = trim_period_payload(1.5, PeriodRange("2025-01", "2025-12"))
+
+    assert result == 1.5
+    assert checks == []
+
+
+def test_trim_period_payload_preserves_mapping_and_list_subclass_support() -> None:
+    class PeriodPoints(list[UserDict[str, object]]):
+        pass
+
+    payload = UserDict(
+        {
+            "history": UserDict({"2025-01": 1.0, "2026-01": 2.0}),
+            "points": PeriodPoints(
+                [
+                    UserDict({"period": "2025-01", "value": 1.0}),
+                    UserDict({"period": "2026-01", "value": 2.0}),
+                ]
+            ),
+        }
+    )
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {
+        "history": {"2025-01": 1.0},
+        "points": [{"period": "2025-01", "value": 1.0}],
+    }
