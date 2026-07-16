@@ -109,3 +109,5 @@ python -m pipeline.orchestrator run --stages strength
 6. `agent3_brand_strength` 스키마 reset(DROP) 러너 경로 반입 금지(ensure_table은 create-only).
 7. mart DB명 신규 하드코딩 금지 — drift gate가 fail시킴(§4 절차로만).
 8. 표준 검증 절차 준수: 골든 4종 · COUNT(*) · tracked-only pytest(※ 최상위 `tests/test_*.py` 2건 포함해 실행할 것 — `tests/**/test_*.py` glob은 이들을 누락함).
+9. **elements 빌더 플래그 주의**: `cache_brand_elements.py`의 `--dry-run`과 `--pilot-fill`은 **독립 플래그** — 병용하면 pilot_fill이 그대로 live upsert된다(2026-07-17 실증). 검토만 하려면 `--dry-run` 단독으로.
+10. **forecast epoch 스킴**: live `deep_forecast_block/horizon`의 `source_epoch`는 DB명 문자열 계열, ops 빌더 게이트는 sha256 지문 — `epoch_is_current`는 live에 대해 False가 정상(행수는 43,474/3,000 정확). 오케스트레이터 신선도는 state 파일 기준이므로 동작에는 영향 없고, ops 빌더 첫 full 실행은 staging 재빌드로 진행된다.
