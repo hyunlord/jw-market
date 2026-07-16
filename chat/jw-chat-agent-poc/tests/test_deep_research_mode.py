@@ -185,6 +185,7 @@ def test_deep_planner_requests_broad_independent_evidence() -> None:
 def test_deep_progress_labels_are_distinct_user_language() -> None:
     assert timing_module._public_stage_name("deep_research_prepare") == "딥리서치 질문 분석"
     assert timing_module._public_stage_name("deep_research_plan") == "딥리서치 조사 설계"
+    assert timing_module._public_stage_name("deep_research_file_batch") == "딥리서치 첨부 파일 수집"
     assert timing_module._public_stage_name("deep_research_tool_batch") == "딥리서치 자료 수집"
     assert timing_module._public_stage_name("deep_research_synthesis") == "딥리서치 종합 분석"
     assert timing_module._public_stage_name("llm_plan") == "분석 계획"
@@ -249,6 +250,84 @@ def test_deep_request_routes_with_stripped_question_and_preserves_original(monke
     assert item["result"]["research_mode"] == "deep"
 
 
+def test_deep_request_collects_all_uploaded_file_evidence_before_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    events: list[dict[str, object]] = []
+    file_context = (
+        "[1] first_report.pdf (document_id=101)\n첫 번째 보고서의 확인된 근거\n\n"
+        "[2] second_report.pdf (document_id=202)\n두 번째 보고서의 확인된 근거"
+    )
+    file_source_items = (
+        {"file_name": "first_report.pdf", "document_id": 101, "i_page": 3},
+        {"file_name": "second_report.pdf", "document_id": 202, "i_page": 7},
+    )
+    sql_trace = ({"stage": "execute", "status": "ok", "selected_columns": "c72"},)
+
+    class ScopeResolver:
+        def has_explicit_anchor(self, _question: str) -> bool:
+            return True
+
+    def deep_answer(question: str, external_mode: str) -> dict[str, object]:
+        captured["deep"] = (question, external_mode)
+        return {
+            "answer": "deep-answer",
+            "sources": ["cache"],
+            "tool_calls": [],
+            "research_mode": "deep",
+            "router_diagnostics": {"mode": "deep_research"},
+        }
+
+    def collect_files(
+        question: str,
+        conversation_id: str | None,
+        provided_context: str | None,
+        *,
+        include_all_files: bool = False,
+    ) -> tuple[str, tuple[dict[str, object], ...], bool, str, tuple[dict[str, str], ...]]:
+        captured["file_lookup"] = (
+            question,
+            conversation_id,
+            provided_context,
+            include_all_files,
+        )
+        return file_context, file_source_items, True, "SQL 결정론 답변", sql_trace
+
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(service_app, "fetch_uploaded_file_schema_columns", lambda _conversation_id: ())
+    monkeypatch.setattr(service_app, "_delegated_file_context", collect_files)
+    monkeypatch.setattr(service_app, "_answer_deep_research", deep_answer)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        ScopeResolver(),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("general agent must not run")),
+        "/deep 두 보고서와 시장 데이터를 종합 분석해줘",
+        "live",
+        "conv-deep-files",
+        use_direct_agent_loop=True,
+        timing_sink=events.append,
+    )
+
+    result = item["result"]
+    assert captured["file_lookup"] == (
+        "두 보고서와 시장 데이터를 종합 분석해줘",
+        "conv-deep-files",
+        None,
+        True,
+    )
+    assert captured["deep"] == ("두 보고서와 시장 데이터를 종합 분석해줘", "live")
+    assert result["file_context"] == file_context
+    assert result["file_source_items"] == [dict(item) for item in file_source_items]
+    assert result["sources"] == ["cache", "document"]
+    assert "deterministic_file_answer" not in result
+    assert result["router_diagnostics"]["file_sql"] == [dict(sql_trace[0])]
+    assert result["router_diagnostics"]["deep_file_source_count"] == 2
+    assert result["router_diagnostics"]["evidence_scope"] == "uploaded_files+market+external+web"
+    assert any(event.get("raw_name") == "deep_research_file_batch" for event in events)
+
+
 def test_deep_fixture_execution_selects_all_evidence_families(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -275,11 +354,70 @@ def test_deep_fixture_execution_selects_all_evidence_families(
     assert result["research_mode"] == "deep"
     assert result["router_diagnostics"]["model"] == "gemini-3.1-pro-preview"
     assert any(event.get("raw_name") == "deep_research_tool_batch" for event in events)
+    batch_started = next(
+        event
+        for event in events
+        if event.get("raw_name") == "deep_research_tool_batch" and event.get("status") == "started"
+    )
+    assert batch_started["detail"] == (
+        "시장·뉴스·임상·허가·환자·안전성·특허·영업 활동·웹 동시 조회"
+    )
+    batch_done = next(
+        event
+        for event in events
+        if event.get("raw_name") == "deep_research_tool_batch" and event.get("status") == "done"
+    )
+    assert batch_done["summary"] == (
+        "시장·뉴스·임상·허가·환자·안전성·특허·영업 활동·웹 동시 조회 완료"
+    )
+    tool_stages = {
+        stage["name"]: stage
+        for stage in result["timing"]["stages"]
+        if stage["name"].startswith("tool:")
+    }
+    for tool_name in selected.intersection(
+        {"get_metric", "get_market_scope", "get_brand_series", "get_top_brands"}
+    ):
+        assert "mode=parallel" in tool_stages[f"tool:{tool_name}"]["detail"]
     assert any(
         event.get("raw_name") == "tool:search_clinical" and event.get("status") == "done"
         for event in events
     )
     assert not any("clinicaltrials_v2_search" in str(event) for event in events)
+
+
+def test_deep_progress_reports_serial_fallback_when_parallel_workers_are_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHAT_METRICS_MODE", "fixture")
+    monkeypatch.setenv("CHAT_QUERY_LAYER_ENABLED", "0")
+    monkeypatch.setenv("CHAT_BQ_PARALLEL_TOOL_WORKERS", "1")
+    events: list[dict[str, object]] = []
+
+    with timing_module.stage_event_sink(events.append):
+        result = service_app._answer_deep_research("리바로 경쟁구도 분석", "fixture")
+
+    batch_started = next(
+        event
+        for event in events
+        if event.get("raw_name") == "deep_research_tool_batch" and event.get("status") == "started"
+    )
+    assert batch_started["detail"] == (
+        "시장·뉴스·임상·허가·환자·안전성·특허·영업 활동·웹 순차 조회"
+    )
+    batch_done = next(
+        event
+        for event in events
+        if event.get("raw_name") == "deep_research_tool_batch" and event.get("status") == "done"
+    )
+    assert batch_done["summary"] == (
+        "시장·뉴스·임상·허가·환자·안전성·특허·영업 활동·웹 순차 조회 완료"
+    )
+    assert all(
+        "mode=serial" in stage["detail"]
+        for stage in result["timing"]["stages"]
+        if stage["name"].startswith("tool:")
+    )
 
 
 def test_deep_client_bypasses_general_deterministic_shortcuts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,6 +465,28 @@ def test_deep_prompt_requires_grounded_multi_source_synthesis() -> None:
     assert "시장·경쟁 구도" in messages[0]["content"]
     assert "임상·허가·안전성·환자 맥락" in messages[0]["content"]
     assert "출처별 근거" in messages[1]["content"]
+
+
+def test_deep_prompt_includes_every_uploaded_file_in_the_evidence_batch() -> None:
+    file_context = (
+        "[1] first_report.pdf (document_id=101)\n첫 번째 보고서 근거\n\n"
+        "[2] second_report.pdf (document_id=202)\n두 번째 보고서 근거"
+    )
+
+    messages = GenosClient._deep_markdown_messages(
+        "두 보고서와 시장 데이터를 종합 분석해줘",
+        {
+            "fact_md": "- 시장 근거: 확인됨",
+            "data_md": "- 시장 근거: 확인됨",
+        },
+        file_context=file_context,
+    )
+
+    prompt = "\n".join(message["content"] for message in messages)
+    assert "first_report.pdf" in prompt
+    assert "second_report.pdf" in prompt
+    assert "각 업로드 파일의 근거를 최소 1개씩" in prompt
+    assert "업로드 파일과 시장·외부 도구·웹 근거를 함께 종합" in prompt
 
 
 def test_compute_final_answer_uses_deep_client_and_stripped_question(
@@ -500,6 +660,100 @@ def test_compute_final_answer_applies_claim_policy_after_deep_text_helpers(
 
     assert "뉴스에서 시장 성과가 입증됐습니다" not in final.text
     assert claim_policy_report(final.text, fact_md)["forbidden_claims_remaining"] == ()
+
+
+def test_compute_final_answer_structures_headingless_deep_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = (
+        "리바로의 시장 자료와 외부 근거를 함께 보면 현재 위치를 여러 관점에서 확인할 수 있습니다.\n\n"
+        "시장 수치, 임상 등록, 허가 정보는 서로 다른 범위를 설명하므로 출처별 한계를 나눠 봐야 합니다.\n\n"
+        "## 출처\n- 데이터: 검증된 근거"
+    )
+
+    class DeepClient:
+        token_usage_calls: list[dict[str, object]] = []
+
+        @classmethod
+        def for_deep_research(cls):
+            return cls()
+
+        def stream_answer(self, _question: str, _result: dict[str, object]):
+            yield generated
+
+    monkeypatch.setattr(service_app, "GenosClient", DeepClient)
+
+    final = service_app.compute_final_answer(
+        "/deep 리바로 경쟁구도 분석",
+        {
+            "research_mode": "deep",
+            "effective_question": "리바로 경쟁구도 분석",
+            "context_scope": "MARKET",
+            "answer": "확인된 근거",
+            "sources": ["cache"],
+            "tool_calls": [],
+            "router_diagnostics": {"mode": "deep_research"},
+            "markdown_response": {
+                "fact_md": "- 리바로: 검증된 시장·외부 근거",
+                "data_md": "- 리바로: 검증된 시장·외부 근거",
+                "allowed_numbers": [],
+            },
+        },
+    )
+
+    assert "## 핵심 요약" in final.text
+    assert "## 상세 분석" in final.text
+    assert "리바로의 시장 자료와 외부 근거를 함께 보면" in final.text
+    assert "시장 수치, 임상 등록, 허가 정보는 서로 다른 범위를 설명" in final.text
+    assert final.text.index("## 핵심 요약") < final.text.index("## 상세 분석")
+    assert final.text.index("## 상세 분석") < final.text.index("## 출처")
+
+
+def test_compute_final_answer_adds_detail_after_single_attached_heading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = (
+        "## 핵심 요약\n"
+        "리바로의 확인된 근거를 먼저 요약합니다.\n\n"
+        "시장 수치와 외부 근거는 범위가 달라 구분해서 해석해야 합니다.\n\n"
+        "## 출처\n- 데이터: 검증된 근거"
+    )
+
+    class DeepClient:
+        token_usage_calls: list[dict[str, object]] = []
+
+        @classmethod
+        def for_deep_research(cls):
+            return cls()
+
+        def stream_answer(self, _question: str, _result: dict[str, object]):
+            yield generated
+
+    monkeypatch.setattr(service_app, "GenosClient", DeepClient)
+
+    final = service_app.compute_final_answer(
+        "/deep 리바로 경쟁구도 분석",
+        {
+            "research_mode": "deep",
+            "effective_question": "리바로 경쟁구도 분석",
+            "context_scope": "MARKET",
+            "answer": "확인된 근거",
+            "sources": ["cache"],
+            "tool_calls": [],
+            "router_diagnostics": {"mode": "deep_research"},
+            "markdown_response": {
+                "fact_md": "- 리바로: 검증된 시장·외부 근거",
+                "data_md": "- 리바로: 검증된 시장·외부 근거",
+                "allowed_numbers": [],
+            },
+        },
+    )
+
+    assert final.text.count("## 핵심 요약") == 1
+    assert final.text.count("## 상세 분석") == 1
+    assert "리바로의 확인된 근거를 먼저 요약합니다" in final.text
+    assert "시장 수치와 외부 근거는 범위가 달라" in final.text
+    assert final.text.index("## 상세 분석") < final.text.index("## 출처")
 
 
 def test_compute_final_answer_drops_unverified_deep_claims(

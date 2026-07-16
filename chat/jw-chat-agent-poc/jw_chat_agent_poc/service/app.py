@@ -58,6 +58,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_file_absence_statement,
     ensure_multi_file_evidence_coverage,
     ensure_file_page_evidence,
+    ensure_deep_research_structure,
     ensure_hira_patient_summary,
     ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
@@ -544,10 +545,37 @@ def _answer_question(
         )
         delegated_file_context: str | None = None
         file_source_items: tuple[dict[str, Any], ...] = ()
+        deep_file_names: tuple[str, ...] = ()
         deterministic_file_answer = ""
         file_sql_trace: tuple[dict[str, str], ...] = ()
         if deep_request.enabled:
             context_scope = ContextScope.MARKET
+            if has_file:
+                with stage(
+                    None,
+                    "deep_research_file_batch",
+                    "현재 세션 업로드 파일 전체 근거 수집",
+                ) as progress:
+                    (
+                        delegated_file_context,
+                        file_source_items,
+                        _has_active_upload,
+                        _deep_file_sql_answer,
+                        file_sql_trace,
+                    ) = _delegated_file_context(
+                        effective_question,
+                        state.conversation_id,
+                        file_context,
+                        include_all_files=True,
+                    )
+                    deep_file_names = tuple(
+                        dict.fromkeys(
+                            str(item.get("file_name") or "").strip()
+                            for item in file_source_items
+                            if str(item.get("file_name") or "").strip()
+                        )
+                    )
+                    progress.summary = f"{len(deep_file_names)}개 파일 근거 확인"
             result = (
                 _answer_deep_research(effective_question, external_mode)
                 if effective_question
@@ -560,6 +588,12 @@ def _answer_question(
                     "model": "gemini-3.1-pro-preview",
                     "serving_id": "202",
                     "trigger": "/deep",
+                    "deep_file_source_count": len(deep_file_names) if has_file else 0,
+                    "evidence_scope": (
+                        "uploaded_files+market+external+web"
+                        if delegated_file_context
+                        else "market+external+web"
+                    ),
                 }
             )
             result = {
@@ -610,7 +644,7 @@ def _answer_question(
         result = _enforce_file_scope_isolation(result, effective_question, context_scope)
         if deterministic_file_answer and context_scope is ContextScope.FILE:
             result = {**result, "deterministic_file_answer": deterministic_file_answer}
-        if file_sql_trace and context_scope is ContextScope.FILE:
+        if file_sql_trace and (context_scope is ContextScope.FILE or deep_request.enabled):
             diagnostics = dict(result.get("router_diagnostics") or {})
             diagnostics["file_sql"] = [dict(item) for item in file_sql_trace]
             result = {**result, "router_diagnostics": diagnostics}
@@ -790,11 +824,23 @@ def _scope_clarification_result(question: str) -> dict:
 
 
 def _delegated_file_context(
-    question: str, conversation_id: str | None, file_context: str | None
+    question: str,
+    conversation_id: str | None,
+    file_context: str | None,
+    *,
+    include_all_files: bool = False,
 ) -> tuple[str | None, tuple[dict[str, Any], ...], bool, str, tuple[dict[str, str], ...]]:
     contexts: list[str] = []
     file_source_items: tuple[dict[str, Any], ...] = ()
-    uploaded = search_uploaded_files(question, conversation_id)
+    uploaded = (
+        search_uploaded_files(
+            question,
+            conversation_id,
+            include_all_files=True,
+        )
+        if include_all_files
+        else search_uploaded_files(question, conversation_id)
+    )
     has_active_upload = bool(uploaded and uploaded.has_active_file)
     deterministic_answer = uploaded.deterministic_answer if uploaded is not None else ""
     sql_trace = uploaded.sql_trace if uploaded is not None else ()
@@ -1803,6 +1849,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
     if deep_mode:
         safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
+        safe_answer = ensure_deep_research_structure(safe_answer)
     safe_answer = scrub_internal_terminology(safe_answer)
     trace = trace_envelope(
         question=question,

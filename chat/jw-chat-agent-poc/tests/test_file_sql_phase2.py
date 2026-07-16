@@ -219,6 +219,47 @@ def test_explicit_filename_filters_search_context_and_sql_sources(monkeypatch) -
     assert [source.file_name for source in captured] == ["F4.docx"]
 
 
+def test_deep_all_session_search_keeps_every_file_when_question_names_one(
+    monkeypatch,
+) -> None:
+    body = {
+        "file_context": (
+            "[1] first_report.pdf (document_id=101)\nfirst evidence\n\n"
+            "[2] second_report.pdf (document_id=202)\nsecond evidence"
+        ),
+        "document_count": 2,
+        "file_sources": [
+            {"document_id": 101, "file_name": "first_report.pdf"},
+            {"document_id": 202, "file_name": "second_report.pdf"},
+        ],
+        "sql_available": False,
+        "sql_sources": [],
+        "errors": [],
+    }
+    monkeypatch.setattr(
+        file_search_client.requests,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: body,
+        ),
+    )
+
+    result = file_search_client.search_uploaded_files(
+        "first_report.pdf와 시장을 종합해줘",
+        "conversation-deep",
+        include_all_files=True,
+    )
+
+    assert result is not None
+    assert "first evidence" in result.file_context
+    assert "second evidence" in result.file_context
+    assert [item["file_name"] for item in result.file_source_items] == [
+        "first_report.pdf",
+        "second_report.pdf",
+    ]
+
+
 def test_explicit_filename_fails_closed_when_target_is_missing_from_hits(monkeypatch) -> None:
     body = {
         "file_context": "[1] F5.pptx (document_id=105)\nF5 only text",

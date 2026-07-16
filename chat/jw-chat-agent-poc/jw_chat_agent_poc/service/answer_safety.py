@@ -62,6 +62,8 @@ _DISEASE_IDENTITY_FACT_RE = re.compile(
     r"^-\s*(?P<code>[A-Z]\d{2}(?:\.\d+)?)\s*:\s*질병명/상병코드\s*=\s*"
     r"(?P<disease>.+?)\s*\[(?P<source>.+?)\]\s*$"
 )
+_DEEP_SOURCE_HEADING_RE = re.compile(r"(?m)^##\s+출처\b")
+_DEEP_BODY_HEADING_RE = re.compile(r"(?m)^##\s+(?!출처\b).+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1125,6 +1127,55 @@ def strip_generated_source_sections(answer: str) -> str:
             continue
         kept.append(line)
     return cleanup_markdown_answer("\n".join(kept).strip())
+
+
+def ensure_deep_research_structure(answer: str) -> str:
+    """Add deep-only section headings without changing the generated facts."""
+
+    cleaned = cleanup_markdown_answer(answer)
+    source_match = _DEEP_SOURCE_HEADING_RE.search(cleaned)
+    body = cleaned[: source_match.start()].strip() if source_match else cleaned.strip()
+    source = cleaned[source_match.start() :].strip() if source_match else ""
+    headings = tuple(_DEEP_BODY_HEADING_RE.finditer(body))
+    if len(headings) >= 2 or not body:
+        return cleaned
+
+    blocks = [block.strip() for block in re.split(r"\n{2,}", body) if block.strip()]
+    if not headings:
+        if len(blocks) < 2:
+            return cleaned
+        structured_body = "\n\n".join(
+            (
+                "## 핵심 요약",
+                blocks[0],
+                "## 상세 분석",
+                "\n\n".join(blocks[1:]),
+            )
+        )
+    else:
+        first_heading = headings[0]
+        leading = body[: first_heading.start()].strip()
+        if leading:
+            structured_body = "\n\n".join(("## 핵심 요약", leading, body[first_heading.start() :].strip()))
+        else:
+            heading = body[: first_heading.end()].strip()
+            content_blocks = [
+                block.strip()
+                for block in re.split(r"\n{2,}", body[first_heading.end() :].strip())
+                if block.strip()
+            ]
+            if len(content_blocks) < 2:
+                return cleaned
+            structured_body = "\n\n".join(
+                (
+                    heading,
+                    content_blocks[0],
+                    "## 상세 분석",
+                    "\n\n".join(content_blocks[1:]),
+                )
+            )
+
+    return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
 
 
 def _is_inline_source_line(stripped: str) -> bool:

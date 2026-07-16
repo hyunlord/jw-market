@@ -410,3 +410,45 @@ def test_news_context_policy_blocks_claim_elevation_language() -> None:
 
     assert "입증" not in revised
     assert "기사 제목과 요약은 시장 동향 참고 자료입니다" in revised
+
+
+def test_news_context_policy_scans_narrative_with_url_without_damaging_link() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "뉴스에서 리바로의 시장 확대가 입증됐습니다. "
+        "참고 링크: https://example.test/news/market-update"
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+
+    assert "입증" not in revised
+    assert "https://example.test/news/market-update" in revised
+
+
+def test_news_context_policy_preserves_url_sentence_before_forbidden_claim() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "참고 링크: https://example.test/news. "
+        "뉴스에서 리바로의 시장 확대가 입증됐습니다."
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+
+    assert "https://example.test/news" in revised
+    assert "입증" not in revised
+
+
+def test_claim_policy_report_does_not_treat_news_evidence_table_as_model_claim() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "기사 제목과 요약은 시장 동향 참고 자료입니다.\n\n"
+        "| 구분 | 원문 제목 |\n"
+        "| --- | --- |\n"
+        "| 뉴스 | 임상 효과 입증 기사 |"
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+    report = claim_policy_report(revised, fact_md)
+
+    assert "임상 효과 입증 기사" in revised
+    assert report["forbidden_claims_remaining"] == ()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.tools.query_layer.catalog import QueryCatalog, default_catalog
@@ -39,15 +40,18 @@ class QueryResultStore:
 
     _items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     _counter: int = 0
+    _lock: Lock = field(default_factory=Lock, repr=False)
 
     def put(self, rows: list[dict[str, Any]]) -> str:
-        self._counter += 1
-        result_id = f"qr_{self._counter:04d}"
-        self._items[result_id] = rows
-        return result_id
+        with self._lock:
+            self._counter += 1
+            result_id = f"qr_{self._counter:04d}"
+            self._items[result_id] = rows
+            return result_id
 
     def get(self, result_id: str) -> list[dict[str, Any]]:
-        return self._items[result_id]
+        with self._lock:
+            return self._items[result_id]
 
 
 class StrategicQueryLayer:

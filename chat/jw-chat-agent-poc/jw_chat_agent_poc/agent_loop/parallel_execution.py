@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import os
@@ -41,12 +41,16 @@ def execute_tool_batch(
     execute: Callable[[ToolCallPlan], T],
     *,
     max_workers: int | None = None,
+    additional_parallel_tools: Collection[str] = (),
 ) -> tuple[TimedExecution[T], ...]:
     """Run independent read-only support tools concurrently and preserve plan order."""
 
-    workers = _worker_count(max_workers)
+    parallel_indexes, workers = _parallel_execution_plan(
+        plans,
+        max_workers=max_workers,
+        additional_parallel_tools=additional_parallel_tools,
+    )
     results: list[TimedExecution[T] | None] = [None] * len(plans)
-    parallel_indexes = [index for index, plan in enumerate(plans) if plan.name in _PARALLEL_SAFE_TOOLS]
     serial_indexes = [index for index in range(len(plans)) if index not in parallel_indexes]
 
     for index in serial_indexes:
@@ -65,6 +69,35 @@ def execute_tool_batch(
                 results[index] = future.result()
 
     return tuple(item for item in results if item is not None)
+
+
+def planned_parallel_tool_names(
+    plans: Sequence[ToolCallPlan],
+    *,
+    max_workers: int | None = None,
+    additional_parallel_tools: Collection[str] = (),
+) -> frozenset[str]:
+    """Return tools that will actually enter the concurrent executor."""
+
+    indexes, workers = _parallel_execution_plan(
+        plans,
+        max_workers=max_workers,
+        additional_parallel_tools=additional_parallel_tools,
+    )
+    if len(indexes) < 2 or workers == 1:
+        return frozenset()
+    return frozenset(plans[index].name for index in indexes)
+
+
+def _parallel_execution_plan(
+    plans: Sequence[ToolCallPlan],
+    *,
+    max_workers: int | None,
+    additional_parallel_tools: Collection[str],
+) -> tuple[list[int], int]:
+    parallel_tools = _PARALLEL_SAFE_TOOLS.union(additional_parallel_tools)
+    indexes = [index for index, plan in enumerate(plans) if plan.name in parallel_tools]
+    return indexes, _worker_count(max_workers)
 
 
 def _timed(

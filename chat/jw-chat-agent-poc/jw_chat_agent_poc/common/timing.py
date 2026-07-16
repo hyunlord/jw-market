@@ -71,6 +71,7 @@ _PUBLIC_STAGE_NAMES = {
     "chart_generation": "차트 준비",
     "deep_research_prepare": "딥리서치 질문 분석",
     "deep_research_plan": "딥리서치 조사 설계",
+    "deep_research_file_batch": "딥리서치 첨부 파일 수집",
     "deep_research_tool_batch": "딥리서치 자료 수집",
     "deep_research_evidence": "딥리서치 근거 정리",
     "deep_research_synthesis": "딥리서치 종합 분석",

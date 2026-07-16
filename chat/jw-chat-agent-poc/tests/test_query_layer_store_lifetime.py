@@ -4,7 +4,7 @@ from collections.abc import Callable
 import threading
 import time
 
-from jw_chat_agent_poc.tools.query_layer.layer import StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer.layer import QueryResultStore, StrategicQueryLayer
 from jw_chat_agent_poc.tools.query_layer.store import MartSnapshot, TtlStrategicMartStore
 
 
@@ -72,6 +72,32 @@ def test_default_layers_share_store_but_isolate_query_results(monkeypatch) -> No
     assert second._results.put([{"brand": "B"}]) == "qr_0001"
     assert first._results.get("qr_0001") == [{"brand": "A"}]
     assert second._results.get("qr_0001") == [{"brand": "B"}]
+
+
+def test_query_result_store_allocates_unique_ids_under_concurrent_writes() -> None:
+    class YieldingCounter:
+        def __add__(self, _value: int) -> int:
+            time.sleep(0.02)
+            return 1
+
+    store = QueryResultStore()
+    object.__setattr__(store, "_counter", YieldingCounter())
+    start = threading.Barrier(3)
+    result_ids: list[str] = []
+
+    def put(brand: str) -> None:
+        start.wait(timeout=1)
+        result_ids.append(store.put([{"brand": brand}]))
+
+    threads = [threading.Thread(target=put, args=(brand,)) for brand in ("A", "B")]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=1)
+    for thread in threads:
+        thread.join(timeout=1)
+
+    assert sorted(result_ids) == ["qr_0001", "qr_0002"]
+    assert store.get("qr_0001") != store.get("qr_0002")
 
 
 def test_injected_readers_keep_private_stores() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import asdict, dataclass
 import json
 import logging
@@ -9,7 +9,10 @@ from typing import Any
 
 from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
-from jw_chat_agent_poc.agent_loop.parallel_execution import execute_tool_batch
+from jw_chat_agent_poc.agent_loop.parallel_execution import (
+    execute_tool_batch,
+    planned_parallel_tool_names,
+)
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
@@ -35,6 +38,36 @@ from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 logger = logging.getLogger(__name__)
+
+_DEEP_PARALLEL_MARKET_TOOLS = frozenset(
+    {"get_metric", "get_market_scope", "get_brand_series", "get_top_brands"}
+)
+_DEEP_TOOL_GROUP_BY_NAME = {
+    "get_metric": "시장",
+    "get_market_scope": "시장",
+    "get_brand_series": "시장",
+    "get_top_brands": "시장",
+    "search_news": "뉴스",
+    "search_clinical": "임상",
+    "search_drug_info": "허가",
+    "get_disease_stats": "환자",
+    "get_procedure_stats": "환자",
+    "search_safety": "안전성",
+    "search_patent": "특허",
+    "csd_activity_trend": "영업 활동",
+    "web_search": "웹",
+}
+_DEEP_TOOL_GROUP_ORDER = (
+    "시장",
+    "뉴스",
+    "임상",
+    "허가",
+    "환자",
+    "안전성",
+    "특허",
+    "영업 활동",
+    "웹",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,18 +229,49 @@ class ToolUseAgent:
             is_bq_batch = bool(
                 deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:")
             )
+            deep_parallel_tools = (
+                _DEEP_PARALLEL_MARKET_TOOLS if self.progress_namespace == "deep" else ()
+            )
+            deep_batch_detail = _deep_batch_progress_detail(
+                decision.tool_calls,
+                deep_parallel_tools,
+            )
             if is_bq_batch:
-                with stage(timing, self._stage_name("tool_batch", "deep_research_tool_batch"), f"step={step}; bounded independent support tools"):
+                detail = (
+                    deep_batch_detail
+                    if self.progress_namespace == "deep"
+                    else f"step={step}; bounded independent support tools"
+                )
+                with stage(
+                    timing,
+                    self._stage_name("tool_batch", "deep_research_tool_batch"),
+                    detail,
+                ) as batch_progress:
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
+                        additional_parallel_tools=deep_parallel_tools,
                     )
+                    if self.progress_namespace == "deep":
+                        batch_progress.summary = f"{deep_batch_detail} 완료"
             else:
-                with stage(timing, self._stage_name("tool_batch", "deep_research_tool_batch"), f"step={step}; independent support tools"):
+                detail = (
+                    deep_batch_detail
+                    if self.progress_namespace == "deep"
+                    else f"step={step}; independent support tools"
+                )
+                with stage(
+                    timing,
+                    self._stage_name("tool_batch", "deep_research_tool_batch"),
+                    detail,
+                ) as batch_progress:
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
+                        additional_parallel_tools=deep_parallel_tools,
                     )
+                    if self.progress_namespace == "deep":
+                        batch_progress.summary = f"{deep_batch_detail} 완료"
             for timed_execution in execution_batch:
                 plan = timed_execution.plan
                 execution = timed_execution.result
@@ -2140,3 +2204,32 @@ def _selected_tool_groups(calls: list[dict[str, Any]]) -> set[str]:
         if tool == "search_patent":
             selected.add("patent")
     return selected
+
+
+def _deep_batch_progress_detail(
+    plans: tuple[ToolCallPlan, ...],
+    additional_parallel_tools: Collection[str],
+) -> str:
+    parallel_tools = planned_parallel_tool_names(
+        plans,
+        additional_parallel_tools=additional_parallel_tools,
+    )
+    all_tools = {plan.name for plan in plans}
+    parallel_groups = _deep_tool_groups(parallel_tools)
+    serial_groups = _deep_tool_groups(all_tools.difference(parallel_tools))
+    if parallel_groups and serial_groups:
+        return f"{'·'.join(parallel_groups)} 동시 조회 · {'·'.join(serial_groups)} 순차 조회"
+    if parallel_groups:
+        return f"{'·'.join(parallel_groups)} 동시 조회"
+    if serial_groups:
+        return f"{'·'.join(serial_groups)} 순차 조회"
+    return "관련 근거 조회"
+
+
+def _deep_tool_groups(tool_names: set[str] | frozenset[str]) -> tuple[str, ...]:
+    selected = {
+        group
+        for tool_name in tool_names
+        if (group := _DEEP_TOOL_GROUP_BY_NAME.get(tool_name)) is not None
+    }
+    return tuple(group for group in _DEEP_TOOL_GROUP_ORDER if group in selected)

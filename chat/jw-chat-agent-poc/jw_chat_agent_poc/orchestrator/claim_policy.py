@@ -87,6 +87,11 @@ _PERIOD_RE: Final = re.compile(r"[12]\d{3}-\d{2}")
 _SENTENCE_RE: Final = re.compile(r"[^.!?\n。]+(?:[.!?。]|$)")
 _SOURCE_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*출처\b")
 _TIMING_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*처리\s*시간\b")
+_URL_RE: Final = re.compile(r"https?://[^\s<>\])]+")
+_PURE_SOURCE_LINE_RE: Final = re.compile(
+    r"^(?:[-*•]\s*)?(?:(?:출처|참고(?:\s*링크)?|링크)\s*:?\s*)?"
+    r"(?:\[[^\]]+\]\(https?://[^)]+\)|https?://\S+)$"
+)
 _BRAND_SHARE_DELTA_RE: Final = re.compile(
     r"(brand_share_delta_pctp|comparison_share_delta_pctp|브랜드\s+MS\s+변화|비교\s+브랜드\s+MS\s+변화|competitive_insight_signals|brand_trend_comparison)"
 )
@@ -145,7 +150,7 @@ def claim_policy_report(answer: str, fact_md: str) -> dict[str, tuple[str, ...]]
     for fact_type in active_fact_types:
         for claim_type in FORBIDDEN_BY_FACT_TYPE.get(fact_type, ()):
             pattern = _FORBIDDEN_PATTERNS_BY_CLAIM[claim_type]
-            if pattern.search(body):
+            if _has_forbidden_analysis_claim(body, pattern):
                 remaining.append(claim_type)
     return {
         "active_fact_types": active_fact_types,
@@ -220,6 +225,15 @@ def _drop_forbidden_claim_sentences(body: str, claim_types: tuple[str, ...]) -> 
         if revised:
             kept_lines.append(revised)
     return "\n".join(kept_lines), removed_any
+
+
+def _has_forbidden_analysis_claim(body: str, pattern: re.Pattern[str]) -> bool:
+    return any(
+        pattern.search(sentence)
+        for raw_line in body.splitlines()
+        if not _is_non_analysis_line(raw_line)
+        for sentence in _sentence_parts(raw_line)
+    )
 
 
 def _channel_safe_summary(question: str, fact_md: str) -> str:
@@ -321,13 +335,34 @@ def _period_from_fact_md(fact_md: str) -> str:
 
 def _sentence_parts(line: str) -> tuple[str, ...]:
     decimal_dot = "__CLAIM_POLICY_DECIMAL_DOT__"
-    protected = re.sub(r"(?<=\d)\.(?=\d)", decimal_dot, line)
+    protected_urls: dict[str, str] = {}
+
+    def protect_url(match: re.Match[str]) -> str:
+        raw_url = match.group(0)
+        url = raw_url.rstrip(".!?。")
+        trailing_punctuation = raw_url[len(url) :]
+        token = f"__CLAIM_POLICY_URL_{len(protected_urls)}__"
+        protected_urls[token] = url
+        return f"{token}{trailing_punctuation}"
+
+    protected = _URL_RE.sub(protect_url, line)
+    protected = re.sub(r"(?<=\d)\.(?=\d)", decimal_dot, protected)
     parts = tuple(
-        match.group(0).replace(decimal_dot, ".").strip()
+        _restore_protected_urls(
+            match.group(0).replace(decimal_dot, "."),
+            protected_urls,
+        ).strip()
         for match in _SENTENCE_RE.finditer(protected)
         if match.group(0).strip()
     )
     return parts or ((line.strip(),) if line.strip() else ())
+
+
+def _restore_protected_urls(text: str, protected_urls: dict[str, str]) -> str:
+    restored = text
+    for token, url in protected_urls.items():
+        restored = restored.replace(token, url)
+    return restored
 
 
 def _is_non_analysis_line(line: str) -> bool:
@@ -336,7 +371,7 @@ def _is_non_analysis_line(line: str) -> bool:
         return True
     if stripped.startswith(("|", ">")):
         return True
-    return bool(re.search(r"https?://", stripped))
+    return bool(_PURE_SOURCE_LINE_RE.fullmatch(stripped))
 
 
 def _split_sources(answer: str) -> tuple[str, str]:

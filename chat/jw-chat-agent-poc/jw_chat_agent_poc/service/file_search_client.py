@@ -29,7 +29,12 @@ class UploadedFileSearchResult:
     sql_trace: tuple[dict[str, str], ...] = ()
 
 
-def search_uploaded_files(question: str, conversation_id: str | None) -> UploadedFileSearchResult | None:
+def search_uploaded_files(
+    question: str,
+    conversation_id: str | None,
+    *,
+    include_all_files: bool = False,
+) -> UploadedFileSearchResult | None:
     """Query wf301 file bridge by conversation/session id.
 
     The bridge owns file-session isolation. Chat only forwards the stable
@@ -64,7 +69,11 @@ def search_uploaded_files(question: str, conversation_id: str | None) -> Uploade
         return None
     raw_sources = body.get("file_sources") or []
     raw_sql_sources = body.get("sql_sources") or []
-    requested_names = _requested_file_names(question, raw_sources, raw_sql_sources)
+    requested_names = (
+        frozenset()
+        if include_all_files
+        else _requested_file_names(question, raw_sources, raw_sql_sources)
+    )
     if requested_names:
         context = _filter_file_context(context, requested_names)
         raw_sources = _filter_named_sources(raw_sources, requested_names)

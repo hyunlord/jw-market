@@ -47,6 +47,36 @@ def test_market_query_tools_remain_serial() -> None:
     assert {item.mode for item in results} == {"serial"}
 
 
+def test_deep_read_only_market_tools_can_join_the_parallel_batch() -> None:
+    plans = (
+        ToolCallPlan("get_metric", {"brand": "리바로"}),
+        ToolCallPlan("get_market_scope", {"brand": "리바로"}),
+        ToolCallPlan("get_brand_series", {"brand": "리바로"}),
+        ToolCallPlan("get_top_brands", {"brand": "리바로"}),
+    )
+    state = {"active": 0, "peak": 0}
+    lock = Lock()
+
+    def execute(plan: ToolCallPlan) -> str:
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.02)
+        with lock:
+            state["active"] -= 1
+        return plan.name
+
+    results = execute_tool_batch(
+        plans,
+        execute,
+        max_workers=4,
+        additional_parallel_tools={plan.name for plan in plans},
+    )
+
+    assert state["peak"] == 4
+    assert {item.mode for item in results} == {"parallel"}
+
+
 def _delayed_name(plan: ToolCallPlan, delay: float) -> str:
     time.sleep(delay)
     return plan.name
