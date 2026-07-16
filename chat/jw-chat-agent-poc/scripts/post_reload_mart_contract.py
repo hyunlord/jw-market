@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 import json
 import math
@@ -11,9 +11,11 @@ from typing import Any, Final
 try:
     from .post_reload_fdm_contract import ReloadIdentity, validate_evidence as validate_fdm_evidence
     from .post_reload_fdm_values import rows, series
+    from .post_reload_mart_common import census_gate as _gate
 except ImportError:
     from post_reload_fdm_contract import ReloadIdentity, validate_evidence as validate_fdm_evidence
     from post_reload_fdm_values import rows, series
+    from post_reload_mart_common import census_gate as _gate
 
 
 ABS_TOLERANCE: Final = 0.01
@@ -24,31 +26,6 @@ EXPECTED_SOURCE_TABLES: Final = {
     "strategic_brand": "mart_strategic_ml_brand_metric",
     "strategic_market": "mart_strategic_ml_market_metric",
 }
-
-
-def _gate(
-    name: str,
-    *,
-    checked: int,
-    population: int,
-    failures: Sequence[str],
-    tolerance: str,
-) -> dict[str, Any]:
-    failure_list = list(failures)
-    exit_code = int(population == 0 or checked != population or bool(failure_list))
-    return {
-        "gate": name,
-        "classification": "census",
-        "checked": checked,
-        "population": population,
-        "missing": "fail",
-        "tolerance": tolerance,
-        "failures": failure_list,
-        "failure_reasons": failure_list,
-        "failure_count": len(failure_list),
-        "exit_code": exit_code,
-        "environment": "runtime_mart_read_only",
-    }
 
 
 def _utc(value: Any) -> datetime | None:
@@ -136,14 +113,13 @@ def _source_table_gate(
     )
 
 
-def _specialty_gate(
-    evidence_rows: Any,
-    gate_name: str,
+def summarize_specialty_rows(
+    evidence_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
     failures: list[str] = []
     checked = 0
     population = 0
-    for row in rows(evidence_rows):
+    for row in evidence_rows:
         identity = f"{row.get('market_id')}:{row.get('brand_name')}"
         metric_history = series(row.get("metric_history"))
         if not metric_history:
@@ -173,10 +149,32 @@ def _specialty_gate(
                     f"specialty_total_mismatch:{identity}:{period}:"
                     f"actual={actual}:expected={expected}"
                 )
+    return {
+        "checked": checked,
+        "population": population,
+        "failures": failures,
+    }
+
+
+def _specialty_gate(
+    evidence_rows: Any,
+    gate_name: str,
+) -> dict[str, Any]:
+    is_summary = isinstance(evidence_rows, Mapping) and {
+        "checked",
+        "population",
+        "failures",
+    }.issubset(evidence_rows)
+    summary = (
+        evidence_rows
+        if is_summary
+        else summarize_specialty_rows(rows(evidence_rows))
+    )
+    failures = [str(failure) for failure in summary.get("failures") or []]
     return _gate(
         gate_name,
-        checked=checked,
-        population=population,
+        checked=int(summary.get("checked") or 0),
+        population=int(summary.get("population") or 0),
         failures=failures,
         tolerance=f"absolute:{ABS_TOLERANCE}",
     )
@@ -196,8 +194,14 @@ def validate_evidence(
         _source_table_gate(evidence, identity),
         fdm_gates[2],
         fdm_gates[3],
-        _specialty_gate(evidence.get("general_specialty_rows"), "general_specialty_parity"),
-        _specialty_gate(evidence.get("strategic_specialty_rows"), "strategic_specialty_parity"),
+        _specialty_gate(
+            evidence.get("general_specialty_summary", evidence.get("general_specialty_rows")),
+            "general_specialty_parity",
+        ),
+        _specialty_gate(
+            evidence.get("strategic_specialty_summary", evidence.get("strategic_specialty_rows")),
+            "strategic_specialty_parity",
+        ),
     ]
     return {
         "reload_authorization": fdm_report["reload_authorization"],

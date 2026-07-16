@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -14,8 +13,18 @@ from typing import Any, Final
 
 try:
     from .post_reload_fdm_contract import ReloadIdentity, validate_evidence
+    from .post_reload_mart_common import (
+        aggregate_history_rows as _aggregate_history_rows,
+        marker_for_sql as _marker_for_sql,
+        normalize_utc_iso as _iso,
+    )
 except ImportError:
     from post_reload_fdm_contract import ReloadIdentity, validate_evidence
+    from post_reload_mart_common import (
+        aggregate_history_rows as _aggregate_history_rows,
+        marker_for_sql as _marker_for_sql,
+        normalize_utc_iso as _iso,
+    )
 
 
 IDENTITY_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -27,32 +36,6 @@ SIDECAR_DIMENSIONS: Final = (
     "route",
     "reimbursement",
 )
-
-
-def _iso(value: Any) -> str:
-    if isinstance(value, datetime):
-        parsed = value
-    else:
-        text = str(value or "").strip().replace(" ", "T")
-        if not text:
-            return ""
-        if text.endswith("Z"):
-            text = f"{text[:-1]}+00:00"
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return ""
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _marker_for_sql(value: str) -> datetime:
-    normalized = _iso(value)
-    if not normalized:
-        raise ValueError(f"invalid FDM computed_at marker: {value!r}")
-    return datetime.fromisoformat(normalized.replace("Z", "+00:00")).replace(tzinfo=None)
-
 
 def _fetch_all(cursor: Any, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
     cursor.execute(sql, params)
@@ -120,28 +103,30 @@ def collect_runtime_evidence(identity: ReloadIdentity) -> dict[str, Any]:
                 ORDER BY atc4_code
                 """,
             )
-            sidecar_rows = _fetch_all(
-                cursor,
-                """
-                SELECT atc4_code AS market_id, dimension_type, raw_value_history
-                FROM mart_general_filter_dimension_metric
-                WHERE source = 'ubist' AND measure = 'sales'
-                  AND dimension_type IN (%s, %s, %s, %s, %s)
-                  AND computed_at = %s
-                ORDER BY atc4_code, dimension_type, dimension_value_norm
-                """,
-                (*SIDECAR_DIMENSIONS, marker),
-            )
-            molecule_rows = _fetch_all(
-                cursor,
-                """
-                SELECT atc4_code AS market_id, dimension_type, raw_value_history
-                FROM mart_general_filter_dimension_metric
-                WHERE source = 'ubist' AND measure = 'sales'
-                  AND dimension_type = 'molecule'
-                ORDER BY atc4_code, dimension_value_norm
-                """,
-            )
+            with connection.cursor(pymysql.cursors.SSDictCursor) as stream_cursor:
+                stream_cursor.execute(
+                    """
+                    SELECT atc4_code AS market_id, dimension_type, raw_value_history
+                    FROM mart_general_filter_dimension_metric
+                    WHERE source = 'ubist' AND measure = 'sales'
+                      AND dimension_type IN (%s, %s, %s, %s, %s)
+                      AND computed_at = %s
+                    ORDER BY atc4_code, dimension_type, dimension_value_norm
+                    """,
+                    (*SIDECAR_DIMENSIONS, marker),
+                )
+                sidecar_rows = _aggregate_history_rows(stream_cursor)
+            with connection.cursor(pymysql.cursors.SSDictCursor) as stream_cursor:
+                stream_cursor.execute(
+                    """
+                    SELECT atc4_code AS market_id, dimension_type, raw_value_history
+                    FROM mart_general_filter_dimension_metric
+                    WHERE source = 'ubist' AND measure = 'sales'
+                      AND dimension_type = 'molecule'
+                    ORDER BY atc4_code, dimension_value_norm
+                    """
+                )
+                molecule_rows = _aggregate_history_rows(stream_cursor)
         connection.rollback()
     finally:
         connection.close()

@@ -263,6 +263,44 @@ def test_marker_row_count_is_checked_per_dimension() -> None:
     assert any("fdm_dimension_row_count_mismatch:route" in failure for failure in cohort["failure_reasons"])
 
 
+def test_high_cardinality_histories_are_compressed_to_market_dimension_aggregates() -> None:
+    def history_rows():
+        for _ in range(10_000):
+            yield {
+                "market_id": "C10A1",
+                "dimension_type": "seller",
+                "raw_value_history": _history(1.0, 2.0),
+            }
+
+    aggregates = post_reload_fdm_gate._aggregate_history_rows(history_rows())
+
+    assert aggregates == [
+        {
+            "market_id": "C10A1",
+            "dimension_type": "seller",
+            "raw_value_history": {"2026-04": 10_000.0, "2026-05": 20_000.0},
+            "source_row_count": 10_000,
+        }
+    ]
+
+
+def test_compressed_history_rows_preserve_census_and_parity_contracts() -> None:
+    evidence = _valid_evidence()
+    evidence["sidecar_rows"] = post_reload_fdm_gate._aggregate_history_rows(
+        evidence["sidecar_rows"]  # type: ignore[arg-type]
+    )
+    evidence["molecule_rows"] = post_reload_fdm_gate._aggregate_history_rows(
+        evidence["molecule_rows"]  # type: ignore[arg-type]
+    )
+
+    report = post_reload_fdm_gate.validate_evidence(evidence, _identity())
+
+    assert report["exit_code"] == 0
+    assert _gate(report, "fdm_reload_cohort")["checked"] == len(DIMENSIONS)
+    assert _gate(report, "general_dimension_parity")["exit_code"] == 0
+    assert _gate(report, "molecule_parity")["exit_code"] == 0
+
+
 def test_runtime_collector_targets_fdm_and_is_read_only() -> None:
     source = inspect.getsource(post_reload_fdm_gate.collect_runtime_evidence)
     normalized = re.sub(r"[_,.\s]", "", inspect.getsource(post_reload_fdm_gate))
@@ -275,6 +313,9 @@ def test_runtime_collector_targets_fdm_and_is_read_only() -> None:
     assert "mart_analysis_level_block" not in source
     assert "source_epoch" not in source
     assert "build_version" not in source
+    assert "SSDictCursor" in source
+    assert "sidecar_rows = _fetch_all" not in source
+    assert "molecule_rows = _fetch_all" not in source
     assert not re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|TRUNCATE)\b", source)
     assert "127504" not in normalized
     assert "82054" not in normalized

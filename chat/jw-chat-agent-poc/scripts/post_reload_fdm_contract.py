@@ -11,9 +11,11 @@ from typing import Any, Final
 try:
     from .post_reload_fdm_values import rows as _rows
     from .post_reload_fdm_values import series as _series
+    from .post_reload_mart_common import census_gate as _gate
 except ImportError:
     from post_reload_fdm_values import rows as _rows
     from post_reload_fdm_values import series as _series
+    from post_reload_mart_common import census_gate as _gate
 
 
 ABS_TOLERANCE: Final = 0.01
@@ -33,31 +35,6 @@ class ReloadIdentity:
     reload_run_id: str
     database: str
     fdm_computed_at: str
-
-
-def _gate(
-    name: str,
-    *,
-    checked: int,
-    population: int,
-    failures: Sequence[str],
-    tolerance: str,
-) -> dict[str, Any]:
-    failure_list = list(failures)
-    exit_code = int(population == 0 or checked != population or bool(failure_list))
-    return {
-        "gate": name,
-        "classification": "census",
-        "checked": checked,
-        "population": population,
-        "missing": "fail",
-        "tolerance": tolerance,
-        "failures": failure_list,
-        "failure_reasons": failure_list,
-        "failure_count": len(failure_list),
-        "exit_code": exit_code,
-        "environment": "runtime_mart_read_only",
-    }
 
 
 def _market_totals(rows: Iterable[Mapping[str, Any]]) -> tuple[dict[str, dict[str, float]], list[str]]:
@@ -116,7 +93,13 @@ def _cohort_gate(evidence: Mapping[str, Any], identity: ReloadIdentity) -> dict[
     expected = set(SIDECAR_DIMENSIONS)
     actual = set(by_dimension)
     for row in sidecar_rows:
-        captured_by_dimension[str(row.get("dimension_type") or "")] += 1
+        dimension = str(row.get("dimension_type") or "")
+        source_row_count = row.get("source_row_count")
+        captured_count = int(source_row_count) if source_row_count is not None else 1
+        if captured_count <= 0:
+            failures.append(f"fdm_source_row_count_invalid:{dimension or '<empty>'}")
+            continue
+        captured_by_dimension[dimension] += captured_count
     if actual != expected:
         failures.append(
             f"dimension_coverage_mismatch:missing={sorted(expected - actual)}:extra={sorted(actual - expected)}"
@@ -149,7 +132,7 @@ def _cohort_gate(evidence: Mapping[str, Any], identity: ReloadIdentity) -> dict[
             )
         if row_count > 0 and marker_count == 1 and marker_matches:
             checked += 1
-    captured_rows = len(sidecar_rows)
+    captured_rows = sum(captured_by_dimension.values())
     if reported_rows != captured_rows:
         failures.append(f"fdm_row_count_mismatch:reported={reported_rows}:captured={captured_rows}")
     return _gate(

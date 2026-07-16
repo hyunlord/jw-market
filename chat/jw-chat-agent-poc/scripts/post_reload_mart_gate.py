@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import json
 import os
@@ -20,7 +20,11 @@ try:
         collect_runtime_evidence as collect_fdm_evidence,
     )
     from .post_reload_fdm_contract import ReloadIdentity
-    from .post_reload_mart_contract import EXPECTED_SOURCE_TABLES, validate_evidence
+    from .post_reload_mart_contract import (
+        EXPECTED_SOURCE_TABLES,
+        summarize_specialty_rows as _summarize_specialty_rows,
+        validate_evidence,
+    )
 except ImportError:
     from post_reload_fdm_gate import (
         _authorization_failure,
@@ -29,7 +33,11 @@ except ImportError:
         collect_runtime_evidence as collect_fdm_evidence,
     )
     from post_reload_fdm_contract import ReloadIdentity
-    from post_reload_mart_contract import EXPECTED_SOURCE_TABLES, validate_evidence
+    from post_reload_mart_contract import (
+        EXPECTED_SOURCE_TABLES,
+        summarize_specialty_rows as _summarize_specialty_rows,
+        validate_evidence,
+    )
 
 
 IDENTIFIER_RE: Final = re.compile(r"^[A-Za-z0-9_]+$")
@@ -57,11 +65,6 @@ def _iso(value: Any) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _fetch_all(cursor: Any, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
-    cursor.execute(sql, params)
-    return [dict(row) for row in cursor.fetchall()]
 
 
 def _collect_source_tables(cursor: Any, database: str) -> list[dict[str, Any]]:
@@ -129,24 +132,26 @@ def collect_runtime_evidence(identity: ReloadIdentity) -> dict[str, Any]:
                 cursor.execute("SELECT @@session.transaction_read_only AS tx_read_only")
             source_tx_read_only = int(cursor.fetchone()["tx_read_only"])
             source_tables = _collect_source_tables(cursor, identity.database)
-            general_specialty_rows = _fetch_all(
-                cursor,
-                """
-                SELECT atc4_code AS market_id, brand_name, metric_history, specialty_data
-                FROM mart_general_brand_metric
-                WHERE source = 'ubist' AND measure = 'sales'
-                ORDER BY atc4_code, brand_name, brand_key
-                """,
-            )
-            strategic_specialty_rows = _fetch_all(
-                cursor,
-                """
-                SELECT ml_id AS market_id, brand_name, metric_history, specialty_data
-                FROM mart_strategic_ml_brand_metric
-                WHERE source = 'ubist' AND measure = 'sales'
-                ORDER BY ml_id, brand_name, brand_key
-                """,
-            )
+            with connection.cursor(pymysql.cursors.SSDictCursor) as stream_cursor:
+                stream_cursor.execute(
+                    """
+                    SELECT atc4_code AS market_id, brand_name, metric_history, specialty_data
+                    FROM mart_general_brand_metric
+                    WHERE source = 'ubist' AND measure = 'sales'
+                    ORDER BY atc4_code, brand_name, brand_key
+                    """
+                )
+                general_specialty_summary = _summarize_specialty_rows(stream_cursor)
+            with connection.cursor(pymysql.cursors.SSDictCursor) as stream_cursor:
+                stream_cursor.execute(
+                    """
+                    SELECT ml_id AS market_id, brand_name, metric_history, specialty_data
+                    FROM mart_strategic_ml_brand_metric
+                    WHERE source = 'ubist' AND measure = 'sales'
+                    ORDER BY ml_id, brand_name, brand_key
+                    """
+                )
+                strategic_specialty_summary = _summarize_specialty_rows(stream_cursor)
         connection.rollback()
     finally:
         connection.close()
@@ -154,8 +159,8 @@ def collect_runtime_evidence(identity: ReloadIdentity) -> dict[str, Any]:
         **evidence,
         "tx_read_only": int(int(evidence.get("tx_read_only") or 0) == 1 and source_tx_read_only == 1),
         "source_tables": source_tables,
-        "general_specialty_rows": general_specialty_rows,
-        "strategic_specialty_rows": strategic_specialty_rows,
+        "general_specialty_summary": general_specialty_summary,
+        "strategic_specialty_summary": strategic_specialty_summary,
     }
 
 

@@ -277,6 +277,46 @@ def test_wrong_database_or_marker_is_rejected_even_when_values_match() -> None:
     assert _gate(marker_report, "fdm_reload_cohort")["exit_code"] == 1
 
 
+def test_high_cardinality_specialty_rows_are_reduced_to_a_gate_summary() -> None:
+    specialty = {
+        "내과": _history(36.0, 40.0),
+        "순환기": _history(54.0, 60.0),
+    }
+
+    def specialty_rows():
+        for index in range(10_000):
+            yield {
+                "market_id": "C10A1",
+                "brand_name": f"Brand {index}",
+                "metric_history": _history(90.0, 100.0),
+                "specialty_data": specialty,
+            }
+
+    summary = post_reload_mart_gate._summarize_specialty_rows(specialty_rows())
+
+    assert summary == {
+        "checked": 20_000,
+        "population": 20_000,
+        "failures": [],
+    }
+
+
+def test_specialty_summaries_preserve_the_seven_gate_contract() -> None:
+    evidence = _valid_evidence()
+    evidence["general_specialty_summary"] = post_reload_mart_gate._summarize_specialty_rows(
+        evidence.pop("general_specialty_rows")  # type: ignore[arg-type]
+    )
+    evidence["strategic_specialty_summary"] = post_reload_mart_gate._summarize_specialty_rows(
+        evidence.pop("strategic_specialty_rows")  # type: ignore[arg-type]
+    )
+
+    report = post_reload_mart_gate.validate_evidence(evidence, _identity())
+
+    assert report["exit_code"] == 0
+    assert _gate(report, "general_specialty_parity")["checked"] == 2
+    assert _gate(report, "strategic_specialty_parity")["checked"] == 2
+
+
 def test_runtime_collector_is_read_only_and_has_no_legacy_block_dependency() -> None:
     source = inspect.getsource(post_reload_mart_gate.collect_runtime_evidence)
     module_source = inspect.getsource(post_reload_mart_gate)
@@ -288,6 +328,9 @@ def test_runtime_collector_is_read_only_and_has_no_legacy_block_dependency() -> 
     assert "mart_analysis_level_block" not in module_source
     assert "source_epoch" not in module_source
     assert "build_version" not in module_source
+    assert "SSDictCursor" in source
+    assert "general_specialty_rows = _fetch_all" not in source
+    assert "strategic_specialty_rows = _fetch_all" not in source
     assert not re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|TRUNCATE)\b", source)
     assert "127504" not in normalized
     assert "82054" not in normalized
