@@ -8,13 +8,20 @@ from pipeline.scripts.gates.latency_matrix_types import MatrixCase
 
 
 LATENCY_MATRIX_PROVENANCE = {
-    "population_rule": "default brands plus required edge brands; all discovered contexts and listed sources",
+    "population_rule": (
+        "default membership plus required edge brands; normalized search-resolved contexts and "
+        "reference-supported sources; serial execution"
+    ),
     "reference": "live-production",
 }
 
 
 def _brand_name(item: Mapping[str, Any]) -> str:
     return str(item.get("brand") or item.get("name") or item.get("brand_name") or "").strip()
+
+
+def normalize_brand_identity(value: object) -> str:
+    return "".join(str(value or "").split()).casefold()
 
 
 def _items(payload: object) -> list[Mapping[str, Any]]:
@@ -25,7 +32,11 @@ def _items(payload: object) -> list[Mapping[str, Any]]:
 
 
 def _exact_search_item(payload: object, brand: str) -> Mapping[str, Any] | None:
-    return next((item for item in _items(payload) if _brand_name(item) == brand), None)
+    expected = normalize_brand_identity(brand)
+    return next(
+        (item for item in _items(payload) if normalize_brand_identity(_brand_name(item)) == expected),
+        None,
+    )
 
 
 def resolved_brand_names(
@@ -196,7 +207,11 @@ def build_latency_matrix_cases(
     required_cd_brands: Sequence[str] = (),
     group_scopes: Sequence[tuple[str, str]] = (),
 ) -> tuple[MatrixCase, ...]:
-    defaults = {_brand_name(item): item for item in _items(default_brands) if _brand_name(item)}
+    defaults = {
+        normalize_brand_identity(_brand_name(item)): item
+        for item in _items(default_brands)
+        if _brand_name(item)
+    }
     all_requested = tuple(
         dict.fromkeys((*requested_brands, *required_cd_brands, *(member for _option_id, member in group_scopes)))
     )
@@ -216,7 +231,8 @@ def build_latency_matrix_cases(
         if item is None:
             continue
         contexts = _contexts(item)
-        atc4 = _atc4_values(defaults.get(brand, {}), contexts)
+        default_item = defaults.get(normalize_brand_identity(brand), {})
+        atc4 = _atc4_values(default_item, contexts)
         cases.append(
             MatrixCase(
                 identifier=f"brand_activity:presence:{brand}",
@@ -225,11 +241,17 @@ def build_latency_matrix_cases(
             )
         )
         views = sorted({view for view, _market_id in contexts})
+        emitted_filter_options: set[tuple[str, str]] = set()
         for view in views:
             view_market_id = next(market_id for context_view, market_id in contexts if context_view == view)
-            sources = _sources(item, defaults.get(brand, {}), view)
+            sources = _sources(item, default_item, view)
             for source in sources:
-                cases.extend((_dynamic_case(brand, view, source, atc4), _filter_options_case(brand, view, source)))
+                cases.append(_dynamic_case(brand, view, source, atc4))
+                public_view = "general" if view == "general" else "strategic"
+                filter_identity = (public_view, source)
+                if filter_identity not in emitted_filter_options:
+                    cases.append(_filter_options_case(brand, public_view, source))
+                    emitted_filter_options.add(filter_identity)
             cases.append(
                 MatrixCase(
                     identifier=f"brand_activity:csd_activity:{brand}:{view}",

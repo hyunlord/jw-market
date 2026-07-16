@@ -788,8 +788,12 @@ def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) ->
         raise ValueError("latency matrix evidence requires classification=census")
     expected_cases = evidence.get("expected_cases")
     observations = evidence.get("observations")
+    default_brands = evidence.get("default_brands")
     requested_brands = evidence.get("requested_brands")
     resolved_brands = evidence.get("resolved_brands")
+    context_resolved_brands = evidence.get("context_resolved_brands")
+    default_only_brands = evidence.get("default_only_brands")
+    excluded_reference_cases = evidence.get("excluded_reference_cases")
     if not isinstance(expected_cases, list) or not expected_cases:
         raise ValueError("latency matrix expected_cases must be a non-empty array")
     if not all(isinstance(identifier, str) and identifier for identifier in expected_cases):
@@ -798,16 +802,44 @@ def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) ->
         raise ValueError("latency matrix expected case identities must be unique")
     if not isinstance(observations, list):
         raise ValueError("latency matrix observations must be an array")
+    if not isinstance(default_brands, list) or not all(isinstance(brand, str) for brand in default_brands):
+        raise ValueError("latency matrix default_brands must be a string array")
     if not isinstance(requested_brands, list) or not all(isinstance(brand, str) for brand in requested_brands):
         raise ValueError("latency matrix requested_brands must be a string array")
     if not isinstance(resolved_brands, list) or not all(isinstance(brand, str) for brand in resolved_brands):
         raise ValueError("latency matrix resolved_brands must be a string array")
+    if not isinstance(context_resolved_brands, list) or not all(
+        isinstance(brand, str) for brand in context_resolved_brands
+    ):
+        raise ValueError("latency matrix context_resolved_brands must be a string array")
+    if not isinstance(default_only_brands, list) or not all(isinstance(brand, str) for brand in default_only_brands):
+        raise ValueError("latency matrix default_only_brands must be a string array")
+    if not isinstance(excluded_reference_cases, list):
+        raise ValueError("latency matrix excluded_reference_cases must be an array")
 
     details: list[str] = []
     failures = 0
     if evidence.get("provenance") != LATENCY_MATRIX_PROVENANCE:
         details.append(f"latency_matrix: invalid provenance {evidence.get('provenance')!r}")
         failures += 1
+    default_set = set(default_brands)
+    requested_set = set(requested_brands)
+    resolved_set = set(resolved_brands)
+    context_set = set(context_resolved_brands)
+    default_only_set = set(default_only_brands)
+    if context_set & default_only_set:
+        details.append("resolution partitions overlap: " + ",".join(sorted(context_set & default_only_set)))
+        failures += len(context_set & default_only_set)
+    if default_only_set != default_set - context_set:
+        details.append("default-only partition does not match default membership without search context")
+        failures += 1
+    if resolved_set != default_set | context_set:
+        details.append("resolved brands do not equal default membership plus context-resolved brands")
+        failures += 1
+    extra_resolved = sorted(resolved_set - requested_set)
+    if extra_resolved:
+        details.append("resolved brands were not requested: " + ",".join(extra_resolved))
+        failures += len(extra_resolved)
     unresolved = sorted(set(requested_brands) - set(resolved_brands))
     if unresolved:
         details.append("unresolved required brands: " + ",".join(unresolved))
@@ -832,7 +864,26 @@ def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) ->
         if identifier in observed:
             raise ValueError(f"duplicate latency matrix identity: {identifier}")
         observed[identifier] = item
+    excluded_ids: set[str] = set()
+    for item in excluded_reference_cases:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError("excluded reference cases require string id")
+        identifier = item["id"]
+        if identifier in excluded_ids:
+            raise ValueError(f"duplicate excluded reference identity: {identifier}")
+        excluded_ids.add(identifier)
+        if (
+            not identifier.startswith("deep:")
+            or item.get("reason") != "source_not_available"
+            or item.get("reference_status") != 422
+        ):
+            details.append(f"{identifier}: invalid reference exclusion")
+            failures += 1
     expected = set(expected_cases)
+    leaked_exclusions = sorted(excluded_ids & (expected | set(observed)))
+    if leaked_exclusions:
+        details.append("excluded reference cases leaked into census: " + ",".join(leaked_exclusions))
+        failures += len(leaked_exclusions)
     missing = sorted(expected - set(observed))
     unexpected = sorted(set(observed) - expected)
     if missing:
@@ -1518,7 +1569,7 @@ def _parser() -> argparse.ArgumentParser:
     latency_matrix.add_argument("--candidate-url", required=True)
     latency_matrix.add_argument("--reference-url", required=True)
     latency_matrix.add_argument("--timeout-seconds", type=float, default=240.0)
-    latency_matrix.add_argument("--max-workers", type=int, default=8)
+    latency_matrix.add_argument("--max-workers", type=int, default=1)
     latency_matrix.add_argument("--evidence-output", type=Path)
     latency_matrix.add_argument("--environment", default="test2")
 

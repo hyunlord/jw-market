@@ -6,7 +6,7 @@ from pipeline.scripts.api.models.brand_activity import (
     BrandActivityTopicsRequest,
     CsdTimeseriesRequest,
 )
-from pipeline.scripts.gates.latency_matrix_cases import build_latency_matrix_cases
+from pipeline.scripts.gates.latency_matrix_cases import LATENCY_MATRIX_PROVENANCE, build_latency_matrix_cases
 from pipeline.scripts.gates.release_acceptance import check_latency_matrix_evidence
 from pipeline.scripts.gates.latency_matrix_required import REQUIRED_GROUP_SCOPES
 
@@ -116,12 +116,13 @@ def test_required_group_scope_bodies_match_public_request_contracts() -> None:
 def test_latency_matrix_gate_rejects_missing_required_surface_contract() -> None:
     evidence = {
         "classification": "census",
-        "provenance": {
-            "population_rule": "default brands plus required edge brands; all discovered contexts and listed sources",
-            "reference": "live-production",
-        },
+        "provenance": LATENCY_MATRIX_PROVENANCE,
+        "default_brands": ["리바로"],
         "requested_brands": ["리바로"],
         "resolved_brands": ["리바로"],
+        "context_resolved_brands": ["리바로"],
+        "default_only_brands": [],
+        "excluded_reference_cases": [],
         "required_cd_brands": ["악템라", "가드렛"],
         "required_group_scopes": [
             ["group:livalo_family", "리바로"],

@@ -144,13 +144,22 @@ probe errors, and either direction of `listed != has_data`.
 ## Latency regression matrix
 
 The `latency-matrix` command builds its population from the reference runtime's
-25 default brands plus the required expanded edge brands. It discovers every
+default membership plus the required expanded edge brands. Search identities
+are whitespace-normalized before context resolution. A default member with no
+search context remains recorded as default-only, while context-dependent cases
+are emitted only for search-resolved brands. The matrix discovers every
 published general, strategic market-landscape, and strategic competitive-
-dynamics context and every listed source. The matrix compares candidate and
-reference responses for dynamic-market, cause, deep-analysis, filter-options,
-brand search, and all five public Brand Activity surfaces. Deep-analysis masks
-only the top-level `generated_at` timestamp; every other response is compared
-as exact bytes.
+dynamics context and every listed source. Reference deep-analysis combinations
+that explicitly return `source_not_available` are recorded and excluded before
+the candidate is called; every other non-200 remains a failure.
+
+The matrix compares candidate and reference responses for dynamic-market,
+cause, deep-analysis, filter-options, brand search, and all public Brand
+Activity surfaces. Filter-options uses the public `general|strategic` view
+contract, deduplicated per brand and source. Deep-analysis masks only the
+top-level `generated_at` timestamp; every other response is compared as exact
+bytes. The census runs serially (`max_workers=1`) so the gate itself cannot
+manufacture single-flight or busy-guard 429 responses.
 
 The competitive-dynamics population must include `악템라` and `가드렛`.
 Brand Activity additionally probes the general-view groups
