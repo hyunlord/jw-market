@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
+from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 from jw_chat_agent_poc.service.runtime_provenance import _empty_result_calls, _ungrounded_numbers, trace_envelope
 from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
@@ -287,6 +288,67 @@ def test_deterministic_web_appendix_is_excluded_from_claim_grounding() -> None:
             web_search_mi_section_from_calls(tool_calls),
         )
     )
+
+    assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("99.99억원",)
+
+
+def test_cleaned_deterministic_web_appendix_is_excluded_from_claim_grounding() -> None:
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "리바로 1위브랜드 허가 기사",
+                        "url": "https://www.biospectator.com/news/view/27271",
+                        "snippet": "리바로 허가 이력을 정리한 기사입니다.",
+                        "published_date": "2016-05-20",
+                    }
+                ]
+            },
+        }
+    ]
+    answer = cleanup_markdown_answer(
+        "\n\n".join(
+            (
+                "시장 수치는 99.99억원입니다.",
+                web_search_mi_section_from_calls(tool_calls),
+            )
+        )
+    )
+
+    assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("99.99억원",)
+
+
+def test_web_appendix_heading_alone_does_not_bypass_claim_grounding() -> None:
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "리바로 허가 기사",
+                        "url": "https://example.test/article",
+                        "snippet": "리바로 허가 이력을 정리한 기사입니다.",
+                        "published_date": "2016-05-20",
+                    }
+                ]
+            },
+        }
+    ]
+    answer = "### 웹 검색 결과(미검증)\n\n시장 수치는 99.99억원입니다."
 
     assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("99.99억원",)
 

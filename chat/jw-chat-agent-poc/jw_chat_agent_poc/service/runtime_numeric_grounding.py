@@ -7,6 +7,7 @@ from typing import Any, Final
 from jw_chat_agent_poc.orchestrator.markdown_formatting import precise_eok_value
 from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
+from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
 
@@ -56,6 +57,10 @@ def _without_deterministic_web_appendix(
     tool_calls: Sequence[Mapping[str, Any]],
 ) -> str:
     section = web_search_mi_section_from_calls(tool_calls)
-    if not section or not answer.rstrip().endswith(section):
+    if not section:
         return answer
-    return answer.rstrip()[: -len(section)].rstrip()
+    stripped_answer = answer.rstrip()
+    for appendix in (section, cleanup_markdown_answer(section)):
+        if stripped_answer.endswith(appendix):
+            return stripped_answer[: -len(appendix)].rstrip()
+    return answer
