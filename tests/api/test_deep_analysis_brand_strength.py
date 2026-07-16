@@ -192,6 +192,7 @@ def test_strategic_mart_lookup_projects_only_runtime_columns(monkeypatch) -> Non
         assert "brand_name" in sql
         assert "ml_id" in sql
         assert "computed_at" in sql
+        assert "is_target" not in sql
 
     catalog_queries: list[str] = []
 

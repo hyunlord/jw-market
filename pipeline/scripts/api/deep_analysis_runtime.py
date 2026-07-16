@@ -19,7 +19,7 @@ from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 logger = logging.getLogger(__name__)
 
 _STRATEGIC_BRAND_RUNTIME_COLUMNS = (
-    "brand_key, brand_name, ml_id, source, measure, is_jw, is_target, computed_at"
+    "brand_key, brand_name, ml_id, source, measure, is_jw, computed_at"
 )
 _STRATEGIC_MARKET_RUNTIME_COLUMNS = "name, data_source, atc_codes_json"
 
