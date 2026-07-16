@@ -1036,7 +1036,11 @@ def test_strategic_runtime_replaces_cd_definition_atcs_with_actual_mart_universe
             }
         }
 
+    apply_calls = 0
+
     def fake_apply(payload: dict[str, object], _market_id: str) -> None:
+        nonlocal apply_calls
+        apply_calls += 1
         meta = payload["market_meta"]
         assert isinstance(meta, dict)
         assert meta["atc_codes"] == ["악템라"]
@@ -1062,6 +1066,7 @@ def test_strategic_runtime_replaces_cd_definition_atcs_with_actual_mart_universe
     assert meta["market_definition_full"] == "악템라"
     assert meta["atc_codes"] == ["L01G1", "L04B0", "L04D0", "M01C0"]
     assert meta["atc_count"] == 4
+    assert apply_calls == 2
 
 
 def test_strategic_runtime_rejects_period_window_without_observed_points(monkeypatch) -> None:

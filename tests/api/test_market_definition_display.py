@@ -266,3 +266,37 @@ def test_apply_cd_market_definition_preserves_actual_atc_codes_and_display_label
     assert payload["market_meta"]["market_definition_full"] == "악템라"
     assert payload["market_meta"]["atc_codes"] == ["L01G1", "L04B0", "L04D0", "M01C0"]
     assert payload["market_meta"]["atc_count"] == 4
+
+
+def test_apply_cd_market_definition_second_pass_preserves_legacy_ml_equal_label(monkeypatch) -> None:
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_004": {
+                "competitive_dynamics_id": "cd_004",
+                "strategic_market_id": "strategy_004",
+                "cd_definition_type": "ml_equals_cd_exact",
+                "cd_filter_raw_json": '[{"value":"B02E1"},{"value":"B02E9"}]',
+                "cd_definition_brand_class": "default",
+            }
+        },
+    )
+    payload = {
+        "market_meta": {
+            "view_source_id": "cd_004",
+            "market_name": "타발리스",
+            "market_definition_label": "혈소판",
+            "market_definition_full": "타발리스 시장 정의",
+            "atc_codes": [],
+            "atc_count": None,
+        }
+    }
+
+    apply_cd_market_definition(payload)
+    apply_cd_market_definition(payload)
+
+    assert payload["market_meta"]["market_definition_label"] == "1 ATC"
+    assert payload["market_meta"]["market_definition_full"] == "타발리스 경쟁 시장 (B02E1)"
+    assert payload["market_meta"]["atc_codes"] == ["B02E1"]
+    assert payload["market_meta"]["atc_count"] == 1

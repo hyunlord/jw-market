@@ -175,6 +175,9 @@ def _build_strategic_payload(
     composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
     apply_cd_market_definition(composed, view_source_id)
     if market_kind == "cd":
+        # Preserve the route's legacy second-pass display normalization before
+        # replacing only the ATC metadata with the mart-backed CD universe.
+        apply_cd_market_definition(composed, view_source_id)
         actual_atc_codes = strategic_atc4_codes(
             mart_db=mart_db,
             source=mart_source,
