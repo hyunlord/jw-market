@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pipeline.scripts.etl.phase29_events import (
     _filter_cut_b_rows,
+    get_brand_events_cut_b,
     _filter_news_exposure_rows,
     _query_events,
     ensure_events_raw_table,
@@ -123,3 +124,15 @@ def test_query_events_applies_policy_predicate_in_source_sql() -> None:
     )
     assert "workflow_196_rev5674" in select_params
     assert "기타" in select_params
+
+
+def test_cut_b_query_drops_derivation_and_lookback_restrictions() -> None:
+    conn = _FakeConn(counts=[1])
+
+    result = get_brand_events_cut_b(conn, "리바로")  # type: ignore[arg-type]
+
+    select_sql = next(sql for sql in conn.statements if "FROM event_brand_scores s" in sql)
+
+    assert result == []
+    assert "s.derivation = %s" not in select_sql
+    assert "DATE_SUB" not in select_sql

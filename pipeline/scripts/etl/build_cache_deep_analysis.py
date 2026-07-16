@@ -86,6 +86,7 @@ EVENT_DEDUP_SIMILARITY_THRESHOLD = 0.80
 EVENT_LIST_THRESHOLD = 30
 EVENT_LIST_MIN = 10
 EVENT_LIST_MAX = 50
+EVENT_CHART_MIN = 5
 EVENT_CHART_MAX = 15
 BRAND_METADATA_BY_NAME = {item.brand: item for item in BRAND_METADATA}
 
@@ -215,7 +216,14 @@ def _bounded_event_count(events: list[dict[str, Any]], *, threshold: int, minimu
 
 
 def _apply_event_cut_flags(events: list[dict[str, Any]], *, chart_event_ids: set[str]) -> list[dict[str, Any]]:
-    """Attach list visibility and versioned Cut B chart membership."""
+    """Attach list visibility and bounded Cut B chart highlighting.
+
+    Chart candidates are only the exposed (Cut A) events, so nothing outside the
+    news list can be highlighted. The versioned Cut B set sizes the natural
+    highlight count, then Cut A-style bounds apply: fill up to EVENT_CHART_MIN
+    from the score-descending exposed events (never inventing beyond what is
+    exposed) and cap at EVENT_CHART_MAX.
+    """
     sorted_events = sorted(events, key=_event_sort_key, reverse=True)[:EVENT_LIST_MAX]
     list_count = _bounded_event_count(
         sorted_events,
@@ -223,12 +231,17 @@ def _apply_event_cut_flags(events: list[dict[str, Any]], *, chart_event_ids: set
         minimum=EVENT_LIST_MIN,
         maximum=EVENT_LIST_MAX,
     )
+    natural_chart_hits = sum(1 for event in sorted_events if str(event.get("id")) in chart_event_ids)
+    chart_count = min(
+        max(natural_chart_hits, min(EVENT_CHART_MIN, len(sorted_events))),
+        EVENT_CHART_MAX,
+    )
 
     flagged: list[dict[str, Any]] = []
     for index, event in enumerate(sorted_events):
         row = dict(event)
         row["on_list"] = index < list_count
-        row["on_chart"] = str(row.get("id")) in chart_event_ids
+        row["on_chart"] = index < chart_count
         flagged.append(row)
     return flagged
 

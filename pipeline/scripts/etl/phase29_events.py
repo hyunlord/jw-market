@@ -356,17 +356,23 @@ def get_brand_events_cut_b(
     conn: pymysql.connections.Connection,
     brand: str,
     *,
-    lookback_months: int | None = 6,
+    lookback_months: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Cut B: processor-versioned direct-only chart/model events."""
+    """Cut B: processor-versioned chart/model events across all derivations.
+
+    Score is the only membership criterion: the derivation restriction and the
+    six-month lookback were removed so exposed news from any derivation and any
+    period can qualify. ``min_score=80`` is a SQL pushdown equal to the lowest
+    versioned Cut B threshold; the authoritative per-processor cut stays in
+    :func:`_filter_cut_b_rows`.
+    """
     rows = _query_events(
         conn,
         brand,
         min_score=80,
         lookback_months=lookback_months,
         limit=None,
-        derivation="llm_direct",
     )
     exposed_rows = _filter_cut_b_rows(rows)
     if limit is not None:
@@ -422,7 +428,8 @@ def build_events_for_cache(conn: pymysql.connections.Connection, brand: str) -> 
             "cut_a_final_lookback_months": cut_a_final_lookback,
             "cut_b_threshold": 80,
             "cut_b_threshold_rev5674": 88,
-            "cut_b_derivation": "llm_direct",
+            "cut_b_derivation": None,
+            "cut_b_lookback_months": None,
         },
     }
 
