@@ -385,7 +385,14 @@ def main() -> None:
     conn = connect_db()
     result: dict[str, Any] = {"database": os.environ.get("MARIADB_DATABASE", TARGET_DATABASE), "table": args.table}
     try:
-        if args.ensure_table:
+        # --dry-run wins over every other flag: no DDL, no upsert, no commit,
+        # regardless of combination (2026-07-17 incident: --dry-run --pilot-fill
+        # combined still upserted one live row).
+        if args.dry_run:
+            blocked = [name for name in ("ensure_table", "pilot_fill") if getattr(args, name)]
+            if blocked:
+                result["dry_run_blocked_writes"] = blocked
+        if args.ensure_table and not args.dry_run:
             ensure_cache_brand_elements_table(conn, args.table)
             conn.commit()
             result["ensure_table"] = {"ok": True}
@@ -395,7 +402,7 @@ def main() -> None:
         if args.dry_run:
             payloads = build_brand_element_payloads(conn, brands, agent3_schema=args.agent3_schema)
             result["dry_run"] = {"brands": len(brands), "sample": [payload.brand_key for payload in payloads[:10]]}
-        if args.pilot_fill:
+        if args.pilot_fill and not args.dry_run:
             ensure_cache_brand_elements_table(conn, args.table)
             payloads = build_brand_element_payloads(conn, brands, agent3_schema=args.agent3_schema)
             result["pilot_fill"] = {"upserted_rows": upsert_brand_elements(conn, payloads, args.table)}
