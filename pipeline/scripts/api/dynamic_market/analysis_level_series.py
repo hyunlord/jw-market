@@ -27,17 +27,16 @@ def metric_history_from_periods(
     totals_by_period: dict[str, float],
     rank: int = 0,
 ) -> dict[str, dict[str, float | int]]:
-    return {
-        period: {
+    history: dict[str, dict[str, float | int]] = {}
+    for period, value in history_by_period.items():
+        total = totals_by_period.get(period, 0.0)
+        history[period] = {
             "raw_value": value,
             "value": value,
-            "ms": round(value / totals_by_period.get(period, 0.0) * 100, 4)
-            if totals_by_period.get(period, 0.0)
-            else 0.0,
+            "ms": round(value / total * 100, 4) if total else 0.0,
             "rank": rank,
         }
-        for period, value in history_by_period.items()
-    }
+    return history
 
 
 def with_dimension_series_from_labels(

@@ -7,6 +7,7 @@ from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import (
     build_analysis_rows,
 )
 from pipeline.scripts.api.dynamic_market.analysis_level_series import (
+    metric_history_from_periods,
     with_dimension_series_from_labels_decoded,
 )
 from pipeline.scripts.api.dynamic_market.general_analysis_levels import cause_builder
@@ -303,6 +304,31 @@ def test_analysis_rows_handoff_decoded_dimension_payloads() -> None:
     assert rows[0]["__dimension_data"] == {
         "seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}
     }
+
+
+def test_metric_history_reads_each_period_total_once() -> None:
+    class CountingTotals(dict[str, float]):
+        def __init__(self) -> None:
+            super().__init__({"2026-01": 4.0, "2026-02": 8.0})
+            self.calls: list[str] = []
+
+        def get(self, key: str, default: float = 0.0) -> float:
+            self.calls.append(key)
+            return super().get(key, default)
+
+    totals = CountingTotals()
+
+    result = metric_history_from_periods(
+        history_by_period={"2026-01": 1.0, "2026-02": 2.0},
+        totals_by_period=totals,
+        rank=3,
+    )
+
+    assert result == {
+        "2026-01": {"raw_value": 1.0, "value": 1.0, "ms": 25.0, "rank": 3},
+        "2026-02": {"raw_value": 2.0, "value": 2.0, "ms": 25.0, "rank": 3},
+    }
+    assert totals.calls == ["2026-01", "2026-02"]
 
 
 def test_general_aliases_reuse_decoded_dimension_payloads(monkeypatch) -> None:
