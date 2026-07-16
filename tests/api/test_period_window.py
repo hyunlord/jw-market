@@ -392,6 +392,26 @@ def test_trim_period_payload_stops_period_detection_after_first_non_period_key(m
     assert calls == ["2025-01", "2025-12", "identity"]
 
 
+def test_trim_period_payload_skips_period_detection_for_metric_row(monkeypatch) -> None:
+    calls: list[str] = []
+    original = period_window_module._period_interval
+
+    def spy(value: str) -> tuple[int, int] | None:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(period_window_module, "_period_interval", spy)
+    payload = {
+        "raw_value": 10.0,
+        "history": {"2025-01": 1.0, "2026-01": 2.0},
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {"raw_value": 10.0, "history": {"2025-01": 1.0}}
+    assert "raw_value" not in calls
+
+
 def test_trim_period_payload_preserves_mixed_mapping_after_leading_period_key() -> None:
     payload = {
         "2025-01": {

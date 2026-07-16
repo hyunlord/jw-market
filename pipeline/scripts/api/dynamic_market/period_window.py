@@ -87,7 +87,7 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
 
     if mapping_value is not None:
         items = mapping_value.items() if value_type is dict else list(mapping_value.items())
-        if items:
+        if items and not (value_type is dict and "raw_value" in mapping_value):
             period_items: list[tuple[Any, Any]] = []
             for key, item in items:
                 interval = _period_interval(str(key))
