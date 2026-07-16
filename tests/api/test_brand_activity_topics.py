@@ -755,6 +755,71 @@ def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_n
     ]
 
 
+def test_post_topic_service_uses_brand_labels_from_resolved_scope_only(monkeypatch) -> None:
+    base = _strategic_brand_set()
+    brand_meta = dict(base.brand_meta)
+    brand_meta["리바로"] = BrandMeta("리바로", "리바로", ("UBISTDIRECT",), True)
+    strategic = BrandSetResolution(
+        view_name=base.view_name,
+        market_id=base.market_id,
+        selected_brand=base.selected_brand,
+        view=base.view,
+        market_row=base.market_row,
+        brand_rows=base.brand_rows,
+        brand_meta=brand_meta,
+        choices=base.choices,
+        candidates=base.candidates,
+        ranking_quarter=base.ranking_quarter,
+        applied_filter=base.applied_filter,
+    )
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: strategic)
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda brands: {key: ("LIVALO",) if key == "리바로" else () for key in brands},
+        raising=False,
+    )
+    resolved_scope = _group_topic_row()
+    unrelated_scope = _post_topic_row()
+    unrelated_payload = json.loads(unrelated_scope["payload"])
+    unrelated_payload["scope"] = {"scope_id": "atc4:A02B2", "atc4_values": ["A02B2"]}
+    unrelated_payload["brands"][0]["brand"] = "UBISTDIRECT"
+    unrelated_payload["brands"][0]["brand_specific_topics"][0]["label"] = "다른 시장 고유"
+    unrelated_scope = {
+        **unrelated_scope,
+        "scope_id": "atc4:A02B2",
+        "atc4_values": json.dumps(["A02B2"]),
+        "payload": json.dumps(unrelated_payload, ensure_ascii=False),
+    }
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [resolved_scope, unrelated_scope]
+        if params and "LIVALO" in params:
+            assert "UBISTDIRECT" in params
+            return [
+                {"topic_id": "B1", "affected_row_count": 7, "brand_total_rows": 31, "share_pct": "22.58"}
+            ]
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert result is not None
+    assert result["brands"][0]["brand_specific_topics"][0]["label"] == "리바로 고유"
+
+
 def test_post_topic_service_reads_assignments_for_brand_omitted_from_stored_payload(monkeypatch) -> None:
     brand_set = _strategic_brand_set(include_crestor=True)
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: brand_set)

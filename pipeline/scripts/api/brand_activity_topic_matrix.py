@@ -75,9 +75,9 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
     if brand_set is None:
         return None
     topic_rows = _fetch_topic_rows()
-    topic_index = _topic_brand_index(topic_rows)
     aliases = _alias_lookup()
     topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows)
+    topic_index = _topic_brand_index([topic_scope]) if topic_scope else {}
     is_sliced = _is_sliced_request(request)
     product_codes_by_brand = (
         _topic_product_codes_by_brand(brand_set=brand_set, topic_scope=topic_scope, aliases=aliases)
