@@ -128,3 +128,49 @@ def test_period_window_boundaries_are_parsed_once_per_projection(monkeypatch) ->
     assert calls.count("2025-02") == 2
     assert calls.count("2025-03") == 2
     assert len(calls) == 5
+
+
+def test_trim_period_rows_reuses_predecoded_dimension_series(monkeypatch) -> None:
+    # Given canonical dimension JSON paired with the decoded objects used by downstream aggregation.
+    period_series = {
+        "seller": {
+            "JW": {
+                "2025-01": {"raw_value": 1.0},
+                "2026-01": {"raw_value": 2.0},
+            }
+        }
+    }
+    decoded_by_field = {
+        "dimension_data": period_series,
+        "dimension_channel_data": period_series,
+        "dimension_specialty_data": period_series,
+    }
+    row = {
+        field: json.dumps(value, ensure_ascii=False, sort_keys=True)
+        for field, value in decoded_by_field.items()
+    }
+    row.update({f"__{field}": value for field, value in decoded_by_field.items()})
+    loads_calls: list[str] = []
+    original_loads = period_window_module.json.loads
+
+    def spy_loads(value: str):
+        loads_calls.append(value)
+        return original_loads(value)
+
+    monkeypatch.setattr(period_window_module.json, "loads", spy_loads)
+
+    # When the row is projected to one year.
+    result = trim_period_rows([row], PeriodRange("2025-01", "2025-12"))[0]
+
+    # Then the encoded fields are projected without reparsing and private values remain untouched.
+    expected = {
+        "seller": {
+            "JW": {
+                "2025-01": {"raw_value": 1.0},
+            }
+        }
+    }
+    assert loads_calls == []
+    for field, decoded in decoded_by_field.items():
+        assert result[field] == json.dumps(expected, ensure_ascii=False, sort_keys=True)
+        assert result[f"__{field}"] is decoded
