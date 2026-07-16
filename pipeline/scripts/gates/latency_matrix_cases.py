@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote, urlencode
 
-from pipeline.scripts.gates.latency_matrix_required import required_general_scenarios
+from pipeline.scripts.gates.latency_matrix_required import REQUIRED_GROUP_ATC4, required_general_scenarios
 from pipeline.scripts.gates.latency_matrix_types import MatrixCase
 
 
@@ -124,7 +124,13 @@ def _activity_cases(brand: str, view: str, market_id: str) -> tuple[MatrixCase, 
 
 
 def _group_activity_cases(option_id: str, member: str) -> tuple[MatrixCase, ...]:
-    filters = {"market_scope": {"option_id": option_id, "member": member}}
+    atc4 = REQUIRED_GROUP_ATC4.get(option_id)
+    if not atc4:
+        raise ValueError(f"group scope ATC membership unresolved: {option_id}")
+    filters = {
+        "atc": {"atc4": list(atc4)},
+        "market_scope": {"option_id": option_id, "member": member},
+    }
     base = {"filters": filters, "selected_brand": member, "view": "general"}
     suffix = f"{option_id}:{member}"
     return (
