@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import BackgroundTasks
 from fastapi import HTTPException
+from starlette.responses import Response
 
 from pipeline.scripts.api.brand_presence import NegativeBrandCache
 from pipeline.scripts.api.routes import cause as cause_route
@@ -83,8 +84,10 @@ def test_cause_route_schedules_cache_persistence_after_response(monkeypatch) -> 
         _market_id: str | None,
         *,
         persistence_scheduler=None,
+        prefer_serialized: bool = False,
     ) -> list[dict[str, object]]:
         captured["scheduler"] = persistence_scheduler
+        captured["prefer_serialized"] = prefer_serialized
         return []
 
     monkeypatch.setattr(cause_route, "_fetch_cause_rows", fake_fetch)
@@ -101,6 +104,74 @@ def test_cause_route_schedules_cache_persistence_after_response(monkeypatch) -> 
     )
 
     assert captured["scheduler"] == background_tasks.add_task
+    assert captured["prefer_serialized"] is True
+
+
+def test_cause_returns_cached_serialized_body_without_reencoding(monkeypatch) -> None:
+    serialized = (
+        '{"brand":"리바로하이","market_id":"strategy_008",'
+        '"markets":[{"market_id":"strategy_008","is_primary":true}],'
+        '"market_meta":{"view_source_id":"ml_008"},"data":{"value":1.25}}'
+    )
+    monkeypatch.setattr(
+        cause_route,
+        "_fetch_cause_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "market_id": "strategy_008",
+                "response_json": None,
+                "serialized_response": serialized,
+            }
+        ],
+    )
+
+    response = cause_route.cause(
+        "리바로하이",
+        background_tasks=BackgroundTasks(),
+        view="market_landscape",
+        source="UBIST",
+        measure="sales",
+        market_id="strategy_008",
+    )
+
+    assert isinstance(response, Response)
+    assert response.body == serialized.encode("utf-8")
+    assert response.media_type == "application/json"
+
+
+def test_cause_parses_only_primary_cached_body_for_multi_market_response(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cause_route,
+        "_fetch_cause_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "market_id": "strategy_003",
+                "response_json": None,
+                "serialized_response": '{"brand":"가드렛","data":{"value":3}}',
+            },
+            {
+                "market_id": "strategy_008",
+                "response_json": None,
+                "serialized_response": '{"brand":"가드렛","data":{"value":8}}',
+            },
+        ],
+    )
+
+    response = cause_route.cause(
+        "가드렛",
+        background_tasks=BackgroundTasks(),
+        view="market_landscape",
+        source="UBIST",
+        measure="sales",
+        market_id="strategy_008",
+    )
+
+    assert isinstance(response, dict)
+    assert response["data"] == {"value": 8}
+    assert response["markets"] == [
+        {"market_id": "strategy_003", "is_primary": False},
+        {"market_id": "strategy_008", "is_primary": True},
+    ]
 
 
 def test_cause_route_negative_caches_only_confirmed_missing_brand(monkeypatch) -> None:

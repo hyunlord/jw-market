@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.dynamic_market.response_cache import (
     CacheClaim,
+    CachedResponse,
     DynamicMarketOverloadedError,
     DynamicResponseCache,
     DynamicResponseCacheUnavailable,
@@ -109,6 +110,26 @@ def test_response_cache_hits_without_rebuilding() -> None:
     assert store.claim_count == 1
     stored = json.loads(next(iter(store.rows.values()))["payload"])
     assert stored["__cache_encoding"] == "zlib-base64"
+
+
+def test_response_cache_exposes_serialized_hit_without_parsing_payload() -> None:
+    store = MemoryStore()
+    cache = DynamicResponseCache(store=store, poll_interval_seconds=0.001, wait_timeout_seconds=1.0)
+    request = {"source": "ubist", "filters": {"atc4": ["C10A1"]}}
+    payload = {"status": "SUCCESS", "result": {"brand": "리바로", "value": 1.25}}
+
+    built = cache.get_or_build_response(request, lambda: payload)
+    hit = cache.get_or_build_response(request, lambda: {"unexpected": True})
+
+    assert built == CachedResponse(payload=payload)
+    assert hit.payload is None
+    assert hit.response_json == json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    assert hit.require_payload() == payload
 
 
 def test_period_windows_do_not_cross_contaminate_response_cache() -> None:

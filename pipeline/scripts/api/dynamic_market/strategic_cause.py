@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pipeline.scripts.api.dynamic_market.response_cache import (
+    CachedResponse,
     DynamicResponseCache,
     DynamicResponseCacheUnavailable,
     PersistenceScheduler,
@@ -60,7 +62,80 @@ def get_strategic_payload(
         analysis_level=analysis_level,
         period_range=period_range,
     )
+    builder = _strategic_builder(
+        mart_db=mart_db,
+        ml_id=ml_id,
+        cd_market_id=cd_market_id,
+        focus_brand_key=focus_brand_key,
+        source=source,
+        measure=measure,
+        analysis_level=analysis_level,
+        period_range=period_range,
+    )
+    try:
+        return cache.get_or_build(
+            request,
+            builder,
+            persistence_scheduler=persistence_scheduler,
+        )
+    except DynamicResponseCacheUnavailable:
+        return builder()
 
+
+def get_strategic_response(
+    *,
+    cache: DynamicResponseCache,
+    mart_db: str,
+    ml_id: str | None,
+    cd_market_id: str | None,
+    focus_brand_key: str | None,
+    source: str,
+    measure: str,
+    analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
+    persistence_scheduler: PersistenceScheduler | None = None,
+) -> CachedResponse:
+    request = strategic_cache_request(
+        ml_id=ml_id,
+        cd_market_id=cd_market_id,
+        focus_brand_key=focus_brand_key,
+        source=source,
+        measure=measure,
+        analysis_level=analysis_level,
+        period_range=period_range,
+    )
+    builder = _strategic_builder(
+        mart_db=mart_db,
+        ml_id=ml_id,
+        cd_market_id=cd_market_id,
+        focus_brand_key=focus_brand_key,
+        source=source,
+        measure=measure,
+        analysis_level=analysis_level,
+        period_range=period_range,
+    )
+
+    try:
+        return cache.get_or_build_response(
+            request,
+            builder,
+            persistence_scheduler=persistence_scheduler,
+        )
+    except DynamicResponseCacheUnavailable:
+        return CachedResponse(payload=builder())
+
+
+def _strategic_builder(
+    *,
+    mart_db: str,
+    ml_id: str | None,
+    cd_market_id: str | None,
+    focus_brand_key: str | None,
+    source: str,
+    measure: str,
+    analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange,
+) -> Callable[[], dict[str, Any]]:
     def build() -> dict[str, Any]:
         return build_strategic_payload(
             mart_db=mart_db,
@@ -73,7 +148,4 @@ def get_strategic_payload(
             period_range=period_range,
         )
 
-    try:
-        return cache.get_or_build(request, build, persistence_scheduler=persistence_scheduler)
-    except DynamicResponseCacheUnavailable:
-        return build()
+    return build

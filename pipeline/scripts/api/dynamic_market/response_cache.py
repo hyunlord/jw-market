@@ -75,6 +75,24 @@ class CacheClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class CachedResponse:
+    payload: dict[str, Any] | None = None
+    response_json: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.payload is None) == (self.response_json is None):
+            raise ValueError("cached response must contain exactly one representation")
+
+    def require_payload(self) -> dict[str, Any]:
+        if self.payload is not None:
+            return self.payload
+        payload = json.loads(self.response_json or "")
+        if not isinstance(payload, dict):
+            raise DynamicResponseCacheUnavailable("cached dynamic response is not an object")
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class CachePruneResult:
     total_rows: int
     total_bytes: int
@@ -228,6 +246,19 @@ class DynamicResponseCache:
         *,
         persistence_scheduler: PersistenceScheduler | None = None,
     ) -> dict[str, Any]:
+        return self.get_or_build_response(
+            request,
+            builder,
+            persistence_scheduler=persistence_scheduler,
+        ).require_payload()
+
+    def get_or_build_response(
+        self,
+        request: Mapping[str, Any],
+        builder: Callable[[], dict[str, Any]],
+        *,
+        persistence_scheduler: PersistenceScheduler | None = None,
+    ) -> CachedResponse:
         started = time.perf_counter() if _stage_timing_enabled() else None
         request_json = canonical_request_json(request)
         request_ms = (time.perf_counter() - started) * 1000 if started is not None else None
@@ -247,16 +278,14 @@ class DynamicResponseCache:
             )
             claim_ms = (time.perf_counter() - claim_started) * 1000 if claim_started is not None else None
             if claim.action == "hit" and claim.response_json is not None:
-                payload = json.loads(_decode_cached_response(claim.response_json))
-                if not isinstance(payload, dict):
-                    raise DynamicResponseCacheUnavailable("cached dynamic response is not an object")
+                response_json = _decode_cached_response(claim.response_json)
                 if started is not None:
                     logger.info(
                         "market_latency_cache action=hit cache_key=%s request_ms=%.3f source_epoch_ms=%.3f claim_ms=%.3f total_ms=%.3f",
                         cache_key[:12], request_ms or 0.0, source_epoch_ms or 0.0, claim_ms or 0.0,
                         (time.perf_counter() - started) * 1000,
                     )
-                return payload
+                return CachedResponse(response_json=response_json)
             if claim.action == "build" and claim.lease_owner is not None:
                 payload = self._build(
                     cache_key=cache_key,
@@ -272,7 +301,7 @@ class DynamicResponseCache:
                         cache_key[:12], request_ms or 0.0, source_epoch_ms or 0.0, claim_ms or 0.0,
                         (time.perf_counter() - started) * 1000,
                     )
-                return payload
+                return CachedResponse(payload=payload)
             if time.monotonic() >= deadline:
                 raise DynamicMarketOverloadedError("timed out waiting for an identical dynamic-market request")
             time.sleep(self._poll_interval_seconds)

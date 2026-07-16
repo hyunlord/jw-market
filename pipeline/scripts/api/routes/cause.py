@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import unquote
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from starlette.responses import Response
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_presence import brand_exists, missing_brand_cache
@@ -11,7 +13,7 @@ from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_measure, normalize_source
 from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, PersistenceScheduler
 from pipeline.scripts.api.dynamic_market.runtime_cache import dynamic_response_cache
-from pipeline.scripts.api.dynamic_market.strategic_cause import get_strategic_payload
+from pipeline.scripts.api.dynamic_market.strategic_cause import get_strategic_payload, get_strategic_response
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 from pipeline.scripts.api.handlers.multi_market import choose_primary_market
 from pipeline.scripts.api.market_definition_display import apply_cd_market_definition
@@ -37,6 +39,7 @@ def _fetch_cause_rows(
     market_id: str | None = None,
     *,
     persistence_scheduler: PersistenceScheduler | None = None,
+    prefer_serialized: bool = False,
 ) -> list[dict]:
     mart_source = normalize_source(source)
     mart_measure = normalize_measure(mart_source, measure)
@@ -74,18 +77,43 @@ def _fetch_cause_rows(
         response_market_id = to_strategy_id(parent_ml_id)
         if requested_ml_id and parent_ml_id != requested_ml_id and view_source_id != market_id:
             continue
-        payload = get_strategic_payload(
-            cache=dynamic_response_cache,
-            mart_db=config.db_name,
-            ml_id=view_source_id if view == "market_landscape" else None,
-            cd_market_id=view_source_id if view == "competitive_dynamics" else None,
-            focus_brand_key=brand,
-            source=source,
-            measure=measure,
-            analysis_level=empty_analysis_level,
-            persistence_scheduler=persistence_scheduler,
+        response = (
+            get_strategic_response(
+                cache=dynamic_response_cache,
+                mart_db=config.db_name,
+                ml_id=view_source_id if view == "market_landscape" else None,
+                cd_market_id=view_source_id if view == "competitive_dynamics" else None,
+                focus_brand_key=brand,
+                source=source,
+                measure=measure,
+                analysis_level=empty_analysis_level,
+                persistence_scheduler=persistence_scheduler,
+            )
+            if prefer_serialized
+            else None
         )
-        rows.append({"market_id": response_market_id, "response_json": payload})
+        payload = (
+            response.payload
+            if response is not None
+            else get_strategic_payload(
+                cache=dynamic_response_cache,
+                mart_db=config.db_name,
+                ml_id=view_source_id if view == "market_landscape" else None,
+                cd_market_id=view_source_id if view == "competitive_dynamics" else None,
+                focus_brand_key=brand,
+                source=source,
+                measure=measure,
+                analysis_level=empty_analysis_level,
+                persistence_scheduler=persistence_scheduler,
+            )
+        )
+        rows.append(
+            {
+                "market_id": response_market_id,
+                "response_json": payload,
+                "serialized_response": response.response_json if response is not None else None,
+            }
+        )
     return rows
 
 
@@ -107,7 +135,7 @@ def cause(
     source: str | None = Query("UBIST", description="데이터 소스. UBIST 또는 IQVIA.", examples=["UBIST"]),
     measure: str | None = Query("sales", description="지표. sales 또는 qty.", examples=["sales"]),
     market_id: str | None = Query(None, description="선택 시장 id. strategy_006 또는 ml_006 형태를 허용합니다.", examples=["strategy_006"]),
-) -> dict:
+) -> dict | Response:
     view, source, measure = validate_cause_query(view, source, measure)
     brand = unquote(brand_name)
     requested_market_id = to_strategy_id(market_id) if market_id else None
@@ -121,6 +149,7 @@ def cause(
             measure,
             requested_market_id,
             persistence_scheduler=background_tasks.add_task,
+            prefer_serialized=True,
         )
     except DynamicMarketOverloadedError as exc:
         raise HTTPException(
@@ -151,7 +180,12 @@ def cause(
     display_brand = get_display_brand(brand)
     preferred_market_id = requested_market_id or (display_brand.market_id if display_brand else None)
     primary, markets = choose_primary_market(rows, preferred_market_id=preferred_market_id)
+    serialized_response = primary.get("serialized_response")
+    if len(rows) == 1 and isinstance(serialized_response, str):
+        return Response(content=serialized_response, media_type="application/json")
     payload = primary["response_json"]
+    if payload is None and isinstance(serialized_response, str):
+        payload = json.loads(serialized_response)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_strategic_payload"})
     payload["markets"] = markets
