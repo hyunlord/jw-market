@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from pipeline.scripts.api.brand_activity_brand_filters import applied_brand_filter
 from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandCandidate,
@@ -428,6 +430,26 @@ def test_general_market_scope_preserves_explicit_group_atc4_membership(monkeypat
     assert result.applied_filter["atc4"] == ["C10A1", "C10C0"]
     assert ("brand", ("C10A1", "iqvia_nsa", "sales")) in calls
     assert ("market", ("C10A1", "iqvia_nsa", "sales")) in calls
+
+
+@pytest.mark.parametrize(
+    ("member", "expected_market_id"),
+    (("가드렛", "A10N1"), ("가드메트", "A10N3")),
+)
+def test_general_market_scope_resolves_gardlet_family_members(
+    member: str,
+    expected_market_id: str,
+) -> None:
+    market_id = resolver._market_scope_market_id(
+        view_name="general",
+        selected_brand=member,
+        filter_payload={
+            "atc4": ["A10N1", "A10N3"],
+            "market_scope": {"option_id": "group:gardlet_family", "member": member},
+        },
+    )
+
+    assert market_id == expected_market_id
 
 
 def test_general_market_scope_member_resolves_livalozet_to_member_atc4(monkeypatch) -> None:
