@@ -13,6 +13,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandSetResolution,
     resolve_brand_set,
 )
+from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
@@ -78,6 +79,11 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
     aliases = _alias_lookup()
     topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows)
     is_sliced = _is_sliced_request(request)
+    product_codes_by_brand = (
+        _topic_product_codes_by_brand(brand_set=brand_set, topic_scope=topic_scope, aliases=aliases)
+        if topic_scope
+        else {}
+    )
     payload_source = "row_topic_assignment_filtered" if is_sliced else "row_topic_assignment_unfiltered"
     result: dict[str, JsonValue] = {
         "scope": {
@@ -112,6 +118,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                     topic_index=topic_index,
                     request=request,
                     aliases=aliases,
+                    product_codes=product_codes_by_brand.get(choice.brand_key, ()),
                     top_n=int(request["top_n"]),
                 )
                 if topic_scope
@@ -196,6 +203,7 @@ def _sliced_topic_brand_item(
     topic_index: dict[str, dict[str, JsonValue]],
     request: dict[str, JsonValue],
     aliases: dict[str, str],
+    product_codes: Sequence[str],
     top_n: int,
 ) -> dict[str, JsonValue]:
     """Project one brand from row-topic assignments under keyword filters."""
@@ -204,7 +212,7 @@ def _sliced_topic_brand_item(
     rows = _fetch_sliced_topic_rows(
         scope_id=_text(topic_scope.get("scope_id")),
         topic_set_version=_text(topic_scope.get("topic_set_version")),
-        product_codes=_brand_product_codes(meta, aliases),
+        product_codes=product_codes,
         visit_locations=_filter_tuple(request.get("visit_location")),
         specialties=_filter_tuple(request.get("specialty")),
         interests=_filter_tuple(request.get("interest")),
@@ -212,7 +220,7 @@ def _sliced_topic_brand_item(
         period_start=_text(request.get("period_start")),
         period_end=_text(request.get("period_end")),
     )
-    stored = _stored_brand_topics(meta, topic_index, aliases)
+    stored = _stored_brand_topics(product_codes, topic_index, aliases)
     axis_labels = _axis_topic_label_index(topic_scope)
     brand_labels = _brand_topic_label_index(stored)
     axis_topics: list[dict[str, JsonValue]] = []
@@ -263,12 +271,12 @@ def _sliced_topic_brand_item(
 
 
 def _stored_brand_topics(
-    meta: BrandMeta,
+    product_codes: Sequence[str],
     topic_index: dict[str, dict[str, JsonValue]],
     aliases: dict[str, str],
 ) -> dict[str, JsonValue] | None:
     """Return stored topics for the first matching IQVIA product code."""
-    for code in meta.product_codes:
+    for code in product_codes:
         normalized = normalize_iqvia_en(code)
         for key in (normalized, aliases.get(normalized, "")):
             if key and key in topic_index:
@@ -402,8 +410,13 @@ def _brand_topic_label_index(stored: dict[str, JsonValue] | None) -> dict[str, d
 
 def _brand_product_codes(meta: BrandMeta, aliases: dict[str, str]) -> tuple[str, ...]:
     """Return normalized product codes and aliases used by topic row brands."""
+    return _normalized_topic_product_codes(meta.product_codes, aliases)
+
+
+def _normalized_topic_product_codes(product_codes: Sequence[str], aliases: dict[str, str]) -> tuple[str, ...]:
+    """Normalize source-independent product codes for keyword row matching."""
     codes: list[str] = []
-    for code in meta.product_codes:
+    for code in product_codes:
         normalized = normalize_iqvia_en(code)
         if normalized:
             codes.append(normalized)
@@ -411,6 +424,31 @@ def _brand_product_codes(meta: BrandMeta, aliases: dict[str, str]) -> tuple[str,
         if alias:
             codes.append(alias)
     return tuple(dict.fromkeys(codes))
+
+
+def _topic_product_codes_by_brand(
+    *,
+    brand_set: BrandSetResolution,
+    topic_scope: dict[str, JsonValue],
+    aliases: dict[str, str],
+) -> dict[str, tuple[str, ...]]:
+    """Resolve topic product codes without depending on the requested sales source."""
+    scope_index = _topic_brand_index([topic_scope])
+    resolved: dict[str, tuple[str, ...]] = {}
+    unresolved: dict[str, str] = {}
+    for choice in brand_set.choices:
+        meta = brand_set.brand_meta[choice.brand_key]
+        direct = _brand_product_codes(meta, aliases)
+        resolved[choice.brand_key] = direct
+        if not direct or _stored_brand_topics(direct, scope_index, aliases) is None:
+            unresolved[choice.brand_key] = choice.brand_name
+    if not unresolved:
+        return resolved
+    fallback_codes = iqvia_product_codes_by_brand(unresolved)
+    for brand_key, raw_codes in fallback_codes.items():
+        fallback = _normalized_topic_product_codes(raw_codes, aliases)
+        resolved[brand_key] = tuple(dict.fromkeys((*resolved.get(brand_key, ()), *fallback)))
+    return resolved
 
 
 def _fetch_sliced_topic_rows(

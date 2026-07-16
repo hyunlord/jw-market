@@ -618,6 +618,47 @@ def _brand_set() -> BrandSetResolution:
     )
 
 
+def _strategic_brand_set(
+    *,
+    empty_product_codes: bool = False,
+    include_crestor: bool = False,
+) -> BrandSetResolution:
+    base = _brand_set()
+    brand_meta = {
+        key: BrandMeta(
+            meta.brand_key,
+            meta.brand_name,
+            () if empty_product_codes else meta.product_codes,
+            meta.is_jw,
+        )
+        for key, meta in base.brand_meta.items()
+    }
+    choices = list(base.choices)
+    if include_crestor:
+        brand_meta["크레스토"] = BrandMeta("크레스토", "크레스토", ("CRESTOR",), False)
+        choices.append(BrandChoice("크레스토", "크레스토", 8, False))
+    return BrandSetResolution(
+        view_name="strategic_ml",
+        market_id="ml_006",
+        selected_brand=base.selected_brand,
+        view=ViewConfig(
+            "mart_strategic_ml_brand_metric",
+            "mart_strategic_ml_market_metric",
+            "ml_id",
+            "ml_name",
+            "brand_ranking_stacked",
+            True,
+        ),
+        market_row={"ml_name": "리바로 리바로젯"},
+        brand_rows=(),
+        brand_meta=brand_meta,
+        choices=tuple(choices),
+        candidates=(),
+        ranking_quarter=base.ranking_quarter,
+        applied_filter={},
+    )
+
+
 def test_topic_scope_uses_catalog_atc_membership_not_payload_brand_membership(monkeypatch) -> None:
     brand_set = _brand_set()
     strategic = BrandSetResolution(
@@ -655,6 +696,115 @@ def test_topic_scope_uses_catalog_atc_membership_not_payload_brand_membership(mo
     scope = topic_matrix._topic_scope(brand_set=strategic, topic_rows=rows)
 
     assert scope["scope_id"] == "group:gardlet_family"
+
+
+def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_none(monkeypatch) -> None:
+    strategic = _strategic_brand_set(empty_product_codes=True)
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: strategic)
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda brands: {key: ("LIVALO",) if key == "리바로" else ("LIPITOR",) for key in brands},
+        raising=False,
+    )
+    group_row = _group_topic_row()
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [group_row]
+        if params and "LIPITOR" in params:
+            return []
+        assert params == (
+            "group:livalo_family",
+            "LIVALO",
+            "2025-04",
+            "2026-03",
+            "group:livalo_family",
+            "brand_activity_group_replay",
+        )
+        return [
+            {"topic_id": "T01", "affected_row_count": 29, "brand_total_rows": 31, "share_pct": "93.55"},
+            {"topic_id": "B1", "affected_row_count": 7, "brand_total_rows": 31, "share_pct": "22.58"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert result is not None
+    assert result["scope"]["topic_set_version"] == "brand_activity_group_replay"
+    assert result["brands"][0]["event_count"] == 31
+    assert result["brands"][0]["brand_specific_topics"] == [
+        {
+            "topic_id": "B1",
+            "label": "리바로 고유",
+            "share_pct": 22.58,
+            "row_count": 7,
+            "definition": "리바로 특화",
+        }
+    ]
+
+
+def test_post_topic_service_reads_assignments_for_brand_omitted_from_stored_payload(monkeypatch) -> None:
+    brand_set = _strategic_brand_set(include_crestor=True)
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: brand_set)
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda brands: {brand_key: () for brand_key in brands},
+        raising=False,
+    )
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [_group_topic_row()]
+        if params and "CRESTOR" in params:
+            return [
+                {
+                    "topic_id": "T01",
+                    "affected_row_count": 254,
+                    "brand_total_rows": 591,
+                    "share_pct": "42.98",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert result is not None
+    crestor = next(brand for brand in result["brands"] if brand["brand_key"] == "크레스토")
+    assert crestor["event_count"] == 591
+    assert crestor["topic_shares"] == [
+        {
+            "rank": 1,
+            "topic_id": "T01",
+            "label": "당뇨 안전성",
+            "share_pct": 42.98,
+            "row_count": 254,
+        }
+    ]
 
 
 def test_missing_catalog_topic_scope_returns_explicit_reason(monkeypatch, caplog) -> None:
@@ -778,5 +928,21 @@ def _post_topic_row() -> dict[str, str]:
         "quality_grade": "A",
         "source_row_count": "1",
         "run_id": "brand_activity_replay_20260703_125045",
+        "payload": json.dumps(payload, ensure_ascii=False),
+    }
+
+
+def _group_topic_row() -> dict[str, str]:
+    row = _post_topic_row()
+    payload = json.loads(row["payload"])
+    payload["scope"] = {
+        "scope_id": "group:livalo_family",
+        "atc4_values": ["C10A1", "C10C0"],
+    }
+    return {
+        **row,
+        "scope_id": "group:livalo_family",
+        "run_id": "brand_activity_group_replay",
+        "atc4_values": json.dumps(["C10A1", "C10C0"]),
         "payload": json.dumps(payload, ensure_ascii=False),
     }
