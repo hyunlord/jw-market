@@ -324,7 +324,7 @@ def _is_schema_question(question: str) -> bool:
 
 
 def _is_aggregate_question(question: str) -> bool:
-    return bool(
+    return _is_monthly_trend_question(question) or bool(
         re.search(
             r"(?:상위\s*\d+\s*(?:개|건)?\s*(?:제품|제조사|업체|회사|채널)|"
             r"top\s*\d+\s*(?:products?|manufacturers?|companies?|channels?))",
@@ -467,9 +467,37 @@ def _render_aggregate_answer(
         "사용 열: " + (", ".join(used_columns) if used_columns else "집계 결과 열"),
         "집계 함수: " + ", ".join(aggregate_functions),
         f"적용 행 수: {_format_number(total_applied)}",
-        "| " + " | ".join(labels) + " |",
-        "| " + " | ".join("---" for _ in labels) + " |",
     ]
+    period_columns = [
+        (index, match.group(1), match.group(2))
+        for index, name in enumerate(columns)
+        if (
+            match := re.fullmatch(
+                r"period_(\d{4})_(\d{2})",
+                name,
+                re.IGNORECASE,
+            )
+        )
+    ]
+    if period_columns and len(rows) == 1:
+        lines.extend(
+            (
+                "| 기간 | 합계 |",
+                "| --- | --- |",
+                *(
+                    f"| {year}-{month} | {_format_number(rows[0][index])} |"
+                    for index, year, month in period_columns
+                    if index < len(rows[0])
+                ),
+            )
+        )
+        return "\n".join(lines)
+    lines.extend(
+        (
+            "| " + " | ".join(labels) + " |",
+            "| " + " | ".join("---" for _ in labels) + " |",
+        )
+    )
     for row in rows:
         lines.append(
             "| "
@@ -634,8 +662,21 @@ def _resolve_deterministic_select(
         missing: list[str] = []
         manufacturer = _find_column(columns, r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체")
         intent = _question_measure_intent(question) or "amount"
-        measure = None if intent == "count" else _find_measure_column(columns, question)
-        if intent == "count":
+        monthly_columns = (
+            _monthly_amount_columns(columns) if _is_monthly_trend_question(question) else ()
+        )
+        measure = (
+            None
+            if intent == "count" or monthly_columns
+            else _find_measure_column(columns, question)
+        )
+        if monthly_columns:
+            aggregate_expression = ", ".join(
+                f"SUM({query_name}) AS period_{period.replace('-', '_')}"
+                for period, query_name in monthly_columns
+            )
+            resolved.extend(("measure", "period"))
+        elif intent == "count":
             aggregate_expression = "COUNT(*) AS response_count"
             resolved.append("measure")
         elif measure is not None:
@@ -738,6 +779,38 @@ def _top_n_limit(question: str) -> int | None:
     if match is None:
         return None
     return min(max(int(match.group(1) or match.group(2)), 1), 100)
+
+
+def _is_monthly_trend_question(question: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:월별|월\s*단위).*(?:추이|흐름|합계|집계|매출|금액)|"
+            r"(?:추이|흐름).*(?:월별|월\s*단위)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _monthly_amount_columns(
+    columns: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, str], ...]:
+    by_period: dict[str, str] = {}
+    for item in columns:
+        source_name = str(item.get("source_name") or "")
+        query_name = str(item.get("query_name") or "")
+        periods = month_keys(source_name)
+        if (
+            len(periods) != 1
+            or not query_name
+            or not _is_amount_column(source_name)
+            or _is_average_column(source_name)
+            or _is_quantity_column(source_name)
+        ):
+            continue
+        period = next(iter(periods))
+        by_period.setdefault(period, query_name)
+    return tuple(sorted(by_period.items()))
 
 
 def _requested_group_column(
@@ -864,7 +937,8 @@ def _file_comparison_subjects(question: str) -> tuple[str, ...]:
 
 def _single_manufacturer_subject(question: str) -> str:
     matches = re.finditer(
-        r"([가-힣A-Za-z0-9_-]+(?:제약|약품))(?:의|은|는|이|가|에서)?\s*(?:sell[ -]?out|매출|금액|합계|총액)",
+        r"([가-힣A-Za-z0-9_-]+(?:제약|약품))(?:의|은|는|이|가|에서)?\s*"
+        r"(?:월별\s*)?(?:sell[ -]?out|매출|금액|합계|총액)",
         question,
         re.IGNORECASE,
     )

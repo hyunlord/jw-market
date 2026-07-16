@@ -584,6 +584,77 @@ def test_top_n_product_without_explicit_by_suffix_still_groups_products() -> Non
     assert plan["sql"].endswith("LIMIT 10")
 
 
+def test_monthly_trend_aggregates_each_grounded_period_column_once() -> None:
+    schema = _wide_chso_schema()
+    schema["columns"][70] = {
+        "query_name": "c71",
+        "source_name": "VALUES LC SI PRICE 12/2025",
+    }
+
+    plan = file_sql_query._deterministic_select(
+        "월별 추이",
+        (schema,),
+    )
+
+    assert plan is not None
+    assert "SUM(c71) AS period_2025_12" in plan["sql"]
+    assert "SUM(c72) AS period_2026_01" in plan["sql"]
+    assert plan["sql"].count("COUNT(*) AS applied_rows") == 1
+
+
+def test_manufacturer_monthly_trend_keeps_filter_and_all_periods() -> None:
+    schema = _wide_chso_schema()
+    schema["columns"][70] = {
+        "query_name": "c71",
+        "source_name": "VALUES LC SI PRICE 12/2025",
+    }
+
+    plan = file_sql_query._deterministic_select(
+        "동아제약의 월별 합계",
+        (schema,),
+    )
+
+    assert plan is not None
+    assert "SUM(c71) AS period_2025_12" in plan["sql"]
+    assert "SUM(c72) AS period_2026_01" in plan["sql"]
+    assert "WHERE c2 = '동아제약'" in plan["sql"]
+
+
+def test_monthly_aggregate_result_renders_as_period_value_rows() -> None:
+    answer = file_sql_query._render_aggregate_answer(
+        "월별 추이",
+        file_sql_query.SqlFileSource(
+            "doc-91:sheet-1",
+            "CHSO.xlsx",
+            "Sell Out Standard",
+        ),
+        (
+            "SELECT SUM(c71) AS period_2025_12, "
+            "SUM(c72) AS period_2026_01, COUNT(*) AS applied_rows FROM data"
+        ),
+        {
+            "columns": ["period_2025_12", "period_2026_01", "applied_rows"],
+            "rows": [[380000000000, 386933825518, 12268]],
+        },
+        {
+            "columns": [
+                {
+                    "query_name": "c71",
+                    "source_name": "VALUES LC SI PRICE 12/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ]
+        },
+    )
+
+    assert "| 기간 | 합계 |" in answer
+    assert "| 2025-12 | 380,000,000,000 |" in answer
+    assert "| 2026-01 | 386,933,825,518 |" in answer
+
+
 def test_unsupported_measure_fails_closed_before_planner(monkeypatch) -> None:
     monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
     monkeypatch.setattr(
