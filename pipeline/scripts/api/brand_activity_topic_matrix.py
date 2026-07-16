@@ -69,6 +69,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             market_id=request["market_id"],
             selected_brand=request["selected_brand"],
             filter_payload=_json_object(request.get("filter")),
+            prefilter_strategic_choices=True,
         )
     except BrandSetInputError as exc:
         raise TopicRequestError(str(exc)) from exc

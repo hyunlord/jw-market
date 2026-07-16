@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ast
+import importlib
+import inspect
+
 import pytest
 
 from pipeline.scripts.api.brand_activity_brand_filters import applied_brand_filter
@@ -19,6 +23,39 @@ from pipeline.scripts.api.brand_activity_channel_axis import (
 )
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
 from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContextError
+
+
+@pytest.mark.parametrize(
+    ("module_name", "function_name"),
+    (
+        ("pipeline.scripts.api.brand_activity_topic_matrix", "get_topic_brand_payload"),
+        ("pipeline.scripts.api.brand_activity_interest_rx_matrix", "get_interest_rx_matrix"),
+        ("pipeline.scripts.api.brand_activity_csd_timeseries", "get_csd_timeseries"),
+        ("pipeline.scripts.api.brand_activity_csd_activity_series", "get_csd_activity_series"),
+    ),
+)
+def test_brand_activity_routes_enable_strategic_choice_prefilter(
+    module_name: str,
+    function_name: str,
+) -> None:
+    function = getattr(importlib.import_module(module_name), function_name)
+    tree = ast.parse(inspect.getsource(function))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "resolve_brand_set"
+    ]
+
+    assert len(calls) == 1
+    keyword = next(
+        (item for item in calls[0].keywords if item.arg == "prefilter_strategic_choices"),
+        None,
+    )
+    assert keyword is not None
+    assert isinstance(keyword.value, ast.Constant)
+    assert keyword.value.value is True
 
 
 def test_brand_filter_uses_or_within_dimension_and_and_across_dimensions() -> None:
@@ -343,6 +380,222 @@ def test_strategic_resolution_can_restrict_rows_to_market_ranking(monkeypatch) -
     assert result is not None
     assert [choice.brand_key for choice in result.choices] == ["선택", "b1", "b2", "b3", "b4", "b5"]
     assert [kind for kind, _ in calls] == ["market", "brand"]
+
+
+def test_strategic_resolution_prefilters_exact_multi_period_choices_before_loading_full_rows(monkeypatch) -> None:
+    calls: list[tuple[str, str, tuple[object, ...]]] = []
+    metric_history = {
+        "선택": {"2026-Q1": {"raw_value": 1.0}, "2026-Q2": {"raw_value": 1.0}},
+        "b1": {"2026-Q1": {"raw_value": 100.0}, "2026-Q2": {"raw_value": 100.0}},
+        "b2": {"2026-Q1": {"raw_value": 90.0}, "2026-Q2": {"raw_value": 90.0}},
+        "b3": {"2026-Q1": {"raw_value": 80.0}, "2026-Q2": {"raw_value": 80.0}},
+        "b4": {"2026-Q1": {"raw_value": 70.0}, "2026-Q2": {"raw_value": 70.0}},
+        "b5": {"2026-Q1": {"raw_value": 0.0}, "2026-Q2": {"raw_value": 60.0}},
+        "b6": {"2026-Q1": {"raw_value": 50.0}, "2026-Q2": {"raw_value": 40.0}},
+    }
+
+    monkeypatch.setattr(
+        resolver,
+        "_resolve_strategic_brand_context",
+        lambda *_args, **_kwargs: type(
+            "Context",
+            (),
+            {"market_id": "ml_008", "brand_key": "선택", "db_source": "ubist"},
+        )(),
+    )
+
+    def fake_fetch_one(sql: str, params: tuple[object, ...]) -> dict[str, object]:
+        calls.append(("market", sql, tuple(params)))
+        return {
+            "ml_id": "ml_008",
+            "ml_name": "시장",
+            "market_size_series": {},
+            "brand_ranking_stacked": {
+                "2026-Q2": [
+                    {"brand_key": key, "rank": rank}
+                    for rank, key in enumerate(("b1", "b2", "b3", "b4", "b5", "b6"), 1)
+                ]
+            },
+        }
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        phase = "full" if "overlay_data" in sql else "light"
+        calls.append((phase, sql, tuple(params)))
+        if phase == "light":
+            assert "overlay_data" not in sql
+            assert "raw_value_history" in sql
+            assert "metric_history" not in sql
+            return [
+                {
+                    "brand_key": key,
+                    "brand_name": key,
+                    "is_jw": 1,
+                    "product_codes": f'["{key}"]',
+                    "raw_value_history": {
+                        period: payload["raw_value"]
+                        for period, payload in history.items()
+                    },
+                }
+                for key, history in metric_history.items()
+            ]
+        selected_keys = tuple(str(value) for value in params[3:])
+        return [
+            {
+                "brand_key": key,
+                "brand_name": key,
+                "is_jw": 1,
+                "by_dimension": {"products": [{"product_code": key}]},
+                "overlay_data": {},
+                "metric_history": metric_history[key],
+                "audit_code_matrix": None,
+            }
+            for key in selected_keys
+        ]
+
+    monkeypatch.setattr(resolver.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(resolver.db, "fetch_all", fake_fetch_all)
+
+    result = resolver.resolve_brand_set(
+        view_name="strategic_ml",
+        market_id="ml_008",
+        selected_brand="선택",
+        filter_payload={},
+        ranking_quarters=("2026-Q1", "2026-Q2"),
+        prefilter_strategic_choices=True,
+    )
+
+    assert result is not None
+    assert [choice.brand_key for choice in result.choices] == ["선택", "b1", "b2", "b3", "b4", "b6"]
+    assert [phase for phase, _sql, _params in calls] == ["market", "light", "full"]
+    assert set(calls[-1][2][3:]) == {"선택", "b1", "b2", "b3", "b4", "b6"}
+    assert set(result.brand_meta) == set(metric_history)
+    assert result.brand_meta["b5"].product_codes == ("B5",)
+
+
+def test_strategic_choice_prefilter_falls_back_when_selected_brand_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        resolver,
+        "_resolve_strategic_brand_context",
+        lambda *_args, **_kwargs: type(
+            "Context",
+            (),
+            {"market_id": "ml_008", "brand_key": "선택", "db_source": "ubist"},
+        )(),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_market_row",
+        lambda *_args, **_kwargs: {
+            "ml_id": "ml_008",
+            "ml_name": "시장",
+            "market_size_series": {},
+            "brand_ranking_stacked": {
+                "2026-Q2": [{"brand_key": "경쟁", "rank": 1}],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_brand_choice_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "brand_key": "경쟁",
+                "brand_name": "경쟁",
+                "is_jw": 0,
+                "product_codes": ["COMP"],
+                "raw_value_history": {"2026-Q2": 100.0},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_brand_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "brand_key": "선택",
+                "brand_name": "선택",
+                "is_jw": 1,
+                "by_dimension": {"products": [{"product_code": "SELECTED"}]},
+                "overlay_data": {},
+                "metric_history": {"2026-Q2": {"raw_value": 1.0}},
+                "audit_code_matrix": None,
+            },
+            {
+                "brand_key": "경쟁",
+                "brand_name": "경쟁",
+                "is_jw": 0,
+                "by_dimension": {"products": [{"product_code": "COMP"}]},
+                "overlay_data": {},
+                "metric_history": {"2026-Q2": {"raw_value": 100.0}},
+                "audit_code_matrix": None,
+            },
+        ],
+    )
+
+    result = resolver.resolve_brand_set(
+        view_name="strategic_ml",
+        market_id="ml_008",
+        selected_brand="선택",
+        filter_payload={},
+        prefilter_strategic_choices=True,
+    )
+
+    assert result is not None
+    assert [choice.brand_key for choice in result.choices] == ["선택", "경쟁"]
+
+
+def test_strategic_choice_prefilter_is_not_used_for_latest_rank_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        resolver,
+        "_resolve_strategic_brand_context",
+        lambda *_args, **_kwargs: type(
+            "Context",
+            (),
+            {"market_id": "ml_008", "brand_key": "선택", "db_source": "ubist"},
+        )(),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_market_row",
+        lambda *_args, **_kwargs: {
+            "ml_id": "ml_008",
+            "ml_name": "시장",
+            "market_size_series": {},
+            "brand_ranking_stacked": {"2026-05": []},
+        },
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_brand_choice_rows",
+        lambda *_args, **_kwargs: pytest.fail("latest-rank mode must keep the exact legacy path"),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_fetch_brand_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "brand_key": "선택",
+                "brand_name": "선택",
+                "is_jw": 1,
+                "by_dimension": {"products": [{"product_code": "SELECTED"}]},
+                "overlay_data": {},
+                "metric_history": {"2026-05": {"raw_value": 1.0, "rank": 1}},
+                "audit_code_matrix": None,
+            }
+        ],
+    )
+
+    result = resolver.resolve_brand_set(
+        view_name="strategic_ml",
+        market_id="ml_008",
+        selected_brand="선택",
+        filter_payload={},
+        rank_by_latest_period=True,
+        prefilter_strategic_choices=True,
+    )
+
+    assert result is not None
+    assert [choice.brand_key for choice in result.choices] == ["선택"]
 
 
 def test_ambiguous_ml_brand_preserves_409_context_contract(monkeypatch) -> None:

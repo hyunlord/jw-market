@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
@@ -119,6 +120,7 @@ def resolve_brand_set(
     rank_by_latest_period: bool = False,
     resolved_context: DeepAnalysisContext | None = None,
     restrict_strategic_to_ranking: bool = False,
+    prefilter_strategic_choices: bool = False,
 ) -> BrandSetResolution | None:
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
@@ -161,7 +163,31 @@ def resolve_brand_set(
 
     market_row = None
     ranked_brand_keys: tuple[str, ...] | None = None
-    if restrict_strategic_to_ranking and view_name in {"strategic_ml", "strategic_cd"} and not raw_filter_payload:
+    strategic_choice_meta: dict[str, BrandMeta] | None = None
+    is_unfiltered_strategic = view_name in {"strategic_ml", "strategic_cd"} and not raw_filter_payload
+    if prefilter_strategic_choices and is_unfiltered_strategic and not rank_by_latest_period:
+        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+        if market_row is not None:
+            ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+            choice_rows = tuple(_fetch_brand_choice_rows(view, resolved_market_id, source=resolved_source))
+            strategic_choice_meta = _brand_choice_meta_by_key(choice_rows, has_is_jw=view.has_is_jw)
+            if resolved_selected_brand in strategic_choice_meta:
+                choice_candidates = _brand_choice_candidates(
+                    choice_rows,
+                    strategic_choice_meta,
+                    ranking,
+                    ranking_quarters=ranking_quarters,
+                )
+                choices = _select_choices(
+                    choice_candidates,
+                    selected_brand=resolved_selected_brand,
+                    applied_filter={},
+                    rank_by_latest_period=rank_by_latest_period,
+                )
+                ranked_brand_keys = tuple(choice.brand_key for choice in choices)
+            else:
+                strategic_choice_meta = None
+    elif restrict_strategic_to_ranking and is_unfiltered_strategic:
         market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
         if market_row is not None:
             ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
@@ -177,7 +203,7 @@ def resolve_brand_set(
     if market_row is None:
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
-    brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
+    brand_meta = strategic_choice_meta or _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
     if view_name == "general":
         resolved_selected_brand = _resolve_general_selected_brand_key(resolved_selected_brand, brand_meta)
     if resolved_selected_brand not in brand_meta:
@@ -413,6 +439,26 @@ def _fetch_brand_rows(
     )
 
 
+def _fetch_brand_choice_rows(
+    view: ViewConfig,
+    market_id: str,
+    *,
+    source: str = SOURCE,
+) -> list[JsonMap]:
+    is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
+    return db.fetch_all(
+        f"""
+        SELECT DISTINCT brand_key, brand_name, {is_jw},
+               JSON_EXTRACT(by_dimension, '$.products[*].product_code') AS product_codes,
+               raw_value_history
+        FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
+        WHERE {view.market_key} = %s AND source = %s AND measure = %s
+        ORDER BY brand_key
+        """,
+        (market_id, source, RANKING_MEASURE),
+    )
+
+
 def _fetch_market_row(view: ViewConfig, market_id: str, *, source: str = SOURCE) -> JsonMap | None:
     return db.fetch_one(
         f"""
@@ -461,6 +507,30 @@ def _brand_candidates(
                 dimensions=_dimensions(view_name, row, meta, general_molecules, general_sidecar.get(brand_key, {})),
                 sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
                 sales_value=_candidate_sales_value(row, ranking=ranking, ranking_quarters=ranking_quarters, audit_code_axis=audit_code_axis),
+            )
+        )
+    return tuple(candidates)
+
+
+def _brand_choice_candidates(
+    rows: tuple[JsonMap, ...],
+    metas: dict[str, BrandMeta],
+    ranking: JsonMap,
+    *,
+    ranking_quarters: Sequence[str] | None = None,
+) -> tuple[BrandCandidate, ...]:
+    rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
+    candidates: list[BrandCandidate] = []
+    for row in rows:
+        brand_key = str(row["brand_key"])
+        raw_history = json_map(row.get("raw_value_history"))
+        periods = tuple(ranking_quarters or sorted(raw_history))
+        candidates.append(
+            BrandCandidate(
+                meta=metas[brand_key],
+                dimensions={},
+                sales_rank=int_or_none(rank_by_key.get(brand_key, {}).get("rank")),
+                sales_value=sum(float_value(raw_history.get(period)) for period in periods),
             )
         )
     return tuple(candidates)
@@ -616,6 +686,36 @@ def _brand_meta_by_key(rows: tuple[JsonMap, ...], *, has_is_jw: bool) -> dict[st
         is_jw = bool(row.get("is_jw")) if has_is_jw else get_display_brand(brand_key) is not None
         metas[brand_key] = BrandMeta(brand_key, str(row.get("brand_name") or brand_key), products, is_jw)
     return metas
+
+
+def _brand_choice_meta_by_key(rows: tuple[JsonMap, ...], *, has_is_jw: bool) -> dict[str, BrandMeta]:
+    metas: dict[str, BrandMeta] = {}
+    for row in rows:
+        brand_key = str(row["brand_key"])
+        products = tuple(
+            sorted(
+                {
+                    normalize_iqvia_en(code)
+                    for code in _json_list(row.get("product_codes"))
+                    if isinstance(code, str)
+                }
+            )
+        )
+        is_jw = bool(row.get("is_jw")) if has_is_jw else get_display_brand(brand_key) is not None
+        metas[brand_key] = BrandMeta(brand_key, str(row.get("brand_name") or brand_key), products, is_jw)
+    return metas
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str | bytes | bytearray):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
 
 
 def _product_codes(value: Any) -> list[str]:

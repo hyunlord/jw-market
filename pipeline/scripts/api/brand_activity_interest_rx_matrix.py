@@ -89,6 +89,7 @@ def get_interest_rx_matrix(payload: Mapping[str, Any]) -> JsonMap | None:
             market_id=request.market_id,
             selected_brand=request.selected_brand,
             filter_payload=request.filter_payload,
+            prefilter_strategic_choices=True,
         )
     except BrandSetInputError as exc:
         raise InterestRxMatrixInputError(str(exc)) from exc
