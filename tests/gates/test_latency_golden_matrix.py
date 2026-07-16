@@ -65,6 +65,19 @@ SEARCH_PAYLOADS = {
 }
 
 
+def _passing_observation(identifier: str) -> dict[str, object]:
+    observation: dict[str, object] = {
+        "id": identifier,
+        "candidate_status": 200,
+        "reference_status": 200,
+        "parity": True,
+    }
+    if identifier.startswith("brand_activity_group:topics:"):
+        observation["candidate_populated_brands"] = 1
+        observation["reference_populated_brands"] = 1
+    return observation
+
+
 def test_latency_matrix_cases_cover_every_backend_surface() -> None:
     cases = build_latency_matrix_cases(
         DEFAULT_BRANDS,
@@ -162,10 +175,7 @@ def test_latency_matrix_gate_requires_complete_200_parity() -> None:
             ["group:gardlet_family", "가드렛"],
         ],
         "expected_cases": expected_cases,
-        "observations": [
-            {"id": identifier, "candidate_status": 200, "reference_status": 200, "parity": True}
-            for identifier in expected_cases
-        ],
+        "observations": [_passing_observation(identifier) for identifier in expected_cases],
     }
 
     result = check_latency_matrix_evidence(evidence, "test2")
@@ -184,6 +194,18 @@ def test_latency_matrix_runtime_uses_reference_population_and_masks_only_deep_ti
             payload = SEARCH_PAYLOADS[brand]
         elif case.identifier.startswith("deep:"):
             payload = {"value": case.identifier, "generated_at": base_url}
+        elif case.identifier.startswith("brand_activity_group:topics:"):
+            payload = {
+                "data": {
+                    "brands": [
+                        {
+                            "brand_name": "리바로",
+                            "event_count": 12,
+                            "topic_shares": [{"topic_id": "T01", "share_pct": 75.0}],
+                        }
+                    ]
+                }
+            }
         else:
             payload = {"value": case.identifier}
         return RawResponse(
@@ -208,6 +230,51 @@ def test_latency_matrix_runtime_uses_reference_population_and_masks_only_deep_ti
     ]
     assert result.exit_code == 0
     assert result.checked == result.population == len(evidence["expected_cases"])
+
+
+def test_latency_matrix_gate_rejects_empty_required_group_topics() -> None:
+    cases = build_latency_matrix_cases(
+        DEFAULT_BRANDS,
+        SEARCH_PAYLOADS,
+        requested_brands=("리바로", "악템라", "가드렛"),
+        required_cd_brands=("악템라", "가드렛"),
+        group_scopes=(("group:livalo_family", "리바로"), ("group:gardlet_family", "가드렛")),
+    )
+    expected_cases = [
+        "brands",
+        "market_status",
+        "brand_search:리바로",
+        "brand_search:악템라",
+        "brand_search:가드렛",
+        *(case.identifier for case in cases),
+    ]
+    observations = [_passing_observation(identifier) for identifier in expected_cases]
+    empty_group = next(
+        item for item in observations if item["id"] == "brand_activity_group:topics:group:livalo_family:리바로"
+    )
+    empty_group["candidate_populated_brands"] = 0
+    empty_group["reference_populated_brands"] = 0
+    evidence = {
+        "classification": "census",
+        "provenance": {
+            "population_rule": "default brands plus required edge brands; all discovered contexts and listed sources",
+            "reference": "live-production",
+        },
+        "requested_brands": ["리바로", "악템라", "가드렛"],
+        "resolved_brands": ["리바로", "악템라", "가드렛"],
+        "required_cd_brands": ["악템라", "가드렛"],
+        "required_group_scopes": [
+            ["group:livalo_family", "리바로"],
+            ["group:gardlet_family", "가드렛"],
+        ],
+        "expected_cases": expected_cases,
+        "observations": observations,
+    }
+
+    result = check_latency_matrix_evidence(evidence, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("required group topics are empty" in detail for detail in result.details)
 
 
 def test_latency_matrix_gate_failure_injection_exits_one() -> None:

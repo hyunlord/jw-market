@@ -854,13 +854,22 @@ def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) ->
         if item.get("parity") is not True:
             details.append(f"{identifier}: response mismatch")
             failures += 1
+        if identifier.startswith("brand_activity_group:topics:"):
+            candidate_populated = item.get("candidate_populated_brands")
+            reference_populated = item.get("reference_populated_brands")
+            if not isinstance(candidate_populated, int) or candidate_populated <= 0:
+                details.append(f"{identifier}: candidate required group topics are empty")
+                failures += 1
+            if not isinstance(reference_populated, int) or reference_populated <= 0:
+                details.append(f"{identifier}: reference required group topics are empty")
+                failures += 1
     return GateResult(
         gate="latency_matrix",
         classification="census",
         checked=len(expected & set(observed)),
         population=len(expected),
         failures=failures,
-        tolerance="HTTP 200 and exact bytes; deep generated_at masked only",
+        tolerance="HTTP 200 and exact bytes; deep generated_at masked only; required group topics populated",
         environment=environment,
         details=tuple(details),
     )

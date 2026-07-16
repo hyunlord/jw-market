@@ -89,10 +89,30 @@ def _normalized_body(case: MatrixCase, response: RawResponse) -> bytes:
     ).encode()
 
 
+def _populated_topic_brands(case: MatrixCase, response: RawResponse) -> int | None:
+    if not case.identifier.startswith("brand_activity_group:topics:") or response.status != 200:
+        return None
+    payload = _json(response, case.identifier)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    brands = data.get("brands") if isinstance(data, dict) else None
+    if not isinstance(brands, list):
+        return 0
+    return sum(
+        1
+        for brand in brands
+        if isinstance(brand, dict)
+        and (
+            int(brand.get("event_count") or 0) > 0
+            or bool(brand.get("topic_shares"))
+            or bool(brand.get("brand_specific_topics"))
+        )
+    )
+
+
 def _observation(case: MatrixCase, candidate: RawResponse, reference: RawResponse) -> dict[str, object]:
     candidate_body = _normalized_body(case, candidate) if candidate.status == 200 else candidate.body
     reference_body = _normalized_body(case, reference) if reference.status == 200 else reference.body
-    return {
+    observation: dict[str, object] = {
         "id": case.identifier,
         "candidate_status": candidate.status,
         "reference_status": reference.status,
@@ -100,6 +120,13 @@ def _observation(case: MatrixCase, candidate: RawResponse, reference: RawRespons
         "reference_sha256": hashlib.sha256(reference_body).hexdigest(),
         "parity": candidate.status == reference.status == 200 and candidate_body == reference_body,
     }
+    candidate_populated = _populated_topic_brands(case, candidate)
+    reference_populated = _populated_topic_brands(case, reference)
+    if candidate_populated is not None:
+        observation["candidate_populated_brands"] = candidate_populated
+    if reference_populated is not None:
+        observation["reference_populated_brands"] = reference_populated
+    return observation
 
 
 def _request_pair(
