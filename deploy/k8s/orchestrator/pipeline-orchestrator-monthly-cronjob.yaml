@@ -1,0 +1,111 @@
+# Monthly pipeline chain: python -m pipeline.orchestrator run --mode full
+#
+# Registered suspended (suspend: true). Resume is a PL decision; before
+# resuming, confirm the image digest below matches the intended build and the
+# schedule fits the mart refresh calendar (see RUNBOOK_MONTHLY.md).
+#
+# The state PVC keeps the per-stage checkpoint (mart-epoch keyed) so re-runs
+# are idempotent across pods. With WaitForFirstConsumer binding no disk is
+# provisioned while the CronJob stays suspended.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jw-pipeline-orchestrator-state
+  namespace: llmops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-pipeline-orchestrator-monthly
+  namespace: llmops
+spec:
+  # 03:00 KST on day 3 of each month (after the monthly mart refresh window);
+  # PL adjusts on resume.
+  schedule: "0 18 2 * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 43200
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: orchestrator
+              # PINNED-BY-DIGEST after the first canonical build; see stage3_genos.md
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator:PLACEHOLDER
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -lc
+              args:
+                - |
+                  set -eu
+                  # Fail-closed double-entry pins (kept in sync by tests/deploy/test_mart_db_single_source.py)
+                  test "${MARIADB_DATABASE}" = "jw_mart_d2_stage_20260630_r2"
+                  test "${AGENT3_DB_NAME}" = "jw_mart_d2_stage_20260630_r2"
+                  test -n "${AGENT3_WORKFLOW_REV}"
+                  test -n "${AGENT3_EXPECTED_WORKFLOW_REV}"
+                  cd /app
+                  exec python -m pipeline.orchestrator run \
+                    --mode full \
+                    --state-file /var/lib/jw-pipeline/state.json \
+                    --log-file /var/lib/jw-pipeline/run-$(date -u +%Y%m%d%H%M%S).jsonl
+              env:
+                - name: MARIADB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_DATABASE
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: AGENT3_DB_NAME
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: AGENT3_WORKFLOW_REV
+                  value: "5692"
+                - name: AGENT3_EXPECTED_WORKFLOW_REV
+                  value: "5692"
+                - name: JW_PIPELINE_STATE_FILE
+                  value: /var/lib/jw-pipeline/state.json
+                - name: MARIADB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: MARIADB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+                - name: D2_WRITER_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: D2_WRITER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 2Gi
+                limits:
+                  cpu: "2"
+                  memory: 6Gi
+              volumeMounts:
+                - name: state
+                  mountPath: /var/lib/jw-pipeline
+          volumes:
+            - name: state
+              persistentVolumeClaim:
+                claimName: jw-pipeline-orchestrator-state
