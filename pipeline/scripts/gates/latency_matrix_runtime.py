@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import copy
 import hashlib
@@ -14,6 +13,7 @@ from urllib.request import Request, urlopen
 from pipeline.scripts.gates.latency_matrix_cases import (
     LATENCY_MATRIX_PROVENANCE,
     build_latency_matrix_cases,
+    normalize_brand_identity,
     resolved_brand_names,
 )
 from pipeline.scripts.gates.latency_matrix_required import REQUIRED_CD_BRANDS, REQUIRED_GROUP_SCOPES
@@ -129,24 +129,30 @@ def _observation(case: MatrixCase, candidate: RawResponse, reference: RawRespons
     return observation
 
 
-def _request_pair(
-    candidate_url: str,
-    reference_url: str,
-    case: MatrixCase,
-    timeout_seconds: float,
-    requester: Requester,
-) -> dict[str, object]:
-    candidate = requester(candidate_url, case, timeout_seconds)
-    reference = requester(reference_url, case, timeout_seconds)
-    return _observation(case, candidate, reference)
-
-
 def _search_case(brand: str) -> MatrixCase:
     return MatrixCase(
         identifier=f"brand_search:{brand}",
         method="GET",
         path=f"/api/brands?{urlencode({'q': brand})}",
     )
+
+
+def _reference_exclusion(case: MatrixCase, response: RawResponse) -> dict[str, object] | None:
+    if not case.identifier.startswith("deep:") or response.status != 422:
+        return None
+    try:
+        payload = json.loads(response.body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    error = detail.get("error") if isinstance(detail, dict) else None
+    if error != "source_not_available":
+        return None
+    return {
+        "id": case.identifier,
+        "reason": error,
+        "reference_status": response.status,
+    }
 
 
 def collect_latency_matrix_evidence(
@@ -158,20 +164,41 @@ def collect_latency_matrix_evidence(
     requester: Requester = request_case,
     edge_brands: Sequence[str] = EDGE_BRANDS,
 ) -> dict[str, object]:
+    if max_workers != 1:
+        raise ValueError("latency matrix census requires max_workers=1")
     brands_case = MatrixCase(identifier="brands", method="GET", path="/api/brands")
     market_status_case = MatrixCase(identifier="market_status", method="GET", path="/api/market-status")
     reference_brands_response = requester(reference_url, brands_case, timeout_seconds)
     reference_brands = _json(reference_brands_response, "reference brands")
-    requested_brands = tuple(dict.fromkeys((*_brand_names(reference_brands), *edge_brands, *REQUIRED_CD_BRANDS)))
+    default_brands = _brand_names(reference_brands)
+    requested_brands = tuple(
+        dict.fromkeys(
+            (
+                *default_brands,
+                *edge_brands,
+                *REQUIRED_CD_BRANDS,
+                *(member for _option_id, member in REQUIRED_GROUP_SCOPES),
+            )
+        )
+    )
 
     search_cases = tuple(_search_case(brand) for brand in requested_brands)
     search_payloads: dict[str, object] = {}
     search_observations: list[dict[str, object]] = []
     for brand, case in zip(requested_brands, search_cases, strict=True):
-        candidate = requester(candidate_url, case, timeout_seconds)
         reference = requester(reference_url, case, timeout_seconds)
+        candidate = requester(candidate_url, case, timeout_seconds)
         search_observations.append(_observation(case, candidate, reference))
         search_payloads[brand] = _json(reference, f"reference brand search {brand}")
+
+    context_resolved_brands = resolved_brand_names(search_payloads, requested_brands)
+    default_identities = {normalize_brand_identity(brand) for brand in default_brands}
+    resolved_brands = tuple(
+        brand
+        for brand in requested_brands
+        if normalize_brand_identity(brand) in default_identities or brand in context_resolved_brands
+    )
+    default_only_brands = tuple(brand for brand in resolved_brands if brand not in context_resolved_brands)
 
     cases = build_latency_matrix_cases(
         reference_brands,
@@ -186,30 +213,43 @@ def collect_latency_matrix_evidence(
             requester(candidate_url, brands_case, timeout_seconds),
             reference_brands_response,
         ),
-        _request_pair(candidate_url, reference_url, market_status_case, timeout_seconds, requester),
         *search_observations,
     ]
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(
-                _request_pair,
-                candidate_url,
-                reference_url,
-                case,
-                timeout_seconds,
-                requester,
-            )
-            for case in cases
-        ]
-        observations = [future.result() for future in as_completed(futures)]
+    reference_market_status = requester(reference_url, market_status_case, timeout_seconds)
+    candidate_market_status = requester(candidate_url, market_status_case, timeout_seconds)
+    initial.append(_observation(market_status_case, candidate_market_status, reference_market_status))
+
+    observations: list[dict[str, object]] = []
+    included_cases: list[MatrixCase] = []
+    excluded_reference_cases: list[dict[str, object]] = []
+    for case in cases:
+        reference = requester(reference_url, case, timeout_seconds)
+        exclusion = _reference_exclusion(case, reference)
+        if exclusion is not None:
+            excluded_reference_cases.append(exclusion)
+            continue
+        candidate = requester(candidate_url, case, timeout_seconds)
+        observations.append(_observation(case, candidate, reference))
+        included_cases.append(case)
     observations.extend(initial)
     observations.sort(key=lambda item: str(item["id"]))
-    expected_cases = sorted({"brands", "market_status", *(case.identifier for case in search_cases), *(case.identifier for case in cases)})
+    expected_cases = sorted(
+        {
+            "brands",
+            "market_status",
+            *(case.identifier for case in search_cases),
+            *(case.identifier for case in included_cases),
+        }
+    )
     return {
         "classification": "census",
         "provenance": LATENCY_MATRIX_PROVENANCE,
+        "default_brands": list(default_brands),
         "requested_brands": list(requested_brands),
-        "resolved_brands": list(resolved_brand_names(search_payloads, requested_brands)),
+        "resolved_brands": list(resolved_brands),
+        "context_resolved_brands": list(context_resolved_brands),
+        "default_only_brands": list(default_only_brands),
+        "excluded_reference_cases": excluded_reference_cases,
         "required_cd_brands": list(REQUIRED_CD_BRANDS),
         "required_group_scopes": [list(scope) for scope in REQUIRED_GROUP_SCOPES],
         "expected_cases": expected_cases,
