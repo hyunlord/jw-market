@@ -7,13 +7,20 @@ profile and slice evidence. It does not read portal cache tables.
 
 - Workflow: `jw-agent3-brand-strength`
 - Workflow id: `316`
-- Active prompt revision: `5365`
+- Active prompt revision: `5692`
 - Active deploy id: `1324`
 - Serving: `163`
 
-Revision `5365` is the live prompt revision that asks wf316 to return `candidate_index` only; exact raw `numbers` are injected server-side from the matched candidate while narrative text still must copy only `display_numbers`. Keep
+Revision `5692` is the live prompt revision that asks wf316 to return `candidate_index` only; exact raw `numbers` are injected server-side from the matched candidate while narrative text still must copy only `display_numbers`. Keep
 `AGENT3_WORKFLOW_REV` aligned with the live revision so idempotency hashes are
 rev-aware.
+
+There is no baked-in default revision in the code. `resolve_workflow_rev()`
+fails closed (`WorkflowRevNotPinnedError`) when neither `--workflow-rev` nor
+`AGENT3_WORKFLOW_REV` is provided, so every Job/CronJob manifest MUST pin the
+revision via env (`AGENT3_WORKFLOW_REV`) and, for run_source, the matching
+`--expected-workflow-rev` argument. A rev bump is therefore always an explicit
+manifest change, never a silent image default.
 
 wf316 narrative validation stays strict: every numeric token in a narrative must
 come from the candidate `display_numbers`, and raw high-precision decimals are

@@ -28,10 +28,11 @@ from pipeline.scripts.etl.cache_deep_analysis_brand_factors import (
     load_brand_factor_map,
     quote_ident,
 )
+from pipeline.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
-TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
+TARGET_DATABASE: Final[str] = DEFAULT_MART_DB_NAME
 CACHE_TABLE: Final[str] = "cache_brand_elements"
 AGENT3_TABLE: Final[str] = "agent3_brand_strength"
 DEFAULT_SOURCE_TABLES: Final[tuple[str, ...]] = ("cache_deep_analysis", "cache_deep_analysis_general")

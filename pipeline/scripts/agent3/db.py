@@ -6,8 +6,10 @@ from typing import Final
 
 import pymysql
 
+from pipeline.mart_config import DEFAULT_MART_DB_NAME
 
-DEFAULT_AGENT3_DB_NAME: Final = "jw_mart_d2_stage_20260630_r2"
+
+DEFAULT_AGENT3_DB_NAME: Final = DEFAULT_MART_DB_NAME
 
 
 @dataclass(frozen=True, slots=True)

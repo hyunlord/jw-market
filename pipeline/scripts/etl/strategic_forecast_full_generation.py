@@ -46,8 +46,9 @@ from pipeline.scripts.forecast.forecast_runner import (
     build_simulation_combo,
     forecast_steps,
 )
+from pipeline.mart_config import DEFAULT_MART_DB_NAME
 
-TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
+TARGET_DATABASE: Final[str] = DEFAULT_MART_DB_NAME
 SOURCE_EPOCH: Final[str] = TARGET_DATABASE
 BLOCK_TABLE: Final[str] = "deep_forecast_block"
 HORIZON_TABLE: Final[str] = "deep_forecast_horizon"

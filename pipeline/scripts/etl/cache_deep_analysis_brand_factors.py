@@ -21,12 +21,13 @@ for candidate in (Path(__file__).resolve(), *Path(__file__).resolve().parents, P
         sys.path.insert(0, str(candidate))
 
 from cache_build_common import mariadb_connect
+from pipeline.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
 logger = logging.getLogger(__name__)
 
-TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
+TARGET_DATABASE: Final[str] = DEFAULT_MART_DB_NAME
 CACHE_TABLE: Final[str] = "cache_deep_analysis"
 GENERAL_BRAND_TABLE: Final[str] = "mart_general_brand_metric"
 GENERAL_DIMENSION_TABLE: Final[str] = "mart_general_filter_dimension_metric"

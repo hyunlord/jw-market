@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Migrate generated general forecasts into source-scoped serving tables."""
+"""Migrate generated general forecasts into source-scoped serving tables.
+
+DEPRECATED: this was the one-shot 2026-07 unified-table migration with pinned
+source row counts (34,378 / 2,880). It is retained for provenance only; do not
+run it against a newer mart generation. Regeneration paths are
+``ops_forecast_builder.py`` / ``general_forecast_full_generation.py`` /
+``strategic_forecast_full_generation.py``. See BRANCH_POLICY.md for the
+historical-lineage policy. Removal requires a separate PL decision.
+"""
 
 from __future__ import annotations
 
@@ -21,10 +29,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pipeline.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.etl.cache_build_common import dump_payload
 
 
-DATABASE: Final = "jw_mart_d2_stage_20260630_r2"
+DATABASE: Final = DEFAULT_MART_DB_NAME
 SOURCE_EPOCH: Final = DATABASE
 SOURCE_BLOCK_TABLE: Final = "cache_deep_analysis_general"
 SOURCE_HORIZON_TABLE: Final = "cache_market_forecast_general"
