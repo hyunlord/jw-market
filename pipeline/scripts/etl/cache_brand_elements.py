@@ -28,7 +28,7 @@ from pipeline.scripts.etl.cache_deep_analysis_brand_factors import (
     load_brand_factor_map,
     quote_ident,
 )
-from pipeline.mart_config import DEFAULT_MART_DB_NAME
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 

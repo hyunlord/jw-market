@@ -43,7 +43,7 @@ from pipeline.scripts.forecast.forecast_runner import (
     forecast_steps,
     history_from_row,
 )
-from pipeline.mart_config import DEFAULT_MART_DB_NAME
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 
 TARGET_DATABASE: Final[str] = DEFAULT_MART_DB_NAME
 GENERAL_CACHE_TABLE: Final[str] = "cache_deep_analysis_general"

@@ -6,7 +6,7 @@ from typing import Final
 
 import pymysql
 
-from pipeline.mart_config import DEFAULT_MART_DB_NAME
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 
 
 DEFAULT_AGENT3_DB_NAME: Final = DEFAULT_MART_DB_NAME

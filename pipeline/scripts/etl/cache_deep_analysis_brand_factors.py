@@ -21,7 +21,7 @@ for candidate in (Path(__file__).resolve(), *Path(__file__).resolve().parents, P
         sys.path.insert(0, str(candidate))
 
 from cache_build_common import mariadb_connect
-from pipeline.mart_config import DEFAULT_MART_DB_NAME
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 

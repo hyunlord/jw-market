@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from typing import Protocol
 
-from pipeline.mart_config import resolve_mart_db_name
+from pipeline.scripts.utils.mart_config import resolve_mart_db_name
 
 
 class Probe(Protocol):

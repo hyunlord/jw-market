@@ -28,7 +28,7 @@ for candidate in (Path("/app"), Path("/workspace")):
         break
 
 from cache_build_common import decode_json, dump_payload, payload_size
-from pipeline.mart_config import DEFAULT_MART_DB_NAME
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.etl.build_cache_deep_analysis import _rebuild_events_payload_for_brand
 
 

@@ -1,6 +1,6 @@
 """Drift gate for the mart DB generation name.
 
-``pipeline/mart_config.py`` is the single Python source of truth for the mart
+``pipeline/scripts/utils/mart_config.py`` is the single Python source of truth for the mart
 generation. Kubernetes manifests and standalone scripts keep deliberate pinned
 copies (fail-closed guards / crawl-image layout); this gate keeps every copy
 equal to the canonical constant so a generation switch cannot be applied
@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from pipeline.mart_config import DEFAULT_MART_DB_NAME, DEFAULT_SOURCE_EPOCH, resolve_mart_db_name
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME, DEFAULT_SOURCE_EPOCH, resolve_mart_db_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,9 +24,9 @@ SCAN_SUFFIXES = {".py", ".yaml", ".yml", ".sh"}
 
 # Python files allowed to carry the literal itself. Standalone scripts run
 # outside the package context in the crawl image layout, so they keep a local
-# pinned default instead of importing pipeline.mart_config.
+# pinned default instead of importing pipeline.scripts.utils.mart_config.
 ALLOWED_PY_LITERAL_FILES = {
-    "pipeline/mart_config.py",
+    "pipeline/scripts/utils/mart_config.py",
     "pipeline/scripts/crawler/tier2_body_match_runner.py",
     "pipeline/scripts/crawler/crawl_retention.py",
     "pipeline/scripts/crawler/crawl_2tier.py",
@@ -58,7 +58,7 @@ def test_every_generation_literal_matches_canonical() -> None:
                 line = text.count("\n", 0, match.start()) + 1
                 mismatches.append(f"{path.relative_to(REPO_ROOT)}:{line}: {match.group(0)}")
     assert not mismatches, (
-        "Mart generation literals diverge from pipeline.mart_config.DEFAULT_MART_DB_NAME "
+        "Mart generation literals diverge from pipeline.scripts.utils.mart_config.DEFAULT_MART_DB_NAME "
         f"({DEFAULT_MART_DB_NAME}):\n" + "\n".join(mismatches)
     )
 
@@ -75,7 +75,7 @@ def test_python_literal_only_in_declared_files() -> None:
         if DEFAULT_MART_DB_NAME in text:
             offenders.append(rel)
     assert not offenders, (
-        "New hardcoded mart DB literals found; import pipeline.mart_config instead "
+        "New hardcoded mart DB literals found; import pipeline.scripts.utils.mart_config instead "
         "(or add a standalone script to ALLOWED_PY_LITERAL_FILES with justification):\n"
         + "\n".join(offenders)
     )
