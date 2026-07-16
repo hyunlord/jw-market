@@ -498,6 +498,89 @@ def test_cli_refuses_runtime_query_before_reload_completion() -> None:
     assert "gate=mart_reload_authorization" in result.stdout
 
 
+def test_cli_refuses_runtime_query_without_bound_reload_identity() -> None:
+    env = os.environ.copy()
+    env["MART_RELOAD_COMPLETE"] = "1"
+    env.pop("MART_RELOAD_RUN_ID", None)
+    env.pop("MART_SOURCE_EPOCH", None)
+    env.pop("MART_BUILD_VERSION", None)
+
+    result = _run_gate(env=env)
+
+    assert result.returncode == 1
+    assert "gate=mart_reload_authorization" in result.stdout
+    assert "failure_count=3" in result.stdout
+
+
+def test_collect_cohort_queries_only_the_authorized_identity() -> None:
+    class RecordingCursor:
+        def __init__(self) -> None:
+            self.sql = ""
+            self.params: tuple[str, str] | None = None
+
+        def execute(self, sql: str, params: tuple[str, str]) -> None:
+            self.sql = " ".join(sql.split())
+            self.params = params
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "source_epoch": "epoch-authorized",
+                    "build_version": "build-authorized",
+                    "built_at_min": "2026-07-16T10:01:00Z",
+                    "built_at_max": "2026-07-16T10:02:00Z",
+                    "row_count": 1,
+                }
+            ]
+
+    cursor = RecordingCursor()
+    identity = post_reload_mart_gate.CohortIdentity(
+        reload_run_id="reload-20260716",
+        source_epoch="epoch-authorized",
+        build_version="build-authorized",
+    )
+
+    cohort = post_reload_mart_gate._collect_cohort(cursor, identity)
+
+    assert cohort["source_epoch"] == "epoch-authorized"
+    assert cursor.params == ("epoch-authorized", "build-authorized")
+    assert "WHERE view = 'general'" in cursor.sql
+    assert "AND source_epoch = %s AND build_version = %s" in cursor.sql
+    assert "ORDER BY MAX(built_at) DESC" not in cursor.sql
+
+
+def test_cli_accepts_evidence_only_for_the_authorized_cohort(tmp_path: Path) -> None:
+    evidence_path = tmp_path / "valid.json"
+    _write_evidence(evidence_path, _valid_evidence())
+    common_args = (
+        "--evidence",
+        str(evidence_path),
+        "--reload-run-id",
+        "reload-20260716",
+        "--source-epoch",
+        "opaque-producer-epoch",
+        "--build-version",
+        "v-test",
+    )
+
+    accepted = _run_gate(*common_args)
+    rejected = _run_gate(
+        "--evidence",
+        str(evidence_path),
+        "--reload-run-id",
+        "reload-20260716",
+        "--source-epoch",
+        "epoch-from-another-reload",
+        "--build-version",
+        "v-test",
+    )
+
+    assert accepted.returncode == 0
+    assert "gate=mart_reload_identity" in accepted.stdout
+    assert rejected.returncode == 1
+    assert "source_epoch_mismatch" in rejected.stdout
+
+
 def test_cli_accepts_complete_evidence_and_prints_acceptance_fields(tmp_path: Path) -> None:
     evidence_path = tmp_path / "valid.json"
     _write_evidence(evidence_path, _valid_evidence())

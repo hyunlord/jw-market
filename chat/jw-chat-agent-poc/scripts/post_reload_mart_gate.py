@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
@@ -44,6 +45,16 @@ EXPECTED_SOURCE_TABLES = {
     "strategic_market": "mart_strategic_ml_market_metric",
 }
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
+COHORT_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+@dataclass(frozen=True, slots=True)
+class CohortIdentity:
+    """Bind a mart census to one PL-authorized reload cohort."""
+
+    reload_run_id: str
+    source_epoch: str
+    build_version: str
 
 
 def _json_value(value: Any) -> Any:
@@ -497,6 +508,35 @@ def validate_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_cohort_identity(
+    evidence: Mapping[str, Any],
+    identity: CohortIdentity,
+) -> dict[str, Any]:
+    """Verify that captured evidence belongs to the authorized reload cohort."""
+
+    cohort = _json_object(evidence.get("cohort"))
+    failures: list[str] = []
+    actual_source_epoch = str(cohort.get("source_epoch") or "")
+    actual_build_version = str(cohort.get("build_version") or "")
+    if actual_source_epoch != identity.source_epoch:
+        failures.append(
+            "source_epoch_mismatch:"
+            f"actual={actual_source_epoch or '<missing>'}:expected={identity.source_epoch}"
+        )
+    if actual_build_version != identity.build_version:
+        failures.append(
+            "build_version_mismatch:"
+            f"actual={actual_build_version or '<missing>'}:expected={identity.build_version}"
+        )
+    return _gate(
+        "mart_reload_identity",
+        checked=0 if failures else 1,
+        population=1,
+        failures=failures,
+        tolerance="exact",
+    )
+
+
 def _fetch_all(cursor: Any, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
     cursor.execute(sql, params)
     return [dict(row) for row in cursor.fetchall()]
@@ -538,7 +578,24 @@ def _collect_source_tables(
     return states
 
 
-def collect_runtime_evidence() -> dict[str, Any]:
+def _collect_cohort(cursor: Any, identity: CohortIdentity) -> dict[str, Any]:
+    rows = _fetch_all(
+        cursor,
+        """
+        SELECT source_epoch, build_version, MIN(built_at) AS built_at_min,
+               MAX(built_at) AS built_at_max, COUNT(*) AS row_count
+        FROM mart_analysis_level_block
+        WHERE view = 'general' AND UPPER(source) = 'UBIST'
+          AND measure = 'sales' AND trim_mode = 'full'
+          AND source_epoch = %s AND build_version = %s
+        GROUP BY source_epoch, build_version
+        """,
+        (identity.source_epoch, identity.build_version),
+    )
+    return rows[0] if rows else {}
+
+
+def collect_runtime_evidence(identity: CohortIdentity) -> dict[str, Any]:
     import pymysql
 
     host = os.environ.get("CHAT_QUERY_DB_HOST") or os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
@@ -569,20 +626,7 @@ def collect_runtime_evidence() -> dict[str, Any]:
             except pymysql.MySQLError:
                 cursor.execute("SELECT @@session.transaction_read_only AS tx_read_only")
             tx_read_only = int(cursor.fetchone()["tx_read_only"])
-            cohorts = _fetch_all(
-                cursor,
-                """
-                SELECT source_epoch, build_version, MIN(built_at) AS built_at_min,
-                       MAX(built_at) AS built_at_max, COUNT(*) AS row_count
-                FROM mart_analysis_level_block
-                WHERE view = 'general' AND UPPER(source) = 'UBIST'
-                  AND measure = 'sales' AND trim_mode = 'full'
-                GROUP BY source_epoch, build_version
-                ORDER BY MAX(built_at) DESC, source_epoch DESC
-                LIMIT 1
-                """,
-            )
-            cohort = cohorts[0] if cohorts else {}
+            cohort = _collect_cohort(cursor, identity)
             block_rows = _fetch_all(
                 cursor,
                 """
@@ -681,16 +725,87 @@ def _acceptance_line(gate: Mapping[str, Any]) -> str:
     )
 
 
+def _authorized_identity(
+    *,
+    reload_run_id: str | None,
+    source_epoch: str | None,
+    build_version: str | None,
+    runtime_required: bool,
+) -> tuple[CohortIdentity | None, list[str]]:
+    values = {
+        "reload_run_id": str(reload_run_id or "").strip(),
+        "source_epoch": str(source_epoch or "").strip(),
+        "build_version": str(build_version or "").strip(),
+    }
+    failures: list[str] = []
+    identity_requested = runtime_required or any(values.values())
+    if not identity_requested:
+        return None, failures
+    for name, value in values.items():
+        if not value:
+            failures.append(f"{name}_missing")
+        elif COHORT_IDENTITY_RE.fullmatch(value) is None:
+            failures.append(f"{name}_invalid:{value!r}")
+    if failures:
+        return None, failures
+    return (
+        CohortIdentity(
+            reload_run_id=values["reload_run_id"],
+            source_epoch=values["source_epoch"],
+            build_version=values["build_version"],
+        ),
+        failures,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", type=Path, help="Validate captured JSON instead of querying the runtime mart")
     parser.add_argument("--output", type=Path, help="Write the redacted validation report")
+    parser.add_argument("--reload-run-id", default=os.environ.get("MART_RELOAD_RUN_ID"))
+    parser.add_argument("--source-epoch", default=os.environ.get("MART_SOURCE_EPOCH"))
+    parser.add_argument("--build-version", default=os.environ.get("MART_BUILD_VERSION"))
     args = parser.parse_args()
-    if args.evidence is None and os.environ.get("MART_RELOAD_COMPLETE") != "1":
-        print("gate=mart_reload_authorization classification=census checked=0 population=1 missing=fail tolerance=exact failure_count=1 exit_code=1 environment=runtime_mart_read_only")
+    runtime_required = args.evidence is None
+    identity, authorization_failures = _authorized_identity(
+        reload_run_id=args.reload_run_id,
+        source_epoch=args.source_epoch,
+        build_version=args.build_version,
+        runtime_required=runtime_required,
+    )
+    if runtime_required and os.environ.get("MART_RELOAD_COMPLETE") != "1":
+        authorization_failures.insert(0, "reload_completion_not_authorized")
+    if authorization_failures:
+        authorization_gate = _gate(
+            "mart_reload_authorization",
+            checked=0,
+            population=1,
+            failures=authorization_failures,
+            tolerance="exact",
+        )
+        print(_acceptance_line(authorization_gate))
+        for failure in authorization_failures:
+            print(f"failure gate=mart_reload_authorization reason={failure}")
         return 1
-    evidence = json.loads(args.evidence.read_text(encoding="utf-8")) if args.evidence else collect_runtime_evidence()
+    if runtime_required and identity is None:
+        raise RuntimeError("runtime mart validation requires a bound cohort identity")
+    evidence = (
+        json.loads(args.evidence.read_text(encoding="utf-8"))
+        if args.evidence
+        else collect_runtime_evidence(identity)
+    )
     report = validate_evidence(evidence)
+    if identity is not None:
+        identity_gate = validate_cohort_identity(evidence, identity)
+        report = {
+            "reload_authorization": {
+                "reload_run_id": identity.reload_run_id,
+                "source_epoch": identity.source_epoch,
+                "build_version": identity.build_version,
+            },
+            "gates": [identity_gate, *report["gates"]],
+            "exit_code": 1 if identity_gate["exit_code"] or report["exit_code"] else 0,
+        }
     for gate in report["gates"]:
         print(_acceptance_line(gate))
         for failure in gate["failures"]:
