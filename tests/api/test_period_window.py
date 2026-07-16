@@ -177,6 +177,39 @@ def test_trim_period_rows_reuses_predecoded_dimension_series(monkeypatch) -> Non
         assert result[f"__{field}"] is decoded
 
 
+def test_trim_period_rows_projects_shared_dimension_alias_once(monkeypatch) -> None:
+    shared = {
+        "JW": {
+            "2025-01": {"raw_value": 1.0},
+            "2026-01": {"raw_value": 2.0},
+        }
+    }
+    decoded = {"seller": shared, "class": shared}
+    row = {
+        "dimension_data": json.dumps(decoded, ensure_ascii=False, sort_keys=True),
+        "__dimension_data": decoded,
+    }
+    calls: list[int] = []
+    original = period_window_module._trim_period_payload
+
+    def spy(value: object, bounds: tuple[int | None, int | None]) -> object:
+        calls.append(id(value))
+        return original(value, bounds)
+
+    monkeypatch.setattr(period_window_module, "_trim_period_payload", spy)
+
+    result = trim_period_rows([row], PeriodRange("2025-01", "2025-12"))[0]
+
+    expected = {
+        "seller": {"JW": {"2025-01": {"raw_value": 1.0}}},
+        "class": {"JW": {"2025-01": {"raw_value": 1.0}}},
+    }
+    assert json.loads(result["dimension_data"]) == expected
+    assert result["__dimension_data"] is decoded
+    assert decoded["seller"]["JW"]["2026-01"] == {"raw_value": 2.0}
+    assert calls.count(id(shared)) == 1
+
+
 def test_trim_period_payload_skips_mapping_protocol_for_json_scalars(monkeypatch) -> None:
     checks: list[type[object]] = []
 

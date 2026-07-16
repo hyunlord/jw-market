@@ -155,6 +155,24 @@ def _trim_encoded_value(value: Any, bounds: _PeriodBounds, decoded_value: Any = 
                 decoded = json.loads(value)
             except json.JSONDecodeError:
                 return value
+        if decoded_value is not None and type(decoded) is dict:
+            first_key = next(iter(decoded), None)
+            if first_key is None or _period_interval(str(first_key)) is None:
+                projected_by_identity: dict[int, Any] = {}
+                projected: dict[str, Any] = {}
+                for key, item in decoded.items():
+                    item_type = type(item)
+                    if item_type in _JSON_SCALAR_TYPES:
+                        trimmed_item = item
+                    elif item_type in (dict, list):
+                        identity = id(item)
+                        if identity not in projected_by_identity:
+                            projected_by_identity[identity] = _trim_period_payload(item, bounds)
+                        trimmed_item = projected_by_identity[identity]
+                    else:
+                        trimmed_item = _trim_period_payload(item, bounds)
+                    projected[str(key)] = trimmed_item
+                return json.dumps(projected, ensure_ascii=False, sort_keys=True)
         return json.dumps(_trim_period_payload(decoded, bounds), ensure_ascii=False, sort_keys=True)
     return _trim_period_payload(value, bounds)
 
