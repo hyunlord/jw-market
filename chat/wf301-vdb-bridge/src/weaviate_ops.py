@@ -266,9 +266,14 @@ def _post_target_objects(client: httpx.Client, objects: list[dict[str, Any]]) ->
 def _embedding_batch_size() -> int:
     value = os.environ.get("EMBEDDING_BATCH_SIZE") or str(settings.BATCH_SIZE)
     try:
-        return max(1, int(value))
+        requested = max(1, int(value))
     except ValueError:
-        return max(1, settings.BATCH_SIZE)
+        requested = max(1, settings.BATCH_SIZE)
+    try:
+        serving_limit = max(1, int(os.environ.get("EMBEDDING_MAX_BATCH_SIZE", "64")))
+    except ValueError:
+        serving_limit = 64
+    return min(requested, serving_limit)
 
 
 def _embedding_fallback_batch_size() -> int:
@@ -280,11 +285,11 @@ def _embedding_fallback_batch_size() -> int:
 
 
 def _embedding_batch_concurrency() -> int:
-    value = os.environ.get("EMBEDDING_BATCH_CONCURRENCY", "4")
+    value = os.environ.get("EMBEDDING_BATCH_CONCURRENCY", "1")
     try:
         return max(1, int(value))
     except ValueError:
-        return 4
+        return 1
 
 
 def _parse_embeddings(body: dict[str, Any], expected: int) -> list[list[float]]:
