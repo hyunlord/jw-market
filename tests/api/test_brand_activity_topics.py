@@ -162,6 +162,36 @@ def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
     assert captured["prescription_evolution"] == ["increase"]
 
 
+def test_post_topics_route_preserves_general_market_scope_without_atc4(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_get_topic_brand_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return {"scope": {"view": "general"}, "brands": [{"event_count": 1}]}
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {
+                "market_scope": {
+                    "option_id": "group:livalo_family",
+                    "member": "리바로",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["filters"]["market_scope"] == {
+        "option_id": "group:livalo_family",
+        "member": "리바로",
+    }
+
+
 def test_post_topics_route_accepts_canonical_period_and_returns_applied_bounds(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -507,6 +537,34 @@ def test_post_topic_service_reads_keyword_filters_from_filters_envelope(monkeypa
 
     assert parsed["specialty"] == ("Cardio", "Nephro")
     assert parsed["interest"] == ("VERY USEFUL",)
+
+
+@pytest.mark.parametrize(
+    ("option_id", "member"),
+    (
+        ("group:livalo_family", "리바로"),
+        ("group:gardlet_family", "가드렛"),
+    ),
+)
+def test_post_topic_service_accepts_general_market_scope_without_atc4(option_id: str, member: str) -> None:
+    parsed = topic_matrix._parse_topic_request(
+        {
+            "view": "general",
+            "selected_brand": member,
+            "filters": {
+                "market_scope": {
+                    "option_id": option_id,
+                    "member": member,
+                }
+            },
+        }
+    )
+
+    assert parsed["market_id"] == ""
+    assert parsed["filter"]["market_scope"] == {
+        "option_id": option_id,
+        "member": member,
+    }
 
 
 def test_post_topic_service_rejects_unknown_filter_values(monkeypatch) -> None:
