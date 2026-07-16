@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 import re
 from typing import Any, Final
 
+from jw_chat_agent_poc.orchestrator.markdown_formatting import precise_eok_value
 from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
@@ -26,6 +27,21 @@ def ungrounded_numbers(
         if call.get("status") not in PUBLIC_EVIDENCE_STATUSES:
             continue
         allowed_set.update(number_tokens(BARE_URL_RE.sub("", call_data_md(dict(call)))))
+        render_data = call.get("render_data")
+        if (
+            call.get("tool") == "get_brand_metric"
+            and isinstance(render_data, Mapping)
+            and render_data.get("metric") == "sales"
+            and str(render_data.get("status") or "ok").lower() in PUBLIC_EVIDENCE_STATUSES
+        ):
+            allowed_set.update(
+                number_tokens(
+                    precise_eok_value(
+                        render_data.get("sales_억원"),
+                        render_data.get("sales_krw"),
+                    )
+                )
+            )
     claim_text = BARE_URL_RE.sub("", _without_deterministic_web_appendix(answer, tool_calls))
     return tuple(sorted(token for token in number_tokens(claim_text) if token not in allowed_set))
 

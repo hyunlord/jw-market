@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.service.runtime_provenance import _empty_result_calls, _ungrounded_numbers, trace_envelope
 from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
@@ -43,6 +44,38 @@ def test_rendered_fact_number_is_grounded_when_allowed_numbers_is_incomplete() -
     }
 
     assert _ungrounded_numbers("리바로 2025-04 매출은 83.184115억원입니다.", markdown_response) == ()
+
+
+def test_exact_monthly_sales_is_grounded_by_successful_structured_tool_value() -> None:
+    call = {
+        "tool": "get_brand_metric",
+        "status": "ok",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "brand": "리바로",
+            "metric": "sales",
+            "period": "2025-04",
+            "sales_억원": 83.184115,
+            "sales_krw": 8_318_411_526.5,
+        },
+    }
+    fact_md = answer_fact_markdown([call], ["UBIST"])
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": fact_md,
+        "data_md": fact_md,
+    }
+
+    assert "| 매출 | 83.18억원 |" in fact_md
+    assert (
+        _ungrounded_numbers(
+            "2025-04 리바로 매출은 83.184115억원입니다.",
+            markdown_response,
+            [call],
+        )
+        == ()
+    )
 
 
 def test_number_absent_from_rendered_facts_remains_ungrounded() -> None:
