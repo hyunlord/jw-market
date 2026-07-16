@@ -87,13 +87,19 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
 
     if mapping_value is not None:
         items = list(mapping_value.items())
-        period_items = [(_period_interval(str(key)), key, item) for key, item in items]
-        if items and all(interval is not None for interval, _key, _item in period_items):
-            return {
-                str(key): _trim_period_payload(item, bounds)
-                for interval, key, item in period_items
-                if interval is not None and _overlaps(interval, bounds)
-            }
+        if items:
+            period_items: list[tuple[tuple[int, int], Any, Any]] = []
+            for key, item in items:
+                interval = _period_interval(str(key))
+                if interval is None:
+                    break
+                period_items.append((interval, key, item))
+            else:
+                return {
+                    str(key): _trim_period_payload(item, bounds)
+                    for interval, key, item in period_items
+                    if _overlaps(interval, bounds)
+                }
         return {str(key): _trim_period_payload(item, bounds) for key, item in items}
 
     assert list_value is not None

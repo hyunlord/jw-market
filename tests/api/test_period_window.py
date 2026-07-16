@@ -218,3 +218,44 @@ def test_trim_period_payload_preserves_mapping_and_list_subclass_support() -> No
         "history": {"2025-01": 1.0},
         "points": [{"period": "2025-01", "value": 1.0}],
     }
+
+
+def test_trim_period_payload_stops_period_detection_after_first_non_period_key(monkeypatch) -> None:
+    calls: list[str] = []
+    original = period_window_module._period_interval
+
+    def spy(value: str) -> tuple[int, int] | None:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(period_window_module, "_period_interval", spy)
+    payload = {
+        "identity": "row",
+        **{f"2025-{month:02d}": float(month) for month in range(1, 13)},
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == payload
+    assert calls == ["2025-01", "2025-12", "identity"]
+
+
+def test_trim_period_payload_preserves_mixed_mapping_after_leading_period_key() -> None:
+    payload = {
+        "2025-01": {
+            "history": {
+                "2025-01": 1.0,
+                "2026-01": 2.0,
+            }
+        },
+        "identity": "row",
+        "2025-02": 3.0,
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {
+        "2025-01": {"history": {"2025-01": 1.0}},
+        "identity": "row",
+        "2025-02": 3.0,
+    }
