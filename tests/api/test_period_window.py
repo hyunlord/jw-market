@@ -255,6 +255,41 @@ def test_trim_period_payload_compares_period_bounds_without_helper_calls(monkeyp
     }
 
 
+def test_trim_period_payload_filters_period_mapping_during_classification(monkeypatch) -> None:
+    events: list[str] = []
+    original = period_window_module._period_interval
+
+    class IntervalProbe(tuple[int, int]):
+        def __new__(cls, period: str, interval: tuple[int, int]) -> "IntervalProbe":
+            instance = super().__new__(cls, interval)
+            instance.period = period
+            return instance
+
+        def __getitem__(self, index: int) -> int:
+            events.append(f"overlap:{self.period}:{index}")
+            return super().__getitem__(index)
+
+    def spy(value: str) -> tuple[int, int] | None:
+        events.append(f"parse:{value}")
+        interval = original(value)
+        return IntervalProbe(value, interval) if interval is not None else None
+
+    monkeypatch.setattr(period_window_module, "_period_interval", spy)
+    payload = {
+        "2024-12": {"raw_value": 1.0},
+        "2025-01": {"raw_value": 2.0},
+        "2026-01": {"raw_value": 3.0},
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {"2025-01": {"raw_value": 2.0}}
+    first_period = events.index("parse:2024-12")
+    first_overlap = events.index("overlap:2024-12:1", first_period)
+    next_period = events.index("parse:2025-01", first_period + 1)
+    assert first_overlap < next_period
+
+
 def test_trim_period_payload_preserves_mapping_and_list_subclass_support() -> None:
     class PeriodPoints(list[UserDict[str, object]]):
         pass

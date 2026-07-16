@@ -88,12 +88,15 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
     if mapping_value is not None:
         items = list(mapping_value.items())
         if items:
-            period_items: list[tuple[tuple[int, int], Any, Any]] = []
+            period_items: list[tuple[Any, Any]] = []
             for key, item in items:
                 interval = _period_interval(str(key))
                 if interval is None:
                     break
-                period_items.append((interval, key, item))
+                if (bounds[0] is None or interval[1] >= bounds[0]) and (
+                    bounds[1] is None or interval[0] <= bounds[1]
+                ):
+                    period_items.append((key, item))
             else:
                 return {
                     str(key): (
@@ -101,9 +104,7 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                         if type(item) in _JSON_SCALAR_TYPES
                         else _trim_period_payload(item, bounds)
                     )
-                    for interval, key, item in period_items
-                    if (bounds[0] is None or interval[1] >= bounds[0])
-                    and (bounds[1] is None or interval[0] <= bounds[1])
+                    for key, item in period_items
                 }
         return {
             str(key): (
