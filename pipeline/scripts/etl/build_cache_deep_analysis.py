@@ -249,10 +249,13 @@ def _apply_event_cut_flags(events: list[dict[str, Any]], *, chart_event_ids: set
 def _events_spec_list(events_payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Project Phase 33 cut_a events to the v0.9.1 spec list shape."""
     events = events_payload.get("cut_a") or []
-    cut_b = sorted(events_payload.get("cut_b") or [], key=_event_sort_key, reverse=True)[:EVENT_CHART_MAX]
+    # Full Cut B membership sizes the natural highlight count; the chart cap is
+    # enforced by _apply_event_cut_flags. Slicing here to the top of the
+    # all-history Cut B would starve the displayed (mostly recent) list of
+    # matches and collapse every brand to the minimum.
     chart_event_ids = {
         str(event.get("id") or event.get("event_id") or event.get("news_id"))
-        for event in cut_b
+        for event in events_payload.get("cut_b") or []
     }
     projected: list[dict[str, Any]] = []
     for event in events:
