@@ -12,6 +12,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOO
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
+from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers as _ungrounded_numbers
 
 
 _UNKNOWN = "unknown"
@@ -112,7 +113,11 @@ def trace_envelope(
         "claim_policy_blocks": claim_report["forbidden_claims_remaining"],
         "surface_policy_blocks": _surface_policy_blocks(result),
         "render_status": _render_status(answer),
-        "ungrounded_numeric_spans": _ungrounded_numbers(answer, markdown_response),
+        "ungrounded_numeric_spans": _ungrounded_numbers(
+            answer,
+            markdown_response,
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        ),
         "token_usage": _token_usage(timing),
         "chart_count": len(charts),
         "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
@@ -475,14 +480,6 @@ def _cell_count(line: str) -> int:
     if not stripped:
         return 0
     return len(stripped.split("|"))
-
-
-def _ungrounded_numbers(answer: str, markdown_response: Mapping[str, Any]) -> tuple[str, ...]:
-    allowed = markdown_response.get("allowed_numbers")
-    allowed_set = {str(item) for item in allowed} if isinstance(allowed, (list, tuple)) else set()
-    allowed_set.update(number_tokens(_markdown_field(markdown_response, "fact_md")))
-    allowed_set.update(number_tokens(_markdown_field(markdown_response, "data_md")))
-    return tuple(sorted(token for token in number_tokens(answer) if token not in allowed_set))
 
 
 def _markdown_field(markdown_response: Mapping[str, Any], field: str) -> str:
