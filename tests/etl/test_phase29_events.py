@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pipeline.scripts.etl.phase29_events import (
     _filter_cut_b_rows,
+    get_brand_events_cut_a,
     get_brand_events_cut_b,
     _filter_news_exposure_rows,
     _query_events,
@@ -136,3 +137,94 @@ def test_cut_b_query_drops_derivation_and_lookback_restrictions() -> None:
     assert result == []
     assert "s.derivation = %s" not in select_sql
     assert "DATE_SUB" not in select_sql
+
+
+def test_cut_a_reuses_one_query_per_lookback(monkeypatch) -> None:
+    rows = [
+        {
+            "event_id": f"event-{index}",
+            "news_id": f"news-{index}",
+            "brand_name": "가드메트",
+            "brand_canonical": "가드메트",
+            "score": score,
+            "tag": "자본/경영",
+            "source_processor": None,
+            "published_date": f"2026-01-{index:02d}",
+            "title": f"title-{index}",
+        }
+        for index, score in enumerate((50, 49, 48, 47, 46), start=1)
+    ]
+    calls: list[tuple[int, int | None]] = []
+
+    def fake_query_events(
+        _conn: object,
+        _brand: str,
+        *,
+        min_score: int,
+        lookback_months: int | None,
+        limit: int | None,
+        derivation: str | None = None,
+    ) -> list[dict[str, object]]:
+        assert limit is None
+        assert derivation is None
+        calls.append((min_score, lookback_months))
+        return [row for row in rows if int(row["score"]) >= min_score]
+
+    monkeypatch.setattr("pipeline.scripts.etl.phase29_events._query_events", fake_query_events)
+
+    events, lookback, threshold = get_brand_events_cut_a(
+        object(),  # type: ignore[arg-type]
+        "가드메트",
+        lookback_candidates=[6, 12],
+    )
+
+    assert calls == [(50, 6), (0, 6)]
+    assert [event["score"] for event in events] == [50, 49, 48, 47, 46]
+    assert lookback == 6
+    assert threshold == 46
+
+
+def test_cut_a_keeps_single_query_when_initial_threshold_has_coverage(monkeypatch) -> None:
+    rows = [
+        {
+            "event_id": f"event-{index}",
+            "news_id": f"news-{index}",
+            "brand_name": "리바로",
+            "brand_canonical": "리바로",
+            "score": score,
+            "tag": "자본/경영",
+            "source_processor": None,
+            "published_date": f"2026-02-{index:02d}",
+            "title": f"title-{index}",
+        }
+        for index, score in enumerate((55, 54, 53, 52, 51), start=1)
+    ]
+    calls: list[int] = []
+
+    def fake_query_events(
+        _conn: object,
+        _brand: str,
+        *,
+        min_score: int,
+        lookback_months: int | None,
+        limit: int | None,
+        derivation: str | None = None,
+    ) -> list[dict[str, object]]:
+        assert lookback_months == 6
+        assert limit is None
+        assert derivation is None
+        calls.append(min_score)
+        return [row for row in rows if int(row["score"]) >= min_score]
+
+    monkeypatch.setattr("pipeline.scripts.etl.phase29_events._query_events", fake_query_events)
+
+    events, lookback, threshold = get_brand_events_cut_a(
+        object(),  # type: ignore[arg-type]
+        "리바로",
+        lookback_candidates=[6],
+    )
+
+    assert calls == [50]
+    assert len(events) == 5
+    assert lookback == 6
+    assert threshold == 50
