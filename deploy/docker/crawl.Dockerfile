@@ -20,8 +20,12 @@ FROM python:3.11-slim
 
 ARG APP_VERSION="local"
 
+# The canonical scripts import each other as pipeline.scripts.crawler.*;
+# /work carries the package tree and PYTHONPATH resolves it regardless of
+# which layout alias (crawl/crawler, /opt/tier2) invoked the script.
 ENV APP_VERSION="${APP_VERSION}" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/work
 
 RUN pip install --no-cache-dir \
     "PyMySQL>=1.1.0" \
@@ -35,6 +39,7 @@ RUN pip install --no-cache-dir \
 WORKDIR /work
 
 COPY pipeline/scripts/crawler/ /work/crawl/crawler/
+COPY pipeline/scripts/crawler/ /work/pipeline/scripts/crawler/
 COPY pipeline/scripts/agent_2/score_v2.py /work/crawl/agent1/score_v2.py
 COPY pipeline/scripts/agent_2/corpus_loader.py /work/crawl/agent1/corpus_loader_v2.py
 COPY docs/crawl/drug_profiles.zip /work/crawl/config/drug_profiles.zip
