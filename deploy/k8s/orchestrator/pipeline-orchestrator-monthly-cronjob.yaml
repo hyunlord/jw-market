@@ -42,7 +42,7 @@ spec:
           containers:
             - name: orchestrator
               # PINNED-BY-DIGEST after the first canonical build; see stage3_genos.md
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator:PLACEHOLDER
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6e820a58f41251b77bbc4f9aaa37882f0cf8fcbbeec5445b6f1503fd857e1235
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh

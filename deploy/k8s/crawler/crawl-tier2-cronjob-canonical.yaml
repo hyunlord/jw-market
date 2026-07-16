@@ -223,7 +223,7 @@ spec:
                   key: password
             - name: DB_NAME
               value: jw_mart_d2_stage_20260630_r2
-            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl:PLACEHOLDER-CANONICAL
+            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:26a3c6b08131ce50dd9d369b97bb66117b527a84337e3245b99fb516f89fb428
             imagePullPolicy: IfNotPresent
             name: crawler
             volumeMounts:
