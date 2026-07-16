@@ -75,6 +75,22 @@ spec:
                   value: "5692"
                 - name: JW_PIPELINE_STATE_FILE
                   value: /var/lib/jw-pipeline/state.json
+                # Agent3 (run_source) reads AGENT3_DB_*; keep both env families
+                # pointing at the same mart writer identity.
+                - name: AGENT3_DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: AGENT3_DB_PORT
+                  value: "3306"
+                - name: AGENT3_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: AGENT3_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
                 - name: MARIADB_USER
                   valueFrom:
                     secretKeyRef:
