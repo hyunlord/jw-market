@@ -105,7 +105,11 @@ def test_competitor_delta_evidence_requires_both_source_operands() -> None:
 def test_genos_final_answer_places_rich_verified_narrative_before_existing_table(monkeypatch) -> None:
     call = _layer().brand_metric("리바로", "series", "latest")
     response = MarkdownResponseBuilder().build(brand="리바로", calls=[call], sources=["UBIST"])
-    monkeypatch.setattr(GenosClient, "_chat_text", lambda *_args: response.data_md)
+
+    def unexpected_llm(*_args) -> str:
+        raise AssertionError("verified market narrative must not use the free-form final LLM")
+
+    monkeypatch.setattr(GenosClient, "_chat_text", unexpected_llm)
 
     answer = GenosClient(token="dummy-token")._markdown_answer(
         "리바로 요즘 상황",
@@ -123,6 +127,36 @@ def test_genos_final_answer_places_rich_verified_narrative_before_existing_table
     assert answer.index(narrative) < answer.index(first_table)
     assert verify_markdown_numbers(answer, facts).status == "pass"
     assert forbidden_claims(answer) == ()
+
+
+def test_genos_mixed_market_and_news_answer_keeps_final_llm(monkeypatch) -> None:
+    call = _layer().brand_metric("리바로", "series", "latest")
+    response = MarkdownResponseBuilder().build(brand="리바로", calls=[call], sources=["UBIST"])
+    calls = 0
+
+    def final_llm(*_args) -> str:
+        nonlocal calls
+        calls += 1
+        return response.data_md
+
+    monkeypatch.setattr(GenosClient, "_chat_text", final_llm)
+
+    GenosClient(token="dummy-token")._markdown_answer(
+        "리바로 매출 추이와 최근 뉴스를 함께 알려줘",
+        response.to_dict(),
+        tool_calls=[
+            call,
+            {
+                "tool": "search_news",
+                "render_data": {
+                    "status": "ok",
+                    "items": [{"title": "검증된 기사", "url": "https://example.test/news"}],
+                },
+            },
+        ],
+    )
+
+    assert calls == 1
 
 
 def test_exact_single_period_question_does_not_receive_trend_narrative(monkeypatch) -> None:

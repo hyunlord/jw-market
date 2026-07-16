@@ -66,7 +66,7 @@ CONTRACT_REQUIRED_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "trend": ("get_brand_metric",),
     "brand_compare": ("get_brand_metric",),
     "share_delta_compare": ("get_brand_metric", "market_scope"),
-    "top_n_share_sum": ("get_brand_metric", "market_scope"),
+    "top_n_share_sum": ("get_brand_metric",),
     "concentration": ("get_brand_metric", "market_scope"),
     "target_share_gap": ("get_brand_metric", "market_scope"),
     "channel_provenance": ("get_brand_metric",),

@@ -475,9 +475,9 @@ def _cell_count(line: str) -> int:
 
 def _ungrounded_numbers(answer: str, markdown_response: Mapping[str, Any]) -> tuple[str, ...]:
     allowed = markdown_response.get("allowed_numbers")
-    if not isinstance(allowed, (list, tuple)):
-        return ()
-    allowed_set = {str(item) for item in allowed}
+    allowed_set = {str(item) for item in allowed} if isinstance(allowed, (list, tuple)) else set()
+    allowed_set.update(number_tokens(_markdown_field(markdown_response, "fact_md")))
+    allowed_set.update(number_tokens(_markdown_field(markdown_response, "data_md")))
     return tuple(sorted(token for token in number_tokens(answer) if token not in allowed_set))
 
 

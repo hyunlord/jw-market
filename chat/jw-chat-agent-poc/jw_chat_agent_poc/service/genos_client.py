@@ -77,6 +77,17 @@ from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
+_DETERMINISTIC_MARKET_NARRATIVE_TOOLS = frozenset(
+    {
+        "agent_calculation",
+        "get_brand_metric",
+        "get_market_landscape",
+        "get_market_scope",
+        "get_top_brands",
+        "query_spec",
+        "resolve_relative_date",
+    }
+)
 LOGGER = logging.getLogger(__name__)
 _FINAL_GENERATION_DEADLINE: ContextVar[float | None] = ContextVar("final_generation_deadline", default=None)
 
@@ -736,6 +747,17 @@ def _is_web_search_only(tool_calls: list[dict[str, Any]] | None) -> bool:
     return True
 
 
+def _uses_deterministic_market_narrative(
+    tool_calls: list[dict[str, Any]] | None,
+    narrative: str,
+    file_context: str,
+) -> bool:
+    if not narrative or file_context:
+        return False
+    tools = {str(call.get("tool") or "") for call in tool_calls or [] if isinstance(call, dict)}
+    return bool(tools) and tools <= _DETERMINISTIC_MARKET_NARRATIVE_TOOLS
+
+
 def _is_tool_use_agent_result(agent_result: dict[str, Any]) -> bool:
     diagnostics = agent_result.get("router_diagnostics")
     return isinstance(diagnostics, dict) and diagnostics.get("mode") == "tool_use_agent"
@@ -950,24 +972,25 @@ class GenosClient:
         strict_numbers = strict_allowed_numbers(fact_for_safety, allowed_numbers)
         if file_context:
             strict_numbers = tuple(sorted({*strict_numbers, *uploaded_file_fact_tokens(file_context)}))
-        messages = self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
-        try:
-            with stage(timing, "final_llm_expression", "GenOS markdown generation"):
-                raw_interpretation = self._chat_text(messages)
-        except requests.RequestException:
-            fallback = finalized_fallback_fact_answer(question, markdown_response)
-            fallback = _apply_final_claim_controls(question, fallback, fact_md)
-            return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
+        trend_prose_candidate = render_market_narrative(tool_calls or [])
+        if trend_prose_candidate and not answer_has_only_fact_numbers(trend_prose_candidate, strict_numbers):
+            trend_prose_candidate = ""
+        if _uses_deterministic_market_narrative(tool_calls, trend_prose_candidate, file_context):
+            with stage(timing, "final_deterministic_market_narrative", "verified market narrative"):
+                raw_interpretation = str(markdown_response.get("data_md") or fact_md)
+        else:
+            messages = self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
+            try:
+                with stage(timing, "final_llm_expression", "GenOS markdown generation"):
+                    raw_interpretation = self._chat_text(messages)
+            except requests.RequestException:
+                fallback = finalized_fallback_fact_answer(question, markdown_response)
+                fallback = _apply_final_claim_controls(question, fallback, fact_md)
+                return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
         if not raw_interpretation:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
             fallback = _apply_final_claim_controls(question, fallback, fact_md)
             return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
-        # Fast final path: the primary markdown prompt already receives trend_fact_md
-        # and explicitly asks for trend prose. Avoid a second pre-safety LLM call;
-        # deterministic guards below keep verified facts and numeric safety.
-        trend_prose_candidate = render_market_narrative(tool_calls or [])
-        if trend_prose_candidate and not answer_has_only_fact_numbers(trend_prose_candidate, strict_numbers):
-            trend_prose_candidate = ""
         mandatory_lines = mandatory_fact_lines(fact_md)
         raw_has_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
         missing_mandatory = missing_mandatory_lines(raw_interpretation, mandatory_lines)

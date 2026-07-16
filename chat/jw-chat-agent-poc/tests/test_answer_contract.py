@@ -40,6 +40,12 @@ def test_market_question_still_requires_market_metric() -> None:
     assert _required_tools(status) == ("get_brand_metric",)
 
 
+def test_top_n_share_sum_does_not_require_redundant_market_scope_tool() -> None:
+    status = {"intent": "top_n_share_sum", "status": "pass"}
+
+    assert _required_tools(status) == ("get_brand_metric",)
+
+
 TREND_FACT_MD = """## 확정 fact set
 
 ### 필수 답변 fact
