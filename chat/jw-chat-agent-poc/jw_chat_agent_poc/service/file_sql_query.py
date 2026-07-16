@@ -894,6 +894,16 @@ def _missing_plan_answer(
             "예를 들어 2026년 1월 총 sell-out 금액, 제조사별 합계, "
             "제품별 상위 10개처럼 질문해 주세요."
         )
+    if labels == ("요청한 조건",) and re.fullmatch(
+        r"(?:이거\s*)?(?:분석|살펴|봐)\s*(?:해\s*줘|해주세요|해줘|줘)?|"
+        r"(?:이거|파일|문서)\s*(?:어때|어떠니|어떤가요?)",
+        " ".join(question.strip().split()),
+        re.IGNORECASE,
+    ):
+        return (
+            "어떤 관점으로 볼까요? 총 합계, 제조사별 합계, 월별 추이, "
+            "상위 제품처럼 원하는 분석 기준을 말씀해 주세요."
+        )
     if len(labels) == 1 and labels[0] != "요청한 조건":
         return file_absence_answer("unsupported", subject=labels[0])
     detail = ", ".join(labels) if labels else "요청한 조건"

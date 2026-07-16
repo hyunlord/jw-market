@@ -67,6 +67,31 @@ def test_broad_sellout_analysis_asks_for_a_grounded_dimension(monkeypatch) -> No
     assert "파일의 열 이름을 확인" not in outcome.answer_md
 
 
+@pytest.mark.parametrize("question", ["분석해줘", "이거 어때"])
+def test_vague_file_questions_ask_for_an_analysis_axis(
+    monkeypatch,
+    question: str,
+) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: _chso_schema(),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        question,
+        "conversation-1",
+        (_source(),),
+    )
+
+    assert outcome.status == "unsupported_query"
+    assert "어떤 관점으로 볼까요?" in outcome.answer_md
+    assert "총 합계" in outcome.answer_md
+    assert "제조사별" in outcome.answer_md
+    assert "월별 추이" in outcome.answer_md
+    assert "열 이름을 확인" not in outcome.answer_md
+
+
 def test_legacy_llm_sql_generation_seam_is_structurally_disabled() -> None:
     with pytest.raises(RuntimeError, match="LLM file SQL generation is disabled"):
         file_sql_query._generate_select("자유 SQL을 만들어줘", (_chso_schema(),))
