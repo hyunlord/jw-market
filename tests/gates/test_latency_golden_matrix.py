@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from pipeline.scripts.gates.latency_matrix_cases import (
@@ -67,6 +70,35 @@ SEARCH_PAYLOADS = {
         }
     ],
 }
+
+
+def test_latency_matrix_cli_import_does_not_require_db_driver() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    script = """
+import builtins
+
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "pymysql" or name.startswith("pymysql."):
+        raise ModuleNotFoundError("blocked DB-only dependency")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+from pipeline.scripts.gates import release_acceptance
+
+assert callable(release_acceptance.check_latency_matrix_evidence)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _passing_observation(identifier: str) -> dict[str, object]:
