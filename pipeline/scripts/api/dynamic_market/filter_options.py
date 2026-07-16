@@ -220,9 +220,9 @@ def strategic_cd_atc4_option_codes(cd_market_id: str, mart_db: str | None = None
     if not normalized.startswith("cd_"):
         return ()
     if mart_db is None:
-        from pipeline.scripts.api import config
+        from pipeline.scripts.api.config import DB_NAME
 
-        mart_db = config.db_name
+        mart_db = DB_NAME
     rows = db.fetch_all(
         f"""
         SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_code')) AS atc4_code
