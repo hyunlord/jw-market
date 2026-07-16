@@ -128,3 +128,51 @@ def test_period_window_boundaries_are_parsed_once_per_projection(monkeypatch) ->
     assert calls.count("2025-02") == 2
     assert calls.count("2025-03") == 2
     assert len(calls) == 5
+
+
+def test_non_period_mapping_stops_period_key_probe_after_first_miss(monkeypatch) -> None:
+    calls: list[str] = []
+    original = period_window_module._period_interval
+
+    def spy(value: str) -> tuple[int, int] | None:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(period_window_module, "_period_interval", spy)
+
+    result = trim_period_payload(
+        {
+            "identity": {"market_id": "ml_006", "rank": 7},
+            "series": {"2025-01": 1.0, "2026-01": 2.0},
+            "metadata": {"source": "UBIST"},
+        },
+        PeriodRange("2025-01", "2025-12"),
+    )
+
+    assert result["series"] == {"2025-01": 1.0}
+    assert "identity" in calls
+    assert "series" not in calls
+    assert "metadata" not in calls
+    assert "rank" not in calls
+
+
+def test_period_point_list_resolves_each_point_period_once(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    original = period_window_module._point_period
+
+    def spy(value: dict[str, object]) -> str | None:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(period_window_module, "_point_period", spy)
+
+    result = trim_period_payload(
+        [
+            {"period": "2025-01", "raw_value": 1.0},
+            {"period": "2026-01", "raw_value": 2.0},
+        ],
+        PeriodRange("2025-01", "2025-12"),
+    )
+
+    assert result == [{"period": "2025-01", "raw_value": 1.0}]
+    assert len(calls) == 2
