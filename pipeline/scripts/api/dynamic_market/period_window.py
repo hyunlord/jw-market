@@ -117,9 +117,17 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
     assert list_value is not None
     point_items: list[tuple[str, Mapping[Any, Any]]] = []
     for item in list_value:
-        if not (type(item) is dict or isinstance(item, Mapping)):
+        if type(item) is dict:
+            period_value = item.get("period")
+            if period_value is None:
+                period_value = item.get("period_full")
+            if period_value is None:
+                period_value = item.get("year")
+            period = str(period_value) if period_value is not None else None
+        elif isinstance(item, Mapping):
+            period = _point_period(item)
+        else:
             break
-        period = _point_period(item)
         if period is None:
             break
         point_items.append((period, item))

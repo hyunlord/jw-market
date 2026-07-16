@@ -321,20 +321,20 @@ def test_trim_period_payload_preserves_mixed_mapping_after_leading_period_key() 
 
 
 def test_trim_period_payload_reuses_point_period_during_list_filtering(monkeypatch) -> None:
-    # Given a valid point-series list and an observable period resolver.
+    # Given a custom-mapping point series and an observable compatibility resolver.
     calls: list[str] = []
     original = period_window_module._point_period
 
-    def spy(item: dict[str, object]) -> str | None:
+    def spy(item: UserDict[str, object]) -> str | None:
         period = original(item)
         calls.append(period or "")
         return period
 
     monkeypatch.setattr(period_window_module, "_point_period", spy)
     payload = [
-        {"period": "2024-12", "value": 1.0},
-        {"period": "2025-01", "value": 2.0},
-        {"period": "2025-02", "value": 3.0},
+        UserDict({"period": "2024-12", "value": 1.0}),
+        UserDict({"period": "2025-01", "value": 2.0}),
+        UserDict({"period": "2025-02", "value": 3.0}),
     ]
 
     # When the point series is projected to the requested range.
@@ -346,6 +346,32 @@ def test_trim_period_payload_reuses_point_period_during_list_filtering(monkeypat
         {"period": "2025-02", "value": 3.0},
     ]
     assert calls == ["2024-12", "2025-01", "2025-02"]
+
+
+def test_trim_period_payload_reads_exact_dict_point_periods_without_helper(monkeypatch) -> None:
+    calls: list[type[object]] = []
+    original = period_window_module._point_period
+
+    def spy(item: UserDict[str, object]) -> str | None:
+        calls.append(type(item))
+        return original(item)
+
+    monkeypatch.setattr(period_window_module, "_point_period", spy)
+    exact_points = [
+        {"period": "2024-12", "value": 1.0},
+        {"period_full": "2025-01", "value": 2.0},
+        {"year": 2026, "value": 3.0},
+    ]
+    custom_points = [
+        UserDict({"period": "2025-01", "value": 4.0}),
+    ]
+
+    exact_result = trim_period_payload(exact_points, PeriodRange("2025-01", "2025-12"))
+    custom_result = trim_period_payload(custom_points, PeriodRange("2025-01", "2025-12"))
+
+    assert exact_result == [{"period_full": "2025-01", "value": 2.0}]
+    assert custom_result == [{"period": "2025-01", "value": 4.0}]
+    assert calls == [UserDict]
 
 
 def test_trim_period_payload_drops_point_with_invalid_period_string() -> None:
