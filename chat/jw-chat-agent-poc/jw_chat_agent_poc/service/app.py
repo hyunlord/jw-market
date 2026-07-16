@@ -1636,7 +1636,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             conversation_id=conversation_id,
         )
     client = GenosClient.for_deep_research() if deep_mode else GenosClient()
-    if result.get("general_view_ready"):
+    if result.get("general_view_ready") and not deep_mode:
         timing_payload = finish(timing)
         markdown_response = result.get("markdown_response")
         answer = replace_internal_fact_dump(
@@ -1752,10 +1752,11 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         isinstance(router_diagnostics, dict)
         and router_diagnostics.get("mode") == "tool_use_agent"
     )
-    if not file_context_fact and market_contract_allowed and not external_tool_agent_result:
+    general_contracts_allowed = not deep_mode and not external_tool_agent_result
+    if not file_context_fact and market_contract_allowed and general_contracts_allowed:
         safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
     safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
-    if not file_context_fact and market_contract_allowed and not external_tool_agent_result:
+    if not file_context_fact and market_contract_allowed and general_contracts_allowed:
         safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(active_question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
@@ -1777,20 +1778,21 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         markdown_response,
         tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         source_scope=str(result.get("context_scope") or "MARKET"),
-        connected_source_mode=external_tool_agent_result,
+        connected_source_mode=external_tool_agent_result or deep_mode,
     )
     safe_answer = replace_internal_fact_dump(active_question, safe_answer, markdown_response)
     if not file_context_fact and market_contract_allowed:
         safe_answer = apply_requested_source_trap_gate(
             active_question,
             safe_answer,
-            identity_only=external_tool_agent_result,
+            identity_only=external_tool_agent_result or deep_mode,
         )
     safe_answer = ensure_file_absence_statement(active_question, safe_answer, str(result.get("file_context") or ""))
     safe_answer = ensure_hira_patient_summary(active_question, safe_answer, fact_md)
-    safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
+    if not deep_mode:
+        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     safe_answer = ensure_natural_fact_lead(active_question, safe_answer, fact_md)
-    if not file_context_fact and market_contract_allowed:
+    if not file_context_fact and market_contract_allowed and not deep_mode:
         safe_answer = enforce_market_answer_contract(
             active_question,
             safe_answer,
@@ -1799,6 +1801,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
     # notice/source appenders above so no path bypasses terminology scrubbing.
     safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
+    if deep_mode:
+        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     safe_answer = scrub_internal_terminology(safe_answer)
     trace = trace_envelope(
         question=question,

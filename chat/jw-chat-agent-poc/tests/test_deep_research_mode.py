@@ -18,6 +18,7 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
     DeepResearchToolPlanner,
     parse_deep_research_request,
 )
+from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service import genos_client as genos_module
 from jw_chat_agent_poc.service.app import SessionStore
@@ -383,6 +384,122 @@ def test_compute_final_answer_uses_deep_client_and_stripped_question(
         item["name"] == "딥리서치 종합 분석"
         for item in final.timing["stages"]
     )
+
+
+def test_compute_final_answer_keeps_deep_synthesis_out_of_general_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rich_answer = """## 핵심 요약
+
+리바로의 확인된 시장 근거와 외부 근거를 함께 보면 경쟁 상황을 여러 관점에서 살펴볼 수 있습니다.
+
+## 시장·경쟁 구도
+
+확인된 시장 수치만 사용했습니다.
+
+## 임상·허가·안전성·환자 맥락
+
+각 외부 출처에서 확인된 항목을 구분해 정리했습니다.
+
+## 종합 판단과 한계
+
+근거가 없는 인과나 전망은 단정하지 않았습니다.
+"""
+    contract_calls: list[str] = []
+
+    class DeepClient:
+        token_usage_calls: list[dict[str, object]] = []
+
+        @classmethod
+        def for_deep_research(cls):
+            return cls()
+
+        def stream_answer(self, _question: str, _result: dict[str, object]):
+            yield rich_answer
+
+    def collapse_answer(*_args, **_kwargs) -> str:
+        contract_calls.append("general")
+        return "일반 시장 계약이 딥리서치 응답을 덮었습니다."
+
+    monkeypatch.setattr(service_app, "GenosClient", DeepClient)
+    monkeypatch.setattr(service_app, "enforce_answer_contract", collapse_answer)
+    monkeypatch.setattr(service_app, "enforce_market_answer_contract", collapse_answer)
+
+    final = service_app.compute_final_answer(
+        "/deep 리바로 경쟁구도 분석",
+        {
+            "research_mode": "deep",
+            "effective_question": "리바로 경쟁구도 분석",
+            "context_scope": "MARKET",
+            "answer": "확인된 근거",
+            "sources": ["cache"],
+            "tool_calls": [],
+            "router_diagnostics": {"mode": "deep_research"},
+            "markdown_response": {
+                "fact_md": "- 리바로: 확인된 근거",
+                "data_md": "- 리바로: 확인된 근거",
+                "allowed_numbers": [],
+            },
+        },
+    )
+
+    assert contract_calls == []
+    assert "## 핵심 요약" in final.text
+    assert "## 시장·경쟁 구도" in final.text
+    assert "## 임상·허가·안전성·환자 맥락" in final.text
+    assert "## 종합 판단과 한계" in final.text
+
+
+def test_compute_final_answer_applies_claim_policy_after_deep_text_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DeepClient:
+        token_usage_calls: list[dict[str, object]] = []
+
+        @classmethod
+        def for_deep_research(cls):
+            return cls()
+
+        def stream_answer(self, _question: str, _result: dict[str, object]):
+            yield "## 핵심 요약\n\n확인된 사실만 정리했습니다."
+
+    def append_forbidden_claim(_question: str, answer: str, _fact_md: str) -> str:
+        return f"{answer}\n\n뉴스에서 시장 성과가 입증됐습니다."
+
+    fact_md = "인사이트 근거 fact - 뉴스/이슈\n- search_news: 관련 기사"
+    monkeypatch.setattr(service_app, "GenosClient", DeepClient)
+    monkeypatch.setattr(service_app, "ensure_natural_fact_lead", append_forbidden_claim)
+    monkeypatch.setattr(
+        service_app,
+        "enforce_answer_contract",
+        lambda _question, answer, _markdown, _contract=None: answer,
+    )
+    monkeypatch.setattr(
+        service_app,
+        "enforce_market_answer_contract",
+        lambda _question, answer, _calls: answer,
+    )
+
+    final = service_app.compute_final_answer(
+        "/deep 리바로 경쟁구도 분석",
+        {
+            "research_mode": "deep",
+            "effective_question": "리바로 경쟁구도 분석",
+            "context_scope": "MARKET",
+            "answer": "확인된 근거",
+            "sources": ["news"],
+            "tool_calls": [],
+            "router_diagnostics": {"mode": "deep_research"},
+            "markdown_response": {
+                "fact_md": fact_md,
+                "data_md": fact_md,
+                "allowed_numbers": [],
+            },
+        },
+    )
+
+    assert "뉴스에서 시장 성과가 입증됐습니다" not in final.text
+    assert claim_policy_report(final.text, fact_md)["forbidden_claims_remaining"] == ()
 
 
 def test_compute_final_answer_drops_unverified_deep_claims(
