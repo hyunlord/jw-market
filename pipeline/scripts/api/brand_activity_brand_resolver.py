@@ -299,7 +299,13 @@ def _filter_payload_for_effective_market(filter_payload: Mapping[str, Any], mark
     if not market_scope_used:
         return filter_payload
     payload = dict(filter_payload)
-    payload["atc4"] = [market_id]
+    raw_atc4 = filter_payload.get("atc4")
+    requested_atc4 = canonical_atc4_values(
+        raw_atc4
+        if isinstance(raw_atc4, Sequence) and not isinstance(raw_atc4, str | bytes)
+        else (raw_atc4,)
+    )
+    payload["atc4"] = list(requested_atc4) if market_id in requested_atc4 else [market_id]
     return payload
 
 
