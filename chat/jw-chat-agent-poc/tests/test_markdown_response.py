@@ -52,6 +52,7 @@ from jw_chat_agent_poc.service.genos_client import (
     _fact_lookup_markdown,
     _insert_before_first_table,
     _needs_trend_fact_prose,
+    _question_wants_trend_output,
     _remove_endpoint_only_trend_sentence,
     _sanitize_preserving_analysis,
     _web_search_unverified_section,
@@ -2133,6 +2134,24 @@ def test_trend_prose_fail_closed_recognizes_sales_tendency_question() -> None:
     assert "2026-02 75.08억원" in prose
     assert "2026-04 84.93억원" in prose
     assert "회복 흐름" in prose
+
+
+def test_default_narrative_classification_accepts_natural_market_phrasing() -> None:
+    for question in (
+        "리바로 매출 경향성 알려줘",
+        "리바로 어때",
+        "리바로 요즘 상황",
+        "리바로 성장하나",
+        "리바로 분석해줘",
+        "리바로 매출 추세",
+        "리바로 매출 알려줘",
+        "리바로 점유율",
+        "고지혈증 경쟁구도",
+    ):
+        assert _question_wants_trend_output(question), question
+
+    assert not _question_wants_trend_output("리바로 2025-Q2 매출 얼마?")
+    assert not _question_wants_trend_output("리바로 임상시험 어때")
 
 
 def test_genos_sales_tendency_answer_restores_verified_narrative_before_table(monkeypatch) -> None:
@@ -4481,6 +4500,29 @@ def test_cleanup_removes_duplicate_top_brand_share_prose_before_table() -> None:
 
     assert "로수젯이 9.17%" not in answer
     assert "| 1위 | 로수젯 | 9.17% |" in answer
+
+
+def test_cleanup_preserves_market_movement_analysis_when_tables_repeat_its_values() -> None:
+    raw = (
+        "수치로 보면, 리바로 점유율은 20.00%에서 19.35%로 0.65%p 감소했으나, "
+        "처방조제액은 0.80억원에서 0.84억원으로 0.04억원 증가했습니다. "
+        "브랜드 성장률 5.00% · 시장 성장률 8.50% · 초과성장 -3.50%p입니다.\n\n"
+        "**리바로 매출 시계열**\n"
+        "| 기간 | 매출 | MS |\n"
+        "| --- | --- | --- |\n"
+        "| 2026-01 | 0.80억원 | 20.00% |\n"
+        "| 2026-03 | 0.84억원 | 19.35% |\n\n"
+        "### 상위 브랜드 추이\n"
+        "| 브랜드 | 시작 점유율 | 최신 MS | MS 변화 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 리바로 | 20.00% | 19.35% | -0.65%p |"
+    )
+
+    answer = cleanup_markdown_answer(raw)
+
+    assert "수치로 보면" in answer
+    assert "초과성장 -3.50%p" in answer
+    assert "| 2026-03 | 0.84억원 | 19.35% |" in answer
 
 
 def test_cleanup_removes_adjacent_duplicate_metric_sentence_without_touching_numbers() -> None:

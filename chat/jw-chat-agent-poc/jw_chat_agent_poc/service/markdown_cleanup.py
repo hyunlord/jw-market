@@ -359,6 +359,8 @@ def _is_duplicate_top_brand_rank_paragraph(paragraph: str, later: str) -> bool:
         return False
     if "점유율" not in stripped:
         return False
+    if any(token in stripped for token in ("%p", "성장률", "저점 후", "정점 후", "개월 연속")):
+        return False
     mentions = _rank_brand_mentions(stripped)
     if len(mentions) >= 2:
         repeated = sum(1 for rank, brand in mentions if _has_rank_brand_mention(later, rank, brand))

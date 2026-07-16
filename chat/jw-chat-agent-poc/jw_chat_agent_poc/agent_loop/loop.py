@@ -21,6 +21,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOO
 from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
 from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidationError, validate_bq_analysis_call
+from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
@@ -1202,7 +1203,7 @@ def _asks_patient_sales_context(question: str) -> bool:
 
 
 def _single_brand_trend_question(question: str) -> bool:
-    if "매출" not in question or not any(token in question for token in ("추이", "변화", "증감", "하락", "감소", "줄")):
+    if not needs_market_series(question):
         return False
     widening_tokens = ("경쟁", "구도", "상위", "위협", "시장 영향", "시장 탓", "시장 문제", "고유", "아토젯", "비교", "같이", "랑")
     return not any(token in question for token in widening_tokens)

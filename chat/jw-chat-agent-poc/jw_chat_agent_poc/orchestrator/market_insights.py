@@ -37,22 +37,69 @@ def render_market_insights(calls: list[dict[str, Any]]) -> tuple[str, ...]:
         return ()
     brand = str(data.get("brand") or "해당 브랜드")
     lines = [
+        *_movement_insights(brand, data),
+        _competitor_line(data),
+        _concentration_line(data),
+    ]
+    return tuple(line for line in lines if line)
+
+
+def render_market_narrative(calls: list[dict[str, Any]]) -> str:
+    """Explain verified market movement without adding causes or forecasts."""
+
+    data = _first_insight_data(calls)
+    if data is None:
+        return ""
+    brand = str(data.get("brand") or "해당 브랜드")
+    summary = _position_summary(brand, data)
+    details = _movement_insights(brand, data)
+    if not summary or not details:
+        return ""
+    return f"{summary}\n\n수치로 보면, {' '.join(details)}"
+
+
+def _movement_insights(brand: str, data: dict[str, Any]) -> tuple[str, ...]:
+    lines = (
         _direction_line(brand, data),
         _growth_line(data),
         _rank_line(data),
         _extreme_line(data),
         _turning_line(data),
         _trend_line(data),
-        _competitor_line(data),
-        _concentration_line(data),
         _missing_line(data),
-    ]
+    )
     return tuple(line for line in lines if line)
 
 
 def forbidden_claims(markdown: str) -> tuple[str, ...]:
     found = set(_FORBIDDEN_RE.findall(markdown))
     return tuple(term for term in _FORBIDDEN_CLAIMS if term in found)
+
+
+def _position_summary(brand: str, data: dict[str, Any]) -> str:
+    sales_delta = _number(data.get("sales_delta_krw"))
+    share_delta = _number(data.get("share_delta_pctp"))
+    if sales_delta is None or share_delta is None or sales_delta == 0 or share_delta == 0:
+        return ""
+    if sales_delta > 0 and share_delta < 0:
+        direction = f"{brand}는 매출이 늘었지만 점유율은 낮아져, 외형 성장과 시장 내 상대적 위치가 엇갈렸습니다."
+    elif sales_delta > 0 and share_delta > 0:
+        direction = f"{brand}는 매출과 점유율이 함께 올라, 외형과 시장 내 상대적 위치가 같이 높아졌습니다."
+    elif sales_delta < 0 and share_delta < 0:
+        direction = f"{brand}는 매출과 점유율이 함께 낮아져, 외형과 시장 내 상대적 위치가 같이 약해졌습니다."
+    else:
+        direction = f"{brand}는 매출은 줄었지만 점유율은 올라, 외형과 시장 내 상대적 위치가 서로 다르게 움직였습니다."
+
+    excess = _number(data.get("excess_growth_pctp"))
+    if excess is None:
+        return direction
+    if excess < 0:
+        growth = "브랜드 성장률이 시장 성장률보다 낮아 시장 성장 속도에는 못 미쳤습니다."
+    elif excess > 0:
+        growth = "브랜드 성장률이 시장 성장률보다 높아 시장보다 빠르게 성장했습니다."
+    else:
+        growth = "브랜드와 시장의 성장률은 같은 수준이었습니다."
+    return f"{direction} {growth}"
 
 
 def _first_insight_data(calls: list[dict[str, Any]]) -> dict[str, Any] | None:

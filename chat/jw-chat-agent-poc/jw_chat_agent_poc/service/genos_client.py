@@ -24,6 +24,8 @@ from jw_chat_agent_poc.orchestrator.answer_completeness import (
     deterministic_top_n_share_answer,
 )
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+from jw_chat_agent_poc.orchestrator.market_insights import render_market_narrative
+from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
@@ -155,11 +157,7 @@ def _needs_trend_fact_prose(question: str, answer: str, trend_fact_md: str = "")
 
 
 def _question_wants_trend_output(question: str) -> bool:
-    trend_tokens = ("추이", "경향", "변화", "흐름")
-    metric_tokens = ("매출", "점유율", "시장점유율", "시장규모", "시장 규모", "MS", "어때")
-    return any(token in question for token in trend_tokens) and any(
-        token in question for token in metric_tokens
-    )
+    return wants_market_narrative(question)
 
 
 def _trend_shape_conflicts_with_answer(trend_fact_md: str, answer: str) -> bool:
@@ -237,11 +235,14 @@ def _ensure_trend_prose_fail_closed(question: str, markdown: str, trend_fact_md:
     if not _needs_trend_fact_prose(question, markdown, trend_fact_md):
         return markdown
     candidate_prose = cleanup_markdown_answer(trend_prose)
-    if not candidate_prose or _needs_trend_fact_prose(question, candidate_prose, trend_fact_md):
-        candidate_prose = _trend_fact_fallback_prose(trend_fact_md)
+    fallback_prose = _trend_fact_fallback_prose(trend_fact_md)
+    if candidate_prose and _needs_trend_fact_prose(question, candidate_prose, trend_fact_md) and fallback_prose:
+        candidate_prose = cleanup_markdown_answer(f"{candidate_prose}\n\n{fallback_prose}")
+    elif not candidate_prose:
+        candidate_prose = fallback_prose
     if not candidate_prose or _needs_trend_fact_prose(question, candidate_prose, trend_fact_md):
         return markdown
-    return cleanup_markdown_answer(_insert_before_first_table(markdown, candidate_prose))
+    return cleanup_markdown_answer("\n\n".join((candidate_prose, markdown)))
 
 
 def _ensure_direct_metric_fact_answer(question: str, markdown: str, fact_md: str) -> str:
@@ -964,7 +965,9 @@ class GenosClient:
         # Fast final path: the primary markdown prompt already receives trend_fact_md
         # and explicitly asks for trend prose. Avoid a second pre-safety LLM call;
         # deterministic guards below keep verified facts and numeric safety.
-        trend_prose_candidate = ""
+        trend_prose_candidate = render_market_narrative(tool_calls or [])
+        if trend_prose_candidate and not answer_has_only_fact_numbers(trend_prose_candidate, strict_numbers):
+            trend_prose_candidate = ""
         mandatory_lines = mandatory_fact_lines(fact_md)
         raw_has_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
         missing_mandatory = missing_mandatory_lines(raw_interpretation, mandatory_lines)

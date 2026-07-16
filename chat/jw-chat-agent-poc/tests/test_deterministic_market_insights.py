@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from jw_chat_agent_poc.orchestrator.market_insights import forbidden_claims, render_market_insights
+from jw_chat_agent_poc.orchestrator.market_insights import (
+    forbidden_claims,
+    render_market_insights,
+    render_market_narrative,
+)
 from jw_chat_agent_poc.orchestrator.markdown_renderers import series_md
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.provenance import (
@@ -10,6 +14,7 @@ from jw_chat_agent_poc.orchestrator.provenance import (
     evidence_from_calls,
     verify_markdown_numbers,
 )
+from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 
 
@@ -31,6 +36,107 @@ def test_series_answer_combines_context_columns_and_mechanical_insights() -> Non
     assert "초과성장 -3.50%p" in markdown
     assert responses[0].verification["status"] == "pass"
     assert forbidden_claims(markdown) == ()
+
+
+def test_market_narrative_explains_verified_growth_gap_without_inventing_a_cause() -> None:
+    call = _layer().brand_metric("리바로", "series", "latest")
+    facts = evidence_from_calls([call], "")
+
+    narrative = render_market_narrative([call])
+
+    assert narrative.startswith(
+        "리바로는 매출이 늘었지만 점유율은 낮아져, 외형 성장과 시장 내 상대적 위치가 엇갈렸습니다."
+    )
+    assert "시장 성장 속도에는 못 미쳤습니다" in narrative
+    assert "점유율은 20.00%에서 19.35%로 0.65%p 감소" in narrative
+    assert "처방조제액은 0.80억원에서 0.84억원으로 0.04억원 증가" in narrative
+    assert "브랜드 성장률 5.00% · 시장 성장률 8.50% · 초과성장 -3.50%p" in narrative
+    assert verify_markdown_numbers(narrative, facts).status == "pass"
+    assert forbidden_claims(narrative) == ()
+
+
+def test_market_narrative_returns_empty_when_no_interpretable_evidence_exists() -> None:
+    call = {"render_data": {"brand": "리바로", "series_insight": {}}}
+
+    assert render_market_narrative([call]) == ""
+
+
+def test_competitor_delta_evidence_requires_both_source_operands() -> None:
+    complete = {
+        "tool": "get_brand_metric",
+        "render_data": {
+            "series_insight": {
+                "competitors": [
+                    {
+                        "brand": "로수젯",
+                        "share_start_pct": 50.0,
+                        "share_end_pct": 50.69124423963134,
+                        "sales_start_krw": 200_000_000.0,
+                        "sales_end_krw": 220_000_000.0,
+                    }
+                ]
+            }
+        },
+    }
+    missing_start = {
+        "tool": "get_brand_metric",
+        "render_data": {
+            "series_insight": {
+                "competitors": [
+                    {
+                        "brand": "로수젯",
+                        "share_end_pct": 50.69124423963134,
+                        "sales_end_krw": 220_000_000.0,
+                    }
+                ]
+            }
+        },
+    }
+
+    complete_values = {fact.value for fact in evidence_from_calls([complete], "")}
+    missing_values = {fact.value for fact in evidence_from_calls([missing_start], "")}
+
+    assert "0.69%p" in complete_values
+    assert "0.20억원" in complete_values
+    assert "0.69%p" not in missing_values
+    assert "0.20억원" not in missing_values
+
+
+def test_genos_final_answer_places_rich_verified_narrative_before_existing_table(monkeypatch) -> None:
+    call = _layer().brand_metric("리바로", "series", "latest")
+    response = MarkdownResponseBuilder().build(brand="리바로", calls=[call], sources=["UBIST"])
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda *_args: response.data_md)
+
+    answer = GenosClient(token="dummy-token")._markdown_answer(
+        "리바로 요즘 상황",
+        response.to_dict(),
+        tool_calls=[call],
+    )
+    facts = evidence_from_calls([call], response.data_md)
+
+    narrative = "리바로는 매출이 늘었지만 점유율은 낮아져, 외형 성장과 시장 내 상대적 위치가 엇갈렸습니다."
+    assert answer.startswith(narrative)
+    assert narrative in answer
+    assert "시장 성장 속도에는 못 미쳤습니다" in answer
+    assert "수치로 보면" in answer
+    first_table = next(line for line in answer.splitlines() if line.startswith("|"))
+    assert answer.index(narrative) < answer.index(first_table)
+    assert verify_markdown_numbers(answer, facts).status == "pass"
+    assert forbidden_claims(answer) == ()
+
+
+def test_exact_single_period_question_does_not_receive_trend_narrative(monkeypatch) -> None:
+    call = _layer().brand_metric("리바로", "series", "latest")
+    response = MarkdownResponseBuilder().build(brand="리바로", calls=[call], sources=["UBIST"])
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda *_args: response.data_md)
+
+    answer = GenosClient(token="dummy-token")._markdown_answer(
+        "리바로 2025-Q2 매출 얼마?",
+        response.to_dict(),
+        tool_calls=[call],
+    )
+
+    assert "외형 성장과 시장 내 상대적 위치" not in answer
 
 
 def test_missing_market_period_never_renders_zero_or_negative_hundred_growth() -> None:

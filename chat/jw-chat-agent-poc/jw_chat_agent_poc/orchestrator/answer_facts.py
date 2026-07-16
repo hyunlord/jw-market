@@ -19,6 +19,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
 )
 from jw_chat_agent_poc.orchestrator.call_normalization import dedupe_blocked_metric_messages
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
+from jw_chat_agent_poc.orchestrator.market_insights import render_market_insights
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_fact_markdown
 from jw_chat_agent_poc.orchestrator.surface_policy import (
     DeltaOperands,
@@ -138,6 +139,13 @@ def answer_fact_markdown(calls: list[dict[str, Any]], sources: list[str]) -> str
     if required:
         blocks.append(required)
         seen_blocks.add(required)
+    insight_lines = render_market_insights(calls)
+    if insight_lines:
+        insight_block = "### 파생 시장 해석 fact\n" + "\n".join(
+            f"- {cell(line)}" for line in insight_lines
+        )
+        blocks.append(insight_block)
+        seen_blocks.add(insight_block)
     for call in calls:
         if _is_fact_only_completion_call(call):
             continue

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
@@ -233,7 +234,30 @@ def _series_insight_values(raw: Any) -> list[tuple[str, str, str]]:
                 rendered = _insight_value(competitor.get(key), kind)
                 if rendered:
                     rows.append((label, rendered, f"render_data.series_insight.competitors[{index}].{key}"))
+            for label, start_key, end_key, kind in (
+                ("경쟁 브랜드 점유율 변화", "share_start_pct", "share_end_pct", "pctp"),
+                ("경쟁 브랜드 매출 변화", "sales_start_krw", "sales_end_krw", "eok"),
+            ):
+                rendered = _derived_insight_delta(competitor.get(start_key), competitor.get(end_key), kind)
+                if rendered:
+                    rows.append(
+                        (
+                            label,
+                            rendered,
+                            f"render_data.series_insight.competitors[{index}].{end_key}-{start_key}",
+                        )
+                    )
     return rows
+
+
+def _derived_insight_delta(start: Any, end: Any, kind: str) -> str:
+    if not isinstance(start, int | float) or not isinstance(end, int | float):
+        return ""
+    start_value = float(start)
+    end_value = float(end)
+    if not isfinite(start_value) or not isfinite(end_value):
+        return ""
+    return _insight_value(end_value - start_value, kind)
 
 
 def _insight_value(value: Any, kind: str) -> str:

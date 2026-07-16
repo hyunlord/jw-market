@@ -153,6 +153,13 @@ def deterministic_single_period_sales_answer(
             "점유율",
             "시장규모",
             "순위",
+            "경향",
+            "추세",
+            "흐름",
+            "어때",
+            "상황",
+            "성장",
+            "분석",
         )
     ):
         return ""

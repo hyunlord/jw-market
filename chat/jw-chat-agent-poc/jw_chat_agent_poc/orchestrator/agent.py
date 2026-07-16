@@ -29,7 +29,12 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
 )
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
-from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context, metric_from_question, requires_brand
+from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
+from jw_chat_agent_poc.orchestrator.question_intent import (
+    allows_background_news_context,
+    metric_from_question,
+    requires_brand,
+)
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
@@ -645,7 +650,7 @@ def _catalog_dimension_for_level(
 
 
 def _is_single_brand_trend_question(question: str) -> bool:
-    if "매출" not in question or not any(token in question for token in ("추이", "변화", "증감", "하락", "감소", "줄")):
+    if not needs_market_series(question):
         return False
     widening_tokens = ("경쟁", "구도", "상위", "위협", "시장 영향", "시장 탓", "시장 문제", "고유", "아토젯", "비교", "같이", "랑")
     return not any(token in question for token in widening_tokens)
@@ -741,24 +746,6 @@ def _brand_clarification_result(question: str) -> dict[str, Any]:
     }
 
 
-_DATA_INTENT_TOKENS = (
-    "매출",
-    "점유",
-    "시장",
-    "순위",
-    "성분",
-    "질환",
-    "환자",
-    "임상",
-    "허가",
-    "특허",
-    "부작용",
-    "뉴스",
-    "파일",
-    "분석",
-)
-
-
 def _conversation_fallback(question: str) -> dict[str, Any] | None:
     normalized = re.sub(r"[\s!?.,~]+", " ", question.casefold()).strip()
     if not normalized:
@@ -781,14 +768,6 @@ def _conversation_fallback(question: str) -> dict[str, Any] | None:
     elif "날씨" in normalized:
         answer = "날씨는 제 분석 범위가 아니에요. 대신 의약품 시장의 브랜드 매출·점유율이나 경쟁 현황은 확인해 드릴 수 있어요."
         intent = "out_of_scope"
-    elif (
-        re.fullmatch(r"\S+(?:은|는|이|가)?\s+어때", normalized)
-        and not any(token in normalized for token in _DATA_INTENT_TOKENS)
-    ):
-        subject = normalized.split()[0].removesuffix("은").removesuffix("는").removesuffix("이").removesuffix("가")
-        answer = f"{subject}의 매출 추이, 경쟁 구도, 임상·허가 현황 중 어떤 내용이 궁금하세요?"
-        intent = "market_clarification"
-
     if answer is None:
         return None
     return {

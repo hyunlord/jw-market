@@ -242,3 +242,6 @@ def test_compare_or_trend_question_never_uses_single_period_fast_path() -> None:
     assert deterministic_single_period_sales_answer(
         "리바로 대비 로수젯 2025년 2분기 매출", FACT_MD, [call]
     ) == ""
+    assert deterministic_single_period_sales_answer(
+        "리바로 2025년 2분기 매출 분석해줘", FACT_MD, [call]
+    ) == ""
