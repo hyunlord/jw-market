@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from pipeline.scripts.api.dynamic_market import period_window as period_window_module
 from pipeline.scripts.api.dynamic_market.period_window import (
     _period_interval,
     trim_period_payload,
@@ -105,3 +106,25 @@ def test_period_interval_parsing_reuses_cached_results() -> None:
     assert cache.maxsize == 4096
     assert cache.misses == len(values)
     assert cache.hits == len(values) * 4
+
+
+def test_period_window_boundaries_are_parsed_once_per_projection(monkeypatch) -> None:
+    calls: list[str] = []
+    original = period_window_module._period_interval
+
+    def spy(value: str) -> tuple[int, int] | None:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(period_window_module, "_period_interval", spy)
+
+    result = trim_period_payload(
+        {"2025-01": 1.0, "2025-02": 2.0, "2025-03": 3.0},
+        PeriodRange("2025-02", "2025-03"),
+    )
+
+    assert result == {"2025-02": 2.0, "2025-03": 3.0}
+    assert calls.count("2025-01") == 1
+    assert calls.count("2025-02") == 2
+    assert calls.count("2025-03") == 2
+    assert len(calls) == 5
