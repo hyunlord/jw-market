@@ -739,3 +739,64 @@ def test_build_filter_options_routes_strategic_cd_scope(monkeypatch) -> None:
     assert seen["market_id"] == "cd_005"
     assert seen["view"] == "strategic"
     assert payload["market_id"] == "cd_005"
+
+
+def test_strategic_atc_rows_respect_requested_codes(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    universe = [
+        {"atc4_code": "C1D"},
+        {"atc4_code": "C1E"},
+        {"atc4_code": "C7A"},
+        {"atc4_code": "C8A"},
+    ]
+    monkeypatch.setattr(filter_options.db, "fetch_all", lambda sql, params=None: list(universe))
+
+    # CD tab shape: the portal sends the cause-derived market codes.
+    rows = filter_options._load_atc_rows(
+        mart_db="jw_mart", view="strategic", source="ubist", market_id="ml_005",
+        atc4_codes=("C1D",),
+    )
+    assert [r["atc4_code"] for r in rows] == ["C1D"]
+
+    # ML tab shape: requested list equals the universe, nothing changes.
+    rows = filter_options._load_atc_rows(
+        mart_db="jw_mart", view="strategic", source="ubist", market_id="ml_005",
+        atc4_codes=("C1D", "C1E", "C7A", "C8A"),
+    )
+    assert [r["atc4_code"] for r in rows] == ["C1D", "C1E", "C7A", "C8A"]
+
+
+def test_strategic_atc_rows_keep_universe_without_codes(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    universe = [{"atc4_code": "C1D"}, {"atc4_code": "C1E"}]
+    monkeypatch.setattr(filter_options.db, "fetch_all", lambda sql, params=None: list(universe))
+
+    rows = filter_options._load_atc_rows(
+        mart_db="jw_mart", view="strategic", source="ubist", market_id="ml_005",
+        atc4_codes=(),
+    )
+    assert [r["atc4_code"] for r in rows] == ["C1D", "C1E"]
+
+
+def test_strategic_atc_rows_fall_back_on_label_only_codes(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    universe = [{"atc4_code": "V6D"}, {"atc4_code": "V06D0"}]
+    monkeypatch.setattr(filter_options.db, "fetch_all", lambda sql, params=None: list(universe))
+
+    # Legacy frontend caches can still send display labels as atc4_codes; an
+    # empty intersection must not blank the dropdown.
+    rows = filter_options._load_atc_rows(
+        mart_db="jw_mart", view="strategic", source="ubist", market_id="ml_015",
+        atc4_codes=("악템라",),
+    )
+    assert [r["atc4_code"] for r in rows] == ["V6D", "V06D0"]
+
+    # Mixed valid/invalid keeps the valid intersection only.
+    rows = filter_options._load_atc_rows(
+        mart_db="jw_mart", view="strategic", source="ubist", market_id="ml_015",
+        atc4_codes=("악템라", "v6d"),
+    )
+    assert [r["atc4_code"] for r in rows] == ["V6D"]

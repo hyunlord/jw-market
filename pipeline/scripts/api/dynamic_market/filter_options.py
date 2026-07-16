@@ -1058,6 +1058,36 @@ def _general_brand_alias_key(brand: str) -> str:
     return brand.replace(" ", "").lower()
 
 
+def _restrict_strategic_atc_rows(
+    rows: tuple[dict[str, object], ...],
+    atc4_codes: Sequence[str],
+) -> tuple[dict[str, object], ...]:
+    """Respect the caller-provided ATC4 list as a strategic option restriction.
+
+    The portal already sends the view-aware market codes (the cause response's
+    ``market_meta.atc_codes``) with every strategic filter-options call, so
+    intersecting the market universe with that list renders the CD tab
+    correctly without any portal change. Without codes the full universe is
+    returned unchanged, and an empty intersection (e.g. legacy label values
+    still cached on the frontend) also falls back to the universe so the
+    dropdown never goes blank.
+    """
+
+    requested = {
+        _canonical_general_atc4(str(code))
+        for code in atc4_codes or ()
+        if str(code).strip()
+    }
+    if not requested:
+        return rows
+    restricted = tuple(
+        row
+        for row in rows
+        if str(row.get("atc4_code") or "").strip().upper() in requested
+    )
+    return restricted or rows
+
+
 def _load_atc_rows(
     *,
     mart_db: str,
@@ -1079,7 +1109,7 @@ def _load_atc_rows(
             FROM {quote_identifier(mart_db)}.{table}
             WHERE {" AND ".join(where)}
         """
-        return tuple(db.fetch_all(sql, params))
+        return _restrict_strategic_atc_rows(tuple(db.fetch_all(sql, params)), atc4_codes)
     where = ["source = %s"]
     params: list[str] = [source]
     if atc4_codes:
