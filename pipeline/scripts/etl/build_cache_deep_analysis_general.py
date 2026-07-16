@@ -43,8 +43,9 @@ from pipeline.scripts.forecast.forecast_runner import (
     forecast_steps,
     history_from_row,
 )
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 
-TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
+TARGET_DATABASE: Final[str] = DEFAULT_MART_DB_NAME
 GENERAL_CACHE_TABLE: Final[str] = "cache_deep_analysis_general"
 GENERAL_MARKET_FORECAST_TABLE: Final[str] = "cache_market_forecast_general"
 GENERAL_BRAND_TABLE: Final[str] = "mart_general_brand_metric"
