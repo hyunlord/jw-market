@@ -990,6 +990,32 @@ def _general_brand_alias_key(brand: str) -> str:
     return brand.replace(" ", "").lower()
 
 
+def strategic_atc4_codes(*, mart_db: str, source: str, market_id: str) -> tuple[str, ...]:
+    """Return the filterable ATC4 universe stored in one strategic mart."""
+
+    table, id_column = _strategic_atc_table(market_id)
+    _, normalized_market_id = _strategic_market_filter(market_id)
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_code')) AS atc4_code
+        FROM {quote_identifier(mart_db)}.{table}
+        WHERE source = %s
+          AND {id_column} = %s
+        ORDER BY atc4_code
+        """,
+        [source, normalized_market_id],
+    )
+    return tuple(
+        sorted(
+            {
+                str(row.get("atc4_code") or "").strip().upper()
+                for row in rows
+                if str(row.get("atc4_code") or "").strip()
+            }
+        )
+    )
+
+
 def _load_atc_rows(
     *,
     mart_db: str,
@@ -999,6 +1025,15 @@ def _load_atc_rows(
     atc4_codes: Sequence[str],
 ) -> tuple[dict[str, object], ...]:
     if view == "strategic":
+        if market_id:
+            return tuple(
+                {"atc4_code": code}
+                for code in strategic_atc4_codes(
+                    mart_db=mart_db,
+                    source=source,
+                    market_id=market_id,
+                )
+            )
         table, id_column = _strategic_atc_table(market_id)
         where = ["source = %s"]
         params: list[str] = [source]

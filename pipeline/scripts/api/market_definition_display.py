@@ -81,11 +81,12 @@ def cd_display_for_id(
     label = _display_label(row, formal_definition=full)
     if not label:
         return None
+    atc_codes = inherited_atc_codes or _raw_definition_atc_codes(row)
     return MarketDefinitionDisplay(
         label=label,
         full=full or label,
-        atc_codes=[label],
-        atc_count=1,
+        atc_codes=atc_codes,
+        atc_count=len(atc_codes),
         cd_definition_class=label,
     )
 
