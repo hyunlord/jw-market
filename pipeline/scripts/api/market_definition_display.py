@@ -160,7 +160,12 @@ def _ml_equal_cd_display(
     ml_id = _parent_ml_id(row)
     if not ml_id:
         return None
-    atc_codes = inherited_atc_codes or ml_atc_codes(ml_id) or _raw_definition_atc_codes(row)
+    atc_codes = (
+        inherited_atc_codes
+        or ml_atc_codes(ml_id)
+        or _raw_definition_atc_codes(row)
+        or _canonical_cd_atc_codes(_valid_text(row.get("competitive_dynamics_id")) or "")
+    )
     if not atc_codes:
         return None
     market_name = (
