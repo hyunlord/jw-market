@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
 import re
@@ -201,6 +202,42 @@ def clear_filter_option_cache() -> None:
 
     with _FILTER_OPTION_CACHE_LOCK:
         _FILTER_OPTION_CACHE.clear()
+    strategic_cd_atc4_option_codes.cache_clear()
+
+
+@lru_cache(maxsize=64)
+def strategic_cd_atc4_option_codes(cd_market_id: str, mart_db: str | None = None) -> tuple[str, ...]:
+    """Canonical ATC4 codes for one CD market, ordered as filter-options emits them.
+
+    Market-definition displays reuse this instead of re-declaring the dropdown
+    source, so ``cause.atc_codes`` and the filter-options ``atc.atc4`` list stay
+    single-sourced (same mart query, same :func:`build_atc_hierarchy` order).
+    The union across sources is returned because market_meta carries one code
+    list for a multi-source payload.
+    """
+
+    normalized = (cd_market_id or "").strip()
+    if not normalized.startswith("cd_"):
+        return ()
+    if mart_db is None:
+        from pipeline.scripts.api import config
+
+        mart_db = config.db_name
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_code')) AS atc4_code
+        FROM {quote_identifier(mart_db)}.mart_strategic_cd_brand_metric
+        WHERE cd_market_id = %s
+        """,
+        [normalized],
+    )
+    hierarchy = build_atc_hierarchy(rows)
+    options = hierarchy.get("atc4") or []
+    return tuple(
+        str(option["value"])
+        for option in options
+        if isinstance(option, dict) and option.get("value")
+    )
 
 
 def _filter_option_cache_key(

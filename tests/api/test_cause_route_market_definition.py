@@ -66,7 +66,9 @@ def test_cause_route_adds_cd_market_definition(monkeypatch) -> None:
     assert payload["market_meta"]["market_definition_full"] == (
         "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
     )
-    assert payload["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
+    # atc_codes now carry real ATC values (raw-definition fallback in tests);
+    # the label stays only in the definition fields above.
+    assert payload["market_meta"]["atc_codes"] == ["C11A1"]
     assert payload["market_meta"]["atc_count"] == 1
 
 
