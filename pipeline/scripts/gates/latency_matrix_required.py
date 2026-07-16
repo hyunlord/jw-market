@@ -9,6 +9,10 @@ REQUIRED_GROUP_SCOPES = (
     ("group:livalo_family", "리바로"),
     ("group:gardlet_family", "가드렛"),
 )
+REQUIRED_GROUP_ATC4 = {
+    "group:livalo_family": ("C10A1", "C10C0"),
+    "group:gardlet_family": ("A10N1", "A10N3"),
+}
 GENERAL_ATC4_SCOPE = (
     "C10A1",
     "C10C0",
