@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 import json
 import re
 from typing import Any, Final
@@ -93,6 +94,7 @@ def _point_period(item: Mapping[str, Any]) -> str | None:
     return str(value) if value is not None else None
 
 
+@lru_cache(maxsize=4096)
 def _period_interval(value: str) -> tuple[int, int] | None:
     match = _PERIOD_RE.fullmatch(value)
     if match is None:
