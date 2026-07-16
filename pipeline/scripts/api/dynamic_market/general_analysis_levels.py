@@ -88,6 +88,7 @@ def build_general_analysis_level_sections(
             focus=focus,
             mart_db=mart_db,
             reuse_general_dimensions=True,
+            retain_decoded_dimensions=True,
         )
     except (MySQLError, RuntimeError, TypeError, ValueError, OSError):
         rows = _rows_from_metrics(metrics=metrics, focus=focus)
@@ -231,8 +232,18 @@ def _with_canonical_dimension_aliases(
     defer_period_series_encoding: bool = False,
 ) -> dict[str, Any]:
     clone = dict(row)
-    by_dimension = _json_object(clone.get("by_dimension"))
-    dimension_data = _json_object(clone.get("dimension_data"))
+    decoded_by_dimension = clone.get("__by_dimension")
+    by_dimension = (
+        dict(decoded_by_dimension)
+        if isinstance(decoded_by_dimension, dict)
+        else _json_object(clone.get("by_dimension"))
+    )
+    decoded_dimension_data = clone.get("__dimension_data")
+    dimension_data = (
+        dict(decoded_dimension_data)
+        if isinstance(decoded_dimension_data, dict)
+        else _json_object(clone.get("dimension_data"))
+    )
     dimension_channel_data = _json_object(clone.get("dimension_channel_data"))
     dimension_specialty_data = _json_object(clone.get("dimension_specialty_data"))
     source_labels = {spec.source_field: by_dimension.get(spec.source_field) for spec in specs}
