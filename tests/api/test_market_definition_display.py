@@ -301,3 +301,41 @@ def test_label_path_never_returns_label_as_atc_code(monkeypatch) -> None:
     assert display.full == "NON_NHI"
     assert display.atc_codes == []
     assert display.atc_count == 0
+
+
+def test_ml_equals_path_falls_back_to_canonical_codes(monkeypatch) -> None:
+    # Given: an ml-equals CD whose inherited/ML/raw code resolution all fail.
+    market_definition_display._cd_dim_by_id.cache_clear()
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_014": {
+                "competitive_dynamics_id": "cd_014",
+                "parent_market_landscape_id": "ml_014",
+                "cd_definition_type": "ml_equals_cd_by_empty",
+                "cd_definition_brand_class": "악템라",
+                "sheet_name": "악템라",
+                "cd_filter_raw_json": None,
+            }
+        },
+    )
+    monkeypatch.setattr(market_definition_display, "_ml_atc_codes", lambda: {})
+    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {})
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    monkeypatch.setattr(
+        filter_options,
+        "strategic_cd_atc4_option_codes",
+        lambda cd_id, mart_db=None: ("L01G1", "L04B0", "L04D0", "M01C0"),
+    )
+
+    # When: the display is resolved without any inherited codes.
+    display = cd_display_for_id("cd_014")
+
+    # Then: the ml-equals market renders the canonical ML-style definition
+    # instead of degrading to the brand-class label path.
+    assert display is not None
+    assert display.atc_codes == ["L01G1", "L04B0", "L04D0", "M01C0"]
+    assert display.label == "4 ATC 통합"
+    assert "경쟁 시장" in display.full
