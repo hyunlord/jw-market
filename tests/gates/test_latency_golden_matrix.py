@@ -114,6 +114,23 @@ def _passing_observation(identifier: str) -> dict[str, object]:
     return observation
 
 
+def _mock_filter_options_payload(
+    case,
+    overrides: dict[tuple[str, str], str] | None = None,
+) -> dict[str, object]:
+    query = parse_qs(urlsplit(case.path).query)
+    brand = query["brand"][0]
+    source = query["source"][0].lower()
+    default_atc4 = {
+        "리바로": "C10A1",
+        "악템라": "L04A0",
+        "가드렛": "A10N1",
+        "라베칸": "A2B2",
+    }
+    atc4 = (overrides or {}).get((brand, source), default_atc4[brand])
+    return {"market_id": atc4, "flagged_atc4": [atc4]}
+
+
 def test_latency_matrix_cases_cover_every_backend_surface() -> None:
     cases = build_latency_matrix_cases(
         DEFAULT_BRANDS,
@@ -164,6 +181,49 @@ def test_latency_matrix_cases_keep_brand_activity_source_independent() -> None:
     assert "dynamic:리바로:general:ubist:sales" in identifiers
     assert "dynamic:리바로:general:iqvia:sales" in identifiers
     assert identifiers.count("brand_activity:topics:리바로:general:C10A1") == 1
+
+
+def test_latency_matrix_cases_use_source_specific_filter_options_for_general_dynamic_requests() -> None:
+    defaults = [
+        {
+            "brand": "라베칸",
+            "atc_codes": ["A2B2"],
+            "general_sources": ["UBIST", "IQVIA"],
+        }
+    ]
+    payloads = {
+        "라베칸": [
+            {
+                "brand": "라베칸",
+                "general_sources": ["UBIST", "IQVIA"],
+                "contexts": [
+                    {"view_kind": "general", "market_id": "A02B2", "has_market_data": True},
+                    {"view_kind": "general", "market_id": "A2B2", "has_market_data": True},
+                ],
+            }
+        ]
+    }
+    filter_options = {
+        "filter_options:라베칸:general:ubist:sales": {
+            "market_id": "A2B2",
+            "flagged_atc4": ["A2B2"],
+        },
+        "filter_options:라베칸:general:iqvia:sales": {
+            "market_id": "A02B2",
+            "flagged_atc4": ["A02B2"],
+        },
+    }
+
+    cases = build_latency_matrix_cases(
+        defaults,
+        payloads,
+        requested_brands=("라베칸",),
+        filter_option_payloads=filter_options,
+    )
+    dynamic = {case.identifier: case for case in cases if case.identifier.startswith("dynamic:라베칸:")}
+
+    assert dynamic["dynamic:라베칸:general:ubist:sales"].body["filters"]["atc4"] == ["A2B2"]
+    assert dynamic["dynamic:라베칸:general:iqvia:sales"].body["filters"]["atc4"] == ["A02B2"]
 
 
 def test_latency_matrix_brand_resolution_normalizes_whitespace_aliases() -> None:
@@ -299,6 +359,8 @@ def test_latency_matrix_runtime_uses_reference_population_and_masks_only_deep_ti
         elif case.identifier.startswith("brand_search:"):
             brand = parse_qs(urlsplit(case.path).query)["q"][0]
             payload = SEARCH_PAYLOADS[brand]
+        elif case.identifier.startswith("filter_options:"):
+            payload = _mock_filter_options_payload(case)
         elif case.identifier.startswith("deep:"):
             payload = {"value": case.identifier, "generated_at": base_url}
         elif case.identifier.startswith("brand_activity_group:topics:"):
@@ -339,6 +401,74 @@ def test_latency_matrix_runtime_uses_reference_population_and_masks_only_deep_ti
     assert result.checked == result.population == len(evidence["expected_cases"])
 
 
+def test_latency_matrix_runtime_builds_general_requests_from_reference_filter_options() -> None:
+    default_brands = [
+        *DEFAULT_BRANDS,
+        {
+            "brand": "라베칸",
+            "atc_codes": ["A2B2"],
+            "general_sources": ["UBIST", "IQVIA"],
+        },
+    ]
+    payloads = {
+        **SEARCH_PAYLOADS,
+        "라베칸": [
+            {
+                "brand": "라베칸",
+                "general_sources": ["UBIST", "IQVIA"],
+                "contexts": [
+                    {"view_kind": "general", "market_id": "A02B2", "has_market_data": True},
+                    {"view_kind": "general", "market_id": "A2B2", "has_market_data": True},
+                ],
+            }
+        ],
+    }
+    dynamic_atc4: dict[tuple[str, str], list[str]] = {}
+
+    def requester(base_url, case, _timeout_seconds):
+        if case.identifier == "brands":
+            payload = default_brands
+        elif case.identifier.startswith("brand_search:"):
+            brand = parse_qs(urlsplit(case.path).query)["q"][0]
+            payload = payloads[brand]
+        elif case.identifier.startswith("filter_options:"):
+            payload = _mock_filter_options_payload(case, {("라베칸", "iqvia"): "A02B2"})
+        elif case.identifier.startswith("dynamic:라베칸:general:"):
+            dynamic_atc4[(base_url, case.identifier)] = case.body["filters"]["atc4"]
+            payload = {"value": case.identifier}
+        elif case.identifier.startswith("deep:"):
+            payload = {"value": case.identifier, "generated_at": base_url}
+        elif case.identifier.startswith("brand_activity_group:topics:"):
+            payload = {
+                "data": {
+                    "brands": [
+                        {"brand_name": "리바로", "event_count": 1, "topic_shares": [{"topic_id": "T01"}]}
+                    ]
+                }
+            }
+        else:
+            payload = {"value": case.identifier}
+        return RawResponse(
+            status=200,
+            body=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+        )
+
+    evidence = collect_latency_matrix_evidence(
+        "http://candidate",
+        "http://reference",
+        timeout_seconds=1.0,
+        max_workers=1,
+        requester=requester,
+        edge_brands=(),
+    )
+    result = check_latency_matrix_evidence(evidence, "unit")
+
+    for base_url in ("http://candidate", "http://reference"):
+        assert dynamic_atc4[(base_url, "dynamic:라베칸:general:ubist:sales")] == ["A2B2"]
+        assert dynamic_atc4[(base_url, "dynamic:라베칸:general:iqvia:sales")] == ["A02B2"]
+    assert result.exit_code == 0
+
+
 def test_latency_matrix_runtime_excludes_reference_source_mismatch_from_serving_population() -> None:
     payloads = json.loads(json.dumps(SEARCH_PAYLOADS, ensure_ascii=False))
     payloads["리바로"][0]["general_sources"] = ["UBIST", "IQVIA"]
@@ -352,6 +482,9 @@ def test_latency_matrix_runtime_excludes_reference_source_mismatch_from_serving_
         elif case.identifier.startswith("brand_search:"):
             brand = parse_qs(urlsplit(case.path).query)["q"][0]
             payload = payloads[brand]
+            status = 200
+        elif case.identifier.startswith("filter_options:"):
+            payload = _mock_filter_options_payload(case)
             status = 200
         elif case.identifier == "deep:리바로:general:C10A1:iqvia":
             if base_url == "http://candidate":
@@ -410,6 +543,8 @@ def test_latency_matrix_runtime_keeps_default_membership_when_search_is_empty() 
         elif case.identifier.startswith("brand_search:"):
             brand = parse_qs(urlsplit(case.path).query)["q"][0]
             payload = SEARCH_PAYLOADS[brand]
+        elif case.identifier.startswith("filter_options:"):
+            payload = _mock_filter_options_payload(case)
         elif case.identifier.startswith("deep:"):
             payload = {"value": case.identifier, "generated_at": "masked"}
         elif case.identifier.startswith("brand_activity_group:topics:"):

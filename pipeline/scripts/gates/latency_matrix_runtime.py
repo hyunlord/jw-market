@@ -200,12 +200,30 @@ def collect_latency_matrix_evidence(
     )
     default_only_brands = tuple(brand for brand in resolved_brands if brand not in context_resolved_brands)
 
+    discovery_cases = build_latency_matrix_cases(
+        reference_brands,
+        search_payloads,
+        requested_brands=requested_brands,
+        required_cd_brands=REQUIRED_CD_BRANDS,
+        group_scopes=REQUIRED_GROUP_SCOPES,
+    )
+    filter_option_payloads: dict[str, object] = {}
+    prefetched: dict[str, tuple[RawResponse, RawResponse]] = {}
+    for case in discovery_cases:
+        if not case.identifier.startswith("filter_options:"):
+            continue
+        reference = requester(reference_url, case, timeout_seconds)
+        candidate = requester(candidate_url, case, timeout_seconds)
+        filter_option_payloads[case.identifier] = _json(reference, f"reference {case.identifier}")
+        prefetched[case.identifier] = (candidate, reference)
+
     cases = build_latency_matrix_cases(
         reference_brands,
         search_payloads,
         requested_brands=requested_brands,
         required_cd_brands=REQUIRED_CD_BRANDS,
         group_scopes=REQUIRED_GROUP_SCOPES,
+        filter_option_payloads=filter_option_payloads,
     )
     initial = [
         _observation(
@@ -223,12 +241,18 @@ def collect_latency_matrix_evidence(
     included_cases: list[MatrixCase] = []
     excluded_reference_cases: list[dict[str, object]] = []
     for case in cases:
-        reference = requester(reference_url, case, timeout_seconds)
+        prefetched_response = prefetched.get(case.identifier)
+        if prefetched_response is None:
+            candidate = None
+            reference = requester(reference_url, case, timeout_seconds)
+        else:
+            candidate, reference = prefetched_response
         exclusion = _reference_exclusion(case, reference)
         if exclusion is not None:
             excluded_reference_cases.append(exclusion)
             continue
-        candidate = requester(candidate_url, case, timeout_seconds)
+        if candidate is None:
+            candidate = requester(candidate_url, case, timeout_seconds)
         observations.append(_observation(case, candidate, reference))
         included_cases.append(case)
     observations.extend(initial)

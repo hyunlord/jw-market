@@ -75,6 +75,25 @@ def _atc4_values(meta: Mapping[str, Any], contexts: Sequence[tuple[str, str]]) -
     return sorted({market_id for view, market_id in contexts if view == "general"})
 
 
+def _source_atc4_values(
+    *,
+    brand: str,
+    view: str,
+    source: str,
+    fallback: Sequence[str],
+    filter_option_payloads: Mapping[str, object] | None,
+) -> list[str]:
+    if view != "general" or filter_option_payloads is None:
+        return list(fallback)
+    identifier = f"filter_options:{brand}:general:{source}:sales"
+    payload = filter_option_payloads.get(identifier)
+    raw = payload.get("flagged_atc4") if isinstance(payload, Mapping) else None
+    values = sorted({str(value).strip() for value in raw if str(value).strip()}) if isinstance(raw, list) else []
+    if not values:
+        raise ValueError(f"source-specific general ATC4 unresolved: {identifier}")
+    return values
+
+
 def _dynamic_case(brand: str, view: str, source: str, atc4: Sequence[str]) -> MatrixCase:
     return MatrixCase(
         identifier=f"dynamic:{brand}:{view}:{source}:sales",
@@ -206,6 +225,7 @@ def build_latency_matrix_cases(
     requested_brands: Sequence[str],
     required_cd_brands: Sequence[str] = (),
     group_scopes: Sequence[tuple[str, str]] = (),
+    filter_option_payloads: Mapping[str, object] | None = None,
 ) -> tuple[MatrixCase, ...]:
     defaults = {
         normalize_brand_identity(_brand_name(item)): item
@@ -246,8 +266,15 @@ def build_latency_matrix_cases(
             view_market_id = next(market_id for context_view, market_id in contexts if context_view == view)
             sources = _sources(item, default_item, view)
             for source in sources:
-                cases.append(_dynamic_case(brand, view, source, atc4))
                 public_view = "general" if view == "general" else "strategic"
+                dynamic_atc4 = _source_atc4_values(
+                    brand=brand,
+                    view=view,
+                    source=source,
+                    fallback=atc4,
+                    filter_option_payloads=filter_option_payloads,
+                )
+                cases.append(_dynamic_case(brand, view, source, dynamic_atc4))
                 filter_identity = (public_view, source)
                 if filter_identity not in emitted_filter_options:
                     cases.append(_filter_options_case(brand, public_view, source))
