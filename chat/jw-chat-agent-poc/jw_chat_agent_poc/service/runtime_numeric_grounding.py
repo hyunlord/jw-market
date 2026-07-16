@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
+from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
 
 PUBLIC_EVIDENCE_STATUSES: Final[frozenset[str]] = frozenset({"live", "ok", "partial", "success"})
+BARE_URL_RE: Final[re.Pattern[str]] = re.compile(r"https?://[^\s|)>]+")
 
 
 def ungrounded_numbers(
@@ -22,10 +25,21 @@ def ungrounded_numbers(
     for call in tool_calls:
         if call.get("status") not in PUBLIC_EVIDENCE_STATUSES:
             continue
-        allowed_set.update(number_tokens(call_data_md(dict(call))))
-    return tuple(sorted(token for token in number_tokens(answer) if token not in allowed_set))
+        allowed_set.update(number_tokens(BARE_URL_RE.sub("", call_data_md(dict(call)))))
+    claim_text = _without_deterministic_web_appendix(answer, tool_calls)
+    return tuple(sorted(token for token in number_tokens(claim_text) if token not in allowed_set))
 
 
 def _markdown_field(markdown_response: Mapping[str, Any], field: str) -> str:
     value = markdown_response.get(field)
     return value if isinstance(value, str) else ""
+
+
+def _without_deterministic_web_appendix(
+    answer: str,
+    tool_calls: Sequence[Mapping[str, Any]],
+) -> str:
+    section = web_search_mi_section_from_calls(tool_calls)
+    if not section or not answer.rstrip().endswith(section):
+        return answer
+    return answer.rstrip()[: -len(section)].rstrip()

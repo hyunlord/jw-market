@@ -78,7 +78,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 )
 from jw_chat_agent_poc.common.timing import stage
 from jw_chat_agent_poc.service.portfolio_decline_render import ensure_portfolio_decline_summary
-from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section
+from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
@@ -706,36 +706,7 @@ def _ensure_web_search_reference(answer: str) -> str:
 
 
 def _web_search_unverified_section(tool_calls: list[dict[str, Any]] | None) -> str:
-    rows: list[dict[str, Any]] = []
-    for call in tool_calls or []:
-        if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
-            continue
-        data = call.get("render_data")
-        if not isinstance(data, dict):
-            continue
-        for item in _web_search_items(data):
-            rows.append(item)
-    if not rows:
-        return ""
-    return web_search_mi_section(rows[:5])
-
-
-def _web_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:
-    direct = data.get("items")
-    if isinstance(direct, list):
-        return [item for item in direct if isinstance(item, dict)]
-    calls = data.get("calls")
-    if not isinstance(calls, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for call in calls:
-        render_data = call.get("render_data") if isinstance(call, dict) else None
-        if not isinstance(render_data, dict):
-            continue
-        nested = render_data.get("items")
-        if isinstance(nested, list):
-            rows.extend(item for item in nested if isinstance(item, dict))
-    return rows
+    return web_search_mi_section_from_calls(tool_calls or ())
 
 
 def _has_web_search_rows(tool_calls: list[dict[str, Any]] | None) -> bool:

@@ -45,6 +45,36 @@ def web_search_mi_section(raw_items: Sequence[Mapping[str, object]]) -> str:
     return "\n\n".join(parts)
 
 
+def web_search_mi_section_from_calls(tool_calls: Sequence[Mapping[str, object]]) -> str:
+    rows: list[Mapping[str, object]] = []
+    for call in tool_calls:
+        if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, Mapping):
+            continue
+        rows.extend(_web_search_items(data))
+    return web_search_mi_section(rows[:5]) if rows else ""
+
+
+def _web_search_items(data: Mapping[str, object]) -> list[Mapping[str, object]]:
+    direct = data.get("items")
+    if isinstance(direct, list):
+        return [item for item in direct if isinstance(item, Mapping)]
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return []
+    rows: list[Mapping[str, object]] = []
+    for call in calls:
+        render_data = call.get("render_data") if isinstance(call, Mapping) else None
+        if not isinstance(render_data, Mapping):
+            continue
+        nested = render_data.get("items")
+        if isinstance(nested, list):
+            rows.extend(item for item in nested if isinstance(item, Mapping))
+    return rows
+
+
 def _dedupe_items(raw_items: Sequence[Mapping[str, object]]) -> tuple[WebSearchItem, ...]:
     by_key: dict[str, WebSearchItem] = {}
     for raw in raw_items:

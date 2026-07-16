@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.service.runtime_provenance import _empty_result_calls, _ungrounded_numbers, trace_envelope
+from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
 
 def test_recovered_tool_call_is_not_reported_as_empty_result() -> None:
@@ -223,6 +224,70 @@ def test_live_tool_internal_number_remains_ungrounded() -> None:
 
     # Then: live status does not expose fields outside the public projection.
     assert ungrounded == ("999건",)
+
+
+def test_deterministic_web_appendix_is_excluded_from_claim_grounding() -> None:
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "과거 허가 기사",
+                        "url": "https://www.biospectator.com/news/view/27271",
+                        "snippet": "리바로 허가 이력을 정리한 기사입니다.",
+                        "published_date": "2016-05-20",
+                    }
+                ]
+            },
+        }
+    ]
+    answer = "\n\n".join(
+        (
+            "시장 수치는 99.99억원입니다.",
+            web_search_mi_section_from_calls(tool_calls),
+        )
+    )
+
+    assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("99.99억원",)
+
+
+def test_number_repeated_in_narrative_remains_ungrounded_even_when_web_appendix_contains_it() -> None:
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "과거 허가 기사",
+                        "url": "https://www.biospectator.com/news/view/27271",
+                        "snippet": "리바로 허가 이력을 정리한 기사입니다.",
+                        "published_date": "2016-05-20",
+                    }
+                ]
+            },
+        }
+    ]
+    answer = "\n\n".join(
+        (
+            "기사 식별자 27271이 핵심 시장 수치입니다.",
+            web_search_mi_section_from_calls(tool_calls),
+        )
+    )
+
+    assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("27271",)
 
 
 def test_trace_envelope_grounds_numbers_from_public_tool_projection() -> None:
