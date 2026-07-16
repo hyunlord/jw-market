@@ -135,6 +135,25 @@ def drug_info_call(resolution: AgentLoopResolution, external: ExternalApiClient)
     return _aggregate_call("search_drug_info", "external_api", _aggregate_status(calls), calls, f"{resolution.canonical_brand} MFDS 허가정보")
 
 
+def safety_call(resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
+    if not resolution.molecule_en:
+        calls = [external_unavailable_for_missing_molecule(resolution)]
+    elif is_external_inapplicable_brand(resolution.canonical_brand):
+        calls = [inapplicable_call(resolution.canonical_brand, resolution.molecule_en)]
+    elif resolution.is_combo:
+        calls = [external.openfda_combo_label_search(resolution.molecule_en)]
+        calls.extend(external.openfda_label_search(molecule) for molecule in resolution.molecule_en)
+    else:
+        calls = [external.openfda_label_search(molecule) for molecule in resolution.molecule_en]
+    return _aggregate_call(
+        "search_safety",
+        "external_api",
+        _aggregate_status(calls),
+        calls,
+        f"{resolution.canonical_brand} FDA 안전성 근거",
+    )
+
+
 def web_search_call(question: str, resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
     query = _web_search_query(question, resolution)
     call = external.web_search(query)

@@ -47,11 +47,12 @@ class ToolUseAgent:
     news: DeepAnalysisNewsTool | None = None
     external: ExternalApiClient | None = None
     query_layer: StrategicQueryLayer | None = None
+    progress_namespace: str = "standard"
 
     def answer(self, question: str) -> dict[str, Any]:
         timing = new_timing()
         planner = self.planner or GenosToolPlanner(fallback=HeuristicToolPlanner())
-        with stage(timing, "agent_pre_resolve", "brand and period grounding"):
+        with stage(timing, self._stage_name("agent_pre_resolve", "deep_research_prepare"), "brand and period grounding"):
             resolutions = _pre_resolutions(question, self.resolver)
             base_allowed_brands = tuple(item.canonical_brand for item in resolutions)
             market_by_brand = {
@@ -131,7 +132,7 @@ class ToolUseAgent:
                 query_layer=self.query_layer,
                 market_by_brand=market_by_brand,
             )
-            with stage(timing, "market_snapshot", "tool catalog and market snapshot"):
+            with stage(timing, self._stage_name("market_snapshot", "deep_research_plan"), "tool catalog and market snapshot"):
                 tool_schemas = facade.schemas(planner_allowed_brands)
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
             brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
@@ -174,7 +175,7 @@ class ToolUseAgent:
                     deterministic_plan_kind = structured_plan.kind
                     progress.summary = " -> ".join(call.name for call in decision.tool_calls)
             else:
-                with stage(timing, "llm_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                with stage(timing, self._stage_name("llm_plan", "deep_research_plan"), f"브랜드={brand_detail}; 기간={period_detail}") as progress:
                     decision = planner.decide(
                         question,
                         tuple(observations),
@@ -196,13 +197,13 @@ class ToolUseAgent:
                 deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:")
             )
             if is_bq_batch:
-                with stage(timing, "tool_batch", f"step={step}; bounded independent support tools"):
+                with stage(timing, self._stage_name("tool_batch", "deep_research_tool_batch"), f"step={step}; bounded independent support tools"):
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
                     )
             else:
-                with stage(timing, "tool_batch", f"step={step}; independent support tools"):
+                with stage(timing, self._stage_name("tool_batch", "deep_research_tool_batch"), f"step={step}; independent support tools"):
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
@@ -210,12 +211,26 @@ class ToolUseAgent:
             for timed_execution in execution_batch:
                 plan = timed_execution.plan
                 execution = timed_execution.result
-                add_stage(
-                    timing,
-                    f"tool:{plan.name}",
-                    timed_execution.elapsed_ms,
-                    f"step={step}; mode={timed_execution.mode}",
-                )
+                if self.progress_namespace == "deep":
+                    with stage(
+                        None,
+                        f"tool:{plan.name}",
+                        f"step={step}; mode={timed_execution.mode}",
+                    ) as tool_progress:
+                        tool_progress.summary = _deep_tool_progress_summary(execution)
+                    add_stage(
+                        timing,
+                        f"tool:{plan.name}",
+                        timed_execution.elapsed_ms,
+                        f"step={step}; mode={timed_execution.mode}",
+                    )
+                else:
+                    add_stage(
+                        timing,
+                        f"tool:{plan.name}",
+                        timed_execution.elapsed_ms,
+                        f"step={step}; mode={timed_execution.mode}",
+                    )
                 key = _fingerprint(ToolCallPlan(name=plan.name, arguments=execution.arguments, reason=plan.reason))
                 if key in seen:
                     duplicate = True
@@ -362,7 +377,7 @@ class ToolUseAgent:
                         calls.append(analysis_call)
         sources = _sources(calls)
         selection = _tool_selection(question, calls)
-        with stage(timing, "fact_assembly", "markdown fact set build"):
+        with stage(timing, self._stage_name("fact_assembly", "deep_research_evidence"), "markdown fact set build"):
             markdown = MarkdownResponseBuilder().build(brand=brand, calls=calls, sources=sources or ["cache"], notices=notices)
         return {
             "question": question,
@@ -389,9 +404,41 @@ class ToolUseAgent:
             "timing": timing,
         }
 
+    def _stage_name(self, standard: str, deep: str) -> str:
+        return deep if self.progress_namespace == "deep" else standard
+
 
 def _bq_source_label(source: str) -> str:
     return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
+
+
+def _deep_tool_progress_summary(execution: ToolExecution) -> str:
+    call = execution.call if isinstance(execution.call, dict) else {}
+    status = str(call.get("status") or execution.status or "")
+    if status in {"no_data", "unsupported", "inapplicable"}:
+        return "확인된 결과 없음"
+    count = _deep_evidence_count(call.get("render_data"))
+    return f"{count}건 확인" if count is not None else "조회 완료"
+
+
+def _deep_evidence_count(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("items", "rows", "results", "events", "studies", "articles"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return len(items)
+    nested_calls = value.get("calls")
+    if not isinstance(nested_calls, list):
+        return None
+    counts = [
+        count
+        for item in nested_calls
+        if isinstance(item, dict)
+        for count in (_deep_evidence_count(item.get("render_data")),)
+        if count is not None
+    ]
+    return sum(counts) if counts else None
 
 
 def is_explicit_quarter_sales_question(question: str) -> bool:

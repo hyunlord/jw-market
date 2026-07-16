@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -65,11 +66,19 @@ _PUBLIC_STAGE_NAMES = {
     "final_llm_retry": "답변 재작성",
     "answer_safety": "숫자 검증",
     "answer_generation_total": "답변 생성 전체",
+    "deep_research_total": "딥리서치 전체",
     "answer_cleanup": "답변 정리",
     "chart_generation": "차트 준비",
+    "deep_research_prepare": "딥리서치 질문 분석",
+    "deep_research_plan": "딥리서치 조사 설계",
+    "deep_research_tool_batch": "딥리서치 자료 수집",
+    "deep_research_evidence": "딥리서치 근거 정리",
+    "deep_research_synthesis": "딥리서치 종합 분석",
 }
 
 _PUBLIC_TOOL_NAMES = {
+    "get_metric": "시장 지표 조회",
+    "get_market_scope": "시장 범위 확인",
     "get_brand_metric": "시장 데이터 집계",
     "get_brand_sales": "브랜드 매출 조회",
     "get_brand_share": "브랜드 점유율 확인",
@@ -77,15 +86,22 @@ _PUBLIC_TOOL_NAMES = {
     "get_top_brands": "상위 브랜드 확인",
     "get_market_landscape": "경쟁 구도 조회",
     "clinicaltrials_v2_search": "임상 데이터 조회",
+    "search_clinical": "임상시험 통합 조회",
     "clinical_scope_notice": "임상 조회 범위 확인",
     "competitor_molecule_candidates": "경쟁 성분 확인",
     "mfds_clinical_trial_kr": "국내 임상 정보 확인",
     "mfds_permission_search": "식약처 허가 정보 확인",
+    "search_drug_info": "식약처 허가 정보 확인",
     "mfds_patent": "의약품 특허 정보 확인",
     "mfds_fda_orangebook": "FDA 특허 정보 확인",
+    "search_patent": "특허 정보 통합 조회",
     "openfda_label_search": "FDA 안전성 정보 확인",
     "openfda_combo_label_search": "FDA 복합제 안전성 정보 확인",
+    "search_safety": "FDA 안전성 정보 확인",
     "hira_disease": "건강보험 환자 정보 확인",
+    "get_disease_stats": "건강보험 환자 정보 확인",
+    "search_news": "뉴스·이슈 확인",
+    "csd_activity_trend": "영업 활동 추이 확인",
     "matching_policy_notice": "의약품 일치 기준 확인",
     "web_search": "최신 웹 자료 검색",
 }
@@ -139,6 +155,24 @@ def _public_stage_detail(detail: str) -> str:
     if detail.startswith("step="):
         return f"{detail.removeprefix('step=')}단계"
     return _PUBLIC_STAGE_DETAILS.get(detail, detail)
+
+
+def public_stage_summary(summary: str) -> str:
+    """Project internal tool identifiers into user-facing progress text."""
+
+    public = summary
+    for raw_name, public_name in sorted(
+        _PUBLIC_TOOL_NAMES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        public = public.replace(raw_name, public_name)
+    public = public.replace(" -> ", " → ")
+    return re.sub(
+        r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+        "관련 데이터 조회",
+        public,
+    )
 
 
 def new_timing() -> dict[str, Any]:

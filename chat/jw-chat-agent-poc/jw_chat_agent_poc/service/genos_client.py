@@ -12,7 +12,12 @@ from typing import Any
 
 import requests
 
-from jw_chat_agent_poc.genos_config import resolve_final_genos_base_url, resolve_final_genos_token
+from jw_chat_agent_poc.genos_config import (
+    resolve_deep_genos_base_url,
+    resolve_deep_genos_token,
+    resolve_final_genos_base_url,
+    resolve_final_genos_token,
+)
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers as markdown_allowed_numbers
@@ -805,7 +810,20 @@ class GenosClient:
     token: str | None = field(default_factory=resolve_final_genos_token)
     timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TIMEOUT_S", "50")))
     total_budget_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TOTAL_BUDGET_S", "100")))
+    research_mode: str = "standard"
+    model: str | None = None
     token_usage_calls: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False, compare=False)
+
+    @classmethod
+    def for_deep_research(cls) -> GenosClient:
+        return cls(
+            base_url=resolve_deep_genos_base_url(),
+            token=resolve_deep_genos_token(),
+            timeout_s=int(os.environ.get("GENOS_DEEP_TIMEOUT_S", "180")),
+            total_budget_s=int(os.environ.get("GENOS_DEEP_TOTAL_BUDGET_S", "300")),
+            research_mode="deep",
+            model="gemini-3.1-pro-preview",
+        )
 
     def stream_answer(self, question: str, agent_result: dict[str, Any]) -> Iterator[str]:
         markdown_response = agent_result.get("markdown_response")
@@ -815,7 +833,7 @@ class GenosClient:
         fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
         tool_calls = agent_result.get("tool_calls")
         verified_calls = tool_calls if isinstance(tool_calls, list) else []
-        if self.token and fallback_code is None and isinstance(markdown_response, dict):
+        if self.research_mode != "deep" and self.token and fallback_code is None and isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             single_period_sales_answer = deterministic_single_period_sales_answer(
                 question,
@@ -875,13 +893,17 @@ class GenosClient:
             yield from chunk_text(verified_answer)
             return
         if self.token and isinstance(markdown_response, dict):
-            if _requires_deterministic_external_relay(verified_calls):
+            if self.research_mode != "deep" and _requires_deterministic_external_relay(verified_calls):
                 answer = _deterministic_external_relay_answer(markdown_response)
                 answer = replace_internal_fact_dump(question, answer, markdown_response)
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
-            concentration_answer = _deterministic_concentration_answer(question, verified_calls)
+            concentration_answer = (
+                _deterministic_concentration_answer(question, verified_calls)
+                if self.research_mode != "deep"
+                else ""
+            )
             if concentration_answer:
                 with stage(
                     timing,
@@ -895,7 +917,11 @@ class GenosClient:
                     )
                 yield from chunk_text(cleanup_markdown_answer(answer))
                 return
-            fast_answer = deterministic_top_n_share_answer(question, fact_md, verified_calls)
+            fast_answer = (
+                deterministic_top_n_share_answer(question, fact_md, verified_calls)
+                if self.research_mode != "deep"
+                else ""
+            )
             if fast_answer:
                 with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
                     answer = _apply_final_claim_controls(question, fast_answer, fact_md)
@@ -975,11 +1001,15 @@ class GenosClient:
         trend_prose_candidate = render_market_narrative(tool_calls or [])
         if trend_prose_candidate and not answer_has_only_fact_numbers(trend_prose_candidate, strict_numbers):
             trend_prose_candidate = ""
-        if _uses_deterministic_market_narrative(tool_calls, trend_prose_candidate, file_context):
+        if self.research_mode != "deep" and _uses_deterministic_market_narrative(tool_calls, trend_prose_candidate, file_context):
             with stage(timing, "final_deterministic_market_narrative", "verified market narrative"):
                 raw_interpretation = str(markdown_response.get("data_md") or fact_md)
         else:
-            messages = self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
+            messages = (
+                self._deep_markdown_messages(question, markdown_response, trend_fact_md, file_context)
+                if self.research_mode == "deep"
+                else self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
+            )
             try:
                 with stage(timing, "final_llm_expression", "GenOS markdown generation"):
                     raw_interpretation = self._chat_text(messages)
@@ -1150,6 +1180,37 @@ class GenosClient:
             },
         ]
 
+    @staticmethod
+    def _deep_markdown_messages(
+        question: str,
+        markdown_response: dict[str, Any],
+        trend_fact_md: str = "",
+        file_context: str = "",
+    ) -> list[dict[str, str]]:
+        messages = GenosClient._markdown_messages(
+            question,
+            markdown_response,
+            trend_fact_md,
+            file_context,
+        )
+        system = dict(messages[0])
+        system["content"] = (
+            "명시적으로 요청된 딥리서치 모드다. 일반 답변보다 충분히 상세하게 작성하되, "
+            "제공된 확정 fact와 실제 도구·웹 근거 밖의 수치, URL, 기사, 인과, 전망을 만들지 않는다. "
+            "서로 다른 출처를 교차 확인하고, 근거가 충돌하거나 비어 있으면 그 한계를 명시한다. "
+            "답변은 핵심 요약, 시장·경쟁 구도, 임상·허가·안전성·환자 맥락, "
+            "교차 근거를 종합한 시사점, 데이터 한계 순으로 구성한다. "
+            "표·차트·뉴스·출처 근거는 유지하고, 확인된 근거가 없는 섹션은 억지로 채우지 않는다. "
+            + str(system["content"])
+        )
+        user = dict(messages[1])
+        user["content"] = (
+            str(user["content"])
+            + "\n\n딥리서치 작성 요구: 먼저 결론을 요약하고, 출처별 근거를 구분해 심층적으로 설명한 뒤, "
+            "근거 사이의 공통점·차이와 실무적 시사점을 정리한다. 모든 구체 주장은 제공된 fact로 검증 가능해야 한다."
+        )
+        return [system, user]
+
     def _chat_text(self, messages: list[dict[str, str]]) -> str:
         last_error: requests.RequestException | None = None
         deadline = time.monotonic() + max(1, self.total_budget_s)
@@ -1204,10 +1265,18 @@ class GenosClient:
         remaining = deadline - time.monotonic() if deadline is not None else float(self.timeout_s)
         if remaining <= 0:
             raise requests.Timeout("final generation deadline exceeded")
+        payload: dict[str, Any] = {
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.0,
+            "stream_options": {"include_usage": True},
+        }
+        if self.model:
+            payload["model"] = self.model
         response = requests.post(
             f"{self.base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.token}"},
-            json={"messages": messages, "stream": True, "temperature": 0.0, "stream_options": {"include_usage": True}},
+            json=payload,
             stream=True,
             timeout=min(float(self.timeout_s), remaining),
         )

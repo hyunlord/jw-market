@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
 from jw_chat_agent_poc.common.periods import (
     canonical_periods,
@@ -40,6 +41,10 @@ from jw_chat_agent_poc.orchestrator.bq_runtime_guard import (
     validate_bq_analysis_call,
 )
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
+from jw_chat_agent_poc.orchestrator.deep_research import (
+    DeepResearchToolPlanner,
+    parse_deep_research_request,
+)
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
@@ -98,7 +103,14 @@ from jw_chat_agent_poc.service.startup_warmup import (
     StartupWarmup,
     startup_warmup_from_env,
 )
-from jw_chat_agent_poc.common.timing import StageEventSink, ensure_timing, finish, stage, stage_event_sink
+from jw_chat_agent_poc.common.timing import (
+    StageEventSink,
+    ensure_timing,
+    finish,
+    public_stage_summary,
+    stage,
+    stage_event_sink,
+)
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope import (
@@ -484,6 +496,8 @@ def _answer_question(
 ) -> dict:
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
+        deep_request = parse_deep_research_request(question)
+        effective_question = deep_request.question
         state = store.conversations.get_or_create(conversation_id)
         provided_file = _has_file_signal(documents, file_context)
         with stage(None, "file_session_probe", "active uploaded file check"):
@@ -495,9 +509,9 @@ def _answer_question(
                 else ()
             )
         previous_turn = state.turns[-1] if state.turns else None
-        routing_resolution = resolve_anaphora(question, previous_turn)
+        routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
-        has_market_intent = _has_market_intent(routing_question)
+        has_market_intent = deep_request.enabled or _has_market_intent(routing_question)
         has_market_anchor = (
             market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
         )
@@ -524,23 +538,45 @@ def _answer_question(
             has_file
             and has_market_intent
             and not has_market_anchor
-            and not has_file_reference(question)
-            and not _has_explicit_file_sheet_reference(question)
+            and not has_file_reference(effective_question)
+            and not _has_explicit_file_sheet_reference(effective_question)
             and not file_schema_match
         )
         delegated_file_context: str | None = None
         file_source_items: tuple[dict[str, Any], ...] = ()
         deterministic_file_answer = ""
         file_sql_trace: tuple[dict[str, str], ...] = ()
-        if needs_scope_clarification:
-            result = _scope_clarification_result(question)
+        if deep_request.enabled:
+            context_scope = ContextScope.MARKET
+            result = (
+                _answer_deep_research(effective_question, external_mode)
+                if effective_question
+                else _deep_research_clarification_result()
+            )
+            diagnostics = dict(result.get("router_diagnostics") or {})
+            diagnostics.update(
+                {
+                    "mode": "deep_research",
+                    "model": "gemini-3.1-pro-preview",
+                    "serving_id": "202",
+                    "trigger": "/deep",
+                }
+            )
+            result = {
+                **result,
+                "research_mode": "deep",
+                "effective_question": effective_question,
+                "router_diagnostics": diagnostics,
+            }
+        elif needs_scope_clarification:
+            result = _scope_clarification_result(effective_question)
         elif context_scope is ContextScope.MIXED:
             result = _answer_mixed_parallel(
                 store,
                 market_scope_resolver,
                 agent_factory,
                 state.conversation_id,
-                question,
+                effective_question,
                 external_mode,
                 file_context,
                 file_question=file_question,
@@ -554,24 +590,24 @@ def _answer_question(
                 deterministic_file_answer,
                 file_sql_trace,
             ) = _delegated_file_context(file_question, state.conversation_id, file_context)
-            if not question.strip() and _has_file_signal(documents, delegated_file_context):
+            if not effective_question.strip() and _has_file_signal(documents, delegated_file_context):
                 result = _file_only_ready_result(documents, delegated_file_context)
             else:
-                result = _file_scoped_result(question)
+                result = _file_scoped_result(effective_question)
         else:
             result = _answer_with_conversation(
                 store,
                 market_scope_resolver,
                 agent_factory,
                 state.conversation_id,
-                question,
+                effective_question,
                 external_mode,
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
-        if not question.strip() and context_scope is ContextScope.FILE and not result.get("file_only_ready"):
+        if not effective_question.strip() and context_scope is ContextScope.FILE and not result.get("file_only_ready"):
             result = _file_only_ready_result(documents, delegated_file_context)
-        result = _enforce_file_scope_isolation(result, question, context_scope)
+        result = _enforce_file_scope_isolation(result, effective_question, context_scope)
         if deterministic_file_answer and context_scope is ContextScope.FILE:
             result = {**result, "deterministic_file_answer": deterministic_file_answer}
         if file_sql_trace and context_scope is ContextScope.FILE:
@@ -1215,6 +1251,68 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
 
 
+def _answer_deep_research(question: str, external_mode: str) -> dict:
+    with stage(None, "deep_research_prepare", "브랜드와 조사 범위 확인"):
+        dependencies = build_chat_agent_dependencies(external_mode=external_mode)
+        try:
+            dependencies.resolver.resolve(question, allow_default=False)
+        except UnsupportedBrandError:
+            result = unsupported_brand_result(
+                question,
+                [],
+                {
+                    "mode": "deep_research",
+                    "deterministic_execution": True,
+                    "model": "gemini-3.1-pro-preview",
+                    "serving_id": "202",
+                },
+            )
+            return {**result, "research_mode": "deep", "effective_question": question}
+
+    agent = ToolUseAgent(
+        metrics=dependencies.metrics,
+        resolver=dependencies.resolver,
+        planner=DeepResearchToolPlanner(),
+        max_steps=2,
+        news=dependencies.news,
+        external=dependencies.external,
+        query_layer=dependencies.query_layer,
+        progress_namespace="deep",
+    )
+    result = agent.answer(question)
+    diagnostics = dict(result.get("router_diagnostics") or {})
+    diagnostics.update(
+        {
+            "mode": "deep_research",
+            "deterministic_execution": True,
+            "model": "gemini-3.1-pro-preview",
+            "serving_id": "202",
+        }
+    )
+    return {
+        **result,
+        "research_mode": "deep",
+        "effective_question": question,
+        "router_diagnostics": diagnostics,
+    }
+
+
+def _deep_research_clarification_result() -> dict[str, Any]:
+    answer = "딥리서치할 질문을 `/deep` 뒤에 입력해 주세요. 예: `/deep 리바로 경쟁구도 분석`"
+    return {
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "router_diagnostics": {
+            "mode": "deep_research",
+            "deterministic_execution": True,
+            "model": "gemini-3.1-pro-preview",
+            "serving_id": "202",
+        },
+    }
+
+
 def _is_known_ingredient_patent_question(question: str) -> bool:
     lower = question.lower()
     asks_patent = "특허" in question or "patent" in lower or "orange" in lower
@@ -1275,9 +1373,12 @@ def _stream_resolving_session_events(
         return item
 
     def emit_step(event: dict[str, Any]) -> None:
-        item = indexed_step(event)
-        item["raw_name"] = item.get("name", "")
-        item["raw_detail"] = item.get("detail", "")
+        public_event = dict(event)
+        public_event.pop("raw_name", None)
+        public_event.pop("raw_detail", None)
+        if public_event.get("summary"):
+            public_event["summary"] = public_stage_summary(str(public_event["summary"]))
+        item = indexed_step(public_event)
         events.put({"type": "step", "item": item})
 
     def run_worker() -> None:
@@ -1290,8 +1391,11 @@ def _stream_resolving_session_events(
                 return
             emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "started", "raw_name": "question_received", "raw_detail": "request accepted"})
             emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "done", "raw_name": "question_received", "raw_detail": "request accepted", "elapsed_ms": 0.0})
+            deep_request = parse_deep_research_request(question)
+            total_stage = "deep_research_total" if deep_request.enabled else "answer_generation_total"
+            total_detail = "딥리서치 전체 진행" if deep_request.enabled else "request processing"
             with stage_event_sink(emit_step):
-                with stage(None, "answer_generation_total", "request processing"):
+                with stage(None, total_stage, total_detail):
                     item = _answer_question(
                         store,
                         market_scope_resolver,
@@ -1333,7 +1437,17 @@ def _stream_resolving_session_events(
         except queue.Empty:
             waited = time.perf_counter() - wait_started
             if not acquire_finished.is_set() and waited >= next_wait_progress:
-                yield _sse_json_event("step", indexed_step({"name": "대기 중", "detail": "처리 슬롯 대기", "status": "in_progress", "raw_name": "queue_wait", "raw_detail": "concurrency slot", "elapsed_ms": round(waited * 1000, 2)}))
+                yield _sse_json_event(
+                    "step",
+                    indexed_step(
+                        {
+                            "name": "대기 중",
+                            "detail": "처리 슬롯 대기",
+                            "status": "in_progress",
+                            "elapsed_ms": round(waited * 1000, 2),
+                        }
+                    ),
+                )
                 next_wait_progress += QUEUE_PROGRESS_INTERVAL_S
             continue
         event_type = event.get("type")
@@ -1499,6 +1613,8 @@ def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     if result.get("context_scope") == ContextScope.MIXED.value:
         return _compute_mixed_final_answer(question, result, conversation_id)
+    deep_mode = result.get("research_mode") == "deep"
+    active_question = str(result.get("effective_question") or question) if deep_mode else question
     timing = ensure_timing(result)
     if result.get("conversation_fallback_ready"):
         timing_payload = finish(timing)
@@ -1519,7 +1635,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             sources=(),
             conversation_id=conversation_id,
         )
-    client = GenosClient()
+    client = GenosClient.for_deep_research() if deep_mode else GenosClient()
     if result.get("general_view_ready"):
         timing_payload = finish(timing)
         markdown_response = result.get("markdown_response")
@@ -1597,8 +1713,8 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     market_contract_allowed = result.get("context_scope") != ContextScope.FILE.value
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "").strip()
     deterministic_market_answer = (
-        _deterministic_simple_market_answer(question, result)
-        if market_contract_allowed and not file_context_fact
+        _deterministic_simple_market_answer(active_question, result)
+        if not deep_mode and market_contract_allowed and not file_context_fact
         else ""
     )
     if deterministic_market_answer:
@@ -1607,10 +1723,12 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         generated_answer = deterministic_file_answer
     else:
         try:
-            with stage(timing, "answer_generation_total", "GenOS expression plus safety"):
-                generated_answer = "".join(client.stream_answer(question, result))
+            generation_stage = "deep_research_synthesis" if deep_mode else "answer_generation_total"
+            generation_detail = "gemini-3.1-pro 근거 종합" if deep_mode else "GenOS expression plus safety"
+            with stage(timing, generation_stage, generation_detail):
+                generated_answer = "".join(client.stream_answer(active_question, result))
         except requests.RequestException:
-            generated_answer = finalized_fallback_fact_answer(question, result.get("markdown_response"))
+            generated_answer = finalized_fallback_fact_answer(active_question, result.get("markdown_response"))
     for call in client.token_usage_calls:
         record_token_usage(timing, call)
     with stage(timing, "answer_cleanup", "markdown cleanup"):
@@ -1621,10 +1739,10 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             safe_answer = ensure_top_brand_trend_table(safe_answer, fact_md)
         policy_fact_md = "\n\n".join(part for part in (fact_md, file_context_fact) if part)
-        safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     try:
         with stage(timing, "chart_generation", "fact-backed chart spec"):
-            charts = build_charts(result, question=question, answer=safe_answer)
+            charts = build_charts(result, question=active_question, answer=safe_answer)
     except Exception:
         charts = []
     timing_payload = finish(timing)
@@ -1635,46 +1753,46 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         and router_diagnostics.get("mode") == "tool_use_agent"
     )
     if not file_context_fact and market_contract_allowed and not external_tool_agent_result:
-        safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
-    safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+        safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
+    safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     if not file_context_fact and market_contract_allowed and not external_tool_agent_result:
-        safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
+        safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
-        safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
+        safe_answer = apply_claim_policy(active_question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = ensure_file_page_evidence(
-        question,
+        active_question,
         safe_answer,
         str(result.get("file_context") or ""),
     )
     safe_answer = ensure_multi_file_evidence_coverage(
-        question,
+        active_question,
         safe_answer,
         str(result.get("file_context") or ""),
     )
     safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
     safe_answer = apply_common_unavailable_response(
-        question,
+        active_question,
         safe_answer,
         markdown_response,
         tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         source_scope=str(result.get("context_scope") or "MARKET"),
         connected_source_mode=external_tool_agent_result,
     )
-    safe_answer = replace_internal_fact_dump(question, safe_answer, markdown_response)
+    safe_answer = replace_internal_fact_dump(active_question, safe_answer, markdown_response)
     if not file_context_fact and market_contract_allowed:
         safe_answer = apply_requested_source_trap_gate(
-            question,
+            active_question,
             safe_answer,
             identity_only=external_tool_agent_result,
         )
-    safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
-    safe_answer = ensure_hira_patient_summary(question, safe_answer, fact_md)
-    safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    safe_answer = ensure_natural_fact_lead(question, safe_answer, fact_md)
+    safe_answer = ensure_file_absence_statement(active_question, safe_answer, str(result.get("file_context") or ""))
+    safe_answer = ensure_hira_patient_summary(active_question, safe_answer, fact_md)
+    safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
+    safe_answer = ensure_natural_fact_lead(active_question, safe_answer, fact_md)
     if not file_context_fact and market_contract_allowed:
         safe_answer = enforce_market_answer_contract(
-            question,
+            active_question,
             safe_answer,
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )

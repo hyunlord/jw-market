@@ -5,8 +5,24 @@ from dataclasses import asdict, dataclass
 import logging
 from typing import Any, Mapping
 
-from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, patent_ingredient_call, procedure_stats_call, search_news_call, web_search_call
-from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding, display_period, require_available_period, resolve_relative_expression
+from jw_chat_agent_poc.agent_loop.external_tools import (
+    clinical_call,
+    disease_stats_call,
+    drug_info_call,
+    patent_call,
+    patent_ingredient_call,
+    procedure_stats_call,
+    safety_call,
+    search_news_call,
+    web_search_call,
+)
+from jw_chat_agent_poc.agent_loop.periods import (
+    AgentPeriodGrounding,
+    build_period_grounding,
+    display_period,
+    require_available_period,
+    resolve_relative_expression,
+)
 from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, int_arg, query_spec, top_brands
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tool_helpers import closest_allowed_brand, ground_news_query, market_members, metric_measure, period_filters, system_current_month
@@ -87,6 +103,8 @@ class AgentToolFacade:
                 return self._patent(grounded_arguments)
             if name == "search_drug_info":
                 return self._drug_info(grounded_arguments)
+            if name == "search_safety":
+                return self._safety(grounded_arguments)
             if name == "csd_activity_trend":
                 return self._csd_activity_trend(grounded_arguments)
             if name == "web_search":
@@ -287,6 +305,13 @@ class AgentToolFacade:
         call = drug_info_call(resolution, self._external)
         call["render_data"]["brand"] = brand
         return ToolExecution("ok", f"{brand} MFDS permission", call, arguments)
+
+    def _safety(self, arguments: Mapping[str, str]) -> ToolExecution:
+        brand = self._brand(arguments)
+        resolution = self._resolver.resolve(brand, allow_default=False)
+        call = safety_call(resolution, self._external)
+        call["render_data"]["brand"] = brand
+        return ToolExecution(call.get("status", "ok"), f"{brand} FDA safety", call, arguments)
 
     def _csd_activity_trend(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)

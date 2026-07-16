@@ -17,6 +17,7 @@ def tool_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ..
         _schema("search_clinical", "브랜드 성분 기준 국내외 임상 근거를 조회하고 성분 범위 고지를 포함합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema("search_patent", "브랜드 또는 확인된 성분 기준 특허/Orange Book 근거를 조회합니다. 브랜드가 없고 ingredient가 있으면 ingredient를 사용합니다.", ("query",), allowed_brands, allowed_periods),
         _schema("search_drug_info", "브랜드 기준 국내 식약처/MFDS 허가 품목 정보를 조회합니다. e약은요 경로는 사용하지 않습니다.", ("brand",), allowed_brands, allowed_periods),
+        _schema("search_safety", "브랜드의 확정 성분 기준 FDA 라벨 안전성·이상반응 근거를 조회합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema(
             "csd_activity_trend",
             "CSD ChannelDynamics stage에서 월별 TOTAL 채널 aggregate 콜수/활동량(product_details 합계)을 조회합니다. impact level, HCP/의사별, 기관별 세부는 포함하지 않습니다.",

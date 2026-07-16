@@ -14,6 +14,7 @@ BRAND_TOOLS = {
     "get_procedure_stats",
     "search_clinical",
     "search_drug_info",
+    "search_safety",
     "web_search",
     "csd_activity_trend",
     "get_brand_sales",

@@ -171,7 +171,9 @@ def test_stream_reports_semaphore_wait_before_busy(monkeypatch) -> None:
     events = list(_stream_resolving_session_events(SessionStore(), object(), object(), "question", "live", None, limiter=limiter))
     steps = _step_payloads(events)
     assert steps
-    assert steps[0]["raw_name"] == "queue_wait"
+    assert steps[0]["name"] == "대기 중"
+    assert "raw_name" not in steps[0]
+    assert "raw_detail" not in steps[0]
     assert steps[0]["status"] == "in_progress"
     assert limiter.released is False
     assert events[-1].rstrip().endswith("data: error")
@@ -186,7 +188,9 @@ def test_question_received_is_first_for_immediate_slot(monkeypatch) -> None:
     monkeypatch.setattr(service_app, "_sse_events_from_final_answer", lambda _answer: iter(("event: done\ndata: ok\n\n",)))
     events = list(_stream_resolving_session_events(SessionStore(), object(), object(), "q", "live", None, limiter=None))
     steps = _step_payloads(events)
-    assert steps[0]["raw_name"] == "질문 접수"
+    assert steps[0]["name"] == "질문 접수"
+    assert "raw_name" not in steps[0]
+    assert "raw_detail" not in steps[0]
     assert [step["status"] for step in steps[:2]] == ["started", "done"]
 
 
@@ -204,5 +208,61 @@ def test_stream_step_boundary_never_exposes_internal_stage_labels(monkeypatch) -
     schema_steps = [step for step in _step_payloads(events) if step["name"] == "첨부 파일 구조 분석"]
 
     assert schema_steps
-    assert {step["raw_name"] for step in schema_steps} == {"첨부 파일 구조 분석"}
-    assert {step["raw_detail"] for step in schema_steps} == {"파일의 시트와 열 확인"}
+    assert all("raw_name" not in step for step in schema_steps)
+    assert all("raw_detail" not in step for step in schema_steps)
+
+
+def test_deep_stream_has_distinct_public_progress_without_internal_names(monkeypatch) -> None:
+    def answer_question(*args, **kwargs):
+        with timing.stage(
+            None,
+            "deep_research_plan",
+            "tool catalog and market snapshot",
+            sink=kwargs["timing_sink"],
+        ) as progress:
+            progress.summary = "get_metric -> search_clinical -> web_search"
+        return {
+            "question": "/deep 리바로 경쟁구도",
+            "result": {"answer": "ok", "sources": [], "tool_calls": []},
+            "conversation_id": "c",
+        }
+
+    monkeypatch.setattr(service_app, "_answer_question", answer_question)
+    monkeypatch.setattr(
+        service_app,
+        "compute_final_answer",
+        lambda *args: type(
+            "Answer",
+            (),
+            {"text": "ok", "sources": [], "charts": [], "timing": {}, "trace": {}},
+        )(),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_sse_events_from_final_answer",
+        lambda _answer: iter(("event: done\ndata: ok\n\n",)),
+    )
+
+    events = list(
+        _stream_resolving_session_events(
+            SessionStore(),
+            object(),
+            object(),
+            "/deep 리바로 경쟁구도",
+            "live",
+            None,
+            limiter=None,
+        )
+    )
+    steps = _step_payloads(events)
+    public_text = str(steps)
+
+    assert "딥리서치 전체" in {step["name"] for step in steps}
+    assert "답변 생성 전체" not in {step["name"] for step in steps}
+    assert "시장 지표 조회 → 임상시험 통합 조회 → 최신 웹 자료 검색" in {
+        step.get("summary") for step in steps
+    }
+    assert all("raw_name" not in step and "raw_detail" not in step for step in steps)
+    assert "get_metric" not in public_text
+    assert "search_clinical" not in public_text
+    assert "web_search" not in public_text

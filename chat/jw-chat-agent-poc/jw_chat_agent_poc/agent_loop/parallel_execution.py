@@ -21,6 +21,7 @@ _PARALLEL_SAFE_TOOLS = frozenset(
         "search_clinical",
         "search_patent",
         "search_drug_info",
+        "search_safety",
         "csd_activity_trend",
         "web_search",
     }
