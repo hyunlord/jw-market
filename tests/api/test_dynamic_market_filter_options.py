@@ -604,3 +604,37 @@ def test_filter_options_openapi_documents_deprecated_market_id_override() -> Non
     assert {"view", "source", "brand", "market_id"}.issubset(by_name)
     assert by_name["market_id"]["deprecated"] is True
     assert "호환" in by_name["market_id"]["description"]
+
+
+def test_strategic_cd_atc4_option_codes_orders_like_option_payload(monkeypatch) -> None:
+    # Given: mart rows in insertion order that differs from option order.
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    filter_options.strategic_cd_atc4_option_codes.cache_clear()
+    monkeypatch.setattr(
+        filter_options.db,
+        "fetch_all",
+        lambda sql, params=None: [
+            {"atc4_code": "A10N3"},
+            {"atc4_code": "A10C5"},
+            {"atc4_code": "A10N1"},
+        ],
+    )
+
+    # When: the canonical codes are resolved without an explicit mart db
+    # (exercising the default DB_NAME resolution import path too).
+    try:
+        codes = filter_options.strategic_cd_atc4_option_codes("cd_003")
+    finally:
+        filter_options.strategic_cd_atc4_option_codes.cache_clear()
+
+    # Then: order matches the filter-options atc.atc4 payload emission.
+    assert codes == ("A10C5", "A10N1", "A10N3")
+
+
+def test_strategic_cd_atc4_option_codes_rejects_non_cd_ids() -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    filter_options.strategic_cd_atc4_option_codes.cache_clear()
+    assert filter_options.strategic_cd_atc4_option_codes("ml_006") == ()
+    assert filter_options.strategic_cd_atc4_option_codes("") == ()

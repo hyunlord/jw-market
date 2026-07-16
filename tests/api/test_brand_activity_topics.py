@@ -771,6 +771,28 @@ def test_general_topic_scope_uses_full_applied_atc_membership() -> None:
     assert scope["scope_id"] == "group:livalo_family"
 
 
+def test_general_group_topic_scope_wins_over_member_scope() -> None:
+    brand_set = replace(
+        _brand_set(),
+        applied_filter={"atc4": ["C10A1", "C10C0"]},
+    )
+    member_row = {
+        "scope_id": "atc4:C10A1",
+        "atc4_values": json.dumps(["C10A1"]),
+        "payload": json.dumps(
+            {"scope": {"scope_id": "atc4:C10A1"}, "brands": [{"brand": "LIVALO"}]},
+            ensure_ascii=False,
+        ),
+    }
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[member_row, _group_topic_row()],
+    )
+
+    assert scope["scope_id"] == "group:livalo_family"
+
+
 def test_general_single_atc_filter_does_not_broaden_to_group() -> None:
     scope = topic_matrix._topic_scope(
         brand_set=_brand_set(),

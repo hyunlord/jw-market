@@ -81,13 +81,31 @@ def cd_display_for_id(
     label = _display_label(row, formal_definition=full)
     if not label:
         return None
+    atc_codes = _canonical_cd_atc_codes(str(cd_id)) or _raw_definition_atc_codes(row)
     return MarketDefinitionDisplay(
         label=label,
         full=full or label,
-        atc_codes=[label],
-        atc_count=1,
+        atc_codes=atc_codes,
+        atc_count=len(atc_codes),
         cd_definition_class=label,
     )
+
+
+def _canonical_cd_atc_codes(cd_id: str) -> list[str]:
+    """Real ATC codes in filter-options order; empty when the mart is unreachable.
+
+    The label used to be stored in ``atc_codes`` itself, which portal fallbacks
+    then rendered as a fake ATC chip. Displays now reuse the filter-options
+    source so both surfaces agree; catalog raw-definition codes remain the
+    DB-free fallback (ETL/build contexts), never the label.
+    """
+
+    try:
+        from pipeline.scripts.api.dynamic_market.filter_options import strategic_cd_atc4_option_codes
+
+        return list(strategic_cd_atc4_option_codes(cd_id))
+    except Exception:
+        return []
 
 
 def apply_cd_market_definition(payload: dict[str, Any], cd_market_id: str | None = None) -> None:
@@ -142,7 +160,12 @@ def _ml_equal_cd_display(
     ml_id = _parent_ml_id(row)
     if not ml_id:
         return None
-    atc_codes = inherited_atc_codes or ml_atc_codes(ml_id) or _raw_definition_atc_codes(row)
+    atc_codes = (
+        inherited_atc_codes
+        or ml_atc_codes(ml_id)
+        or _raw_definition_atc_codes(row)
+        or _canonical_cd_atc_codes(_valid_text(row.get("competitive_dynamics_id")) or "")
+    )
     if not atc_codes:
         return None
     market_name = (
