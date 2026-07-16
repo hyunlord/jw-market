@@ -17,7 +17,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import parse_audit_code_matrix, parse_channel_specialty_matrix
 from pipeline.scripts.api.dynamic_market.general_brand_aliases import sidecar_brand_aliases
-from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
+from pipeline.scripts.api.dynamic_market.resolvers import normalize_source, resolve_strategic_market_for_focus
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
 
@@ -106,6 +106,11 @@ def build_filter_options(
     """
 
     normalized_view = normalize_view(view)
+    strategic_market_kind = "cd" if normalized_view == "strategic_cd" else "ml"
+    if normalized_view == "strategic_cd":
+        # Downstream option builders only distinguish general vs strategic;
+        # the CD scope travels through the resolved cd_* market id.
+        normalized_view = "strategic"
     normalized_source = normalize_source(source)
     normalized_measure = measure.strip().lower() or "sales"
     normalized_brand = brand.strip() if brand else ""
@@ -115,6 +120,8 @@ def build_filter_options(
         source=normalized_source,
         brand=brand,
         market_id=market_id,
+        strategic_market_kind=strategic_market_kind,
+        measure=normalized_measure,
     )
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
     market_id_for_atc = resolved_market_id if normalized_view == "general" else None
@@ -173,13 +180,18 @@ def resolve_filter_option_market_id(
     source: str,
     brand: str | None,
     market_id: str | None,
+    strategic_market_kind: str = "ml",
+    measure: str = "sales",
 ) -> str | None:
     """Resolve the optional market id hidden behind the filter-options API.
 
     Explicit ``market_id`` stays authoritative for old callers.  Without it,
-    strategic views use the 25-brand display catalog. General views keep the
-    source-wide option universe and resolve brand ATC4 membership separately
-    so every matching market can be flagged without narrowing the list.
+    strategic ML views use the 25-brand display catalog and strategic CD views
+    derive the brand's cd market from the strategic mart (the same resolver the
+    dynamic-market endpoint uses), so the market id is never a required input.
+    General views keep the source-wide option universe and resolve brand ATC4
+    membership separately so every matching market can be flagged without
+    narrowing the list.
     """
 
     explicit_market_id = market_id.strip() if market_id else ""
@@ -191,6 +203,15 @@ def resolve_filter_option_market_id(
         return None
 
     if view == "strategic":
+        if strategic_market_kind == "cd":
+            selection = resolve_strategic_market_for_focus(
+                mart_db=mart_db,
+                view_kind="strategic_cd",
+                focus_brand_key=normalized_brand,
+                source=source,
+                measure=measure,
+            )
+            return selection.market_id
         display_brand = get_display_brand(normalized_brand)
         return display_brand.ml_id if display_brand else None
 
@@ -485,8 +506,18 @@ def _parent_for_atc_level(level: str, value: str) -> str | None:
 
 
 def normalize_view(value: str) -> str:
+    """Normalize the public view token.
+
+    ``strategic`` keeps its historical ML meaning so existing portal calls stay
+    untouched; ``strategic_ml`` is accepted as its explicit alias and
+    ``strategic_cd`` selects the competitive-dynamics scope. The market id is
+    derived from the brand — never required as input.
+    """
+
     normalized = value.strip().lower()
-    if normalized not in {"general", "strategic"}:
+    if normalized == "strategic_ml":
+        return "strategic"
+    if normalized not in {"general", "strategic", "strategic_cd"}:
         raise DynamicMarketInputError(f"unsupported filter option view: {value}")
     return normalized
 

@@ -638,3 +638,104 @@ def test_strategic_cd_atc4_option_codes_rejects_non_cd_ids() -> None:
     filter_options.strategic_cd_atc4_option_codes.cache_clear()
     assert filter_options.strategic_cd_atc4_option_codes("ml_006") == ()
     assert filter_options.strategic_cd_atc4_option_codes("") == ()
+
+
+def test_normalize_view_accepts_cd_and_ml_alias() -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    assert filter_options.normalize_view("strategic") == "strategic"
+    assert filter_options.normalize_view("strategic_ml") == "strategic"
+    assert filter_options.normalize_view("strategic_cd") == "strategic_cd"
+    assert filter_options.normalize_view("general") == "general"
+    try:
+        filter_options.normalize_view("strategic_xx")
+    except Exception as exc:
+        assert "unsupported" in str(exc)
+    else:
+        raise AssertionError("invalid view must be rejected")
+
+
+def test_resolver_derives_cd_market_from_brand(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    captured = {}
+
+    class _Selection:
+        market_kind = "cd"
+        market_id = "cd_005"
+
+    def fake_focus(**kwargs):
+        captured.update(kwargs)
+        return _Selection()
+
+    monkeypatch.setattr(filter_options, "resolve_strategic_market_for_focus", fake_focus)
+
+    resolved = filter_options.resolve_filter_option_market_id(
+        mart_db="jw_mart",
+        view="strategic",
+        source="ubist",
+        brand="시그마트",
+        market_id=None,
+        strategic_market_kind="cd",
+        measure="sales",
+    )
+
+    assert resolved == "cd_005"
+    assert captured["view_kind"] == "strategic_cd"
+    assert captured["focus_brand_key"] == "시그마트"
+
+
+def test_strategic_view_without_kind_keeps_ml_resolution(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    class _Display:
+        ml_id = "ml_005"
+
+    monkeypatch.setattr(filter_options, "get_display_brand", lambda brand: _Display())
+    monkeypatch.setattr(
+        filter_options,
+        "resolve_strategic_market_for_focus",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("cd resolver must not run for ML view")),
+    )
+
+    resolved = filter_options.resolve_filter_option_market_id(
+        mart_db="jw_mart",
+        view="strategic",
+        source="ubist",
+        brand="시그마트",
+        market_id=None,
+    )
+
+    assert resolved == "ml_005"
+
+
+def test_build_filter_options_routes_strategic_cd_scope(monkeypatch) -> None:
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    class _Selection:
+        market_kind = "cd"
+        market_id = "cd_005"
+
+    monkeypatch.setattr(filter_options, "resolve_strategic_market_for_focus", lambda **kwargs: _Selection())
+
+    seen = {}
+
+    def fake_uncached(**kwargs):
+        seen.update(kwargs)
+        return {"atc": {"atc4": []}, "view": kwargs["view"], "market_id": kwargs["market_id"]}
+
+    monkeypatch.setattr(filter_options, "_build_filter_options_uncached", fake_uncached)
+    monkeypatch.setattr(filter_options, "_apply_option_state", lambda **kwargs: None)
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        view="strategic_cd",
+        source="ubist",
+        brand="시그마트",
+    )
+
+    # CD scope flows through the resolved cd market id while downstream
+    # builders keep the plain strategic view (existing behavior preserved).
+    assert seen["market_id"] == "cd_005"
+    assert seen["view"] == "strategic"
+    assert payload["market_id"] == "cd_005"

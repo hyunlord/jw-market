@@ -422,7 +422,11 @@ def _resolve_strategic_market_selection(payload: DynamicMarketRequest) -> Strate
     responses=FILTER_OPTIONS_RESPONSES,
 )
 def dynamic_market_filter_options(
-    view: str = Query("general", description="[입력] general 또는 strategic.", examples=["general"]),
+    view: str = Query(
+        "general",
+        description="[입력] general, strategic(전략뷰 ML, 기존 그대로), strategic_cd(전략뷰 CD). market_id 없이 brand로 시장을 유도합니다.",
+        examples=["general"],
+    ),
     source: str = Query("ubist", description="[입력] ubist 또는 iqvia.", examples=["ubist"]),
     measure: str = Query("sales", description="[입력] sales 또는 qty.", examples=["sales"]),
     brand: str | None = Query(
