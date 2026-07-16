@@ -7,16 +7,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PROTECTED_BLOB_SHA256 = {
-    "api/Dockerfile": "20d969eae848996624cca8b0a8f7349aadb51e45c543bcde3e5211576da5d008",
+    "api/Dockerfile": "e89feb8e6708177a37275896e17fbaa6ba04a86342b4defdbb8ca594bca73723",
     "pipeline/scripts/agent3/repository.py": "83af919e96eac24b372fa500c7fdb920b1e23e9abfb91352134bc98305fec858",
     "pipeline/scripts/agent3/run_source.py": "be4dcaf7cffb77cdcb0898970597a76d12349822ecdf3ff4aebd633aa794c376",
     "pipeline/scripts/agent3/strength_candidate_extractor.py": "67773b5947f4eb36b79c85edb421a9c1002d413450dbb001f842b91f2c8cb271",
-    "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "9c90906657dde4ef281b13fa8e3d347e328ee9abdd05458378ddcd29793ff221",
+    "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "48eec25ef65943c1cd1ff8213c635f9dece3051a87033710f359aa389b26ed0c",
     "pipeline/scripts/api/main.py": "6da9103a735cb599a14a719e1e6729df15d163ec0481b9e4c97d369935715485",
-    "pipeline/scripts/api/market_definition_display.py": "774291083195348bd17707e6a61b7853b3c4202ac91649788c5ec8cef0773d5b",
+    "pipeline/scripts/api/market_definition_display.py": "36cd88d6b0ada9718ddf959f2b8172c0443fb52843ebca64ca8340e1b6bbd269",
     "pipeline/scripts/api/openapi_docs.py": "b97fbb588593ad657efbfbb53a886480351f1b4a5b96c885464e5f4f2cb936ab",
     "pipeline/scripts/api/routes/cause.py": "cdd25a31b1318d310726b73afb170c636a09a8ed657c2469604c091217f4eb80",
-    "pipeline/scripts/api/routes/deep_analysis.py": "07dddb5cc0a578757cbe3000f021a2ba7a6661960eed55b5eec8f96321147130",
+    "pipeline/scripts/api/routes/deep_analysis.py": "497c1b9f565ee6de2b2d7682170fb1eb67d7d2b123e96b435e03766486fe9017",
 }
 
 
