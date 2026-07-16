@@ -290,6 +290,37 @@ def test_number_repeated_in_narrative_remains_ungrounded_even_when_web_appendix_
     assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("27271",)
 
 
+def test_bare_url_identifiers_are_not_treated_as_numeric_claims() -> None:
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    answer = (
+        "| 기사 | URL |\n"
+        "| --- | --- |\n"
+        "| 과거 허가 기사 | https://example.test/news/2016/27271-20?item=3300 |"
+    )
+
+    assert _ungrounded_numbers(answer, markdown_response) == ()
+
+
+def test_visible_number_remains_ungrounded_when_same_number_appears_in_bare_url() -> None:
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    answer = "\n".join(
+        (
+            "기사 식별자 27271이 핵심 시장 수치입니다.",
+            "원문: https://example.test/news/2016/27271-20?item=3300",
+        )
+    )
+
+    assert _ungrounded_numbers(answer, markdown_response) == ("27271",)
+
+
 def test_trace_envelope_grounds_numbers_from_public_tool_projection() -> None:
     result = {
         "context_scope": "MARKET",

@@ -26,7 +26,7 @@ def ungrounded_numbers(
         if call.get("status") not in PUBLIC_EVIDENCE_STATUSES:
             continue
         allowed_set.update(number_tokens(BARE_URL_RE.sub("", call_data_md(dict(call)))))
-    claim_text = _without_deterministic_web_appendix(answer, tool_calls)
+    claim_text = BARE_URL_RE.sub("", _without_deterministic_web_appendix(answer, tool_calls))
     return tuple(sorted(token for token in number_tokens(claim_text) if token not in allowed_set))
 
 
