@@ -86,7 +86,7 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
         return value
 
     if mapping_value is not None:
-        items = list(mapping_value.items())
+        items = mapping_value.items() if value_type is dict else list(mapping_value.items())
         if items:
             period_items: list[tuple[Any, Any]] = []
             for key, item in items:

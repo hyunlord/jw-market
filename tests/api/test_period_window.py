@@ -323,6 +323,31 @@ def test_trim_period_payload_filters_period_mapping_during_classification(monkey
     assert first_overlap < next_period
 
 
+def test_trim_period_payload_does_not_snapshot_exact_dict_items(monkeypatch) -> None:
+    snapshots: list[object] = []
+
+    class TrackingList(list):
+        def __init__(self, value=()) -> None:
+            snapshots.append(value)
+            super().__init__(value)
+
+    monkeypatch.setattr(period_window_module, "list", TrackingList, raising=False)
+    payload = {
+        "2025-01": {"raw_value": 1.0},
+        "2026-01": {"raw_value": 2.0},
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {"2025-01": {"raw_value": 1.0}}
+    assert snapshots == []
+
+    custom_result = trim_period_payload(UserDict(payload), PeriodRange("2025-01", "2025-12"))
+
+    assert custom_result == result
+    assert len(snapshots) == 1
+
+
 def test_trim_period_payload_preserves_mapping_and_list_subclass_support() -> None:
     class PeriodPoints(list[UserDict[str, object]]):
         pass
