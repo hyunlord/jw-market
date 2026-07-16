@@ -106,6 +106,8 @@ def _passing_observation(identifier: str) -> dict[str, object]:
         "id": identifier,
         "candidate_status": 200,
         "reference_status": 200,
+        "candidate_elapsed_ms": 12.5,
+        "reference_elapsed_ms": 10.0,
         "parity": True,
     }
     if identifier.startswith("brand_activity_group:topics:"):
@@ -327,6 +329,40 @@ def test_latency_matrix_gate_requires_complete_200_parity() -> None:
     assert result.checked == result.population == len(expected_cases)
 
 
+def test_latency_matrix_gate_requires_non_negative_elapsed_measurements() -> None:
+    evidence = {
+        "classification": "census",
+        "provenance": LATENCY_MATRIX_PROVENANCE,
+        "default_brands": ["리바로"],
+        "requested_brands": ["리바로", "악템라", "가드렛"],
+        "resolved_brands": ["리바로", "악템라", "가드렛"],
+        "context_resolved_brands": ["리바로", "악템라", "가드렛"],
+        "default_only_brands": [],
+        "excluded_reference_cases": [],
+        "required_cd_brands": ["악템라", "가드렛"],
+        "required_group_scopes": [
+            ["group:livalo_family", "리바로"],
+            ["group:gardlet_family", "가드렛"],
+        ],
+        "expected_cases": ["brands"],
+        "observations": [
+            {
+                "id": "brands",
+                "candidate_status": 200,
+                "reference_status": 200,
+                "candidate_elapsed_ms": -1.0,
+                "parity": True,
+            }
+        ],
+    }
+
+    result = check_latency_matrix_evidence(evidence, "failure-injection")
+
+    assert result.exit_code == 1
+    assert any("candidate elapsed measurement" in detail for detail in result.details)
+    assert any("reference elapsed measurement" in detail for detail in result.details)
+
+
 def test_latency_matrix_gate_rejects_overlapping_resolution_partitions() -> None:
     evidence = {
         "classification": "census",
@@ -380,6 +416,7 @@ def test_latency_matrix_runtime_uses_reference_population_and_masks_only_deep_ti
         return RawResponse(
             status=200,
             body=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+            elapsed_ms=17.5 if base_url == "http://candidate" else 11.25,
         )
 
     evidence = collect_latency_matrix_evidence(
@@ -399,6 +436,8 @@ def test_latency_matrix_runtime_uses_reference_population_and_masks_only_deep_ti
     ]
     assert result.exit_code == 0
     assert result.checked == result.population == len(evidence["expected_cases"])
+    assert all(observation["candidate_elapsed_ms"] == 17.5 for observation in evidence["observations"])
+    assert all(observation["reference_elapsed_ms"] == 11.25 for observation in evidence["observations"])
 
 
 def test_latency_matrix_runtime_builds_general_requests_from_reference_filter_options() -> None:

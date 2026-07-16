@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import copy
 import hashlib
 import json
+import time
 from typing import Any, Final
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -27,6 +28,7 @@ EDGE_BRANDS: Final[tuple[str, ...]] = ("아토젯", "마운자로")
 class RawResponse:
     status: int
     body: bytes
+    elapsed_ms: float = 0.0
 
 
 Requester = Callable[[str, MatrixCase, float], RawResponse]
@@ -42,13 +44,26 @@ def request_case(base_url: str, case: MatrixCase, timeout_seconds: float) -> Raw
         method=case.method,
         headers={"Accept": "application/json", "Content-Type": "application/json"},
     )
+    started_at = time.perf_counter()
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
-            return RawResponse(status=response.status, body=response.read())
+            return RawResponse(
+                status=response.status,
+                body=response.read(),
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
     except HTTPError as exc:
-        return RawResponse(status=exc.code, body=exc.read())
+        return RawResponse(
+            status=exc.code,
+            body=exc.read(),
+            elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+        )
     except (TimeoutError, URLError, OSError) as exc:
-        return RawResponse(status=0, body=str(exc).encode())
+        return RawResponse(
+            status=0,
+            body=str(exc).encode(),
+            elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+        )
 
 
 def _json(response: RawResponse, label: str) -> object:
@@ -116,6 +131,8 @@ def _observation(case: MatrixCase, candidate: RawResponse, reference: RawRespons
         "id": case.identifier,
         "candidate_status": candidate.status,
         "reference_status": reference.status,
+        "candidate_elapsed_ms": candidate.elapsed_ms,
+        "reference_elapsed_ms": reference.elapsed_ms,
         "candidate_sha256": hashlib.sha256(candidate_body).hexdigest(),
         "reference_sha256": hashlib.sha256(reference_body).hexdigest(),
         "parity": candidate.status == reference.status == 200 and candidate_body == reference_body,

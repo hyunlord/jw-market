@@ -896,11 +896,29 @@ def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) ->
         item = observed[identifier]
         candidate_status = item.get("candidate_status")
         reference_status = item.get("reference_status")
+        candidate_elapsed_ms = item.get("candidate_elapsed_ms")
+        reference_elapsed_ms = item.get("reference_elapsed_ms")
         if candidate_status != 200:
             details.append(f"{identifier}: candidate HTTP {candidate_status}")
             failures += 1
         if reference_status != 200:
             details.append(f"{identifier}: reference HTTP {reference_status}")
+            failures += 1
+        if (
+            isinstance(candidate_elapsed_ms, bool)
+            or not isinstance(candidate_elapsed_ms, (int, float))
+            or not math.isfinite(candidate_elapsed_ms)
+            or candidate_elapsed_ms < 0
+        ):
+            details.append(f"{identifier}: invalid candidate elapsed measurement {candidate_elapsed_ms!r}")
+            failures += 1
+        if (
+            isinstance(reference_elapsed_ms, bool)
+            or not isinstance(reference_elapsed_ms, (int, float))
+            or not math.isfinite(reference_elapsed_ms)
+            or reference_elapsed_ms < 0
+        ):
+            details.append(f"{identifier}: invalid reference elapsed measurement {reference_elapsed_ms!r}")
             failures += 1
         if item.get("parity") is not True:
             details.append(f"{identifier}: response mismatch")
@@ -920,7 +938,10 @@ def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) ->
         checked=len(expected & set(observed)),
         population=len(expected),
         failures=failures,
-        tolerance="HTTP 200 and exact bytes; deep generated_at masked only; required group topics populated",
+        tolerance=(
+            "HTTP 200, finite non-negative elapsed timing, and exact bytes; "
+            "deep generated_at masked only; required group topics populated"
+        ),
         environment=environment,
         details=tuple(details),
     )
