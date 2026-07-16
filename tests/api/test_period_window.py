@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from pipeline.scripts.api.dynamic_market.period_window import (
+    _period_interval,
     trim_period_payload,
     trim_period_rows,
 )
@@ -90,3 +91,17 @@ def test_empty_period_window_does_not_invent_zero_points() -> None:
 
     assert json.loads(result[0]["metric_history"]) == {}
     assert json.loads(result[0]["hhi_series_5y"]) == []
+
+
+def test_period_interval_parsing_reuses_cached_results() -> None:
+    values = ("2025-01", "2025-Q1", "2025", "not-a-period")
+    _period_interval.cache_clear()
+
+    for _ in range(5):
+        for value in values:
+            _period_interval(value)
+
+    cache = _period_interval.cache_info()
+    assert cache.maxsize == 4096
+    assert cache.misses == len(values)
+    assert cache.hits == len(values) * 4
