@@ -94,8 +94,16 @@ def build_general_analysis_level_sections(
     if not rows:
         return None
     source_api = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
+    defer_period_series_encoding = period_range.start is not None or period_range.end is not None
     canonical_rows = trim_period_rows(
-        [_with_canonical_dimension_aliases(row, specs) for row in rows],
+        [
+            _with_canonical_dimension_aliases(
+                row,
+                specs,
+                defer_period_series_encoding=defer_period_series_encoding,
+            )
+            for row in rows
+        ],
         period_range,
     )
     channels = list(cause_builder._channels_for_source(source_api))
@@ -216,7 +224,12 @@ def _load_precomputed_general_block(
     )
 
 
-def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralLevelSpec, ...]) -> dict[str, Any]:
+def _with_canonical_dimension_aliases(
+    row: dict[str, Any],
+    specs: tuple[GeneralLevelSpec, ...],
+    *,
+    defer_period_series_encoding: bool = False,
+) -> dict[str, Any]:
     clone = dict(row)
     by_dimension = _json_object(clone.get("by_dimension"))
     dimension_data = _json_object(clone.get("dimension_data"))
@@ -242,10 +255,17 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
         _copy_dimension_value(dimension_channel_data, value=source_channel_data.get(spec.source_field), target=canonical_field)
         _copy_dimension_value(dimension_specialty_data, value=source_specialty_data.get(spec.source_field), target=canonical_field)
     clone["by_dimension"] = _json_dump(by_dimension)
-    clone["dimension_data"] = _json_dump(dimension_data)
-    clone["dimension_channel_data"] = _json_dump(dimension_channel_data)
-    if dimension_specialty_data:
-        clone["dimension_specialty_data"] = _json_dump(dimension_specialty_data)
+    if defer_period_series_encoding:
+        # trim_period_rows consumes the decoded private values immediately.
+        clone["dimension_data"] = "{}"
+        clone["dimension_channel_data"] = "{}"
+        if dimension_specialty_data:
+            clone["dimension_specialty_data"] = "{}"
+    else:
+        clone["dimension_data"] = _json_dump(dimension_data)
+        clone["dimension_channel_data"] = _json_dump(dimension_channel_data)
+        if dimension_specialty_data:
+            clone["dimension_specialty_data"] = _json_dump(dimension_specialty_data)
     clone["__by_dimension"] = by_dimension
     clone["__dimension_data"] = dimension_data
     clone["__dimension_channel_data"] = dimension_channel_data

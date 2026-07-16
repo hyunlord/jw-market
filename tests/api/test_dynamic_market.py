@@ -1529,6 +1529,92 @@ def test_general_response_slimming_removes_only_approved_unused_fields() -> None
     assert brand["ms_recent_pct"] == 50.0
 
 
+def test_general_dimension_aliases_defer_series_encoding_until_window_projection(monkeypatch) -> None:
+    specs = general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"]
+    period_series = {
+        "2025-05": {"raw_value": 10.0},
+        "2025-06": {"raw_value": 20.0},
+        "2026-05": {"raw_value": 30.0},
+    }
+    row = {
+        "by_dimension": json.dumps({"seller": "JW중외제약"}, ensure_ascii=False),
+        "dimension_data": json.dumps(
+            {"seller": {"JW중외제약": period_series}},
+            ensure_ascii=False,
+        ),
+        "dimension_channel_data": json.dumps(
+            {"seller": {"JW중외제약": {"전체": period_series}}},
+            ensure_ascii=False,
+        ),
+        "dimension_specialty_data": json.dumps(
+            {"seller": {"JW중외제약": {"의원": {"내과": period_series}}}},
+            ensure_ascii=False,
+        ),
+    }
+    period_range = PeriodRange(start="2025-06", end="2026-05")
+    expected = general_analysis_levels.trim_period_rows(
+        [general_analysis_levels._with_canonical_dimension_aliases(row, specs)],
+        period_range,
+    )[0]
+    dump_calls: list[dict[str, object]] = []
+    json_dump = general_analysis_levels._json_dump
+
+    def record_dump(payload: dict[str, object]) -> str:
+        dump_calls.append(payload)
+        return json_dump(payload)
+
+    monkeypatch.setattr(general_analysis_levels, "_json_dump", record_dump)
+
+    deferred = general_analysis_levels._with_canonical_dimension_aliases(
+        row,
+        specs,
+        defer_period_series_encoding=True,
+    )
+    actual = general_analysis_levels.trim_period_rows([deferred], period_range)[0]
+
+    assert len(dump_calls) == 1
+    assert deferred["dimension_data"] == "{}"
+    assert deferred["dimension_channel_data"] == "{}"
+    assert deferred["dimension_specialty_data"] == "{}"
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"by_dimension": "{}"},
+        {
+            "by_dimension": {},
+            "dimension_data": {"seller": {"JW중외제약": {"2026-05": {"raw_value": 30.0}}}},
+            "dimension_channel_data": {},
+            "dimension_specialty_data": {},
+        },
+    ],
+)
+def test_general_deferred_dimension_encoding_preserves_sparse_and_decoded_shapes(
+    row: dict[str, object],
+) -> None:
+    specs = general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"]
+    period_range = PeriodRange(start="2025-06", end="2026-05")
+
+    expected = general_analysis_levels.trim_period_rows(
+        [general_analysis_levels._with_canonical_dimension_aliases(row, specs)],
+        period_range,
+    )[0]
+    actual = general_analysis_levels.trim_period_rows(
+        [
+            general_analysis_levels._with_canonical_dimension_aliases(
+                row,
+                specs,
+                defer_period_series_encoding=True,
+            )
+        ],
+        period_range,
+    )[0]
+
+    assert actual == expected
+
+
 def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch) -> None:
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
 
@@ -1654,7 +1740,11 @@ def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch
         all_brands=(focus, competitor),
     )
 
-    payload = build_cause_payload(definition=definition, metrics=metrics)
+    payload = build_cause_payload(
+        definition=definition,
+        metrics=metrics,
+        period_range=PeriodRange(start="2026-01", end="2026-02"),
+    )
 
     analysis_levels = payload["data"]["analysis_levels"]
     assert analysis_levels["levels"] == ["판매사", "성분", "성분용량", "제형", "투여경로", "급여구분"]
