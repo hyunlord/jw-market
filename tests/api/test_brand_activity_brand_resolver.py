@@ -408,6 +408,28 @@ def test_general_market_scope_member_resolves_livalo_to_member_atc4(monkeypatch)
     assert ("market", ("C10A1", "iqvia_nsa", "sales")) in calls
 
 
+def test_general_market_scope_preserves_explicit_group_atc4_membership(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    _patch_resolver_db(monkeypatch, calls)
+
+    result = resolve_brand_set(
+        view_name="general",
+        market_id=None,
+        selected_brand="리바로",
+        filter_payload={
+            "atc4": ["C10A1", "C10C0"],
+            "market_scope": {"option_id": "group:livalo_family", "member": "리바로"},
+        },
+        ranking_quarters=("2026-Q2",),
+    )
+
+    assert result is not None
+    assert result.market_id == "C10A1"
+    assert result.applied_filter["atc4"] == ["C10A1", "C10C0"]
+    assert ("brand", ("C10A1", "iqvia_nsa", "sales")) in calls
+    assert ("market", ("C10A1", "iqvia_nsa", "sales")) in calls
+
+
 def test_general_market_scope_member_resolves_livalozet_to_member_atc4(monkeypatch) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
     _patch_resolver_db(monkeypatch, calls)
