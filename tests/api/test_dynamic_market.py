@@ -1014,8 +1014,6 @@ def test_strategic_runtime_replaces_cd_definition_atcs_with_actual_mart_universe
         }
     ]
     market_row = {"market_size_series": json.dumps({"2026-Q1": 200.0})}
-    captured: dict[str, object] = {}
-
     monkeypatch.setattr(strategic_runtime, "_fetch_sibling_rows", lambda **_kwargs: sibling_rows)
     monkeypatch.setattr(strategic_runtime, "_fetch_market_row", lambda **_kwargs: market_row)
     monkeypatch.setattr(strategic_runtime, "_catalog_row", lambda *_args: {})
@@ -1039,12 +1037,16 @@ def test_strategic_runtime_replaces_cd_definition_atcs_with_actual_mart_universe
         }
 
     def fake_apply(payload: dict[str, object], _market_id: str) -> None:
-        captured.update(payload)
+        meta = payload["market_meta"]
+        assert isinstance(meta, dict)
+        assert meta["atc_codes"] == ["악템라"]
+        meta["market_definition_label"] = "악템라"
+        meta["market_definition_full"] = "악템라"
 
     monkeypatch.setattr(strategic_runtime.cause_builder, "build_response", fake_build_response)
     monkeypatch.setattr(strategic_runtime, "apply_cd_market_definition", fake_apply)
 
-    strategic_runtime._build_strategic_payload(
+    payload = strategic_runtime._build_strategic_payload(
         mart_db="mart",
         ml_id=None,
         cd_market_id="cd_014",
@@ -1054,8 +1056,10 @@ def test_strategic_runtime_replaces_cd_definition_atcs_with_actual_mart_universe
         analysis_level=DynamicMarketRequest().filters.analysis_level,
     )
 
-    meta = captured["market_meta"]
+    meta = payload["market_meta"]
     assert isinstance(meta, dict)
+    assert meta["market_definition_label"] == "악템라"
+    assert meta["market_definition_full"] == "악템라"
     assert meta["atc_codes"] == ["L01G1", "L04B0", "L04D0", "M01C0"]
     assert meta["atc_count"] == 4
 

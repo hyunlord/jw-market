@@ -155,5 +155,5 @@ def cause(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_strategic_payload"})
     payload["markets"] = markets
-    apply_cd_market_definition(payload)
+    apply_cd_market_definition(payload, preserve_existing_actual_atcs=True)
     return payload

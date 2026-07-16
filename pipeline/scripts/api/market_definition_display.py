@@ -81,17 +81,21 @@ def cd_display_for_id(
     label = _display_label(row, formal_definition=full)
     if not label:
         return None
-    atc_codes = inherited_atc_codes or _raw_definition_atc_codes(row)
     return MarketDefinitionDisplay(
         label=label,
         full=full or label,
-        atc_codes=atc_codes,
-        atc_count=len(atc_codes),
+        atc_codes=[label],
+        atc_count=1,
         cd_definition_class=label,
     )
 
 
-def apply_cd_market_definition(payload: dict[str, Any], cd_market_id: str | None = None) -> None:
+def apply_cd_market_definition(
+    payload: dict[str, Any],
+    cd_market_id: str | None = None,
+    *,
+    preserve_existing_actual_atcs: bool = False,
+) -> None:
     meta = payload.get("market_meta")
     if not isinstance(meta, dict):
         return
@@ -99,6 +103,15 @@ def apply_cd_market_definition(payload: dict[str, Any], cd_market_id: str | None
     if not view_source_id or not view_source_id.startswith("cd_"):
         return
     inherited_atc_codes = _clean_atc_codes(meta.get("atc_codes"))
+    if (
+        preserve_existing_actual_atcs
+        and inherited_atc_codes
+        and _valid_text(meta.get("market_definition_label"))
+        and _valid_text(meta.get("market_definition_full"))
+    ):
+        meta["atc_codes"] = inherited_atc_codes
+        meta["atc_count"] = len(inherited_atc_codes)
+        return
     display = cd_display_for_id(
         view_source_id,
         inherited_atc_codes=inherited_atc_codes,

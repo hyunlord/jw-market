@@ -37,8 +37,11 @@ def test_cause_route_adds_cd_market_definition(monkeypatch) -> None:
                 "response_json": {
                     "market_meta": {
                         "view_source_id": "cd_008",
-                        "market_definition_label": "old",
-                        "market_definition_full": "old",
+                        "market_definition_label": "Statin/ARB/CCB",
+                        "market_definition_full": (
+                            "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 "
+                            "(단일 투약 형태) - Statin/ARB/CCB"
+                        ),
                         "atc_codes": ["C11A1"],
                         "atc_count": 1,
                     }

@@ -173,6 +173,7 @@ def _build_strategic_payload(
     if not isinstance(composed, dict):
         raise DynamicMarketInputError("strategic payload composition did not return an object")
     composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
+    apply_cd_market_definition(composed, view_source_id)
     if market_kind == "cd":
         actual_atc_codes = strategic_atc4_codes(
             mart_db=mart_db,
@@ -188,7 +189,6 @@ def _build_strategic_payload(
             raise DynamicMarketInputError("strategic payload market_meta did not return an object")
         market_meta["atc_codes"] = list(actual_atc_codes)
         market_meta["atc_count"] = len(actual_atc_codes)
-    apply_cd_market_definition(composed, view_source_id)
     return composed
 
 
