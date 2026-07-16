@@ -115,7 +115,7 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
         }
 
     assert list_value is not None
-    point_items: list[tuple[str, Mapping[Any, Any]]] = []
+    point_items: list[Mapping[Any, Any]] = []
     for item in list_value:
         if type(item) is dict:
             period_value = item.get("period")
@@ -130,16 +130,14 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
             break
         if period is None:
             break
-        point_items.append((period, item))
+        interval = _period_interval(period)
+        if interval is not None and (
+            (bounds[0] is None or interval[1] >= bounds[0])
+            and (bounds[1] is None or interval[0] <= bounds[1])
+        ):
+            point_items.append(item)
     else:
-        if point_items:
-            return [
-                _trim_period_payload(item, bounds)
-                for period, item in point_items
-                if (interval := _period_interval(period)) is not None
-                and (bounds[0] is None or interval[1] >= bounds[0])
-                and (bounds[1] is None or interval[0] <= bounds[1])
-            ]
+        return [_trim_period_payload(item, bounds) for item in point_items]
     return [
         item
         if type(item) in _JSON_SCALAR_TYPES

@@ -348,6 +348,67 @@ def test_trim_period_payload_reuses_point_period_during_list_filtering(monkeypat
     assert calls == ["2024-12", "2025-01", "2025-02"]
 
 
+def test_trim_period_payload_filters_each_custom_point_during_classification(monkeypatch) -> None:
+    events: list[str] = []
+    original_point_period = period_window_module._point_period
+    original_period_interval = period_window_module._period_interval
+
+    def spy_point_period(item: UserDict[str, object]) -> str | None:
+        period = original_point_period(item)
+        events.append(f"point:{period}")
+        return period
+
+    def spy_period_interval(value: str) -> tuple[int, int] | None:
+        events.append(f"interval:{value}")
+        return original_period_interval(value)
+
+    monkeypatch.setattr(period_window_module, "_point_period", spy_point_period)
+    monkeypatch.setattr(period_window_module, "_period_interval", spy_period_interval)
+    payload = [
+        UserDict({"period": "2024-12", "value": 1.0}),
+        UserDict({"period": "2025-01", "value": 2.0}),
+    ]
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == [{"period": "2025-01", "value": 2.0}]
+    assert events == [
+        "interval:2025-01",
+        "interval:2025-12",
+        "point:2024-12",
+        "interval:2024-12",
+        "point:2025-01",
+        "interval:2025-01",
+        "interval:period",
+    ]
+
+
+def test_trim_period_payload_falls_back_when_later_list_item_has_no_period() -> None:
+    payload = [
+        {
+            "period": "2025-01",
+            "history": {"2025-01": 1.0, "2026-01": 2.0},
+        },
+        {
+            "value": 3.0,
+            "history": {"2025-02": 4.0, "2026-02": 5.0},
+        },
+    ]
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == [
+        {
+            "period": "2025-01",
+            "history": {"2025-01": 1.0},
+        },
+        {
+            "value": 3.0,
+            "history": {"2025-02": 4.0},
+        },
+    ]
+
+
 def test_trim_period_payload_reads_exact_dict_point_periods_without_helper(monkeypatch) -> None:
     calls: list[type[object]] = []
     original = period_window_module._point_period
