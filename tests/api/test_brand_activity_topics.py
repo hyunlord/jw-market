@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -696,6 +697,29 @@ def test_topic_scope_uses_catalog_atc_membership_not_payload_brand_membership(mo
     scope = topic_matrix._topic_scope(brand_set=strategic, topic_rows=rows)
 
     assert scope["scope_id"] == "group:gardlet_family"
+
+
+def test_general_topic_scope_uses_full_applied_atc_membership() -> None:
+    brand_set = replace(
+        _brand_set(),
+        applied_filter={"atc4": ["C10A1", "C10C0"]},
+    )
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[_group_topic_row()],
+    )
+
+    assert scope["scope_id"] == "group:livalo_family"
+
+
+def test_general_single_atc_filter_does_not_broaden_to_group() -> None:
+    scope = topic_matrix._topic_scope(
+        brand_set=_brand_set(),
+        topic_rows=[_group_topic_row()],
+    )
+
+    assert scope == {}
 
 
 def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_none(monkeypatch) -> None:

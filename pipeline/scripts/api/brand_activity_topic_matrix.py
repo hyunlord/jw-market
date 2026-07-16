@@ -329,6 +329,11 @@ def _topic_scope(
 
 def _catalog_atc4_values(brand_set: BrandSetResolution) -> tuple[str, ...]:
     if brand_set.view_name == "general":
+        applied_codes = _atc4_values(
+            _json_object(brand_set.applied_filter).get("atc4")
+        )
+        if applied_codes:
+            return applied_codes
         return _atc4_values(brand_set.market_id)
     schema = quote_identifier(config.db_name)
     if brand_set.view_name == "strategic_ml":
