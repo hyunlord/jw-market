@@ -228,6 +228,33 @@ def test_trim_period_payload_does_not_reenter_for_exact_json_scalar_children(mon
     assert calls == [dict, CustomInt, dict, list]
 
 
+def test_trim_period_payload_compares_period_bounds_without_helper_calls(monkeypatch) -> None:
+    def fail_if_called(
+        interval: tuple[int, int],
+        bounds: tuple[int | None, int | None],
+    ) -> bool:
+        raise AssertionError(f"unexpected overlap helper call: {interval=} {bounds=}")
+
+    monkeypatch.setattr(period_window_module, "_overlaps", fail_if_called, raising=False)
+    payload = {
+        "monthly": {"2024-12": 1.0, "2025-01": 2.0, "2026-01": 3.0},
+        "quarterly": {"2024-Q4": 4.0, "2025-Q1": 5.0, "2026-Q1": 6.0},
+        "points": [
+            {"period": "2024-12", "value": 7.0},
+            {"period": "2025-01", "value": 8.0},
+            {"period": "2026-01", "value": 9.0},
+        ],
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {
+        "monthly": {"2025-01": 2.0},
+        "quarterly": {"2025-Q1": 5.0},
+        "points": [{"period": "2025-01", "value": 8.0}],
+    }
+
+
 def test_trim_period_payload_preserves_mapping_and_list_subclass_support() -> None:
     class PeriodPoints(list[UserDict[str, object]]):
         pass

@@ -102,7 +102,8 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                         else _trim_period_payload(item, bounds)
                     )
                     for interval, key, item in period_items
-                    if _overlaps(interval, bounds)
+                    if (bounds[0] is None or interval[1] >= bounds[0])
+                    and (bounds[1] is None or interval[0] <= bounds[1])
                 }
         return {
             str(key): (
@@ -128,7 +129,8 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                 _trim_period_payload(item, bounds)
                 for period, item in point_items
                 if (interval := _period_interval(period)) is not None
-                and _overlaps(interval, bounds)
+                and (bounds[0] is None or interval[1] >= bounds[0])
+                and (bounds[1] is None or interval[0] <= bounds[1])
             ]
     return [
         item
@@ -182,8 +184,3 @@ def _period_bounds(period_range: PeriodRange) -> _PeriodBounds:
     start = start_interval[0] if start_interval else None
     end = end_interval[1] if end_interval else None
     return start, end
-
-
-def _overlaps(interval: tuple[int, int], bounds: _PeriodBounds) -> bool:
-    start, end = bounds
-    return (start is None or interval[1] >= start) and (end is None or interval[0] <= end)
