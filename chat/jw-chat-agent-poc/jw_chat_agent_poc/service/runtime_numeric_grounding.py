@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
+
+
+PUBLIC_EVIDENCE_STATUSES: Final[frozenset[str]] = frozenset({"live", "ok", "partial", "success"})
 
 
 def ungrounded_numbers(
@@ -17,7 +20,7 @@ def ungrounded_numbers(
     allowed_set.update(number_tokens(_markdown_field(markdown_response, "fact_md")))
     allowed_set.update(number_tokens(_markdown_field(markdown_response, "data_md")))
     for call in tool_calls:
-        if call.get("status") not in {"ok", "success"}:
+        if call.get("status") not in PUBLIC_EVIDENCE_STATUSES:
             continue
         allowed_set.update(number_tokens(call_data_md(dict(call))))
     return tuple(sorted(token for token in number_tokens(answer) if token not in allowed_set))

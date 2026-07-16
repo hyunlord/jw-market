@@ -86,6 +86,88 @@ def test_public_web_search_number_is_grounded_by_rendered_tool_evidence() -> Non
     )
 
 
+def test_live_public_web_search_number_is_grounded_by_rendered_tool_evidence() -> None:
+    # Given: the live external adapter returned public web evidence.
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "2023-06-20 가이드라인 업데이트",
+                        "url": "https://example.test/guideline",
+                        "snippet": "고위험군에서 LDL-C를 30% 이상 낮추도록 권고합니다.",
+                    }
+                ]
+            },
+        }
+    ]
+
+    # When: the runtime grounding gate checks the answer.
+    ungrounded = _ungrounded_numbers(
+        "2023-06-20 지침은 LDL-C를 30% 이상 낮추도록 권고합니다.",
+        markdown_response,
+        tool_calls,
+    )
+
+    # Then: values in the public live projection are grounded.
+    assert ungrounded == ()
+
+
+def test_partial_public_evidence_number_is_grounded_when_one_source_succeeds() -> None:
+    # Given: one external source returned evidence while another returned no data.
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "source": "web_search",
+            "status": "partial",
+            "render_data": {
+                "calls": [
+                    {
+                        "tool": "web_search",
+                        "status": "live",
+                        "render_data": {
+                            "items": [
+                                {
+                                    "title": "가이드라인 업데이트",
+                                    "url": "https://example.test/guideline",
+                                    "snippet": "LDL-C 목표를 28% 낮춘 결과를 보고했습니다.",
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "tool": "web_search",
+                        "status": "no_data",
+                        "render_data": {"items": []},
+                    },
+                ]
+            },
+        }
+    ]
+
+    # When: the runtime grounding gate checks a value from the successful source.
+    ungrounded = _ungrounded_numbers(
+        "확인된 공개 근거에서는 LDL-C 목표가 28% 낮아졌습니다.",
+        markdown_response,
+        tool_calls,
+    )
+
+    # Then: partial aggregate evidence remains usable.
+    assert ungrounded == ()
+
+
 def test_non_rendered_tool_internal_number_remains_ungrounded() -> None:
     markdown_response = {
         "allowed_numbers": (),
@@ -110,6 +192,37 @@ def test_non_rendered_tool_internal_number_remains_ungrounded() -> None:
     ]
 
     assert _ungrounded_numbers("검색 내부 건수는 999건입니다.", markdown_response, tool_calls) == ("999건",)
+
+
+def test_live_tool_internal_number_remains_ungrounded() -> None:
+    # Given: a live call includes one public item and an internal-only counter.
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "가이드라인 업데이트",
+                        "url": "https://example.test/guideline",
+                        "snippet": "고위험군 치료 권고를 정리했습니다.",
+                    }
+                ],
+                "internal_total_count": 999,
+            },
+        }
+    ]
+
+    # When: the answer cites the internal-only counter.
+    ungrounded = _ungrounded_numbers("검색 내부 건수는 999건입니다.", markdown_response, tool_calls)
+
+    # Then: live status does not expose fields outside the public projection.
+    assert ungrounded == ("999건",)
 
 
 def test_trace_envelope_grounds_numbers_from_public_tool_projection() -> None:
