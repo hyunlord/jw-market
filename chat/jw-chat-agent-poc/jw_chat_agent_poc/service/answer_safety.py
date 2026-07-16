@@ -18,6 +18,13 @@ FAIL_CLOSED_TEXT = "- 표에 포함된 확정 데이터만 기준으로 해석�
 _UNSUPPORTED_SERIES_RE = re.compile(r"(미지원|미보유|확인\s*안\s*됨|확인되지|데이터\s*없음|지원하지)")
 _NEGATED_UNSUPPORTED_RE = re.compile(r"(아니|아님|아닙)")
 _EMPTY_NEWS_SHELL_RE = re.compile(r"관련\s*기사에서.*언급이\s*확인|언급이\s*확인됐습니다|언급이\s*확인되었습니다")
+_STREAM_ATOMIC_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"\d{4}-(?:0[1-9]|1[0-2])|"
+    r"\d{4}-Q[1-4]|"
+    r"[+-]?\d[\d,]*(?:\.\d+)?(?:%p|%|억원|원|명|건|개|위)?"
+    r")(?![A-Za-z0-9])"
+)
 _NEWS_ISSUE_NUMBER_RE = re.compile(
     r"(?<![A-Za-z])[+-]?\d[\d,]*(?:\.\d+)?(?:\s*(?:억\s*원|억원|원|명|건|개|위|년|월|%p|%|분기))?"
 )
@@ -1660,6 +1667,7 @@ def chunk_text(text: str, size: int = 24) -> Iterator[str]:
         forward = text.find(" ", limit, min(len(text), index + int(size * 1.5)))
         if forward > limit:
             limit = _space_aware_limit(text, forward, index, size)
+        limit = _atomic_stream_limit(text, limit)
         while limit < len(text) and text[limit].isspace():
             limit += 1
         yield text[index:limit]
@@ -1671,6 +1679,15 @@ def _space_aware_limit(text: str, forward: int, index: int, size: int) -> int:
         return forward + 1
     next_forward = text.find(" ", forward + 1, min(len(text), index + int(size * 1.5)))
     return next_forward + 1 if next_forward > forward else forward + 1
+
+
+def _atomic_stream_limit(text: str, limit: int) -> int:
+    window_start = max(0, limit - 40)
+    window_end = min(len(text), limit + 40)
+    for match in _STREAM_ATOMIC_TOKEN_RE.finditer(text, window_start, window_end):
+        if match.start() < limit < match.end():
+            return match.end()
+    return limit
 
 
 def _mandatory_line_present(answer: str, line: str) -> bool:

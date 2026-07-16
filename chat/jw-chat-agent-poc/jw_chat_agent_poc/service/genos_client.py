@@ -155,7 +155,11 @@ def _needs_trend_fact_prose(question: str, answer: str, trend_fact_md: str = "")
 
 
 def _question_wants_trend_output(question: str) -> bool:
-    return "추이" in question and any(token in question for token in ("매출", "점유율", "어때"))
+    trend_tokens = ("추이", "경향", "변화", "흐름")
+    metric_tokens = ("매출", "점유율", "시장점유율", "시장규모", "시장 규모", "MS", "어때")
+    return any(token in question for token in trend_tokens) and any(
+        token in question for token in metric_tokens
+    )
 
 
 def _trend_shape_conflicts_with_answer(trend_fact_md: str, answer: str) -> bool:
@@ -499,8 +503,23 @@ def _insert_before_first_table(markdown: str, block: str) -> str:
     lines = markdown.splitlines()
     for idx, line in enumerate(lines):
         if line.strip().startswith("|"):
-            return cleanup_markdown_answer("\n".join((*lines[:idx], "", cleaned_block, "", *lines[idx:])))
+            section_start = _table_section_start(lines, idx)
+            return cleanup_markdown_answer(
+                "\n".join((*lines[:section_start], "", cleaned_block, "", *lines[section_start:]))
+            )
     return cleanup_markdown_answer("\n\n".join((cleaned_block, markdown)))
+
+
+def _table_section_start(lines: list[str], table_start: int) -> int:
+    previous = table_start - 1
+    while previous >= 0 and not lines[previous].strip():
+        previous -= 1
+    if previous < 0:
+        return table_start
+    heading = lines[previous].strip()
+    if re.fullmatch(r"(?:#{1,6}\s+\S.*|\*\*[^*\n]+\*\*)", heading):
+        return previous
+    return table_start
 
 
 def _ensure_mfds_permit_date_answer(question: str, markdown: str, fact_md: str) -> str:

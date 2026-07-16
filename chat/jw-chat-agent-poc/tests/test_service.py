@@ -1335,6 +1335,13 @@ def test_chunked_sse_preserves_period_value_separators() -> None:
     assert "2025-125.14%" not in reconstructed
 
 
+@pytest.mark.parametrize("token", ("2026-05", "2025-Q2", "29.52%", "2,052,001"))
+def test_chunk_text_keeps_canonical_numeric_tokens_atomic(token: str) -> None:
+    for prefix_length in range(24):
+        chunks = list(chunk_text(f"{'가' * prefix_length}{token}"))
+        assert any(token in chunk for chunk in chunks), (prefix_length, chunks)
+
+
 def test_markdown_timeout_fallback_keeps_causal_structure_and_deterministic_sources(monkeypatch) -> None:
     def timeout_chat(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
         raise requests.Timeout("simulated final generation timeout")
@@ -1639,6 +1646,29 @@ def test_markdown_table_blocks_are_sent_as_atomic_sse_events() -> None:
     assert "event: markdown_block" in encoded
     assert '"markdown":"\\n\\n| 채널 | 매출 |\\n| --- | --- |\\n| 의원 | 41.93억원 |\\n\\n"' in encoded
     assert "event: delta\ndata: | 채널" not in encoded
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ("### 리바로 매출 시계열 (2026-05)", "**리바로 매출 시계열 (2026-05)**"),
+)
+def test_markdown_table_block_keeps_its_heading_atomic(heading: str) -> None:
+    answer = (
+        "리바로 매출은 고점 이후 저점을 거쳐 회복했습니다.\n\n"
+        f"{heading}\n"
+        "| 기간 | 매출 |\n"
+        "| --- | --- |\n"
+        "| 2026-05 | 80.39억원 |\n\n"
+        "## 출처\n"
+    )
+
+    events = list(iter_markdown_sse_events(answer))
+    table_event = next(event for event in events if event.startswith("event: markdown_block"))
+    table_payload = json.loads(table_event.split("data: ", 1)[1])
+    prose_events = "".join(event for event in events if event.startswith("event: delta"))
+
+    assert table_payload["markdown"].startswith(f"\n\n{heading}\n")
+    assert heading not in prose_events
 
 
 def test_stream_endpoint_keeps_timing_out_of_answer_body(monkeypatch) -> None:

@@ -2106,6 +2106,84 @@ def test_trend_prose_fail_closed_uses_fact_fallback_when_llm_prose_was_stripped(
     assert not _needs_trend_fact_prose("리바로 매출 추이 어때", revised, trend_fact)
 
 
+def test_trend_prose_fail_closed_recognizes_sales_tendency_question() -> None:
+    trend_fact = """### 단일 브랜드 추이 산문용 trend fact
+| 항목 | 값 |
+| --- | --- |
+| brand | 리바로 |
+| shape | recovery |
+| first | 2025-07 / 84.76억원 / MS 3.92% |
+| peak | 2025-12 / 90.86억원 / MS 3.93% |
+| trough_after_peak | 2026-02 / 75.08억원 / MS 3.79% |
+| latest | 2026-04 / 84.93억원 / MS 3.76% |
+"""
+    table_only = """### 리바로 매출 시계열
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-07 | 84.76억원 | 3.92% |
+| 2025-12 | 90.86억원 | 3.93% |
+| 2026-02 | 75.08억원 | 3.79% |
+| 2026-04 | 84.93억원 | 3.76% |
+"""
+
+    revised = _ensure_trend_prose_fail_closed("리바로 매출 경향성 알려줘", table_only, trend_fact, "")
+
+    prose = revised[: revised.index("### 리바로 매출 시계열")]
+    assert "2025-12 90.86억원" in prose
+    assert "2026-02 75.08억원" in prose
+    assert "2026-04 84.93억원" in prose
+    assert "회복 흐름" in prose
+
+
+def test_genos_sales_tendency_answer_restores_verified_narrative_before_table(monkeypatch) -> None:
+    fact_md = """### 리바로 매출 시계열 fact
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-07 | 84.76억원 | 3.92% |
+| 2025-12 | 90.86억원 | 3.93% |
+| 2026-02 | 75.08억원 | 3.79% |
+| 2026-04 | 84.93억원 | 3.76% |
+"""
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "brand": "리바로",
+                "answer_scope": "single_brand_trend",
+                "brand_value_series_10pt": [
+                    {"period": "2025-07", "value_억원": 84.76, "ms_pct": 3.92},
+                    {"period": "2025-12", "value_억원": 90.86, "ms_pct": 3.93},
+                    {"period": "2026-02", "value_억원": 75.08, "ms_pct": 3.79},
+                    {"period": "2026-04", "value_억원": 84.93, "ms_pct": 3.76},
+                ],
+            },
+        }
+    ]
+    table_only = """### 리바로 매출 시계열
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-07 | 84.76억원 | 3.92% |
+| 2025-12 | 90.86억원 | 3.93% |
+| 2026-02 | 75.08억원 | 3.79% |
+| 2026-04 | 84.93억원 | 3.76% |
+"""
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda *_args: table_only)
+
+    answer = GenosClient(token="dummy-token")._markdown_answer(
+        "리바로 매출 경향성 알려줘",
+        {"fact_md": fact_md},
+        tool_calls=calls,
+    )
+
+    narrative_end = answer.index("**리바로 매출 시계열**")
+    narrative = answer[:narrative_end]
+    assert "2025-12 90.86억원" in narrative
+    assert "2026-02 75.08억원" in narrative
+    assert "2026-04 84.93억원" in narrative
+    assert answer.index("**리바로 매출 시계열**") < answer.index("| 기간 | 매출 | MS |")
+
+
 def test_direct_metric_fact_answer_preserves_full_rank_denominator() -> None:
     fact_md = """### 리바로 지표 fact
 | 항목 | 값 |
