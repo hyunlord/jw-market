@@ -17,9 +17,10 @@ from typing import Any
 from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
-from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
 from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import analysis_level_profile_signature
+from pipeline.scripts.api.dynamic_market.filter_options import strategic_atc4_codes
 from pipeline.scripts.api.dynamic_market.period_window import trim_period_rows
+from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
 from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketInputError,
     DynamicMarketPeriodNoDataError,
@@ -172,6 +173,21 @@ def _build_strategic_payload(
     if not isinstance(composed, dict):
         raise DynamicMarketInputError("strategic payload composition did not return an object")
     composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
+    if market_kind == "cd":
+        actual_atc_codes = strategic_atc4_codes(
+            mart_db=mart_db,
+            source=mart_source,
+            market_id=view_source_id,
+        )
+        if not actual_atc_codes:
+            raise DynamicMarketInputError(
+                f"competitive-dynamics ATC4 universe was not found: market_id={view_source_id}, source={mart_source}"
+            )
+        market_meta = composed.get("market_meta")
+        if not isinstance(market_meta, dict):
+            raise DynamicMarketInputError("strategic payload market_meta did not return an object")
+        market_meta["atc_codes"] = list(actual_atc_codes)
+        market_meta["atc_count"] = len(actual_atc_codes)
     apply_cd_market_definition(composed, view_source_id)
     return composed
 

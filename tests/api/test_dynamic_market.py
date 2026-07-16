@@ -969,10 +969,14 @@ def test_strategic_runtime_trims_every_builder_row_before_ml_or_cd_assembly(
     monkeypatch.setattr(strategic_runtime, "_strategic_brand_catalog", lambda: [])
     monkeypatch.setattr(strategic_runtime, "compose_cached_json", lambda payload, **_kwargs: payload)
     monkeypatch.setattr(strategic_runtime, "apply_cd_market_definition", lambda *_args: None)
+    monkeypatch.setattr(strategic_runtime, "strategic_atc4_codes", lambda **_kwargs: ("C10A1", "C10C"))
 
     def fake_build_response(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
-        return {"data": {"kpi": {"market_size_recent": 100.0}}}
+        return {
+            "data": {"kpi": {"market_size_recent": 100.0}},
+            "market_meta": {"atc_codes": [], "atc_count": 0},
+        }
 
     monkeypatch.setattr(strategic_runtime.cause_builder, "build_response", fake_build_response)
 
@@ -997,6 +1001,63 @@ def test_strategic_runtime_trims_every_builder_row_before_ml_or_cd_assembly(
     assert isinstance(captured_market, dict)
     assert json.loads(captured_market["market_size_series"]) == {"2025-01": 100.0}
     assert json.loads(captured_market["hhi_series_5y"]) == [{"hhi": 100.0, "year": 2025}]
+
+
+def test_strategic_runtime_replaces_cd_definition_atcs_with_actual_mart_universe(monkeypatch) -> None:
+    sibling_rows = [
+        {
+            "brand_key": "악템라",
+            "brand_name": "악템라",
+            "metric_history": json.dumps({"2026-Q1": {"raw_value": 20.0}}),
+            "extended_metric_history": json.dumps({"2026-Q1": {"raw_value": 20.0}}),
+            "is_jw": 1,
+        }
+    ]
+    market_row = {"market_size_series": json.dumps({"2026-Q1": 200.0})}
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(strategic_runtime, "_fetch_sibling_rows", lambda **_kwargs: sibling_rows)
+    monkeypatch.setattr(strategic_runtime, "_fetch_market_row", lambda **_kwargs: market_row)
+    monkeypatch.setattr(strategic_runtime, "_catalog_row", lambda *_args: {})
+    monkeypatch.setattr(strategic_runtime, "_strategic_brand_catalog", lambda: [])
+    monkeypatch.setattr(strategic_runtime, "compose_cached_json", lambda payload, **_kwargs: payload)
+    monkeypatch.setattr(
+        strategic_runtime,
+        "strategic_atc4_codes",
+        lambda **_kwargs: ("L01G1", "L04B0", "L04D0", "M01C0"),
+    )
+
+    def fake_build_response(**_kwargs: object) -> dict[str, object]:
+        return {
+            "market_meta": {
+                "view_source_id": "cd_014",
+                "market_definition_label": "old",
+                "market_definition_full": "old",
+                "atc_codes": ["악템라"],
+                "atc_count": 1,
+            }
+        }
+
+    def fake_apply(payload: dict[str, object], _market_id: str) -> None:
+        captured.update(payload)
+
+    monkeypatch.setattr(strategic_runtime.cause_builder, "build_response", fake_build_response)
+    monkeypatch.setattr(strategic_runtime, "apply_cd_market_definition", fake_apply)
+
+    strategic_runtime._build_strategic_payload(
+        mart_db="mart",
+        ml_id=None,
+        cd_market_id="cd_014",
+        focus_brand_key="악템라",
+        source="iqvia",
+        measure="sales",
+        analysis_level=DynamicMarketRequest().filters.analysis_level,
+    )
+
+    meta = captured["market_meta"]
+    assert isinstance(meta, dict)
+    assert meta["atc_codes"] == ["L01G1", "L04B0", "L04D0", "M01C0"]
+    assert meta["atc_count"] == 4
 
 
 def test_strategic_runtime_rejects_period_window_without_observed_points(monkeypatch) -> None:

@@ -26,7 +26,8 @@ def test_cd_display_falls_back_to_spec_rows_without_parquet(tmp_path, monkeypatc
     assert display is not None
     assert display.label == "Statin/ARB/CCB"
     assert display.full == "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
-    assert display.atc_codes == ["Statin/ARB/CCB"]
+    assert display.atc_codes == ["C11A1"]
+    assert display.atc_count == 1
     assert INTERNAL_MARKET_DEFINITION_PATTERN.search(display.label) is None
     assert INTERNAL_MARKET_DEFINITION_PATTERN.search(display.full) is None
 
@@ -204,8 +205,8 @@ def test_apply_cd_market_definition_updates_only_cd_payloads() -> None:
             "view_source_id": "cd_009",
             "market_definition_label": "old",
             "market_definition_full": "old",
-            "atc_codes": [],
-            "atc_count": 0,
+            "atc_codes": ["C11A1"],
+            "atc_count": 1,
         }
     }
     ml_payload = {
@@ -225,7 +226,43 @@ def test_apply_cd_market_definition_updates_only_cd_payloads() -> None:
     # Then: only the CD payload is narrowed to the CD display definition.
     assert cd_payload["market_meta"]["market_definition_label"] == "Statin/ARB"
     assert cd_payload["market_meta"]["market_definition_full"] == "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB"
-    assert cd_payload["market_meta"]["atc_codes"] == ["Statin/ARB"]
+    assert cd_payload["market_meta"]["atc_codes"] == ["C11A1"]
     assert cd_payload["market_meta"]["atc_count"] == 1
     assert ml_payload["market_meta"]["market_definition_label"] == "1 ATC"
     assert ml_payload["market_meta"]["market_definition_full"] == "C10A1"
+
+
+def test_apply_cd_market_definition_preserves_actual_atc_codes_and_display_label(monkeypatch) -> None:
+    # Given: the mart payload carries the exact CD ATC4 universe for Actemra.
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_014": {
+                "competitive_dynamics_id": "cd_014",
+                "parent_market_landscape_id": "ml_011",
+                "cd_definition_type": "class_narrowing",
+                "cd_filter_raw_json": '[{"value":"악템라"}]',
+                "cd_definition_brand_class": "악템라",
+            }
+        },
+    )
+    payload = {
+        "market_meta": {
+            "view_source_id": "cd_014",
+            "market_name": "악템라",
+            "market_definition_label": "old",
+            "market_definition_full": "old",
+            "atc_codes": ["L01G1", "L04B0", "L04D0", "M01C0"],
+            "atc_count": 4,
+        }
+    }
+
+    # When: the CD display overlay is applied.
+    apply_cd_market_definition(payload)
+
+    # Then: label fields remain descriptive while atc_codes remain actual ATC4 values.
+    assert payload["market_meta"]["market_definition_label"] == "악템라"
+    assert payload["market_meta"]["market_definition_full"] == "악템라"
+    assert payload["market_meta"]["atc_codes"] == ["L01G1", "L04B0", "L04D0", "M01C0"]
+    assert payload["market_meta"]["atc_count"] == 4

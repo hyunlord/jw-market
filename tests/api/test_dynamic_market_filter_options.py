@@ -596,6 +596,34 @@ def test_strategic_filter_options_exposes_only_atc_hierarchy(monkeypatch) -> Non
     assert payload["applied_selections"] == {}
 
 
+def test_strategic_atc4_codes_reads_exact_cd_mart_universe(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, object]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            {"atc4_code": "L04D0"},
+            {"atc4_code": "L01G1"},
+            {"atc4_code": "L04D0"},
+            {"atc4_code": "M01C0"},
+            {"atc4_code": "L04B0"},
+        ]
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    codes = filter_options.strategic_atc4_codes(
+        mart_db="mart",
+        source="iqvia",
+        market_id="cd_014",
+    )
+
+    assert codes == ("L01G1", "L04B0", "L04D0", "M01C0")
+    assert "mart_strategic_cd_brand_metric" in str(captured["sql"])
+    assert "JSON_EXTRACT(by_dimension, '$.atc4_code')" in str(captured["sql"])
+    assert captured["params"] == ["iqvia", "cd_014"]
+
+
 def test_filter_options_openapi_documents_deprecated_market_id_override() -> None:
     schema = app.openapi()
     params = schema["paths"]["/api/dynamic-market/filter-options"]["get"]["parameters"]
