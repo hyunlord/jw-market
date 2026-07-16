@@ -143,7 +143,7 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     selected_brand = _text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
     market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else _text(payload.get("market_id"))
-    if not view or not selected_brand or (view == "general" and not market_id):
+    if not view or not selected_brand or (view == "general" and not market_id and not _has_market_scope(filter_payload)):
         raise TopicRequestError("view, filters.atc4, and selected_brand are required")
     top_n = _integer(payload.get("top_n") or 5)
     return {
@@ -615,6 +615,10 @@ def _first_filter_value(filter_payload: dict[str, JsonValue], key: str) -> str:
     if isinstance(value, list):
         return _text(value[0]) if value else ""
     return _text(value)
+
+
+def _has_market_scope(filter_payload: dict[str, JsonValue]) -> bool:
+    return isinstance(filter_payload.get("market_scope"), dict)
 
 
 def _resolved_market_payload(request: dict[str, JsonValue], brand_set: BrandSetResolution) -> dict[str, JsonValue]:
