@@ -151,7 +151,10 @@ def collect_runtime_evidence(identity: ReloadIdentity) -> dict[str, Any]:
                     ORDER BY ml_id, brand_name, brand_key
                     """
                 )
-                strategic_specialty_summary = _summarize_specialty_rows(stream_cursor)
+                strategic_specialty_summary = _summarize_specialty_rows(
+                    stream_cursor,
+                    sparse_periods_are_zero=True,
+                )
         connection.rollback()
     finally:
         connection.close()

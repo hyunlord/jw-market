@@ -261,6 +261,40 @@ def test_general_and_strategic_specialty_drift_fail_independently() -> None:
     assert strategic_gate["exit_code"] == 1
 
 
+def test_strategic_specialty_sparse_periods_contribute_zero() -> None:
+    evidence = _valid_evidence()
+    evidence["strategic_specialty_rows"][0]["specialty_data"] = {  # type: ignore[index]
+        "내과": {"2026-05": {"raw_value": 40.0}},
+        "순환기": _history(90.0, 60.0),
+    }
+
+    report = post_reload_mart_gate.validate_evidence(evidence, _identity())
+
+    gate = _gate(report, "strategic_specialty_parity")
+    assert gate["checked"] == 2
+    assert gate["population"] == 2
+    assert gate["failure_reasons"] == []
+    assert gate["exit_code"] == 0
+
+
+def test_general_specialty_sparse_periods_still_fail_closed() -> None:
+    evidence = _valid_evidence()
+    evidence["general_specialty_rows"][0]["specialty_data"] = {  # type: ignore[index]
+        "내과": {"2026-05": {"raw_value": 40.0}},
+        "순환기": _history(90.0, 60.0),
+    }
+
+    report = post_reload_mart_gate.validate_evidence(evidence, _identity())
+
+    gate = _gate(report, "general_specialty_parity")
+    assert gate["checked"] == 1
+    assert gate["population"] == 2
+    assert gate["exit_code"] == 1
+    assert gate["failure_reasons"] == [
+        "specialty_coverage_missing:C10A1:Brand A:2026-04"
+    ]
+
+
 def test_wrong_database_or_marker_is_rejected_even_when_values_match() -> None:
     wrong_database = deepcopy(_valid_evidence())
     wrong_database["database"] = "jw_mart"

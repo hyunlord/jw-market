@@ -115,6 +115,8 @@ def _source_table_gate(
 
 def summarize_specialty_rows(
     evidence_rows: Iterable[Mapping[str, Any]],
+    *,
+    sparse_periods_are_zero: bool = False,
 ) -> dict[str, Any]:
     failures: list[str] = []
     checked = 0
@@ -134,8 +136,14 @@ def summarize_specialty_rows(
             values: list[float] = []
             for history in specialty_data.values():
                 parsed = series(history)
-                value = parsed.get(period)
-                if period not in parsed or value is None:
+                if period not in parsed:
+                    if sparse_periods_are_zero:
+                        values.append(0.0)
+                        continue
+                    values = []
+                    break
+                value = parsed[period]
+                if value is None:
                     values = []
                     break
                 values.append(value)
@@ -168,7 +176,10 @@ def _specialty_gate(
     summary = (
         evidence_rows
         if is_summary
-        else summarize_specialty_rows(rows(evidence_rows))
+        else summarize_specialty_rows(
+            rows(evidence_rows),
+            sparse_periods_are_zero=gate_name == "strategic_specialty_parity",
+        )
     )
     failures = [str(failure) for failure in summary.get("failures") or []]
     return _gate(
