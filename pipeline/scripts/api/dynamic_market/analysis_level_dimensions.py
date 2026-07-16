@@ -27,6 +27,18 @@ GENERAL_SIDECAR_DIMENSIONS_BY_SOURCE = {
     "iqvia_nsa": IQVIA_GENERAL_DIMENSIONS,
     "ubist": UBIST_GENERAL_DIMENSIONS,
 }
+_GENERAL_DIMENSION_PAYLOAD_FIELDS = (
+    "by_dimension",
+    "dimension_data",
+    "dimension_channel_data",
+    "channel_data",
+    "channel_specialty_matrix",
+)
+_NORMALIZED_GENERAL_DIMENSION_FIELDS = (
+    "by_dimension",
+    "dimension_data",
+    "dimension_channel_data",
+)
 
 
 def build_analysis_rows(
@@ -40,8 +52,10 @@ def build_analysis_rows(
 ) -> list[dict[str, Any]]:
     """Return cache-cause mart rows enriched for analysis-level builders."""
 
+    # General aggregation rows already carry these fields in `analysis_row`.
+    # Only decoded payloads need the legacy normalization copy before mutation.
     general_dimensions = (
-        _general_dimensions_from_metrics(metrics)
+        _decoded_general_dimensions_from_metrics(metrics)
         if reuse_general_dimensions
         else _general_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
     )
@@ -63,20 +77,20 @@ def build_analysis_rows(
     return rows
 
 
-def _general_dimensions_from_metrics(metrics: AggregatedMetrics) -> dict[tuple[str, str], dict[str, Any]]:
-    """Reuse general dimension fields already loaded by the request aggregator."""
-
+def _decoded_general_dimensions_from_metrics(
+    metrics: AggregatedMetrics,
+) -> dict[tuple[str, str], dict[str, Any]]:
     dimensions: dict[tuple[str, str], dict[str, Any]] = {}
     for brand in metrics.all_brands:
+        analysis_row = brand.analysis_row
+        if not any(
+            isinstance(analysis_row.get(field), (dict, list))
+            for field in _NORMALIZED_GENERAL_DIMENSION_FIELDS
+        ):
+            continue
         dimensions[(brand.brand_key, brand.atc4_code)] = {
-            key: brand.analysis_row.get(key)
-            for key in (
-                "by_dimension",
-                "dimension_data",
-                "dimension_channel_data",
-                "channel_data",
-                "channel_specialty_matrix",
-            )
+            field: analysis_row.get(field)
+            for field in _GENERAL_DIMENSION_PAYLOAD_FIELDS
         }
     return dimensions
 

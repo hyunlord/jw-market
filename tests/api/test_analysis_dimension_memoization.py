@@ -1,9 +1,10 @@
 from contextlib import nullcontext
 import json
 
+from pipeline.scripts.api.dynamic_market import analysis_level_dimensions
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import (
     _analysis_rows,
-    _general_dimensions_from_metrics,
+    build_analysis_rows,
 )
 from pipeline.scripts.api.dynamic_market.analysis_level_series import (
     with_dimension_series_from_labels_decoded,
@@ -126,7 +127,7 @@ def test_dimension_segment_index_matches_individual_segment_selection() -> None:
     )
 
 
-def test_general_dimensions_reuse_request_rows() -> None:
+def test_general_dimensions_reuse_skips_duplicate_payload_map(monkeypatch) -> None:
     analysis_row = {
         "by_dimension": '{"seller": "JW중외제약"}',
         "dimension_data": '{"seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}}',
@@ -158,14 +159,94 @@ def test_general_dimensions_reuse_request_rows() -> None:
         all_brands=(metric,),
     )
 
-    dimensions = _general_dimensions_from_metrics(metrics)
+    captured: dict[str, object] = {}
 
-    assert dimensions[("brand-a", "C10A1")] == {
-        "by_dimension": analysis_row["by_dimension"],
-        "dimension_data": analysis_row["dimension_data"],
-        "dimension_channel_data": analysis_row["dimension_channel_data"],
-        "channel_data": analysis_row["channel_data"],
-        "channel_specialty_matrix": analysis_row["channel_specialty_matrix"],
+    sidecar_dimensions = {
+        ("brand-a", "C10A1"): {"by_dimension": '{"seller": "sidecar"}'}
+    }
+    strategic_dimensions = {
+        "brand-a": {"by_dimension": '{"class": "strategic"}', "is_jw": True}
+    }
+    monkeypatch.setattr(
+        analysis_level_dimensions,
+        "_general_sidecar_dimensions_by_pair",
+        lambda **_: sidecar_dimensions,
+    )
+    monkeypatch.setattr(
+        analysis_level_dimensions,
+        "_strategic_dimensions_by_brand",
+        lambda **_: strategic_dimensions,
+    )
+
+    def capture_analysis_rows(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(analysis_level_dimensions, "_analysis_rows", capture_analysis_rows)
+
+    result = build_analysis_rows(
+        definition=MarketDefinition(view="general", filter_echo={}, source="ubist", measure="sales"),
+        metrics=metrics,
+        focus=metric,
+        mart_db="jw_mart",
+        reuse_general_dimensions=True,
+    )
+
+    assert result == []
+    assert captured["general_dimensions"] == {}
+    assert captured["sidecar_dimensions"] is sidecar_dimensions
+    assert captured["strategic_dimensions"] is strategic_dimensions
+
+
+def test_general_dimensions_reuse_normalizes_decoded_payloads_without_mutation(monkeypatch) -> None:
+    decoded_dimension_data: dict[str, object] = {}
+    analysis_row = {
+        "by_dimension": {"seller": "JW중외제약"},
+        "dimension_data": decoded_dimension_data,
+        "dimension_channel_data": {"seller": {}},
+        "channel_data": {},
+        "channel_specialty_matrix": {},
+    }
+    metric = BrandMetric(
+        "brand-a",
+        "Brand A",
+        "C10A1",
+        1.0,
+        100.0,
+        1,
+        "2026-01",
+        1.0,
+        history_by_period={"2026-01": 1.0},
+        analysis_row=analysis_row,
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1.0,
+        hhi=10000.0,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 1.0},),
+        brands=(metric,),
+        all_brands=(metric,),
+    )
+    monkeypatch.setattr(analysis_level_dimensions, "_general_sidecar_dimensions_by_pair", lambda **_: {})
+    monkeypatch.setattr(analysis_level_dimensions, "_strategic_dimensions_by_brand", lambda **_: {})
+
+    rows = build_analysis_rows(
+        definition=MarketDefinition(view="general", filter_echo={}, source="ubist", measure="sales"),
+        metrics=metrics,
+        focus=metric,
+        mart_db="jw_mart",
+        reuse_general_dimensions=True,
+        retain_decoded_dimensions=True,
+    )
+
+    assert decoded_dimension_data == {}
+    assert isinstance(rows[0]["by_dimension"], str)
+    assert isinstance(rows[0]["dimension_channel_data"], str)
+    assert rows[0]["__dimension_data"] == {
+        "seller": {"JW중외제약": {"2026-01": {"raw_value": 1.0}}}
     }
 
 
