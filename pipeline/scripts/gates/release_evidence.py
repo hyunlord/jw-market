@@ -10,10 +10,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request, urlopen
 
-import pymysql
-from pymysql.cursors import DictCursor
-
-
 SEGMENT_LEVELS: Final[tuple[str, ...]] = ("class", "molecule", "ox_gx")
 SEGMENT_PROVENANCE: Final[str] = "actual=live_api:/api/cause/리바로;expected=mart_sql:mart_strategic_ml_market_metric"
 MARKET_GROWTH_PROVENANCE: Final[str] = "actual=live_api:/api/dynamic-market;expected=mart_sql:mart_general_market_metric"
@@ -97,6 +93,12 @@ def fetch_read_only_rows(
     *,
     env: Mapping[str, str],
 ) -> list[dict[str, Any]]:
+    try:
+        import pymysql
+        from pymysql.cursors import DictCursor
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pymysql is required for database evidence") from exc
+
     config = _db_config_from_env(env)
     try:
         with pymysql.connect(
