@@ -362,6 +362,10 @@ def _route(result: Mapping[str, Any]) -> dict[str, Any]:
     }
     if diagnostics.get("route") is not None:
         route["route"] = diagnostics.get("route")
+    if diagnostics.get("tool_execution_mode") is not None:
+        route["tool_execution_mode"] = diagnostics.get("tool_execution_mode")
+    if diagnostics.get("parallel_tool_count") is not None:
+        route["parallel_tool_count"] = diagnostics.get("parallel_tool_count")
     return route
 
 

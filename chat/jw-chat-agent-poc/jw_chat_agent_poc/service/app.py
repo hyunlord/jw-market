@@ -1327,12 +1327,23 @@ def _answer_deep_research(question: str, external_mode: str) -> dict:
     )
     result = agent.answer(question)
     diagnostics = dict(result.get("router_diagnostics") or {})
+    timing = result.get("timing")
+    stages = timing.get("stages") if isinstance(timing, dict) else ()
+    parallel_tool_count = sum(
+        1
+        for item in stages
+        if isinstance(item, dict)
+        and str(item.get("name") or "").startswith("tool:")
+        and "mode=parallel" in str(item.get("detail") or "")
+    )
     diagnostics.update(
         {
             "mode": "deep_research",
             "deterministic_execution": True,
             "model": "gemini-3.1-pro-preview",
             "serving_id": "202",
+            "tool_execution_mode": "parallel" if parallel_tool_count >= 2 else "serial",
+            "parallel_tool_count": parallel_tool_count,
         }
     )
     return {

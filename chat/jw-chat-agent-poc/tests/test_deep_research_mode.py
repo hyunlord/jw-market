@@ -353,6 +353,8 @@ def test_deep_fixture_execution_selects_all_evidence_families(
     }.issubset(selected)
     assert result["research_mode"] == "deep"
     assert result["router_diagnostics"]["model"] == "gemini-3.1-pro-preview"
+    assert result["router_diagnostics"]["tool_execution_mode"] == "parallel"
+    assert result["router_diagnostics"]["parallel_tool_count"] >= 2
     assert any(event.get("raw_name") == "deep_research_tool_batch" for event in events)
     batch_started = next(
         event
@@ -525,7 +527,11 @@ def test_compute_final_answer_uses_deep_client_and_stripped_question(
             "answer": "확인된 근거",
             "sources": ["cache"],
             "tool_calls": [],
-            "router_diagnostics": {"mode": "deep_research"},
+            "router_diagnostics": {
+                "mode": "deep_research",
+                "tool_execution_mode": "parallel",
+                "parallel_tool_count": 2,
+            },
             "markdown_response": {
                 "fact_md": "- 리바로: 확인된 근거",
                 "data_md": "- 리바로: 확인된 근거",
@@ -540,6 +546,8 @@ def test_compute_final_answer_uses_deep_client_and_stripped_question(
         "mode": "deep",
     }
     assert final.trace["question"] == "/deep 리바로 경쟁구도 분석"
+    assert final.trace["route"]["tool_execution_mode"] == "parallel"
+    assert final.trace["route"]["parallel_tool_count"] == 2
     assert any(
         item["name"] == "딥리서치 종합 분석"
         for item in final.timing["stages"]
