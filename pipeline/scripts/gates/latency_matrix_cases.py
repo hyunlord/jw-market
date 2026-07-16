@@ -87,7 +87,13 @@ def _source_atc4_values(
         return list(fallback)
     identifier = f"filter_options:{brand}:general:{source}:sales"
     payload = filter_option_payloads.get(identifier)
-    raw = payload.get("flagged_atc4") if isinstance(payload, Mapping) else None
+    raw = None
+    if isinstance(payload, Mapping):
+        brand_matched = payload.get("brand_matched")
+        if isinstance(brand_matched, Mapping):
+            raw = brand_matched.get("atc4")
+        if raw is None:
+            raw = payload.get("flagged_atc4")
     values = sorted({str(value).strip() for value in raw if str(value).strip()}) if isinstance(raw, list) else []
     if not values:
         raise ValueError(f"source-specific general ATC4 unresolved: {identifier}")

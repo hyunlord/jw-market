@@ -128,7 +128,7 @@ def _mock_filter_options_payload(
         "라베칸": "A2B2",
     }
     atc4 = (overrides or {}).get((brand, source), default_atc4[brand])
-    return {"market_id": atc4, "flagged_atc4": [atc4]}
+    return {"market_id": atc4, "brand_matched": {"atc4": [atc4]}}
 
 
 def test_latency_matrix_cases_cover_every_backend_surface() -> None:
@@ -210,7 +210,7 @@ def test_latency_matrix_cases_use_source_specific_filter_options_for_general_dyn
         },
         "filter_options:라베칸:general:iqvia:sales": {
             "market_id": "A02B2",
-            "flagged_atc4": ["A02B2"],
+            "brand_matched": {"atc4": ["A02B2"]},
         },
     }
 
