@@ -99,6 +99,10 @@ def test_required_group_scope_bodies_match_public_request_contracts() -> None:
         "csd_activity": CsdActivitySeriesRequest,
         "interest_rx": BrandActivityInterestRxRequest,
     }
+    expected_atc4 = {
+        "group:livalo_family": ["C10A1", "C10C0"],
+        "group:gardlet_family": ["A10N1", "A10N3"],
+    }
     for option_id, member in REQUIRED_GROUP_SCOPES:
         for surface, request_model in validators.items():
             case = by_id[f"brand_activity_group:{surface}:{option_id}:{member}"]
@@ -106,6 +110,7 @@ def test_required_group_scope_bodies_match_public_request_contracts() -> None:
 
             assert parsed.filters.market_scope.option_id == option_id
             assert parsed.filters.market_scope.member == member
+            assert parsed.filters.atc.atc4 == expected_atc4[option_id]
 
 
 def test_latency_matrix_gate_rejects_missing_required_surface_contract() -> None:

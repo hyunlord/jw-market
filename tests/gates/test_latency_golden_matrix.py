@@ -145,6 +145,20 @@ def test_latency_matrix_cases_fail_when_required_cd_brand_has_no_cd_context() ->
         raise AssertionError("missing required strategic_cd context must fail closed")
 
 
+def test_latency_matrix_cases_reject_group_scope_without_canonical_atc_membership() -> None:
+    try:
+        build_latency_matrix_cases(
+            DEFAULT_BRANDS,
+            SEARCH_PAYLOADS,
+            requested_brands=("리바로",),
+            group_scopes=(("group:unknown", "리바로"),),
+        )
+    except ValueError as exc:
+        assert "group scope ATC membership unresolved: group:unknown" in str(exc)
+    else:
+        raise AssertionError("group scope without canonical ATC membership must fail closed")
+
+
 def test_latency_matrix_gate_requires_complete_200_parity() -> None:
     cases = build_latency_matrix_cases(
         DEFAULT_BRANDS,
