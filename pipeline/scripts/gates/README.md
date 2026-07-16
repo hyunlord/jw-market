@@ -156,7 +156,9 @@ The competitive-dynamics population must include `악템라` and `가드렛`.
 Brand Activity additionally probes the general-view groups
 `group:livalo_family` and `group:gardlet_family` through topics, CSD timeseries,
 CSD activity, and interest/Rx. A missing required brand/context, any non-200,
-or any response difference fails closed.
+or any response difference fails closed. The two required group topic probes
+must also contain at least one brand with measured topic activity; matching
+empty responses do not pass.
 
 The matrix also carries fixed general-view contract scenarios for ATC4 OR
 scopes of 1, 2, 5, and 10 values, IQVIA `molecule_type` and `molecule_desc`
