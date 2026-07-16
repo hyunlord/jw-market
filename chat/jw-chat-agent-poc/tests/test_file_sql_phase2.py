@@ -542,6 +542,48 @@ def test_product_top_n_sellout_groups_by_product_name() -> None:
     assert plan["sql"].endswith("LIMIT 10")
 
 
+def test_natural_manufacturer_grouping_never_falls_back_to_whole_total() -> None:
+    plan = file_sql_query._deterministic_select(
+        "제조사별 합계",
+        (_wide_chso_schema(),),
+    )
+
+    assert plan is not None
+    assert "SELECT c2, SUM(c72) AS total_value" in plan["sql"]
+    assert "GROUP BY c2" in plan["sql"]
+    assert "ORDER BY total_value DESC" in plan["sql"]
+
+
+def test_natural_channel_count_groups_by_grounded_channel_column() -> None:
+    schema = _wide_chso_schema()
+    schema["columns"][19] = {
+        "query_name": "c20",
+        "source_name": "CHANNEL",
+    }
+
+    plan = file_sql_query._deterministic_select(
+        "채널별 건수",
+        (schema,),
+    )
+
+    assert plan is not None
+    assert "SELECT c20, COUNT(*) AS response_count" in plan["sql"]
+    assert "GROUP BY c20" in plan["sql"]
+    assert "ORDER BY response_count DESC" in plan["sql"]
+
+
+def test_top_n_product_without_explicit_by_suffix_still_groups_products() -> None:
+    plan = file_sql_query._deterministic_select(
+        "상위 10개 제품",
+        (_wide_chso_schema(),),
+    )
+
+    assert plan is not None
+    assert "SELECT c3, SUM(c72) AS total_value" in plan["sql"]
+    assert "GROUP BY c3" in plan["sql"]
+    assert plan["sql"].endswith("LIMIT 10")
+
+
 def test_unsupported_measure_fails_closed_before_planner(monkeypatch) -> None:
     monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
     monkeypatch.setattr(

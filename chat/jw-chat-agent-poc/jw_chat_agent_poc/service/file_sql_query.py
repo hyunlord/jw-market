@@ -324,7 +324,14 @@ def _is_schema_question(question: str) -> bool:
 
 
 def _is_aggregate_question(question: str) -> bool:
-    return _contains_configured_term(
+    return bool(
+        re.search(
+            r"(?:상위\s*\d+\s*(?:개|건)?\s*(?:제품|제조사|업체|회사|채널)|"
+            r"top\s*\d+\s*(?:products?|manufacturers?|companies?|channels?))",
+            question,
+            re.IGNORECASE,
+        )
+    ) or _contains_configured_term(
         question,
         "JW_CHAT_FILE_SQL_AGGREGATE_TERMS",
         DEFAULT_AGGREGATE_TERMS,
@@ -659,22 +666,22 @@ def _resolve_deterministic_select(
                 group_suffix = f" GROUP BY {manufacturer_query} ORDER BY total_value DESC"
                 resolved.extend(("manufacturer", "subjects"))
         else:
-            if re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE):
-                product = _find_column(
-                    columns,
-                    r"(?:^|\b)product(?:\s+name)?(?:\b|$)|제품(?:명)?",
-                )
-                if product is None:
-                    missing.append("제품")
+            group_label, group_column = _requested_group_column(question, columns)
+            if group_label:
+                if group_column is None:
+                    missing.append(group_label)
                 else:
-                    product_query = str(product.get("query_name") or "")
-                    select_prefix = f"{product_query}, "
+                    group_query = str(group_column.get("query_name") or "")
+                    order_alias = (
+                        "response_count" if intent == "count" else "total_value"
+                    )
+                    select_prefix = f"{group_query}, "
                     group_suffix = (
-                        f" GROUP BY {product_query} ORDER BY total_value DESC"
+                        f" GROUP BY {group_query} ORDER BY {order_alias} DESC"
                     )
                     if top_n := _top_n_limit(question):
                         group_suffix += f" LIMIT {top_n}"
-                    resolved.append("product")
+                    resolved.append(group_label)
             subject = _single_manufacturer_subject(question)
             if subject:
                 if manufacturer is None:
@@ -731,6 +738,34 @@ def _top_n_limit(question: str) -> int | None:
     if match is None:
         return None
     return min(max(int(match.group(1) or match.group(2)), 1), 100)
+
+
+def _requested_group_column(
+    question: str,
+    columns: Sequence[Mapping[str, Any]],
+) -> tuple[str, Mapping[str, Any] | None]:
+    specifications = (
+        (
+            "제조사",
+            r"(?:제조사|업체|회사)\s*별|(?:by\s+)?(?:manufacturer|company)",
+            r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체",
+        ),
+        (
+            "채널",
+            r"채널\s*별|(?:by\s+)?channel",
+            r"(?:^|\b)channel(?:\b|$)|채널",
+        ),
+        (
+            "제품",
+            r"제품\s*별|(?:by\s+)?product(?:\s+name)?|"
+            r"상위\s*\d+\s*(?:개|건)?\s*제품|top\s*\d+\s*products?",
+            r"(?:^|\b)product(?:\s+name)?(?:\b|$)|제품(?:명)?",
+        ),
+    )
+    for label, question_pattern, column_pattern in specifications:
+        if re.search(question_pattern, question, re.IGNORECASE):
+            return label, _find_column(columns, column_pattern)
+    return "", None
 
 
 def _measure_label(intent: str) -> str:
