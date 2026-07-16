@@ -111,6 +111,57 @@ def test_explicit_schema_intent_precedes_broad_aggregate_terms(question: str) ->
     assert file_sql_query._is_schema_question(question)
 
 
+@pytest.mark.parametrize(
+    "question",
+    ["이 파일에 뭐가 있어", "셀아웃 지표 설명해줘", "어떤 기간 데이터야"],
+)
+def test_file_overview_questions_use_schema_path(question: str) -> None:
+    assert file_sql_query._is_schema_question(question)
+
+
+def test_schema_answer_explains_available_sellout_measures_and_period_range() -> None:
+    sources = (
+        file_sql_query.SqlFileSource(
+            "doc-91:sheet-1",
+            "CHSO.xlsx",
+            "Sell Out Standard",
+            row_count=12268,
+        ),
+    )
+    schemas = (
+        {
+            "columns": [
+                {"query_name": "c1", "source_name": "AUDIT DESC"},
+                {"query_name": "c2", "source_name": "MFR NAME KOR"},
+                {
+                    "query_name": "c71",
+                    "source_name": "VALUES LC SI PRICE 12/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ]
+        },
+    )
+
+    measure_answer = file_sql_query._render_schema_answer(
+        "셀아웃 지표 설명해줘",
+        sources,
+        schemas,
+    )
+    period_answer = file_sql_query._render_schema_answer(
+        "어떤 기간 데이터야",
+        sources,
+        schemas,
+    )
+
+    assert "사용 가능한 셀아웃 금액 지표" in measure_answer
+    assert "VALUES LC SI PRICE 12/2025" in measure_answer
+    assert "VALUES LC SI PRICE 1/2026" in measure_answer
+    assert "데이터 기간: 2025-12~2026-01" in period_answer
+
+
 def test_amount_request_rejects_average_price_column(monkeypatch) -> None:
     schema = {
         "logical_name": "doc-91:sheet-1",
