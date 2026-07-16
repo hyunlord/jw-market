@@ -196,6 +196,38 @@ def test_trim_period_payload_skips_mapping_protocol_for_json_scalars(monkeypatch
     assert checks == []
 
 
+def test_trim_period_payload_does_not_reenter_for_exact_json_scalar_children(monkeypatch) -> None:
+    class CustomInt(int):
+        pass
+
+    calls: list[type[object]] = []
+    original = period_window_module._trim_period_payload
+
+    def spy(value: object, bounds: tuple[int | None, int | None]) -> object:
+        calls.append(type(value))
+        return original(value, bounds)
+
+    monkeypatch.setattr(period_window_module, "_trim_period_payload", spy)
+    payload = {
+        "identity": "row",
+        "rank": 1,
+        "ratio": 1.5,
+        "active": True,
+        "missing": None,
+        "custom": CustomInt(7),
+        "history": {"2025-01": 1.0, "2026-01": 2.0},
+        "flags": [False, None, "x"],
+    }
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {
+        **payload,
+        "history": {"2025-01": 1.0},
+    }
+    assert calls == [dict, CustomInt, dict, list]
+
+
 def test_trim_period_payload_preserves_mapping_and_list_subclass_support() -> None:
     class PeriodPoints(list[UserDict[str, object]]):
         pass

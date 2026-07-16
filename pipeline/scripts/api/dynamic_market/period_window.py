@@ -96,11 +96,22 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                 period_items.append((interval, key, item))
             else:
                 return {
-                    str(key): _trim_period_payload(item, bounds)
+                    str(key): (
+                        item
+                        if type(item) in _JSON_SCALAR_TYPES
+                        else _trim_period_payload(item, bounds)
+                    )
                     for interval, key, item in period_items
                     if _overlaps(interval, bounds)
                 }
-        return {str(key): _trim_period_payload(item, bounds) for key, item in items}
+        return {
+            str(key): (
+                item
+                if type(item) in _JSON_SCALAR_TYPES
+                else _trim_period_payload(item, bounds)
+            )
+            for key, item in items
+        }
 
     assert list_value is not None
     point_items: list[tuple[str, Mapping[Any, Any]]] = []
@@ -119,7 +130,12 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                 if (interval := _period_interval(period)) is not None
                 and _overlaps(interval, bounds)
             ]
-    return [_trim_period_payload(item, bounds) for item in list_value]
+    return [
+        item
+        if type(item) in _JSON_SCALAR_TYPES
+        else _trim_period_payload(item, bounds)
+        for item in list_value
+    ]
 
 
 def _trim_encoded_value(value: Any, bounds: _PeriodBounds, decoded_value: Any = None) -> Any:
