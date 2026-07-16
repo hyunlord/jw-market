@@ -103,17 +103,22 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
         return {str(key): _trim_period_payload(item, bounds) for key, item in items}
 
     assert list_value is not None
-    if list_value and all(
-        (type(item) is dict or isinstance(item, Mapping)) and _point_period(item) is not None
-        for item in list_value
-    ):
-        return [
-            _trim_period_payload(item, bounds)
-            for item in list_value
-            if (period := _point_period(item)) is not None
-            and (interval := _period_interval(period)) is not None
-            and _overlaps(interval, bounds)
-        ]
+    point_items: list[tuple[str, Mapping[Any, Any]]] = []
+    for item in list_value:
+        if not (type(item) is dict or isinstance(item, Mapping)):
+            break
+        period = _point_period(item)
+        if period is None:
+            break
+        point_items.append((period, item))
+    else:
+        if point_items:
+            return [
+                _trim_period_payload(item, bounds)
+                for period, item in point_items
+                if (interval := _period_interval(period)) is not None
+                and _overlaps(interval, bounds)
+            ]
     return [_trim_period_payload(item, bounds) for item in list_value]
 
 

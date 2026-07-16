@@ -259,3 +259,45 @@ def test_trim_period_payload_preserves_mixed_mapping_after_leading_period_key() 
         "identity": "row",
         "2025-02": 3.0,
     }
+
+
+def test_trim_period_payload_reuses_point_period_during_list_filtering(monkeypatch) -> None:
+    # Given a valid point-series list and an observable period resolver.
+    calls: list[str] = []
+    original = period_window_module._point_period
+
+    def spy(item: dict[str, object]) -> str | None:
+        period = original(item)
+        calls.append(period or "")
+        return period
+
+    monkeypatch.setattr(period_window_module, "_point_period", spy)
+    payload = [
+        {"period": "2024-12", "value": 1.0},
+        {"period": "2025-01", "value": 2.0},
+        {"period": "2025-02", "value": 3.0},
+    ]
+
+    # When the point series is projected to the requested range.
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    # Then each point period is resolved once and only in-range points remain.
+    assert result == [
+        {"period": "2025-01", "value": 2.0},
+        {"period": "2025-02", "value": 3.0},
+    ]
+    assert calls == ["2024-12", "2025-01", "2025-02"]
+
+
+def test_trim_period_payload_drops_point_with_invalid_period_string() -> None:
+    # Given point-shaped rows where one period value cannot be parsed.
+    payload = [
+        {"period": "not-a-period", "value": 1.0},
+        {"period": "2025-01", "value": 2.0},
+    ]
+
+    # When the point series is projected.
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    # Then the invalid point is omitted and the valid point is preserved.
+    assert result == [{"period": "2025-01", "value": 2.0}]
