@@ -29,6 +29,13 @@ from pipeline.scripts.gates.release_evidence import (
     collect_segment_sum_evidence,
     write_evidence,
 )
+from pipeline.scripts.gates.latency_matrix_cases import LATENCY_MATRIX_PROVENANCE
+from pipeline.scripts.gates.latency_matrix_required import (
+    REQUIRED_CD_BRANDS,
+    REQUIRED_GROUP_SCOPES,
+    missing_required_case_contract,
+)
+from pipeline.scripts.gates.latency_matrix_runtime import collect_latency_matrix_evidence
 
 
 STRICT_LOG_PATTERN = re.compile(r"Traceback|(?:^|\s)ERROR(?:\s|:|$)|(?:^|\s)5[0-9]{2}(?:\s|$)")
@@ -776,6 +783,89 @@ def check_brand_source_evidence(
     )
 
 
+def check_latency_matrix_evidence(evidence: dict[str, Any], environment: str) -> GateResult:
+    if evidence.get("classification") != "census":
+        raise ValueError("latency matrix evidence requires classification=census")
+    expected_cases = evidence.get("expected_cases")
+    observations = evidence.get("observations")
+    requested_brands = evidence.get("requested_brands")
+    resolved_brands = evidence.get("resolved_brands")
+    if not isinstance(expected_cases, list) or not expected_cases:
+        raise ValueError("latency matrix expected_cases must be a non-empty array")
+    if not all(isinstance(identifier, str) and identifier for identifier in expected_cases):
+        raise ValueError("latency matrix expected case identities must be strings")
+    if len(set(expected_cases)) != len(expected_cases):
+        raise ValueError("latency matrix expected case identities must be unique")
+    if not isinstance(observations, list):
+        raise ValueError("latency matrix observations must be an array")
+    if not isinstance(requested_brands, list) or not all(isinstance(brand, str) for brand in requested_brands):
+        raise ValueError("latency matrix requested_brands must be a string array")
+    if not isinstance(resolved_brands, list) or not all(isinstance(brand, str) for brand in resolved_brands):
+        raise ValueError("latency matrix resolved_brands must be a string array")
+
+    details: list[str] = []
+    failures = 0
+    if evidence.get("provenance") != LATENCY_MATRIX_PROVENANCE:
+        details.append(f"latency_matrix: invalid provenance {evidence.get('provenance')!r}")
+        failures += 1
+    unresolved = sorted(set(requested_brands) - set(resolved_brands))
+    if unresolved:
+        details.append("unresolved required brands: " + ",".join(unresolved))
+        failures += len(unresolved)
+    if evidence.get("required_cd_brands") != list(REQUIRED_CD_BRANDS):
+        details.append(f"required CD brands mismatch: {evidence.get('required_cd_brands')!r}")
+        failures += 1
+    expected_group_scopes = [list(scope) for scope in REQUIRED_GROUP_SCOPES]
+    if evidence.get("required_group_scopes") != expected_group_scopes:
+        details.append(f"required group scopes mismatch: {evidence.get('required_group_scopes')!r}")
+        failures += 1
+    missing_contract = missing_required_case_contract(set(expected_cases))
+    if missing_contract:
+        details.append("required latency cases missing: " + ",".join(missing_contract))
+        failures += len(missing_contract)
+
+    observed: dict[str, dict[str, Any]] = {}
+    for item in observations:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError("latency matrix observations require string id")
+        identifier = item["id"]
+        if identifier in observed:
+            raise ValueError(f"duplicate latency matrix identity: {identifier}")
+        observed[identifier] = item
+    expected = set(expected_cases)
+    missing = sorted(expected - set(observed))
+    unexpected = sorted(set(observed) - expected)
+    if missing:
+        details.append("missing cases: " + ",".join(missing))
+        failures += len(missing)
+    if unexpected:
+        details.append("unexpected cases: " + ",".join(unexpected))
+        failures += len(unexpected)
+    for identifier in sorted(expected & set(observed)):
+        item = observed[identifier]
+        candidate_status = item.get("candidate_status")
+        reference_status = item.get("reference_status")
+        if candidate_status != 200:
+            details.append(f"{identifier}: candidate HTTP {candidate_status}")
+            failures += 1
+        if reference_status != 200:
+            details.append(f"{identifier}: reference HTTP {reference_status}")
+            failures += 1
+        if item.get("parity") is not True:
+            details.append(f"{identifier}: response mismatch")
+            failures += 1
+    return GateResult(
+        gate="latency_matrix",
+        classification="census",
+        checked=len(expected & set(observed)),
+        population=len(expected),
+        failures=failures,
+        tolerance="HTTP 200 and exact bytes; deep generated_at masked only",
+        environment=environment,
+        details=tuple(details),
+    )
+
+
 def check_cause_assembly(evidence_path: Path, environment: str) -> GateResult:
     document = _load_json(evidence_path)
     if not isinstance(document, dict) or document.get("classification") != "census":
@@ -1354,6 +1444,17 @@ def _run_brand_source_gate(args: argparse.Namespace) -> GateResult:
     return check_brand_source_evidence(evidence, 100, args.environment)
 
 
+def _run_latency_matrix_gate(args: argparse.Namespace) -> GateResult:
+    evidence = collect_latency_matrix_evidence(
+        args.candidate_url,
+        args.reference_url,
+        timeout_seconds=args.timeout_seconds,
+        max_workers=args.max_workers,
+    )
+    write_evidence(args.evidence_output, evidence)
+    return check_latency_matrix_evidence(evidence, args.environment)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fail-closed release acceptance gates")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1404,6 +1505,14 @@ def _parser() -> argparse.ArgumentParser:
     sources.add_argument("--evidence-output", type=Path)
     sources.add_argument("--environment", default="local")
 
+    latency_matrix = subparsers.add_parser("latency-matrix")
+    latency_matrix.add_argument("--candidate-url", required=True)
+    latency_matrix.add_argument("--reference-url", required=True)
+    latency_matrix.add_argument("--timeout-seconds", type=float, default=240.0)
+    latency_matrix.add_argument("--max-workers", type=int, default=8)
+    latency_matrix.add_argument("--evidence-output", type=Path)
+    latency_matrix.add_argument("--environment", default="test2")
+
     cause_assembly = subparsers.add_parser("cause-assembly")
     cause_assembly.add_argument("--evidence", type=Path, required=True)
     cause_assembly.add_argument("--environment", default="local")
@@ -1444,6 +1553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "period-ranges": lambda: check_period_ranges(args.evidence, args.environment),
         "brand-sources": lambda: _run_brand_source_gate(args),
+        "latency-matrix": lambda: _run_latency_matrix_gate(args),
         "cause-assembly": lambda: check_cause_assembly(args.evidence, args.environment),
         "cause-null-integrity": lambda: check_cause_null_integrity(args.evidence, args.environment),
         "competition-ranking": lambda: check_competition_ranking(

@@ -141,6 +141,40 @@ python3 pipeline/scripts/gates/release_acceptance.py brand-sources \
 The command fails on an empty or incomplete population, duplicate identities,
 probe errors, and either direction of `listed != has_data`.
 
+## Latency regression matrix
+
+The `latency-matrix` command builds its population from the reference runtime's
+25 default brands plus the required expanded edge brands. It discovers every
+published general, strategic market-landscape, and strategic competitive-
+dynamics context and every listed source. The matrix compares candidate and
+reference responses for dynamic-market, cause, deep-analysis, filter-options,
+brand search, and all five public Brand Activity surfaces. Deep-analysis masks
+only the top-level `generated_at` timestamp; every other response is compared
+as exact bytes.
+
+The competitive-dynamics population must include `악템라` and `가드렛`.
+Brand Activity additionally probes the general-view groups
+`group:livalo_family` and `group:gardlet_family` through topics, CSD timeseries,
+CSD activity, and interest/Rx. A missing required brand/context, any non-200,
+or any response difference fails closed.
+
+The matrix also carries fixed general-view contract scenarios for ATC4 OR
+scopes of 1, 2, 5, and 10 values, IQVIA `molecule_type` and `molecule_desc`
+narrowing, and both sales and source-native quantity measures. The quantity
+measure is `volume` for UBIST and `unit` for IQVIA; these are the runtime's
+canonical measure names.
+
+```bash
+python3 pipeline/scripts/gates/release_acceptance.py latency-matrix \
+  --candidate-url http://candidate-runtime:8000 \
+  --reference-url http://production-runtime:8000 \
+  --evidence-output /tmp/latency-matrix.json \
+  --environment test2-vs-production
+```
+
+This is a census of the declared serving population discovered from the
+reference API. It is not a claim about every distinct raw mart brand row.
+
 ## Cause assembly equivalence
 
 The cause-assembly gate compares before/after payload files byte-for-byte for
