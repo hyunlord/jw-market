@@ -70,6 +70,48 @@ def test_trim_period_rows_filters_known_json_series_and_preserves_missing_period
     assert json.loads(result[0]["company_ranking_stacked"]) == {"2025": [{"company": "JW"}]}
 
 
+def test_trim_period_rows_reuses_predecoded_dimension_series(monkeypatch) -> None:
+    period_series = {
+        "class": {
+            "JW": {
+                "2025-01": {"raw_value": 1.0},
+                "2026-01": {"raw_value": 2.0},
+            }
+        }
+    }
+    decoded_by_field = {
+        "dimension_data": period_series,
+        "dimension_channel_data": period_series,
+        "dimension_specialty_data": period_series,
+    }
+    row = {
+        field: json.dumps(decoded, ensure_ascii=False, sort_keys=True)
+        for field, decoded in decoded_by_field.items()
+    }
+    row.update({f"__{field}": decoded for field, decoded in decoded_by_field.items()})
+    encoded_values = set(row[field] for field in decoded_by_field)
+    original_loads = period_window_module.json.loads
+
+    def reject_duplicate_decode(raw: str) -> object:
+        if raw in encoded_values:
+            raise AssertionError("predecoded dimension_data must bypass json.loads")
+        return original_loads(raw)
+
+    monkeypatch.setattr(period_window_module.json, "loads", reject_duplicate_decode)
+
+    result = trim_period_rows(
+        [row],
+        PeriodRange("2025-01", "2025-12"),
+    )[0]
+
+    expected = {
+        "class": {"JW": {"2025-01": {"raw_value": 1.0}}}
+    }
+    for field, decoded in decoded_by_field.items():
+        assert json.loads(result[field]) == expected
+        assert result[f"__{field}"] is decoded
+
+
 def test_unbounded_period_range_preserves_payload_byte_shape() -> None:
     raw = json.dumps({"2025-01": 1.0}, separators=(",", ":"))
     rows = [{"metric_history": raw}]

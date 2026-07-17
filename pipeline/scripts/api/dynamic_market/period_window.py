@@ -31,6 +31,13 @@ _ROW_SERIES_FIELDS: Final[tuple[str, ...]] = (
     "hhi_series",
     "level_top5_trend",
 )
+_PREDECODED_ROW_SERIES_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "dimension_data",
+        "dimension_channel_data",
+        "dimension_specialty_data",
+    }
+)
 _PeriodBounds = tuple[int | None, int | None]
 
 
@@ -45,7 +52,8 @@ def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRang
         for field in _ROW_SERIES_FIELDS:
             if field not in row or row[field] in (None, ""):
                 continue
-            row[field] = _trim_encoded_value(row[field], bounds)
+            decoded_value = row.get(f"__{field}") if field in _PREDECODED_ROW_SERIES_FIELDS else None
+            row[field] = _trim_encoded_value(row[field], bounds, decoded_value)
         row.pop("__metric_history", None)
         row.pop("__extended_metric_history", None)
     return copied
@@ -94,12 +102,14 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
     return value
 
 
-def _trim_encoded_value(value: Any, bounds: _PeriodBounds) -> Any:
+def _trim_encoded_value(value: Any, bounds: _PeriodBounds, decoded_value: Any = None) -> Any:
     if isinstance(value, str):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
+        decoded = decoded_value
+        if decoded is None:
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                return value
         return json.dumps(_trim_period_payload(decoded, bounds), ensure_ascii=False, sort_keys=True)
     return _trim_period_payload(value, bounds)
 
