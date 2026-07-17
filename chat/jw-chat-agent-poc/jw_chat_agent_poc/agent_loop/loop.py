@@ -10,6 +10,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.parallel_execution import (
+    TimedExecution,
     execute_tool_batch,
     planned_parallel_tool_names,
 )
@@ -29,7 +30,7 @@ from jw_chat_agent_poc.orchestrator.question_intent import allows_background_new
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
-from jw_chat_agent_poc.common.timing import add_stage, new_timing, stage
+from jw_chat_agent_poc.common.timing import add_stage, emit_completed_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.common.periods import canonical_periods
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
@@ -236,6 +237,20 @@ class ToolUseAgent:
                 decision.tool_calls,
                 deep_parallel_tools,
             )
+
+            def record_tool_completion(timed_execution: TimedExecution[ToolExecution]) -> None:
+                plan = timed_execution.plan
+                execution = timed_execution.result
+                detail = f"step={step}; mode={timed_execution.mode}"
+                summary = _deep_tool_progress_summary(execution) if self.progress_namespace == "deep" else None
+                emit_completed_stage(
+                    timing,
+                    f"tool:{plan.name}",
+                    timed_execution.elapsed_ms,
+                    detail,
+                    summary=summary,
+                )
+
             if is_bq_batch:
                 detail = (
                     deep_batch_detail
@@ -251,6 +266,7 @@ class ToolUseAgent:
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
                         additional_parallel_tools=deep_parallel_tools,
+                        on_complete=record_tool_completion,
                     )
                     if self.progress_namespace == "deep":
                         batch_progress.summary = f"{deep_batch_detail} 완료"
@@ -269,32 +285,13 @@ class ToolUseAgent:
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
                         additional_parallel_tools=deep_parallel_tools,
+                        on_complete=record_tool_completion,
                     )
                     if self.progress_namespace == "deep":
                         batch_progress.summary = f"{deep_batch_detail} 완료"
             for timed_execution in execution_batch:
                 plan = timed_execution.plan
                 execution = timed_execution.result
-                if self.progress_namespace == "deep":
-                    with stage(
-                        None,
-                        f"tool:{plan.name}",
-                        f"step={step}; mode={timed_execution.mode}",
-                    ) as tool_progress:
-                        tool_progress.summary = _deep_tool_progress_summary(execution)
-                    add_stage(
-                        timing,
-                        f"tool:{plan.name}",
-                        timed_execution.elapsed_ms,
-                        f"step={step}; mode={timed_execution.mode}",
-                    )
-                else:
-                    add_stage(
-                        timing,
-                        f"tool:{plan.name}",
-                        timed_execution.elapsed_ms,
-                        f"step={step}; mode={timed_execution.mode}",
-                    )
                 key = _fingerprint(ToolCallPlan(name=plan.name, arguments=execution.arguments, reason=plan.reason))
                 if key in seen:
                     duplicate = True

@@ -24,6 +24,26 @@ def test_parallel_support_tools_overlap_but_results_keep_plan_order() -> None:
     assert elapsed < 0.13
 
 
+def test_parallel_completion_callback_follows_actual_finish_order() -> None:
+    plans = (
+        ToolCallPlan("search_news", {"brand": "리바로"}),
+        ToolCallPlan("get_disease_stats", {"brand": "리바로"}),
+        ToolCallPlan("search_clinical", {"brand": "리바로"}),
+    )
+    delays = {"search_news": 0.08, "get_disease_stats": 0.01, "search_clinical": 0.04}
+    completed: list[str] = []
+
+    results = execute_tool_batch(
+        plans,
+        lambda plan: _delayed_name(plan, delays[plan.name]),
+        max_workers=3,
+        on_complete=lambda item: completed.append(item.plan.name),
+    )
+
+    assert completed == ["get_disease_stats", "search_clinical", "search_news"]
+    assert [item.plan.name for item in results] == [plan.name for plan in plans]
+
+
 def test_market_query_tools_remain_serial() -> None:
     plans = (
         ToolCallPlan("get_brand_series", {"brand": "리바로"}),

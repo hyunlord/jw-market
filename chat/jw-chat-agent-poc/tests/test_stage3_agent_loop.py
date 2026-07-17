@@ -13,6 +13,7 @@ from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
+from jw_chat_agent_poc.common.timing import stage_event_sink
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.router import BQRouter
@@ -1174,7 +1175,9 @@ def test_non_bq_external_tools_use_the_parallel_batch_executor(monkeypatch) -> N
         ),
     )
 
-    result = agent.answer("리바로 MM302 진료행위와 경쟁제품 동향을 같이 확인해줘")
+    events: list[dict[str, Any]] = []
+    with stage_event_sink(events.append):
+        result = agent.answer("리바로 MM302 진료행위와 경쟁제품 동향을 같이 확인해줘")
 
     assert captured_batches == [("get_procedure_stats", "web_search")]
     assert {"get_procedure_stats", "web_search"}.issubset(set(_tool_names(result)))
@@ -1187,6 +1190,27 @@ def test_non_bq_external_tools_use_the_parallel_batch_executor(monkeypatch) -> N
     assert "mode=parallel" in tool_stages["tool:get_procedure_stats"]["detail"]
     assert "mode=parallel" in tool_stages["tool:web_search"]["detail"]
     assert any(stage["name"] == "tool_batch" for stage in result["timing"]["stages"])
+    tool_done_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.get("status") == "done" and str(event.get("raw_name", "")).startswith("tool:")
+    ]
+    batch_done_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("status") == "done" and event.get("raw_name") == "tool_batch"
+    )
+    assert tool_done_indexes
+    assert max(tool_done_indexes) < batch_done_index
+    completed_elapsed = {
+        event["raw_name"]: event["elapsed_ms"]
+        for event in events
+        if event.get("status") == "done" and str(event.get("raw_name", "")).startswith("tool:")
+    }
+    assert completed_elapsed == {
+        name: stage["elapsed_ms"]
+        for name, stage in tool_stages.items()
+    }
 
 
 def test_mfds_clinical_broad_rows_are_filtered_from_evidence() -> None:

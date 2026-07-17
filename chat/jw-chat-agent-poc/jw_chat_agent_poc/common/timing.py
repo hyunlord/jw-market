@@ -309,6 +309,22 @@ def add_stage(timing: Timing | None, name: str, elapsed_ms: float, detail: str =
     stages.append({"name": name, "elapsed_ms": round(float(elapsed_ms), 2), "detail": detail})
 
 
+def emit_completed_stage(
+    timing: Timing | None,
+    name: str,
+    elapsed_ms: float,
+    detail: str = "",
+    *,
+    summary: str | None = None,
+) -> None:
+    """Record a completed concurrent stage and publish its actual elapsed time."""
+
+    sink = _ACTIVE_STAGE_SINK.get()
+    _emit_stage_event(sink, name, detail, "started")
+    add_stage(timing, name, elapsed_ms, detail)
+    _emit_stage_event(sink, name, detail, "done", elapsed_ms, summary=summary)
+
+
 def finish(timing: Timing | None) -> dict[str, Any]:
     """Finalize total elapsed time without losing per-stage entries."""
 

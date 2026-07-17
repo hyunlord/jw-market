@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import os
 import time
@@ -42,6 +42,7 @@ def execute_tool_batch(
     *,
     max_workers: int | None = None,
     additional_parallel_tools: Collection[str] = (),
+    on_complete: Callable[[TimedExecution[T]], None] | None = None,
 ) -> tuple[TimedExecution[T], ...]:
     """Run independent read-only support tools concurrently and preserve plan order."""
 
@@ -54,19 +55,29 @@ def execute_tool_batch(
     serial_indexes = [index for index in range(len(plans)) if index not in parallel_indexes]
 
     for index in serial_indexes:
-        results[index] = _timed(plans[index], execute, "serial")
+        item = _timed(plans[index], execute, "serial")
+        results[index] = item
+        if on_complete is not None:
+            on_complete(item)
 
     if len(parallel_indexes) < 2 or workers == 1:
         for index in parallel_indexes:
-            results[index] = _timed(plans[index], execute, "serial")
+            item = _timed(plans[index], execute, "serial")
+            results[index] = item
+            if on_complete is not None:
+                on_complete(item)
     else:
         with ThreadPoolExecutor(max_workers=min(workers, len(parallel_indexes)), thread_name_prefix="bq-tool") as pool:
             futures = {
-                index: pool.submit(_timed, plans[index], execute, "parallel")
+                pool.submit(_timed, plans[index], execute, "parallel"): index
                 for index in parallel_indexes
             }
-            for index, future in futures.items():
-                results[index] = future.result()
+            for future in as_completed(futures):
+                index = futures[future]
+                item = future.result()
+                results[index] = item
+                if on_complete is not None:
+                    on_complete(item)
 
     return tuple(item for item in results if item is not None)
 
