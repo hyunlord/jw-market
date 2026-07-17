@@ -107,6 +107,36 @@ def test_trim_period_rows_reuses_predecoded_dimension_series(monkeypatch) -> Non
         assert result[f"__{field}"] is decoded
 
 
+def test_trim_period_rows_reuses_and_projects_predecoded_channel_matrix(monkeypatch) -> None:
+    matrix = {
+        "종합병원": {
+            "순환기(Cardiology IM)": {
+                "2025-01": 10.0,
+                "2026-01": 20.0,
+            }
+        }
+    }
+    encoded = json.dumps(matrix, ensure_ascii=False, sort_keys=True)
+    row = {
+        "channel_specialty_matrix": encoded,
+        "__channel_specialty_matrix": matrix,
+    }
+    original_loads = period_window_module.json.loads
+
+    def reject_duplicate_decode(raw: str) -> object:
+        if raw == encoded:
+            raise AssertionError("predecoded channel matrix must bypass json.loads")
+        return original_loads(raw)
+
+    monkeypatch.setattr(period_window_module.json, "loads", reject_duplicate_decode)
+
+    result = trim_period_rows([row], PeriodRange("2025-01", "2025-12"))[0]
+
+    expected = {"종합병원": {"순환기(Cardiology IM)": {"2025-01": 10.0}}}
+    assert json.loads(result["channel_specialty_matrix"]) == expected
+    assert result["__channel_specialty_matrix"] == expected
+
+
 def test_unbounded_period_range_preserves_payload_byte_shape() -> None:
     raw = json.dumps({"2025-01": 1.0}, separators=(",", ":"))
     rows = [{"metric_history": raw}]

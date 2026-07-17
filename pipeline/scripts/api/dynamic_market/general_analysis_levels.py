@@ -95,17 +95,17 @@ def build_general_analysis_level_sections(
         return None
     source_api = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     defer_period_series_encoding = period_range.start is not None or period_range.end is not None
-    canonical_rows = trim_period_rows(
-        [
-            _with_canonical_dimension_aliases(
-                row,
-                specs,
-                defer_period_series_encoding=defer_period_series_encoding,
-            )
-            for row in rows
-        ],
-        period_range,
-    )
+    canonical_source_rows = [
+        _with_canonical_dimension_aliases(
+            row,
+            specs,
+            defer_period_series_encoding=defer_period_series_encoding,
+        )
+        for row in rows
+    ]
+    if source_api == "UBIST":
+        canonical_source_rows = _predecode_ubist_channel_matrices(canonical_source_rows)
+    canonical_rows = trim_period_rows(canonical_source_rows, period_range)
     channels = list(cause_builder._channels_for_source(source_api))
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
@@ -270,6 +270,20 @@ def _with_canonical_dimension_aliases(
     clone["__dimension_channel_data"] = dimension_channel_data
     clone["__dimension_specialty_data"] = dimension_specialty_data
     return clone
+
+
+def _predecode_ubist_channel_matrices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for row in rows:
+        clone = dict(row)
+        try:
+            matrix = _json_object(clone.get("channel_specialty_matrix"))
+        except json.JSONDecodeError:
+            prepared.append(clone)
+            continue
+        clone["__channel_specialty_matrix"] = matrix
+        prepared.append(clone)
+    return prepared
 
 
 def _project_analysis_level_channels(payload: dict[str, Any], channels: list[str]) -> dict[str, Any]:

@@ -1579,6 +1579,33 @@ def test_general_dimension_aliases_defer_series_encoding_until_window_projection
     assert actual == expected
 
 
+def test_general_ubist_rows_predecode_channel_matrix_once() -> None:
+    matrix = {
+        "종합병원": {
+            "순환기(Cardiology IM)": {
+                "2025-01": 10.0,
+                "2026-01": 20.0,
+            }
+        }
+    }
+    encoded = json.dumps(matrix, ensure_ascii=False, sort_keys=True)
+
+    rows = general_analysis_levels._predecode_ubist_channel_matrices(
+        [{"brand_key": "livalo", "channel_specialty_matrix": encoded}]
+    )
+
+    assert rows[0]["channel_specialty_matrix"] == encoded
+    assert rows[0]["__channel_specialty_matrix"] == matrix
+
+
+def test_general_ubist_rows_leave_malformed_channel_matrix_for_existing_fallback() -> None:
+    rows = general_analysis_levels._predecode_ubist_channel_matrices(
+        [{"brand_key": "livalo", "channel_specialty_matrix": "{"}]
+    )
+
+    assert rows == [{"brand_key": "livalo", "channel_specialty_matrix": "{"}]
+
+
 @pytest.mark.parametrize(
     "row",
     [

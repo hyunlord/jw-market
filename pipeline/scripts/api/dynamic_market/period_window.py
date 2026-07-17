@@ -36,6 +36,7 @@ _PREDECODED_ROW_SERIES_FIELDS: Final[frozenset[str]] = frozenset(
         "dimension_data",
         "dimension_channel_data",
         "dimension_specialty_data",
+        "channel_specialty_matrix",
     }
 )
 _PeriodBounds = tuple[int | None, int | None]
@@ -57,7 +58,12 @@ def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRang
                 if field in _PREDECODED_ROW_SERIES_FIELDS
                 else None
             )
-            row[field] = _trim_encoded_value(row[field], bounds, decoded_value)
+            if field == "channel_specialty_matrix" and decoded_value is not None:
+                trimmed = _trim_period_payload(decoded_value, bounds)
+                row[field] = json.dumps(trimmed, ensure_ascii=False, sort_keys=True)
+                row[f"__{field}"] = trimmed
+            else:
+                row[field] = _trim_encoded_value(row[field], bounds, decoded_value)
         row.pop("__metric_history", None)
         row.pop("__extended_metric_history", None)
     return copied

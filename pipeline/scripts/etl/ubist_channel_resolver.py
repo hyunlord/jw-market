@@ -26,7 +26,7 @@ SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "(상급종병 +
 UBIST_CHANNEL_BY_DISPLAY_COLUMN = "ubist_channel_by_display"
 UBIST_CHANNEL_BY_CODE_COLUMN = "ubist_channel_by_code"
 CHANNEL_SPECIALTY_MATRIX_COLUMN = "channel_specialty_matrix"
-_DECODED_CHANNEL_SPECIALTY_MATRIX = "__channel_specialty_matrix_decoded"
+_DECODED_CHANNEL_SPECIALTY_MATRIX = "__channel_specialty_matrix"
 _STRATEGIC_CHANNEL_ROWS: ContextVar[tuple[dict[str, Any], ...] | None] = ContextVar(
     "strategic_channel_rows",
     default=None,

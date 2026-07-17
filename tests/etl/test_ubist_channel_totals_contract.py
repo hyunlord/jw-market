@@ -161,4 +161,4 @@ def test_resolver_decodes_each_raw_matrix_once_per_request(monkeypatch) -> None:
 
     assert len(decode_calls) == len(rows)
     assert result["specialty_channels"][1] == "주요고객 종합병원 순환기"
-    assert all("__channel_specialty_matrix_decoded" not in row for row in rows)
+    assert all("__channel_specialty_matrix" not in row for row in rows)
