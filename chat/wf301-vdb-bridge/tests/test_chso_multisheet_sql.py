@@ -145,6 +145,39 @@ def test_selected_sql_sheets_are_excluded_from_residual_vdb_chunks(tmp_path: Pat
     assert any("Overview" in chunk and "3.81%" in chunk for chunk in chunks)
 
 
+def test_all_sql_sheets_skip_redundant_residual_workbook_scan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sell Out Standard"
+    sheet.append(["brand", "sales"])
+    sheet.append(["LIVALO", 100])
+    path = tmp_path / "all-sql.xlsx"
+    workbook.save(path)
+    document = main.TempDocument(
+        temp_document_id=1,
+        file_name=path.name,
+        file_path=str(path),
+    )
+
+    def fail_if_scanned(_path: Path) -> bool:
+        raise AssertionError("all-SQL workbook must not be scanned for residual VDB chunks")
+
+    monkeypatch.setattr(main, "should_stream_xlsx_chunks", fail_if_scanned)
+
+    collection, texts, notes, file_size = main._load_local_xlsx_texts(
+        document,
+        exclude_sheet_names=frozenset({"Sell Out Standard"}),
+        known_sheet_names=frozenset({"Sell Out Standard"}),
+    )
+
+    assert collection == "local_xlsx_preprocessor"
+    assert texts == []
+    assert notes == ["SQL 시트 제외 후 VDB 잔여 청킹: Sell Out Standard"]
+    assert file_size == path.stat().st_size
+
+
 def test_logical_names_are_readable_and_collision_safe() -> None:
     names = logical_names_for_profiles(
         (

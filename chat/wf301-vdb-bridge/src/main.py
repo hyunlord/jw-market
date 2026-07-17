@@ -739,12 +739,23 @@ def _load_local_xlsx_texts(
     temp_doc: TempDocument,
     *,
     exclude_sheet_names: frozenset[str] = frozenset(),
+    known_sheet_names: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str], list[str], int] | None:
     if not temp_doc.file_name.lower().endswith(LOCAL_XLSX_SUFFIXES) or not temp_doc.file_path:
         return None
     path = Path(temp_doc.file_path)
     if not path.is_file():
         return None
+    if known_sheet_names and known_sheet_names.issubset(exclude_sheet_names):
+        return (
+            "local_xlsx_preprocessor",
+            [],
+            [
+                "SQL 시트 제외 후 VDB 잔여 청킹: "
+                + ", ".join(sorted(exclude_sheet_names))
+            ],
+            path.stat().st_size,
+        )
     try:
         if should_stream_xlsx_chunks(path):
             texts = list(
@@ -901,9 +912,14 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
                 profile.sheet_name
                 for profile in (sql_decision.selected_sheets if sql_decision else ())
             )
+            known_sheet_names = frozenset(
+                profile.sheet_name
+                for profile in (sql_decision.profiles if sql_decision else ())
+            )
             local_xlsx = _load_local_xlsx_texts(
                 temp_doc,
                 exclude_sheet_names=selected_sheet_names,
+                known_sheet_names=known_sheet_names,
             )
             if sql_tables:
                 collection = "session_sqlite"
@@ -1091,9 +1107,14 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                 profile.sheet_name
                 for profile in (sql_decision.selected_sheets if sql_decision else ())
             )
+            known_sheet_names = frozenset(
+                profile.sheet_name
+                for profile in (sql_decision.profiles if sql_decision else ())
+            )
             local_xlsx = _load_local_xlsx_texts(
                 temp_doc,
                 exclude_sheet_names=selected_sheet_names,
+                known_sheet_names=known_sheet_names,
             )
             local_xlsx_texts: list[str] | None = None
             if sql_tables:
