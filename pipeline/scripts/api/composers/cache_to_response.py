@@ -22,6 +22,7 @@ def _series_dict_to_points(
     *,
     value_key: str,
     source: str | None = None,
+    format_derived_inputs: bool = False,
 ) -> list[dict[str, Any]]:
     def numeric_value(item: object) -> float | None:
         if isinstance(item, dict):
@@ -30,7 +31,8 @@ def _series_dict_to_points(
             candidate = item
         if isinstance(candidate, bool) or not isinstance(candidate, int | float):
             return None
-        return float(candidate)
+        numeric = float(candidate)
+        return format_number(numeric) if format_derived_inputs else numeric
 
     numeric_values = {
         str(period): numeric_value(item)
@@ -72,9 +74,22 @@ def _null_first_growth_point(value: Any) -> Any:
     return points
 
 
-def _frontend_shape_aliases(key: str, value: Any, source: str | None) -> Any:
+def _frontend_shape_aliases(
+    key: str,
+    value: Any,
+    source: str | None,
+    *,
+    format_derived_inputs: bool = False,
+) -> Any:
     if key == "market_size_series" and isinstance(value, dict):
-        return _null_first_growth_point(_series_dict_to_points(value, value_key="value", source=source))
+        return _null_first_growth_point(
+            _series_dict_to_points(
+                value,
+                value_key="value",
+                source=source,
+                format_derived_inputs=format_derived_inputs,
+            )
+        )
     if key == "market_size_series" and isinstance(value, list):
         return _null_first_growth_point(value)
     if key == "hhi_series_5y" and isinstance(value, dict):
@@ -85,7 +100,11 @@ def _frontend_shape_aliases(key: str, value: Any, source: str | None) -> Any:
             for item in value
             if isinstance(item, dict)
         ]
-        numeric_shares = [share for share in shares if isinstance(share, int | float)]
+        numeric_shares = [
+            format_number(share) if format_derived_inputs else share
+            for share in shares
+            if isinstance(share, int | float)
+        ]
         avg_share = sum(numeric_shares) / len(numeric_shares) if numeric_shares else 0.0
         return {"data": value, "ms_avg_pct": avg_share, "share_avg_pct": avg_share}
     return value
@@ -123,9 +142,23 @@ def _frontend_entry_aliases(obj: dict[str, Any]) -> dict[str, Any]:
     return obj
 
 
-def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | None = None) -> Any:
+def _clean_dict_recursive(
+    obj: Any,
+    measure: str | None = None,
+    source: str | None = None,
+    *,
+    format_derived_inputs: bool = False,
+) -> Any:
     if isinstance(obj, list):
-        return [_clean_dict_recursive(item, measure, source) for item in obj]
+        return [
+            _clean_dict_recursive(
+                item,
+                measure,
+                source,
+                format_derived_inputs=format_derived_inputs,
+            )
+            for item in obj
+        ]
     if not isinstance(obj, dict):
         return format_number(obj)
 
@@ -133,15 +166,40 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | No
     if source_key and any(key in obj for key in ALL_SERIES_KEYS):
         picked = obj.get(source_key, obj.get("value_series", []))
         cleaned = {
-            key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
+            key: _clean_dict_recursive(
+                _frontend_shape_aliases(
+                    key,
+                    value,
+                    source,
+                    format_derived_inputs=format_derived_inputs,
+                ),
+                measure,
+                source,
+                format_derived_inputs=format_derived_inputs,
+            )
             for key, value in obj.items()
             if key not in ALL_SERIES_KEYS and not str(key).endswith(DISPLAY_KEY_SUFFIXES)
         }
-        cleaned["value_series"] = _clean_dict_recursive(picked, measure, source)
+        cleaned["value_series"] = _clean_dict_recursive(
+            picked,
+            measure,
+            source,
+            format_derived_inputs=format_derived_inputs,
+        )
         return _frontend_entry_aliases(_anomaly_aliases(cleaned))
 
     cleaned = {
-        key: _clean_dict_recursive(_frontend_shape_aliases(key, value, source), measure, source)
+        key: _clean_dict_recursive(
+            _frontend_shape_aliases(
+                key,
+                value,
+                source,
+                format_derived_inputs=format_derived_inputs,
+            ),
+            measure,
+            source,
+            format_derived_inputs=format_derived_inputs,
+        )
         for key, value in obj.items()
         if not str(key).endswith(DISPLAY_KEY_SUFFIXES)
     }
@@ -162,3 +220,14 @@ def _clean_dict_recursive(obj: Any, measure: str | None = None, source: str | No
 
 def compose_cached_json(raw: Any, measure: str | None = None, source: str | None = None) -> Any:
     return _clean_dict_recursive(loads_json_maybe(raw), measure, source)
+
+
+def compose_dynamic_json(raw: Any, measure: str | None = None, source: str | None = None) -> Any:
+    """Compose an unformatted runtime tree with legacy derived-value ordering."""
+
+    return _clean_dict_recursive(
+        loads_json_maybe(raw),
+        measure,
+        source,
+        format_derived_inputs=True,
+    )

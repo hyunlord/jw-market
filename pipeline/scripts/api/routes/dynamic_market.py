@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from pipeline.scripts.api.brand_presence import brand_exists
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT
-from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.composers.cache_to_response import compose_cached_json, compose_dynamic_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
@@ -185,7 +185,7 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
     result = composer.compose_unformatted(definition=definition, metrics=metrics, period_range=period_range)
     compose_ms = (perf_counter() - compose_started) * 1000 if compose_started is not None else 0.0
     serialize_started = perf_counter() if started is not None else None
-    response = compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+    response = compose_dynamic_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
     serialize_ms = (perf_counter() - serialize_started) * 1000 if serialize_started is not None else 0.0
     if started is not None:
         logger.info(

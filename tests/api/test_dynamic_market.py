@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
 from pipeline.scripts.api.dynamic_market import general_analysis_levels
+from pipeline.scripts.api.composers import cache_to_response
 from pipeline.scripts.etl import ubist_channel_resolver
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
@@ -26,6 +27,7 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.composers.number_format import deep_format_numbers
 from pipeline.scripts.api.dynamic_market.cause_sections import (
     display_matrix_rows,
     growth_contribution,
@@ -1315,6 +1317,25 @@ def test_unformatted_compose_has_identical_final_route_payload() -> None:
     ) == compose_cached_json(
         {"status": "SUCCESS", "result": formatted}, measure="sales"
     )
+
+
+def test_dynamic_cleaner_preserves_preformatted_matrix_derivations() -> None:
+    raw = {
+        "status": "SUCCESS",
+        "result": {
+            "growth_contribution_ms_matrix": [
+                {"ms": 1.23459},
+                {"ms": 2.34569},
+            ],
+            "market_size_series": {
+                "2021-01": 100.12349,
+                "2022-01": 110.98769,
+            },
+        },
+    }
+    expected = compose_cached_json(deep_format_numbers(raw), measure="sales")
+
+    assert cache_to_response.compose_dynamic_json(raw, measure="sales") == expected
 
 
 def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypatch) -> None:
