@@ -58,6 +58,7 @@ MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
 P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "H02", "H03", "M02", "M03"})
+P0G_FAST_PATH_STAGE_NAME = "조회 계획 확정"
 P0G_FORBIDDEN_GENERAL_STAGE_NAMES = frozenset(
     {
         "첨부 문서 조회",
@@ -231,6 +232,7 @@ def capture_p0g_suite(
         ]
         route_contamination_failures = _p0g_route_contamination_failures(rows)
         step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
+        fast_path_stage_failures = _p0g_fast_path_stage_failures(rows) if portal_equivalent else []
         seed_execution_failures = _p0g_seed_execution_failures(name, rows) if portal_equivalent else []
         session_continuity_failures = (
             _p0g_session_continuity_failures(rows, conversation_id)
@@ -244,6 +246,7 @@ def capture_p0g_suite(
                 "latency_failures": latency_failures,
                 "route_contamination_failures": route_contamination_failures,
                 "step_evidence_failures": step_evidence_failures,
+                "fast_path_stage_failures": fast_path_stage_failures,
                 "seed_execution_failures": seed_execution_failures,
                 "session_continuity_failures": session_continuity_failures,
             }
@@ -303,6 +306,7 @@ def capture_p0g_suite(
             and not item["latency_failures"]
             and not item["route_contamination_failures"]
             and not item["step_evidence_failures"]
+            and not item["fast_path_stage_failures"]
             and not item["seed_execution_failures"]
             and not item["session_continuity_failures"]
             for item in summary
@@ -342,6 +346,24 @@ def _p0g_missing_step_evidence(rows: list[dict[str, Any]]) -> list[str]:
             isinstance(step, dict) and str(step.get("name", "")).strip()
             for step in steps
         ):
+            failures.append(qid)
+    return failures
+
+
+def _p0g_fast_path_stage_failures(rows: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    for row in rows:
+        qid = str(row.get("qid", ""))
+        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+            continue
+        completed_names = {
+            str(step.get("name", "")).strip()
+            for step in row.get("steps", ())
+            if isinstance(step, dict)
+            and str(step.get("status", "")).strip() == "done"
+            and str(step.get("name", "")).strip()
+        }
+        if P0G_FAST_PATH_STAGE_NAME not in completed_names:
             failures.append(qid)
     return failures
 
