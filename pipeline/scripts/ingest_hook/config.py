@@ -19,7 +19,7 @@ ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mo
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
-    "jw-pipeline-orchestrator@sha256:d6e11ee484c08ba67f836d2058c65c4831d08ec5ed1556a6609f112a686fbfa1"
+    "jw-pipeline-orchestrator@sha256:d787ba9424e0541faaeef374faa57fdaf70af818aa97abf25543f6670af6dea1"
 )
 
 
