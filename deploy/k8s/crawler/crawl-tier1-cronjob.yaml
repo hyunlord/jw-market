@@ -247,4 +247,5 @@ spec:
           terminationGracePeriodSeconds: 30
   schedule: 10 18 * * *
   successfulJobsHistoryLimit: 3
-  suspend: true
+  # Aligned to the live state (tier1 crawl has been in daily operation; drift fixed 2026-07-17).
+  suspend: false

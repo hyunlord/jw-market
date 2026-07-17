@@ -8,7 +8,10 @@ metadata:
     component: brand-strength
 spec:
   schedule: "0 21 * * *" # 06:00 KST, after crawl and cache-refresh windows
-  suspend: true
+  # Aligned to the live state (PL-approved resume; drift fixed 2026-07-17).
+  # Resume preconditions already satisfied in production: cfc8f3e6-lineage
+  # image + AGENT3_WORKFLOW_REV=5692 pin (see env below).
+  suspend: false
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

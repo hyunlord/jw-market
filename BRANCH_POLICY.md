@@ -32,3 +32,12 @@ definition unless ancestry and policy parity are independently demonstrated.
 Keep the lineage for history only. Any useful change must be extracted onto
 current `develop`, then reviewed against the active event policy and serving
 contracts.
+
+## Agent2 regenerator canon (PL decision, 2026-07-17)
+
+The canonical agent2 regenerator is
+`pipeline/scripts/ai_analysis/agent2_regen_orchestrator.py` (904-line
+implementation): it alone carries the `--analysis-variant short|long`
+contract matching the live wf217 short/long lineage. The recovered VM
+snapshot under `pipeline/scripts/ai_analysis/ops/` is a deprecated prior
+generation retained for provenance (see its README).
