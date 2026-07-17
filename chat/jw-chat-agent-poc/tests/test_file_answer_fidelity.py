@@ -127,6 +127,94 @@ def test_single_file_answer_does_not_gain_multi_file_evidence_section() -> None:
     assert ensure_multi_file_evidence_coverage("이 파일을 요약해줘", answer, DOCX_FILE_CONTEXT) == answer
 
 
+def test_cross_file_sql_and_document_question_synthesizes_both_evidence_types(monkeypatch) -> None:
+    calls = 0
+
+    def stream_answer(_client, question, result):
+        nonlocal calls
+        calls += 1
+        assert question == "RA 보고서의 승인 약물 표와 엑셀 수치를 비교해 일치 여부를 알려줘"
+        assert "Simponi" in result["file_context"]
+        assert "386,933,825,518" in result["file_context"]
+        yield (
+            "RA 보고서에는 승인 약물 Simponi가 제시되어 있고, "
+            "엑셀의 2026년 1월 sell-out 합계는 386,933,825,518입니다. "
+            "두 값은 약물 목록과 전체 금액으로 정의와 단위가 달라 직접적인 일치 여부를 판정할 수 없습니다."
+        )
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    question = "RA 보고서의 승인 약물 표와 엑셀 수치를 비교해 일치 여부를 알려줘"
+    result = {
+        "context_scope": "FILE",
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "sources": ["document", "file_upload"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+        "file_context": (
+            "[1] primary.pdf (document_id=113889) (page=20)\n"
+            "Approved drug table: Simponi\n\n"
+            "## 업로드 파일 SQL 결과\n"
+            "파일: chso.xlsx\n"
+            "| total_value | applied_rows |\n"
+            "| --- | --- |\n"
+            "| 386,933,825,518 | 12,268 |"
+        ),
+        "file_source_items": [
+            {"file_name": "primary.pdf", "i_page": 20, "source_channel": "native_text"},
+            {"file_name": "chso.xlsx", "sheet_name": "Sell Out Standard"},
+        ],
+        "deterministic_file_answer": (
+            "## 업로드 파일 집계 결과\n"
+            "파일: chso.xlsx\n"
+            "| total_value | applied_rows |\n"
+            "| --- | --- |\n"
+            "| 386,933,825,518 | 12,268 |"
+        ),
+    }
+
+    final = service_app.compute_final_answer(question, result, "cross-file-answer")
+
+    assert calls == 1
+    assert "Simponi" in final.text
+    assert "386,933,825,518" in final.text
+    assert "직접적인 일치 여부를 판정할 수 없습니다" in final.text
+    assert {source["file_name"] for source in final.file_sources} == {"primary.pdf", "chso.xlsx"}
+
+
+def test_single_file_comparison_keeps_deterministic_sql_answer(monkeypatch) -> None:
+    def fail_if_streamed(_client, _question, _result):
+        raise AssertionError("single-file comparison must keep the deterministic SQL path")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", fail_if_streamed)
+    question = "동아와 동화 제조사별 합계를 비교해줘"
+    deterministic_answer = (
+        "## 업로드 파일 집계 결과\n"
+        "파일: chso.xlsx\n"
+        "| 제조사 | 합계 |\n"
+        "| --- | ---: |\n"
+        "| 동아 | 10 |\n"
+        "| 동화 | 8 |"
+    )
+    result = {
+        "context_scope": "FILE",
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "sources": ["file_upload"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+        "file_context": deterministic_answer,
+        "file_source_items": [
+            {"file_name": "chso.xlsx", "sheet_name": "Sell Out Standard"},
+        ],
+        "deterministic_file_answer": deterministic_answer,
+    }
+
+    final = service_app.compute_final_answer(question, result, "single-file-comparison")
+
+    assert "| 동아 | 10 |" in final.text
+    assert "| 동화 | 8 |" in final.text
+    assert {source["file_name"] for source in final.file_sources} == {"chso.xlsx"}
+
+
 def test_markdown_messages_do_not_offer_legacy_mixed_synthesis() -> None:
     messages = GenosClient._markdown_messages(
         "리바로 매출과 이 보고서 전망을 비교해줘",

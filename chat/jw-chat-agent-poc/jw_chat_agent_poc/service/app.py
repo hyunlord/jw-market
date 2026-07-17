@@ -1822,7 +1822,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     )
     if deterministic_market_answer:
         generated_answer = deterministic_market_answer
-    elif deterministic_file_answer:
+    elif deterministic_file_answer and not _requires_cross_file_synthesis(active_question, result):
         generated_answer = deterministic_file_answer
     else:
         try:
@@ -1925,6 +1925,17 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         conversation_id=conversation_id,
         file_sources=_file_source_items(result),
     )
+
+
+def _requires_cross_file_synthesis(question: str, result: dict) -> bool:
+    if not re.search(r"(?:비교|대조|교차|일치|차이)", question, re.IGNORECASE):
+        return False
+    file_names = {
+        str(item.get("file_name") or "").strip().casefold()
+        for item in _file_source_items(result)
+        if str(item.get("file_name") or "").strip()
+    }
+    return len(file_names) >= 2
 
 
 def _compute_mixed_final_answer(
