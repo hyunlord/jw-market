@@ -491,7 +491,55 @@ def test_unanchored_market_goldens_are_grounded_before_direct_execution(
     )
 
     assert captured == [grounded_question]
+    assert item["result"]["effective_question"] == grounded_question
     assert item["result"]["context_scope"] == "MARKET"
+
+
+def test_final_answer_uses_grounded_market_question_for_generation_and_contract(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def stream_answer(_self: GenosClient, question: str, _result: dict):
+        captured.append(question)
+        yield "HHI 253.62, CR5 29.52%입니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    grounded = "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
+    result = {
+        "effective_question": grounded,
+        "context_scope": "MARKET",
+        "answer": "",
+        "sources": ["UBIST"],
+        "markdown_response": {
+            "fact_md": "HHI = 253.62\nCR5 = 29.52%",
+            "allowed_numbers": ["253.62", "29.52"],
+        },
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "period": "2026-05",
+                    "hhi": 253.62,
+                    "level_segments": [
+                        {"rank": rank, "brand": f"brand-{rank}", "ms_recent_pct": share}
+                        for rank, share in enumerate((9.12649, 6.12777, 5.11672, 4.94876, 4.19605), 1)
+                    ],
+                },
+            }
+        ],
+    }
+
+    final = service_app.compute_final_answer(
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        result,
+        "clean-top5",
+    )
+
+    assert captured == [grounded]
+    assert "HHI 253.62" in final.text
+    assert "CR5 29.52%" in final.text
+    assert "지원되지 않는 시장" not in final.text
 
 
 def test_unanchored_quarter_golden_ignores_stale_file_and_external_turn(

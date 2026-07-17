@@ -651,6 +651,8 @@ def _answer_question(
             )
         if not effective_question.strip() and context_scope is ContextScope.FILE and not result.get("file_only_ready"):
             result = _file_only_ready_result(documents, delegated_file_context)
+        if context_scope is ContextScope.MARKET and execution_question != effective_question:
+            result = {**result, "effective_question": execution_question}
         result = _enforce_file_scope_isolation(result, effective_question, context_scope)
         if deterministic_file_answer and context_scope is ContextScope.FILE:
             result = {**result, "deterministic_file_answer": deterministic_file_answer}
@@ -1711,7 +1713,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     if result.get("context_scope") == ContextScope.MIXED.value:
         return _compute_mixed_final_answer(question, result, conversation_id)
     deep_mode = result.get("research_mode") == "deep"
-    active_question = str(result.get("effective_question") or question) if deep_mode else question
+    active_question = str(result.get("effective_question") or question)
     timing = ensure_timing(result)
     if result.get("conversation_fallback_ready"):
         timing_payload = finish(timing)
