@@ -1,0 +1,58 @@
+# Loss sweep — daily watchdog for lost webhooks. NOT a load batch: on a normal
+# day it finds every complete manifest already recorded and exits no-op.
+#
+# Registered SUSPENDED (suspend: true). Resume is part of the PL-gated
+# activation together with the trigger Deployment scale-up.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-ingest-sweep-daily
+  namespace: llmops
+spec:
+  schedule: "30 19 * * *"        # 04:30 KST daily
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: jw-ingest-hook
+          containers:
+            - name: sweep
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6e820a58f41251b77bbc4f9aaa37882f0cf8fcbbeec5445b6f1503fd857e1235
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - pipeline.scripts.ingest_hook.sweep
+              env:
+                - name: INGEST_INPUT_ROOT
+                  value: /data/jw-input
+                - name: MARIADB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_DATABASE
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: MARIADB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: MARIADB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

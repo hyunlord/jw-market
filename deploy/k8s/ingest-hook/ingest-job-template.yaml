@@ -1,0 +1,70 @@
+# Reference template for the incremental ingest Job.
+#
+# The trigger service renders the equivalent body in code
+# (pipeline/scripts/ingest_hook/job_launcher.py::render_job); this file is the
+# human-reviewable canon for the env/volume contract the live launcher copies
+# at activation. NOT applied directly — Jobs only ever come from the launcher.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jw-ingest-<category>-<sha8>          # rendered per submission
+  namespace: llmops
+  labels:
+    app: jw-ingest
+    jw-ingest/category: "<category>"
+    jw-ingest/manifest-sha8: "<sha8>"
+spec:
+  backoffLimit: 0                            # retries are a ledger decision, not kubelet's
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 259200
+  template:
+    metadata:
+      labels:
+        app: jw-ingest
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ingest
+          # Same digest pin as the monthly orchestrator CronJob — one code identity.
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6e820a58f41251b77bbc4f9aaa37882f0cf8fcbbeec5445b6f1503fd857e1235
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - pipeline.scripts.ingest_hook.job_runner
+            - --manifest
+            - "<manifest_path>"
+          env:
+            # Job step 1 is ALWAYS G3 (job_runner enforces the order in code).
+            - name: INGEST_INPUT_ROOT
+              value: /data/jw-input
+            - name: MARIADB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: "3306"
+            - name: MARIADB_DATABASE
+              value: jw_mart_d2_stage_20260630_r2
+            - name: AGENT3_DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            # Fail-closed rev pins, same double-entry as the monthly CronJob.
+            - name: AGENT3_WORKFLOW_REV
+              value: "5692"
+            - name: AGENT3_EXPECTED_WORKFLOW_REV
+              value: "5692"
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi

@@ -1,0 +1,86 @@
+# Ingest trigger service (D-1 option (a)) — webhook receiver + ledger status API.
+#
+# Registered INERT: replicas 0. Activation (scale to 1) is a PL decision after
+# the jw-data-input confirm flow lands and the isolation gates (G-1..G-5) are
+# accepted. Serving (jw-market-backend-api) is untouched by design.
+#
+# Reuses the digest-pinned pipeline-orchestrator image (fastapi/uvicorn/PyMySQL
+# already inside) — no new build pipeline.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-ingest-hook
+  namespace: llmops
+  labels:
+    app: jw-ingest-hook
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: jw-ingest-hook
+  template:
+    metadata:
+      labels:
+        app: jw-ingest-hook
+    spec:
+      serviceAccountName: jw-ingest-hook
+      containers:
+        - name: trigger
+          # Keep in lockstep with deploy/k8s/orchestrator/pipeline-orchestrator-monthly-cronjob.yaml
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6e820a58f41251b77bbc4f9aaa37882f0cf8fcbbeec5445b6f1503fd857e1235
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - uvicorn
+            - --factory
+            - pipeline.scripts.ingest_hook.app:build
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8080"
+          env:
+            - name: INGEST_INPUT_ROOT
+              value: /data/jw-input            # submission volume; PL pins the real mount on activation
+            - name: MARIADB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: "3306"
+            - name: MARIADB_DATABASE
+              value: jw_mart_d2_stage_20260630_r2
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jw-ingest-hook
+  namespace: llmops
+spec:
+  selector:
+    app: jw-ingest-hook
+  ports:
+    - port: 8080
+      targetPort: 8080
