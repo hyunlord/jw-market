@@ -452,6 +452,39 @@ def test_p0g_suite_fails_when_general_golden_runs_contaminated_routes(monkeypatc
     }
 
 
+def test_p0g_suite_fails_when_general_step_text_leaks_prior_turn_or_internal_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+        out_dir.mkdir(parents=True)
+        rows = [
+            {
+                "qid": qid,
+                "elapsed_ms": 100.0,
+                "steps": (
+                    [
+                        {"name": "질문 분해", "detail": "뇌경색 질환 임상·허가", "status": "done"},
+                        {"name": "관련 데이터 조회", "detail": "1; mode=parallel단계", "status": "done"},
+                    ]
+                    if qid == "H02"
+                    else []
+                ),
+            }
+            for qid, _ in questions
+        ]
+        (out_dir / "summary.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+
+    assert capture_p0g_suite(tmp_path, "live", None) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["scenarios"][1]["route_contamination_failures"] == {
+        "H02": ["질문 분해:뇌경색", "질문 분해:임상·허가", "관련 데이터 조회:mode=parallel"],
+    }
+
+
 def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, tmp_path: Path) -> None:
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
         out_dir.mkdir(parents=True)

@@ -78,6 +78,12 @@ P0G_FORBIDDEN_GENERAL_STAGE_NAMES = frozenset(
         "최신 웹 자료 검색",
     }
 )
+P0G_FORBIDDEN_GENERAL_STEP_TEXT = (
+    "뇌경색",
+    "임상·허가",
+    "mode=parallel",
+    "mode=serial",
+)
 P0G_FAIL_CLOSED_ANSWER_SENTINELS = (
     "데이터 존재 여부를 확인하지 못했습니다",
     "지원되지 않는 시장",
@@ -346,6 +352,11 @@ def _p0g_route_contamination_failures(rows: list[dict[str, Any]]) -> dict[str, l
                 or name.startswith("딥리서치 ")
             ) and name not in forbidden:
                 forbidden.append(name)
+            public_text = " ".join(str(step.get(key, "")) for key in ("name", "detail", "summary"))
+            for token in P0G_FORBIDDEN_GENERAL_STEP_TEXT:
+                finding = f"{name}:{token}"
+                if token in public_text and finding not in forbidden:
+                    forbidden.append(finding)
         if forbidden:
             failures[qid] = forbidden
     return failures
