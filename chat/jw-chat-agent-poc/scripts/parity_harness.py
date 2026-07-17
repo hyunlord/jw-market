@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import requests
 
@@ -41,6 +42,11 @@ CHANNEL_PARAPHRASE_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("Q07_CHANNEL_MIX", "리바로 채널 mix"),
     ("Q07_CHANNEL_COMPOSITION", "리바로 채널 구성"),
 )
+HISTORY_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
+    ("H01", "뇌경색 임상·허가 경쟁약물"),
+    ("H02", "2025년 2분기 매출 얼마야"),
+    ("H03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+)
 
 VOLATILE_KEYS = {
     "answer_cleanup",
@@ -64,6 +70,7 @@ def capture(
     external_mode: str,
     base_url: str | None = None,
     questions: tuple[tuple[str, str], ...] = QUESTIONS,
+    conversation_id: str | None = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("sse", "markdown", "traces"):
@@ -79,10 +86,17 @@ def capture(
         events: list[str] = []
         try:
             if base_url:
-                events = [_http_sse(base_url, question, external_mode)]
+                events = [_http_sse(base_url, question, external_mode, conversation_id=conversation_id)]
                 result = {"capture_mode": "http", "trace_available": False}
             else:
-                item = _answer_question(store, resolver, _default_agent_factory, question, external_mode, None)
+                item = _answer_question(
+                    store,
+                    resolver,
+                    _default_agent_factory,
+                    question,
+                    external_mode,
+                    conversation_id,
+                )
                 result = item["result"]
                 events = list(_sse_events(question, result, item.get("conversation_id")))
         except Exception as exc:  # noqa: BLE001 - parity capture must record all question failures.
@@ -91,6 +105,10 @@ def capture(
         raw_sse = "".join(events)
         (out_dir / "sse" / f"{qid}.sse").write_text(raw_sse, encoding="utf-8")
         parsed = parse_sse_file(out_dir / "sse" / f"{qid}.sse")
+        acceptance_pass, acceptance_error = _history_golden_acceptance(
+            qid,
+            parsed.answer_markdown,
+        )
         (out_dir / "markdown" / f"{qid}.md").write_text(parsed.answer_markdown, encoding="utf-8")
         (out_dir / "traces" / f"{qid}.json").write_text(
             json.dumps(_trace_payload(qid, question, result, parsed), ensure_ascii=False, indent=2, default=str),
@@ -106,17 +124,30 @@ def capture(
             "done_count": parsed.done_count,
             "error_count": parsed.error_count,
             "answer_chars": parsed.answer_chars,
+            "acceptance_pass": acceptance_pass,
+            "acceptance_error": acceptance_error,
         }
         summary.append(row)
         print(json.dumps(row, ensure_ascii=False), flush=True)
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "questions.json").write_text(json.dumps(dict(questions), ensure_ascii=False, indent=2), encoding="utf-8")
-    return 0 if all(row["status"] == "ok" and row["done_count"] == 1 and row["error_count"] == 0 for row in summary) else 1
+    return 0 if all(
+        row["status"] == "ok"
+        and row["done_count"] == 1
+        and row["error_count"] == 0
+        and row["acceptance_pass"]
+        for row in summary
+    ) else 1
 
 
-def diff_captures(before: Path, after: Path, report_dir: Path) -> int:
+def diff_captures(
+    before: Path,
+    after: Path,
+    report_dir: Path,
+    questions: tuple[tuple[str, str], ...] = QUESTIONS,
+) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
-    results = [_diff_question(qid, before, after) for qid, _ in QUESTIONS]
+    results = [_diff_question(qid, before, after) for qid, _ in questions]
     report = {"status": "pass" if all(item["pass"] for item in results) else "fail", "questions": results}
     (report_dir / "parity_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     (report_dir / "parity_report.md").write_text(_markdown_report(report), encoding="utf-8")
@@ -205,11 +236,32 @@ def _trace_payload(qid: str, question: str, result: dict[str, Any], parsed: Any)
     }
 
 
-def _http_sse(base_url: str, question: str, external_mode: str) -> str:
+def _http_sse(
+    base_url: str,
+    question: str,
+    external_mode: str,
+    *,
+    conversation_id: str | None = None,
+) -> str:
     url = base_url.rstrip("/") + "/chat/stream"
-    response = requests.get(url, params={"question": question, "external_mode": external_mode}, timeout=180)
+    params = {"question": question, "external_mode": external_mode}
+    if conversation_id:
+        params["conversation_id"] = conversation_id
+    response = requests.get(url, params=params, timeout=180)
     response.raise_for_status()
     return response.text
+
+
+def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
+    requirements = {
+        "H02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
+        "H03": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
+    }
+    requirement = requirements.get(qid)
+    if requirement is None:
+        return True, ""
+    pattern, error = requirement
+    return (True, "") if pattern.search(answer) else (False, error)
 
 
 def _diff_question(qid: str, before: Path, after: Path) -> dict[str, Any]:
@@ -463,6 +515,8 @@ def _mark(value: bool) -> str:
 def _capture_questions(name: str) -> tuple[tuple[str, str], ...]:
     if name == "channel":
         return CHANNEL_PARAPHRASE_QUESTIONS
+    if name == "history":
+        return HISTORY_GOLDEN_QUESTIONS
     return QUESTIONS
 
 
@@ -473,11 +527,16 @@ def main() -> int:
     capture_parser.add_argument("--out-dir", type=Path, required=True)
     capture_parser.add_argument("--external-mode", default="live")
     capture_parser.add_argument("--base-url", help="Capture deployed /chat/stream SSE instead of local service trace.")
-    capture_parser.add_argument("--question-set", choices=("core", "channel"), default="core")
+    capture_parser.add_argument("--question-set", choices=("core", "channel", "history"), default="core")
+    capture_parser.add_argument(
+        "--conversation-id",
+        help="Reuse one session across capture questions. Required to reproduce history contamination against an existing uploaded-file session.",
+    )
     diff_parser = sub.add_parser("diff")
     diff_parser.add_argument("--before", type=Path, required=True)
     diff_parser.add_argument("--after", type=Path, required=True)
     diff_parser.add_argument("--report-dir", type=Path, required=True)
+    diff_parser.add_argument("--question-set", choices=("core", "channel", "history"), default="core")
     multi_parser = sub.add_parser("diff-multi")
     multi_parser.add_argument("--baseline-root", type=Path, required=True)
     multi_parser.add_argument("--after", type=Path, required=True)
@@ -487,9 +546,23 @@ def main() -> int:
     self_parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "capture":
-        return capture(args.out_dir, args.external_mode, args.base_url, _capture_questions(args.question_set))
+        conversation_id = args.conversation_id
+        if args.question_set == "history" and not conversation_id:
+            conversation_id = f"parity-history-{uuid4().hex}"
+        return capture(
+            args.out_dir,
+            args.external_mode,
+            args.base_url,
+            _capture_questions(args.question_set),
+            conversation_id,
+        )
     if args.command == "diff":
-        return diff_captures(args.before, args.after, args.report_dir)
+        return diff_captures(
+            args.before,
+            args.after,
+            args.report_dir,
+            _capture_questions(args.question_set),
+        )
     if args.command == "diff-multi":
         return diff_multi_baseline(args.baseline_root, args.after, args.report_dir)
     if args.command == "self-test":

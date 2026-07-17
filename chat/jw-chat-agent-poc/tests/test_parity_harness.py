@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 from scripts.fact_scoreboard.sse import parse_sse_file
-from scripts.parity_harness import CHANNEL_PARAPHRASE_QUESTIONS, _capture_questions, diff_captures
+from scripts.parity_harness import (
+    CHANNEL_PARAPHRASE_QUESTIONS,
+    HISTORY_GOLDEN_QUESTIONS,
+    _history_golden_acceptance,
+    _capture_questions,
+    _http_sse,
+    diff_captures,
+)
 from scripts.runtime_model_compare_runner import _parse_events
 
 
@@ -54,6 +61,60 @@ def test_parity_harness_registers_channel_paraphrases() -> None:
     assert "리바로 채널" in questions
     assert "리바로 의원/병원별 실적" in questions
     assert _capture_questions("channel") == CHANNEL_PARAPHRASE_QUESTIONS
+
+
+def test_parity_harness_registers_history_goldens() -> None:
+    assert _capture_questions("history") == HISTORY_GOLDEN_QUESTIONS
+    assert HISTORY_GOLDEN_QUESTIONS[-2:] == (
+        ("H02", "2025년 2분기 매출 얼마야"),
+        ("H03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+    )
+
+
+def test_http_sse_forwards_shared_conversation_id(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        text = "event: done\ndata: ok\n\n"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    def get(url, *, params, timeout):
+        captured.update(url=url, params=params, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.get", get)
+
+    payload = _http_sse(
+        "http://chat.example",
+        "2025년 2분기 매출 얼마야",
+        "live",
+        conversation_id="dirty-session",
+    )
+
+    assert payload == "event: done\ndata: ok\n\n"
+    assert captured["params"] == {
+        "question": "2025년 2분기 매출 얼마야",
+        "external_mode": "live",
+        "conversation_id": "dirty-session",
+    }
+
+
+def test_history_golden_acceptance_requires_live_values() -> None:
+    assert _history_golden_acceptance("H01", "도구 조회가 끝났습니다.") == (True, "")
+    assert _history_golden_acceptance("H02", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
+    assert _history_golden_acceptance("H03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+
+    assert _history_golden_acceptance("H02", "데이터 존재 여부를 확인하지 못했습니다.") == (
+        False,
+        "missing 242.72억원",
+    )
+    assert _history_golden_acceptance("H03", "지원되지 않는 시장입니다.") == (
+        False,
+        "missing 29.52%",
+    )
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:
