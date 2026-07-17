@@ -177,6 +177,7 @@ def capture(
             "done_count": parsed.done_count,
             "error_count": parsed.error_count,
             "answer_chars": parsed.answer_chars,
+            "sources": parsed.sources,
             "steps": list(parsed.steps),
             "conversation_ids": list(parsed.conversation_ids),
             "acceptance_pass": acceptance_pass,
@@ -242,6 +243,7 @@ def capture_p0g_suite(
         step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
         fast_path_stage_failures = _p0g_fast_path_stage_failures(rows) if portal_equivalent else []
         market_tool_stage_failures = _p0g_market_tool_stage_failures(rows) if portal_equivalent else {}
+        source_evidence_failures = _p0g_source_evidence_failures(rows) if portal_equivalent else {}
         seed_execution_failures = _p0g_seed_execution_failures(name, rows) if portal_equivalent else []
         session_continuity_failures = (
             _p0g_session_continuity_failures(rows, conversation_id)
@@ -257,6 +259,7 @@ def capture_p0g_suite(
                 "step_evidence_failures": step_evidence_failures,
                 "fast_path_stage_failures": fast_path_stage_failures,
                 "market_tool_stage_failures": market_tool_stage_failures,
+                "source_evidence_failures": source_evidence_failures,
                 "seed_execution_failures": seed_execution_failures,
                 "session_continuity_failures": session_continuity_failures,
             }
@@ -318,6 +321,7 @@ def capture_p0g_suite(
             and not item["step_evidence_failures"]
             and not item["fast_path_stage_failures"]
             and not item["market_tool_stage_failures"]
+            and not item["source_evidence_failures"]
             and not item["seed_execution_failures"]
             and not item["session_continuity_failures"]
             for item in summary
@@ -395,6 +399,19 @@ def _p0g_market_tool_stage_failures(rows: list[dict[str, Any]]) -> dict[str, str
         }
         if expected_stage not in completed_names:
             failures[qid] = expected_stage
+    return failures
+
+
+def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, str]:
+    failures: dict[str, str] = {}
+    for row in rows:
+        qid = str(row.get("qid", ""))
+        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+            continue
+        raw_sources = str(row.get("sources", "")).strip()
+        labels = {item.strip() for item in raw_sources.split(",") if item.strip()}
+        if "UBIST" not in labels:
+            failures[qid] = raw_sources
     return failures
 
 
