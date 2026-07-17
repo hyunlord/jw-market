@@ -80,11 +80,22 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                 period_items.append((interval, key, item))
             else:
                 return {
-                    str(key): _trim_period_payload(item, bounds)
+                    str(key): (
+                        _trim_period_payload(item, bounds)
+                        if isinstance(item, (Mapping, list))
+                        else item
+                    )
                     for interval, key, item in period_items
                     if _overlaps(interval, bounds)
                 }
-        return {str(key): _trim_period_payload(item, bounds) for key, item in value.items()}
+        return {
+            str(key): (
+                _trim_period_payload(item, bounds)
+                if isinstance(item, (Mapping, list))
+                else item
+            )
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         if value:
             period_points: list[tuple[tuple[int, int], Mapping[str, Any]]] = []
@@ -102,7 +113,12 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                     for interval, item in period_points
                     if _overlaps(interval, bounds)
                 ]
-        return [_trim_period_payload(item, bounds) for item in value]
+        return [
+            _trim_period_payload(item, bounds)
+            if isinstance(item, (Mapping, list))
+            else item
+            for item in value
+        ]
     return value
 
 

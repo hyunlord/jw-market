@@ -193,6 +193,26 @@ def test_non_period_mapping_stops_period_key_probe_after_first_miss(monkeypatch)
     assert "rank" not in calls
 
 
+def test_scalar_leaf_values_do_not_reenter_recursive_period_projection(monkeypatch) -> None:
+    calls = 0
+    original = period_window_module._trim_period_payload
+
+    def counted(value: object, bounds: tuple[int | None, int | None]) -> object:
+        nonlocal calls
+        calls += 1
+        return original(value, bounds)
+
+    monkeypatch.setattr(period_window_module, "_trim_period_payload", counted)
+
+    result = counted(
+        {"metadata": {f"field_{index}": index for index in range(1_000)}},
+        (2025 * 12, 2025 * 12 + 11),
+    )
+
+    assert result["metadata"]["field_999"] == 999
+    assert calls == 2
+
+
 def test_period_point_list_resolves_each_point_period_once(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
     original = period_window_module._point_period
