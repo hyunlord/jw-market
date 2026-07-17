@@ -171,7 +171,13 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                     {
                         "qid": qid,
                         "elapsed_ms": 100.0,
-                        "steps": [{"name": "질문 접수"}],
+                        "steps": (
+                            [{"name": "질문 접수"}, {"name": "임상 데이터 조회"}]
+                            if qid == "H01"
+                            else [{"name": "질문 접수"}, {"name": "딥리서치 조사 설계"}]
+                            if qid == "M01"
+                            else [{"name": "질문 접수"}]
+                        ),
                         "conversation_ids": [conversation_id] if conversation_id else [],
                     }
                     for qid, _ in questions
@@ -470,6 +476,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "route_contamination_failures": {},
             "step_evidence_failures": ["F01", "F02"],
             "session_continuity_failures": {},
+            "seed_execution_failures": [],
         },
         {
             "scenario": "history",
@@ -478,6 +485,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "route_contamination_failures": {},
             "step_evidence_failures": ["H02", "H03"],
             "session_continuity_failures": {},
+            "seed_execution_failures": ["H01"],
         },
         {
             "scenario": "mode-transition",
@@ -486,6 +494,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "route_contamination_failures": {},
             "step_evidence_failures": ["M02", "M03"],
             "session_continuity_failures": {},
+            "seed_execution_failures": ["M01"],
         },
     ]
 
@@ -526,6 +535,41 @@ def test_p0g_suite_rejects_history_response_from_a_different_session(monkeypatch
     assert summary["scenarios"][1]["session_continuity_failures"] == {
         "H02": ["wrong-session"],
     }
+
+
+def test_p0g_suite_requires_history_and_deep_seed_execution(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+        out_dir.mkdir(parents=True)
+        rows = [
+            {
+                "qid": qid,
+                "elapsed_ms": 100.0,
+                "steps": [{"name": "질문 접수"}],
+                "conversation_ids": [conversation_id] if conversation_id else [],
+            }
+            for qid, _ in questions
+        ]
+        (out_dir / "summary.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 1, ""),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "http://portal-equivalent",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        portal_user_id="85",
+        file_base_url="http://code-serving-235",
+    ) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["scenarios"][1]["seed_execution_failures"] == ["H01"]
+    assert summary["scenarios"][2]["seed_execution_failures"] == ["M01"]
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:

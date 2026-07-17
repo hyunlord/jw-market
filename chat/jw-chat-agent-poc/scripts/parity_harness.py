@@ -74,6 +74,13 @@ P0G_FAIL_CLOSED_ANSWER_SENTINELS = (
     "지원되지 않는 시장",
     "조회 오류",
 )
+P0G_HISTORY_SEED_STAGE_NAMES = frozenset(
+    {
+        "임상 데이터 조회",
+        "국내 임상 정보 확인",
+        "식약처 허가 정보 확인",
+    }
+)
 
 VOLATILE_KEYS = {
     "answer_cleanup",
@@ -224,6 +231,7 @@ def capture_p0g_suite(
         ]
         route_contamination_failures = _p0g_route_contamination_failures(rows)
         step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
+        seed_execution_failures = _p0g_seed_execution_failures(name, rows) if portal_equivalent else []
         session_continuity_failures = (
             _p0g_session_continuity_failures(rows, conversation_id)
             if portal_equivalent and conversation_id
@@ -236,6 +244,7 @@ def capture_p0g_suite(
                 "latency_failures": latency_failures,
                 "route_contamination_failures": route_contamination_failures,
                 "step_evidence_failures": step_evidence_failures,
+                "seed_execution_failures": seed_execution_failures,
                 "session_continuity_failures": session_continuity_failures,
             }
         )
@@ -294,6 +303,7 @@ def capture_p0g_suite(
             and not item["latency_failures"]
             and not item["route_contamination_failures"]
             and not item["step_evidence_failures"]
+            and not item["seed_execution_failures"]
             and not item["session_continuity_failures"]
             for item in summary
         )
@@ -334,6 +344,25 @@ def _p0g_missing_step_evidence(rows: list[dict[str, Any]]) -> list[str]:
         ):
             failures.append(qid)
     return failures
+
+
+def _p0g_seed_execution_failures(scenario: str, rows: list[dict[str, Any]]) -> list[str]:
+    seed_qid = {"history": "H01", "mode-transition": "M01"}.get(scenario)
+    if seed_qid is None:
+        return []
+    seed_row = next((row for row in rows if str(row.get("qid", "")) == seed_qid), None)
+    if seed_row is None:
+        return [seed_qid]
+    step_names = {
+        str(step.get("name", "")).strip()
+        for step in seed_row.get("steps", ())
+        if isinstance(step, dict) and str(step.get("name", "")).strip()
+    }
+    if scenario == "history":
+        executed = bool(step_names & P0G_HISTORY_SEED_STAGE_NAMES)
+    else:
+        executed = any(name.startswith("딥리서치 ") for name in step_names)
+    return [] if executed else [seed_qid]
 
 
 def _p0g_session_continuity_failures(
