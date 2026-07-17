@@ -1,0 +1,6 @@
+# capture 2026-07-17 (UTC 09:49)
+NAME                        REFERENCE                          TARGETS           MINPODS   MAXPODS   REPLICAS   AGE
+jw-market-backend-api-hpa   Deployment/jw-market-backend-api   memory: 82%/60%   2         8         8          7d
+
+NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
+jw-market-backend-api   8/8     8            8           52d

@@ -1,0 +1,2380 @@
+#### DATABASE: jw_mart_d2_stage_20260630_r2
+== TABLE LIST ==
+_cutover_news_map_final_843_20260707_152039
+_cutover_score_pick_final_843_20260707_152039
+agent3_brand_strength
+agent3_brand_strength_market
+agent3_brand_strength_source
+agent3_brand_strength_source_bak_profileonly_20260711
+agent3_brand_strength_source_bak_taxonomy_20260710
+brand_alias
+cache_brand_elements
+cache_brands
+cache_brands_old_f096v10_0715a
+cache_cause
+cache_cause_bak_freshness_20260710145033
+cache_cause_bak_freshness_20260710145305
+cache_cause_bak_freshness_20260710145607
+cache_cause_bak_freshness_r2_20260710164051
+cache_cause_bak_freshness_r2_20260710171845
+cache_deep_analysis
+cache_deep_analysis_ai_analysis
+cache_deep_analysis_ai_analysis_bak_pre_promotion_20260710
+cache_deep_analysis_ai_analysis_bak_pre_short_long_20260712
+cache_deep_analysis_ai_analysis_stage_general_sample_20260712
+cache_deep_analysis_ai_analysis_stage_short_long_20260712
+cache_deep_analysis_audit_p0_stage_20260710
+cache_deep_analysis_backup_audit_p0_20260710_1340
+cache_deep_analysis_bak_d2_prev3_20260709200001
+cache_deep_analysis_bak_d2_prev3_20260710135533
+cache_deep_analysis_bak_d2_prev3_20260710150708
+cache_deep_analysis_bak_d2_prev3_20260710200001
+cache_deep_analysis_bak_d2_prev3_20260711200001
+cache_deep_analysis_bak_d2_prev3_20260712200005
+cache_deep_analysis_bak_d2_prev3_20260713200001
+cache_deep_analysis_bak_d2_prev3_20260714200001
+cache_deep_analysis_bak_d2_prev3_20260715200001
+cache_deep_analysis_bak_d2_prev3_20260716200001
+cache_deep_analysis_general
+cache_deep_analysis_general_backup_pre_rng_20260712
+cache_dynamic_market_response
+cache_market_forecast_general
+cache_market_forecast_general_backup_pre_rng_20260712
+cache_market_status
+cache_market_status_bak_freshness_20260710145033
+cache_market_status_bak_freshness_20260710145305
+cache_market_status_bak_freshness_20260710145607
+cache_market_status_bak_freshness_r2_20260710162930
+cache_market_status_bak_freshness_r2_20260710163036
+catalog_cd_market
+catalog_ml_market
+catalog_strategic_brand
+deep_forecast_block
+deep_forecast_block_stage_ops_20260713
+deep_forecast_horizon
+deep_forecast_horizon_stage_ops_20260713
+event_brand_scores
+event_brand_scores_bak_precutover_20260707_155418
+event_brand_scores_bak_tier2_exact_20260708_005132
+event_brand_scores_bak_v3rescore_20260704_pre5347
+event_brand_scores_mig_stg_20260707093653
+event_brand_scores_tier2_staging_20260707_105528
+events
+events_bak_precutover_20260707_155418
+events_mig_stg_20260707093653
+events_raw
+events_raw_bak_precutover_20260707_155418
+events_raw_mig_stg_20260707093653
+iqvia_nsa_quarterly_raw
+mart_analysis_level_block
+mart_analysis_level_block_old_f096v10_0715a
+mart_brand_molecule
+mart_general_brand_metric
+mart_general_filter_dimension_metric
+mart_general_filter_dimension_metric__backup_dimfix_20260716
+mart_general_filter_dimension_metric__backup_f124a_20260715
+mart_general_market_metric
+mart_strategic_cd_brand_metric
+mart_strategic_cd_brand_metric__failed_f116_0715b
+mart_strategic_cd_market_metric
+mart_strategic_cd_market_metric__failed_f116_0715b
+mart_strategic_filter_dimension_metric
+mart_strategic_ml_brand_metric
+mart_strategic_ml_brand_metric__failed_f116_0715b
+mart_strategic_ml_market_metric
+mart_strategic_ml_market_metric__failed_f116_0715b
+news_mig_component_stg_20260707093653
+news_mig_map_stg_20260707093653
+news_raw
+news_raw_bak_precutover_20260707_155418
+news_raw_mig_stg_20260707093653
+tier2_match_staging
+zeta_analysis_outputs
+zeta_analysis_runs
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2._cutover_news_map_final_843_20260707_152039 ==
+*************************** 1. row ***************************
+_cutover_news_map_final_843_20260707_152039
+CREATE TABLE `_cutover_news_map_final_843_20260707_152039` (
+  `old_news_id` varchar(64) NOT NULL,
+  `new_news_id` varchar(64) NOT NULL,
+  `component_id` int(11) NOT NULL,
+  `representative_old_news_id` varchar(64) NOT NULL,
+  `is_representative` tinyint(1) NOT NULL,
+  `merge_reason` varchar(64) NOT NULL,
+  `collection_provenance` longtext NOT NULL CHECK (json_valid(`collection_provenance`)),
+  `legacy_news_ids` longtext NOT NULL CHECK (json_valid(`legacy_news_ids`)),
+  PRIMARY KEY (`old_news_id`),
+  KEY `idx_new_news_id` (`new_news_id`),
+  KEY `idx_component` (`component_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2._cutover_news_map_final_843_20260707_152039 ==
+35474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2._cutover_score_pick_final_843_20260707_152039 ==
+*************************** 1. row ***************************
+_cutover_score_pick_final_843_20260707_152039
+CREATE TABLE `_cutover_score_pick_final_843_20260707_152039` (
+  `source_score_id` bigint(20) NOT NULL,
+  `new_news_id` varchar(64) NOT NULL,
+  `brand_canonical` varchar(255) NOT NULL,
+  `source_rows` int(11) NOT NULL,
+  `had_score_conflict` tinyint(1) NOT NULL,
+  PRIMARY KEY (`source_score_id`),
+  KEY `idx_new_brand` (`new_news_id`,`brand_canonical`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2._cutover_score_pick_final_843_20260707_152039 ==
+59240
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.agent3_brand_strength ==
+*************************** 1. row ***************************
+agent3_brand_strength
+CREATE TABLE `agent3_brand_strength` (
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `serving_brand_name` varchar(255) DEFAULT NULL,
+  `profile_json` longtext NOT NULL CHECK (json_valid(`profile_json`)),
+  `strength_candidates_json` longtext NOT NULL CHECK (json_valid(`strength_candidates_json`)),
+  `strength_summary_json` longtext NOT NULL CHECK (json_valid(`strength_summary_json`)),
+  `workflow_id` int(11) NOT NULL,
+  `workflow_rev` int(11) NOT NULL,
+  `input_hash` char(64) NOT NULL,
+  `generated_at` datetime NOT NULL,
+  PRIMARY KEY (`brand_key`),
+  UNIQUE KEY `uq_agent3_brand_strength_serving_brand_name` (`serving_brand_name`),
+  KEY `idx_agent3_brand_strength_brand_name` (`brand_name`),
+  KEY `idx_agent3_brand_strength_hash` (`input_hash`),
+  KEY `idx_agent3_brand_strength_generated_at` (`generated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.agent3_brand_strength ==
+25153
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_market ==
+*************************** 1. row ***************************
+agent3_brand_strength_market
+CREATE TABLE `agent3_brand_strength_market` (
+  `brand_key` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `market_id` varchar(32) NOT NULL,
+  `view_kind` varchar(32) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `serving_brand_name` varchar(255) DEFAULT NULL,
+  `profile_json` longtext NOT NULL CHECK (json_valid(`profile_json`)),
+  `strength_candidates_json` longtext NOT NULL CHECK (json_valid(`strength_candidates_json`)),
+  `strength_summary_json` longtext NOT NULL CHECK (json_valid(`strength_summary_json`)),
+  `workflow_id` int(11) NOT NULL,
+  `workflow_rev` int(11) NOT NULL,
+  `input_hash` char(64) NOT NULL,
+  `generation_status` varchar(32) NOT NULL,
+  `generated_at` datetime NOT NULL,
+  PRIMARY KEY (`brand_key`,`source`,`market_id`),
+  KEY `idx_market_scope` (`view_kind`,`market_id`,`source`),
+  KEY `idx_serving_market_source` (`serving_brand_name`,`market_id`,`source`),
+  KEY `idx_generation_status` (`generation_status`),
+  KEY `idx_generated_at` (`generated_at`),
+  CONSTRAINT `chk_agent3_market_source` CHECK (`source` in ('iqvia','ubist')),
+  CONSTRAINT `chk_agent3_market_view` CHECK (`view_kind` = 'market_landscape' and `market_id` like 'ml\\_%' or `view_kind` = 'competitive_dynamics' and `market_id` like 'cd\\_%')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_market ==
+7706
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_source ==
+*************************** 1. row ***************************
+agent3_brand_strength_source
+CREATE TABLE `agent3_brand_strength_source` (
+  `brand_key` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `serving_brand_name` varchar(255) DEFAULT NULL,
+  `profile_json` longtext NOT NULL CHECK (json_valid(`profile_json`)),
+  `strength_candidates_json` longtext NOT NULL CHECK (json_valid(`strength_candidates_json`)),
+  `strength_summary_json` longtext NOT NULL CHECK (json_valid(`strength_summary_json`)),
+  `workflow_id` int(11) NOT NULL,
+  `workflow_rev` int(11) NOT NULL,
+  `input_hash` char(64) NOT NULL,
+  `generated_at` datetime NOT NULL,
+  PRIMARY KEY (`brand_key`,`source`),
+  KEY `idx_serving_brand_source` (`serving_brand_name`,`source`),
+  KEY `idx_generated_at` (`generated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_source ==
+35521
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_source_bak_profileonly_20260711 ==
+*************************** 1. row ***************************
+agent3_brand_strength_source_bak_profileonly_20260711
+CREATE TABLE `agent3_brand_strength_source_bak_profileonly_20260711` (
+  `brand_key` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `serving_brand_name` varchar(255) DEFAULT NULL,
+  `profile_json` longtext NOT NULL CHECK (json_valid(`profile_json`)),
+  `strength_candidates_json` longtext NOT NULL CHECK (json_valid(`strength_candidates_json`)),
+  `strength_summary_json` longtext NOT NULL CHECK (json_valid(`strength_summary_json`)),
+  `workflow_id` int(11) NOT NULL,
+  `workflow_rev` int(11) NOT NULL,
+  `input_hash` char(64) NOT NULL,
+  `generated_at` datetime NOT NULL,
+  PRIMARY KEY (`brand_key`,`source`),
+  KEY `idx_serving_brand_source` (`serving_brand_name`,`source`),
+  KEY `idx_generated_at` (`generated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_source_bak_profileonly_20260711 ==
+35521
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_source_bak_taxonomy_20260710 ==
+*************************** 1. row ***************************
+agent3_brand_strength_source_bak_taxonomy_20260710
+CREATE TABLE `agent3_brand_strength_source_bak_taxonomy_20260710` (
+  `brand_key` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `serving_brand_name` varchar(255) DEFAULT NULL,
+  `profile_json` longtext NOT NULL CHECK (json_valid(`profile_json`)),
+  `strength_candidates_json` longtext NOT NULL CHECK (json_valid(`strength_candidates_json`)),
+  `strength_summary_json` longtext NOT NULL CHECK (json_valid(`strength_summary_json`)),
+  `workflow_id` int(11) NOT NULL,
+  `workflow_rev` int(11) NOT NULL,
+  `input_hash` char(64) NOT NULL,
+  `generated_at` datetime NOT NULL,
+  PRIMARY KEY (`brand_key`,`source`),
+  KEY `idx_serving_brand_source` (`serving_brand_name`,`source`),
+  KEY `idx_generated_at` (`generated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.agent3_brand_strength_source_bak_taxonomy_20260710 ==
+35521
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.brand_alias ==
+*************************** 1. row ***************************
+brand_alias
+CREATE TABLE `brand_alias` (
+  `alias_name` varchar(255) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `alias_type` varchar(32) NOT NULL,
+  `alias_sources` varchar(64) DEFAULT NULL,
+  `note` varchar(255) DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`alias_name`),
+  KEY `idx_brand_key` (`brand_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.brand_alias ==
+1688
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_brand_elements ==
+*************************** 1. row ***************************
+cache_brand_elements
+CREATE TABLE `cache_brand_elements` (
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `brand_name_compact` varchar(255) NOT NULL,
+  `factors_json` longtext NOT NULL CHECK (json_valid(`factors_json`)),
+  `strength_json` longtext NOT NULL CHECK (json_valid(`strength_json`)),
+  `strength_generated_at` datetime DEFAULT NULL,
+  `strength_workflow_rev` varchar(64) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `source_computed_at` timestamp NULL DEFAULT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`brand_key`),
+  KEY `idx_cache_brand_elements_compact` (`brand_name_compact`),
+  KEY `idx_cache_brand_elements_updated_at` (`updated_at`),
+  KEY `idx_cache_brand_elements_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_brand_elements ==
+26411
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_brands ==
+*************************** 1. row ***************************
+cache_brands
+CREATE TABLE `cache_brands` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `build_sha` varchar(64) DEFAULT NULL,
+  `input_manifest_json` longtext DEFAULT NULL,
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_brands ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_brands_old_f096v10_0715a ==
+*************************** 1. row ***************************
+cache_brands_old_f096v10_0715a
+CREATE TABLE `cache_brands_old_f096v10_0715a` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `build_sha` varchar(64) DEFAULT NULL,
+  `input_manifest_json` longtext DEFAULT NULL,
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_brands_old_f096v10_0715a ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_cause ==
+*************************** 1. row ***************************
+cache_cause
+CREATE TABLE `cache_cause` (
+  `brand` varchar(255) NOT NULL,
+  `view_type` varchar(30) NOT NULL,
+  `source` varchar(10) NOT NULL,
+  `measure` varchar(20) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`,`view_type`,`source`,`measure`,`market_id`),
+  KEY `idx_cache_cause_brand` (`brand`),
+  KEY `idx_cache_cause_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_cause ==
+168
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_20260710145033 ==
+*************************** 1. row ***************************
+cache_cause_bak_freshness_20260710145033
+CREATE TABLE `cache_cause_bak_freshness_20260710145033` (
+  `brand` varchar(255) NOT NULL,
+  `view_type` varchar(30) NOT NULL,
+  `source` varchar(10) NOT NULL,
+  `measure` varchar(20) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`,`view_type`,`source`,`measure`,`market_id`),
+  KEY `idx_cache_cause_brand` (`brand`),
+  KEY `idx_cache_cause_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_20260710145033 ==
+168
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_20260710145305 ==
+*************************** 1. row ***************************
+cache_cause_bak_freshness_20260710145305
+CREATE TABLE `cache_cause_bak_freshness_20260710145305` (
+  `brand` varchar(255) NOT NULL,
+  `view_type` varchar(30) NOT NULL,
+  `source` varchar(10) NOT NULL,
+  `measure` varchar(20) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`,`view_type`,`source`,`measure`,`market_id`),
+  KEY `idx_cache_cause_brand` (`brand`),
+  KEY `idx_cache_cause_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_20260710145305 ==
+168
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_20260710145607 ==
+*************************** 1. row ***************************
+cache_cause_bak_freshness_20260710145607
+CREATE TABLE `cache_cause_bak_freshness_20260710145607` (
+  `brand` varchar(255) NOT NULL,
+  `view_type` varchar(30) NOT NULL,
+  `source` varchar(10) NOT NULL,
+  `measure` varchar(20) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`,`view_type`,`source`,`measure`,`market_id`),
+  KEY `idx_cache_cause_brand` (`brand`),
+  KEY `idx_cache_cause_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_20260710145607 ==
+168
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_r2_20260710164051 ==
+*************************** 1. row ***************************
+cache_cause_bak_freshness_r2_20260710164051
+CREATE TABLE `cache_cause_bak_freshness_r2_20260710164051` (
+  `brand` varchar(255) NOT NULL,
+  `view_type` varchar(30) NOT NULL,
+  `source` varchar(10) NOT NULL,
+  `measure` varchar(20) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`,`view_type`,`source`,`measure`,`market_id`),
+  KEY `idx_cache_cause_brand` (`brand`),
+  KEY `idx_cache_cause_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_r2_20260710164051 ==
+168
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_r2_20260710171845 ==
+*************************** 1. row ***************************
+cache_cause_bak_freshness_r2_20260710171845
+CREATE TABLE `cache_cause_bak_freshness_r2_20260710171845` (
+  `brand` varchar(255) NOT NULL,
+  `view_type` varchar(30) NOT NULL,
+  `source` varchar(10) NOT NULL,
+  `measure` varchar(20) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`,`view_type`,`source`,`measure`,`market_id`),
+  KEY `idx_cache_cause_brand` (`brand`),
+  KEY `idx_cache_cause_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_cause_bak_freshness_r2_20260710171845 ==
+168
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis ==
+*************************** 1. row ***************************
+cache_deep_analysis
+CREATE TABLE `cache_deep_analysis` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis ==
+*************************** 1. row ***************************
+cache_deep_analysis_ai_analysis
+CREATE TABLE `cache_deep_analysis_ai_analysis` (
+  `brand` varchar(255) NOT NULL,
+  `brand_key` varchar(255) DEFAULT NULL,
+  `market_id` varchar(20) DEFAULT NULL,
+  `ai_analysis_json` longtext DEFAULT NULL,
+  `ai_analysis_short_json` longtext DEFAULT NULL,
+  `ai_analysis_long_json` longtext DEFAULT NULL,
+  `updated_at` datetime DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `short_workflow_id` int(11) DEFAULT NULL,
+  `short_workflow_revision_id` int(11) DEFAULT NULL,
+  `short_generation_id` varchar(255) DEFAULT NULL,
+  `short_input_hash` char(64) DEFAULT NULL,
+  `short_generated_at` datetime(6) DEFAULT NULL,
+  `short_source_epoch` varchar(255) DEFAULT NULL,
+  `short_generation_status` varchar(32) DEFAULT NULL,
+  `long_workflow_id` int(11) DEFAULT NULL,
+  `long_workflow_revision_id` int(11) DEFAULT NULL,
+  `long_generation_id` varchar(255) DEFAULT NULL,
+  `long_input_hash` char(64) DEFAULT NULL,
+  `long_generated_at` datetime(6) DEFAULT NULL,
+  `long_source_epoch` varchar(255) DEFAULT NULL,
+  `long_generation_status` varchar(32) DEFAULT NULL,
+  PRIMARY KEY (`brand`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis ==
+24789
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_bak_pre_promotion_20260710 ==
+*************************** 1. row ***************************
+cache_deep_analysis_ai_analysis_bak_pre_promotion_20260710
+CREATE TABLE `cache_deep_analysis_ai_analysis_bak_pre_promotion_20260710` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) DEFAULT NULL,
+  `ai_analysis_json` longtext DEFAULT NULL,
+  `ai_analysis_short_json` longtext DEFAULT NULL,
+  `ai_analysis_long_json` longtext DEFAULT NULL,
+  `updated_at` datetime DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_bak_pre_promotion_20260710 ==
+279
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_bak_pre_short_long_20260712 ==
+*************************** 1. row ***************************
+cache_deep_analysis_ai_analysis_bak_pre_short_long_20260712
+CREATE TABLE `cache_deep_analysis_ai_analysis_bak_pre_short_long_20260712` (
+  `brand` varchar(255) NOT NULL,
+  `brand_key` varchar(255) DEFAULT NULL,
+  `market_id` varchar(20) DEFAULT NULL,
+  `ai_analysis_json` longtext DEFAULT NULL,
+  `ai_analysis_short_json` longtext DEFAULT NULL,
+  `ai_analysis_long_json` longtext DEFAULT NULL,
+  `updated_at` datetime DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `short_workflow_id` int(11) DEFAULT NULL,
+  `short_workflow_revision_id` int(11) DEFAULT NULL,
+  `short_generation_id` varchar(255) DEFAULT NULL,
+  `short_input_hash` char(64) DEFAULT NULL,
+  `short_generated_at` datetime(6) DEFAULT NULL,
+  `short_source_epoch` varchar(255) DEFAULT NULL,
+  `short_generation_status` varchar(32) DEFAULT NULL,
+  `long_workflow_id` int(11) DEFAULT NULL,
+  `long_workflow_revision_id` int(11) DEFAULT NULL,
+  `long_generation_id` varchar(255) DEFAULT NULL,
+  `long_input_hash` char(64) DEFAULT NULL,
+  `long_generated_at` datetime(6) DEFAULT NULL,
+  `long_source_epoch` varchar(255) DEFAULT NULL,
+  `long_generation_status` varchar(32) DEFAULT NULL,
+  PRIMARY KEY (`brand`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_bak_pre_short_long_20260712 ==
+23331
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_stage_general_sample_20260712 ==
+*************************** 1. row ***************************
+cache_deep_analysis_ai_analysis_stage_general_sample_20260712
+CREATE TABLE `cache_deep_analysis_ai_analysis_stage_general_sample_20260712` (
+  `brand_key` varchar(255) NOT NULL,
+  `canonical_brand_name` varchar(255) NOT NULL,
+  `route_bucket` varchar(16) NOT NULL,
+  `ai_analysis_short_json` longtext NOT NULL,
+  `ai_analysis_long_json` longtext NOT NULL,
+  `short_tokens_in` int(11) NOT NULL,
+  `short_tokens_out` int(11) NOT NULL,
+  `long_tokens_in` int(11) NOT NULL,
+  `long_tokens_out` int(11) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`brand_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_stage_general_sample_20260712 ==
+18
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_stage_short_long_20260712 ==
+*************************** 1. row ***************************
+cache_deep_analysis_ai_analysis_stage_short_long_20260712
+CREATE TABLE `cache_deep_analysis_ai_analysis_stage_short_long_20260712` (
+  `brand_key` varchar(255) NOT NULL,
+  `canonical_brand_name` varchar(255) NOT NULL,
+  `generated_brand_name` varchar(255) NOT NULL,
+  `route_bucket` varchar(16) NOT NULL,
+  `ai_analysis_short_json` longtext NOT NULL,
+  `ai_analysis_long_json` longtext NOT NULL,
+  `short_run_id` bigint(20) NOT NULL,
+  `long_run_id` bigint(20) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`brand_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_ai_analysis_stage_short_long_20260712 ==
+349
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_audit_p0_stage_20260710 ==
+*************************** 1. row ***************************
+cache_deep_analysis_audit_p0_stage_20260710
+CREATE TABLE `cache_deep_analysis_audit_p0_stage_20260710` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_audit_p0_stage_20260710 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_backup_audit_p0_20260710_1340 ==
+*************************** 1. row ***************************
+cache_deep_analysis_backup_audit_p0_20260710_1340
+CREATE TABLE `cache_deep_analysis_backup_audit_p0_20260710_1340` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_backup_audit_p0_20260710_1340 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260709200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260709200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260709200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260709200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260710135533 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260710135533
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260710135533` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260710135533 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260710150708 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260710150708
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260710150708` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260710150708 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260710200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260710200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260710200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260710200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260711200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260711200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260711200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260711200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260712200005 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260712200005
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260712200005` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260712200005 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260713200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260713200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260713200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260713200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260714200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260714200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260714200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260714200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260715200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260715200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260715200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260715200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260716200001 ==
+*************************** 1. row ***************************
+cache_deep_analysis_bak_d2_prev3_20260716200001
+CREATE TABLE `cache_deep_analysis_bak_d2_prev3_20260716200001` (
+  `brand` varchar(255) NOT NULL,
+  `market_id` varchar(20) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`brand`),
+  KEY `idx_cache_deep_market` (`market_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_bak_d2_prev3_20260716200001 ==
+4695
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_general ==
+*************************** 1. row ***************************
+cache_deep_analysis_general
+CREATE TABLE `cache_deep_analysis_general` (
+  `brand_key` varchar(255) NOT NULL,
+  `brand` varchar(255) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL,
+  `market_id` varchar(32) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `source_computed_at` timestamp NULL DEFAULT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL,
+  `is_stale` tinyint(1) NOT NULL DEFAULT 0,
+  `stale_reason` varchar(255) DEFAULT NULL,
+  `stale_marked_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`brand_key`,`atc4_code`),
+  KEY `idx_cache_deep_general_brand` (`brand`),
+  KEY `idx_cache_deep_general_atc4` (`atc4_code`),
+  KEY `idx_cache_deep_general_market` (`market_id`),
+  KEY `idx_cache_deep_general_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_general ==
+34378
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_general_backup_pre_rng_20260712 ==
+*************************** 1. row ***************************
+cache_deep_analysis_general_backup_pre_rng_20260712
+CREATE TABLE `cache_deep_analysis_general_backup_pre_rng_20260712` (
+  `brand_key` varchar(255) NOT NULL,
+  `brand` varchar(255) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL,
+  `market_id` varchar(32) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `brand_factors` longtext DEFAULT NULL CHECK (`brand_factors` is null or json_valid(`brand_factors`)),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `source_computed_at` timestamp NULL DEFAULT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL,
+  `is_stale` tinyint(1) NOT NULL DEFAULT 0,
+  `stale_reason` varchar(255) DEFAULT NULL,
+  `stale_marked_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`brand_key`,`atc4_code`),
+  KEY `idx_cache_deep_general_brand` (`brand`),
+  KEY `idx_cache_deep_general_atc4` (`atc4_code`),
+  KEY `idx_cache_deep_general_market` (`market_id`),
+  KEY `idx_cache_deep_general_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_deep_analysis_general_backup_pre_rng_20260712 ==
+597
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_dynamic_market_response ==
+*************************** 1. row ***************************
+cache_dynamic_market_response
+CREATE TABLE `cache_dynamic_market_response` (
+  `cache_key` char(64) NOT NULL,
+  `namespace` varchar(32) NOT NULL DEFAULT 'dynamic',
+  `request_json` longtext NOT NULL CHECK (json_valid(`request_json`)),
+  `source_epoch` char(64) NOT NULL,
+  `state` enum('building','ready','failed') NOT NULL,
+  `lease_owner` varchar(64) DEFAULT NULL,
+  `lease_expires_at` datetime DEFAULT NULL,
+  `response_json` longtext DEFAULT NULL CHECK (`response_json` is null or json_valid(`response_json`)),
+  `response_sha256` char(64) DEFAULT NULL,
+  `payload_size` int(10) unsigned DEFAULT NULL,
+  `expires_at` datetime DEFAULT NULL,
+  `hit_count` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `last_hit_at` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  `failure_reason` varchar(255) DEFAULT NULL,
+  `attempt_count` int(10) unsigned NOT NULL DEFAULT 0,
+  `last_error` text DEFAULT NULL,
+  `last_attempt_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`cache_key`),
+  KEY `idx_dynamic_response_expiry` (`state`,`expires_at`),
+  KEY `idx_dynamic_response_lease` (`state`,`lease_expires_at`),
+  KEY `idx_dynamic_response_eviction` (`state`,`hit_count`,`last_hit_at`,`updated_at`),
+  KEY `idx_dynamic_response_namespace_eviction` (`namespace`,`state`,`hit_count`,`last_hit_at`,`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_dynamic_market_response ==
+339
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_forecast_general ==
+*************************** 1. row ***************************
+cache_market_forecast_general
+CREATE TABLE `cache_market_forecast_general` (
+  `atc4_code` varchar(16) NOT NULL,
+  `source` varchar(32) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `market_forecast_json` longtext NOT NULL CHECK (json_valid(`market_forecast_json`)),
+  `payload_size` int(11) NOT NULL,
+  `source_row_count` int(11) NOT NULL,
+  `source_computed_at` timestamp NULL DEFAULT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `is_stale` tinyint(1) NOT NULL DEFAULT 0,
+  `stale_reason` varchar(255) DEFAULT NULL,
+  `stale_marked_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`atc4_code`,`source`,`measure`),
+  KEY `idx_market_forecast_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_forecast_general ==
+2880
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_forecast_general_backup_pre_rng_20260712 ==
+*************************** 1. row ***************************
+cache_market_forecast_general_backup_pre_rng_20260712
+CREATE TABLE `cache_market_forecast_general_backup_pre_rng_20260712` (
+  `atc4_code` varchar(16) NOT NULL,
+  `source` varchar(32) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `market_forecast_json` longtext NOT NULL CHECK (json_valid(`market_forecast_json`)),
+  `payload_size` int(11) NOT NULL,
+  `source_row_count` int(11) NOT NULL,
+  `source_computed_at` timestamp NULL DEFAULT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `is_stale` tinyint(1) NOT NULL DEFAULT 0,
+  `stale_reason` varchar(255) DEFAULT NULL,
+  `stale_marked_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`atc4_code`,`source`,`measure`),
+  KEY `idx_market_forecast_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_forecast_general_backup_pre_rng_20260712 ==
+830
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_status ==
+*************************** 1. row ***************************
+cache_market_status
+CREATE TABLE `cache_market_status` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `build_sha` varchar(64) DEFAULT NULL,
+  `input_manifest_json` longtext DEFAULT NULL,
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_status ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_20260710145033 ==
+*************************** 1. row ***************************
+cache_market_status_bak_freshness_20260710145033
+CREATE TABLE `cache_market_status_bak_freshness_20260710145033` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_20260710145033 ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_20260710145305 ==
+*************************** 1. row ***************************
+cache_market_status_bak_freshness_20260710145305
+CREATE TABLE `cache_market_status_bak_freshness_20260710145305` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_20260710145305 ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_20260710145607 ==
+*************************** 1. row ***************************
+cache_market_status_bak_freshness_20260710145607
+CREATE TABLE `cache_market_status_bak_freshness_20260710145607` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_20260710145607 ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_r2_20260710162930 ==
+*************************** 1. row ***************************
+cache_market_status_bak_freshness_r2_20260710162930
+CREATE TABLE `cache_market_status_bak_freshness_r2_20260710162930` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_r2_20260710162930 ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_r2_20260710163036 ==
+*************************** 1. row ***************************
+cache_market_status_bak_freshness_r2_20260710163036
+CREATE TABLE `cache_market_status_bak_freshness_r2_20260710163036` (
+  `query_key` varchar(255) NOT NULL,
+  `response_json` longtext NOT NULL CHECK (json_valid(`response_json`)),
+  `payload_size` int(11) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`query_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.cache_market_status_bak_freshness_r2_20260710163036 ==
+1
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.catalog_cd_market ==
+*************************** 1. row ***************************
+catalog_cd_market
+CREATE TABLE `catalog_cd_market` (
+  `cd_id` varchar(32) NOT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `ml_id` varchar(32) DEFAULT NULL,
+  `cd_filter_id` varchar(32) DEFAULT NULL,
+  `data_source` varchar(32) DEFAULT NULL,
+  `analyze_class` tinyint(1) DEFAULT NULL,
+  `analyze_molecule` tinyint(1) DEFAULT NULL,
+  `analyze_dosage_form` tinyint(1) DEFAULT NULL,
+  `analyze_strength_pack` tinyint(1) DEFAULT NULL,
+  `analyze_nhi_type` tinyint(1) DEFAULT NULL,
+  `analyze_ox_gx` tinyint(1) DEFAULT NULL,
+  `analyze_fish_oil` tinyint(1) DEFAULT NULL,
+  `target_iqvia_1` varchar(255) DEFAULT NULL,
+  `target_iqvia_2` varchar(255) DEFAULT NULL,
+  `target_iqvia_3` varchar(255) DEFAULT NULL,
+  `target_ubist_1` varchar(255) DEFAULT NULL,
+  `target_ubist_2` varchar(255) DEFAULT NULL,
+  `target_ubist_3` varchar(255) DEFAULT NULL,
+  `target_ubist_4` varchar(255) DEFAULT NULL,
+  `source_file_version` varchar(512) DEFAULT NULL,
+  `ingested_at` datetime(6) DEFAULT NULL,
+  `catalog_manifest_hash` char(64) DEFAULT NULL,
+  PRIMARY KEY (`cd_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.catalog_cd_market ==
+19
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.catalog_ml_market ==
+*************************** 1. row ***************************
+catalog_ml_market
+CREATE TABLE `catalog_ml_market` (
+  `ml_id` varchar(32) NOT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `data_source` varchar(32) DEFAULT NULL,
+  `atc_codes_json` longtext DEFAULT NULL,
+  `analyze_class` tinyint(1) DEFAULT NULL,
+  `analyze_molecule` tinyint(1) DEFAULT NULL,
+  `analyze_dosage_form` tinyint(1) DEFAULT NULL,
+  `analyze_strength_pack` tinyint(1) DEFAULT NULL,
+  `analyze_nhi_type` tinyint(1) DEFAULT NULL,
+  `analyze_ox_gx` tinyint(1) DEFAULT NULL,
+  `analyze_fish_oil` tinyint(1) DEFAULT NULL,
+  `target_iqvia_1` varchar(255) DEFAULT NULL,
+  `target_iqvia_2` varchar(255) DEFAULT NULL,
+  `target_iqvia_3` varchar(255) DEFAULT NULL,
+  `target_ubist_1` varchar(255) DEFAULT NULL,
+  `target_ubist_2` varchar(255) DEFAULT NULL,
+  `target_ubist_3` varchar(255) DEFAULT NULL,
+  `target_ubist_4` varchar(255) DEFAULT NULL,
+  `source_file_version` varchar(512) DEFAULT NULL,
+  `ingested_at` datetime(6) DEFAULT NULL,
+  `catalog_manifest_hash` char(64) DEFAULT NULL,
+  PRIMARY KEY (`ml_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.catalog_ml_market ==
+16
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.catalog_strategic_brand ==
+*************************** 1. row ***************************
+catalog_strategic_brand
+CREATE TABLE `catalog_strategic_brand` (
+  `brand_id` varchar(128) NOT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `merge_name` varchar(255) DEFAULT NULL,
+  `ml_id` varchar(32) DEFAULT NULL,
+  `cd_id` varchar(32) DEFAULT NULL,
+  `is_excluded` tinyint(1) DEFAULT NULL,
+  `is_class_excluded` tinyint(1) DEFAULT NULL,
+  `allowed_atc4_codes_json` longtext DEFAULT NULL,
+  `class` varchar(255) DEFAULT NULL,
+  `class_1` varchar(255) DEFAULT NULL,
+  `class_2` varchar(255) DEFAULT NULL,
+  `molecule` varchar(255) DEFAULT NULL,
+  `dosage_form` varchar(255) DEFAULT NULL,
+  `strength_pack` longtext DEFAULT NULL,
+  `nhi_type` varchar(255) DEFAULT NULL,
+  `ox_gx` varchar(255) DEFAULT NULL,
+  `fish_oil` varchar(255) DEFAULT NULL,
+  `판매사` varchar(255) DEFAULT NULL,
+  `제조사` varchar(255) DEFAULT NULL,
+  `source_file_version` varchar(512) DEFAULT NULL,
+  `ingested_at` datetime(6) DEFAULT NULL,
+  `is_jw` tinyint(1) DEFAULT NULL,
+  `is_target` tinyint(1) DEFAULT NULL,
+  `canonical_name` varchar(255) DEFAULT NULL,
+  `general_brand_key` varchar(255) DEFAULT NULL,
+  `strategy_id` varchar(32) DEFAULT NULL,
+  `catalog_manifest_hash` char(64) DEFAULT NULL,
+  PRIMARY KEY (`brand_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.catalog_strategic_brand ==
+5100
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.deep_forecast_block ==
+*************************** 1. row ***************************
+deep_forecast_block
+CREATE TABLE `deep_forecast_block` (
+  `brand_key` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `market_id` varchar(64) NOT NULL,
+  `view_kind` varchar(32) NOT NULL,
+  `forecast_json` longtext NOT NULL CHECK (json_valid(`forecast_json`)),
+  `simulation_json` longtext DEFAULT NULL CHECK (`simulation_json` is null or json_valid(`simulation_json`)),
+  `generation_status` varchar(64) DEFAULT NULL,
+  `no_history_fallback` longtext DEFAULT NULL CHECK (`no_history_fallback` is null or json_valid(`no_history_fallback`)),
+  `simulation_available` tinyint(1) NOT NULL,
+  `source_epoch` varchar(64) NOT NULL,
+  `source_computed_at` datetime DEFAULT NULL,
+  `generated_at` datetime NOT NULL COMMENT 'payload.generated_at when present; otherwise source cache updated_at fallback',
+  PRIMARY KEY (`brand_key`,`source`,`market_id`),
+  CONSTRAINT `CONSTRAINT_1` CHECK (`source` in ('iqvia_nsa','ubist')),
+  CONSTRAINT `CONSTRAINT_2` CHECK (`simulation_available` = 0 and `simulation_json` is null or `simulation_available` = 1 and `simulation_json` is not null),
+  CONSTRAINT `CONSTRAINT_3` CHECK (`view_kind` = 'market_landscape' and `market_id` like 'ml\\_%' or `view_kind` = 'competitive_dynamics' and `market_id` like 'cd\\_%' or `view_kind` = 'general' and `market_id`  not like 'ml\\_%' and `market_id`  not like 'cd\\_%')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.deep_forecast_block ==
+43474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.deep_forecast_block_stage_ops_20260713 ==
+*************************** 1. row ***************************
+deep_forecast_block_stage_ops_20260713
+CREATE TABLE `deep_forecast_block_stage_ops_20260713` (
+  `brand_key` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `market_id` varchar(64) NOT NULL,
+  `view_kind` varchar(32) NOT NULL,
+  `forecast_json` longtext NOT NULL CHECK (json_valid(`forecast_json`)),
+  `simulation_json` longtext DEFAULT NULL CHECK (`simulation_json` is null or json_valid(`simulation_json`)),
+  `generation_status` varchar(64) DEFAULT NULL,
+  `no_history_fallback` longtext DEFAULT NULL CHECK (`no_history_fallback` is null or json_valid(`no_history_fallback`)),
+  `simulation_available` tinyint(1) NOT NULL,
+  `source_epoch` varchar(64) NOT NULL,
+  `source_computed_at` datetime DEFAULT NULL,
+  `generated_at` datetime NOT NULL COMMENT 'payload.generated_at when present; otherwise source cache updated_at fallback',
+  PRIMARY KEY (`brand_key`,`source`,`market_id`),
+  CONSTRAINT `CONSTRAINT_1` CHECK (`source` in ('iqvia_nsa','ubist')),
+  CONSTRAINT `CONSTRAINT_2` CHECK (`simulation_available` = 0 and `simulation_json` is null or `simulation_available` = 1 and `simulation_json` is not null),
+  CONSTRAINT `CONSTRAINT_3` CHECK (`view_kind` = 'market_landscape' and `market_id` like 'ml\\_%' or `view_kind` = 'competitive_dynamics' and `market_id` like 'cd\\_%' or `view_kind` = 'general' and `market_id`  not like 'ml\\_%' and `market_id`  not like 'cd\\_%')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.deep_forecast_block_stage_ops_20260713 ==
+43474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.deep_forecast_horizon ==
+*************************** 1. row ***************************
+deep_forecast_horizon
+CREATE TABLE `deep_forecast_horizon` (
+  `market_id` varchar(64) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `view_kind` varchar(32) NOT NULL,
+  `forecast_horizon_json` longtext NOT NULL CHECK (json_valid(`forecast_horizon_json`)),
+  `source_row_count` int(11) NOT NULL,
+  `source_epoch` varchar(64) NOT NULL,
+  `source_computed_at` datetime DEFAULT NULL,
+  `generated_at` datetime NOT NULL COMMENT 'payload.generated_at when present; otherwise source cache updated_at fallback',
+  PRIMARY KEY (`market_id`,`source`,`measure`),
+  CONSTRAINT `CONSTRAINT_1` CHECK (`source` in ('iqvia_nsa','ubist')),
+  CONSTRAINT `CONSTRAINT_2` CHECK (`view_kind` = 'market_landscape' and `market_id` like 'ml\\_%' or `view_kind` = 'competitive_dynamics' and `market_id` like 'cd\\_%' or `view_kind` = 'general' and `market_id`  not like 'ml\\_%' and `market_id`  not like 'cd\\_%')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.deep_forecast_horizon ==
+3000
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.deep_forecast_horizon_stage_ops_20260713 ==
+*************************** 1. row ***************************
+deep_forecast_horizon_stage_ops_20260713
+CREATE TABLE `deep_forecast_horizon_stage_ops_20260713` (
+  `market_id` varchar(64) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `view_kind` varchar(32) NOT NULL,
+  `forecast_horizon_json` longtext NOT NULL CHECK (json_valid(`forecast_horizon_json`)),
+  `source_row_count` int(11) NOT NULL,
+  `source_epoch` varchar(64) NOT NULL,
+  `source_computed_at` datetime DEFAULT NULL,
+  `generated_at` datetime NOT NULL COMMENT 'payload.generated_at when present; otherwise source cache updated_at fallback',
+  PRIMARY KEY (`market_id`,`source`,`measure`),
+  CONSTRAINT `CONSTRAINT_1` CHECK (`source` in ('iqvia_nsa','ubist')),
+  CONSTRAINT `CONSTRAINT_2` CHECK (`view_kind` = 'market_landscape' and `market_id` like 'ml\\_%' or `view_kind` = 'competitive_dynamics' and `market_id` like 'cd\\_%' or `view_kind` = 'general' and `market_id`  not like 'ml\\_%' and `market_id`  not like 'cd\\_%')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.deep_forecast_horizon_stage_ops_20260713 ==
+3000
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.event_brand_scores ==
+*************************** 1. row ***************************
+event_brand_scores
+CREATE TABLE `event_brand_scores` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `event_id` varchar(64) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `brand_canonical` varchar(255) DEFAULT NULL,
+  `brand_id` varchar(64) DEFAULT NULL,
+  `ml_id` varchar(20) DEFAULT NULL,
+  `cd_id` varchar(20) DEFAULT NULL,
+  `is_jw` tinyint(4) DEFAULT 0,
+  `score` int(11) NOT NULL CHECK (`score` >= 0 and `score` <= 100),
+  `score_tier` varchar(30) DEFAULT NULL,
+  `reason` text DEFAULT NULL,
+  `source_processor` varchar(50) DEFAULT NULL,
+  `generated_at` datetime DEFAULT current_timestamp(),
+  `news_id` varchar(64) DEFAULT NULL COMMENT 'Direct news_raw reference for scored JSON import',
+  `derivation` enum('llm_direct','cross_match','manual') NOT NULL DEFAULT 'llm_direct',
+  `mirrored_from_jw_brands` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Source JW brands for cross_match derivation' CHECK (json_valid(`mirrored_from_jw_brands`)),
+  `tag` varchar(50) DEFAULT NULL COMMENT 'Workflow top-level tag',
+  `summary` text DEFAULT NULL COMMENT 'Workflow top-level summary',
+  `workflow_id` int(11) DEFAULT 196,
+  `catalog_version` varchar(64) DEFAULT NULL COMMENT '_catalog.json sha1',
+  `llm_meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Workflow duration, token and cost metadata' CHECK (json_valid(`llm_meta`)),
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_event_brand` (`event_id`,`brand_canonical`),
+  KEY `idx_event_brand_scores_brand_score` (`brand_canonical`,`score` DESC),
+  KEY `idx_event_brand_scores_ml_id` (`ml_id`),
+  KEY `idx_event_brand_scores_news_id` (`news_id`),
+  KEY `idx_event_brand_scores_derivation` (`derivation`),
+  KEY `idx_event_brand_scores_workflow` (`workflow_id`,`catalog_version`),
+  KEY `idx_phase29_brand_score` (`brand_canonical`,`score`),
+  KEY `idx_phase29_news` (`news_id`),
+  KEY `idx_event_brand_scores_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_event_brand_scores_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=253322 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.event_brand_scores ==
+71240
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.event_brand_scores_bak_precutover_20260707_155418 ==
+*************************** 1. row ***************************
+event_brand_scores_bak_precutover_20260707_155418
+CREATE TABLE `event_brand_scores_bak_precutover_20260707_155418` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `event_id` varchar(64) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `brand_canonical` varchar(255) DEFAULT NULL,
+  `brand_id` varchar(64) DEFAULT NULL,
+  `ml_id` varchar(20) DEFAULT NULL,
+  `cd_id` varchar(20) DEFAULT NULL,
+  `is_jw` tinyint(4) DEFAULT 0,
+  `score` int(11) NOT NULL CHECK (`score` >= 0 and `score` <= 100),
+  `score_tier` varchar(30) DEFAULT NULL,
+  `reason` text DEFAULT NULL,
+  `source_processor` varchar(50) DEFAULT NULL,
+  `generated_at` datetime DEFAULT current_timestamp(),
+  `news_id` varchar(64) DEFAULT NULL COMMENT 'Direct news_raw reference for scored JSON import',
+  `derivation` enum('llm_direct','cross_match','manual') NOT NULL DEFAULT 'llm_direct',
+  `mirrored_from_jw_brands` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Source JW brands for cross_match derivation' CHECK (json_valid(`mirrored_from_jw_brands`)),
+  `tag` varchar(50) DEFAULT NULL COMMENT 'Workflow top-level tag',
+  `summary` text DEFAULT NULL COMMENT 'Workflow top-level summary',
+  `workflow_id` int(11) DEFAULT 196,
+  `catalog_version` varchar(64) DEFAULT NULL COMMENT '_catalog.json sha1',
+  `llm_meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Workflow duration, token and cost metadata' CHECK (json_valid(`llm_meta`)),
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_event_brand` (`event_id`,`brand_canonical`),
+  KEY `idx_event_brand_scores_brand_score` (`brand_canonical`,`score` DESC),
+  KEY `idx_event_brand_scores_ml_id` (`ml_id`),
+  KEY `idx_event_brand_scores_news_id` (`news_id`),
+  KEY `idx_event_brand_scores_derivation` (`derivation`),
+  KEY `idx_event_brand_scores_workflow` (`workflow_id`,`catalog_version`),
+  KEY `idx_phase29_brand_score` (`brand_canonical`,`score`),
+  KEY `idx_phase29_news` (`news_id`),
+  KEY `idx_event_brand_scores_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_event_brand_scores_tier_expire_at` (`tier`,`expire_at`),
+  CONSTRAINT `fk_event_brand_scores_events` FOREIGN KEY (`event_id`) REFERENCES `events_bak_precutover_20260707_155418` (`event_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=126968 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.event_brand_scores_bak_precutover_20260707_155418 ==
+60555
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.event_brand_scores_bak_tier2_exact_20260708_005132 ==
+*************************** 1. row ***************************
+event_brand_scores_bak_tier2_exact_20260708_005132
+CREATE TABLE `event_brand_scores_bak_tier2_exact_20260708_005132` (
+  `id` bigint(20) NOT NULL DEFAULT 0,
+  `event_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL,
+  `brand_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL,
+  `brand_canonical` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `brand_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `ml_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `cd_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `is_jw` tinyint(4) DEFAULT 0,
+  `score` int(11) NOT NULL CHECK (`score` >= 0 and `score` <= 100),
+  `score_tier` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `source_processor` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `generated_at` datetime DEFAULT current_timestamp(),
+  `news_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT 'Direct news_raw reference for scored JSON import',
+  `derivation` enum('llm_direct','cross_match','manual') CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL DEFAULT 'llm_direct',
+  `mirrored_from_jw_brands` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Source JW brands for cross_match derivation' CHECK (json_valid(`mirrored_from_jw_brands`)),
+  `tag` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT 'Workflow top-level tag',
+  `summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT 'Workflow top-level summary',
+  `workflow_id` int(11) DEFAULT 196,
+  `catalog_version` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT '_catalog.json sha1',
+  `llm_meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Workflow duration, token and cost metadata' CHECK (json_valid(`llm_meta`)),
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.event_brand_scores_bak_tier2_exact_20260708_005132 ==
+13202
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.event_brand_scores_bak_v3rescore_20260704_pre5347 ==
+*************************** 1. row ***************************
+event_brand_scores_bak_v3rescore_20260704_pre5347
+CREATE TABLE `event_brand_scores_bak_v3rescore_20260704_pre5347` (
+  `id` bigint(20) NOT NULL DEFAULT 0,
+  `event_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL,
+  `brand_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL,
+  `brand_canonical` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `brand_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `ml_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `cd_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `is_jw` tinyint(4) DEFAULT 0,
+  `score` int(11) NOT NULL CHECK (`score` >= 0 and `score` <= 100),
+  `score_tier` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `source_processor` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL,
+  `generated_at` datetime DEFAULT current_timestamp(),
+  `news_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT 'Direct news_raw reference for scored JSON import',
+  `derivation` enum('llm_direct','cross_match','manual') CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL DEFAULT 'llm_direct',
+  `mirrored_from_jw_brands` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Source JW brands for cross_match derivation' CHECK (json_valid(`mirrored_from_jw_brands`)),
+  `tag` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT 'Workflow top-level tag',
+  `summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT 'Workflow top-level summary',
+  `workflow_id` int(11) DEFAULT 196,
+  `catalog_version` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci DEFAULT NULL COMMENT '_catalog.json sha1',
+  `llm_meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Workflow duration, token and cost metadata' CHECK (json_valid(`llm_meta`)),
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  KEY `idx_bak_id` (`id`),
+  KEY `idx_bak_news` (`news_id`),
+  KEY `idx_bak_brand` (`brand_canonical`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.event_brand_scores_bak_v3rescore_20260704_pre5347 ==
+33066
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.event_brand_scores_mig_stg_20260707093653 ==
+*************************** 1. row ***************************
+event_brand_scores_mig_stg_20260707093653
+CREATE TABLE `event_brand_scores_mig_stg_20260707093653` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `event_id` varchar(64) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `brand_canonical` varchar(255) DEFAULT NULL,
+  `brand_id` varchar(64) DEFAULT NULL,
+  `ml_id` varchar(20) DEFAULT NULL,
+  `cd_id` varchar(20) DEFAULT NULL,
+  `is_jw` tinyint(4) DEFAULT 0,
+  `score` int(11) NOT NULL CHECK (`score` >= 0 and `score` <= 100),
+  `score_tier` varchar(30) DEFAULT NULL,
+  `reason` text DEFAULT NULL,
+  `source_processor` varchar(50) DEFAULT NULL,
+  `generated_at` datetime DEFAULT current_timestamp(),
+  `news_id` varchar(64) DEFAULT NULL COMMENT 'Direct news_raw reference for scored JSON import',
+  `derivation` enum('llm_direct','cross_match','manual') NOT NULL DEFAULT 'llm_direct',
+  `mirrored_from_jw_brands` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Source JW brands for cross_match derivation' CHECK (json_valid(`mirrored_from_jw_brands`)),
+  `tag` varchar(50) DEFAULT NULL COMMENT 'Workflow top-level tag',
+  `summary` text DEFAULT NULL COMMENT 'Workflow top-level summary',
+  `workflow_id` int(11) DEFAULT 196,
+  `catalog_version` varchar(64) DEFAULT NULL COMMENT '_catalog.json sha1',
+  `llm_meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Workflow duration, token and cost metadata' CHECK (json_valid(`llm_meta`)),
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  `legacy_score_id` bigint(20) DEFAULT NULL,
+  `legacy_event_id` varchar(64) DEFAULT NULL,
+  `legacy_news_id` varchar(64) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_event_brand_scores_brand_score` (`brand_canonical`,`score` DESC),
+  KEY `idx_event_brand_scores_ml_id` (`ml_id`),
+  KEY `idx_event_brand_scores_news_id` (`news_id`),
+  KEY `idx_event_brand_scores_derivation` (`derivation`),
+  KEY `idx_event_brand_scores_workflow` (`workflow_id`,`catalog_version`),
+  KEY `idx_phase29_brand_score` (`brand_canonical`,`score`),
+  KEY `idx_phase29_news` (`news_id`),
+  KEY `idx_event_brand_scores_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_event_brand_scores_tier_expire_at` (`tier`,`expire_at`),
+  KEY `idx_mig_event_brand` (`event_id`,`brand_canonical`),
+  KEY `idx_mig_legacy_score_id` (`legacy_score_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=126968 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.event_brand_scores_mig_stg_20260707093653 ==
+60555
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.event_brand_scores_tier2_staging_20260707_105528 ==
+*************************** 1. row ***************************
+event_brand_scores_tier2_staging_20260707_105528
+CREATE TABLE `event_brand_scores_tier2_staging_20260707_105528` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `event_id` varchar(64) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `brand_canonical` varchar(255) DEFAULT NULL,
+  `brand_id` varchar(64) DEFAULT NULL,
+  `ml_id` varchar(20) DEFAULT NULL,
+  `cd_id` varchar(20) DEFAULT NULL,
+  `is_jw` tinyint(4) DEFAULT 0,
+  `score` int(11) NOT NULL CHECK (`score` >= 0 and `score` <= 100),
+  `score_tier` varchar(30) DEFAULT NULL,
+  `reason` text DEFAULT NULL,
+  `source_processor` varchar(50) DEFAULT NULL,
+  `generated_at` datetime DEFAULT current_timestamp(),
+  `news_id` varchar(64) DEFAULT NULL COMMENT 'Direct news_raw reference for scored JSON import',
+  `derivation` enum('llm_direct','cross_match','manual') NOT NULL DEFAULT 'llm_direct',
+  `mirrored_from_jw_brands` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Source JW brands for cross_match derivation' CHECK (json_valid(`mirrored_from_jw_brands`)),
+  `tag` varchar(50) DEFAULT NULL COMMENT 'Workflow top-level tag',
+  `summary` text DEFAULT NULL COMMENT 'Workflow top-level summary',
+  `workflow_id` int(11) DEFAULT 196,
+  `catalog_version` varchar(64) DEFAULT NULL COMMENT '_catalog.json sha1',
+  `llm_meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Workflow duration, token and cost metadata' CHECK (json_valid(`llm_meta`)),
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_event_brand` (`event_id`,`brand_canonical`),
+  KEY `idx_event_brand_scores_brand_score` (`brand_canonical`,`score` DESC),
+  KEY `idx_event_brand_scores_ml_id` (`ml_id`),
+  KEY `idx_event_brand_scores_news_id` (`news_id`),
+  KEY `idx_event_brand_scores_derivation` (`derivation`),
+  KEY `idx_event_brand_scores_workflow` (`workflow_id`,`catalog_version`),
+  KEY `idx_phase29_brand_score` (`brand_canonical`,`score`),
+  KEY `idx_phase29_news` (`news_id`),
+  KEY `idx_event_brand_scores_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_event_brand_scores_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=71868 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.event_brand_scores_tier2_staging_20260707_105528 ==
+23964
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.events ==
+*************************** 1. row ***************************
+events
+CREATE TABLE `events` (
+  `event_id` varchar(64) NOT NULL,
+  `news_id` varchar(64) NOT NULL,
+  `category` varchar(50) DEFAULT NULL,
+  `category_label` varchar(50) DEFAULT NULL,
+  `date` date DEFAULT NULL,
+  `title` text DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `body_full` longtext DEFAULT NULL,
+  `source_name` varchar(50) DEFAULT NULL,
+  `source_url` text DEFAULT NULL,
+  `period_ubist` varchar(20) DEFAULT NULL,
+  `period_iqvia` varchar(20) DEFAULT NULL,
+  `processed_by` varchar(50) DEFAULT NULL,
+  `processed_at` datetime DEFAULT NULL,
+  `search_keyword` varchar(255) DEFAULT NULL,
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`event_id`),
+  KEY `idx_events_category_date` (`category`,`date`),
+  KEY `idx_events_date` (`date`),
+  KEY `fk_events_news_raw` (`news_id`),
+  KEY `idx_events_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_events_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.events ==
+35484
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.events_bak_precutover_20260707_155418 ==
+*************************** 1. row ***************************
+events_bak_precutover_20260707_155418
+CREATE TABLE `events_bak_precutover_20260707_155418` (
+  `event_id` varchar(64) NOT NULL,
+  `news_id` varchar(64) NOT NULL,
+  `category` varchar(50) DEFAULT NULL,
+  `category_label` varchar(50) DEFAULT NULL,
+  `date` date DEFAULT NULL,
+  `title` text DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `body_full` longtext DEFAULT NULL,
+  `source_name` varchar(50) DEFAULT NULL,
+  `source_url` text DEFAULT NULL,
+  `period_ubist` varchar(20) DEFAULT NULL,
+  `period_iqvia` varchar(20) DEFAULT NULL,
+  `processed_by` varchar(50) DEFAULT NULL,
+  `processed_at` datetime DEFAULT NULL,
+  `search_keyword` varchar(255) DEFAULT NULL,
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`event_id`),
+  KEY `idx_events_category_date` (`category`,`date`),
+  KEY `idx_events_date` (`date`),
+  KEY `fk_events_news_raw` (`news_id`),
+  KEY `idx_events_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_events_tier_expire_at` (`tier`,`expire_at`),
+  CONSTRAINT `fk_events_news_raw` FOREIGN KEY (`news_id`) REFERENCES `news_raw_bak_precutover_20260707_155418` (`news_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.events_bak_precutover_20260707_155418 ==
+35474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.events_mig_stg_20260707093653 ==
+*************************** 1. row ***************************
+events_mig_stg_20260707093653
+CREATE TABLE `events_mig_stg_20260707093653` (
+  `event_id` varchar(64) NOT NULL,
+  `news_id` varchar(64) NOT NULL,
+  `category` varchar(50) DEFAULT NULL,
+  `category_label` varchar(50) DEFAULT NULL,
+  `date` date DEFAULT NULL,
+  `title` text DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `body_full` longtext DEFAULT NULL,
+  `source_name` varchar(50) DEFAULT NULL,
+  `source_url` text DEFAULT NULL,
+  `period_ubist` varchar(20) DEFAULT NULL,
+  `period_iqvia` varchar(20) DEFAULT NULL,
+  `processed_by` varchar(50) DEFAULT NULL,
+  `processed_at` datetime DEFAULT NULL,
+  `search_keyword` varchar(255) DEFAULT NULL,
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`event_id`),
+  KEY `idx_events_category_date` (`category`,`date`),
+  KEY `idx_events_date` (`date`),
+  KEY `fk_events_news_raw` (`news_id`),
+  KEY `idx_events_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_events_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.events_mig_stg_20260707093653 ==
+34631
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.events_raw ==
+*************************** 1. row ***************************
+events_raw
+CREATE TABLE `events_raw` (
+  `news_id` varchar(64) NOT NULL,
+  `source_name` varchar(100) DEFAULT NULL,
+  `published_date` date DEFAULT NULL,
+  `title` text DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `body` longtext DEFAULT NULL,
+  `url` text DEFAULT NULL,
+  `created_at` datetime DEFAULT NULL,
+  `ingested_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`news_id`),
+  KEY `idx_events_raw_published` (`published_date`),
+  KEY `idx_events_raw_source` (`source_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.events_raw ==
+35484
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.events_raw_bak_precutover_20260707_155418 ==
+*************************** 1. row ***************************
+events_raw_bak_precutover_20260707_155418
+CREATE TABLE `events_raw_bak_precutover_20260707_155418` (
+  `news_id` varchar(64) NOT NULL,
+  `source_name` varchar(100) DEFAULT NULL,
+  `published_date` date DEFAULT NULL,
+  `title` text DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `body` longtext DEFAULT NULL,
+  `url` text DEFAULT NULL,
+  `created_at` datetime DEFAULT NULL,
+  `ingested_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`news_id`),
+  KEY `idx_events_raw_published` (`published_date`),
+  KEY `idx_events_raw_source` (`source_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.events_raw_bak_precutover_20260707_155418 ==
+35474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.events_raw_mig_stg_20260707093653 ==
+*************************** 1. row ***************************
+events_raw_mig_stg_20260707093653
+CREATE TABLE `events_raw_mig_stg_20260707093653` (
+  `news_id` varchar(64) NOT NULL,
+  `source_name` varchar(100) DEFAULT NULL,
+  `published_date` date DEFAULT NULL,
+  `title` text DEFAULT NULL,
+  `summary` text DEFAULT NULL,
+  `body` longtext DEFAULT NULL,
+  `url` text DEFAULT NULL,
+  `created_at` datetime DEFAULT NULL,
+  `ingested_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`news_id`),
+  KEY `idx_events_raw_published` (`published_date`),
+  KEY `idx_events_raw_source` (`source_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.events_raw_mig_stg_20260707093653 ==
+34631
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.iqvia_nsa_quarterly_raw ==
+*************************** 1. row ***************************
+iqvia_nsa_quarterly_raw
+CREATE TABLE `iqvia_nsa_quarterly_raw` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `source_file` varchar(255) NOT NULL,
+  `sheet_name` varchar(255) DEFAULT NULL,
+  `source_row_no` int(11) NOT NULL,
+  `audit_code` varchar(64) DEFAULT NULL COMMENT 'IQVIA AUDIT CODE',
+  `audit_desc` varchar(512) DEFAULT NULL,
+  `mfr_code` varchar(64) DEFAULT NULL,
+  `mfr_name` varchar(255) DEFAULT NULL,
+  `period_yyyy` smallint(6) DEFAULT NULL,
+  `period_quarter` tinyint(4) DEFAULT NULL COMMENT '1, 2, 3, 4',
+  `period_label` varchar(32) DEFAULT NULL COMMENT 'Example: Q1 2025',
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),
+  `source_master_version` varchar(255) DEFAULT NULL,
+  `ingested_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_code` (`audit_code`),
+  KEY `idx_period` (`period_yyyy`,`period_quarter`),
+  KEY `idx_mfr` (`mfr_code`)
+) ENGINE=InnoDB AUTO_INCREMENT=891568 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.iqvia_nsa_quarterly_raw ==
+891567
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_analysis_level_block ==
+*************************** 1. row ***************************
+mart_analysis_level_block
+CREATE TABLE `mart_analysis_level_block` (
+  `view` varchar(32) NOT NULL,
+  `market_id` varchar(64) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `profile_sig` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  `trim_mode` varchar(8) NOT NULL DEFAULT 'full',
+  `analysis_levels_json` longtext NOT NULL,
+  `analysis_level_market_status_json` longtext NOT NULL,
+  `payload_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `source_epoch` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `build_version` varchar(128) NOT NULL,
+  `payload_size` int(10) unsigned NOT NULL,
+  `built_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`view`,`market_id`,`source`,`measure`,`profile_sig`,`trim_mode`),
+  KEY `idx_malb_epoch_build` (`source_epoch`,`build_version`),
+  KEY `idx_malb_built_at` (`built_at`),
+  CONSTRAINT `chk_malb_view` CHECK (`view` in ('general','strategic_ml','strategic_cd')),
+  CONSTRAINT `chk_malb_source` CHECK (`source` in ('UBIST','IQVIA')),
+  CONSTRAINT `chk_malb_measure` CHECK (`measure` in ('sales','volume','unit','counting_unit','dosage_unit')),
+  CONSTRAINT `chk_malb_analysis_levels_json` CHECK (json_valid(`analysis_levels_json`)),
+  CONSTRAINT `chk_malb_market_status_json` CHECK (json_valid(`analysis_level_market_status_json`))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin ROW_FORMAT=DYNAMIC
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_analysis_level_block ==
+0
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_analysis_level_block_old_f096v10_0715a ==
+*************************** 1. row ***************************
+mart_analysis_level_block_old_f096v10_0715a
+CREATE TABLE `mart_analysis_level_block_old_f096v10_0715a` (
+  `view` varchar(32) NOT NULL,
+  `market_id` varchar(64) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `profile_sig` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  `trim_mode` varchar(8) NOT NULL DEFAULT 'full',
+  `analysis_levels_json` longtext NOT NULL,
+  `analysis_level_market_status_json` longtext NOT NULL,
+  `payload_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `source_epoch` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `build_version` varchar(128) NOT NULL,
+  `payload_size` int(10) unsigned NOT NULL,
+  `built_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`view`,`market_id`,`source`,`measure`,`profile_sig`,`trim_mode`),
+  KEY `idx_malb_epoch_build` (`source_epoch`,`build_version`),
+  KEY `idx_malb_built_at` (`built_at`),
+  CONSTRAINT `chk_malb_view` CHECK (`view` in ('general','strategic_ml','strategic_cd')),
+  CONSTRAINT `chk_malb_source` CHECK (`source` in ('UBIST','IQVIA')),
+  CONSTRAINT `chk_malb_measure` CHECK (`measure` in ('sales','volume','unit','counting_unit','dosage_unit')),
+  CONSTRAINT `chk_malb_analysis_levels_json` CHECK (json_valid(`analysis_levels_json`)),
+  CONSTRAINT `chk_malb_market_status_json` CHECK (json_valid(`analysis_level_market_status_json`))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin ROW_FORMAT=DYNAMIC
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_analysis_level_block_old_f096v10_0715a ==
+4525
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_brand_molecule ==
+*************************** 1. row ***************************
+mart_brand_molecule
+CREATE TABLE `mart_brand_molecule` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL DEFAULT '',
+  `mart_source` varchar(16) NOT NULL DEFAULT 'any',
+  `molecule_norm` varchar(255) NOT NULL,
+  `molecule_display` varchar(255) NOT NULL,
+  `molecule_raw_examples` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`molecule_raw_examples`)),
+  `evidence_scopes` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`evidence_scopes`)),
+  `evidence_count` int(11) NOT NULL,
+  `component_count` int(11) NOT NULL,
+  `is_combo_component` tinyint(1) NOT NULL DEFAULT 0,
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_brand_molecule` (`brand_key`,`atc4_code`,`mart_source`,`molecule_norm`),
+  KEY `idx_molecule_norm` (`molecule_norm`,`mart_source`,`atc4_code`,`brand_key`),
+  KEY `idx_brand_key` (`brand_key`,`mart_source`,`atc4_code`),
+  KEY `idx_atc4_source` (`atc4_code`,`mart_source`)
+) ENGINE=InnoDB AUTO_INCREMENT=58396 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_brand_molecule ==
+58395
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_general_brand_metric ==
+*************************** 1. row ***************************
+mart_general_brand_metric
+CREATE TABLE `mart_general_brand_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL,
+  `atc4_desc` varchar(255) DEFAULT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`metric_history`)),
+  `extended_metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`extended_metric_history`)),
+  `channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`channel_data`)),
+  `specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`specialty_data`)),
+  `channel_specialty_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`channel_specialty_matrix`)),
+  `dimension_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_data`)),
+  `dimension_channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_channel_data`)),
+  `by_dimension` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`by_dimension`)),
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  `audit_code_matrix` longtext DEFAULT NULL CHECK (`audit_code_matrix` is null or json_valid(`audit_code_matrix`)),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_general_brand` (`brand_key`,`atc4_code`,`source`,`measure`),
+  KEY `idx_general_brand_key` (`brand_key`,`source`,`measure`),
+  KEY `idx_general_brand_atc4` (`atc4_code`,`source`,`measure`),
+  KEY `idx_general_brand_source` (`source`,`measure`),
+  KEY `idx_general_atc_universe` (`source`,`atc4_code`)
+) ENGINE=InnoDB AUTO_INCREMENT=114899 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_general_brand_metric ==
+114898
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_general_filter_dimension_metric ==
+*************************** 1. row ***************************
+mart_general_filter_dimension_metric
+CREATE TABLE `mart_general_filter_dimension_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `product_code` varchar(255) NOT NULL,
+  `dimension_type` varchar(64) NOT NULL,
+  `dimension_value` text NOT NULL,
+  `dimension_value_norm` text NOT NULL,
+  `dimension_value_hash` char(64) NOT NULL,
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_filter_dimension` (`source`,`measure`,`atc4_code`,`brand_key`,`product_code`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_filter_lookup` (`source`,`measure`,`dimension_type`,`dimension_value_hash`,`atc4_code`,`brand_key`),
+  KEY `idx_filter_atc_brand` (`source`,`measure`,`atc4_code`,`brand_key`),
+  KEY `idx_filter_option` (`source`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_filter_norm_prefix` (`source`,`dimension_type`,`dimension_value_norm`(191)),
+  KEY `idx_general_option_universe` (`source`,`dimension_type`,`dimension_value_hash`,`dimension_value_norm`(191)),
+  KEY `idx_general_atc_scope` (`source`,`atc4_code`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_general_brand_scope` (`source`,`atc4_code`,`brand_key`,`dimension_type`,`dimension_value_hash`)
+) ENGINE=InnoDB AUTO_INCREMENT=4607492 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_general_filter_dimension_metric ==
+973908
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_general_filter_dimension_metric__backup_dimfix_20260716 ==
+*************************** 1. row ***************************
+mart_general_filter_dimension_metric__backup_dimfix_20260716
+CREATE TABLE `mart_general_filter_dimension_metric__backup_dimfix_20260716` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `product_code` varchar(255) NOT NULL,
+  `dimension_type` varchar(64) NOT NULL,
+  `dimension_value` text NOT NULL,
+  `dimension_value_norm` text NOT NULL,
+  `dimension_value_hash` char(64) NOT NULL,
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_filter_dimension` (`source`,`measure`,`atc4_code`,`brand_key`,`product_code`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_filter_lookup` (`source`,`measure`,`dimension_type`,`dimension_value_hash`,`atc4_code`,`brand_key`),
+  KEY `idx_filter_atc_brand` (`source`,`measure`,`atc4_code`,`brand_key`),
+  KEY `idx_filter_option` (`source`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_filter_norm_prefix` (`source`,`dimension_type`,`dimension_value_norm`(191)),
+  KEY `idx_general_option_universe` (`source`,`dimension_type`,`dimension_value_hash`,`dimension_value_norm`(191)),
+  KEY `idx_general_atc_scope` (`source`,`atc4_code`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_general_brand_scope` (`source`,`atc4_code`,`brand_key`,`dimension_type`,`dimension_value_hash`)
+) ENGINE=InnoDB AUTO_INCREMENT=3894605 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_general_filter_dimension_metric__backup_dimfix_20260716 ==
+234038
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_general_filter_dimension_metric__backup_f124a_20260715 ==
+*************************** 1. row ***************************
+mart_general_filter_dimension_metric__backup_f124a_20260715
+CREATE TABLE `mart_general_filter_dimension_metric__backup_f124a_20260715` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `atc4_code` varchar(16) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `product_code` varchar(255) NOT NULL,
+  `dimension_type` varchar(64) NOT NULL,
+  `dimension_value` text NOT NULL,
+  `dimension_value_norm` text NOT NULL,
+  `dimension_value_hash` char(64) NOT NULL,
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_filter_dimension` (`source`,`measure`,`atc4_code`,`brand_key`,`product_code`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_filter_lookup` (`source`,`measure`,`dimension_type`,`dimension_value_hash`,`atc4_code`,`brand_key`),
+  KEY `idx_filter_atc_brand` (`source`,`measure`,`atc4_code`,`brand_key`),
+  KEY `idx_filter_option` (`source`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_filter_norm_prefix` (`source`,`dimension_type`,`dimension_value_norm`(191)),
+  KEY `idx_general_option_universe` (`source`,`dimension_type`,`dimension_value_hash`,`dimension_value_norm`(191)),
+  KEY `idx_general_atc_scope` (`source`,`atc4_code`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_general_brand_scope` (`source`,`atc4_code`,`brand_key`,`dimension_type`,`dimension_value_hash`)
+) ENGINE=InnoDB AUTO_INCREMENT=3149687 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_general_filter_dimension_metric__backup_f124a_20260715 ==
+916076
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_general_market_metric ==
+*************************** 1. row ***************************
+mart_general_market_metric
+CREATE TABLE `mart_general_market_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `atc4_code` varchar(16) NOT NULL,
+  `atc4_desc` varchar(255) DEFAULT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `market_size_series` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`market_size_series`)),
+  `hhi_series` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`hhi_series`)),
+  `brand_ranking` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`brand_ranking`)),
+  `company_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_ranking_stacked`)),
+  `company_concentration_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_concentration_trend`)),
+  `ei_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`ei_ms_matrix`)),
+  `growth_contribution_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution_ms_matrix`)),
+  `growth_contribution` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution`)),
+  `analysis_levels` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`analysis_levels`)),
+  `level_top5_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`level_top5_trend`)),
+  `target_customer_competition` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`target_customer_competition`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_general_market` (`atc4_code`,`source`,`measure`),
+  KEY `idx_general_market_atc4` (`atc4_code`),
+  KEY `idx_general_market_source` (`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=2881 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_general_market_metric ==
+2880
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_brand_metric ==
+*************************** 1. row ***************************
+mart_strategic_cd_brand_metric
+CREATE TABLE `mart_strategic_cd_brand_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `cd_market_id` varchar(32) NOT NULL,
+  `cd_brand_id` varchar(255) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `is_jw` tinyint(1) DEFAULT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`metric_history`)),
+  `extended_metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`extended_metric_history`)),
+  `channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`channel_data`)),
+  `specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`specialty_data`)),
+  `dimension_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_data`)),
+  `dimension_channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_channel_data`)),
+  `by_dimension` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`by_dimension`)),
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `cd_overlay` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`cd_overlay`)),
+  `overlay_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`overlay_data`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  `ubist_channel_by_display` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_display`)),
+  `ubist_channel_by_code` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_code`)),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_cd_brand` (`cd_market_id`,`cd_brand_id`,`source`,`measure`),
+  KEY `idx_cd_brand_name_source_measure` (`brand_name`,`source`,`measure`,`cd_market_id`),
+  KEY `idx_cd_brand_key_source_measure` (`brand_key`,`source`,`measure`,`cd_market_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=4977 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_brand_metric ==
+4976
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_brand_metric__failed_f116_0715b ==
+*************************** 1. row ***************************
+mart_strategic_cd_brand_metric__failed_f116_0715b
+CREATE TABLE `mart_strategic_cd_brand_metric__failed_f116_0715b` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `cd_market_id` varchar(32) NOT NULL,
+  `cd_brand_id` varchar(255) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `is_jw` tinyint(1) DEFAULT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`metric_history`)),
+  `extended_metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`extended_metric_history`)),
+  `channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`channel_data`)),
+  `specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`specialty_data`)),
+  `dimension_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_data`)),
+  `dimension_channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_channel_data`)),
+  `by_dimension` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`by_dimension`)),
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `ubist_channel_by_display` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_display`)),
+  `ubist_channel_by_code` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_code`)),
+  `cd_overlay` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`cd_overlay`)),
+  `overlay_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`overlay_data`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_cd_brand` (`cd_market_id`,`cd_brand_id`,`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=14927 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_brand_metric__failed_f116_0715b ==
+4976
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_market_metric ==
+*************************** 1. row ***************************
+mart_strategic_cd_market_metric
+CREATE TABLE `mart_strategic_cd_market_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `cd_market_id` varchar(32) NOT NULL,
+  `cd_market_name` varchar(255) DEFAULT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `market_size_series` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`market_size_series`)),
+  `hhi_series_5y` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`hhi_series_5y`)),
+  `brand_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`brand_ranking_stacked`)),
+  `company_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_ranking_stacked`)),
+  `company_concentration_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_concentration_trend`)),
+  `ei_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`ei_ms_matrix`)),
+  `growth_contribution_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution_ms_matrix`)),
+  `growth_contribution` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution`)),
+  `analysis_levels` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`analysis_levels`)),
+  `level_top5_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`level_top5_trend`)),
+  `target_customer_competition` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`target_customer_competition`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_cd_market` (`cd_market_id`,`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=65 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_market_metric ==
+64
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_market_metric__failed_f116_0715b ==
+*************************** 1. row ***************************
+mart_strategic_cd_market_metric__failed_f116_0715b
+CREATE TABLE `mart_strategic_cd_market_metric__failed_f116_0715b` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `cd_market_id` varchar(32) NOT NULL,
+  `cd_market_name` varchar(255) DEFAULT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `market_size_series` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`market_size_series`)),
+  `hhi_series_5y` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`hhi_series_5y`)),
+  `brand_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`brand_ranking_stacked`)),
+  `company_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_ranking_stacked`)),
+  `company_concentration_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_concentration_trend`)),
+  `ei_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`ei_ms_matrix`)),
+  `growth_contribution_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution_ms_matrix`)),
+  `growth_contribution` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution`)),
+  `analysis_levels` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`analysis_levels`)),
+  `level_top5_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`level_top5_trend`)),
+  `target_customer_competition` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`target_customer_competition`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_cd_market` (`cd_market_id`,`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=191 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_cd_market_metric__failed_f116_0715b ==
+64
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_filter_dimension_metric ==
+*************************** 1. row ***************************
+mart_strategic_filter_dimension_metric
+CREATE TABLE `mart_strategic_filter_dimension_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `market_kind` varchar(8) NOT NULL,
+  `market_id` varchar(32) NOT NULL,
+  `brand_id` varchar(255) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) DEFAULT NULL,
+  `product_code` varchar(255) NOT NULL,
+  `product_name` varchar(512) DEFAULT NULL,
+  `dimension_type` varchar(64) NOT NULL,
+  `dimension_value` text NOT NULL,
+  `dimension_value_norm` text NOT NULL,
+  `dimension_value_hash` char(64) NOT NULL,
+  `raw_value_history` longtext NOT NULL,
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_scope` (`market_kind`,`market_id`,`source`,`measure`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_brand` (`market_kind`,`market_id`,`brand_id`,`source`,`measure`),
+  KEY `idx_options` (`source`,`dimension_type`,`dimension_value_hash`),
+  KEY `idx_product` (`source`,`measure`,`product_code`)
+) ENGINE=InnoDB AUTO_INCREMENT=108861 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_filter_dimension_metric ==
+108860
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_brand_metric ==
+*************************** 1. row ***************************
+mart_strategic_ml_brand_metric
+CREATE TABLE `mart_strategic_ml_brand_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `ml_id` varchar(32) NOT NULL,
+  `brand_id` varchar(255) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `is_jw` tinyint(1) DEFAULT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`metric_history`)),
+  `extended_metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`extended_metric_history`)),
+  `channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`channel_data`)),
+  `specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`specialty_data`)),
+  `dimension_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_data`)),
+  `dimension_channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_channel_data`)),
+  `dimension_specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`dimension_specialty_data`)),
+  `by_dimension` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`by_dimension`)),
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `overlay_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`overlay_data`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  `ubist_channel_by_display` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_display`)),
+  `ubist_channel_by_code` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_code`)),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_ml_brand` (`ml_id`,`brand_id`,`source`,`measure`),
+  KEY `idx_ml_brand_name_source_measure` (`brand_name`,`source`,`measure`,`ml_id`),
+  KEY `idx_ml_brand_key_source_measure` (`brand_key`,`source`,`measure`,`ml_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=14329 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_brand_metric ==
+14328
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_brand_metric__failed_f116_0715b ==
+*************************** 1. row ***************************
+mart_strategic_ml_brand_metric__failed_f116_0715b
+CREATE TABLE `mart_strategic_ml_brand_metric__failed_f116_0715b` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `ml_id` varchar(32) NOT NULL,
+  `brand_id` varchar(255) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_name` varchar(255) NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `is_jw` tinyint(1) DEFAULT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`metric_history`)),
+  `extended_metric_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`extended_metric_history`)),
+  `channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`channel_data`)),
+  `specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`specialty_data`)),
+  `dimension_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_data`)),
+  `dimension_channel_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`dimension_channel_data`)),
+  `dimension_specialty_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`dimension_specialty_data`)),
+  `by_dimension` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`by_dimension`)),
+  `raw_value_history` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`raw_value_history`)),
+  `ubist_channel_by_display` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_display`)),
+  `ubist_channel_by_code` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`ubist_channel_by_code`)),
+  `overlay_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`overlay_data`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_ml_brand` (`ml_id`,`brand_id`,`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=42983 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_brand_metric__failed_f116_0715b ==
+14328
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_market_metric ==
+*************************** 1. row ***************************
+mart_strategic_ml_market_metric
+CREATE TABLE `mart_strategic_ml_market_metric` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `ml_id` varchar(32) NOT NULL,
+  `ml_name` varchar(255) DEFAULT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `market_size_series` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`market_size_series`)),
+  `hhi_series_5y` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`hhi_series_5y`)),
+  `brand_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`brand_ranking_stacked`)),
+  `company_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_ranking_stacked`)),
+  `company_concentration_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_concentration_trend`)),
+  `ei_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`ei_ms_matrix`)),
+  `growth_contribution_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution_ms_matrix`)),
+  `growth_contribution` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution`)),
+  `analysis_levels` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`analysis_levels`)),
+  `level_top5_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`level_top5_trend`)),
+  `target_customer_competition` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`target_customer_competition`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_ml_market` (`ml_id`,`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=57 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_market_metric ==
+56
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_market_metric__failed_f116_0715b ==
+*************************** 1. row ***************************
+mart_strategic_ml_market_metric__failed_f116_0715b
+CREATE TABLE `mart_strategic_ml_market_metric__failed_f116_0715b` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `ml_id` varchar(32) NOT NULL,
+  `ml_name` varchar(255) DEFAULT NULL,
+  `source` varchar(16) NOT NULL,
+  `measure` varchar(32) NOT NULL,
+  `unit_label` varchar(32) NOT NULL,
+  `market_size_series` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`market_size_series`)),
+  `hhi_series_5y` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`hhi_series_5y`)),
+  `brand_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`brand_ranking_stacked`)),
+  `company_ranking_stacked` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_ranking_stacked`)),
+  `company_concentration_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`company_concentration_trend`)),
+  `ei_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`ei_ms_matrix`)),
+  `growth_contribution_ms_matrix` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution_ms_matrix`)),
+  `growth_contribution` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`growth_contribution`)),
+  `analysis_levels` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`analysis_levels`)),
+  `level_top5_trend` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`level_top5_trend`)),
+  `target_customer_competition` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`target_customer_competition`)),
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`payload`)),
+  `computation_version` varchar(16) DEFAULT 'v3',
+  `computed_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_ml_market` (`ml_id`,`source`,`measure`)
+) ENGINE=InnoDB AUTO_INCREMENT=167 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.mart_strategic_ml_market_metric__failed_f116_0715b ==
+56
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.news_mig_component_stg_20260707093653 ==
+*************************** 1. row ***************************
+news_mig_component_stg_20260707093653
+CREATE TABLE `news_mig_component_stg_20260707093653` (
+  `new_news_id` varchar(64) NOT NULL,
+  `rep_news_id` varchar(64) NOT NULL,
+  `event_rep_news_id` varchar(64) NOT NULL,
+  `component_size` int(11) NOT NULL,
+  `tiers` varchar(32) NOT NULL,
+  `has_cross_tier` tinyint(4) NOT NULL,
+  `normalized_url` longtext NOT NULL,
+  `legacy_news_ids_json` longtext NOT NULL CHECK (json_valid(`legacy_news_ids_json`)),
+  `collection_provenance` longtext NOT NULL CHECK (json_valid(`collection_provenance`)),
+  PRIMARY KEY (`new_news_id`),
+  KEY `idx_news_mig_component_rep` (`rep_news_id`),
+  KEY `idx_news_mig_component_event_rep` (`event_rep_news_id`),
+  KEY `idx_news_mig_component_cross` (`has_cross_tier`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.news_mig_component_stg_20260707093653 ==
+34631
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.news_mig_map_stg_20260707093653 ==
+*************************** 1. row ***************************
+news_mig_map_stg_20260707093653
+CREATE TABLE `news_mig_map_stg_20260707093653` (
+  `old_news_id` varchar(64) NOT NULL,
+  `new_news_id` varchar(64) NOT NULL,
+  PRIMARY KEY (`old_news_id`),
+  KEY `idx_news_mig_map_new` (`new_news_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.news_mig_map_stg_20260707093653 ==
+35474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.news_raw ==
+*************************** 1. row ***************************
+news_raw
+CREATE TABLE `news_raw` (
+  `news_id` varchar(64) NOT NULL,
+  `source_name` varchar(50) NOT NULL,
+  `title` text NOT NULL,
+  `article_url` text DEFAULT NULL,
+  `article_text` longtext DEFAULT NULL,
+  `raw_html` longtext DEFAULT NULL,
+  `published_date` date DEFAULT NULL,
+  `search_keyword` varchar(255) DEFAULT NULL,
+  `ingested_at` datetime DEFAULT current_timestamp(),
+  `corpus_file_path` varchar(1000) DEFAULT NULL,
+  `matched_search_keywords` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Crawl-time matched keyword list' CHECK (json_valid(`matched_search_keywords`)),
+  `matched_jw_search_contexts` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'JW brand to matched keyword contexts' CHECK (json_valid(`matched_jw_search_contexts`)),
+  `news_source_file` varchar(500) DEFAULT NULL COMMENT 'Source news JSON path',
+  `scored` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Workflow scoring completion flag',
+  `scored_at` timestamp NULL DEFAULT NULL COMMENT 'Workflow scoring timestamp',
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  `collection_provenance` longtext DEFAULT NULL CHECK (json_valid(`collection_provenance`)),
+  `legacy_news_ids` longtext DEFAULT NULL CHECK (json_valid(`legacy_news_ids`)),
+  PRIMARY KEY (`news_id`),
+  KEY `idx_news_raw_published_date` (`published_date`),
+  KEY `idx_news_raw_source_name` (`source_name`),
+  KEY `idx_news_raw_scored` (`scored`,`scored_at`),
+  KEY `idx_news_raw_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_news_raw_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.news_raw ==
+35484
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.news_raw_bak_precutover_20260707_155418 ==
+*************************** 1. row ***************************
+news_raw_bak_precutover_20260707_155418
+CREATE TABLE `news_raw_bak_precutover_20260707_155418` (
+  `news_id` varchar(64) NOT NULL,
+  `source_name` varchar(50) NOT NULL,
+  `title` text NOT NULL,
+  `article_url` text DEFAULT NULL,
+  `article_text` longtext DEFAULT NULL,
+  `raw_html` longtext DEFAULT NULL,
+  `published_date` date DEFAULT NULL,
+  `search_keyword` varchar(255) DEFAULT NULL,
+  `ingested_at` datetime DEFAULT current_timestamp(),
+  `corpus_file_path` varchar(1000) DEFAULT NULL,
+  `matched_search_keywords` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Crawl-time matched keyword list' CHECK (json_valid(`matched_search_keywords`)),
+  `matched_jw_search_contexts` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'JW brand to matched keyword contexts' CHECK (json_valid(`matched_jw_search_contexts`)),
+  `news_source_file` varchar(500) DEFAULT NULL COMMENT 'Source news JSON path',
+  `scored` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Workflow scoring completion flag',
+  `scored_at` timestamp NULL DEFAULT NULL COMMENT 'Workflow scoring timestamp',
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`news_id`),
+  KEY `idx_news_raw_published_date` (`published_date`),
+  KEY `idx_news_raw_source_name` (`source_name`),
+  KEY `idx_news_raw_scored` (`scored`,`scored_at`),
+  KEY `idx_news_raw_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_news_raw_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.news_raw_bak_precutover_20260707_155418 ==
+35474
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.news_raw_mig_stg_20260707093653 ==
+*************************** 1. row ***************************
+news_raw_mig_stg_20260707093653
+CREATE TABLE `news_raw_mig_stg_20260707093653` (
+  `news_id` varchar(64) NOT NULL,
+  `source_name` varchar(50) NOT NULL,
+  `title` text NOT NULL,
+  `article_url` text DEFAULT NULL,
+  `article_text` longtext DEFAULT NULL,
+  `raw_html` longtext DEFAULT NULL,
+  `published_date` date DEFAULT NULL,
+  `search_keyword` varchar(255) DEFAULT NULL,
+  `ingested_at` datetime DEFAULT current_timestamp(),
+  `corpus_file_path` varchar(1000) DEFAULT NULL,
+  `matched_search_keywords` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Crawl-time matched keyword list' CHECK (json_valid(`matched_search_keywords`)),
+  `matched_jw_search_contexts` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'JW brand to matched keyword contexts' CHECK (json_valid(`matched_jw_search_contexts`)),
+  `news_source_file` varchar(500) DEFAULT NULL COMMENT 'Source news JSON path',
+  `scored` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Workflow scoring completion flag',
+  `scored_at` timestamp NULL DEFAULT NULL COMMENT 'Workflow scoring timestamp',
+  `tier` tinyint(4) NOT NULL DEFAULT 1,
+  `collected_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expire_at` datetime DEFAULT NULL,
+  `collection_provenance` longtext DEFAULT NULL CHECK (`collection_provenance` is null or json_valid(`collection_provenance`)),
+  `legacy_news_ids_json` longtext DEFAULT NULL CHECK (`legacy_news_ids_json` is null or json_valid(`legacy_news_ids_json`)),
+  `normalized_article_url` longtext DEFAULT NULL,
+  PRIMARY KEY (`news_id`),
+  KEY `idx_news_raw_published_date` (`published_date`),
+  KEY `idx_news_raw_source_name` (`source_name`),
+  KEY `idx_news_raw_scored` (`scored`,`scored_at`),
+  KEY `idx_news_raw_tier_collected_at` (`tier`,`collected_at`),
+  KEY `idx_news_raw_tier_expire_at` (`tier`,`expire_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.news_raw_mig_stg_20260707093653 ==
+34631
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.tier2_match_staging ==
+*************************** 1. row ***************************
+tier2_match_staging
+CREATE TABLE `tier2_match_staging` (
+  `run_id` varchar(64) NOT NULL,
+  `news_id` varchar(64) NOT NULL,
+  `brand_key` varchar(255) NOT NULL,
+  `brand_canonical` varchar(255) NOT NULL,
+  `match_source` varchar(64) NOT NULL,
+  `matched_keywords` longtext NOT NULL CHECK (json_valid(`matched_keywords`)),
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`run_id`,`news_id`,`brand_key`),
+  KEY `idx_tier2_match_news` (`news_id`),
+  KEY `idx_tier2_match_brand` (`brand_key`),
+  KEY `idx_tier2_match_source` (`match_source`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.tier2_match_staging ==
+23964
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.zeta_analysis_outputs ==
+*************************** 1. row ***************************
+zeta_analysis_outputs
+CREATE TABLE `zeta_analysis_outputs` (
+  `output_id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `run_id` bigint(20) NOT NULL,
+  `stage` varchar(20) NOT NULL,
+  `title` varchar(500) DEFAULT NULL,
+  `body` text DEFAULT NULL,
+  `bullets` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`bullets`)),
+  `raw_response` longtext DEFAULT NULL,
+  `validated` tinyint(1) DEFAULT 0,
+  `validation_log` longtext DEFAULT NULL,
+  `tokens_in` int(11) DEFAULT NULL,
+  `tokens_out` int(11) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`output_id`),
+  UNIQUE KEY `uq_run_stage` (`run_id`,`stage`),
+  CONSTRAINT `zeta_analysis_outputs_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `zeta_analysis_runs` (`run_id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=322657 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.zeta_analysis_outputs ==
+107572
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.zeta_analysis_runs ==
+*************************** 1. row ***************************
+zeta_analysis_runs
+CREATE TABLE `zeta_analysis_runs` (
+  `run_id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `brand` varchar(255) NOT NULL,
+  `snapshot_at` datetime NOT NULL,
+  `analysis_variant` varchar(16) NOT NULL DEFAULT 'legacy',
+  `config_version` varchar(64) NOT NULL,
+  `builder_version` varchar(64) NOT NULL,
+  `bundle_hash` varchar(80) NOT NULL,
+  `model_version` varchar(64) DEFAULT NULL,
+  `status` varchar(32) NOT NULL,
+  `total_tokens_in` int(11) DEFAULT NULL,
+  `total_tokens_out` int(11) DEFAULT NULL,
+  `cost_usd` decimal(10,6) DEFAULT NULL,
+  `duration_sec` decimal(8,2) DEFAULT NULL,
+  `input_bundle` longtext DEFAULT NULL,
+  `error_log` text DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`run_id`),
+  UNIQUE KEY `uq_brand_snapshot_variant` (`brand`,`snapshot_at`,`analysis_variant`),
+  KEY `idx_bundle_hash` (`bundle_hash`),
+  KEY `idx_status` (`status`),
+  KEY `idx_brand` (`brand`)
+) ENGINE=InnoDB AUTO_INCREMENT=80623 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.zeta_analysis_runs ==
+26893
+#### DATABASE: jw_brand_activity_stage
+== TABLE LIST ==
+csd_channel_dynamics_stage
+km_keyword_event_stage
+mart_brand_activity_topic_runs
+mart_brand_activity_topics
+row_topic_assignment
+row_topic_assignment_share_view
+row_topic_assignment_status
+== SHOW CREATE: jw_brand_activity_stage.csd_channel_dynamics_stage ==
+*************************** 1. row ***************************
+csd_channel_dynamics_stage
+CREATE TABLE `csd_channel_dynamics_stage` (
+  `period_ym` char(7) NOT NULL,
+  `market` varchar(128) NOT NULL,
+  `jw_channel` varchar(32) NOT NULL,
+  `master_product` varchar(255) NOT NULL,
+  `representing_company` varchar(255) NOT NULL,
+  `product_details` int(11) NOT NULL,
+  `source_file` varchar(255) NOT NULL,
+  `source_sheet` varchar(128) NOT NULL,
+  `source_row_no` int(11) NOT NULL,
+  `loaded_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`period_ym`,`market`,`jw_channel`,`master_product`,`representing_company`),
+  KEY `idx_csd_stage_market_period` (`market`,`period_ym`),
+  KEY `idx_csd_stage_product` (`master_product`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_brand_activity_stage.csd_channel_dynamics_stage ==
+49894
+== SHOW CREATE: jw_brand_activity_stage.km_keyword_event_stage ==
+*************************** 1. row ***************************
+km_keyword_event_stage
+CREATE TABLE `km_keyword_event_stage` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `period_ym` char(7) NOT NULL,
+  `visit_location` varchar(255) NOT NULL,
+  `specialty` varchar(255) NOT NULL,
+  `representing_company` varchar(255) NOT NULL,
+  `product_name` varchar(255) NOT NULL,
+  `therapeutic_class` varchar(64) NOT NULL,
+  `keyword_text` longtext NOT NULL,
+  `interest` varchar(64) NOT NULL,
+  `prescription_frequency` varchar(128) NOT NULL,
+  `prescription_evolution` varchar(128) NOT NULL,
+  `abstract_lit` varchar(16) NOT NULL,
+  `patient_lit` varchar(16) NOT NULL,
+  `promotional_lit` varchar(16) NOT NULL,
+  `samples_left` varchar(16) NOT NULL,
+  `other_materials_left` varchar(16) NOT NULL,
+  `what_other_materials` text NOT NULL,
+  `other_comments` text NOT NULL,
+  `source_file` varchar(255) NOT NULL,
+  `source_sheet` varchar(64) NOT NULL,
+  `source_row_no` int(11) NOT NULL,
+  `source_file_sha256` char(64) NOT NULL,
+  `stage_row_sha256` char(64) NOT NULL,
+  `loaded_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_km_keyword_period_class` (`period_ym`,`therapeutic_class`),
+  KEY `idx_km_keyword_product` (`product_name`),
+  KEY `idx_km_keyword_lineage` (`source_file`,`source_sheet`,`source_row_no`)
+) ENGINE=InnoDB AUTO_INCREMENT=199667 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_brand_activity_stage.km_keyword_event_stage ==
+66556
+== SHOW CREATE: jw_brand_activity_stage.mart_brand_activity_topic_runs ==
+*************************** 1. row ***************************
+mart_brand_activity_topic_runs
+CREATE TABLE `mart_brand_activity_topic_runs` (
+  `run_id` varchar(160) NOT NULL,
+  `created_at` datetime NOT NULL,
+  `model_id` varchar(128) NOT NULL,
+  `serving_id` varchar(32) NOT NULL,
+  `route` varchar(64) NOT NULL,
+  `total_prompt_tokens` bigint(20) NOT NULL,
+  `total_completion_tokens` bigint(20) NOT NULL,
+  `est_cost_usd` decimal(12,4) NOT NULL,
+  `market_count` int(11) NOT NULL,
+  `brand_count` int(11) NOT NULL,
+  `axis_compound_count` int(11) NOT NULL,
+  `brand_specific_dup_count` int(11) NOT NULL,
+  `sha256` char(64) NOT NULL,
+  `input_fingerprint` char(64) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`run_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_brand_activity_stage.mart_brand_activity_topic_runs ==
+4
+== SHOW CREATE: jw_brand_activity_stage.mart_brand_activity_topics ==
+*************************** 1. row ***************************
+mart_brand_activity_topics
+CREATE TABLE `mart_brand_activity_topics` (
+  `scope_id` varchar(128) NOT NULL,
+  `display_name` varchar(255) NOT NULL,
+  `atc4_values` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`atc4_values`)),
+  `quality_grade` varchar(8) NOT NULL,
+  `source_row_count` int(11) NOT NULL,
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),
+  `run_id` varchar(160) NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`scope_id`),
+  KEY `idx_mart_brand_activity_topics_run_id` (`run_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_brand_activity_stage.mart_brand_activity_topics ==
+11
+== SHOW CREATE: jw_brand_activity_stage.row_topic_assignment ==
+*************************** 1. row ***************************
+row_topic_assignment
+CREATE TABLE `row_topic_assignment` (
+  `row_id` bigint(20) unsigned NOT NULL,
+  `scope_id` varchar(128) NOT NULL,
+  `brand` varchar(255) NOT NULL,
+  `topic_id` varchar(128) NOT NULL,
+  `topic_set_version` varchar(128) NOT NULL,
+  `prompt_version` varchar(64) NOT NULL,
+  `assigned_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `batch_id` varchar(160) NOT NULL,
+  PRIMARY KEY (`row_id`,`topic_id`,`topic_set_version`),
+  KEY `idx_row_topic_scope_brand_version` (`scope_id`,`brand`,`topic_set_version`),
+  KEY `idx_row_topic_topic_version` (`topic_id`,`topic_set_version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_brand_activity_stage.row_topic_assignment ==
+172419
+== SHOW CREATE: jw_brand_activity_stage.row_topic_assignment_share_view ==
+== ROWCOUNT: jw_brand_activity_stage.row_topic_assignment_share_view ==
+1639
+== SHOW CREATE: jw_brand_activity_stage.row_topic_assignment_status ==
+*************************** 1. row ***************************
+row_topic_assignment_status
+CREATE TABLE `row_topic_assignment_status` (
+  `topic_set_version` varchar(128) NOT NULL,
+  `scope_id` varchar(128) NOT NULL,
+  `row_id` bigint(20) unsigned NOT NULL,
+  `stage_row_sha256` char(64) NOT NULL,
+  `prompt_version` varchar(64) NOT NULL,
+  `batch_id` varchar(192) NOT NULL,
+  `status` varchar(32) NOT NULL,
+  `assignment_count` int(11) NOT NULL DEFAULT 0,
+  `classified_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`topic_set_version`,`scope_id`,`row_id`),
+  KEY `idx_row_topic_assignment_status_status` (`topic_set_version`,`status`),
+  KEY `idx_row_topic_assignment_status_batch` (`topic_set_version`,`batch_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_brand_activity_stage.row_topic_assignment_status ==
+119178
+
+#### 추가 캡처 (2026-07-17 09:54 UTC — ingest hook 활성화 이후)
+== SHOW CREATE: jw_mart_d2_stage_20260630_r2.ingest_ledger ==
+CREATE TABLE `ingest_ledger` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `epoch` varchar(32) NOT NULL,
+  `category` varchar(32) NOT NULL,
+  `manifest_sha` char(64) NOT NULL,
+  `manifest_path` varchar(512) NOT NULL,
+  `uploaded_by` varchar(128) DEFAULT NULL,
+  `status` varchar(16) NOT NULL,
+  `reason` text DEFAULT NULL,
+  `job_name` varchar(128) DEFAULT NULL,
+  `run_id` varchar(64) DEFAULT NULL,
+  `row_counts` text DEFAULT NULL,
+  `received_at` datetime NOT NULL,
+  `started_at` datetime DEFAULT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_ledger_identity` (`epoch`,`category`,`manifest_sha`),
+  KEY `idx_ledger_category_status` (`category`,`status`)
+) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+== ROWCOUNT: jw_mart_d2_stage_20260630_r2.ingest_ledger ==
+3

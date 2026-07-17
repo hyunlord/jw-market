@@ -1,0 +1,27 @@
+# re-capture 2026-07-17 (UTC 09:54)
+NAME                                        SCHEDULE           TIMEZONE     SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+jw-ingest-sweep-daily                       30 19 * * *        <none>       False     0        <none>          32m
+jw-news-crawl-retention-daily               0 19 * * *         <none>       True      0        <none>          16d
+jw-news-crawl-tier1-daily                   10 18 * * *        <none>       False     0        15h             16d
+jw-news-crawl-tier1-daily-canonical         10 18 * * *        <none>       True      0        <none>          18h
+jw-news-crawl-tier2-daily-slice             40 18 * * *        <none>       False     0        15h             16d
+jw-news-crawl-tier2-daily-slice-canonical   40 18 * * *        <none>       True      0        <none>          18h
+jw-pipeline-orchestrator-poll-daily         0 16 * * *         <none>       True      0        <none>          6h22m
+
+asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:fea296850e89bc1f8fe98f4c1eb4d1570bb778a22ef835f4712e0769db9ab88c
+INGEST_S3_BUCKET = <secretRef>
+MINIO_ENDPOINT = http://minio.llmops.svc.cluster.local:9000
+MINIO_REGION = us-east-1
+MINIO_ACCESS_KEY = <redacted>
+MINIO_SECRET_KEY = <redacted>
+MARIADB_HOST = llmops-mariadb-service.llmops.svc.cluster.local
+MARIADB_PORT = 3306
+MARIADB_DATABASE = jw_mart_d2_stage_20260630_r2
+MARIADB_USER = <secretRef>
+MARIADB_PASSWORD = <redacted>
+INGEST_REHEARSAL_ROOT = /tmp/ingest-rehearsal
+
+# crawl cutover digest 대조 (2026-07-17 추가 실측)
+jw-news-crawl-tier1-daily: suspend=false, image=jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
+jw-news-crawl-tier2-daily-slice: suspend=false, image=jw-market-crawl@sha256:64bb2b9f (동일 digest)
+repo deploy/k8s/crawler/crawl-tier{1,2}-cronjob.yaml: image 동일 digest·suspend: false → 라이브=repo manifest 일치, cutover 실행 완료

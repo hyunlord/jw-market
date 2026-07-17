@@ -33,6 +33,9 @@ docs/*
 !docs/reference/
 !docs/reference/**
 docs/reference/*.xlsx
+# SI delivery document set (DOC-1~5 + gates + evidence) is tracked deliberately.
+!docs/delivery/
+!docs/delivery/**
 # Runtime catalog input; keep other untracked crawl artifacts ignored.
 !docs/crawl/
 docs/crawl/*
