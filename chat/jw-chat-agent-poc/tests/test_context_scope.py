@@ -438,6 +438,7 @@ def test_question_without_file_context_is_unchanged() -> None:
         ("처리율은?", True, False, False, ContextScope.FILE),
         ("리바로 최근 매출 추이", True, False, True, ContextScope.MARKET),
         ("리바로 매출과 파일 값을 비교", True, False, True, ContextScope.MIXED),
+        ("이 셀아웃과 우리 리바로 시장 데이터 비교", True, False, True, ContextScope.MIXED),
         ("리바로 수치와 문서 결과를 시장 데이터로 대비", True, False, True, ContextScope.MIXED),
         ("리바로 실적과 PDF 결과를 시장 기준으로 비교", True, False, True, ContextScope.MIXED),
         ("리바로 매출과 이 보고서 전망을 비교", False, False, True, ContextScope.MIXED),
