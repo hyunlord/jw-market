@@ -131,14 +131,20 @@ def _deterministic_external_decision(
     """
     if observations:
         return None
-    external_intent = _asks_clinical(question) or _asks_patent(question) or _asks_web_search(question) or _asks_hira_procedure(question)
+    external_intent = (
+        _asks_clinical(question)
+        or _asks_patent(question)
+        or _asks_drug_info(question)
+        or _asks_web_search(question)
+        or _asks_hira_procedure(question)
+    )
     if not external_intent:
         return None
     calls = _expanded_tool_calls(question, allowed_brands, allowed_periods)
     external_calls = tuple(
         call
         for call in calls
-        if call.name in {"search_clinical", "search_patent", "web_search", "get_procedure_stats"}
+        if call.name in {"search_clinical", "search_patent", "search_drug_info", "web_search", "get_procedure_stats"}
         or (call.name in {"get_metric", "get_brand_sales", "get_brand_share", "get_brand_series"} and _asks_explicit_metric(question))
     )
     if not external_calls:
@@ -269,7 +275,13 @@ def select_candidate_tools(
         names.extend(_MARKET_TOOL_NAMES)
     if _asks_relative_date(question):
         names.extend(_RELATIVE_DATE_TOOL_NAMES)
-    external_intent = _asks_clinical(question) or _asks_patent(question) or _asks_web_search(question) or _asks_hira_procedure(question)
+    external_intent = (
+        _asks_clinical(question)
+        or _asks_patent(question)
+        or _asks_drug_info(question)
+        or _asks_web_search(question)
+        or _asks_hira_procedure(question)
+    )
     metric_context_allowed = not external_intent or _asks_explicit_metric(question)
     if (metric_context_allowed and _asks_metric_or_analysis(question)) or not names:
         names.extend(_METRIC_TOOL_NAMES)

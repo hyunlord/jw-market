@@ -1039,6 +1039,32 @@ def test_genos_planner_uses_deterministic_external_tools_before_llm() -> None:
     assert [call.name for call in procedure_decision.tool_calls] == ["get_procedure_stats"]
 
 
+def test_genos_planner_uses_deterministic_drug_info_before_llm() -> None:
+    class FallbackBomb:
+        def decide(self, *_args, **_kwargs):
+            raise AssertionError("fallback should not be called for explicit drug-info intents")
+
+    planner = GenosToolPlanner(fallback=FallbackBomb(), token=None)
+
+    permission_decision = planner.decide(
+        "리바로 허가일",
+        (),
+        (),
+        ("리바로",),
+        ("2026-04",),
+    )
+    combined_decision = planner.decide(
+        "리바로 임상·허가 현황",
+        (),
+        (),
+        ("리바로",),
+        ("2026-04",),
+    )
+
+    assert [call.name for call in permission_decision.tool_calls] == ["search_drug_info"]
+    assert [call.name for call in combined_decision.tool_calls] == ["search_clinical", "search_drug_info"]
+
+
 def test_genos_planner_routes_explicit_web_search_words_before_llm() -> None:
     class FallbackBomb:
         def decide(self, *_args, **_kwargs):
