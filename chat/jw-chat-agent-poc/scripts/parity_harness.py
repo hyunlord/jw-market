@@ -58,6 +58,7 @@ MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
 P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "H02", "H03", "M02", "M03"})
+P0G_TOP5_GOLDEN_QIDS = frozenset({"F02", "H03", "M03"})
 P0G_FAST_PATH_STAGE_NAME = "조회 계획 확정"
 P0G_MARKET_TOOL_STAGE_BY_QID = {
     "F01": "브랜드 매출 조회",
@@ -634,7 +635,14 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         if sentinel in answer:
             return False, f"fail-closed answer: {sentinel}"
     pattern, error = requirement
-    return (True, "") if pattern.search(answer) else (False, error)
+    if not pattern.search(answer):
+        return False, error
+    if qid in P0G_TOP5_GOLDEN_QIDS and not all(
+        re.search(rf"(?m)^\|\s*{rank}(?:위)?\s*\|", answer)
+        for rank in range(1, 6)
+    ):
+        return False, "missing top 5 ranked rows"
+    return True, ""
 
 
 def _diff_question(qid: str, before: Path, after: Path) -> dict[str, Any]:

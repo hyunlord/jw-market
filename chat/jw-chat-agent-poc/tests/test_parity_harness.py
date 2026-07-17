@@ -126,9 +126,19 @@ def test_http_sse_forwards_shared_conversation_id(monkeypatch) -> None:
 
 
 def test_history_golden_acceptance_requires_live_values() -> None:
+    top5_answer = (
+        "상위 5개 합계 시장점유율은 29.52%입니다.\n\n"
+        "| 순위 | 브랜드 | 점유율 | 매출 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1위 | 로수젯 | 9.13% | 195.24억원 |\n"
+        "| 2위 | 리피토 | 6.13% | 131.09억원 |\n"
+        "| 3위 | 리바로젯 | 5.12% | 109.46억원 |\n"
+        "| 4위 | 아토젯 | 4.95% | 105.87억원 |\n"
+        "| 5위 | 로수바미브 | 4.20% | 89.76억원 |"
+    )
     assert _history_golden_acceptance("H01", "도구 조회가 끝났습니다.") == (True, "")
     assert _history_golden_acceptance("H02", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
-    assert _history_golden_acceptance("H03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+    assert _history_golden_acceptance("H03", top5_answer) == (True, "")
 
     assert _history_golden_acceptance("H02", "데이터 존재 여부를 확인하지 못했습니다.") == (
         False,
@@ -139,9 +149,16 @@ def test_history_golden_acceptance_requires_live_values() -> None:
         "fail-closed answer: 지원되지 않는 시장",
     )
     assert _history_golden_acceptance("M02", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
-    assert _history_golden_acceptance("M03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+    assert _history_golden_acceptance("M03", top5_answer) == (True, "")
     assert _history_golden_acceptance("F01", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
-    assert _history_golden_acceptance("F02", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+    assert _history_golden_acceptance("F02", top5_answer) == (True, "")
+
+
+def test_history_golden_acceptance_rejects_top5_aggregate_without_ranked_rows() -> None:
+    assert _history_golden_acceptance(
+        "F02",
+        "상위 5개 합계 시장점유율은 29.52%입니다.",
+    ) == (False, "missing top 5 ranked rows")
 
 
 def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() -> None:
