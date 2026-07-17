@@ -25,8 +25,8 @@ spec:
       restartPolicy: Never
       containers:
         - name: ingest
-          # Same digest pin as the monthly orchestrator CronJob — one code identity.
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6e820a58f41251b77bbc4f9aaa37882f0cf8fcbbeec5445b6f1503fd857e1235
+          # Same digest pin as the orchestrator poll CronJob — one code identity.
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6bffbc5350aadd302124c500eb91b16415b0dcfe42c635774fd0abd763441996
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -46,7 +46,7 @@ spec:
               value: jw_mart_d2_stage_20260630_r2
             - name: AGENT3_DB_NAME
               value: jw_mart_d2_stage_20260630_r2
-            # Fail-closed rev pins, same double-entry as the monthly CronJob.
+            # Fail-closed rev pins, same double-entry as the orchestrator poll CronJob.
             - name: AGENT3_WORKFLOW_REV
               value: "5692"
             - name: AGENT3_EXPECTED_WORKFLOW_REV

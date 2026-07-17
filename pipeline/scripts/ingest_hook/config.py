@@ -1,8 +1,8 @@
 """Environment contract for the ingest hook (single place, fail-closed reads).
 
 The Job image default deliberately equals the digest-pinned orchestrator image
-from deploy/k8s/orchestrator/pipeline-orchestrator-monthly-cronjob.yaml so the
-ingest Job and the monthly chain execute the same code by construction.
+from deploy/k8s/orchestrator/pipeline-orchestrator-poll-cronjob.yaml so the
+ingest Job and the orchestrator poll chain execute the same code by construction.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mo
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
-    "jw-pipeline-orchestrator@sha256:6e820a58f41251b77bbc4f9aaa37882f0cf8fcbbeec5445b6f1503fd857e1235"
+    "jw-pipeline-orchestrator@sha256:6bffbc5350aadd302124c500eb91b16415b0dcfe42c635774fd0abd763441996"
 )
 
 

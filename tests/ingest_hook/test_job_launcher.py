@@ -33,9 +33,9 @@ def test_submit_uses_injected_transport(fake_transport):
     assert body["metadata"]["name"] == name
 
 
-def test_job_image_default_matches_monthly_cronjob_pin():
-    """One code identity: ingest Jobs run the exact digest the monthly chain runs."""
-    cronjob = REPO_ROOT / "deploy" / "k8s" / "orchestrator" / "pipeline-orchestrator-monthly-cronjob.yaml"
+def test_job_image_default_matches_orchestrator_cronjob_pin():
+    """One code identity: ingest Jobs run the exact digest the orchestrator poll chain runs."""
+    cronjob = REPO_ROOT / "deploy" / "k8s" / "orchestrator" / "pipeline-orchestrator-poll-cronjob.yaml"
     assert config.DEFAULT_JOB_IMAGE in cronjob.read_text(encoding="utf-8")
 
 
