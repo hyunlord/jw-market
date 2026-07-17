@@ -1,3 +1,10 @@
+# TRANSITIONAL (2026-07-17 PL scope decision): the hook-driven input system
+# (JW_Input_Detection_Contract_v2: jw-data-input -> MinIO manifest -> webhook
+# -> G3 validation -> incremental Job -> sigma gate) is the canonical
+# architecture; its execution target is `python -m pipeline.orchestrator run
+# --mode incremental`. This object is a manual/interim fallback only and is
+# slated for REPLACEMENT/DELETION when the hook system lands.
+# DO NOT RESUME (keep suspend: true).
 # Brand-activity run template (triggered by the CSD sensor, never by clock).
 #
 # The schedule below never fires (Feb 30); the only intended invocation is

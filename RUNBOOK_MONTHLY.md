@@ -27,6 +27,8 @@ python -m pipeline.orchestrator run --mode full
 
 ## 0-a. 트리거 지도 (이벤트 드리븐 아키텍처, 2026-07-17)
 
+> **★ 과도기 주의(PL 범위 확정)**: 정본 아키텍처는 jw market **증분 훅 시스템**(JW_Input_Detection_Contract_v2 — jw-data-input → MinIO manifest 감지 → webhook → G3 검증 → `pipeline.orchestrator --mode incremental` Job → Σ게이트). 아래 센서·kick·poll 3종은 훅 착지 시 **대체·삭제 예정**이며 **resume 금지**(suspend 유지, 과도기 수동 예비용).
+
 | 파이프라인 | 1차 트리거(이벤트) | 안전망(시계) | 판단 주체 |
 |---|---|---|---|
 | 시장 데이터 체인(오케스트레이터) | **ETL 증분 적재 성공 → kick**(`pipeline/etl/kick.py`, `JW_ETL_KICK_ORCHESTRATOR=1`일 때만·성공 경로만) | `jw-pipeline-orchestrator-poll-daily` 매일 01:00 KST(같은 epoch면 수초 no-op) | 오케스트레이터 epoch/coverage 감지 |

@@ -1,5 +1,10 @@
 """Event-driven wake-up: kick the pipeline orchestrator after a successful ETL load.
 
+TRANSITIONAL (2026-07-17 PL scope decision): the hook-driven input system
+(JW_Input_Detection_Contract_v2) is the canonical trigger architecture and
+calls ``pipeline.orchestrator`` directly; this kick is a manual/interim
+fallback slated for replacement when the hook system lands.
+
 Design contract (event-driven round, 2026-07-17):
 
 * The kick is a WAKE-UP only. The orchestrator's own epoch/coverage detection
