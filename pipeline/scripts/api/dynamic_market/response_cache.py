@@ -463,53 +463,69 @@ class MySQLDynamicResponseCacheStore:
             if self._epoch_cached is not None and time.monotonic() - self._epoch_cached[0] < 5.0:
                 return self._epoch_cached[1]
         try:
-            mart_versions: list[dict[str, Any]] = []
-            for table_name in (
+            mart_table_names = (
                 "mart_general_brand_metric",
                 "mart_general_market_metric",
                 "mart_strategic_ml_brand_metric",
                 "mart_strategic_ml_market_metric",
                 "mart_strategic_cd_brand_metric",
                 "mart_strategic_cd_market_metric",
-            ):
-                mart_versions.extend(
-                    db.fetch_all(
-                        f"""
-                        SELECT %s AS table_name, computation_version, computed_at
-                        FROM `{self._mart_db}`.`{table_name}`
-                        ORDER BY id DESC
-                        LIMIT 1
-                        """,
-                        (table_name,),
-                    )
-                )
-            dimension_versions: list[dict[str, Any]] = []
-            for schema, table_name, index_name in (
+            )
+            mart_version_queries = [
+                f"""
+                SELECT {position} AS table_order, %s AS table_name,
+                       recent.computation_version, recent.computed_at
+                FROM (
+                    SELECT computation_version, computed_at
+                    FROM `{self._mart_db}`.`{table_name}`
+                    ORDER BY id DESC
+                    LIMIT 1
+                ) recent
+                """
+                for position, table_name in enumerate(mart_table_names)
+            ]
+            mart_versions = db.fetch_all(
+                "SELECT table_name, computation_version, computed_at FROM ("
+                + " UNION ALL ".join(mart_version_queries)
+                + ") versions ORDER BY table_order",
+                mart_table_names,
+            )
+            dimension_tables = (
                 (self._general_dimension_db, "mart_general_filter_dimension_metric", "idx_filter_option"),
                 (self._strategic_dimension_db, "mart_strategic_filter_dimension_metric", "idx_options"),
-            ):
-                rows = db.fetch_all(
-                    f"""
-                    SELECT %s AS table_name, d.source, d.dimension_type,
-                           (SELECT f.computed_at
-                            FROM `{schema}`.`{table_name}` f FORCE INDEX (`{index_name}`)
-                            WHERE f.source = d.source
-                              AND f.dimension_type = d.dimension_type
-                            ORDER BY f.dimension_value_hash
-                            LIMIT 1) AS computed_at
-                    FROM (
-                        SELECT DISTINCT source, dimension_type
-                        FROM `{schema}`.`{table_name}`
-                    ) d
-                    ORDER BY d.source, d.dimension_type
-                    """,
-                    (table_name,),
+            )
+            dimension_version_queries = [
+                f"""
+                SELECT {position} AS table_order, %s AS table_name, d.source, d.dimension_type,
+                       (SELECT f.computed_at
+                        FROM `{schema}`.`{table_name}` f FORCE INDEX (`{index_name}`)
+                        WHERE f.source = d.source
+                          AND f.dimension_type = d.dimension_type
+                        ORDER BY f.dimension_value_hash
+                        LIMIT 1) AS computed_at
+                FROM (
+                    SELECT DISTINCT source, dimension_type
+                    FROM `{schema}`.`{table_name}`
+                ) d
+                """
+                for position, (schema, table_name, index_name) in enumerate(dimension_tables)
+            ]
+            dimension_versions = db.fetch_all(
+                "SELECT table_name, source, dimension_type, computed_at FROM ("
+                + " UNION ALL ".join(dimension_version_queries)
+                + ") versions ORDER BY table_order, source, dimension_type",
+                tuple(table_name for _schema, table_name, _index_name in dimension_tables),
+            )
+            dimension_table_names = {str(row.get("table_name") or "") for row in dimension_versions}
+            missing_dimension_tables = [
+                table_name
+                for _schema, table_name, _index_name in dimension_tables
+                if table_name not in dimension_table_names
+            ]
+            if missing_dimension_tables:
+                raise DynamicResponseCacheUnavailable(
+                    "filter dimension explicit data version is missing: " + ", ".join(missing_dimension_tables)
                 )
-                if not rows:
-                    raise DynamicResponseCacheUnavailable(
-                        f"filter dimension explicit data version is missing: {table_name}"
-                    )
-                dimension_versions.extend(rows)
             catalogs = db.fetch_all(
                 f"""
                 SELECT 'catalog_ml_market' AS table_name, MAX(source_file_version) AS source_file_version,

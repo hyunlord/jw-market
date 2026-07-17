@@ -583,11 +583,14 @@ def _explicit_version_fetcher(
     *,
     metric_timestamp: str = "2026-07-14 00:00:00",
     event_timestamp: str = "2026-07-14 01:00:00",
+    omitted_mart_table: str | None = None,
+    omitted_dimension_table: str | None = None,
+    omitted_catalog_table: str | None = None,
 ):
     def fake_fetch_all(sql: str, _params: object) -> list[dict[str, object]]:
         calls.append(sql)
         if "computation_version" in sql:
-            table_name = next(
+            table_names = [
                 name
                 for name in (
                     "mart_general_brand_metric",
@@ -597,15 +600,21 @@ def _explicit_version_fetcher(
                     "mart_strategic_cd_brand_metric",
                     "mart_strategic_cd_market_metric",
                 )
-                if name in sql
-            )
-            return [{"table_name": table_name, "computation_version": "v3", "computed_at": metric_timestamp}]
+                if name in sql and name != omitted_mart_table
+            ]
+            return [
+                {"table_name": table_name, "computation_version": "v3", "computed_at": metric_timestamp}
+                for table_name in table_names
+            ]
         if "d.source, d.dimension_type" in sql:
-            table_name = (
-                "mart_general_filter_dimension_metric"
-                if "mart_general_filter_dimension_metric" in sql
-                else "mart_strategic_filter_dimension_metric"
-            )
+            table_names = [
+                table_name
+                for table_name in (
+                    "mart_general_filter_dimension_metric",
+                    "mart_strategic_filter_dimension_metric",
+                )
+                if table_name in sql and table_name != omitted_dimension_table
+            ]
             return [
                 {
                     "table_name": table_name,
@@ -613,6 +622,7 @@ def _explicit_version_fetcher(
                     "dimension_type": "molecule",
                     "computed_at": "2026-07-13 17:08:13",
                 }
+                for table_name in table_names
             ]
         if "catalog_manifest_hash" in sql:
             return [
@@ -623,6 +633,7 @@ def _explicit_version_fetcher(
                     "catalog_manifest_hash": "manifest-1",
                 }
                 for table_name in ("catalog_ml_market", "catalog_cd_market", "catalog_strategic_brand")
+                if table_name != omitted_catalog_table
             ]
         if "event_brand_scores" in sql:
             return [
@@ -683,6 +694,80 @@ def test_source_epoch_uses_only_explicit_data_versions(monkeypatch) -> None:
     assert "`strategic_dimension`.`mart_strategic_filter_dimension_metric`" in combined
 
 
+def test_source_epoch_batches_version_reads_into_three_round_trips(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls),
+    )
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    )
+
+    assert len(store.source_epoch()) == 64
+    assert len(calls) == 3
+
+
+def test_source_epoch_rejects_missing_dimension_version_in_batched_read(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls, omitted_dimension_table="mart_strategic_filter_dimension_metric"),
+    )
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    )
+
+    with pytest.raises(DynamicResponseCacheUnavailable, match="mart_strategic_filter_dimension_metric"):
+        store.source_epoch()
+
+    assert len(calls) == 2
+
+
+def test_source_epoch_rejects_missing_mart_version_in_batched_read(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls, omitted_mart_table="mart_strategic_cd_market_metric"),
+    )
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    )
+
+    with pytest.raises(DynamicResponseCacheUnavailable, match="explicit data versions are incomplete"):
+        store.source_epoch()
+
+    assert len(calls) == 3
+
+
+def test_source_epoch_rejects_missing_catalog_version_in_batched_read(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.response_cache.db.fetch_all",
+        _explicit_version_fetcher(calls, omitted_catalog_table="catalog_cd_market"),
+    )
+    store = MySQLDynamicResponseCacheStore(
+        mart_db="mart",
+        general_dimension_db="general_dimension",
+        strategic_dimension_db="strategic_dimension",
+    )
+
+    with pytest.raises(DynamicResponseCacheUnavailable, match="explicit data versions are incomplete"):
+        store.source_epoch()
+
+    assert len(calls) == 3
+
+
 def test_source_epoch_is_stable_until_an_explicit_version_changes(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(
@@ -735,3 +820,4 @@ def test_deep_section_epoch_includes_event_scores_and_namespace(monkeypatch) -> 
     assert "workflow_id" in event_sql
     assert "catalog_version" in event_sql
     assert "information_schema" not in event_sql
+    assert len(calls) == 4
