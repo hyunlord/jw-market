@@ -150,6 +150,39 @@ def capture(
     ) else 1
 
 
+def capture_p0g_suite(
+    out_dir: Path,
+    external_mode: str,
+    base_url: str | None,
+    *,
+    history_conversation_id: str | None = None,
+) -> int:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scenarios = (
+        ("fresh", FRESH_GOLDEN_QUESTIONS, None),
+        (
+            "history",
+            HISTORY_GOLDEN_QUESTIONS,
+            history_conversation_id or f"parity-history-{uuid4().hex}",
+        ),
+        (
+            "mode-transition",
+            MODE_TRANSITION_GOLDEN_QUESTIONS,
+            f"parity-mode-transition-{uuid4().hex}",
+        ),
+    )
+    summary: list[dict[str, str | int]] = []
+    for name, questions, conversation_id in scenarios:
+        status = capture(out_dir / name, external_mode, base_url, questions, conversation_id)
+        summary.append({"scenario": name, "status": status})
+    (out_dir / "p0g_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(json.dumps({"p0g": summary}, ensure_ascii=False), flush=True)
+    return 0 if all(item["status"] == 0 for item in summary) else 1
+
+
 def diff_captures(
     before: Path,
     after: Path,
@@ -551,6 +584,14 @@ def main() -> int:
         "--conversation-id",
         help="Reuse one session across capture questions. Required to reproduce history contamination against an existing uploaded-file session.",
     )
+    p0g_parser = sub.add_parser("capture-p0g")
+    p0g_parser.add_argument("--out-dir", type=Path, required=True)
+    p0g_parser.add_argument("--external-mode", default="live")
+    p0g_parser.add_argument("--base-url", help="Portal-equivalent /chat/stream base URL.")
+    p0g_parser.add_argument(
+        "--history-conversation-id",
+        help="Existing session containing an uploaded file and unrelated prior turns.",
+    )
     diff_parser = sub.add_parser("diff")
     diff_parser.add_argument("--before", type=Path, required=True)
     diff_parser.add_argument("--after", type=Path, required=True)
@@ -574,6 +615,13 @@ def main() -> int:
             args.base_url,
             _capture_questions(args.question_set),
             conversation_id,
+        )
+    if args.command == "capture-p0g":
+        return capture_p0g_suite(
+            args.out_dir,
+            args.external_mode,
+            args.base_url,
+            history_conversation_id=args.history_conversation_id,
         )
     if args.command == "diff":
         return diff_captures(

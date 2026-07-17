@@ -12,6 +12,7 @@ from scripts.parity_harness import (
     _history_golden_acceptance,
     _capture_questions,
     _http_sse,
+    capture_p0g_suite,
     diff_captures,
 )
 from scripts.runtime_model_compare_runner import _parse_events
@@ -139,6 +140,41 @@ def test_history_golden_acceptance_requires_live_values() -> None:
     assert _history_golden_acceptance("M03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
     assert _history_golden_acceptance("F01", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
     assert _history_golden_acceptance("F02", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+
+
+def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[Path, str | None, str | None, tuple[tuple[str, str], ...], str | None]] = []
+
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
+        calls.append((out_dir, external_mode, base_url, questions, conversation_id))
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+
+    status = capture_p0g_suite(
+        tmp_path,
+        "live",
+        "http://portal-equivalent",
+        history_conversation_id="uploaded-file-session",
+    )
+
+    assert status == 0
+    assert [call[0].name for call in calls] == ["fresh", "history", "mode-transition"]
+    assert [call[3] for call in calls] == [
+        FRESH_GOLDEN_QUESTIONS,
+        HISTORY_GOLDEN_QUESTIONS,
+        MODE_TRANSITION_GOLDEN_QUESTIONS,
+    ]
+    assert calls[0][4] is None
+    assert calls[1][4] == "uploaded-file-session"
+    assert calls[2][4] is not None
+
+
+def test_p0g_suite_fails_when_any_scenario_fails(monkeypatch, tmp_path: Path) -> None:
+    statuses = iter((0, 1, 0))
+    monkeypatch.setattr("scripts.parity_harness.capture", lambda *args: next(statuses))
+
+    assert capture_p0g_suite(tmp_path, "live", None) == 1
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:
