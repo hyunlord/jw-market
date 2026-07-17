@@ -879,6 +879,8 @@ def _resolve_file_question(question: str, previous_turn: ConversationTurn | None
         return question
     if previous_turn is None:
         return question
+    if _is_complete_ranked_file_question(question):
+        return question
     previous = previous_turn.question.strip()
     resolved = question.strip()
     has_current_sheet = bool(re.search(r"[^\s]+\s*시트", question, re.IGNORECASE))
@@ -941,6 +943,18 @@ def _resolve_file_question(question: str, previous_turn: ConversationTurn | None
     if file_sheet and not has_current_sheet:
         resolved = f"{file_sheet} 시트에서 {resolved}"
     return resolved
+
+
+def _is_complete_ranked_file_question(question: str) -> bool:
+    """Keep an explicit ranked axis independent from stale turn slots."""
+
+    return bool(
+        re.search(
+            r"(?:상위|하위)\s*\d+\s*(?:개\s*)?(?:제품|품목|브랜드|제조사|업체|채널)",
+            question,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _has_explicit_file_sheet_reference(question: str) -> bool:
