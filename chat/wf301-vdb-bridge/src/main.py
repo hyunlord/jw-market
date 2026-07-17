@@ -1890,8 +1890,12 @@ def _context_from_hits(
         source_channel = str(provenance.get("source_channel") or "native_text")
         label = " [image-derived extraction]" if source_channel == pdf_vlm.SOURCE_CHANNEL else ""
         section_title = str(provenance.get("section_title") or "").strip() or None
-        slide_number = hit.get("i_page") if file_name.casefold().endswith(".pptx") else None
+        normalized_name = file_name.casefold()
+        page_number = hit.get("i_page") if normalized_name.endswith(".pdf") else None
+        slide_number = hit.get("i_page") if normalized_name.endswith(".pptx") else None
         location_parts: list[str] = []
+        if page_number is not None:
+            location_parts.append(f"page={page_number}")
         if section_title:
             location_parts.append(f"section={section_title}")
         if slide_number is not None:
@@ -1925,7 +1929,9 @@ def _join_file_contexts(wiki_context: str, vdb_context: str) -> str:
 
 
 _PAGE_REFERENCE_RE = re.compile(
-    r"(?:(?P<ko>\d{1,4})\s*(?:페이지|번\s*슬라이드)|(?:page|p\.)\s*(?P<en>\d{1,4}))",
+    r"(?:(?P<ko>\d{1,4})\s*(?:페이지|번\s*슬라이드)|"
+    r"(?:page|p\.)\s*(?P<en>\d{1,4})|"
+    r"(?:slide|슬라이드)\s*(?P<leading_slide>\d{1,4}))",
     re.IGNORECASE,
 )
 _KEYWORD_EVIDENCE_RE = re.compile(
@@ -1938,7 +1944,11 @@ def _requested_page_number(question: str) -> int | None:
     match = _PAGE_REFERENCE_RE.search(question)
     if match is None:
         return None
-    return int(match.group("ko") or match.group("en"))
+    return int(
+        match.group("ko")
+        or match.group("en")
+        or match.group("leading_slide")
+    )
 
 
 def _search_document_hits(

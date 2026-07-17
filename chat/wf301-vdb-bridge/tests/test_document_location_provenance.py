@@ -24,9 +24,18 @@ def test_docx_chunk_records_preserve_heading_sections(tmp_path) -> None:
     assert "No new safety signal" in records[1].text
 
 
-def test_context_projects_docx_section_and_pptx_slide_locations() -> None:
+def test_context_projects_pdf_page_docx_section_and_pptx_slide_locations() -> None:
     context, sources, empty_pages = main._context_from_hits(
         [
+            {
+                "text": "The primary endpoint was met.",
+                "summary": '{"source_channel":"native_text"}',
+                "doc_id": 6,
+                "file_name": "study.pdf",
+                "i_page": 4,
+                "i_chunk_on_doc": 1,
+                "_additional": {"id": "pdf-4", "distance": 0.05},
+            },
             {
                 "text": "No new safety signal was identified.",
                 "summary": '{"source_channel":"native_text","section_title":"Safety"}',
@@ -49,9 +58,12 @@ def test_context_projects_docx_section_and_pptx_slide_locations() -> None:
     )
 
     assert empty_pages == []
+    assert "page=4" in context
     assert "section=Safety" in context
     assert "slide=12" in context
-    assert sources[0].section_title == "Safety"
+    assert sources[0].i_page == 4
     assert sources[0].slide_number is None
-    assert sources[1].section_title is None
-    assert sources[1].slide_number == 12
+    assert sources[1].section_title == "Safety"
+    assert sources[1].slide_number is None
+    assert sources[2].section_title is None
+    assert sources[2].slide_number == 12
