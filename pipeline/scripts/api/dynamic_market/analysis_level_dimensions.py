@@ -8,6 +8,7 @@ from typing import Any
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.analysis_level_series import (
+    dimension_series_from_labels_decoded,
     metric_history_from_periods,
     with_dimension_series_from_labels,
     with_dimension_series_from_labels_decoded,
@@ -37,6 +38,7 @@ def build_analysis_rows(
     mart_db: str,
     reuse_general_dimensions: bool = False,
     retain_decoded_dimensions: bool = False,
+    defer_dimension_data_encoding: bool = False,
 ) -> list[dict[str, Any]]:
     """Return cache-cause mart rows enriched for analysis-level builders."""
 
@@ -63,6 +65,7 @@ def build_analysis_rows(
         sidecar_dimensions=sidecar_dimensions,
         strategic_dimensions=strategic_dimensions,
         retain_decoded_dimensions=retain_decoded_dimensions,
+        defer_dimension_data_encoding=defer_dimension_data_encoding,
     )
     return rows
 
@@ -216,6 +219,7 @@ def _analysis_rows(
     sidecar_dimensions: dict[tuple[str, str], dict[str, Any]],
     strategic_dimensions: dict[str, dict[str, Any]],
     retain_decoded_dimensions: bool = False,
+    defer_dimension_data_encoding: bool = False,
 ) -> list[dict[str, Any]]:
     totals_by_period = {
         str(item["period"]): float(item.get("market_size") or 0.0)
@@ -250,12 +254,20 @@ def _analysis_rows(
         row["is_jw"] = bool(row["is_target"] or strategic.get("is_jw"))
         row["metric_history"] = _metric_history(brand=brand, totals_by_period=totals_by_period)
         if retain_decoded_dimensions:
-            encoded, dimension_data, by_dimension = with_dimension_series_from_labels_decoded(
-                dimension_data,
-                by_dimension,
-                brand.history_by_period,
-            )
-            row["dimension_data"] = encoded
+            if defer_dimension_data_encoding:
+                dimension_data, by_dimension = dimension_series_from_labels_decoded(
+                    dimension_data,
+                    by_dimension,
+                    brand.history_by_period,
+                )
+                row["dimension_data"] = "{}"
+            else:
+                encoded, dimension_data, by_dimension = with_dimension_series_from_labels_decoded(
+                    dimension_data,
+                    by_dimension,
+                    brand.history_by_period,
+                )
+                row["dimension_data"] = encoded
             row["__dimension_data"] = dimension_data
             row["__by_dimension"] = by_dimension
         else:

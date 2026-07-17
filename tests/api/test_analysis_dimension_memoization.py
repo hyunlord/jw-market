@@ -265,6 +265,67 @@ def test_analysis_rows_can_handoff_decoded_dimension_payloads() -> None:
     }
 
 
+def test_analysis_rows_can_defer_intermediate_dimension_encoding() -> None:
+    analysis_row = {
+        "by_dimension": '{"seller": "JW중외제약"}',
+        "dimension_data": '{"seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}}',
+    }
+    metric = BrandMetric(
+        "brand-a",
+        "Brand A",
+        "C10A1",
+        1.0,
+        100.0,
+        1,
+        "2026-01",
+        1.0,
+        history_by_period={"2026-01": 1.0},
+        analysis_row=analysis_row,
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1.0,
+        hhi=10000.0,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 1.0},),
+        brands=(metric,),
+        all_brands=(metric,),
+    )
+
+    materialized_rows = _analysis_rows(
+        metrics=metrics,
+        focus=metric,
+        general_dimensions={},
+        sidecar_dimensions={},
+        strategic_dimensions={},
+        retain_decoded_dimensions=True,
+    )
+    deferred_rows = _analysis_rows(
+        metrics=metrics,
+        focus=metric,
+        general_dimensions={},
+        sidecar_dimensions={},
+        strategic_dimensions={},
+        retain_decoded_dimensions=True,
+        defer_dimension_data_encoding=True,
+    )
+
+    assert deferred_rows[0]["dimension_data"] == "{}"
+    assert deferred_rows[0]["__dimension_data"] == {
+        "seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}
+    }
+    specs = general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"]
+    assert general_analysis_levels._with_canonical_dimension_aliases(
+        deferred_rows[0],
+        specs,
+    ) == general_analysis_levels._with_canonical_dimension_aliases(
+        materialized_rows[0],
+        specs,
+    )
+
+
 def test_general_sidecar_can_handoff_decoded_payloads(monkeypatch) -> None:
     metric = BrandMetric(
         "brand-a",
