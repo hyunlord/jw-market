@@ -183,6 +183,11 @@ spec:
                 --workflow-url "$WF337_URL" \
                 --daily-call-limit 60 \
                 --max-cost-krw 203.40
+              # Category refresh must follow append-live and must not be
+              # skippable: under set -euo pipefail this line only runs after a
+              # successful append, and its own failure fails the Job (the
+              # missing invocation was the tier2 category gap - audit dd41f8aa).
+              python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories
             command:
             - /bin/sh
             - -lc

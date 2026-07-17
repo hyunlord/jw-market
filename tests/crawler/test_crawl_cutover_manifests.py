@@ -35,6 +35,10 @@ def test_tier2_manifest_pins_ga_workflow_and_stays_active() -> None:
     assert "python /opt/tier2/tier2_full_scoring_runner.py append-live" in manifest
     assert "python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw" in manifest
     assert manifest.index("sync-events-raw") < manifest.index("append-live")
+    # Category refresh runs after append-live so the tier2 category gap
+    # (missing invocation) stays closed.
+    assert "python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories" in manifest
+    assert manifest.index("append-live") < manifest.index("refresh-live-categories")
     assert "name: tier2-llm-runner-rev5671" in manifest
     assert "suspend: false" in manifest
 
