@@ -4,6 +4,7 @@ import json
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import (
     _analysis_rows,
     _general_dimensions_from_metrics,
+    _general_sidecar_dimensions_by_pair,
 )
 from pipeline.scripts.api.dynamic_market.analysis_level_series import (
     with_dimension_series_from_labels_decoded,
@@ -262,6 +263,123 @@ def test_analysis_rows_can_handoff_decoded_dimension_payloads() -> None:
     assert rows[0]["__dimension_data"] == {
         "seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}
     }
+
+
+def test_general_sidecar_can_handoff_decoded_payloads(monkeypatch) -> None:
+    metric = BrandMetric(
+        "brand-a",
+        "Brand A",
+        "C10A1",
+        1.0,
+        100.0,
+        1,
+        "2026-01",
+        1.0,
+        history_by_period={"2026-01": 1.0},
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1.0,
+        hhi=10000.0,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 1.0},),
+        brands=(metric,),
+        all_brands=(metric,),
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all",
+        lambda *_args, **_kwargs: [
+            {
+                "brand_key": "brand-a",
+                "brand_name": "Brand A",
+                "atc4_code": "C10A1",
+                "dimension_type": "seller",
+                "dimension_value": "JW중외제약",
+                "raw_value_history": '{"2026-01": {"raw_value": 1}}',
+            }
+        ],
+    )
+
+    default_payloads = _general_sidecar_dimensions_by_pair(
+        metrics=metrics,
+        mart_db="mart",
+    )
+    payloads = _general_sidecar_dimensions_by_pair(
+        metrics=metrics,
+        mart_db="mart",
+        retain_decoded_dimensions=True,
+    )
+
+    assert default_payloads[("brand-a", "C10A1")] == {
+        "by_dimension": '{"seller": "JW중외제약"}',
+        "dimension_data": (
+            '{"seller": {"JW중외제약": {"2026-01": {"raw_value": 1.0}}}}'
+        ),
+    }
+    assert payloads[("brand-a", "C10A1")] == {
+        "by_dimension": {"seller": "JW중외제약"},
+        "dimension_data": {
+            "seller": {"JW중외제약": {"2026-01": {"raw_value": 1.0}}}
+        },
+    }
+
+
+def test_analysis_rows_do_not_redecode_decoded_sidecar_payloads(monkeypatch) -> None:
+    metric = BrandMetric(
+        "brand-a",
+        "Brand A",
+        "C10A1",
+        1.0,
+        100.0,
+        1,
+        "2026-01",
+        1.0,
+        history_by_period={"2026-01": 1.0},
+        analysis_row={"by_dimension": "{}", "dimension_data": "{}"},
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1.0,
+        hhi=10000.0,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 1.0},),
+        brands=(metric,),
+        all_brands=(metric,),
+    )
+    decode_inputs = []
+    decode_json = cause_builder.decode_json
+
+    def record_decode(raw):
+        decode_inputs.append(raw)
+        return decode_json(raw)
+
+    monkeypatch.setattr(cause_builder, "decode_json", record_decode)
+
+    rows = _analysis_rows(
+        metrics=metrics,
+        focus=metric,
+        general_dimensions={},
+        sidecar_dimensions={
+            ("brand-a", "C10A1"): {
+                "by_dimension": {"seller": "JW중외제약"},
+                "dimension_data": {
+                    "seller": {"JW중외제약": {"2026-01": {"raw_value": 1.0}}}
+                },
+            }
+        },
+        strategic_dimensions={},
+        retain_decoded_dimensions=True,
+    )
+
+    assert rows[0]["__by_dimension"] == {"seller": "JW중외제약"}
+    assert rows[0]["__dimension_data"] == {
+        "seller": {"JW중외제약": {"2026-01": {"raw_value": 1.0}}}
+    }
+    assert not any(isinstance(raw, str) for raw in decode_inputs)
 
 
 def test_general_aliases_reuse_handed_off_dimension_payloads(monkeypatch) -> None:
