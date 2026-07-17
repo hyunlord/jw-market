@@ -933,6 +933,7 @@ def _resolve_file_question(question: str, previous_turn: ConversationTurn | None
     if (
         file_measure
         and not has_current_measure
+        and not has_explicit_period_cue(question)
         and file_measure.casefold() not in resolved.casefold()
     ):
         resolved = f"{resolved.rstrip('? ')} {file_measure}는?"

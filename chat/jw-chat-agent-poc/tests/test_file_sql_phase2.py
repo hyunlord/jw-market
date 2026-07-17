@@ -388,6 +388,29 @@ def test_file_followup_does_not_inherit_measure_when_current_question_names_one(
     assert "동아제약" not in resolved
 
 
+def test_file_followup_explicit_month_replaces_previous_measure_month() -> None:
+    previous = ConversationTurn(
+        question="2021년 2월 제품 상위 10개",
+        answer="245,286,648,850",
+        applied_filters={},
+        slots=ConversationSlots(
+            file_name="CHSO.xlsx",
+            file_measure="VALUES LC SI PRICE 2/2021",
+            file_sheet="Sell Out Standard",
+        ),
+    )
+
+    resolved = service_app._resolve_file_question("2026년 1월만 합계", previous)
+    plan = file_sql_query._resolve_deterministic_select(
+        resolved,
+        (_wide_chso_schema(),),
+    ).plan
+
+    assert "2/2021" not in resolved
+    assert plan is not None
+    assert "SUM(c72)" in plan["sql"]
+
+
 def test_explicit_unsupported_measure_beats_inherited_sell_out_sheet_name() -> None:
     question = (
         "Sell Out Standard 시트에서 CHSO.xlsx에서 "
