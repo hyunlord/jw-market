@@ -34,6 +34,26 @@ class UploadedTempDocument(BaseModel):
     file_path: str = Field(description="서비스가 저장한 임시 파일 경로입니다. 응답 확인과 장애 분석용으로 제공합니다.")
 
 
+class UploadWorksheetCard(BaseModel):
+    """Observed worksheet bounds read from the workbook package."""
+
+    name: str
+    row_count: int | None = None
+    column_count: int | None = None
+
+
+class UploadFileCard(BaseModel):
+    """Deterministic upload metadata that is not answer evidence."""
+
+    file_name: str
+    file_type: str
+    size_bytes: int = 0
+    sheet_count: int | None = None
+    sheets: list[UploadWorksheetCard] = Field(default_factory=list)
+    page_count: int | None = None
+    slide_count: int | None = None
+
+
 class BlockedUpload(BaseModel):
     file_name: str = Field(description="차단된 업로드 파일명입니다.")
     route: Literal["blocked_oversized", "preprocess_failed"] = Field(
@@ -286,6 +306,10 @@ class UploadResponse(BaseModel):
     temp_vdb_index_id: int | None = Field(default=None, description="생성된 임시 VDB index ID입니다.")
     temp_vdb_index: str | None = Field(default=None, description="전처리기가 청크를 저장한 임시 VDB index 이름입니다.")
     temp_documents: list[UploadedTempDocument] = Field(default_factory=list, description="/commit에 넘길 임시 문서 목록입니다.")
+    file_cards: list[UploadFileCard] = Field(
+        default_factory=list,
+        description="비동기 accepted 응답에 포함되는 파일 패키지 관측 정보입니다.",
+    )
     commit: CommitResponse | None = Field(
         default=None,
         description=(
@@ -476,6 +500,7 @@ class PublicAcceptedUploadResponse(BaseModel):
 
     mode: str = "upload"
     temp_documents: list[PublicUploadedTempDocument] = Field(default_factory=list)
+    file_cards: list[UploadFileCard] = Field(default_factory=list)
     upload_id: str
     state: Literal["accepted"] = "accepted"
     ready: Literal[False] = False
@@ -498,6 +523,7 @@ class PublicUploadFileStatus(BaseModel):
     ]
     route: str | None = None
     message: str | None = None
+    card: UploadFileCard | None = None
 
 
 class PublicUploadStatusResponse(BaseModel):

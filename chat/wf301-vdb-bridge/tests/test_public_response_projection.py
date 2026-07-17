@@ -77,6 +77,19 @@ def test_upload_status_projection_hides_session_and_storage_details() -> None:
                 "state": "preprocessing",
                 "route": None,
                 "message": None,
+                "card": {
+                    "file_name": "wide.xlsx",
+                    "file_type": "xlsx",
+                    "size_bytes": 17103441,
+                    "sheet_count": 1,
+                    "sheets": [
+                        {
+                            "name": "Sell Out Standard",
+                            "row_count": 12269,
+                            "column_count": 252,
+                        }
+                    ],
+                },
             }
         ],
         "message": None,
@@ -88,6 +101,8 @@ def test_upload_status_projection_hides_session_and_storage_details() -> None:
 
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
     assert "wide.xlsx" in encoded
+    assert "Sell Out Standard" in encoded
+    assert "252" in encoded
 
 
 def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> None:
@@ -162,6 +177,21 @@ def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
         "state": "accepted",
         "ready": False,
         "status_url": "/upload/status",
+        "file_cards": [
+            {
+                "file_name": "wide.xlsx",
+                "file_type": "xlsx",
+                "size_bytes": 17103441,
+                "sheet_count": 1,
+                "sheets": [
+                    {
+                        "name": "Sell Out Standard",
+                        "row_count": 12269,
+                        "column_count": 252,
+                    }
+                ],
+            }
+        ],
     }
 
     projected = models.PublicAcceptedUploadResponse.model_validate(raw).model_dump()
@@ -175,6 +205,8 @@ def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
     assert projected["state"] == "accepted"
     assert projected["ready"] is False
     assert projected["status_url"] == "/upload/status"
+    assert projected["file_cards"][0]["sheet_count"] == 1
+    assert projected["file_cards"][0]["sheets"][0]["column_count"] == 252
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
 
 

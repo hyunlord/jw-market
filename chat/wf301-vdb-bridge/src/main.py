@@ -30,7 +30,14 @@ from .file_sql import (
 )
 from .logging_utils import safe_log
 from .upload_ownership import TempDocumentNotFoundError, UploadOwnershipRegistry
-from .upload_status import UploadFileStatus, UploadJobNotFoundError, UploadStatusRegistry
+from .upload_status import (
+    UploadFileCard as StatusUploadFileCard,
+    UploadFileStatus,
+    UploadJobNotFoundError,
+    UploadStatusRegistry,
+    UploadWorksheetCard as StatusUploadWorksheetCard,
+)
+from .upload_machine_card import inspect_upload_machine_card
 from .models import (
     BlockedUpload,
     BridgeRequest,
@@ -88,6 +95,47 @@ from .xlsx_sql_route import (
 WORKFLOW_ID_EXAMPLE = 301
 SESSION_KEY_EXAMPLE = "puc-004928"
 SESSION_KEY_SCHEMA = {"maxLength": 36, "pattern": "^[A-Za-z0-9_-]{1,36}$"}
+
+
+def _inspect_saved_upload_card(
+    item: upload_adapter.SavedTempDocument,
+) -> StatusUploadFileCard:
+    observed = inspect_upload_machine_card(Path(item.file_path), item.file_name)
+    return StatusUploadFileCard(
+        file_name=Path(item.file_name).name,
+        file_type=observed.file_type,
+        size_bytes=observed.size_bytes,
+        sheet_count=observed.sheet_count,
+        sheets=tuple(
+            StatusUploadWorksheetCard(
+                name=sheet.name,
+                row_count=sheet.row_count,
+                column_count=sheet.column_count,
+            )
+            for sheet in observed.sheets
+        ),
+        page_count=observed.page_count,
+        slide_count=observed.slide_count,
+    )
+
+
+def _upload_card_payload(card: StatusUploadFileCard) -> dict[str, object]:
+    return {
+        "file_name": card.file_name,
+        "file_type": card.file_type,
+        "size_bytes": card.size_bytes,
+        "sheet_count": card.sheet_count,
+        "sheets": [
+            {
+                "name": sheet.name,
+                "row_count": sheet.row_count,
+                "column_count": sheet.column_count,
+            }
+            for sheet in card.sheets
+        ],
+        "page_count": card.page_count,
+        "slide_count": card.slide_count,
+    }
 TARGET_VDB_EXAMPLE = settings.TARGET_VDB_ID
 # .xlsm은 매크로(vbaProject)를 무시하고 데이터 시트만 .xlsx와 같은 로컬 전처리 경로로 처리한다.
 LOCAL_XLSX_SUFFIXES = (".xlsx", ".xlsm")
@@ -1742,10 +1790,14 @@ def upload(
                     )
                 if return_when == "accepted":
                     conn.commit()
+                    file_cards = tuple(
+                        _inspect_saved_upload_card(item) for item in saved_documents
+                    )
                     status = _UPLOAD_STATUS.create(
                         session_id=session_value,
                         workflow_id=workflow_id,
                         file_names=[item.file_name for item in saved_documents],
+                        file_cards=file_cards,
                         expires_at=expires_at,
                     )
                     accepted_request = BridgeRequest(
@@ -1786,6 +1838,9 @@ def upload(
                                 file_path=item.file_path,
                             )
                             for item in saved_documents
+                        ],
+                        file_cards=[
+                            _upload_card_payload(card) for card in file_cards
                         ],
                         quota=quota,
                         upload_id=status.upload_id,
@@ -1932,6 +1987,11 @@ def upload_status(
                 "state": item.state,
                 "route": item.route,
                 "message": item.message,
+                "card": (
+                    _upload_card_payload(item.card)
+                    if item.card is not None
+                    else None
+                ),
             }
             for item in status.files
         ],

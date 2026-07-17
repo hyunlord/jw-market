@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from src.upload_status import UploadJobNotFoundError, UploadStatusRegistry
+from src.upload_status import (
+    UploadFileCard,
+    UploadFileStatus,
+    UploadJobNotFoundError,
+    UploadStatusRegistry,
+    UploadWorksheetCard,
+)
 
 
 def test_upload_status_persists_across_registry_instances(tmp_path: Path) -> None:
@@ -14,6 +20,21 @@ def test_upload_status_persists_across_registry_instances(tmp_path: Path) -> Non
         session_id="session-a",
         workflow_id=301,
         file_names=("wide.xlsx", "report.pdf"),
+        file_cards=(
+            UploadFileCard(
+                file_name="wide.xlsx",
+                file_type="xlsx",
+                size_bytes=123,
+                sheet_count=1,
+                sheets=(UploadWorksheetCard("Raw", 12_269, 252),),
+            ),
+            UploadFileCard(
+                file_name="report.pdf",
+                file_type="pdf",
+                size_bytes=456,
+                page_count=185,
+            ),
+        ),
         expires_at=datetime.now(UTC) + timedelta(days=1),
     )
     registry.transition(
@@ -21,6 +42,10 @@ def test_upload_status_persists_across_registry_instances(tmp_path: Path) -> Non
         workflow_id=301,
         upload_id=job.upload_id,
         state="preprocessing",
+        files=(
+            UploadFileStatus("wide.xlsx", state="preprocessing"),
+            UploadFileStatus("report.pdf", state="preprocessing"),
+        ),
     )
 
     reloaded = UploadStatusRegistry(tmp_path).resolve(
@@ -31,6 +56,12 @@ def test_upload_status_persists_across_registry_instances(tmp_path: Path) -> Non
 
     assert reloaded.state == "preprocessing"
     assert [item.file_name for item in reloaded.files] == ["wide.xlsx", "report.pdf"]
+    assert reloaded.files[0].card is not None
+    assert reloaded.files[0].card.sheets == (
+        UploadWorksheetCard("Raw", 12_269, 252),
+    )
+    assert reloaded.files[1].card is not None
+    assert reloaded.files[1].card.page_count == 185
     assert registry.status_path("session-a", job.upload_id).stat().st_mode & 0o777 == 0o600
 
 

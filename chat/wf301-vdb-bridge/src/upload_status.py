@@ -49,11 +49,30 @@ class UploadJobNotFoundError(LookupError):
 
 
 @dataclass(frozen=True, slots=True)
+class UploadWorksheetCard:
+    name: str
+    row_count: int | None = None
+    column_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UploadFileCard:
+    file_name: str
+    file_type: str
+    size_bytes: int
+    sheet_count: int | None = None
+    sheets: tuple[UploadWorksheetCard, ...] = ()
+    page_count: int | None = None
+    slide_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class UploadFileStatus:
     file_name: str
     state: UploadJobState = "accepted"
     route: str | None = None
     message: str | None = None
+    card: UploadFileCard | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,17 +120,22 @@ class UploadStatusRegistry:
         session_id: str,
         workflow_id: int,
         file_names: Sequence[str],
+        file_cards: Sequence[UploadFileCard] = (),
         expires_at: datetime,
         now: datetime | None = None,
     ) -> UploadJobStatus:
         timestamp = (now or datetime.now(UTC)).astimezone(UTC)
         upload_id = f"upl_{secrets.token_urlsafe(18)}"
+        cards_by_name = {card.file_name: card for card in file_cards}
         status = UploadJobStatus(
             upload_id=upload_id,
             workflow_id=workflow_id,
             state="accepted",
             files=tuple(
-                UploadFileStatus(file_name=Path(file_name).name)
+                UploadFileStatus(
+                    file_name=Path(file_name).name,
+                    card=cards_by_name.get(Path(file_name).name),
+                )
                 for file_name in file_names
             ),
             message=None,
@@ -138,10 +162,23 @@ class UploadStatusRegistry:
         timestamp = (now or datetime.now(UTC)).astimezone(UTC)
         with self._guard(session_id):
             current = self._load(session_id, workflow_id, upload_id)
+            next_files = tuple(files) if files is not None else current.files
+            if files is not None:
+                cards_by_name = {
+                    item.file_name: item.card
+                    for item in current.files
+                    if item.card is not None
+                }
+                next_files = tuple(
+                    item
+                    if item.card is not None
+                    else replace(item, card=cards_by_name.get(item.file_name))
+                    for item in next_files
+                )
             updated = replace(
                 current,
                 state=state,
-                files=tuple(files) if files is not None else current.files,
+                files=next_files,
                 message=message,
                 updated_at=timestamp,
             )
@@ -221,6 +258,7 @@ class UploadStatusRegistry:
                             if item.get("message") is not None
                             else None
                         ),
+                        card=self._parse_card(item.get("card")),
                     )
                     for item in payload["files"]
                 ),
@@ -244,7 +282,52 @@ class UploadStatusRegistry:
             raise UploadJobNotFoundError("upload job is not registered")
         if any(item.file_name != Path(item.file_name).name for item in status.files):
             raise UploadJobNotFoundError("upload job is not registered")
+        if any(
+            item.card is not None and item.card.file_name != item.file_name
+            for item in status.files
+        ):
+            raise UploadJobNotFoundError("upload job is not registered")
         return status
+
+    @staticmethod
+    def _parse_card(value: object) -> UploadFileCard | None:
+        if not isinstance(value, dict):
+            return None
+        sheets_value = value.get("sheets")
+        sheets = tuple(
+            UploadWorksheetCard(
+                name=str(item["name"]),
+                row_count=int(item["row_count"]) if item.get("row_count") is not None else None,
+                column_count=(
+                    int(item["column_count"])
+                    if item.get("column_count") is not None
+                    else None
+                ),
+            )
+            for item in sheets_value
+            if isinstance(item, dict) and item.get("name") is not None
+        ) if isinstance(sheets_value, list) else ()
+        return UploadFileCard(
+            file_name=str(value["file_name"]),
+            file_type=str(value["file_type"]),
+            size_bytes=int(value.get("size_bytes") or 0),
+            sheet_count=(
+                int(value["sheet_count"])
+                if value.get("sheet_count") is not None
+                else None
+            ),
+            sheets=sheets,
+            page_count=(
+                int(value["page_count"])
+                if value.get("page_count") is not None
+                else None
+            ),
+            slide_count=(
+                int(value["slide_count"])
+                if value.get("slide_count") is not None
+                else None
+            ),
+        )
 
     def _write(self, session_id: str, status: UploadJobStatus) -> None:
         path = self.status_path(session_id, status.upload_id)
