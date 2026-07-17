@@ -178,6 +178,7 @@ def capture(
             "error_count": parsed.error_count,
             "answer_chars": parsed.answer_chars,
             "sources": parsed.sources,
+            "source_section_has_ubist": _source_section_has_label(parsed.answer_markdown, "UBIST"),
             "steps": list(parsed.steps),
             "conversation_ids": list(parsed.conversation_ids),
             "acceptance_pass": acceptance_pass,
@@ -402,17 +403,28 @@ def _p0g_market_tool_stage_failures(rows: list[dict[str, Any]]) -> dict[str, str
     return failures
 
 
-def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, str]:
-    failures: dict[str, str] = {}
+def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    failures: dict[str, dict[str, Any]] = {}
     for row in rows:
         qid = str(row.get("qid", ""))
         if qid not in P0G_GENERAL_GOLDEN_QIDS:
             continue
         raw_sources = str(row.get("sources", "")).strip()
         labels = {item.strip() for item in raw_sources.split(",") if item.strip()}
-        if "UBIST" not in labels:
-            failures[qid] = raw_sources
+        source_section_has_ubist = row.get("source_section_has_ubist") is True
+        if "UBIST" not in labels or not source_section_has_ubist:
+            failures[qid] = {
+                "event_sources": raw_sources,
+                "answer_source_section_has_ubist": source_section_has_ubist,
+            }
     return failures
+
+
+def _source_section_has_label(answer: str, label: str) -> bool:
+    _body, marker, source_section = answer.rpartition("## 출처")
+    if not marker:
+        return False
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(label)}(?![A-Za-z0-9_])", source_section) is not None
 
 
 def _p0g_seed_execution_failures(scenario: str, rows: list[dict[str, Any]]) -> list[str]:
