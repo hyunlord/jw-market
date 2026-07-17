@@ -1280,7 +1280,8 @@ def _drop_deep_policy_and_crawl_debris(lines: list[str]) -> list[str]:
             continue
         if stripped in {"→ 내부 지표 확인 가능", "내부 지표 확인 가능"}:
             continue
-        kept.append(line)
+        public_line = re.sub(r"\s*→?\s*내부 지표 확인 가능\s*$", "", line).rstrip()
+        kept.append(public_line)
     return kept
 
 

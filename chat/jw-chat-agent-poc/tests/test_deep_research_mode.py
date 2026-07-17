@@ -552,6 +552,25 @@ def test_deep_finalizer_removes_internal_policy_debris_and_duplicate_blocks() ->
     assert "내부 지표 확인 가능" not in revised
 
 
+def test_deep_finalizer_removes_inline_internal_metric_tag_without_dropping_news() -> None:
+    raw = """## 핵심 요약
+
+리바로젯 관련 보도는 복합제 시장의 변화를 설명합니다. → 내부 지표 확인 가능
+
+## 종합 분석
+
+확인된 근거 범위에서 경쟁 구도를 설명합니다.
+
+## 출처
+- 기사
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert "리바로젯 관련 보도는 복합제 시장의 변화를 설명합니다." in revised
+    assert "내부 지표 확인 가능" not in revised
+
+
 def test_deep_finalizer_repairs_link_urls_and_marks_future_dates_as_planned() -> None:
     raw = """## 핵심 요약
 
