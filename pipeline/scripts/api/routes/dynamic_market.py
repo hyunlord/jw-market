@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from pipeline.scripts.api.brand_presence import brand_exists
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT
-from pipeline.scripts.api.composers.cache_to_response import compose_cached_json, compose_dynamic_json
+from pipeline.scripts.api.composers.cache_to_response import compose_dynamic_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
