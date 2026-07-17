@@ -1867,6 +1867,7 @@ def upload(
                         upload_id=status.upload_id,
                         state=status.state,
                         ready=False,
+                        message="파일 확인 완료. 질문 준비를 진행하고 있습니다.",
                         status_url="/upload/status",
                     )
                 external_preprocessor_documents = [

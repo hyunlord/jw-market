@@ -176,6 +176,7 @@ def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
         "upload_id": "upl_7Qz4R4R2Xh9pCkN8",
         "state": "accepted",
         "ready": False,
+        "message": "파일 확인 완료. 질문 준비를 진행하고 있습니다.",
         "status_url": "/upload/status",
         "file_cards": [
             {
@@ -204,6 +205,7 @@ def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
     assert projected["upload_id"] == "upl_7Qz4R4R2Xh9pCkN8"
     assert projected["state"] == "accepted"
     assert projected["ready"] is False
+    assert projected["message"] == "파일 확인 완료. 질문 준비를 진행하고 있습니다."
     assert projected["status_url"] == "/upload/status"
     assert projected["file_cards"][0]["sheet_count"] == 1
     assert projected["file_cards"][0]["sheets"][0]["column_count"] == 252

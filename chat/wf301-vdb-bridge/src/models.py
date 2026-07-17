@@ -334,6 +334,10 @@ class UploadResponse(BaseModel):
         default=None,
         description="업로드 문서를 검색하거나 질의할 준비가 끝났는지 나타냅니다.",
     )
+    message: str | None = Field(
+        default=None,
+        description="사용자에게 보여줄 현재 업로드 처리 상태입니다.",
+    )
     status_url: str | None = Field(
         default=None,
         description="upload_id와 같은 세션 식별자로 상태를 조회할 상대 경로입니다.",
@@ -504,6 +508,7 @@ class PublicAcceptedUploadResponse(BaseModel):
     upload_id: str
     state: Literal["accepted"] = "accepted"
     ready: Literal[False] = False
+    message: str = "파일 확인 완료. 질문 준비를 진행하고 있습니다."
     status_url: Literal["/upload/status"] = "/upload/status"
 
 
