@@ -39,7 +39,7 @@ def test_ingest_manifests_pin_the_default_job_image():
     (The poll CronJob keeps its own ED-round pin; ingest upgrades independently.)"""
     base = REPO_ROOT / "deploy" / "k8s" / "ingest-hook"
     for name in ("ingest-trigger-deployment.yaml", "ingest-job-template.yaml", "ingest-sweep-cronjob.yaml"):
-        assert config.DEFAULT_JOB_IMAGE in (base / name).read_text(encoding="utf-8"), name
+        assert config.DEFAULT_JOB_IMAGE in (base / ("reference/" + name) if name == "ingest-job-template.yaml" else base / name).read_text(encoding="utf-8"), name
 
 
 def test_tracked_manifests_stay_inert():
