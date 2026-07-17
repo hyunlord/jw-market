@@ -231,6 +231,138 @@ def test_aggregate_intent_covers_natural_language_sum_comparison() -> None:
     assert file_sql_query._is_aggregate_question(question) is True
 
 
+def test_manufacturer_by_sum_builds_grouped_deterministic_query() -> None:
+    schema = {
+        "logical_name": SQL_SOURCE.logical_name,
+        "columns": [
+            {"query_name": "c2", "source_name": "MFR NAME KOR"},
+            {
+                "query_name": "c72",
+                "source_name": "VALUES LC SI PRICE 1/2026",
+            },
+        ],
+    }
+
+    resolution = file_sql_query._resolve_deterministic_select(
+        "제조사별 합계",
+        (schema,),
+    )
+
+    assert resolution.missing_slots == ()
+    assert resolution.resolved_slots == ("measure", "manufacturer")
+    assert resolution.plan == {
+        "logical_name": SQL_SOURCE.logical_name,
+        "sql": (
+            "SELECT c2, SUM(c72) AS total_value, COUNT(*) AS applied_rows "
+            "FROM data GROUP BY c2 ORDER BY total_value DESC"
+        ),
+    }
+
+
+def test_manufacturer_by_sum_executes_grouped_rows_without_total_fallback(
+    monkeypatch,
+) -> None:
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c2", "source_name": "MFR NAME KOR"},
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+
+    def run_query(_conversation_id: str, _logical_name: str, sql: str):
+        captured["sql"] = sql
+        return {
+            "columns": ["c2", "total_value", "applied_rows"],
+            "rows": [
+                ["동아제약", 21_978_584_141, 348],
+                ["동화약품", 15_188_575_523, 208],
+            ],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "제조사별 합계",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "GROUP BY c2 ORDER BY total_value DESC" in captured["sql"]
+    assert "동아제약" in outcome.answer_md
+    assert "21,978,584,141" in outcome.answer_md
+    assert "동화약품" in outcome.answer_md
+    assert "15,188,575,523" in outcome.answer_md
+    assert "386,933,825,518" not in outcome.answer_md
+
+
+def test_channel_by_count_builds_grouped_deterministic_query() -> None:
+    schema = {
+        "logical_name": SQL_SOURCE.logical_name,
+        "columns": [
+            {"query_name": "c259", "source_name": "채널"},
+            {"query_name": "c1", "source_name": "응답자 번호"},
+        ],
+    }
+
+    resolution = file_sql_query._resolve_deterministic_select(
+        "채널별 건수",
+        (schema,),
+    )
+
+    assert resolution.missing_slots == ()
+    assert resolution.resolved_slots == ("measure", "channel")
+    assert resolution.plan == {
+        "logical_name": SQL_SOURCE.logical_name,
+        "sql": (
+            "SELECT c259, COUNT(*) AS response_count, COUNT(*) AS applied_rows "
+            "FROM data GROUP BY c259 ORDER BY response_count DESC"
+        ),
+    }
+
+
+def test_channel_by_count_executes_grouped_rows(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c259", "source_name": "채널"},
+                {"query_name": "c1", "source_name": "응답자 번호"},
+            ],
+        },
+    )
+
+    def run_query(_conversation_id: str, _logical_name: str, sql: str):
+        captured["sql"] = sql
+        return {
+            "columns": ["c259", "response_count", "applied_rows"],
+            "rows": [["2", 100, 100], ["1", 92, 92]],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "채널별 건수",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "GROUP BY c259 ORDER BY response_count DESC" in captured["sql"]
+    assert "| 2 | 100 | 100 |" in outcome.answer_md
+    assert "| 1 | 92 | 92 |" in outcome.answer_md
+
+
 def test_named_column_sum_is_not_misclassified_as_schema_inspection() -> None:
     question = "VALUES LC SI PRICE 1/2026 컬럼의 전체 합계를 계산해줘."
 

@@ -630,16 +630,19 @@ def _resolve_deterministic_select(
         measure = None if intent == "count" else _find_measure_column(columns, question)
         if intent == "count":
             aggregate_expression = "COUNT(*) AS response_count"
+            aggregate_alias = "response_count"
             resolved.append("measure")
         elif measure is not None:
             measure_query = str(measure.get("query_name") or "")
             function = "AVG" if intent == "average" else "SUM"
             aggregate_expression = f"{function}({measure_query}) AS total_value"
+            aggregate_alias = "total_value"
             resolved.append("measure")
         else:
             requested = _requested_measure_label(question)
             missing.append(requested or _measure_label(intent))
             aggregate_expression = ""
+            aggregate_alias = "total_value"
 
         filters: list[str] = []
         select_prefix = ""
@@ -656,10 +659,41 @@ def _resolve_deterministic_select(
                     f"{manufacturer_query} IN ({', '.join(_sql_literal(value) for value in subjects)})"
                 )
                 select_prefix = f"{manufacturer_query}, "
-                group_suffix = f" GROUP BY {manufacturer_query} ORDER BY total_value DESC"
+                group_suffix = (
+                    f" GROUP BY {manufacturer_query} ORDER BY {aggregate_alias} DESC"
+                )
                 resolved.extend(("manufacturer", "subjects"))
         else:
-            if re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE):
+            if re.search(
+                r"제조사\s*별|업체\s*별|by\s+(?:mfr|manufacturer|company)",
+                question,
+                re.IGNORECASE,
+            ):
+                if manufacturer is None:
+                    missing.append("제조사")
+                else:
+                    manufacturer_query = str(manufacturer.get("query_name") or "")
+                    select_prefix = f"{manufacturer_query}, "
+                    group_suffix = (
+                        f" GROUP BY {manufacturer_query} ORDER BY {aggregate_alias} DESC"
+                    )
+                    resolved.append("manufacturer")
+            elif re.search(
+                r"채널\s*별|by\s+channel",
+                question,
+                re.IGNORECASE,
+            ):
+                channel = _find_column(columns, r"(?:^|\b)channel(?:\b|$)|채널")
+                if channel is None:
+                    missing.append("채널")
+                else:
+                    channel_query = str(channel.get("query_name") or "")
+                    select_prefix = f"{channel_query}, "
+                    group_suffix = (
+                        f" GROUP BY {channel_query} ORDER BY {aggregate_alias} DESC"
+                    )
+                    resolved.append("channel")
+            elif re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE):
                 product = _find_column(
                     columns,
                     r"(?:^|\b)product(?:\s+name)?(?:\b|$)|제품(?:명)?",
@@ -670,7 +704,7 @@ def _resolve_deterministic_select(
                     product_query = str(product.get("query_name") or "")
                     select_prefix = f"{product_query}, "
                     group_suffix = (
-                        f" GROUP BY {product_query} ORDER BY total_value DESC"
+                        f" GROUP BY {product_query} ORDER BY {aggregate_alias} DESC"
                     )
                     if top_n := _top_n_limit(question):
                         group_suffix += f" LIMIT {top_n}"
