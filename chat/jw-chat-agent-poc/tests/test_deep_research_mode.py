@@ -571,6 +571,27 @@ def test_deep_finalizer_removes_inline_internal_metric_tag_without_dropping_news
     assert "내부 지표 확인 가능" not in revised
 
 
+def test_deep_finalizer_removes_internal_metric_tag_inside_markdown_table_cell() -> None:
+    raw = """## 핵심 요약
+
+리바로젯 관련 보도를 시장 근거와 함께 확인했습니다.
+
+## 종합 분석
+
+| 관련성 | 방향 | 내용 |
+| --- | --- | --- |
+| 직접 | 강화 | 복합제 시장 매출 1위 보도 → 내부 지표 확인 가능 |
+
+## 출처
+- 기사
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert "복합제 시장 매출 1위 보도" in revised
+    assert "내부 지표 확인 가능" not in revised
+
+
 def test_deep_finalizer_repairs_link_urls_and_marks_future_dates_as_planned() -> None:
     raw = """## 핵심 요약
 
