@@ -22,6 +22,10 @@ _CONTRAST_FOLLOWUP_RE = re.compile(
     r"^\s*(?:그럼|그러면|그렇다면)\s+(?P<brand>[가-힣A-Za-z0-9_-]{2,30}?)(?:은|는|이|가)?\s*[?!.]?\s*$",
     re.IGNORECASE,
 )
+_NON_BRAND_CONTRAST_TARGET_RE = re.compile(
+    r"^(?:\d{1,2}(?:월|분기)|20\d{2}년|매출|점유율|순위|시장|성분|임상|허가|부작용|환자수|그건|이건|저건)$",
+    re.IGNORECASE,
+)
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
     (re.compile(r"점유율\s*(?:경향성|추이|흐름|변화)"), "점유율 추이"),
@@ -125,12 +129,14 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
 def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> AnaphoraResolution:
     contrast = _CONTRAST_FOLLOWUP_RE.match(question)
     if contrast is not None:
+        brand = contrast.group("brand")
+        if _NON_BRAND_CONTRAST_TARGET_RE.fullmatch(brand):
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
         if previous_turn is None:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
         intent = _inheritable_intent(previous_turn.question)
         if not intent:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-        brand = contrast.group("brand")
         return AnaphoraResolution(
             resolved_question=f"{brand} {intent}는?",
             brand=brand,

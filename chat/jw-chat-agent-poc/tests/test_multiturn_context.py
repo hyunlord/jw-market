@@ -149,6 +149,22 @@ def test_resolve_anaphora_refuses_contrast_followup_without_grounded_intent() ->
     assert vague_history.unresolved_reference is True
 
 
+def test_resolve_anaphora_never_treats_period_or_metric_as_contrast_brand() -> None:
+    previous = ConversationTurn(
+        question="리피토 매출 추이 알려줘",
+        answer="리피토 매출 추이를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리피토"),
+    )
+
+    for question in ("그럼 3분기는?", "그럼 점유율은?", "그럼 시장은?", "그럼 그건?"):
+        resolved = resolve_anaphora(question, previous)
+
+        assert resolved.resolved_question == question
+        assert resolved.brand is None
+        assert resolved.interpretation_notice is None
+        assert resolved.unresolved_reference is True
+
+
 def test_final_answer_discloses_inherited_contrast_interpretation_once() -> None:
     result = {
         "conversation_fallback_ready": True,
