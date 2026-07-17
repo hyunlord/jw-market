@@ -630,6 +630,53 @@ def test_unanchored_top_five_golden_ignores_stale_file_and_external_turn(
     assert "29.52%" in item["result"]["answer"]
 
 
+def test_general_top_five_golden_resets_after_deep_turn(monkeypatch) -> None:
+    store = SessionStore()
+    captured: list[str] = []
+
+    monkeypatch.setattr(
+        service_app,
+        "_answer_deep_research",
+        lambda question, _external_mode: {
+            "answer": f"딥리서치 완료: {question}",
+            "sources": ["UBIST"],
+            "tool_calls": [],
+        },
+    )
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: False)
+
+    deep_item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "/deep 리바로 경쟁구도",
+        "live",
+        "deep-transition-session",
+        use_direct_agent_loop=True,
+    )
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "상위 5개 합계 시장점유율은 29.52%입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+    general_item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        "deep-transition-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert deep_item["result"]["research_mode"] == "deep"
+    assert captured == ["리바로 시장 상위 5개와 HHI, CR5를 알려줘"]
+    assert general_item["result"].get("research_mode") != "deep"
+    assert general_item["result"]["context_scope"] == "MARKET"
+    assert "29.52%" in general_item["result"]["answer"]
+
+
 def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
     def fail_build_loop(_dependencies):
         raise AssertionError("requested-source trap must not enter direct agent loop")
