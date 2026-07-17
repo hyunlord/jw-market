@@ -36,6 +36,9 @@ ALLOWED_PY_LITERAL_FILES = {
     "pipeline/scripts/ai_analysis/stage3a7_create_and_insert_ai_analysis.py",
     "pipeline/scripts/ai_analysis/agent2_variant_promotion.py",
     "pipeline/scripts/ai_analysis/agent2_variant_repair.py",
+    # Runtime-recovered one-off probe ingested verbatim by the canonicalize-s2
+    # merge; it is an archival diagnostic snapshot, not a serving path.
+    "pipeline/scripts/etl/probes/brand_elements_stage0_check.py",
 }
 
 
