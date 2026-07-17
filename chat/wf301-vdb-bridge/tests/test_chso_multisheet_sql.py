@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
 from openpyxl import Workbook
 
 from src import main, xlsx_sql_route
-from src.xlsx_preprocessor import extract_xlsx_chunks
+from src.xlsx_preprocessor import XlsxPreprocessError, extract_xlsx_chunks
 from src.xlsx_sql_route import (
     FileSqlRouteConfig,
     SheetSqlProfile,
@@ -98,8 +99,8 @@ def test_fast_sql_profile_falls_back_when_formula_or_span_proof_is_missing(
     formula_xml = b"""<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <dimension ref="A1:B2"/><sheetData><row r="1" spans="1:2"><c r="A1"><f>1+1</f><v>2</v></c></row>
 <row r="2" spans="1:2"><c r="B2"><v>3</v></c></row></sheetData></worksheet>"""
-    missing_span_xml = formula_xml.replace(b'<f>1+1</f>', b'').replace(
-        b' spans="1:2"', b''
+    missing_span_xml = formula_xml.replace(b"<f>1+1</f>", b"").replace(
+        b' spans="1:2"', b""
     )
     with ZipFile(path, "w") as archive:
         archive.writestr("xl/worksheets/formula.xml", formula_xml)
@@ -117,9 +118,9 @@ def test_fast_sql_profile_falls_back_when_row_or_dimension_proof_is_invalid(
     missing_row_xml = b"""<worksheet><dimension ref="A1:B3"/><sheetData>
 <row r="1" spans="1:2"><c r="A1"><v>1</v></c></row>
 <row r="3" spans="1:2"><c r="B3"><v>2</v></c></row></sheetData></worksheet>"""
-    stale_span_xml = missing_row_xml.replace(b'<dimension ref="A1:B3"', b'<dimension ref="A1:B2"').replace(
-        b'<row r="3" spans="1:2"', b'<row r="2" spans="1:3"'
-    )
+    stale_span_xml = missing_row_xml.replace(
+        b'<dimension ref="A1:B3"', b'<dimension ref="A1:B2"'
+    ).replace(b'<row r="3" spans="1:2"', b'<row r="2" spans="1:3"')
     invalid_dimension_xml = missing_row_xml.replace(b"A1:B3", b"A1:\xff3")
     with ZipFile(path, "w") as archive:
         archive.writestr("xl/worksheets/missing-row.xml", missing_row_xml)
@@ -129,7 +130,9 @@ def test_fast_sql_profile_falls_back_when_row_or_dimension_proof_is_invalid(
     with ZipFile(path) as archive:
         assert _fast_sheet_features(archive, "xl/worksheets/missing-row.xml") is None
         assert _fast_sheet_features(archive, "xl/worksheets/stale-span.xml") is None
-        assert _fast_sheet_features(archive, "xl/worksheets/invalid-dimension.xml") is None
+        assert (
+            _fast_sheet_features(archive, "xl/worksheets/invalid-dimension.xml") is None
+        )
 
 
 def test_large_sql_inspection_prefers_proven_fast_profile(
@@ -174,6 +177,203 @@ def test_large_sql_inspection_prefers_proven_fast_profile(
 
     assert decision.route == "sql"
     assert decision.profiles[0].audit_dict() == fast_profile.audit_dict()
+
+
+def test_proven_dense_sql_sheet_reuses_validated_xml_for_header_and_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dense SQL"
+    sheet.append(["brand", "sales", "note"])
+    sheet.append(["LIVALO & Co", 100, None])
+    sheet.append(["LIPITOR", None, "comparison"])
+    path = tmp_path / "dense-sql.xlsx"
+    workbook.save(path)
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_fast_sheet_features",
+        lambda _archive, _sheet_path: xlsx_sql_route.SheetFeatures(
+            row_count=3,
+            column_count=3,
+            used_cell_count=7,
+            formula_cell_count=0,
+            merged_range_count=0,
+        ),
+    )
+
+    decision = inspect_xlsx_for_sql(path, _config())
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_iter_sheet_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("validated dense XML must not use the generic row decoder")
+        ),
+    )
+
+    sql_sheet = load_sql_sheet(path, decision.selected_sheets[0])
+
+    assert list(sql_sheet.rows()) == [
+        ("LIVALO & Co", "100", None),
+        ("LIPITOR", None, "comparison"),
+    ]
+
+
+def test_proven_dense_sql_sheet_falls_back_before_yielding_unsupported_xml(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["brand", "sales"])
+    sheet.append(["LIVALO", 100])
+    source_path = tmp_path / "source.xlsx"
+    path = tmp_path / "unsupported-cell.xlsx"
+    workbook.save(source_path)
+    with ZipFile(source_path) as source, ZipFile(path, "w") as target:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                payload = payload.replace(
+                    b't="n"><v>100</v>',
+                    b't="n" custom="1"><v>100</v>',
+                )
+            target.writestr(item, payload)
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_fast_sheet_features",
+        lambda _archive, _sheet_path: xlsx_sql_route.SheetFeatures(
+            row_count=2,
+            column_count=2,
+            used_cell_count=4,
+            formula_cell_count=0,
+            merged_range_count=0,
+        ),
+    )
+
+    decision = inspect_xlsx_for_sql(path, _config())
+    sql_sheet = load_sql_sheet(path, decision.selected_sheets[0])
+
+    assert sql_sheet.dense_sheet_xml is None
+    assert list(sql_sheet.rows()) == [("LIVALO", "100")]
+
+
+def test_proven_dense_sql_sheet_rejects_cells_hidden_in_xml_comments(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["brand", "sales"])
+    sheet.append(["LIVALO", 100])
+    source_path = tmp_path / "source.xlsx"
+    path = tmp_path / "commented-cell.xlsx"
+    workbook.save(source_path)
+    with ZipFile(source_path) as source, ZipFile(path, "w") as target:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                payload = payload.replace(
+                    b'<c r="B2" t="n"><v>100</v></c>',
+                    b'<!--<c r="B2" t="n"><v>999</v></c>-->',
+                )
+            target.writestr(item, payload)
+
+    with ZipFile(path) as archive:
+        assert _fast_sheet_features(archive, "xl/worksheets/sheet1.xml") is None
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_fast_sheet_features",
+        lambda _archive, _sheet_path: xlsx_sql_route.SheetFeatures(
+            row_count=2,
+            column_count=2,
+            used_cell_count=4,
+            formula_cell_count=0,
+            merged_range_count=0,
+        ),
+    )
+
+    decision = inspect_xlsx_for_sql(path, _config())
+    sql_sheet = load_sql_sheet(path, decision.selected_sheets[0])
+
+    assert sql_sheet.dense_sheet_xml is None
+    assert list(sql_sheet.rows()) == [("LIVALO", None)]
+
+
+def test_proven_dense_sql_sheet_rejects_invalid_utf8(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    workbook.active.append(["brand", "sales"])
+    workbook.active.append(["LIVALO", 100])
+    source_path = tmp_path / "source.xlsx"
+    path = tmp_path / "invalid-utf8.xlsx"
+    workbook.save(source_path)
+    with ZipFile(source_path) as source, ZipFile(path, "w") as target:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                payload = payload.replace(b"LIVALO", b"LIV\xffLO")
+            target.writestr(item, payload)
+
+    with ZipFile(path) as archive:
+        assert _fast_sheet_features(archive, "xl/worksheets/sheet1.xml") is None
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_fast_sheet_features",
+        lambda _archive, _sheet_path: xlsx_sql_route.SheetFeatures(
+            row_count=2,
+            column_count=2,
+            used_cell_count=4,
+            formula_cell_count=0,
+            merged_range_count=0,
+        ),
+    )
+
+    decision = inspect_xlsx_for_sql(path, _config())
+    with pytest.raises(XlsxPreprocessError, match="xlsx SQL header read failed"):
+        load_sql_sheet(path, decision.selected_sheets[0])
+
+
+def test_proven_dense_sql_sheet_respects_raw_xml_memory_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    workbook.active.append(["brand", "sales"])
+    workbook.active.append(["LIVALO", 100])
+    path = tmp_path / "bounded-dense.xlsx"
+    workbook.save(path)
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    monkeypatch.setattr(xlsx_sql_route, "DENSE_SQL_MAX_XML_BYTES", 1)
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_fast_sheet_features",
+        lambda _archive, _sheet_path: xlsx_sql_route.SheetFeatures(
+            row_count=2,
+            column_count=2,
+            used_cell_count=4,
+            formula_cell_count=0,
+            merged_range_count=0,
+        ),
+    )
+
+    decision = inspect_xlsx_for_sql(path, _config())
+    sql_sheet = load_sql_sheet(path, decision.selected_sheets[0])
+
+    assert sql_sheet.dense_sheet_xml is None
+    assert list(sql_sheet.rows()) == [("LIVALO", "100")]
 
 
 def test_chso_eight_column_dense_sheet_is_sql_candidate() -> None:
@@ -237,7 +437,9 @@ def test_default_column_floor_is_eight(monkeypatch) -> None:
     assert FileSqlRouteConfig.from_env().min_columns == 8
 
 
-def test_selected_sql_sheets_are_excluded_from_residual_vdb_chunks(tmp_path: Path) -> None:
+def test_selected_sql_sheets_are_excluded_from_residual_vdb_chunks(
+    tmp_path: Path,
+) -> None:
     workbook = Workbook()
     sql_sheet = workbook.active
     sql_sheet.title = "LIVALO Market"
@@ -276,7 +478,9 @@ def test_all_sql_sheets_skip_redundant_residual_workbook_scan(
     )
 
     def fail_if_scanned(_path: Path) -> bool:
-        raise AssertionError("all-SQL workbook must not be scanned for residual VDB chunks")
+        raise AssertionError(
+            "all-SQL workbook must not be scanned for residual VDB chunks"
+        )
 
     monkeypatch.setattr(main, "should_stream_xlsx_chunks", fail_if_scanned)
 

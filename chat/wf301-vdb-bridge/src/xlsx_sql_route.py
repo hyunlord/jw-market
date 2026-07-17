@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+from codecs import getincrementaldecoder
 from dataclasses import dataclass
+from html import unescape
 from itertools import islice
 from pathlib import Path
 from typing import Iterator, Literal
@@ -33,11 +35,21 @@ from .xlsx_preprocessor import (
 
 FAST_SQL_PROFILE_MIN_XML_BYTES = 32 * 1024 * 1024
 FAST_SQL_PROFILE_MAX_XML_BYTES = 256 * 1024 * 1024
+DENSE_SQL_MAX_XML_BYTES = 128 * 1024 * 1024
 _DIMENSION_REF_RE = re.compile(rb'<dimension\b[^>]*\bref="([^"]+)"')
 _ROW_REF_RE = re.compile(rb'<row\b[^>]*\br="([0-9]+)"')
 _ROW_SPAN_RE = re.compile(rb'<row\b[^>]*\bspans="([0-9]+):([0-9]+)"')
-_EMPTY_VALUE_RE = re.compile(rb'<v(?:\s[^>]*)?>\s*</v>|<v(?:\s[^>]*)?\s*/>')
-_FORMULA_TAG_RE = re.compile(rb'<f(?:\s|/?>)')
+_EMPTY_VALUE_RE = re.compile(rb"<v(?:\s[^>]*)?>\s*</v>|<v(?:\s[^>]*)?\s*/>")
+_FORMULA_TAG_RE = re.compile(rb"<f(?:\s|/?>)")
+_DENSE_VALUE_CELL_RE = re.compile(
+    rb'<c r="([A-Z]+)([0-9]+)"(?: s="[0-9]+")?(?: t="n")?\s*>'
+    rb"\s*<v>(.*?)</v>\s*</c>"
+    rb'|<c r="([A-Z]+)([0-9]+)"(?: s="[0-9]+")? t="inlineStr"\s*>'
+    rb"\s*<is>(.*?)</is>\s*</c>",
+    re.DOTALL,
+)
+_DENSE_TEXT_RE = re.compile(rb"<t(?:\s[^>]*)?>(.*?)</t>", re.DOTALL)
+_UNSAFE_DENSE_XML_MARKERS = (b"<!--", b"<![CDATA[", b"<!DOCTYPE")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -89,6 +101,7 @@ class SheetSqlProfile:
     formula_cell_count: int
     merged_range_count: int
     crosstable: bool = False
+    proven_dense: bool = False
 
     @property
     def density(self) -> float:
@@ -123,8 +136,12 @@ class SqlSheetData:
     profile: SheetSqlProfile
     columns: tuple[str, ...]
     header_nonempty_index: int
+    dense_sheet_xml: bytes | None = None
 
     def rows(self) -> Iterator[tuple[str | None, ...]]:
+        if self.dense_sheet_xml is not None:
+            yield from self._data_rows(_iter_dense_sheet_rows(self.dense_sheet_xml))
+            return
         with ZipFile(self.path) as archive:
             shared_strings = _shared_strings(archive)
             style_formats = _style_formats(archive)
@@ -134,11 +151,16 @@ class SqlSheetData:
                 shared_strings,
                 style_formats,
             )
-            for row in islice(row_iter, self.header_nonempty_index + 1, None):
-                values = row.values[: len(self.columns)]
-                if len(values) < len(self.columns):
-                    values.extend("" for _ in range(len(self.columns) - len(values)))
-                yield tuple(value if value != "" else None for value in values)
+            yield from self._data_rows(row_iter)
+
+    def _data_rows(
+        self, row_iter: Iterator[SheetRow]
+    ) -> Iterator[tuple[str | None, ...]]:
+        for row in islice(row_iter, self.header_nonempty_index + 1, None):
+            values = row.values[: len(self.columns)]
+            if len(values) < len(self.columns):
+                values.extend("" for _ in range(len(self.columns) - len(values)))
+            yield tuple(value if value != "" else None for value in values)
 
 
 def logical_names_for_profiles(
@@ -239,13 +261,14 @@ def inspect_xlsx_for_sql(
             profiles: list[SheetSqlProfile] = []
             for index, (sheet_name, sheet_path) in enumerate(sheet_paths, start=1):
                 xml_size = archive.getinfo(sheet_path).file_size
-                features = (
+                fast_features = (
                     _fast_sheet_features(archive, sheet_path)
                     if FAST_SQL_PROFILE_MIN_XML_BYTES
                     <= xml_size
                     <= FAST_SQL_PROFILE_MAX_XML_BYTES
                     else None
                 )
+                features = fast_features
                 if features is None:
                     features = _sheet_features_streaming(archive, sheet_path)
                 profiles.append(
@@ -259,6 +282,7 @@ def inspect_xlsx_for_sql(
                         formula_cell_count=features.formula_cell_count,
                         merged_range_count=features.merged_range_count,
                         crosstable=sheet_name in crosstable_names,
+                        proven_dense=fast_features is not None,
                     )
                 )
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError) as exc:
@@ -274,6 +298,10 @@ def _fast_sheet_features(archive: ZipFile, sheet_path: str) -> SheetFeatures | N
     """
 
     raw = archive.read(sheet_path)
+    if any(marker in raw for marker in _UNSAFE_DENSE_XML_MARKERS):
+        return None
+    if not _is_valid_utf8(raw):
+        return None
     dimension_match = _DIMENSION_REF_RE.search(raw)
     if dimension_match is None or _FORMULA_TAG_RE.search(raw):
         return None
@@ -324,17 +352,23 @@ def load_sql_sheet(path: Path, profile: SheetSqlProfile) -> SqlSheetData:
         with ZipFile(path) as archive:
             shared_strings = _shared_strings(archive)
             style_formats = _style_formats(archive)
-            first_rows = list(
-                islice(
-                    _iter_sheet_rows(
-                        archive,
-                        profile.sheet_path,
-                        shared_strings,
-                        style_formats,
-                    ),
-                    10,
+            dense_sheet_xml = _validated_dense_sheet_xml(
+                archive,
+                profile,
+                shared_strings=shared_strings,
+                style_formats=style_formats,
+            )
+            row_iter = (
+                _iter_dense_sheet_rows(dense_sheet_xml)
+                if dense_sheet_xml is not None
+                else _iter_sheet_rows(
+                    archive,
+                    profile.sheet_path,
+                    shared_strings,
+                    style_formats,
                 )
             )
+            first_rows = list(islice(row_iter, 10))
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError) as exc:
         raise XlsxPreprocessError(f"xlsx SQL header read failed: {exc}") from exc
     header = _first_header([row.values for row in first_rows])
@@ -352,7 +386,86 @@ def load_sql_sheet(path: Path, profile: SheetSqlProfile) -> SqlSheetData:
         profile=profile,
         columns=columns,
         header_nonempty_index=header_index,
+        dense_sheet_xml=dense_sheet_xml,
     )
+
+
+def _validated_dense_sheet_xml(
+    archive: ZipFile,
+    profile: SheetSqlProfile,
+    *,
+    shared_strings: list[str],
+    style_formats: dict[int, str],
+) -> bytes | None:
+    if not profile.proven_dense or shared_strings or style_formats:
+        return None
+    if archive.getinfo(profile.sheet_path).file_size > DENSE_SQL_MAX_XML_BYTES:
+        return None
+    raw = archive.read(profile.sheet_path)
+    if any(marker in raw for marker in _UNSAFE_DENSE_XML_MARKERS):
+        return None
+    if not _is_valid_utf8(raw):
+        return None
+    matched_cells = sum(1 for _match in _DENSE_VALUE_CELL_RE.finditer(raw))
+    if matched_cells != profile.used_cell_count:
+        return None
+    return raw
+
+
+def _is_valid_utf8(raw: bytes, *, chunk_size: int = 1024 * 1024) -> bool:
+    decoder = getincrementaldecoder("utf-8")()
+    try:
+        for offset in range(0, len(raw), chunk_size):
+            decoder.decode(raw[offset : offset + chunk_size], final=False)
+        decoder.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _iter_dense_sheet_rows(raw: bytes) -> Iterator[SheetRow]:
+    column_numbers: dict[bytes, int] = {}
+    current_row = 0
+    values: list[str] = []
+    for match in _DENSE_VALUE_CELL_RE.finditer(raw):
+        column_letters = match.group(1) or match.group(4)
+        row_number = int(match.group(2) or match.group(5))
+        if current_row and row_number != current_row:
+            if any(value.strip() for value in values):
+                yield SheetRow(row_number=current_row, values=values)
+            values = []
+        current_row = row_number
+
+        column_number = column_numbers.get(column_letters)
+        if column_number is None:
+            column_number = 0
+            for byte in column_letters:
+                column_number = column_number * 26 + byte - 64
+            column_numbers[column_letters] = column_number
+
+        raw_number = match.group(3)
+        if raw_number is not None:
+            value = " ".join(raw_number.decode("utf-8").replace("\x00", " ").split())
+        else:
+            inline_xml = match.group(6) or b""
+            parts = (
+                _decode_xml_text(item) for item in _DENSE_TEXT_RE.findall(inline_xml)
+            )
+            value = _clean_dense_cell_text("".join(parts))
+        _set_row_value(values, column_number, value)
+
+    if current_row and any(value.strip() for value in values):
+        yield SheetRow(row_number=current_row, values=values)
+
+
+def _decode_xml_text(value: bytes) -> str:
+    text = value.decode("utf-8")
+    return unescape(text) if "&" in text else text
+
+
+def _clean_dense_cell_text(value: str) -> str:
+    lines = [" ".join(line.split()) for line in value.replace("\x00", " ").splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def _is_sql_candidate(
