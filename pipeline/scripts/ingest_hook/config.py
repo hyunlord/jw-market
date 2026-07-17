@@ -68,3 +68,21 @@ def open_configured_ledger():
         autocommit=False,
     )
     return Ledger(conn, dialect="mysql")
+
+
+def open_mart_connection():
+    """pymysql connection to the mart DB the Job env points at (MARIADB_* family)."""
+    import os
+
+    import pymysql
+
+    from pipeline.scripts.utils.mart_config import resolve_mart_db_name
+
+    return pymysql.connect(
+        host=os.environ.get("MARIADB_HOST") or os.environ.get("DB_HOST", "127.0.0.1"),
+        port=int(os.environ.get("MARIADB_PORT") or os.environ.get("DB_PORT", "3306")),
+        user=os.environ.get("MARIADB_USER") or os.environ.get("DB_USER", ""),
+        password=os.environ.get("MARIADB_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
+        database=resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
+        charset="utf8mb4",
+    )

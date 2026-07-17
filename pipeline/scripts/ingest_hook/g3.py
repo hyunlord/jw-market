@@ -39,6 +39,7 @@ class G3Report:
     category: str
     file_rows: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    observed_periods: set[str] = field(default_factory=set)
 
     @property
     def total_rows(self) -> int:
@@ -136,6 +137,7 @@ def validate(
         _check_declared_period(entry, manifest.epoch, failures)
         if spec.period_column:
             periods = _period_values(path, spec.period_column)
+            report.observed_periods.update(periods)
             if manifest.epoch not in periods:
                 failures.append(
                     f"{entry.path}: epoch {manifest.epoch} absent from {spec.period_column!r} values {sorted(periods)[:6]}"

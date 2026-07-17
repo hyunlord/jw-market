@@ -114,8 +114,18 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
             _run_commands("load", spec.load_argv)
-            # Σ reconciliation inside the builders (staged promotion + expected
-            # counts); category-pinned sigma SQL is an activation-time addition.
+            if spec.sigma_source:
+                from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
+
+                periods = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
+                sigma = check_market_sigma(
+                    config.open_mart_connection(), source=spec.sigma_source, periods=periods
+                )
+                print(
+                    f"gate=sigma status=pass source={spec.sigma_source} "
+                    f"markets={sigma.markets_checked} cells={sigma.cells_checked} "
+                    f"worst_rel={sigma.worst_rel:.6%}"
+                )
             _run_commands("refresh", spec.refresh_argv)
 
         ledger.mark_complete(*identity, row_counts=report.file_rows)

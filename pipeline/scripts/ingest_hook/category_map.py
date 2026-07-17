@@ -37,6 +37,9 @@ class CategorySpec:
     # System B downstream refresh argv.
     refresh_argv: tuple[str, ...]
     row_floor_ratio: float = DEFAULT_ROW_FLOOR_RATIO
+    # mart source key for the post-load Σ(brands)=market reconciliation
+    # (sigma_market.check_market_sigma); None = no market sigma for the category.
+    sigma_source: str | None = None
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -55,6 +58,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         period_column="period",
         load_argv=_etl("--source", "ubist", "--incremental"),
         refresh_argv=_orchestrator(),
+        sigma_source="ubist",
     ),
     CategorySpec(
         key="iqvia",
@@ -63,6 +67,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         period_column="period",
         load_argv=_etl("--source", "iqvia"),
         refresh_argv=_orchestrator(),
+        sigma_source="iqvia_nsa",
     ),
     CategorySpec(
         key="mimaster",
