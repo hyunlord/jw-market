@@ -537,6 +537,7 @@ def test_product_top_n_sellout_groups_by_product_name() -> None:
 
     assert plan is not None
     assert "SELECT c3, SUM(c72) AS total_value" in plan["sql"]
+    assert "WHERE c3 IS NOT NULL AND TRIM(c3) <> ''" in plan["sql"]
     assert "GROUP BY c3" in plan["sql"]
     assert "ORDER BY total_value DESC" in plan["sql"]
     assert plan["sql"].endswith("LIMIT 10")

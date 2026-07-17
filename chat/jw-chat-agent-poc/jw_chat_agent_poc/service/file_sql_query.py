@@ -1047,6 +1047,12 @@ def _resolve_deterministic_select(
                     missing.append("제품")
                 else:
                     product_query = str(product.get("query_name") or "")
+                    filters.extend(
+                        (
+                            f"{product_query} IS NOT NULL",
+                            f"TRIM({product_query}) <> ''",
+                        )
+                    )
                     select_prefix = f"{product_query}, "
                     group_suffix = (
                         f" GROUP BY {product_query} ORDER BY {aggregate_alias} DESC"
