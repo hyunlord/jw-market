@@ -368,7 +368,7 @@ def _activity_series(
     product_codes_by_brand: Mapping[str, frozenset[str]],
     activity_months: tuple[str, ...],
 ) -> JsonMap:
-    rows = db.fetch_all(_sql_csd_activity(), (csd_market,))
+    rows = db.fetch_all(_sql_csd_activity(), (csd_market, activity_months[0], activity_months[-1]))
     totals = {month: 0.0 for month in activity_months}
     by_brand = {choice.brand_key: {month: 0.0 for month in activity_months} for choice in choices}
     matched = {choice.brand_key: False for choice in choices}
@@ -493,4 +493,4 @@ def _sql_csd_products(product_codes: tuple[str, ...]) -> str:
 
 
 def _sql_csd_activity() -> str:
-    return f"SELECT period_ym, master_product, SUM(product_details) AS value FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE market = %s AND jw_channel = 'TOTAL' GROUP BY period_ym, master_product"
+    return f"SELECT period_ym, master_product, SUM(product_details) AS value FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE market = %s AND period_ym BETWEEN %s AND %s AND jw_channel = 'TOTAL' GROUP BY period_ym, master_product"

@@ -477,8 +477,9 @@ def test_csd_timeseries_market_totals_include_sales(monkeypatch) -> None:
 
 def test_csd_timeseries_activity_preserves_monthly_keys(monkeypatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+        assert "period_ym BETWEEN %s AND %s" in sql
         assert "GROUP BY period_ym, master_product" in sql
-        assert params == ("LIVALO Market",)
+        assert params == ("LIVALO Market", "2025-01", "2025-03")
         return [
             {"period_ym": "2025-01", "master_product": "LIVALO", "value": 10.0},
             {"period_ym": "2025-02", "master_product": "LIVALO", "value": 20.0},
