@@ -17,6 +17,8 @@ from jw_chat_agent_poc.service.genos_client import (
 )
 from jw_chat_agent_poc.service.answer_safety import (
     answer_has_only_fact_numbers,
+    ensure_cross_file_comparison_judgment,
+    ensure_file_overview_evidence_coverage,
     ensure_multi_file_evidence_coverage,
     ensure_file_absence_statement,
     fact_token_allowed,
@@ -121,6 +123,117 @@ def test_multi_file_coverage_appends_grounded_evidence_for_every_file() -> None:
     assert covered.index("## 파일별 근거 확인") < covered.index("## 출처")
 
 
+def test_file_overview_answer_preserves_retrieved_summary_sections(monkeypatch) -> None:
+    def stream_answer(_client, _question, _result):
+        yield "업로드 파일 기준으로 이 보고서는 질환 배경과 치료 현황을 설명합니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    question = "이 보고서 핵심 내용을 요약해줘"
+    result = {
+        "context_scope": "FILE",
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+        "file_context": (
+            "[1] portfolio.pdf (document_id=41) (page=2)\n"
+            "섹션: Key Takeaways\n"
+            "# Key Takeaways\n"
+            "- The market faces increasing biosimilar competition.\n"
+            "- Oral therapies carry a boxed safety warning.\n\n"
+            "[2] portfolio.pdf (document_id=41) (page=9)\n"
+            "섹션: Unmet Needs\n"
+            "# Unmet Needs\n"
+            "Safer durable remission remains an unmet need."
+        ),
+        "file_source_items": [
+            {"file_name": "portfolio.pdf", "i_page": 2, "source_channel": "native_text"},
+            {"file_name": "portfolio.pdf", "i_page": 9, "source_channel": "native_text"},
+        ],
+    }
+
+    final = service_app.compute_final_answer(question, result, "overview-answer")
+
+    assert "biosimilar competition" in final.text
+    assert "boxed safety warning" in final.text
+    assert "unmet need" in final.text
+
+
+def test_presentation_overview_preserves_named_analysis_sections(monkeypatch) -> None:
+    def stream_answer(_client, _question, _result):
+        yield "이 발표는 브랜드 경쟁력을 진단하는 분석 체계를 제안합니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    question = "이 발표 핵심 메시지를 알려줘"
+    result = {
+        "context_scope": "FILE",
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+        "file_context": (
+            "[1] strategy.pptx (document_id=52) (slide=4)\n"
+            "섹션: Market Landscape\n"
+            "# Market Landscape\n"
+            "Competitive position by brand.\n\n"
+            "[2] strategy.pptx (document_id=52) (slide=12)\n"
+            "섹션: Market Size\n"
+            "# Market Size\n"
+            "Growth Contribution and HHI are tracked together."
+        ),
+        "file_source_items": [
+            {"file_name": "strategy.pptx", "slide_number": 4, "source_channel": "native_text"},
+            {"file_name": "strategy.pptx", "slide_number": 12, "source_channel": "native_text"},
+        ],
+    }
+
+    final = service_app.compute_final_answer(question, result, "presentation-overview")
+
+    for token in ("Market Landscape", "Market Size", "Growth Contribution", "HHI"):
+        assert token in final.text
+
+
+def test_file_overview_coverage_does_not_change_detail_questions() -> None:
+    answer = "승인 약물은 Polaris입니다."
+    context = (
+        "[1] portfolio.pdf (document_id=41) (page=2)\n"
+        "# Key Takeaways\n"
+        "The market faces increasing biosimilar competition."
+    )
+
+    assert ensure_file_overview_evidence_coverage("승인 약물 이름이 뭐야", answer, context) == answer
+
+
+def test_file_overview_heading_mention_does_not_count_as_body_coverage() -> None:
+    answer = "주요 섹션으로 Key Takeaways가 있습니다."
+    context = (
+        "[1] portfolio.pdf (document_id=41) (page=2)\n"
+        "# Key Takeaways\n"
+        "The market faces increasing biosimilar competition.\n"
+        "Oral therapies carry a boxed safety warning."
+    )
+
+    covered = ensure_file_overview_evidence_coverage("이 문서 요약해줘", answer, context)
+
+    assert "biosimilar competition" in covered
+    assert "boxed safety warning" in covered
+
+
+def test_cross_file_judgment_does_not_reject_comparable_metrics() -> None:
+    answer = "보고서와 엑셀 모두 Revenue를 같은 통화 단위로 제시합니다."
+    context = (
+        "[1] portfolio.pdf (document_id=41) (page=2)\n"
+        "Revenue by month\n\n"
+        "## 업로드 파일 SQL 결과\n"
+        "파일: revenue.xlsx\n"
+        "| period | revenue |\n"
+        "| --- | ---: |\n"
+        "| current | 42 |"
+    )
+
+    assert ensure_cross_file_comparison_judgment("두 파일의 Revenue를 비교해줘", answer, context) == answer
+
+
 def test_single_file_answer_does_not_gain_multi_file_evidence_section() -> None:
     answer = "승인코드는 NAR-7712입니다."
 
@@ -138,8 +251,7 @@ def test_cross_file_sql_and_document_question_synthesizes_both_evidence_types(mo
         assert "386,933,825,518" in result["file_context"]
         yield (
             "RA 보고서에는 승인 약물 Simponi가 제시되어 있고, "
-            "엑셀의 2026년 1월 sell-out 합계는 386,933,825,518입니다. "
-            "두 값은 약물 목록과 전체 금액으로 정의와 단위가 달라 직접적인 일치 여부를 판정할 수 없습니다."
+            "엑셀의 2026년 1월 sell-out 합계는 386,933,825,518입니다."
         )
 
     monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
@@ -450,6 +562,46 @@ def test_file_search_client_supplements_truncated_conclusion_context(monkeypatch
     assert "unmet needs" in questions[1]
     assert "There remains an unmet need" in result.file_context
     assert result.file_context.count("There remains an unmet need") == 1
+
+
+def test_file_search_client_supplements_general_document_summary_context(monkeypatch) -> None:
+    questions: list[str] = []
+
+    def search_response(url, json=None, timeout=None):
+        question = str((json or {}).get("question") or "")
+        questions.append(question)
+        context = (
+            "[1] primary.pdf (page=4)\nDisease Background\n"
+            "The disease is chronic and progressive."
+        )
+        if "key takeaways" in question:
+            context = (
+                "[1] primary.pdf (page=2)\nKey Takeaways\n"
+                "Biosimilar competition is increasing.\n"
+                "Oral therapies carry a boxed safety warning."
+            )
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "file_context": context,
+                "document_count": 1,
+                "file_sources": [{"file_name": "primary.pdf", "i_page": 2}],
+                "errors": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.post",
+        search_response,
+    )
+
+    result = search_uploaded_files("이 문서 요약해줘", "conv-general-summary")
+
+    assert result is not None
+    assert len(questions) == 2
+    assert "key takeaways" in questions[1]
+    assert "Biosimilar competition is increasing" in result.file_context
+    assert "boxed safety warning" in result.file_context
 
 
 def test_markdown_messages_require_document_level_overview_before_background() -> None:

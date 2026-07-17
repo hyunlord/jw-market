@@ -39,6 +39,35 @@ _MULTI_FILE_REQUEST_RE = re.compile(
     r"(?:두|여러|모든)\s*(?:업로드\s*)?파일|(?:업로드\s*)?파일(?:을|를)?\s*모두|파일별",
     re.IGNORECASE,
 )
+_FILE_OVERVIEW_REQUEST_RE = re.compile(
+    r"(?:문서|보고서|파일|발표).{0,20}(?:요약|핵심|결론|뭐에\s*관한|무슨\s*내용)"
+    r"|(?:요약|핵심|결론).{0,20}(?:문서|보고서|파일|발표)",
+    re.IGNORECASE,
+)
+_FILE_OVERVIEW_SECTION_RE = re.compile(
+    r"(?:Key\s+Takeaways?|Executive\s+Summary|Conclusions?|Unmet\s+Needs?|Overview|"
+    r"Market\s+Landscape|Market\s+Size|Growth\s+Contribution|HHI|"
+    r"핵심\s*요약|주요\s*결론|미충족\s*수요|시장\s*개요|시장\s*규모)",
+    re.IGNORECASE,
+)
+_FILE_CONTEXT_NOISE_RE = re.compile(
+    r"^(?:\[DA\]\s*문서:|섹션:|검색\s*범위:|Copyright\s|<!--|\d+\s+\d{1,2}\s+[A-Za-z]{3},\s+\d{4}\s*$)",
+    re.IGNORECASE,
+)
+_CROSS_FILE_COMPARISON_RE = re.compile(r"(?:비교|일치|같(?:은|나|은지)|대조)", re.IGNORECASE)
+_COMPARISON_JUDGMENT_RE = re.compile(
+    r"(?:대상|정의|단위).{0,30}(?:다르|불일치)|직접.{0,20}(?:비교|일치).{0,30}(?:어렵|불가|없|판정)",
+    re.IGNORECASE,
+)
+_CATALOG_EVIDENCE_RE = re.compile(
+    r"(?:Approved\s+drug|\bDrug\b|Approval(?:\s+Date)?|\bPhase\b|\bTarget\b|"
+    r"승인\s*약물|허가\s*(?:약물|품목|목록)|임상\s*(?:약물|목록))",
+    re.IGNORECASE,
+)
+_AGGREGATE_EVIDENCE_RE = re.compile(
+    r"(?:total_value|applied_rows|\bSUM\b|\bCOUNT\b|매출\s*합계|총\s*매출|전체\s*합계|집계\s*금액)",
+    re.IGNORECASE,
+)
 _FILE_CONTEXT_BLOCK_RE = re.compile(
     r"^\[(?:\d+)\]\s+([^\n]+)\n(.*?)(?=^\[(?:\d+)\]\s+|\Z)",
     re.MULTILINE | re.DOTALL,
@@ -215,6 +244,88 @@ def ensure_file_page_evidence(question: str, answer: str, file_context: str) -> 
         return answer
     excerpt = "\n\n".join(block[:1800] for block in evidence)
     return cleanup_markdown_answer(f"{answer}\n\n### 지정 페이지 원문 근거\n{excerpt}")
+
+
+def ensure_file_overview_evidence_coverage(question: str, answer: str, file_context: str) -> str:
+    """Keep bounded, retrieved overview sections when synthesis omits them."""
+
+    context = (file_context or "").strip()
+    if not context or not _FILE_OVERVIEW_REQUEST_RE.search(question):
+        return answer
+
+    excerpts: list[str] = []
+    total_chars = 0
+    for match in _FILE_CONTEXT_BLOCK_RE.finditer(context):
+        header = match.group(1).strip()
+        body = match.group(2).strip()
+        meaningful_lines = [
+            line.strip()
+            for line in body.splitlines()
+            if line.strip() and not _FILE_CONTEXT_NOISE_RE.search(line.strip())
+        ]
+        excerpt = "\n".join(meaningful_lines).strip()
+        if not excerpt or not _FILE_OVERVIEW_SECTION_RE.search(excerpt):
+            continue
+        substantive_lines = [
+            line.lstrip("#- ").strip()
+            for line in meaningful_lines
+            if not re.fullmatch(
+                r"#{0,6}\s*(?:Key\s+Takeaways?|Executive\s+Summary|Conclusions?|"
+                r"Unmet\s+Needs?|Overview|Market\s+(?:Landscape|Size)|"
+                r"핵심\s*요약|주요\s*결론|미충족\s*수요|시장\s*개요)\s*",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        if substantive_lines and all(
+            line.casefold() in answer.casefold() for line in substantive_lines
+        ):
+            continue
+        remaining = 7000 - total_chars
+        if remaining <= 0:
+            break
+        is_summary = re.search(
+            r"(?:Key\s+Takeaways?|Executive\s+Summary|Conclusions?|Unmet\s+Needs?|Overview|"
+            r"핵심\s*요약|주요\s*결론|미충족\s*수요|시장\s*개요)",
+            excerpt,
+            re.IGNORECASE,
+        )
+        block_limit = 3000 if is_summary else 900
+        excerpt = excerpt[: min(block_limit, remaining)].rstrip()
+        if not excerpt:
+            continue
+        filename = re.sub(r"\s+\(document_id=.*", "", header).strip()
+        excerpts.append(f"### {filename}\n{excerpt}")
+        total_chars += len(excerpt)
+
+    if not excerpts:
+        return answer
+    section = "## 업로드 파일 핵심 근거\n" + "\n\n".join(excerpts)
+    return _insert_before_timing_or_source(answer, section)
+
+
+def ensure_cross_file_comparison_judgment(question: str, answer: str, file_context: str) -> str:
+    """State non-comparability only for retrieved catalog-vs-aggregate evidence."""
+
+    context = (file_context or "").strip()
+    if (
+        not context
+        or not _CROSS_FILE_COMPARISON_RE.search(question)
+        or _COMPARISON_JUDGMENT_RE.search(answer)
+        or "## 업로드 파일 SQL 결과" not in context
+    ):
+        return answer
+    document_context, sql_context = context.split("## 업로드 파일 SQL 결과", 1)
+    if (
+        not _CATALOG_EVIDENCE_RE.search(document_context)
+        or not _AGGREGATE_EVIDENCE_RE.search(sql_context)
+    ):
+        return answer
+    judgment = (
+        "문서의 항목형 근거와 엑셀 집계는 대상과 단위가 서로 달라 "
+        "직접적인 일치 여부를 판정할 수 없습니다."
+    )
+    return _insert_before_timing_or_source(answer, judgment)
 
 
 def ensure_multi_file_evidence_coverage(question: str, answer: str, file_context: str) -> str:

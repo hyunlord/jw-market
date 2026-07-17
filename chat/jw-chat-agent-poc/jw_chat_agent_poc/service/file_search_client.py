@@ -65,7 +65,7 @@ def search_uploaded_files(
         )
     context = str(body.get("file_context") or "").strip()
     supplemental_body: dict[str, Any] = {}
-    if body.get("document_count") and _DOCUMENT_CONCLUSION_QUESTION_RE.search(question) is not None:
+    if body.get("document_count") and _DOCUMENT_OVERVIEW_QUESTION_RE.search(question) is not None:
         supplemental_payload = {
             **payload,
             "question": _DOCUMENT_CONCLUSION_SUPPLEMENT_QUERY,
