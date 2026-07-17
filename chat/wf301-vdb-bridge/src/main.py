@@ -30,6 +30,7 @@ from .file_sql import (
 )
 from .logging_utils import safe_log
 from .upload_ownership import TempDocumentNotFoundError, UploadOwnershipRegistry
+from .upload_status import UploadJobNotFoundError, UploadStatusRegistry
 from .models import (
     BlockedUpload,
     BridgeRequest,
@@ -56,6 +57,7 @@ from .models import (
     PublicCommitResponse,
     PublicDocumentsResponse,
     PublicSearchResponse,
+    PublicUploadStatusResponse,
     PublicUploadResponse,
     SearchRequest,
     SearchResponse,
@@ -89,6 +91,7 @@ TARGET_VDB_EXAMPLE = settings.TARGET_VDB_ID
 # .xlsm은 매크로(vbaProject)를 무시하고 데이터 시트만 .xlsx와 같은 로컬 전처리 경로로 처리한다.
 LOCAL_XLSX_SUFFIXES = (".xlsx", ".xlsm")
 _UPLOAD_OWNERSHIP = UploadOwnershipRegistry(Path(settings.TEMP_DOCUMENT_DIR))
+_UPLOAD_STATUS = UploadStatusRegistry(Path(settings.TEMP_DOCUMENT_DIR))
 
 
 def _xlsx_timeout_gate(chunk_count: int) -> tuple[str, str] | None:
@@ -1655,6 +1658,47 @@ def upload(
         quota=quota,
         errors=upload_errors,
     )
+
+
+@app.get(
+    "/upload/status",
+    response_model=PublicUploadStatusResponse,
+    summary="비동기 업로드 처리 상태 조회",
+)
+def upload_status(
+    workflow_id: int = Query(...),
+    app_session_id: str | None = Query(None),
+    chat_id: str | None = Query(None),
+    upload_id: str = Query(...),
+) -> dict[str, object]:
+    session_value = chat_id or app_session_id or ""
+    if not session_value:
+        raise HTTPException(status_code=400, detail="app_session_id or chat_id is required")
+    try:
+        status = _UPLOAD_STATUS.resolve(
+            session_id=session_value,
+            workflow_id=workflow_id,
+            upload_id=upload_id,
+        )
+    except UploadJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "upload_id": status.upload_id,
+        "state": status.state,
+        "ready": status.ready,
+        "files": [
+            {
+                "file_name": item.file_name,
+                "state": item.state,
+                "route": item.route,
+                "message": item.message,
+            }
+            for item in status.files
+        ],
+        "message": status.message,
+        "updated_at": status.updated_at.isoformat(),
+        "expires_at": status.expires_at.isoformat(),
+    }
 
 
 @app.get(

@@ -40,11 +40,40 @@ def test_public_routes_use_projection_models_without_changing_file_sql() -> None
     }
 
     assert route_models["/upload"] is models.PublicUploadResponse
+    assert route_models["/upload/status"] is models.PublicUploadStatusResponse
     assert route_models["/commit"] is models.PublicCommitResponse
     assert route_models["/search"] is models.PublicSearchResponse
     assert route_models["/documents"] is models.PublicDocumentsResponse
     assert route_models["/file-sql/schema"] is models.FileSqlSchemaResponse
     assert route_models["/file-sql/query"] is models.FileSqlQueryResponse
+
+
+def test_upload_status_projection_hides_session_and_storage_details() -> None:
+    raw = {
+        "upload_id": "upl_7Qz4R4R2Xh9pCkN8",
+        "workflow_id": 301,
+        "session_id": "session-a",
+        "temp_document_id": 1601,
+        "file_path": "/private/wide.xlsx",
+        "state": "preprocessing",
+        "ready": False,
+        "files": [
+            {
+                "file_name": "wide.xlsx",
+                "state": "preprocessing",
+                "route": None,
+                "message": None,
+            }
+        ],
+        "message": None,
+        "updated_at": "2026-07-18T00:00:00+00:00",
+        "expires_at": "2026-07-19T00:00:00+00:00",
+    }
+
+    encoded = _encoded(models.PublicUploadStatusResponse, raw)
+
+    assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    assert "wide.xlsx" in encoded
 
 
 def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> None:

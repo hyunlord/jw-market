@@ -455,6 +455,45 @@ class PublicUploadResponse(BaseModel):
     blocked_uploads: list[PublicBlockedUpload] = Field(default_factory=list)
 
 
+class PublicUploadFileStatus(BaseModel):
+    """Per-file progress without temporary document or storage identifiers."""
+
+    file_name: str
+    state: Literal[
+        "accepted",
+        "preprocessing",
+        "committing",
+        "ready",
+        "blocked",
+        "failed",
+        "interrupted",
+        "expired",
+    ]
+    route: str | None = None
+    message: str | None = None
+
+
+class PublicUploadStatusResponse(BaseModel):
+    """Session-owned progressive upload state safe for portal polling."""
+
+    upload_id: str
+    state: Literal[
+        "accepted",
+        "preprocessing",
+        "committing",
+        "ready",
+        "blocked",
+        "failed",
+        "interrupted",
+        "expired",
+    ]
+    ready: bool = False
+    files: list[PublicUploadFileStatus] = Field(default_factory=list)
+    message: str | None = None
+    updated_at: str
+    expires_at: str
+
+
 class PublicSessionDocument(BaseModel):
     """A user asset without ledger identifiers or storage topology."""
 
