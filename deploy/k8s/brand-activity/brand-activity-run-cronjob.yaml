@@ -30,7 +30,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: brand-activity
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator:PLACEHOLDER-EVENTDRIVEN
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6bffbc5350aadd302124c500eb91b16415b0dcfe42c635774fd0abd763441996
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
