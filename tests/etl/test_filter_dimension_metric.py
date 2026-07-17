@@ -15,13 +15,14 @@ def test_ubist_registry_exposes_raw_molecule_dimension() -> None:
     assert sidecar.DIMENSION_REGISTRY["ubist"]["molecule"].enabled is True
 
 
-def test_iqvia_registry_exposes_enabled_dimensions_and_excludes_pack() -> None:
+def test_iqvia_registry_exposes_enabled_dimensions_including_pack() -> None:
     enabled = sidecar.enabled_dimension_specs("iqvia_nsa")
     names = {spec.dimension_type for spec in enabled}
 
-    assert names == {"mfr", "molecule_type", "molecule_desc", "strength", "nhi"}
+    assert names == {"mfr", "molecule_type", "molecule_desc", "strength", "nhi", "pack"}
     assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["molecule_desc"].enabled is True
-    assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["pack"].enabled is False
+    assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["pack"].enabled is True
+    assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["pack"].source_columns == ("pack_desc",)
 
 
 def test_dimension_value_normalization_collapses_whitespace_and_excludes_empty_values() -> None:
@@ -133,7 +134,7 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
                 "strength": "10MG",
                 "nhi_type": "급여",
                 "molecule_desc": "CARTEOLOL",
-                "pack_desc": "Excluded pack",
+                "pack_desc": "PACK 10MG X 30",
             },
             {
                 "source": "iqvia_nsa",
@@ -150,7 +151,7 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
                 "strength": "20MG",
                 "nhi_type": "비급여",
                 "molecule_desc": "DORZOLAMIDE",
-                "pack_desc": "Excluded pack",
+                "pack_desc": "PACK 20MG X 30",
             },
         ]
     )
@@ -174,7 +175,14 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
     assert molecule["dimension_value"] == "CARTEOLOL"
     assert molecule["raw_value_history"] == {"2025-01": 125.0}
     assert "molecule_desc" in dimension_types
-    assert "pack" not in dimension_types
+    assert "pack" in dimension_types
+    pack = next(
+        row
+        for row in rows
+        if row["dimension_type"] == "pack" and row["dimension_value_norm"] == "PACK 10MG X 30"
+    )
+    assert pack["product_code"] == "P1"
+    assert pack["raw_value_history"] == {"2025-01": 125.0}
 
 
 def test_build_filter_dimension_rows_collapses_iqvia_brand_display_variants() -> None:
