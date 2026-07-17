@@ -109,6 +109,44 @@ def test_resolve_anaphora_inherits_market_for_common_market_pronouns() -> None:
         assert resolved.unresolved_reference is False
 
 
+def test_resolve_anaphora_inherits_only_missing_intent_for_contrast_followup() -> None:
+    previous = ConversationTurn(
+        question="리피토 매출 추이 알려줘",
+        answer="리피토 매출 추이를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리피토"),
+    )
+
+    resolved = resolve_anaphora("그럼 리바로는?", previous)
+
+    assert resolved.resolved_question == "리바로 매출 추이는?"
+    assert resolved.brand == "리바로"
+    assert resolved.unresolved_reference is False
+
+
+def test_resolve_anaphora_does_not_override_complete_contrast_question() -> None:
+    previous = ConversationTurn(
+        question="리피토 매출 추이 알려줘",
+        answer="리피토 매출 추이를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리피토"),
+    )
+
+    resolved = resolve_anaphora("그럼 리바로 임상시험은?", previous)
+
+    assert resolved.resolved_question == "그럼 리바로 임상시험은?"
+    assert resolved.unresolved_reference is False
+
+
+def test_resolve_anaphora_refuses_contrast_followup_without_grounded_intent() -> None:
+    no_history = resolve_anaphora("그럼 리바로는?", None)
+    vague_history = resolve_anaphora(
+        "그럼 리바로는?",
+        ConversationTurn(question="리피토 어때?", answer="무엇이 궁금한지 물었습니다."),
+    )
+
+    assert no_history.unresolved_reference is True
+    assert vague_history.unresolved_reference is True
+
+
 def test_reused_context_result_contains_verified_series_without_backend_call() -> None:
     result = reused_context_result(
         "그중 1위 브랜드 점유율 추이는?",

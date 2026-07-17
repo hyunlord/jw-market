@@ -18,6 +18,23 @@ _ANCHOR_RE = re.compile(r"그\s*브랜드")
 _PERIOD_RE = re.compile(r"같은\s*기간")
 _MARKET_RE = re.compile(r"(?:방금|이|해당|그)\s*시장")
 _REFERENCE_RES = (_FIRST_RANK_RE, _ANCHOR_RE, _PERIOD_RE, _MARKET_RE)
+_CONTRAST_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:그럼|그러면|그렇다면)\s+(?P<brand>[가-힣A-Za-z0-9_-]{2,30}?)(?:은|는|이|가)?\s*[?!.]?\s*$",
+    re.IGNORECASE,
+)
+_INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
+    (re.compile(r"점유율\s*(?:경향성|추이|흐름|변화)"), "점유율 추이"),
+    (re.compile(r"경쟁\s*구도"), "경쟁구도"),
+    (re.compile(r"임상\s*(?:시험|실험)"), "임상시험"),
+    (re.compile(r"허가\s*(?:일|날짜|현황|정보)"), "허가 현황"),
+    (re.compile(r"부작용|이상반응"), "부작용"),
+    (re.compile(r"성분"), "성분"),
+    (re.compile(r"환자\s*수"), "환자수"),
+    (re.compile(r"매출"), "매출"),
+    (re.compile(r"점유율"), "점유율"),
+    (re.compile(r"순위"), "순위"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +122,15 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
 
 
 def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> AnaphoraResolution:
+    contrast = _CONTRAST_FOLLOWUP_RE.match(question)
+    if contrast is not None:
+        if previous_turn is None:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        intent = _inheritable_intent(previous_turn.question)
+        if not intent:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        brand = contrast.group("brand")
+        return AnaphoraResolution(resolved_question=f"{brand} {intent}는?", brand=brand)
     if not any(pattern.search(question) for pattern in _REFERENCE_RES):
         return AnaphoraResolution(resolved_question=question)
     if previous_turn is None:
@@ -138,6 +164,13 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
         market_hint = f"{slots.anchor_brand} 시장" if slots.anchor_brand else slots.market
         resolved = _MARKET_RE.sub(market_hint, resolved)
     return AnaphoraResolution(resolved_question=resolved, brand=brand, reusable_ranked=reusable)
+
+
+def _inheritable_intent(question: str) -> str:
+    for pattern, intent in _INHERITABLE_INTENTS:
+        if pattern.search(question):
+            return intent
+    return ""
 
 
 def reused_context_result(
