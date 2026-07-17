@@ -39,7 +39,12 @@ class ChannelAxisFilter:
         return bool(self.facilities or self.specialties or self.pairs or self.audit_codes)
 
 
-def parse_channel_specialty_matrix(raw: Any) -> ChannelMatrix:
+def parse_channel_specialty_matrix(
+    raw: Any,
+    *,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> ChannelMatrix:
     """Parse raw UBIST facility-specialty-period matrix from the general mart."""
 
     if isinstance(raw, dict):
@@ -61,6 +66,8 @@ def parse_channel_specialty_matrix(raw: Any) -> ChannelMatrix:
             facility_bucket[str(specialty)] = {
                 str(period): float(value or 0.0)
                 for period, value in series.items()
+                if (period_start is None or str(period) >= period_start)
+                and (period_end is None or str(period) <= period_end)
             }
         if facility_bucket:
             parsed[str(facility)] = facility_bucket

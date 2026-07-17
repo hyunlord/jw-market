@@ -433,12 +433,21 @@ class MetricAggregator:
         ranking_histories: dict[str, dict[str, float]] = {}
         incomplete_periods: set[str] = set()
         unit_label = ""
+        channel_axis_active = channel_axis is not None and channel_axis.is_active
         for row in rows:
             if not unit_label:
                 unit_label = str(row.get("unit_label") or "")
-            raw_matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
-            matrix = slice_channel_specialty_matrix(raw_matrix, channel_axis)
-            window_matrix = _window_channel_specialty_matrix(matrix, period_range)
+            if channel_axis_active:
+                raw_matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
+                matrix = slice_channel_specialty_matrix(raw_matrix, channel_axis)
+                window_matrix = _window_channel_specialty_matrix(matrix, period_range)
+            else:
+                window_matrix = parse_channel_specialty_matrix(
+                    row.get("channel_specialty_matrix"),
+                    period_start=period_range.start,
+                    period_end=period_range.end,
+                )
+                matrix = window_matrix
             raw_audit_matrix = parse_audit_code_matrix(row.get("audit_code_matrix"))
             audit_matrix = slice_audit_code_matrix(raw_audit_matrix, channel_axis)
             history = _history_for_row(

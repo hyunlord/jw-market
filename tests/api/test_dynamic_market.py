@@ -1746,6 +1746,79 @@ def test_window_channel_specialty_matrix_reuses_unbounded_input() -> None:
     assert result is matrix
 
 
+def test_parse_channel_specialty_matrix_can_apply_period_window_during_decode() -> None:
+    raw = json.dumps(
+        {
+            "의원": {
+                "내과": {
+                    "2025-05": 10,
+                    "2025-06": 20,
+                    "2026-05": 30,
+                    "2026-06": 40,
+                }
+            }
+        },
+        ensure_ascii=False,
+    )
+
+    result = aggregator_module.parse_channel_specialty_matrix(
+        raw,
+        period_start="2025-06",
+        period_end="2026-05",
+    )
+
+    assert result == {"의원": {"내과": {"2025-06": 20.0, "2026-05": 30.0}}}
+
+
+def test_aggregate_rows_decodes_inactive_channel_matrix_with_period_window(monkeypatch) -> None:
+    calls: list[tuple[str | None, str | None]] = []
+    original_parse = aggregator_module.parse_channel_specialty_matrix
+
+    def tracked_parse(
+        raw: object,
+        *,
+        period_start: str | None = None,
+        period_end: str | None = None,
+    ) -> dict[str, dict[str, dict[str, float]]]:
+        calls.append((period_start, period_end))
+        return original_parse(
+            raw,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
+    def reject_second_window(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("inactive channel matrix must not be copied for a second period-window pass")
+
+    monkeypatch.setattr(aggregator_module, "parse_channel_specialty_matrix", tracked_parse)
+    monkeypatch.setattr(aggregator_module, "_window_channel_specialty_matrix", reject_second_window)
+    rows = [
+        {
+            "brand_key": "a",
+            "brand_name": "A",
+            "atc4_code": "C10A1",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2025-05": 10.0, "2025-06": 20.0, "2026-05": 30.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"의원": {"내과": {"2025-05": 10.0, "2025-06": 20.0, "2026-05": 30.0}}},
+                ensure_ascii=False,
+            ),
+            "audit_code_matrix": "{}",
+        }
+    ]
+
+    metrics, totals = MetricAggregator(mart_db="jw_mart")._aggregate_rows(
+        rows,
+        period_range=PeriodRange("2025-06", "2026-05"),
+    )
+
+    assert calls == [("2025-06", "2026-05")]
+    assert totals == {"2025-06": 20.0, "2026-05": 30.0}
+    assert metrics[0].channel_specialty_matrix == {
+        "의원": {"내과": {"2025-06": 20.0, "2026-05": 30.0}}
+    }
+
+
 @pytest.mark.parametrize(
     "row",
     [
