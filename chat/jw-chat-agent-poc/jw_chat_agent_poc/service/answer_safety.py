@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from html import unescape
 from collections.abc import Iterator
 from typing import Any
@@ -1130,15 +1131,14 @@ def strip_generated_source_sections(answer: str) -> str:
 
 
 def ensure_deep_research_structure(answer: str) -> str:
-    """Add deep-only section headings without changing the generated facts."""
+    """Enforce the public deep-report shape without changing verified facts."""
 
-    cleaned = cleanup_markdown_answer(answer)
-    source_match = _DEEP_SOURCE_HEADING_RE.search(cleaned)
-    body = cleaned[: source_match.start()].strip() if source_match else cleaned.strip()
-    source = cleaned[source_match.start() :].strip() if source_match else ""
+    cleaned = _clean_deep_public_markdown(cleanup_markdown_answer(answer))
+    body, source = _split_deep_source_section(cleaned)
     headings = tuple(_DEEP_BODY_HEADING_RE.finditer(body))
     if len(headings) >= 2 or not body:
-        return cleaned
+        structured_body = body
+        return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
 
     blocks = [block.strip() for block in re.split(r"\n{2,}", body) if block.strip()]
     if not headings:
@@ -1176,6 +1176,112 @@ def ensure_deep_research_structure(answer: str) -> str:
             )
 
     return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
+
+
+def _clean_deep_public_markdown(answer: str) -> str:
+    answer = _repair_markdown_link_urls(answer)
+    answer = _mark_future_deep_dates(answer)
+    lines = _drop_deep_policy_and_crawl_debris(answer.splitlines())
+    answer = "\n".join(lines).strip()
+    answer = re.sub(
+        r"(습니다|입니다|됩니다|보입니다|확인됩니다)\s+(?=[가-힣A-Za-z])",
+        r"\1. ",
+        answer,
+    )
+    return _dedupe_deep_blocks(answer)
+
+
+def _repair_markdown_link_urls(answer: str) -> str:
+    def repair(match: re.Match[str]) -> str:
+        target = match.group("target")
+        if not target.lstrip().startswith(("http://", "https://")):
+            return match.group(0)
+        return f"]({re.sub(r'\s+', '', target)})"
+
+    return re.sub(r"]\((?P<target>[^)]+)\)", repair, answer)
+
+
+def _mark_future_deep_dates(answer: str) -> str:
+    today = date.today()
+
+    def mark_dates(text: str) -> str:
+        def mark(match: re.Match[str]) -> str:
+            raw = match.group(0)
+            try:
+                parsed = date.fromisoformat(raw)
+            except ValueError:
+                return raw
+            suffix = text[match.end() : match.end() + 8]
+            return f"{raw} (예정)" if parsed > today and "예정" not in suffix else raw
+
+        return re.sub(r"(?<![\d/])\d{4}-\d{2}-\d{2}(?![\d/])", mark, text)
+
+    parts = re.split(r"(]\(https?://[^)]+\))", answer)
+    return "".join(part if part.startswith("](") else mark_dates(part) for part in parts)
+
+
+def _drop_deep_policy_and_crawl_debris(lines: list[str]) -> list[str]:
+    kept: list[str] = []
+    skipping_policy = False
+    for line in lines:
+        stripped = line.strip()
+        heading = re.match(r"^(#{1,6})\s+", stripped)
+        if re.match(r"^#{1,6}\s+(?:미보유 데이터 처리|미지원 축 처리)\s*$", stripped):
+            skipping_policy = True
+            continue
+        if skipping_policy:
+            if heading and len(heading.group(1)) <= 3:
+                skipping_policy = False
+            else:
+                continue
+        if re.match(r"^#{1,6}\s*Image\s+\d+\s*:?$", stripped, re.IGNORECASE):
+            continue
+        if re.match(r"^[-*•]?\s*Image\s+\d+\s*:?$", stripped, re.IGNORECASE):
+            continue
+        if stripped in {"→ 내부 지표 확인 가능", "내부 지표 확인 가능"}:
+            continue
+        kept.append(line)
+    return kept
+
+
+def _dedupe_deep_blocks(answer: str) -> str:
+    blocks = [block.strip() for block in re.split(r"\n{2,}", answer) if block.strip()]
+    seen: set[str] = set()
+    kept: list[str] = []
+    for block in blocks:
+        if block.startswith("#") or block.startswith("|"):
+            kept.append(block)
+            continue
+        normalized = re.sub(r"\s+", " ", re.sub(r"[*_`]", "", block)).strip()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        kept.append(block)
+    return "\n\n".join(kept)
+
+
+def _split_deep_source_section(answer: str) -> tuple[str, str]:
+    lines = answer.splitlines()
+    body: list[str] = []
+    source: list[str] = []
+    in_source = False
+    source_seen = False
+    for line in lines:
+        stripped = line.strip()
+        if _DEEP_SOURCE_HEADING_RE.fullmatch(stripped):
+            in_source = True
+            if not source_seen:
+                source_seen = True
+                source.append("## 출처")
+            continue
+        if in_source and re.match(r"^##\s+", stripped):
+            in_source = False
+        if in_source:
+            if source_seen:
+                source.append(line)
+            continue
+        body.append(line)
+    return "\n".join(body).strip(), "\n".join(source).strip()
 
 
 def _is_inline_source_line(stripped: str) -> bool:

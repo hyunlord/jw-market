@@ -23,6 +23,7 @@ from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service import genos_client as genos_module
 from jw_chat_agent_poc.service.app import SessionStore
 from jw_chat_agent_poc.service.genos_client import GenosClient
+from jw_chat_agent_poc.service.answer_safety import ensure_deep_research_structure
 from jw_chat_agent_poc.tools.external import ExternalCall
 
 
@@ -466,7 +467,117 @@ def test_deep_prompt_requires_grounded_multi_source_synthesis() -> None:
     assert "수치, URL, 기사, 인과, 전망을 만들지 않는다" in messages[0]["content"]
     assert "시장·경쟁 구도" in messages[0]["content"]
     assert "임상·허가·안전성·환자 맥락" in messages[0]["content"]
-    assert "출처별 근거" in messages[1]["content"]
+    assert "도구별·출처별 섹션 나열" in messages[0]["content"]
+    assert "핵심 요약 → 종합 분석 → 뒷받침 표" in messages[0]["content"]
+    assert "정합하거나 반대 방향" in messages[1]["content"]
+    assert "때문이다" in messages[1]["content"]
+
+
+def test_deep_finalizer_keeps_one_source_section_at_the_end() -> None:
+    raw = """## 핵심 요약
+
+시장 근거를 요약했습니다.
+
+## 출처
+| 출처 | 기준기간 |
+| --- | --- |
+| UBIST | 2026-05 |
+
+## 주요 MI 요약
+
+뉴스 근거를 시장 수치와 함께 해석했습니다.
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert revised.count("## 출처") == 1
+    assert revised.index("## 주요 MI 요약") < revised.index("## 출처")
+    assert revised.rstrip().endswith("| UBIST | 2026-05 |")
+
+
+def test_deep_finalizer_removes_internal_policy_debris_and_duplicate_blocks() -> None:
+    repeated = "리바로젯은 0.41%p 상승했고 리피토는 -0.65%p 하락했습니다."
+    raw = f"""## 핵심 요약
+
+{repeated}
+
+## 종합 분석
+
+{repeated}
+
+### 미보유 데이터 처리
+| 단계 | 내용 |
+| --- | --- |
+| 1. 미보유 데이터 | 환자수 |
+
+# Image 4:
+* Image 23
+→ 내부 지표 확인 가능
+
+## 출처
+- UBIST
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert revised.count(repeated) == 1
+    assert "미보유 데이터 처리" not in revised
+    assert "Image 4" not in revised
+    assert "Image 23" not in revised
+    assert "내부 지표 확인 가능" not in revised
+
+
+def test_deep_finalizer_repairs_link_urls_and_marks_future_dates_as_planned() -> None:
+    raw = """## 핵심 요약
+
+[기사](https://example.test/news/articleVi ew?id=1)에서 2999-07-28 출시를 확인했습니다.
+
+## 종합 분석
+
+확인된 근거 범위만 설명합니다.
+
+## 출처
+- 기사
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert "https://example.test/news/articleView?id=1" in revised
+    assert "articleVi ew" not in revised
+    assert "2999-07-28 (예정)" in revised
+
+
+def test_deep_finalizer_preserves_analysis_metrics_and_complete_top_five() -> None:
+    raw = """## 핵심 요약
+
+리바로젯은 +0.41%p, 리피토는 -0.65%p로 반대 방향입니다.
+
+## 종합 분석
+
+SoG 7.20%, 초과성장 -3.50%p로 확인됩니다.
+
+## 뒷받침 표
+| 순위 | 브랜드 | MS 변화 |
+| --- | --- | --- |
+| 1위 | 로수젯 | -0.11%p |
+| 2위 | 리피토 | -0.65%p |
+| 3위 | 리바로젯 | +0.41%p |
+| 4위 | 아토젯 | +0.08%p |
+| 5위 | 크레스토 | -0.03%p |
+
+## 출처
+- UBIST
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert "+0.41%p" in revised
+    assert "-0.65%p" in revised
+    assert "SoG 7.20%" in revised
+    assert "초과성장 -3.50%p" in revised
+    for rank, brand in enumerate(("로수젯", "리피토", "리바로젯", "아토젯", "크레스토"), start=1):
+        assert f"| {rank}위 | {brand} |" in revised
+    assert revised.rstrip().endswith("- UBIST")
 
 
 def test_deep_prompt_includes_every_uploaded_file_in_the_evidence_batch() -> None:

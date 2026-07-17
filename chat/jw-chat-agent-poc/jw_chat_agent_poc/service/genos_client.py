@@ -1068,13 +1068,15 @@ class GenosClient:
         answer = _ensure_mfds_clinical_evidence_answer(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
+        if self.research_mode == "deep":
+            answer = _append_web_search_section(answer, tool_calls)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
         if not file_context:
             answer = apply_common_unavailable_response(question, answer, markdown_response)
             answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
-        return _append_web_search_section(answer, tool_calls)
+        return answer if self.research_mode == "deep" else _append_web_search_section(answer, tool_calls)
 
     @staticmethod
     def _markdown_messages(
@@ -1170,8 +1172,10 @@ class GenosClient:
             "제공된 확정 fact와 실제 도구·웹 근거 밖의 수치, URL, 기사, 인과, 전망을 만들지 않는다. "
             "업로드 파일과 시장·외부 도구·웹 근거를 함께 종합하고, 업로드 파일이 여러 개면 각 파일의 실제 근거를 빠짐없이 파일명과 함께 구분한다. "
             "서로 다른 출처를 교차 확인하고, 근거가 충돌하거나 비어 있으면 그 한계를 명시한다. "
-            "답변은 핵심 요약, 시장·경쟁 구도, 임상·허가·안전성·환자 맥락, "
-            "교차 근거를 종합한 시사점, 데이터 한계 순으로 구성한다. "
+            "도구별·출처별 섹션 나열을 금지하고, 시장·경쟁 구도와 임상·허가·안전성·환자 맥락을 질문에 대한 하나의 종합 서사로 작성한다. "
+            "구조는 핵심 요약 → 종합 분석 → 뒷받침 표 순으로 고정하며, 출처는 시스템이 맨 마지막에 한 번만 붙인다. "
+            "핵심 요약은 3~5줄로 결론을 먼저 말하고, 종합 분석에서는 시장 수치와 뉴스·임상·허가 근거를 서로 연결한다. "
+            "같은 사실이나 같은 기사를 여러 섹션에서 반복하지 않는다. 내부 미보유 처리 정책이나 단계 표를 노출하지 않는다. "
             "각 본문 섹션은 반드시 '## '로 시작하는 명시적 제목을 붙이고, 최소 두 개의 본문 섹션을 만든다. "
             "표·차트·뉴스·출처 근거는 유지하고, 확인된 근거가 없는 섹션은 억지로 채우지 않는다. "
             + str(system["content"])
@@ -1179,8 +1183,9 @@ class GenosClient:
         user = dict(messages[1])
         user["content"] = (
             str(user["content"])
-            + "\n\n딥리서치 작성 요구: 먼저 결론을 요약하고, 출처별 근거를 구분해 심층적으로 설명한 뒤, "
-            "근거 사이의 공통점·차이와 실무적 시사점을 정리한다. 모든 구체 주장은 제공된 fact로 검증 가능해야 한다."
+            + "\n\n딥리서치 작성 요구: 먼저 결론을 요약하고, 서로 다른 근거가 정합하거나 반대 방향인지 연결해 설명한 뒤 "
+            "실무적 시사점과 한계를 정리한다. 근거가 함께 움직여도 '때문이다'라고 단정하지 않는다. "
+            "모든 구체 주장은 제공된 fact로 검증 가능해야 하며, 출처별 결과 목록을 반복하지 않는다."
         )
         return [system, user]
 
