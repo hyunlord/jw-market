@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from pipeline.etl.io.mart.strategic_ubist_channels import build_ubist_channel_totals
 from pipeline.scripts.etl import ubist_channel_resolver
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
@@ -121,3 +123,42 @@ def test_resolver_fills_from_latest_raw_matrix_with_others_and_catalog_exclusion
     assert result["fallback_codes"] == ["Semi Others", "TGH Nephro"]
     assert rows[0]["__ubist_specialty_channel_data"]["병원"]["2026-05"] == 80.0
     assert rows[1]["__ubist_specialty_channel_data"]["병원"]["2026-05"] == 20.0
+
+
+def test_resolver_decodes_each_raw_matrix_once_per_request(monkeypatch) -> None:
+    matrices = [
+        {
+            "종합병원": {
+                "순환기(Cardiology IM)": {"2026-04": 10.0, "2026-05": 20.0},
+            }
+        },
+        {
+            "의원": {
+                "분리되지 않은 내과": {"2026-04": 30.0, "2026-05": 40.0},
+            }
+        },
+    ]
+    encoded = [json.dumps(matrix, ensure_ascii=False) for matrix in matrices]
+    rows = [
+        {"brand_name": f"brand-{index}", "channel_specialty_matrix": raw}
+        for index, raw in enumerate(encoded)
+    ]
+    original_loads = ubist_channel_resolver.json.loads
+    decode_calls: list[str] = []
+
+    def counted_loads(raw: str) -> object:
+        if raw in encoded:
+            decode_calls.append(raw)
+        return original_loads(raw)
+
+    monkeypatch.setattr(ubist_channel_resolver.json, "loads", counted_loads)
+
+    result = ubist_channel_resolver.resolve_market_channels(
+        rows=rows,
+        market={"target_ubist_1": "GH Cardio"},
+        measure="sales",
+    )
+
+    assert len(decode_calls) == len(rows)
+    assert result["specialty_channels"][1] == "주요고객 종합병원 순환기"
+    assert all("__channel_specialty_matrix_decoded" not in row for row in rows)
