@@ -463,7 +463,7 @@ def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monk
         ("2025년 2분기 매출 얼마야", "리바로 2025년 2분기 매출 얼마야"),
         (
             "고지혈증 시장 상위 5개 브랜드 알려줘",
-            "리바로 고지혈증 시장 상위 5개 브랜드 알려줘",
+            "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
         ),
     ),
 )

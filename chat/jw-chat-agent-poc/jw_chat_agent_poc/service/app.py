@@ -971,12 +971,13 @@ def _ground_unanchored_market_golden(
         return question
     if is_explicit_quarter_sales_question(question):
         return f"리바로 {question}"
+    top_n = re.search(r"상위\s*(\d+)\s*개?\s*브랜드", question)
     if (
         re.search(r"(?:고지혈증|이상지질혈증)", question)
         and "시장" in question
-        and re.search(r"상위\s*\d+\s*개?\s*브랜드", question)
+        and top_n
     ):
-        return f"리바로 {question}"
+        return f"리바로 시장 상위 {top_n.group(1)}개와 HHI, CR5를 알려줘"
     return question
 
 
