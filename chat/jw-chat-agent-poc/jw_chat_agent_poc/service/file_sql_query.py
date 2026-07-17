@@ -316,7 +316,11 @@ def _is_schema_question(question: str) -> bool:
         return False
     return bool(
         re.search(
-            r"(?:열\s*목록|컬럼|스키마|헤더|(?:파일|문서|엑셀|시트)\s*구조|시트\s*수|행\s*수|마지막\s*(?:월|기간)|월별\s*(?:value|값)\s*열)",
+            r"(?:열\s*목록|컬럼|스키마|헤더|(?:파일|문서|엑셀|시트)\s*구조|"
+            r"(?:이|해당)?\s*(?:파일|문서|엑셀)(?:에|에는|은|는)?\s*(?:뭐|무엇|어떤\s*(?:내용|데이터))|"
+            r"(?:셀아웃|sell[ -]?out)\s*(?:지표|데이터)?\s*(?:설명|뜻|의미)|"
+            r"(?:어떤|무슨)\s*기간\s*(?:데이터|자료)?|기간\s*(?:범위|목록)|"
+            r"시트\s*수|행\s*수|마지막\s*(?:월|기간)|월별\s*(?:value|값)\s*열)",
             question,
             re.IGNORECASE,
         )
@@ -391,6 +395,7 @@ def _render_schema_answer(
     lines = ["## 업로드 파일 구조", f"시트 수: {len(schemas)}개"]
     observed_months: list[tuple[int, int, str]] = []
     all_column_names: list[str] = []
+    period_source_names: list[str] = []
     for index, schema in enumerate(schemas):
         source = sources[index]
         raw_columns = schema.get("columns")
@@ -411,15 +416,64 @@ def _render_schema_answer(
             ]
         )
         for name in names:
-            for month, year in re.findall(r"(?<!\d)(1[0-2]|[1-9])/(20\d{2})(?!\d)", name):
-                observed_months.append((int(year), int(month), f"{int(month)}/{year}"))
+            periods = month_keys(name)
+            if periods:
+                period_source_names.append(name)
+            for period in periods:
+                year, month = period.split("-", 1)
+                observed_months.append(
+                    (int(year), int(month), f"{int(month)}/{year}")
+                )
+    measure_names = tuple(
+        dict.fromkeys(
+            name
+            for name in all_column_names
+            if _is_measure_source_column(name)
+        )
+    )
+    dimension_names = tuple(
+        dict.fromkeys(
+            name
+            for name in all_column_names
+            if not _is_measure_source_column(name)
+        )
+    )
+    lines.append(
+        "주요 차원 열: "
+        + (", ".join(dimension_names) if dimension_names else "확인되지 않음")
+    )
+    lines.append(
+        "측정 열: "
+        + (", ".join(measure_names) if measure_names else "확인되지 않음")
+    )
     if observed_months:
+        earliest = min(observed_months)
         latest = max(observed_months)
+        lines.append(
+            f"기간 범위: {earliest[0]:04d}-{earliest[1]:02d} ~ "
+            f"{latest[0]:04d}-{latest[1]:02d}"
+        )
+        lines.append(
+            "기간 근거 열: " + ", ".join(dict.fromkeys(period_source_names))
+        )
         lines.append(f"마지막 월: {latest[2]}")
         next_year, next_month = (latest[0] + 1, 1) if latest[1] == 12 else (latest[0], latest[1] + 1)
         next_label = f"{next_month}/{next_year}"
         present = any(next_label.casefold() in name.casefold() for name in all_column_names)
         lines.append(f"{next_label} 열: {'있음' if present else '없음'}")
+    if re.search(r"(?:셀아웃|sell[ -]?out)", question, re.IGNORECASE):
+        sellout_names = tuple(
+            name
+            for name in measure_names
+            if _is_amount_column(name)
+        )
+        lines.append(
+            "파일에서 확인된 셀아웃 측정 열: "
+            + (", ".join(sellout_names) if sellout_names else "확인되지 않음")
+        )
+        lines.append(
+            "집계 질문에는 질문에 지정한 기간의 실제 열을 선택해 집계합니다."
+        )
     for source in sources[: len(schemas)]:
         normalized_sheet = source.sheet_name.casefold()
         if source.row_count is not None and re.search(r"(?:질문|question)", normalized_sheet, re.IGNORECASE):
@@ -427,6 +481,17 @@ def _render_schema_answer(
         if source.row_count is not None and re.search(r"(?:출처|source)", normalized_sheet, re.IGNORECASE):
             lines.append(f"출처 수: {_format_number(source.row_count)}개 (SQL 스키마 실측)")
     return "\n".join(lines)
+
+
+def _is_measure_source_column(source_name: str) -> bool:
+    return bool(month_keys(source_name)) or any(
+        predicate(source_name)
+        for predicate in (
+            _is_amount_column,
+            _is_average_column,
+            _is_quantity_column,
+        )
+    )
 
 
 def _render_aggregate_answer(

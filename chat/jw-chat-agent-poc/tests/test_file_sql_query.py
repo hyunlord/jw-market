@@ -568,6 +568,115 @@ def test_schema_question_uses_measured_schema_without_planner(monkeypatch) -> No
     assert "2/2026 열: 없음" in outcome.answer_md
 
 
+def test_file_overview_describes_grounded_dimensions_and_measures(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {"query_name": "c2", "source_name": "PRODUCT NAME KOR"},
+                {
+                    "query_name": "c71",
+                    "source_name": "VALUES LC SI PRICE 12/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "이 파일에 뭐가 있어",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "주요 차원 열: MFR NAME KOR, PRODUCT NAME KOR" in outcome.answer_md
+    assert (
+        "측정 열: VALUES LC SI PRICE 12/2025, VALUES LC SI PRICE 1/2026"
+        in outcome.answer_md
+    )
+
+
+def test_sellout_measure_explanation_names_only_available_source_columns(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "셀아웃 지표 설명해줘",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert (
+        "파일에서 확인된 셀아웃 측정 열: VALUES LC SI PRICE 1/2026"
+        in outcome.answer_md
+    )
+    assert "질문에 지정한 기간의 실제 열을 선택해 집계합니다" in outcome.answer_md
+
+
+def test_period_overview_reports_measured_range_and_source_columns(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {
+                    "query_name": "c70",
+                    "source_name": "VALUES LC SI PRICE 11/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "어떤 기간 데이터야",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "기간 범위: 2025-11 ~ 2026-01" in outcome.answer_md
+    assert "기간 근거 열: VALUES LC SI PRICE 11/2025, VALUES LC SI PRICE 1/2026" in outcome.answer_md
+
+
 def test_workbook_structure_uses_only_measured_sheet_and_row_counts(monkeypatch) -> None:
     sources = (
         SqlFileSource("doc:questions", "questions.xlsx", "질문", row_count=14, column_count=4),
