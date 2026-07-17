@@ -93,6 +93,8 @@ def capture(
     base_url: str | None = None,
     questions: tuple[tuple[str, str], ...] = QUESTIONS,
     conversation_id: str | None = None,
+    *,
+    portal_user_id: str | None = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("sse", "markdown", "traces"):
@@ -108,7 +110,15 @@ def capture(
         events: list[str] = []
         try:
             if base_url:
-                events = [_http_sse(base_url, question, external_mode, conversation_id=conversation_id)]
+                events = [
+                    _http_sse(
+                        base_url,
+                        question,
+                        external_mode,
+                        conversation_id=conversation_id,
+                        portal_user_id=portal_user_id,
+                    )
+                ]
                 result = {"capture_mode": "http", "trace_available": False}
             else:
                 item = _answer_question(
@@ -172,6 +182,7 @@ def capture_p0g_suite(
     history_conversation_id: str | None = None,
     max_general_elapsed_ms: float = 10_000.0,
     portal_equivalent: bool = False,
+    portal_user_id: str | None = None,
     file_base_url: str | None = None,
     file_workflow_id: int = 301,
 ) -> int:
@@ -191,7 +202,14 @@ def capture_p0g_suite(
     )
     summary: list[dict[str, Any]] = []
     for name, questions, conversation_id in scenarios:
-        status = capture(out_dir / name, external_mode, base_url, questions, conversation_id)
+        status = capture(
+            out_dir / name,
+            external_mode,
+            base_url,
+            questions,
+            conversation_id,
+            portal_user_id=portal_user_id,
+        )
         rows = json.loads((out_dir / name / "summary.json").read_text(encoding="utf-8"))
         latency_failures = [
             str(row["qid"])
@@ -221,6 +239,8 @@ def capture_p0g_suite(
         qualification_failures.append("portal-equivalent entry path was not declared")
     if portal_equivalent and not base_url:
         qualification_failures.append("portal-equivalent evidence requires a deployed base URL")
+    if portal_equivalent and not str(portal_user_id or "").strip():
+        qualification_failures.append("portal-equivalent evidence requires X-Portal-User-Id")
     if not history_conversation_id:
         qualification_failures.append("uploaded-file history conversation ID was not supplied")
     file_probe = {
@@ -250,6 +270,7 @@ def capture_p0g_suite(
         "evidence_context": {
             "transport": "direct-chat-sse" if base_url else "local-inprocess",
             "portal_equivalent_declared": portal_equivalent,
+            "portal_user_id_supplied": bool(str(portal_user_id or "").strip()),
             "history_conversation_id_supplied": bool(history_conversation_id),
             "file_probe": file_probe,
         },
@@ -432,12 +453,14 @@ def _http_sse(
     external_mode: str,
     *,
     conversation_id: str | None = None,
+    portal_user_id: str | None = None,
 ) -> str:
     url = base_url.rstrip("/") + "/chat/stream"
     params = {"question": question, "external_mode": external_mode}
     if conversation_id:
         params["conversation_id"] = conversation_id
-    response = requests.get(url, params=params, timeout=180)
+    headers = {"X-Portal-User-Id": portal_user_id} if portal_user_id else {}
+    response = requests.get(url, params=params, headers=headers, timeout=180)
     response.raise_for_status()
     return response.text
 
@@ -766,6 +789,10 @@ def main() -> int:
         help="Declare that the supplied endpoint and payload path match the portal path under release review.",
     )
     p0g_parser.add_argument(
+        "--portal-user-id",
+        help="Portal user ID forwarded as X-Portal-User-Id for portal-equivalent evidence.",
+    )
+    p0g_parser.add_argument(
         "--history-conversation-id",
         help="Existing session containing an uploaded file and unrelated prior turns.",
     )
@@ -812,6 +839,7 @@ def main() -> int:
             history_conversation_id=args.history_conversation_id,
             max_general_elapsed_ms=args.max_general_elapsed_ms,
             portal_equivalent=args.portal_equivalent,
+            portal_user_id=args.portal_user_id,
             file_base_url=args.file_base_url,
             file_workflow_id=args.file_workflow_id,
         )
