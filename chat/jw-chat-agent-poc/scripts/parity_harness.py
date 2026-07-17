@@ -47,6 +47,11 @@ HISTORY_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("H02", "2025년 2분기 매출 얼마야"),
     ("H03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
+MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
+    ("M01", "/deep 리바로 경쟁구도"),
+    ("M02", "2025년 2분기 매출 얼마야"),
+    ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+)
 
 VOLATILE_KEYS = {
     "answer_cleanup",
@@ -256,6 +261,8 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     requirements = {
         "H02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
         "H03": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
+        "M02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
+        "M03": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
     }
     requirement = requirements.get(qid)
     if requirement is None:
@@ -517,6 +524,8 @@ def _capture_questions(name: str) -> tuple[tuple[str, str], ...]:
         return CHANNEL_PARAPHRASE_QUESTIONS
     if name == "history":
         return HISTORY_GOLDEN_QUESTIONS
+    if name == "mode-transition":
+        return MODE_TRANSITION_GOLDEN_QUESTIONS
     return QUESTIONS
 
 
@@ -527,7 +536,8 @@ def main() -> int:
     capture_parser.add_argument("--out-dir", type=Path, required=True)
     capture_parser.add_argument("--external-mode", default="live")
     capture_parser.add_argument("--base-url", help="Capture deployed /chat/stream SSE instead of local service trace.")
-    capture_parser.add_argument("--question-set", choices=("core", "channel", "history"), default="core")
+    question_sets = ("core", "channel", "history", "mode-transition")
+    capture_parser.add_argument("--question-set", choices=question_sets, default="core")
     capture_parser.add_argument(
         "--conversation-id",
         help="Reuse one session across capture questions. Required to reproduce history contamination against an existing uploaded-file session.",
@@ -536,7 +546,7 @@ def main() -> int:
     diff_parser.add_argument("--before", type=Path, required=True)
     diff_parser.add_argument("--after", type=Path, required=True)
     diff_parser.add_argument("--report-dir", type=Path, required=True)
-    diff_parser.add_argument("--question-set", choices=("core", "channel", "history"), default="core")
+    diff_parser.add_argument("--question-set", choices=question_sets, default="core")
     multi_parser = sub.add_parser("diff-multi")
     multi_parser.add_argument("--baseline-root", type=Path, required=True)
     multi_parser.add_argument("--after", type=Path, required=True)
@@ -547,8 +557,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "capture":
         conversation_id = args.conversation_id
-        if args.question_set == "history" and not conversation_id:
-            conversation_id = f"parity-history-{uuid4().hex}"
+        if args.question_set in {"history", "mode-transition"} and not conversation_id:
+            conversation_id = f"parity-{args.question_set}-{uuid4().hex}"
         return capture(
             args.out_dir,
             args.external_mode,

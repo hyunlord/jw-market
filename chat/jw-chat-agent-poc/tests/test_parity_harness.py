@@ -7,6 +7,7 @@ from scripts.fact_scoreboard.sse import parse_sse_file
 from scripts.parity_harness import (
     CHANNEL_PARAPHRASE_QUESTIONS,
     HISTORY_GOLDEN_QUESTIONS,
+    MODE_TRANSITION_GOLDEN_QUESTIONS,
     _history_golden_acceptance,
     _capture_questions,
     _http_sse,
@@ -71,6 +72,15 @@ def test_parity_harness_registers_history_goldens() -> None:
     )
 
 
+def test_parity_harness_registers_mode_transition_goldens() -> None:
+    assert _capture_questions("mode-transition") == MODE_TRANSITION_GOLDEN_QUESTIONS
+    assert MODE_TRANSITION_GOLDEN_QUESTIONS == (
+        ("M01", "/deep 리바로 경쟁구도"),
+        ("M02", "2025년 2분기 매출 얼마야"),
+        ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+    )
+
+
 def test_http_sse_forwards_shared_conversation_id(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -115,6 +125,8 @@ def test_history_golden_acceptance_requires_live_values() -> None:
         False,
         "missing 29.52%",
     )
+    assert _history_golden_acceptance("M02", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
+    assert _history_golden_acceptance("M03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:
