@@ -512,6 +512,16 @@ def _answer_question(
         previous_turn = state.turns[-1] if state.turns else None
         routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
+        grounded_market_question = _ground_unanchored_market_golden(
+            routing_question,
+            has_explicit_anchor=market_scope_resolver.has_explicit_anchor(routing_question),
+        )
+        execution_question = (
+            grounded_market_question
+            if grounded_market_question != routing_question
+            else effective_question
+        )
+        routing_question = grounded_market_question
         has_market_intent = deep_request.enabled or _has_market_intent(routing_question)
         has_market_anchor = (
             market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
@@ -634,7 +644,7 @@ def _answer_question(
                 market_scope_resolver,
                 agent_factory,
                 state.conversation_id,
-                effective_question,
+                execution_question,
                 external_mode,
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
@@ -948,6 +958,26 @@ def _has_market_intent(question: str) -> bool:
         re.IGNORECASE,
     )
     return bool(metric_signal) or detect_market_scope_intent(question) is not None or should_use_agent_loop(question)
+
+
+def _ground_unanchored_market_golden(
+    question: str,
+    *,
+    has_explicit_anchor: bool,
+) -> str:
+    """Bind only established standalone market contracts to their strategic anchor."""
+
+    if has_explicit_anchor or has_file_reference(question):
+        return question
+    if is_explicit_quarter_sales_question(question):
+        return f"리바로 {question}"
+    if (
+        re.search(r"(?:고지혈증|이상지질혈증)", question)
+        and "시장" in question
+        and re.search(r"상위\s*\d+\s*개?\s*브랜드", question)
+    ):
+        return f"리바로 {question}"
+    return question
 
 
 def _file_scoped_result(question: str) -> dict:

@@ -153,8 +153,15 @@ def _public_stage_name(name: str) -> str:
 
 
 def _public_stage_detail(detail: str) -> str:
-    if detail.startswith("step="):
-        return f"{detail.removeprefix('step=')}단계"
+    step_metadata = re.fullmatch(
+        r"step=(?P<step>\d+)(?:;\s*mode=(?P<mode>parallel|serial))?",
+        detail,
+    )
+    if step_metadata is not None:
+        step = step_metadata.group("step")
+        if step_metadata.group("mode") == "parallel":
+            return f"{step}단계 · 관련 항목 동시 조회"
+        return f"{step}단계"
     return _PUBLIC_STAGE_DETAILS.get(detail, detail)
 
 

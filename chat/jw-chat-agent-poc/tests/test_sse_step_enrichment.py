@@ -133,6 +133,17 @@ def test_runtime_planning_steps_have_user_facing_labels() -> None:
     assert not any(name in public_text for name, _detail in stages)
 
 
+def test_parallel_step_metadata_is_projected_to_user_language() -> None:
+    events: list[dict] = []
+    with timing.stage(None, "deep_research_tool_batch", "step=1; mode=parallel", sink=events.append):
+        pass
+
+    started = events[0]
+    assert started["detail"] == "1단계 · 관련 항목 동시 조회"
+    assert "mode=" not in started["detail"]
+    assert ";" not in started["detail"]
+
+
 def test_runtime_market_tool_names_have_specific_public_labels() -> None:
     events: list[dict] = []
     expected = {

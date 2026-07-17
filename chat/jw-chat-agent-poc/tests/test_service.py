@@ -457,6 +457,85 @@ def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monk
     assert captured["loop_question"] == "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
 
 
+@pytest.mark.parametrize(
+    ("question", "grounded_question"),
+    (
+        ("2025년 2분기 매출 얼마야", "리바로 2025년 2분기 매출 얼마야"),
+        (
+            "고지혈증 시장 상위 5개 브랜드 알려줘",
+            "리바로 고지혈증 시장 상위 5개 브랜드 알려줘",
+        ),
+    ),
+)
+def test_unanchored_market_goldens_are_grounded_before_direct_execution(
+    monkeypatch,
+    question: str,
+    grounded_question: str,
+) -> None:
+    captured: list[str] = []
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "golden", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        question,
+        "live",
+        "golden-clean-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == [grounded_question]
+    assert item["result"]["context_scope"] == "MARKET"
+
+
+def test_unanchored_quarter_golden_ignores_stale_file_and_external_turn(
+    monkeypatch,
+) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "golden-dirty-session",
+        "뇌경색 임상·허가 경쟁약물",
+        "외부 도구 결과",
+    )
+    captured: list[str] = []
+
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(service_app, "fetch_uploaded_file_schema_columns", lambda _conversation_id: ("질환", "임상"))
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("standalone market golden must not search stale files")
+        ),
+    )
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "2025-Q2 리바로 매출은 242.72억원입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "golden-dirty-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 2025년 2분기 매출 얼마야"]
+    assert item["result"]["context_scope"] == "MARKET"
+    assert "242.72억원" in item["result"]["answer"]
+
+
 def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
     def fail_build_loop(_dependencies):
         raise AssertionError("requested-source trap must not enter direct agent loop")
