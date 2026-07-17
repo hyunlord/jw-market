@@ -298,6 +298,22 @@ class UploadResponse(BaseModel):
         default_factory=list,
         description="preprocessor-64 위임 전에 차단된 파일 목록입니다.",
     )
+    upload_id: str | None = Field(
+        default=None,
+        description="비동기 업로드 상태를 조회할 때 사용하는 불투명 식별자입니다.",
+    )
+    state: Literal["accepted", "preprocessing", "committing", "ready", "blocked", "failed"] | None = Field(
+        default=None,
+        description="비동기 업로드의 현재 처리 상태입니다.",
+    )
+    ready: bool | None = Field(
+        default=None,
+        description="업로드 문서를 검색하거나 질의할 준비가 끝났는지 나타냅니다.",
+    )
+    status_url: str | None = Field(
+        default=None,
+        description="upload_id와 같은 세션 식별자로 상태를 조회할 상대 경로입니다.",
+    )
     errors: list[str] = Field(default_factory=list)
 
 
@@ -453,6 +469,17 @@ class PublicUploadResponse(BaseModel):
     temp_documents: list[PublicUploadedTempDocument] = Field(default_factory=list)
     commit: PublicCommitResponse | None = None
     blocked_uploads: list[PublicBlockedUpload] = Field(default_factory=list)
+
+
+class PublicAcceptedUploadResponse(BaseModel):
+    """Immediate acknowledgement for a persisted background upload."""
+
+    mode: str = "upload"
+    temp_documents: list[PublicUploadedTempDocument] = Field(default_factory=list)
+    upload_id: str
+    state: Literal["accepted"] = "accepted"
+    ready: Literal[False] = False
+    status_url: Literal["/upload/status"] = "/upload/status"
 
 
 class PublicUploadFileStatus(BaseModel):

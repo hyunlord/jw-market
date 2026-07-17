@@ -14,10 +14,10 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 
 from . import delete_ops, ledger, pdf_vlm, session_wiki, settings, upload_adapter, weaviate_ops
 from .file_sql import (
@@ -30,7 +30,7 @@ from .file_sql import (
 )
 from .logging_utils import safe_log
 from .upload_ownership import TempDocumentNotFoundError, UploadOwnershipRegistry
-from .upload_status import UploadJobNotFoundError, UploadStatusRegistry
+from .upload_status import UploadFileStatus, UploadJobNotFoundError, UploadStatusRegistry
 from .models import (
     BlockedUpload,
     BridgeRequest,
@@ -56,6 +56,7 @@ from .models import (
     QuotaSnapshot,
     PublicCommitResponse,
     PublicDocumentsResponse,
+    PublicAcceptedUploadResponse,
     PublicSearchResponse,
     PublicUploadStatusResponse,
     PublicUploadResponse,
@@ -1387,13 +1388,192 @@ def _session_request(
     )
 
 
+def _deactivate_failed_upload(saved_documents: list[upload_adapter.SavedTempDocument]) -> None:
+    upload_adapter.cleanup_saved_documents(saved_documents)
+    with ledger.ledger_connection() as conn:
+        upload_adapter.deactivate_temp_documents(
+            conn,
+            temp_document_ids=[item.temp_document_id for item in saved_documents],
+        )
+        conn.commit()
+
+
+def _terminal_upload_files(
+    saved_documents: list[upload_adapter.SavedTempDocument],
+    commit_response: CommitResponse,
+) -> tuple[UploadFileStatus, ...]:
+    results = {item.temp_document_id: item for item in commit_response.documents}
+    files: list[UploadFileStatus] = []
+    for saved in saved_documents:
+        result = results.get(saved.temp_document_id)
+        if result is None:
+            files.append(
+                UploadFileStatus(
+                    file_name=saved.file_name,
+                    state="failed",
+                    message="파일 처리를 완료하지 못했습니다.",
+                )
+            )
+            continue
+        if result.status in {"no_chunks", "blocked_oversized"}:
+            files.append(
+                UploadFileStatus(
+                    file_name=saved.file_name,
+                    state="blocked",
+                    route=result.route,
+                    message="파일을 검색 가능한 상태로 준비하지 못했습니다.",
+                )
+            )
+            continue
+        files.append(
+            UploadFileStatus(
+                file_name=saved.file_name,
+                state="ready",
+                route=result.route,
+                message="파일 처리가 완료되었습니다.",
+            )
+        )
+    return tuple(files)
+
+
+def _process_accepted_upload(
+    *,
+    upload_id: str,
+    session_id: str,
+    config: upload_adapter.FileUploadConfig,
+    temp_vdb: upload_adapter.TempVdbIndex,
+    saved_documents: list[upload_adapter.SavedTempDocument],
+    request: BridgeRequest,
+) -> None:
+    """Complete an accepted upload without retaining request-scoped objects."""
+
+    external_documents = [
+        item for item in saved_documents if upload_adapter.requires_external_preprocessor(item)
+    ]
+    try:
+        if external_documents:
+            _UPLOAD_STATUS.transition(
+                session_id=session_id,
+                workflow_id=request.workflow_id,
+                upload_id=upload_id,
+                state="preprocessing",
+                files=tuple(
+                    UploadFileStatus(file_name=item.file_name, state="preprocessing")
+                    for item in saved_documents
+                ),
+            )
+            try:
+                with httpx.Client() as client:
+                    upload_adapter.run_preprocessor(
+                        client,
+                        temp_vdb_index=temp_vdb.temp_vdb_index,
+                        config=config,
+                        saved_documents=external_documents,
+                        user_id=request.user_id,
+                    )
+            except upload_adapter.PreprocessorRunError as exc:
+                _deactivate_failed_upload(saved_documents)
+                safe_message = exc.user_message
+                _UPLOAD_STATUS.transition(
+                    session_id=session_id,
+                    workflow_id=request.workflow_id,
+                    upload_id=upload_id,
+                    state="blocked",
+                    files=tuple(
+                        UploadFileStatus(
+                            file_name=item.file_name,
+                            state="blocked",
+                            route="preprocess_failed",
+                            message=safe_message,
+                        )
+                        for item in saved_documents
+                    ),
+                    message=safe_message,
+                )
+                safe_log(
+                    "accepted_upload_preprocess_failed",
+                    request_id=uuid.uuid4().hex,
+                    session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+                    decision="preprocess_failed",
+                    workflow_id=request.workflow_id,
+                    docs=len(saved_documents),
+                )
+                return
+
+        _UPLOAD_STATUS.transition(
+            session_id=session_id,
+            workflow_id=request.workflow_id,
+            upload_id=upload_id,
+            state="committing",
+            files=tuple(
+                UploadFileStatus(file_name=item.file_name, state="committing")
+                for item in saved_documents
+            ),
+        )
+        commit_response = _commit_temp_documents(request)
+        terminal_files = _terminal_upload_files(saved_documents, commit_response)
+        ready = commit_response.file_only_ready and not commit_response.errors
+        terminal_state: Literal["ready", "blocked", "failed"]
+        if ready:
+            terminal_state = "ready"
+            message = "파일 처리가 완료되어 지금 질문하실 수 있습니다."
+        elif any(item.state == "blocked" for item in terminal_files):
+            terminal_state = "blocked"
+            message = "일부 파일을 검색 가능한 상태로 준비하지 못했습니다."
+        else:
+            terminal_state = "failed"
+            message = "파일 처리를 완료하지 못했습니다. 다시 업로드해 주세요."
+        _UPLOAD_STATUS.transition(
+            session_id=session_id,
+            workflow_id=request.workflow_id,
+            upload_id=upload_id,
+            state=terminal_state,
+            files=terminal_files,
+            message=message,
+        )
+    except Exception as exc:
+        safe_log(
+            "accepted_upload_failed",
+            request_id=uuid.uuid4().hex,
+            session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+            decision="background_failed",
+            workflow_id=request.workflow_id,
+            error_type=type(exc).__name__,
+        )
+        try:
+            _UPLOAD_STATUS.transition(
+                session_id=session_id,
+                workflow_id=request.workflow_id,
+                upload_id=upload_id,
+                state="failed",
+                files=tuple(
+                    UploadFileStatus(
+                        file_name=item.file_name,
+                        state="failed",
+                        message="파일 처리를 완료하지 못했습니다.",
+                    )
+                    for item in saved_documents
+                ),
+                message="파일 처리를 완료하지 못했습니다. 다시 업로드해 주세요.",
+            )
+        except Exception:
+            safe_log(
+                "accepted_upload_status_write_failed",
+                request_id=uuid.uuid4().hex,
+                session_hash=_UPLOAD_OWNERSHIP.session_hash(session_id),
+                decision="status_write_failed",
+                workflow_id=request.workflow_id,
+            )
+
+
 @app.post(
     "/upload",
-    response_model=PublicUploadResponse,
+    response_model=PublicAcceptedUploadResponse | PublicUploadResponse,
     summary="파일을 세션 임시 VDB에 업로드",
     description=UPLOAD_DESCRIPTION,
 )
 def upload(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(
         ...,
         description=(
@@ -1433,6 +1613,13 @@ def upload(
         default=settings.TARGET_VDB_ID,
         description="정식 등록 대상 VDB ID입니다. 기본값은 공용 파일 검색 VDB인 139이며 다른 값은 거부됩니다.",
         examples=[TARGET_VDB_EXAMPLE],
+    ),
+    return_when: Literal["complete", "accepted"] = Form(
+        default="complete",
+        description=(
+            "complete는 기존처럼 전처리와 등록 완료 후 응답합니다. "
+            "accepted는 파일을 안전하게 저장한 뒤 즉시 upload_id를 반환하고 백그라운드에서 완료합니다."
+        ),
     ),
 ) -> UploadResponse:
     session_value = chat_id or app_session_id or ""
@@ -1552,6 +1739,59 @@ def upload(
                         file_name=item.file_name,
                         file_path=Path(item.file_path),
                         expires_at=expires_at,
+                    )
+                if return_when == "accepted":
+                    conn.commit()
+                    status = _UPLOAD_STATUS.create(
+                        session_id=session_value,
+                        workflow_id=workflow_id,
+                        file_names=[item.file_name for item in saved_documents],
+                        expires_at=expires_at,
+                    )
+                    accepted_request = BridgeRequest(
+                        workflow_id=workflow_id,
+                        vdb_id=vdb_id,
+                        app_session_id=app_session_value,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        temp_documents=[
+                            TempDocument(
+                                temp_document_id=item.temp_document_id,
+                                file_name=item.file_name,
+                                file_path=item.file_path,
+                            )
+                            for item in saved_documents
+                        ],
+                    )
+                    background_tasks.add_task(
+                        _process_accepted_upload,
+                        upload_id=status.upload_id,
+                        session_id=session_value,
+                        config=config,
+                        temp_vdb=temp_vdb,
+                        saved_documents=saved_documents,
+                        request=accepted_request,
+                    )
+                    return UploadResponse(
+                        target_vdb_id=vdb_id,
+                        workflow_id=workflow_id,
+                        app_session_id=app_session_value,
+                        session_id=session_value,
+                        temp_vdb_index_id=temp_vdb.temp_vdb_index_id,
+                        temp_vdb_index=temp_vdb.temp_vdb_index,
+                        temp_documents=[
+                            UploadedTempDocument(
+                                temp_document_id=item.temp_document_id,
+                                file_name=item.file_name,
+                                file_path=item.file_path,
+                            )
+                            for item in saved_documents
+                        ],
+                        quota=quota,
+                        upload_id=status.upload_id,
+                        state=status.state,
+                        ready=False,
+                        status_url="/upload/status",
                     )
                 external_preprocessor_documents = [
                     item

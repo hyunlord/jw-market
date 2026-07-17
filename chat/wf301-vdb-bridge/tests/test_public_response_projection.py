@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from pydantic import TypeAdapter
+
 import src.models as models
 from src.main import app
 
@@ -39,13 +41,25 @@ def test_public_routes_use_projection_models_without_changing_file_sql() -> None
         if hasattr(route, "response_model")
     }
 
-    assert route_models["/upload"] is models.PublicUploadResponse
+    assert route_models["/upload"] == models.PublicAcceptedUploadResponse | models.PublicUploadResponse
     assert route_models["/upload/status"] is models.PublicUploadStatusResponse
     assert route_models["/commit"] is models.PublicCommitResponse
     assert route_models["/search"] is models.PublicSearchResponse
     assert route_models["/documents"] is models.PublicDocumentsResponse
     assert route_models["/file-sql/schema"] is models.FileSqlSchemaResponse
     assert route_models["/file-sql/query"] is models.FileSqlQueryResponse
+
+
+def test_upload_async_mode_is_explicit_and_complete_remains_default() -> None:
+    schema = app.openapi()
+    body_ref = schema["paths"]["/upload"]["post"]["requestBody"]["content"][
+        "multipart/form-data"
+    ]["schema"]["$ref"]
+    body_name = body_ref.rsplit("/", 1)[-1]
+    return_when = schema["components"]["schemas"][body_name]["properties"]["return_when"]
+
+    assert return_when["enum"] == ["complete", "accepted"]
+    assert return_when["default"] == "complete"
 
 
 def test_upload_status_projection_hides_session_and_storage_details() -> None:
@@ -115,12 +129,53 @@ def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> Non
 
     projected = models.PublicUploadResponse.model_validate(raw).model_dump()
     encoded = json.dumps(projected)
+    union_value = TypeAdapter(
+        models.PublicAcceptedUploadResponse | models.PublicUploadResponse
+    ).validate_python(raw)
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    assert isinstance(union_value, models.PublicUploadResponse)
+    assert not {"upload_id", "state", "ready", "status_url"} & projected.keys()
     assert projected["temp_documents"] == [{"file_name": "survey.xlsx"}]
     document = projected["commit"]["documents"][0]
     assert document["route"] == "sql"
     assert document["status"] == "committed_sql"
     assert document["sql_tables"][0]["logical_name"] == "data_abc"
+
+
+def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
+    raw = {
+        "mode": "upload",
+        "target_vdb_id": 139,
+        "workflow_id": 301,
+        "app_session_id": "session-a",
+        "session_id": "session-a",
+        "temp_vdb_index_id": 1705,
+        "temp_vdb_index": "InternalCollection",
+        "temp_documents": [
+            {
+                "temp_document_id": 1601,
+                "file_name": "wide.xlsx",
+                "file_path": "/private/wide.xlsx",
+            }
+        ],
+        "upload_id": "upl_7Qz4R4R2Xh9pCkN8",
+        "state": "accepted",
+        "ready": False,
+        "status_url": "/upload/status",
+    }
+
+    projected = models.PublicAcceptedUploadResponse.model_validate(raw).model_dump()
+    encoded = json.dumps(projected)
+    union_value = TypeAdapter(
+        models.PublicAcceptedUploadResponse | models.PublicUploadResponse
+    ).validate_python(raw)
+
+    assert isinstance(union_value, models.PublicAcceptedUploadResponse)
+    assert projected["upload_id"] == "upl_7Qz4R4R2Xh9pCkN8"
+    assert projected["state"] == "accepted"
+    assert projected["ready"] is False
+    assert projected["status_url"] == "/upload/status"
+    assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
 
 
 def test_upload_projection_exposes_only_safe_block_message() -> None:
