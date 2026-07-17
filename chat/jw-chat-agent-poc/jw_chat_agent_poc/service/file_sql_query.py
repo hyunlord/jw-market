@@ -344,10 +344,14 @@ def _is_schema_question(question: str) -> bool:
 
 
 def _is_aggregate_question(question: str) -> bool:
-    return _is_monthly_trend_question(question) or _contains_configured_term(
-        question,
-        "JW_CHAT_FILE_SQL_AGGREGATE_TERMS",
-        DEFAULT_AGGREGATE_TERMS,
+    return (
+        _is_monthly_trend_question(question)
+        or _is_growth_by_channel_question(question)
+        or _contains_configured_term(
+            question,
+            "JW_CHAT_FILE_SQL_AGGREGATE_TERMS",
+            DEFAULT_AGGREGATE_TERMS,
+        )
     )
 
 
@@ -358,6 +362,13 @@ def _is_monthly_trend_question(question: str) -> bool:
             question,
             re.IGNORECASE,
         )
+    )
+
+
+def _is_growth_by_channel_question(question: str) -> bool:
+    return bool(
+        re.search(r"(?:가장|제일|최대).*(?:성장|증가).*(?:채널)", question)
+        or re.search(r"(?:채널).*(?:성장|증가)", question)
     )
 
 
@@ -619,6 +630,74 @@ def _render_aggregate_answer(
     labels = _source_column_labels(columns, schema)
     total_applied = sum(float(row[applied_index]) for row in rows)
     monthly_periods = _monthly_result_periods(columns, applied_index)
+    growth_index = next(
+        (
+            index
+            for index, name in enumerate(columns)
+            if name.casefold() == "growth_value"
+        ),
+        None,
+    )
+    if (
+        _is_growth_by_channel_question(question)
+        and len(monthly_periods) >= 2
+        and growth_index is not None
+    ):
+        label_index = next(
+            (
+                index
+                for index in range(len(columns))
+                if index not in {applied_index, growth_index}
+                and all(index != period_index for _, period_index in monthly_periods)
+            ),
+            None,
+        )
+        if label_index is None or any(
+            max(label_index, growth_index, applied_index) >= len(row)
+            or not _is_number(row[growth_index])
+            for row in rows
+        ):
+            return ""
+        first_period, first_index = monthly_periods[0]
+        last_period, last_index = monthly_periods[-1]
+        if any(
+            max(first_index, last_index) >= len(row)
+            or not _is_number(row[first_index])
+            or not _is_number(row[last_index])
+            for row in rows
+        ):
+            return ""
+        lines = [
+            "## 업로드 파일 채널 성장 비교",
+            f"파일: {source.file_name}",
+            f"시트·테이블명: {source.sheet_name} / data",
+            f"비교 기준: {first_period} 대비 {last_period} 절대 증가액",
+            "사용 열: " + (", ".join(used_columns) if used_columns else "집계 결과 열"),
+            f"적용 행 수: {_format_number(total_applied)}",
+            f"| 채널 | {first_period} | {last_period} | 증가액 | 적용 행 수 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        lines.extend(
+            "| "
+            + " | ".join(
+                (
+                    _markdown_cell(row[label_index]),
+                    _format_number(row[first_index]),
+                    _format_number(row[last_index]),
+                    _format_number(row[growth_index]),
+                    _format_number(row[applied_index]),
+                )
+            )
+            + " |"
+            for row in rows
+        )
+        winner = rows[0]
+        lines.append(
+            f"{first_period} 대비 {last_period} 절대 증가액 기준 "
+            f"가장 성장한 채널은 {winner[label_index]}이며 증가액은 "
+            f"{_format_number(winner[growth_index])}입니다."
+        )
+        return "\n".join(lines)
     if len(rows) == 1 and monthly_periods:
         values = tuple(
             (period, rows[0][index])
@@ -835,6 +914,41 @@ def _resolve_deterministic_select(
 
         resolved: list[str] = []
         missing: list[str] = []
+        if _is_growth_by_channel_question(question):
+            channel = _find_column(columns, r"(?:^|\b)channel(?:\b|$)|채널")
+            monthly_measures = _monthly_measure_columns(columns)
+            if channel is None:
+                missing.append("채널")
+            if len(monthly_measures) < 2:
+                missing.append("비교 가능한 월별 금액 열")
+            if missing:
+                candidate = DeterministicPlanResolution(
+                    None,
+                    (),
+                    tuple(missing),
+                )
+                if len(candidate.resolved_slots) >= len(best_failure.resolved_slots):
+                    best_failure = candidate
+                continue
+            first_period, first_query = monthly_measures[0]
+            last_period, last_query = monthly_measures[-1]
+            channel_query = str(channel.get("query_name") or "")
+            return DeterministicPlanResolution(
+                {
+                    "logical_name": str(schema.get("logical_name") or ""),
+                    "sql": (
+                        f"SELECT {channel_query}, "
+                        f"SUM({first_query}) AS period_{first_period.replace('-', '_')}, "
+                        f"SUM({last_query}) AS period_{last_period.replace('-', '_')}, "
+                        f"(SUM({last_query}) - SUM({first_query})) AS growth_value, "
+                        f"COUNT(*) AS applied_rows FROM data "
+                        f"WHERE {channel_query} IS NOT NULL AND "
+                        f"TRIM({channel_query}) <> '' "
+                        f"GROUP BY {channel_query} ORDER BY growth_value DESC"
+                    ),
+                },
+                ("channel", "growth_periods"),
+            )
         manufacturer = _find_column(columns, r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체")
         intent = _question_measure_intent(question) or "amount"
         monthly_trend = _is_monthly_trend_question(question)

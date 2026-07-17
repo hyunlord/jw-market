@@ -365,6 +365,98 @@ def test_channel_by_count_executes_grouped_rows(monkeypatch) -> None:
     assert "| 1 | 92 | 92 |" in outcome.answer_md
 
 
+def test_fastest_growing_channel_compares_grounded_period_endpoints() -> None:
+    schema = {
+        "logical_name": SQL_SOURCE.logical_name,
+        "columns": [
+            {"query_name": "c5", "source_name": "CHANNEL"},
+            {
+                "query_name": "c70",
+                "source_name": "VALUES LC SI PRICE 11/2025",
+            },
+            {
+                "query_name": "c71",
+                "source_name": "VALUES LC SI PRICE 12/2025",
+            },
+            {
+                "query_name": "c72",
+                "source_name": "VALUES LC SI PRICE 1/2026",
+            },
+        ],
+    }
+
+    resolution = file_sql_query._resolve_deterministic_select(
+        "가장 성장한 채널은",
+        (schema,),
+    )
+
+    assert resolution.missing_slots == ()
+    assert resolution.resolved_slots == ("channel", "growth_periods")
+    assert resolution.plan == {
+        "logical_name": SQL_SOURCE.logical_name,
+        "sql": (
+            "SELECT c5, SUM(c70) AS period_2025_11, "
+            "SUM(c72) AS period_2026_01, "
+            "(SUM(c72) - SUM(c70)) AS growth_value, "
+            "COUNT(*) AS applied_rows FROM data "
+            "WHERE c5 IS NOT NULL AND TRIM(c5) <> '' "
+            "GROUP BY c5 ORDER BY growth_value DESC"
+        ),
+    }
+    assert file_sql_query._is_select_only_candidate(resolution.plan["sql"])
+
+
+def test_fastest_growing_channel_renders_ranked_grounded_narrative(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c5", "source_name": "CHANNEL"},
+                {
+                    "query_name": "c70",
+                    "source_name": "VALUES LC SI PRICE 11/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *_args: {
+            "columns": [
+                "c5",
+                "period_2025_11",
+                "period_2026_01",
+                "growth_value",
+                "applied_rows",
+            ],
+            "rows": [
+                ["병원", 100, 150, 50, 6],
+                ["의원", 100, 120, 20, 8],
+            ],
+        },
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "가장 성장한 채널은",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "| 채널 | 2025-11 | 2026-01 | 증가액 | 적용 행 수 |" in outcome.answer_md
+    assert "2025-11 대비 2026-01 절대 증가액 기준" in outcome.answer_md
+    assert "가장 성장한 채널은 병원이며 증가액은 50입니다" in outcome.answer_md
+    assert "때문" not in outcome.answer_md
+
+
 def test_monthly_trend_builds_one_select_over_ordered_month_columns() -> None:
     schema = {
         "logical_name": SQL_SOURCE.logical_name,
