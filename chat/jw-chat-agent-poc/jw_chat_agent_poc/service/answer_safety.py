@@ -1196,7 +1196,8 @@ def _repair_markdown_link_urls(answer: str) -> str:
         target = match.group("target")
         if not target.lstrip().startswith(("http://", "https://")):
             return match.group(0)
-        return f"]({re.sub(r'\s+', '', target)})"
+        compact_target = re.sub(r"\s+", "", target)
+        return f"]({compact_target})"
 
     return re.sub(r"]\((?P<target>[^)]+)\)", repair, answer)
 
