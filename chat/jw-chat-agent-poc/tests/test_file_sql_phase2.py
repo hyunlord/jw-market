@@ -18,6 +18,10 @@ def _wide_chso_schema() -> dict:
     columns[1] = {"query_name": "c2", "source_name": "MFR NAME KOR"}
     columns[2] = {"query_name": "c3", "source_name": "PRODUCT NAME KOR"}
     columns[11] = {"query_name": "c12", "source_name": "ATC 4"}
+    columns[70] = {
+        "query_name": "c71",
+        "source_name": "VALUES LC SI PRICE 12/2025",
+    }
     columns[71] = {
         "query_name": "c72",
         "source_name": "VALUES LC SI PRICE 1/2026",
@@ -433,6 +437,32 @@ def test_complete_ranked_file_question_does_not_inherit_previous_trend_measure()
     assert plan is not None
     assert "SUM(c72)" in plan["sql"]
     assert "SUM(c17)" not in plan["sql"]
+
+
+def test_manufacturer_monthly_total_does_not_inherit_previous_product_axis() -> None:
+    previous = ConversationTurn(
+        question="상위 10개 제품",
+        answer="제품별 상위 10개",
+        applied_filters={},
+        slots=ConversationSlots(
+            file_name="CHSO.xlsx",
+            file_measure="PRODUCT NAME KOR",
+            file_sheet="Sell Out Standard",
+        ),
+    )
+
+    resolved = service_app._resolve_file_question("동아제약의 월별 합계", previous)
+    plan = file_sql_query._resolve_deterministic_select(
+        resolved,
+        (_wide_chso_schema(),),
+    ).plan
+
+    assert "PRODUCT NAME KOR" not in resolved
+    assert plan is not None
+    assert "WHERE c2 = '동아제약'" in plan["sql"]
+    assert "GROUP BY c3" not in plan["sql"]
+    assert "SUM(c71) AS period_2025_12" in plan["sql"]
+    assert "SUM(c72) AS period_2026_01" in plan["sql"]
 
 
 def test_explicit_unsupported_measure_beats_inherited_sell_out_sheet_name() -> None:

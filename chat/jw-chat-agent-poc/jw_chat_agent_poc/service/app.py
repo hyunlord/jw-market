@@ -886,7 +886,7 @@ def _resolve_file_question(question: str, previous_turn: ConversationTurn | None
     has_current_sheet = bool(re.search(r"[^\s]+\s*시트", question, re.IGNORECASE))
     has_current_measure = bool(
         re.search(
-            r"(?:sell[ -]?out|매출|금액|수량|단가|재구매율|\bq1\b|(?<![A-Za-z])no(?![A-Za-z])|VALUES\s+LC\s+SI\s+PRICE)",
+            r"(?:월별\s*(?:추이|흐름|변화|합계|금액|매출|집계)|sell[ -]?out|매출|금액|수량|단가|재구매율|\bq1\b|(?<![A-Za-z])no(?![A-Za-z])|VALUES\s+LC\s+SI\s+PRICE)",
             question,
             re.IGNORECASE,
         )
