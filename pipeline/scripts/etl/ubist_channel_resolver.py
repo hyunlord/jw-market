@@ -234,7 +234,9 @@ def _normalize_target_channel_series(payload: dict[str, Any]) -> dict[str, dict[
 def _raw_matrices_available(rows: list[dict[str, Any]]) -> bool:
     available = False
     for row in rows:
-        matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
+        matrix = row.get(_DECODED_CHANNEL_SPECIALTY_MATRIX)
+        if not isinstance(matrix, dict):
+            matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
         row[_DECODED_CHANNEL_SPECIALTY_MATRIX] = matrix
         available = available or bool(matrix)
     return available

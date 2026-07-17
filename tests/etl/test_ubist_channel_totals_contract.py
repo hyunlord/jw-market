@@ -162,3 +162,36 @@ def test_resolver_decodes_each_raw_matrix_once_per_request(monkeypatch) -> None:
     assert len(decode_calls) == len(rows)
     assert result["specialty_channels"][1] == "주요고객 종합병원 순환기"
     assert all("__channel_specialty_matrix" not in row for row in rows)
+
+
+def test_resolver_reuses_predecoded_matrix_without_loading_raw_json(monkeypatch) -> None:
+    matrix = {
+        "종합병원": {
+            "순환기(Cardiology IM)": {"2026-04": 10.0, "2026-05": 20.0},
+        }
+    }
+    encoded = json.dumps(matrix, ensure_ascii=False)
+    rows = [
+        {
+            "brand_name": "brand-1",
+            "channel_specialty_matrix": encoded,
+            "__channel_specialty_matrix": matrix,
+        }
+    ]
+    original_loads = ubist_channel_resolver.json.loads
+
+    def reject_duplicate_decode(raw: str) -> object:
+        if raw == encoded:
+            raise AssertionError("resolver must reuse the request-local decoded matrix")
+        return original_loads(raw)
+
+    monkeypatch.setattr(ubist_channel_resolver.json, "loads", reject_duplicate_decode)
+
+    result = ubist_channel_resolver.resolve_market_channels(
+        rows=rows,
+        market={"target_ubist_1": "GH Cardio"},
+        measure="sales",
+    )
+
+    assert result["specialty_channels"][1] == "주요고객 종합병원 순환기"
+    assert "__channel_specialty_matrix" not in rows[0]
