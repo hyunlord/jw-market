@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from xml.etree.ElementTree import ParseError
+from xml.etree.ElementTree import ParseError, fromstring
 from zipfile import BadZipFile, ZipFile
 
 import fitz
@@ -15,6 +15,7 @@ from .xlsx_preprocessor import _sheet_paths
 
 _DIMENSION_RE = re.compile(rb"<dimension\s+[^>]*ref=\"(?:[^:\"]+:)?([A-Z]+)([0-9]+)\"")
 _PPTX_SLIDE_RE = re.compile(r"^ppt/slides/slide[0-9]+\.xml$")
+_CORE_TITLE_TAG = "{http://purl.org/dc/elements/1.1/}title"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class ObservedSheet:
 class UploadMachineCard:
     file_type: str
     size_bytes: int
+    title: str | None = None
     sheet_count: int | None = None
     sheets: tuple[ObservedSheet, ...] = ()
     page_count: int | None = None
@@ -52,16 +54,25 @@ def inspect_upload_machine_card(path: Path, file_name: str) -> UploadMachineCard
             sheets=sheets or (),
         )
     if suffix == "pdf":
+        title, page_count = _pdf_metadata(path)
         return UploadMachineCard(
             file_type=suffix,
             size_bytes=size_bytes,
-            page_count=_pdf_page_count(path),
+            title=title,
+            page_count=page_count,
         )
     if suffix == "pptx":
         return UploadMachineCard(
             file_type=suffix,
             size_bytes=size_bytes,
+            title=_package_title(path),
             slide_count=_pptx_slide_count(path),
+        )
+    if suffix == "docx":
+        return UploadMachineCard(
+            file_type=suffix,
+            size_bytes=size_bytes,
+            title=_package_title(path),
         )
     return UploadMachineCard(file_type=suffix, size_bytes=size_bytes)
 
@@ -103,12 +114,23 @@ def _column_number(letters: str) -> int:
     return value
 
 
-def _pdf_page_count(path: Path) -> int | None:
+def _pdf_metadata(path: Path) -> tuple[str | None, int | None]:
     try:
         with fitz.open(path) as document:
-            return len(document)
+            title = str(document.metadata.get("title") or "").strip() or None
+            return title, len(document)
     except (OSError, RuntimeError, ValueError):
+        return None, None
+
+
+def _package_title(path: Path) -> str | None:
+    try:
+        with ZipFile(path) as archive:
+            root = fromstring(archive.read("docProps/core.xml"))
+    except (BadZipFile, KeyError, OSError, ParseError):
         return None
+    title = root.findtext(_CORE_TITLE_TAG)
+    return title.strip() if title and title.strip() else None
 
 
 def _pptx_slide_count(path: Path) -> int | None:

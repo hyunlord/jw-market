@@ -32,6 +32,7 @@ def test_upload_status_persists_across_registry_instances(tmp_path: Path) -> Non
                 file_name="report.pdf",
                 file_type="pdf",
                 size_bytes=456,
+                title="고지혈증 시장 보고서",
                 page_count=185,
             ),
         ),
@@ -61,6 +62,7 @@ def test_upload_status_persists_across_registry_instances(tmp_path: Path) -> Non
         UploadWorksheetCard("Raw", 12_269, 252),
     )
     assert reloaded.files[1].card is not None
+    assert reloaded.files[1].card.title == "고지혈증 시장 보고서"
     assert reloaded.files[1].card.page_count == 185
     assert registry.status_path("session-a", job.upload_id).stat().st_mode & 0o777 == 0o600
 

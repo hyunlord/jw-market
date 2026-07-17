@@ -183,6 +183,7 @@ def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
                 "file_name": "wide.xlsx",
                 "file_type": "xlsx",
                 "size_bytes": 17103441,
+                "title": "CHSO Sell Out Basic",
                 "sheet_count": 1,
                 "sheets": [
                     {
@@ -207,6 +208,7 @@ def test_accepted_upload_projection_exposes_only_polling_contract() -> None:
     assert projected["ready"] is False
     assert projected["message"] == "파일 확인 완료. 질문 준비를 진행하고 있습니다."
     assert projected["status_url"] == "/upload/status"
+    assert projected["file_cards"][0]["title"] == "CHSO Sell Out Basic"
     assert projected["file_cards"][0]["sheet_count"] == 1
     assert projected["file_cards"][0]["sheets"][0]["column_count"] == 252
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)

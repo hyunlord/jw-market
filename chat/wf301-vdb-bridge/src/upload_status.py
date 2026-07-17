@@ -60,6 +60,7 @@ class UploadFileCard:
     file_name: str
     file_type: str
     size_bytes: int
+    title: str | None = None
     sheet_count: int | None = None
     sheets: tuple[UploadWorksheetCard, ...] = ()
     page_count: int | None = None
@@ -311,6 +312,7 @@ class UploadStatusRegistry:
             file_name=str(value["file_name"]),
             file_type=str(value["file_type"]),
             size_bytes=int(value.get("size_bytes") or 0),
+            title=str(value["title"]) if value.get("title") is not None else None,
             sheet_count=(
                 int(value["sheet_count"])
                 if value.get("sheet_count") is not None

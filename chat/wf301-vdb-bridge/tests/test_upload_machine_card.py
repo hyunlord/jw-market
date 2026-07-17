@@ -32,6 +32,7 @@ def test_xlsx_card_reports_observed_sheet_dimensions(tmp_path: Path) -> None:
 def test_pdf_card_reports_page_count_without_reading_page_text(tmp_path: Path) -> None:
     path = tmp_path / "report.pdf"
     document = fitz.open()
+    document.set_metadata({"title": "고지혈증 시장 보고서"})
     document.new_page()
     document.new_page()
     document.save(path)
@@ -40,6 +41,7 @@ def test_pdf_card_reports_page_count_without_reading_page_text(tmp_path: Path) -
     card = inspect_upload_machine_card(path, "report.pdf")
 
     assert card.file_type == "pdf"
+    assert card.title == "고지혈증 시장 보고서"
     assert card.page_count == 2
     assert card.sheets == ()
 
@@ -47,6 +49,15 @@ def test_pdf_card_reports_page_count_without_reading_page_text(tmp_path: Path) -
 def test_pptx_card_counts_slides_from_package_members(tmp_path: Path) -> None:
     path = tmp_path / "brief.pptx"
     with ZipFile(path, "w") as archive:
+        archive.writestr(
+            "docProps/core.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <cp:coreProperties
+                xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                xmlns:dc="http://purl.org/dc/elements/1.1/">
+              <dc:title>리바로 전략 브리프</dc:title>
+            </cp:coreProperties>""",
+        )
         archive.writestr("ppt/slides/slide1.xml", "<slide />")
         archive.writestr("ppt/slides/slide2.xml", "<slide />")
         archive.writestr("ppt/notesSlides/notesSlide1.xml", "<notes />")
@@ -54,8 +65,31 @@ def test_pptx_card_counts_slides_from_package_members(tmp_path: Path) -> None:
     card = inspect_upload_machine_card(path, "brief.pptx")
 
     assert card.file_type == "pptx"
+    assert card.title == "리바로 전략 브리프"
     assert card.slide_count == 2
     assert card.page_count is None
+
+
+def test_docx_card_reports_package_title_without_reading_document_body(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "policy.docx"
+    with ZipFile(path, "w") as archive:
+        archive.writestr(
+            "docProps/core.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <cp:coreProperties
+                xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                xmlns:dc="http://purl.org/dc/elements/1.1/">
+              <dc:title>시장 분석 운영 지침</dc:title>
+            </cp:coreProperties>""",
+        )
+        archive.writestr("word/document.xml", "<document />")
+
+    card = inspect_upload_machine_card(path, "policy.docx")
+
+    assert card.file_type == "docx"
+    assert card.title == "시장 분석 운영 지침"
 
 
 def test_broken_package_returns_safe_minimal_card(tmp_path: Path) -> None:

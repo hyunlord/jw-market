@@ -105,6 +105,7 @@ def _inspect_saved_upload_card(
         file_name=Path(item.file_name).name,
         file_type=observed.file_type,
         size_bytes=observed.size_bytes,
+        title=observed.title,
         sheet_count=observed.sheet_count,
         sheets=tuple(
             StatusUploadWorksheetCard(
@@ -124,6 +125,7 @@ def _upload_card_payload(card: StatusUploadFileCard) -> dict[str, object]:
         "file_name": card.file_name,
         "file_type": card.file_type,
         "size_bytes": card.size_bytes,
+        "title": card.title,
         "sheet_count": card.sheet_count,
         "sheets": [
             {

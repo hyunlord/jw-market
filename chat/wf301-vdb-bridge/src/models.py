@@ -48,6 +48,7 @@ class UploadFileCard(BaseModel):
     file_name: str
     file_type: str
     size_bytes: int = 0
+    title: str | None = None
     sheet_count: int | None = None
     sheets: list[UploadWorksheetCard] = Field(default_factory=list)
     page_count: int | None = None
