@@ -161,6 +161,24 @@ def test_history_golden_acceptance_rejects_top5_aggregate_without_ranked_rows() 
     ) == (False, "missing top 5 ranked rows")
 
 
+def test_history_golden_acceptance_rejects_incorrect_top5_ranked_values() -> None:
+    incorrect_answer = (
+        "상위 5개 합계 시장점유율은 29.52%입니다.\n\n"
+        "| 순위 | 브랜드 | 점유율 | 매출 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1위 | 로수젯 | 9.13% | 195.24억원 |\n"
+        "| 2위 | 리피토 | 6.13% | 131.09억원 |\n"
+        "| 3위 | 잘못된브랜드 | 5.12% | 109.46억원 |\n"
+        "| 4위 | 아토젯 | 4.95% | 105.87억원 |\n"
+        "| 5위 | 로수바미브 | 4.20% | 0.00억원 |"
+    )
+
+    assert _history_golden_acceptance("M03", incorrect_answer) == (
+        False,
+        "incorrect top 5 ranked values",
+    )
+
+
 def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() -> None:
     assert _history_golden_acceptance(
         "H02",
