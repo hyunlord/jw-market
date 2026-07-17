@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from pipeline.scripts.ingest_hook import config, job_launcher
-from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
+from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import Ledger
 
 
@@ -30,10 +30,11 @@ class WebhookPayload(BaseModel):
 
 
 class IngestService:
-    def __init__(self, ledger: Ledger, input_root: Path, transport=None):
+    def __init__(self, ledger: Ledger, input_root: Path | None, transport=None, s3=None):
         self.ledger = ledger
         self.input_root = input_root
         self.transport = transport
+        self.s3 = s3
 
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
@@ -52,13 +53,22 @@ class IngestService:
         self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
 
-    def receive_webhook(self, manifest_path: str) -> dict:
+    def _read_manifest(self, manifest_path: str):
+        if self.s3 is not None:
+            key = manifest_path.lstrip("/")
+            try:
+                return parse_manifest_bytes(self.s3.read(key), manifest_path=key), key
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"manifest not found in bucket: {key}") from exc
         path = (self.input_root / manifest_path).resolve() if not Path(manifest_path).is_absolute() else Path(manifest_path).resolve()
         root = self.input_root.resolve()
         if root not in path.parents and path != root:
             raise HTTPException(status_code=400, detail="manifest_path escapes the input root")
+        return load_manifest(path), str(path)
+
+    def receive_webhook(self, manifest_path: str) -> dict:
         try:
-            manifest = load_manifest(path)
+            manifest, stored_path = self._read_manifest(manifest_path)
         except ContractError as exc:
             raise HTTPException(status_code=422, detail=f"contract violation: {exc}") from exc
         if not manifest.complete:
@@ -68,7 +78,7 @@ class IngestService:
             manifest.epoch,
             manifest.category,
             manifest.manifest_sha,
-            manifest_path=str(path),
+            manifest_path=stored_path,
             uploaded_by=manifest.uploaded_by,
         )
         launched = self.promote(manifest.category) if decision.action == "queued" else None
@@ -128,4 +138,6 @@ def build() -> FastAPI:
     # sqlite ledgers self-create; the mysql ingest_ledger DDL is applied
     # manually at activation (PL gate) — never implicitly from service boot.
     ledger = config.open_configured_ledger()
-    return create_app(IngestService(ledger, config.input_root()))
+    s3 = config.open_input_source()
+    input_root = None if s3 is not None else config.input_root()
+    return create_app(IngestService(ledger, input_root, s3=s3))

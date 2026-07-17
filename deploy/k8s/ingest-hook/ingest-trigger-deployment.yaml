@@ -40,8 +40,27 @@ spec:
             - --port
             - "8080"
           env:
-            - name: INGEST_INPUT_ROOT
-              value: /data/jw-input            # submission volume; PL pins the real mount on activation
+            # Submissions live in the MinIO market bucket (contract v2.1);
+            # same secret keys the portal uses. S3 mode makes INGEST_INPUT_ROOT unnecessary.
+            - name: INGEST_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: jw-data-portal-secrets
+                  key: MINIO_MARKET_BUCKET
+            - name: MINIO_ENDPOINT
+              value: "http://minio-service.llmops.svc.cluster.local:9000"
+            - name: MINIO_REGION
+              value: "us-east-1"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jw-data-portal-secrets
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jw-data-portal-secrets
+                  key: MINIO_SECRET_KEY
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT

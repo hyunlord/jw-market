@@ -31,8 +31,25 @@ spec:
                 - -m
                 - pipeline.scripts.ingest_hook.sweep
               env:
-                - name: INGEST_INPUT_ROOT
-                  value: /data/jw-input
+                - name: INGEST_S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-data-portal-secrets
+                      key: MINIO_MARKET_BUCKET
+                - name: MINIO_ENDPOINT
+                  value: "http://minio-service.llmops.svc.cluster.local:9000"
+                - name: MINIO_REGION
+                  value: "us-east-1"
+                - name: MINIO_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-data-portal-secrets
+                      key: MINIO_ACCESS_KEY
+                - name: MINIO_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-data-portal-secrets
+                      key: MINIO_SECRET_KEY
                 - name: MARIADB_HOST
                   value: llmops-mariadb-service.llmops.svc.cluster.local
                 - name: MARIADB_PORT

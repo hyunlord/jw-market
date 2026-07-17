@@ -17,27 +17,39 @@ from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.app import IngestService
-from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
+from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_RUNNING, Ledger
 
 MANIFEST_GLOB = "**/manifest*.json"
+S3_MANIFEST_PREFIX = "_manifests/"
+
+
+def _iter_manifests(input_root: Path | None, s3):
+    if s3 is not None:
+        for key in sorted(s3.list_keys(S3_MANIFEST_PREFIX)):
+            if key.endswith(".json"):
+                yield key, lambda key=key: parse_manifest_bytes(s3.read(key), manifest_path=key)
+        return
+    for path in sorted(input_root.glob(MANIFEST_GLOB)):
+        yield path, lambda path=path: load_manifest(path)
 
 
 def sweep(
     ledger: Ledger,
-    input_root: Path,
+    input_root: Path | None,
     *,
     transport=None,
     rehearsal_root: Path | None = None,
+    s3=None,
 ) -> dict:
     """Return {found, kicked, skipped} counts plus per-manifest actions."""
     actions: list[dict] = []
     kicked = 0
-    service = IngestService(ledger, input_root, transport=transport)
+    service = IngestService(ledger, input_root, transport=transport, s3=s3)
 
-    for manifest_path in sorted(input_root.glob(MANIFEST_GLOB)):
+    for manifest_path, loader in _iter_manifests(input_root, s3):
         try:
-            manifest = load_manifest(manifest_path)
+            manifest = loader()
         except ContractError as exc:
             actions.append({"path": str(manifest_path), "action": "invalid", "reason": str(exc)})
             continue
@@ -58,7 +70,7 @@ def sweep(
             manifest_path=str(manifest_path),
             uploaded_by=manifest.uploaded_by,
         )
-        if rehearsal_root is not None:
+        if rehearsal_root is not None and s3 is None:
             rc = job_runner.run(
                 manifest_path, input_root=input_root, ledger=ledger, rehearsal_root=rehearsal_root
             )
@@ -77,9 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rehearsal-root", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    input_root = args.input_root or config.input_root()
+    s3 = config.open_input_source()
+    input_root = None if s3 is not None else (args.input_root or config.input_root())
     ledger = config.open_configured_ledger()
-    result = sweep(ledger, input_root, rehearsal_root=args.rehearsal_root)
+    result = sweep(ledger, input_root, rehearsal_root=args.rehearsal_root, s3=s3)
     print(f"sweep found={result['found']} kicked={result['kicked']}")
     for action in result["actions"]:
         print(f"  {action}")

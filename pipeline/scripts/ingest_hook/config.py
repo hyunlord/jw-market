@@ -14,6 +14,7 @@ ENV_LEDGER_SQLITE = "INGEST_LEDGER_SQLITE"      # set => sqlite ledger (rehearsa
 ENV_JOB_IMAGE = "INGEST_JOB_IMAGE"
 ENV_JOB_NAMESPACE = "INGEST_JOB_NAMESPACE"
 ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mode
+# INGEST_S3_BUCKET (s3_input.ENV_BUCKET): set => submissions read from MinIO/S3
 
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
@@ -86,3 +87,10 @@ def open_mart_connection():
         database=resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
         charset="utf8mb4",
     )
+
+
+def open_input_source():
+    """S3Input when INGEST_S3_BUCKET is set (MinIO submissions), else None (local root)."""
+    from pipeline.scripts.ingest_hook.s3_input import S3Input
+
+    return S3Input.from_env()

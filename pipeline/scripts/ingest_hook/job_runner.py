@@ -146,8 +146,36 @@ def main(argv: list[str] | None = None) -> int:
 
     rehearsal_env = os.environ.get(config.ENV_REHEARSAL_ROOT, "")
     rehearsal_root = args.rehearsal_root or (Path(rehearsal_env) if rehearsal_env else None)
-    input_root = args.input_root or config.input_root()
     ledger = config.open_configured_ledger()
+
+    s3 = config.open_input_source()
+    if s3 is not None:
+        import tempfile
+
+        from pipeline.scripts.ingest_hook.contract import parse_manifest_bytes
+
+        workdir = Path(tempfile.mkdtemp(prefix="ingest_s3_"))
+        manifest_key = str(args.manifest).lstrip("/")
+        try:
+            manifest_bytes = s3.read(manifest_key)
+        except FileNotFoundError:
+            print(f"gate=contract status=fail reason=manifest not found in bucket: {manifest_key}", file=sys.stderr)
+            return 2
+        local_manifest = workdir / manifest_key
+        local_manifest.parent.mkdir(parents=True, exist_ok=True)
+        local_manifest.write_bytes(manifest_bytes)
+        try:
+            manifest = parse_manifest_bytes(manifest_bytes, manifest_path=manifest_key)
+            for entry in manifest.files:
+                try:
+                    s3.materialize([entry.path], workdir)
+                except FileNotFoundError:
+                    pass  # G3 reports the absence as a failure
+        except Exception:
+            pass  # contract failures surface in run()
+        return run(local_manifest, input_root=workdir, ledger=ledger, rehearsal_root=rehearsal_root)
+
+    input_root = args.input_root or config.input_root()
     return run(args.manifest, input_root=input_root, ledger=ledger, rehearsal_root=rehearsal_root)
 
 
