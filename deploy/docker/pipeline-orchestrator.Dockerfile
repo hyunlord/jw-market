@@ -27,7 +27,15 @@ RUN groupadd -g 3000 app \
 WORKDIR /app
 
 COPY pipeline/scripts/api/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && pip install --no-cache-dir "openpyxl>=3.1" "typer>=0.12" "requests>=2.31"
+
+# kubectl for the event-driven wake-ups (ETL kick / CSD sensor create Jobs
+# via the jw-pipeline-kicker ServiceAccount).
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl \
+    && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 COPY pipeline /app/pipeline
 COPY docs/crawl /app/docs/crawl

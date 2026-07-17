@@ -1,0 +1,86 @@
+# CSD arrival sensor (event-driven trigger, mode B: polling).
+#
+# Every 10 minutes: list jw-market-raw-iqvia/CSD/ChannelDynamics*, compare
+# against the processed marker, validate any new workbook's structure, and
+# only then create a brand-activity run Job (from the suspended
+# jw-brand-activity-run template). Registered suspended; resume is a PL gate.
+#
+# Mode A note (stage0_survey.md): MinIO supports notify_webhook but enabling
+# it is a platform-team change; if approved later, only this CronJob is
+# replaced by a webhook receiver - the validation gate and run Job stay.
+#
+# PL/platform follow-ups before resume:
+#   - scoped MinIO read-only user to replace the root secret reference
+#   - orchestrator image rebuild (kubectl + openpyxl now baked)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jw-csd-sensor-state
+  namespace: llmops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-csd-sensor
+  namespace: llmops
+spec:
+  schedule: "*/10 * * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 540
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: jw-pipeline-kicker
+          containers:
+            - name: sensor
+              # Same image lineage as the orchestrator; digest pinned at build time.
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator:PLACEHOLDER-EVENTDRIVEN
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /app/pipeline/scripts/etl/brand_activity/minio_csd_sensor.py
+              env:
+                - name: MINIO_ENDPOINT
+                  value: http://minio.llmops.svc.cluster.local:9000
+                # TODO(platform): replace root credentials with a scoped
+                # read-only MinIO user before resume.
+                - name: MINIO_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio
+                      key: root-user
+                - name: MINIO_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio
+                      key: root-password
+                - name: CSD_SENSOR_MARKER_FILE
+                  value: /var/lib/jw-pipeline/csd-sensor-marker.json
+                - name: CSD_SENSOR_RUN_CRONJOB
+                  value: jw-brand-activity-run
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 1Gi
+              volumeMounts:
+                - name: state
+                  mountPath: /var/lib/jw-pipeline
+          volumes:
+            - name: state
+              persistentVolumeClaim:
+                claimName: jw-csd-sensor-state

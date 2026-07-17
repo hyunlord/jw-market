@@ -1,0 +1,106 @@
+# Brand-activity run template (triggered by the CSD sensor, never by clock).
+#
+# The schedule below never fires (Feb 30); the only intended invocation is
+# `kubectl create job --from=cronjob/jw-brand-activity-run <name>` issued by
+# the sensor AFTER the structure-validation gate passes. suspend stays true
+# as a second latch until PL approves cutover.
+#
+# Chain (repo-canonical): materialize CSD workbooks from MinIO ->
+# ingest_csd into the isolated stage schema (jw_brand_activity_stage) ->
+# auto-topic -> row-topic. The topic/row-topic steps require GenOS credentials
+# (GENOS_BEARER_TOKEN secret) and PL-confirmed call budgets; they run with
+# explicit bounds and stop the chain on failure.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-brand-activity-run
+  namespace: llmops
+spec:
+  schedule: "0 0 30 2 *"  # never fires; sensor-created Jobs only
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: brand-activity
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator:PLACEHOLDER-EVENTDRIVEN
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -lc
+              args:
+                - |
+                  set -eu
+                  cd /app
+                  RUN_TAG=$(date -u +%Y%m%d%H%M%S)
+                  SRC=/tmp/csd-src/CSD/ChannelDynamics
+                  mkdir -p "$SRC"
+                  python pipeline/scripts/etl/brand_activity/minio_csd_sensor.py \
+                    --download-new-to "$SRC"
+                  python pipeline/scripts/etl/brand_activity/ingest_csd.py \
+                    --source-root /tmp/csd-src \
+                    --audit-dir /tmp/csd-audit \
+                    --output-dir /tmp/csd-out \
+                    --expected-months ${CSD_EXPECTED_MONTHS} \
+                    --db-load \
+                    --stage-schema jw_brand_activity_stage \
+                    --db-host "$MARIADB_HOST" --db-port "$MARIADB_PORT" \
+                    --db-user "$MARIADB_USER" --db-password-env MARIADB_PASSWORD
+                  python -m pipeline.scripts.analysis.brand_activity.auto_topic.run_auto_topic \
+                    --execute --tag "csd-$RUN_TAG" --max-real-calls "${TOPIC_MAX_REAL_CALLS}"
+                  python -m pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_execute \
+                    execute --schema jw_brand_activity_stage \
+                    --checkpoint /tmp/row_topic_checkpoint.jsonl \
+                    --log /tmp/row_topic_log.jsonl
+              env:
+                - name: MINIO_ENDPOINT
+                  value: http://minio.llmops.svc.cluster.local:9000
+                - name: MINIO_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio
+                      key: root-user
+                - name: MINIO_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio
+                      key: root-password
+                - name: MARIADB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: MARIADB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+                # PL sets the month window and call budget before cutover.
+                - name: CSD_EXPECTED_MONTHS
+                  value: ""
+                - name: TOPIC_MAX_REAL_CALLS
+                  value: "86"
+                - name: GENOS_BEARER_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-genos-bearer
+                      key: token
+                      optional: true
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 2Gi
+                limits:
+                  cpu: "2"
+                  memory: 6Gi
