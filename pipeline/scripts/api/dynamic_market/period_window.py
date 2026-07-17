@@ -41,7 +41,12 @@ _PREDECODED_ROW_SERIES_FIELDS: Final[frozenset[str]] = frozenset(
 _PeriodBounds = tuple[int | None, int | None]
 
 
-def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRange) -> list[dict[str, Any]]:
+def trim_period_rows(
+    rows: Sequence[Mapping[str, Any]],
+    period_range: PeriodRange,
+    *,
+    materialize_predecoded_fields: bool = True,
+) -> list[dict[str, Any]]:
     """Copy mart rows while projecting known time-series fields to the requested window."""
 
     copied = [dict(row) for row in rows]
@@ -57,6 +62,8 @@ def trim_period_rows(rows: Sequence[Mapping[str, Any]], period_range: PeriodRang
                 if field in _PREDECODED_ROW_SERIES_FIELDS
                 else None
             )
+            if decoded_value is not None and not materialize_predecoded_fields:
+                continue
             row[field] = _trim_encoded_value(row[field], bounds, decoded_value)
         row.pop("__metric_history", None)
         row.pop("__extended_metric_history", None)

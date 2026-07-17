@@ -107,6 +107,35 @@ def test_trim_period_rows_reuses_predecoded_dimension_series(monkeypatch) -> Non
         assert result[f"__{field}"] is decoded
 
 
+def test_trim_period_rows_can_defer_materializing_predecoded_dimension_series() -> None:
+    period_series = {
+        "class": {
+            "JW": {
+                "2025-01": {"raw_value": 1.0},
+                "2026-01": {"raw_value": 2.0},
+            }
+        }
+    }
+    row = {
+        "dimension_data": "{}",
+        "dimension_channel_data": "{}",
+        "dimension_specialty_data": "{}",
+        "__dimension_data": period_series,
+        "__dimension_channel_data": period_series,
+        "__dimension_specialty_data": period_series,
+    }
+
+    result = trim_period_rows(
+        [row],
+        PeriodRange("2025-01", "2025-12"),
+        materialize_predecoded_fields=False,
+    )[0]
+
+    for field in ("dimension_data", "dimension_channel_data", "dimension_specialty_data"):
+        assert result[field] == "{}"
+        assert result[f"__{field}"] is period_series
+
+
 def test_unbounded_period_range_preserves_payload_byte_shape() -> None:
     raw = json.dumps({"2025-01": 1.0}, separators=(",", ":"))
     rows = [{"metric_history": raw}]
