@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 from jw_chat_agent_poc.common import timing
@@ -277,3 +278,131 @@ def test_deep_stream_has_distinct_public_progress_without_internal_names(monkeyp
     assert "get_metric" not in public_text
     assert "search_clinical" not in public_text
     assert "web_search" not in public_text
+
+
+def _verified_external_result() -> dict:
+    return {
+        "answer": "최종 분석입니다.",
+        "sources": ["ClinicalTrials.gov", "식약처"],
+        "tool_calls": [
+            {
+                "tool": "clinicaltrials_v2_search",
+                "status": "live",
+                "render_data": {"ok": True, "evidence": [{"metric": "글로벌 임상시험"}]},
+            },
+            {
+                "tool": "mfds_permission_search",
+                "status": "live",
+                "render_data": {"ok": True, "items": [{"item_name": "리바로정"}]},
+            },
+        ],
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+    }
+
+
+def test_verified_evidence_prefix_uses_only_successful_user_facing_sources() -> None:
+    result = _verified_external_result()
+    result["tool_calls"].extend(
+        [
+            {
+                "tool": "openfda_label_search",
+                "status": "error",
+                "render_data": {"ok": False, "evidence": []},
+            },
+            {
+                "tool": "local_molecule_lookup",
+                "status": "live",
+                "render_data": {"ok": True, "evidence": [{"metric": "성분"}]},
+            },
+        ]
+    )
+
+    prefix = service_app._verified_evidence_prefix(result)
+
+    assert prefix == (
+        "임상시험·허가 근거를 확인했습니다. "
+        "확인된 자료를 종합해 답변을 정리하고 있어요."
+    )
+    assert "clinicaltrials" not in prefix
+    assert "mfds" not in prefix
+    assert "openfda" not in prefix
+    assert "성분" not in prefix
+    final_text = service_app._prepend_verified_evidence_prefix("최종 분석입니다.", result)
+    assert final_text.startswith(prefix)
+    assert service_app._prepend_verified_evidence_prefix(final_text, result) == final_text
+
+
+def test_verified_evidence_prefix_rejects_empty_failed_and_non_external_results() -> None:
+    empty = _verified_external_result()
+    empty["tool_calls"] = [
+        {
+            "tool": "clinicaltrials_v2_search",
+            "status": "error",
+            "render_data": {"ok": False, "evidence": []},
+        }
+    ]
+    market = _verified_external_result()
+    market["router_diagnostics"] = {"mode": "agent_loop"}
+    deep = _verified_external_result()
+    deep["research_mode"] = "deep"
+
+    assert service_app._verified_evidence_prefix(empty) == ""
+    assert service_app._verified_evidence_prefix(market) == ""
+    assert service_app._verified_evidence_prefix(deep) == ""
+
+
+def test_verified_evidence_prefix_streams_before_slow_final_synthesis(monkeypatch) -> None:
+    compute_started = threading.Event()
+    compute_finished = threading.Event()
+
+    def answer_question(*args, **kwargs):
+        return {
+            "question": "리바로 임상과 허가",
+            "result": _verified_external_result(),
+            "conversation_id": "c",
+        }
+
+    def compute_final_answer(*args):
+        compute_started.set()
+        time.sleep(0.15)
+        compute_finished.set()
+        prefix = service_app._verified_evidence_prefix(args[1])
+        return service_app.FinalAnswer(
+            text=f"{prefix}\n\n최종 분석입니다.",
+            charts=[],
+            timing={},
+            trace={},
+            sources=("ClinicalTrials.gov", "식약처"),
+            conversation_id="c",
+        )
+
+    monkeypatch.setattr(service_app, "_answer_question", answer_question)
+    monkeypatch.setattr(service_app, "compute_final_answer", compute_final_answer)
+
+    stream = _stream_resolving_session_events(
+        SessionStore(),
+        object(),
+        object(),
+        "리바로 임상과 허가",
+        "live",
+        None,
+        limiter=None,
+    )
+    first_delta = None
+    events: list[str] = []
+    for event in stream:
+        events.append(event)
+        if event.startswith("event: delta\n"):
+            first_delta = event
+            break
+
+    assert first_delta is not None
+    assert "임상시험·허가 근거를 확인했습니다" in first_delta
+    assert compute_started.is_set() is False
+    assert compute_finished.is_set() is False
+
+    events.extend(stream)
+    rendered = "".join(events)
+    assert compute_started.is_set() is True
+    assert compute_finished.is_set() is True
+    assert rendered.count("임상시험·허가 근거를 확인했습니다") == 1

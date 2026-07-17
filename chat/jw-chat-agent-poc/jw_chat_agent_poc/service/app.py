@@ -1567,7 +1567,7 @@ def _stream_resolving_session_events(
                         use_direct_agent_loop=use_direct_agent_loop,
                         timing_sink=emit_step,
                     )
-                    streamed_prefix = _file_ready_prefix(item["result"])
+                    streamed_prefix = _stream_ready_prefix(item["result"])
                     if streamed_prefix:
                         prefix_emitted = threading.Event()
                         events.put(
@@ -1720,7 +1720,7 @@ def _sse_events(
     if limiter is not None and not limiter.try_acquire():
         yield from _sse_busy_events()
         return
-    streamed_prefix = _file_ready_prefix(result)
+    streamed_prefix = _stream_ready_prefix(result)
     if streamed_prefix:
         yield from _sse_initial_text_events(
             conversation_id=conversation_id,
@@ -1758,6 +1758,65 @@ def _file_ready_prefix(result: dict[str, Any]) -> str:
     if not result.get("file_only_ready"):
         return ""
     return cleanup_markdown_answer(str(result.get("answer") or ""))
+
+
+_VERIFIED_EVIDENCE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("임상시험", ("clinicaltrials_", "mfds_clinical_", "search_clinical")),
+    ("허가", ("mfds_permission_", "search_drug_info")),
+    ("안전성", ("openfda_", "search_safety")),
+    ("환자수", ("hira_", "get_disease_stats")),
+    ("최신 자료", ("web_search", "search_news")),
+)
+
+
+def _stream_ready_prefix(result: dict[str, Any]) -> str:
+    return _file_ready_prefix(result) or _verified_evidence_prefix(result)
+
+
+def _verified_evidence_prefix(result: dict[str, Any]) -> str:
+    if result.get("research_mode") == "deep":
+        return ""
+    if result.get("context_scope") in {ContextScope.FILE.value, ContextScope.MIXED.value}:
+        return ""
+    diagnostics = result.get("router_diagnostics")
+    if not isinstance(diagnostics, dict) or diagnostics.get("mode") != "tool_use_agent":
+        return ""
+
+    completed_groups: list[str] = []
+    calls = result.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+    for label, tool_prefixes in _VERIFIED_EVIDENCE_GROUPS:
+        if any(
+            isinstance(call, dict)
+            and str(call.get("tool") or "").startswith(tool_prefixes)
+            and _call_has_verified_evidence(call)
+            for call in calls
+        ):
+            completed_groups.append(label)
+    if not completed_groups:
+        return ""
+    joined = "·".join(completed_groups)
+    return f"{joined} 근거를 확인했습니다. 확인된 자료를 종합해 답변을 정리하고 있어요."
+
+
+def _call_has_verified_evidence(call: dict[str, Any]) -> bool:
+    if str(call.get("status") or "").lower() in {"error", "failed", "unavailable"}:
+        return False
+    data = call.get("render_data")
+    if not isinstance(data, dict) or data.get("ok") is False:
+        return False
+    return any(
+        isinstance(data.get(key), (list, tuple)) and bool(data[key])
+        for key in ("evidence", "items", "rows")
+    )
+
+
+def _prepend_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> str:
+    prefix = _verified_evidence_prefix(result)
+    if not prefix or answer.startswith(prefix):
+        return answer
+    return f"{prefix}\n\n{answer}" if answer else prefix
 
 
 def _sse_initial_text_events(
@@ -2071,6 +2130,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
         safe_answer = ensure_deep_research_structure(safe_answer)
     safe_answer = scrub_internal_terminology(safe_answer)
+    safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
     trace = trace_envelope(
         question=question,
         result=result,
