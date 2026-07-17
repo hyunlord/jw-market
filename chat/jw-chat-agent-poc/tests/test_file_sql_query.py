@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from jw_chat_agent_poc.orchestrator.provenance_facts import (
     provenance_row_from_file_context,
@@ -27,6 +28,115 @@ PUBLIC_FILE_SQL_SOURCE = {
     "column_count": 252,
     "file_name": "survey_raw.xlsx",
 }
+
+
+def test_file_sql_select_retries_one_transient_transport_failure(monkeypatch) -> None:
+    calls = 0
+
+    def post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise requests.ConnectionError("transient file SQL connection failure")
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "columns": ["total_value", "applied_rows"],
+                "rows": [[386_933_825_518, 12_268]],
+            },
+        )
+
+    monkeypatch.setattr(file_sql_query.requests, "post", post)
+
+    result = file_sql_query._run_query(
+        "conversation-1",
+        "doc-91:sheet-1",
+        "SELECT SUM(c72) AS total_value, COUNT(*) AS applied_rows FROM data",
+    )
+
+    assert calls == 2
+    assert result["rows"] == [[386_933_825_518, 12_268]]
+
+
+def test_file_sql_select_does_not_retry_client_error(monkeypatch) -> None:
+    calls = 0
+    response = SimpleNamespace(status_code=400)
+
+    def post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            raise_for_status=lambda: (_ for _ in ()).throw(
+                requests.HTTPError("invalid query", response=response)
+            )
+        )
+
+    monkeypatch.setattr(file_sql_query.requests, "post", post)
+
+    with pytest.raises(requests.HTTPError):
+        file_sql_query._run_query(
+            "conversation-1",
+            "doc-91:sheet-1",
+            "SELECT SUM(c72) AS total_value, COUNT(*) AS applied_rows FROM data",
+        )
+
+    assert calls == 1
+
+
+def test_file_sql_select_retries_server_error(monkeypatch) -> None:
+    calls = 0
+    server_error_response = SimpleNamespace(status_code=503)
+
+    def post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(
+                raise_for_status=lambda: (_ for _ in ()).throw(
+                    requests.HTTPError(
+                        "file SQL unavailable",
+                        response=server_error_response,
+                    )
+                )
+            )
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "columns": ["total_value", "applied_rows"],
+                "rows": [[386_933_825_518, 12_268]],
+            },
+        )
+
+    monkeypatch.setattr(file_sql_query.requests, "post", post)
+
+    result = file_sql_query._run_query(
+        "conversation-1",
+        "doc-91:sheet-1",
+        "SELECT SUM(c72) AS total_value, COUNT(*) AS applied_rows FROM data",
+    )
+
+    assert calls == 2
+    assert result["rows"] == [[386_933_825_518, 12_268]]
+
+
+def test_file_sql_select_fails_closed_after_second_transport_failure(monkeypatch) -> None:
+    calls = 0
+
+    def post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise requests.ConnectionError("persistent file SQL connection failure")
+
+    monkeypatch.setattr(file_sql_query.requests, "post", post)
+
+    with pytest.raises(requests.ConnectionError):
+        file_sql_query._run_query(
+            "conversation-1",
+            "doc-91:sheet-1",
+            "SELECT SUM(c72) AS total_value, COUNT(*) AS applied_rows FROM data",
+        )
+
+    assert calls == 2
 
 
 def _data_row_count_query_only(

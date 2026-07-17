@@ -1415,16 +1415,29 @@ def _run_query(
     logical_name: str,
     sql: str,
 ) -> dict[str, Any]:
-    response = requests.post(
-        f"{_file_service_base_url()}/file-sql/query",
-        json=_session_payload(
-            conversation_id,
-            logical_name=logical_name,
-            sql=sql,
-        ),
-        timeout=_file_service_timeout(),
-    )
-    response.raise_for_status()
+    response = None
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                f"{_file_service_base_url()}/file-sql/query",
+                json=_session_payload(
+                    conversation_id,
+                    logical_name=logical_name,
+                    sql=sql,
+                ),
+                timeout=_file_service_timeout(),
+            )
+            response.raise_for_status()
+            break
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == 1:
+                raise
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 0
+            if attempt == 1 or status_code < 500:
+                raise
+    if response is None:
+        raise RuntimeError("file SQL query did not produce a response")
     body = response.json()
     if not isinstance(body, dict):
         raise ValueError("file SQL query response must be an object")
