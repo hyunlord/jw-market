@@ -42,6 +42,11 @@ CHANNEL_PARAPHRASE_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("Q07_CHANNEL_MIX", "리바로 채널 mix"),
     ("Q07_CHANNEL_COMPOSITION", "리바로 채널 구성"),
 )
+FRESH_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
+    ("F01", "2025년 2분기 매출 얼마야"),
+    ("F02", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+    ("F03", "리바로 최근 매출 추이 어때"),
+)
 HISTORY_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("H01", "뇌경색 임상·허가 경쟁약물"),
     ("H02", "2025년 2분기 매출 얼마야"),
@@ -259,6 +264,8 @@ def _http_sse(
 
 def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     requirements = {
+        "F01": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
+        "F02": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
         "H02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
         "H03": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
         "M02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
@@ -522,6 +529,8 @@ def _mark(value: bool) -> str:
 def _capture_questions(name: str) -> tuple[tuple[str, str], ...]:
     if name == "channel":
         return CHANNEL_PARAPHRASE_QUESTIONS
+    if name == "fresh":
+        return FRESH_GOLDEN_QUESTIONS
     if name == "history":
         return HISTORY_GOLDEN_QUESTIONS
     if name == "mode-transition":
@@ -536,7 +545,7 @@ def main() -> int:
     capture_parser.add_argument("--out-dir", type=Path, required=True)
     capture_parser.add_argument("--external-mode", default="live")
     capture_parser.add_argument("--base-url", help="Capture deployed /chat/stream SSE instead of local service trace.")
-    question_sets = ("core", "channel", "history", "mode-transition")
+    question_sets = ("core", "channel", "fresh", "history", "mode-transition")
     capture_parser.add_argument("--question-set", choices=question_sets, default="core")
     capture_parser.add_argument(
         "--conversation-id",

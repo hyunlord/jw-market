@@ -6,6 +6,7 @@ from pathlib import Path
 from scripts.fact_scoreboard.sse import parse_sse_file
 from scripts.parity_harness import (
     CHANNEL_PARAPHRASE_QUESTIONS,
+    FRESH_GOLDEN_QUESTIONS,
     HISTORY_GOLDEN_QUESTIONS,
     MODE_TRANSITION_GOLDEN_QUESTIONS,
     _history_golden_acceptance,
@@ -62,6 +63,15 @@ def test_parity_harness_registers_channel_paraphrases() -> None:
     assert "리바로 채널" in questions
     assert "리바로 의원/병원별 실적" in questions
     assert _capture_questions("channel") == CHANNEL_PARAPHRASE_QUESTIONS
+
+
+def test_parity_harness_registers_fresh_goldens() -> None:
+    assert _capture_questions("fresh") == FRESH_GOLDEN_QUESTIONS
+    assert FRESH_GOLDEN_QUESTIONS == (
+        ("F01", "2025년 2분기 매출 얼마야"),
+        ("F02", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+        ("F03", "리바로 최근 매출 추이 어때"),
+    )
 
 
 def test_parity_harness_registers_history_goldens() -> None:
@@ -127,6 +137,8 @@ def test_history_golden_acceptance_requires_live_values() -> None:
     )
     assert _history_golden_acceptance("M02", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
     assert _history_golden_acceptance("M03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+    assert _history_golden_acceptance("F01", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
+    assert _history_golden_acceptance("F02", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:
