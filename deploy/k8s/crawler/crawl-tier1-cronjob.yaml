@@ -247,4 +247,6 @@ spec:
           terminationGracePeriodSeconds: 30
   schedule: 10 18 * * *
   successfulJobsHistoryLimit: 3
-  suspend: true
+  # Cutover resume (2026-07-17, PL (b) + jw market delegation): the redesigned
+  # rev5674 path takes over the daily 18:10 UTC schedule in place.
+  suspend: false

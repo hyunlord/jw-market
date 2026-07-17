@@ -19,7 +19,8 @@ def test_tier1_manifest_uses_rev5674_marker_and_redesigned_path() -> None:
     assert "--months 1" in manifest
     assert "PRESEED_URL_COUNT" in manifest
     assert "CANDIDATE_GATE" in manifest
-    assert "suspend: true" in manifest
+    # Cutover executed 2026-07-17: the redesigned tier1 path is live.
+    assert "suspend: false" in manifest
 
 
 def test_tier2_manifest_pins_ga_workflow_and_stays_active() -> None:
