@@ -158,6 +158,7 @@ def capture_p0g_suite(
     *,
     history_conversation_id: str | None = None,
     max_general_elapsed_ms: float = 10_000.0,
+    portal_equivalent: bool = False,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenarios = (
@@ -190,12 +191,31 @@ def capture_p0g_suite(
                 "latency_failures": latency_failures,
             }
         )
+    qualification_failures: list[str] = []
+    if not portal_equivalent:
+        qualification_failures.append("portal-equivalent entry path was not declared")
+    if portal_equivalent and not base_url:
+        qualification_failures.append("portal-equivalent evidence requires a deployed base URL")
+    if not history_conversation_id:
+        qualification_failures.append("uploaded-file history conversation ID was not supplied")
+    report = {
+        "evidence_context": {
+            "transport": "direct-chat-sse" if base_url else "local-inprocess",
+            "portal_equivalent_declared": portal_equivalent,
+            "history_conversation_id_supplied": bool(history_conversation_id),
+        },
+        "qualification_failures": qualification_failures,
+        "scenarios": summary,
+    }
     (out_dir / "p0g_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2),
+        json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(json.dumps({"p0g": summary}, ensure_ascii=False), flush=True)
-    return 0 if all(item["status"] == 0 and not item["latency_failures"] for item in summary) else 1
+    print(json.dumps({"p0g": report}, ensure_ascii=False), flush=True)
+    return 0 if (
+        not qualification_failures
+        and all(item["status"] == 0 and not item["latency_failures"] for item in summary)
+    ) else 1
 
 
 def diff_captures(
@@ -602,7 +622,12 @@ def main() -> int:
     p0g_parser = sub.add_parser("capture-p0g")
     p0g_parser.add_argument("--out-dir", type=Path, required=True)
     p0g_parser.add_argument("--external-mode", default="live")
-    p0g_parser.add_argument("--base-url", help="Portal-equivalent /chat/stream base URL.")
+    p0g_parser.add_argument("--base-url", help="Deployed /chat/stream base URL.")
+    p0g_parser.add_argument(
+        "--portal-equivalent",
+        action="store_true",
+        help="Declare that the supplied endpoint and payload path match the portal path under release review.",
+    )
     p0g_parser.add_argument(
         "--history-conversation-id",
         help="Existing session containing an uploaded file and unrelated prior turns.",
@@ -644,6 +669,7 @@ def main() -> int:
             args.base_url,
             history_conversation_id=args.history_conversation_id,
             max_general_elapsed_ms=args.max_general_elapsed_ms,
+            portal_equivalent=args.portal_equivalent,
         )
     if args.command == "diff":
         return diff_captures(
