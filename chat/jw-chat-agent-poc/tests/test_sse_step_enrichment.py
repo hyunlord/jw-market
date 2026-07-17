@@ -320,7 +320,7 @@ def test_verified_evidence_prefix_uses_only_successful_user_facing_sources() -> 
     prefix = service_app._verified_evidence_prefix(result)
 
     assert prefix == (
-        "임상시험·허가 근거를 확인했습니다. "
+        "임상시험 1건·허가 1건의 근거를 확인했습니다. "
         "확인된 자료를 종합해 답변을 정리하고 있어요."
     )
     assert "clinicaltrials" not in prefix
@@ -330,6 +330,38 @@ def test_verified_evidence_prefix_uses_only_successful_user_facing_sources() -> 
     final_text = service_app._prepend_verified_evidence_prefix("최종 분석입니다.", result)
     assert final_text.startswith(prefix)
     assert service_app._prepend_verified_evidence_prefix(final_text, result) == final_text
+
+
+def test_verified_evidence_prefix_counts_nested_results_without_double_counting() -> None:
+    result = _verified_external_result()
+    result["tool_calls"] = [
+        {
+            "tool": "clinicaltrials_v2_search",
+            "status": "live",
+            "render_data": {
+                "payload": {
+                    "studies": [
+                        {"nctId": "NCT001"},
+                        {"nctId": "NCT002"},
+                    ]
+                }
+            },
+        },
+        {
+            "tool": "clinicaltrials_v2_search",
+            "status": "live",
+            "render_data": {
+                "payload": {
+                    "studies": [
+                        {"nctId": "NCT002"},
+                        {"nctId": "NCT003"},
+                    ]
+                }
+            },
+        },
+    ]
+
+    assert service_app._verified_evidence_prefix(result).startswith("임상시험 3건의 근거")
 
 
 def test_verified_evidence_prefix_rejects_empty_failed_and_non_external_results() -> None:
@@ -397,7 +429,7 @@ def test_verified_evidence_prefix_streams_before_slow_final_synthesis(monkeypatc
             break
 
     assert first_delta is not None
-    assert "임상시험·허가 근거를 확인했습니다" in first_delta
+    assert "임상시험 1건·허가 1건의 근거를 확인했습니다" in first_delta
     assert compute_started.is_set() is False
     assert compute_finished.is_set() is False
 
@@ -405,4 +437,4 @@ def test_verified_evidence_prefix_streams_before_slow_final_synthesis(monkeypatc
     rendered = "".join(events)
     assert compute_started.is_set() is True
     assert compute_finished.is_set() is True
-    assert rendered.count("임상시험·허가 근거를 확인했습니다") == 1
+    assert rendered.count("임상시험 1건·허가 1건의 근거를 확인했습니다") == 1

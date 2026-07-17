@@ -1787,29 +1787,38 @@ def _verified_evidence_prefix(result: dict[str, Any]) -> str:
     if not isinstance(calls, list):
         return ""
     for label, tool_prefixes in _VERIFIED_EVIDENCE_GROUPS:
-        if any(
-            isinstance(call, dict)
-            and str(call.get("tool") or "").startswith(tool_prefixes)
-            and _call_has_verified_evidence(call)
+        evidence = {
+            json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
             for call in calls
-        ):
-            completed_groups.append(label)
+            if isinstance(call, dict)
+            and str(call.get("tool") or "").startswith(tool_prefixes)
+            for item in _verified_evidence_items(call)
+        }
+        if evidence:
+            completed_groups.append(f"{label} {len(evidence)}건")
     if not completed_groups:
         return ""
     joined = "·".join(completed_groups)
-    return f"{joined} 근거를 확인했습니다. 확인된 자료를 종합해 답변을 정리하고 있어요."
+    return f"{joined}의 근거를 확인했습니다. 확인된 자료를 종합해 답변을 정리하고 있어요."
 
 
-def _call_has_verified_evidence(call: dict[str, Any]) -> bool:
+def _verified_evidence_items(call: dict[str, Any]) -> tuple[Any, ...]:
     if str(call.get("status") or "").lower() in {"error", "failed", "unavailable"}:
-        return False
+        return ()
     data = call.get("render_data")
     if not isinstance(data, dict) or data.get("ok") is False:
-        return False
-    return any(
-        isinstance(data.get(key), (list, tuple)) and bool(data[key])
-        for key in ("evidence", "items", "rows")
-    )
+        return ()
+    for key in ("evidence", "items", "rows"):
+        items = data.get(key)
+        if isinstance(items, (list, tuple)) and items:
+            return tuple(items)
+    payload = data.get("payload")
+    if isinstance(payload, dict):
+        for key in ("studies", "results", "items"):
+            items = payload.get(key)
+            if isinstance(items, (list, tuple)) and items:
+                return tuple(items)
+    return ()
 
 
 def _prepend_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> str:
