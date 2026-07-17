@@ -75,7 +75,10 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
         "2025-11",
         "2025-12",
     ]
-    assert any(params == ("LIVALO Market", "GH+SHPPI") for params in captured_params)
+    assert any(
+        params == ("LIVALO Market", "GH+SHPPI", "2025-01", "2025-12")
+        for params in captured_params
+    )
     selected = payload["entities"][0]
     assert selected["key"] == "JW"
     assert selected["is_selected"] is True
@@ -83,6 +86,36 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
     assert {"period": "2025-10", "value": 23.52941176470588} in selected["activity"]["share_pct"]
     assert {"period": "2025-10", "value": 2} in selected["activity"]["rank"]
     assert {"period": "2025-11", "value": 0.0} in selected["activity"]["absolute"]
+
+
+def test_activity_query_is_bounded_to_requested_months(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, tuple[Any, ...] | None]] = []
+
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        captured.append((sql, params))
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": period} for period in _months()]
+        if "GROUP BY market, master_product" in sql:
+            return [{"market": "LIVALO Market", "master_product": product} for product in ("LIVALO", "A", "B", "C")]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            return _activity_rows()
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+
+    payload = service.get_csd_activity_series(
+        _request(period={"start": "2025-Q2", "end": "2025-Q3"})
+    )
+
+    assert payload is not None
+    activity_sql, activity_params = next(
+        (sql, params)
+        for sql, params in captured
+        if "GROUP BY period_ym, master_product, representing_company" in sql
+    )
+    assert "period_ym BETWEEN %s AND %s" in activity_sql
+    assert activity_params == ("LIVALO Market", "TOTAL", "2025-04", "2025-09")
 
 
 def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypatch) -> None:

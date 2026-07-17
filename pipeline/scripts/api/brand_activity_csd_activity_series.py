@@ -92,7 +92,7 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
     primary_totals: dict[str, float] = {}
     for item in selected_crosswalks:
         activity = _activity_rows(
-            _fetch_activity_rows(item, request.csd_channel),
+            _fetch_activity_rows(item, request.csd_channel, activity_months),
             activity_months,
             all_months,
         )
@@ -147,8 +147,15 @@ def _brand_set_filter_payload(request: ParsedCsdActivityRequest) -> JsonMap:
     return request.filter_payload
 
 
-def _fetch_activity_rows(crosswalk: CsdCrosswalk, csd_channel: str) -> list[JsonMap]:
-    return db.fetch_all(_sql_csd_activity(), (crosswalk.market, csd_channel))
+def _fetch_activity_rows(
+    crosswalk: CsdCrosswalk,
+    csd_channel: str,
+    activity_months: tuple[str, ...],
+) -> list[JsonMap]:
+    return db.fetch_all(
+        _sql_csd_activity(),
+        (crosswalk.market, csd_channel, activity_months[0], activity_months[-1]),
+    )
 
 
 def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tuple[str, ...]) -> ActivityRows:
@@ -305,5 +312,6 @@ def _sql_csd_activity() -> str:
         SELECT period_ym, master_product, representing_company, SUM(product_details) AS value
         FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage`
         WHERE market = %s AND jw_channel = %s
+          AND period_ym BETWEEN %s AND %s
         GROUP BY period_ym, master_product, representing_company
     """
