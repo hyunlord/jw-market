@@ -199,12 +199,14 @@ def capture_p0g_suite(
             and float(row.get("elapsed_ms", float("inf"))) > max_general_elapsed_ms
         ]
         route_contamination_failures = _p0g_route_contamination_failures(rows)
+        step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
         summary.append(
             {
                 "scenario": name,
                 "status": status,
                 "latency_failures": latency_failures,
                 "route_contamination_failures": route_contamination_failures,
+                "step_evidence_failures": step_evidence_failures,
             }
         )
     qualification_failures: list[str] = []
@@ -258,6 +260,7 @@ def capture_p0g_suite(
             item["status"] == 0
             and not item["latency_failures"]
             and not item["route_contamination_failures"]
+            and not item["step_evidence_failures"]
             for item in summary
         )
     ) else 1
@@ -281,6 +284,21 @@ def _p0g_route_contamination_failures(rows: list[dict[str, Any]]) -> dict[str, l
                 forbidden.append(name)
         if forbidden:
             failures[qid] = forbidden
+    return failures
+
+
+def _p0g_missing_step_evidence(rows: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    for row in rows:
+        qid = str(row.get("qid", ""))
+        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+            continue
+        steps = row.get("steps", ())
+        if not isinstance(steps, (list, tuple)) or not any(
+            isinstance(step, dict) and str(step.get("name", "")).strip()
+            for step in steps
+        ):
+            failures.append(qid)
     return failures
 
 
