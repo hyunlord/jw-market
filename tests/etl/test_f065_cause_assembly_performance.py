@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+from copy import deepcopy
 import inspect
 import json
 from pathlib import Path
@@ -26,6 +27,16 @@ class CountingHistory(dict[str, dict[str, float]]):
     def items(self):  # type: ignore[override]
         self.items_calls += 1
         return super().items()
+
+
+class CountingRows(list[dict[str, Any]]):
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows)
+        self.iterations = 0
+
+    def __iter__(self):  # type: ignore[override]
+        self.iterations += 1
+        return super().__iter__()
 
 
 def test_annual_rank_rows_reuse_one_neutral_reduction_per_label() -> None:
@@ -148,6 +159,83 @@ def test_segment_rows_uses_channel_map_without_rechecking_field_presence(monkeyp
 
     assert segments[0]["name"] == "A"
     assert segments[0]["value_series"] == [10.0]
+
+
+def test_segment_rows_builds_all_channels_in_one_row_pass() -> None:
+    periods = ["2025-01", "2025-02"]
+    channels = ["전체", "병원", "의원"]
+    rows = [
+        {
+            "brand_name": "Brand A",
+            "brand_key": "brand-a",
+            "by_dimension": {"class": "Class A"},
+            "metric_history": {
+                "2025-01": {"raw_value": 30.0},
+                "2025-02": {"raw_value": 40.0},
+            },
+            "dimension_data": {},
+            "dimension_channel_data": {},
+            "dimension_specialty_data": {},
+            "channel_data": {
+                "병원": {
+                    "2025-01": {"raw_value": 10.0},
+                    "2025-02": {"raw_value": 15.0},
+                },
+                "의원": {
+                    "2025-01": {"raw_value": 20.0},
+                    "2025-02": {"raw_value": 25.0},
+                },
+            },
+        },
+        {
+            "brand_name": "Brand B",
+            "brand_key": "brand-b",
+            "by_dimension": {"class": "Class B"},
+            "metric_history": {
+                "2025-01": {"raw_value": 12.0},
+                "2025-02": {"raw_value": 18.0},
+            },
+            "dimension_data": {},
+            "dimension_channel_data": {},
+            "dimension_specialty_data": {},
+            "channel_data": {
+                "병원": {
+                    "2025-01": {"raw_value": 5.0},
+                    "2025-02": {"raw_value": 8.0},
+                },
+                "의원": {
+                    "2025-01": {"raw_value": 7.0},
+                    "2025-02": {"raw_value": 10.0},
+                },
+            },
+        },
+    ]
+    expected = {
+        channel: cause._segment_rows_for_level(
+            rows=deepcopy(rows),
+            level="Class",
+            periods=periods,
+            source="UBIST",
+            channel=channel,
+            target_name=None,
+            top_n=None if channel == "전체" else 5,
+        )
+        for channel in channels
+    }
+    counted_rows = CountingRows(deepcopy(rows))
+
+    actual = cause._segment_rows_by_channel_for_level(
+        rows=counted_rows,
+        level="Class",
+        periods=periods,
+        source="UBIST",
+        channels=channels,
+        target_name=None,
+        top_n_by_channel={"전체": None, "병원": 5, "의원": 5},
+    )
+
+    assert actual == expected
+    assert counted_rows.iterations == 1
 
 
 def test_is_class_level_reuses_pure_level_classification() -> None:
