@@ -430,6 +430,38 @@ def test_build_response_does_not_compute_unused_others_display_rows() -> None:
     assert len(display_calls) == 1
 
 
+def test_ms_level_options_reuses_nested_segment_values_without_deepcopy(monkeypatch) -> None:
+    value_series = [10.0, 20.0]
+    source_segment = {
+        "name": "Option A",
+        "value_series": value_series,
+        "is_overall": False,
+    }
+    payload = {
+        "Class": {
+            "by_channel": {
+                "전체": [
+                    {"name": "전체", "is_overall": True, "value_series": [30.0, 40.0]},
+                    source_segment,
+                ]
+            }
+        }
+    }
+
+    def fail_deepcopy(_value: object) -> object:
+        raise AssertionError("ms options must not recursively copy immutable response values")
+
+    monkeypatch.setattr(cause, "deepcopy", fail_deepcopy)
+
+    result = cause._with_ms_level_options(payload)
+    copied_segment = result["Class"]["ms_by_channel"]["전체"][0]
+
+    assert copied_segment == source_segment
+    assert copied_segment is not source_segment
+    assert copied_segment["value_series"] is value_series
+    assert result["Class"]["ms_segments"] is result["Class"]["ms_by_channel"]["전체"]
+
+
 def test_level_top5_reuses_overall_channel_rows_across_levels(monkeypatch) -> None:
     rows = [{"brand_key": "A", "metric_history": {"2025-01": {"raw_value": 10.0}}}]
     analysis_levels = {

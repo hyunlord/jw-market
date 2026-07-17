@@ -2286,7 +2286,7 @@ def _with_ms_level_options(data: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(segments, list):
                 continue
             ms_by_channel[channel] = [
-                deepcopy(segment)
+                segment.copy()
                 for segment in segments
                 if isinstance(segment, dict) and not segment.get("is_overall")
             ]
