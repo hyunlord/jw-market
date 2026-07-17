@@ -172,9 +172,15 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                         "qid": qid,
                         "elapsed_ms": 100.0,
                         "steps": (
-                            [{"name": "질문 접수"}, {"name": "임상 데이터 조회"}]
+                            [
+                                {"name": "질문 접수", "status": "done"},
+                                {"name": "임상 데이터 조회", "status": "done"},
+                            ]
                             if qid == "H01"
-                            else [{"name": "질문 접수"}, {"name": "딥리서치 조사 설계"}]
+                            else [
+                                {"name": "질문 접수", "status": "done"},
+                                {"name": "딥리서치 조사 설계", "status": "done"},
+                            ]
                             if qid == "M01"
                             else [{"name": "질문 접수"}]
                         ),
@@ -544,7 +550,13 @@ def test_p0g_suite_requires_history_and_deep_seed_execution(monkeypatch, tmp_pat
             {
                 "qid": qid,
                 "elapsed_ms": 100.0,
-                "steps": [{"name": "질문 접수"}],
+                "steps": (
+                    [{"name": "임상 데이터 조회", "status": "started"}]
+                    if qid == "H01"
+                    else [{"name": "딥리서치 조사 설계", "status": "started"}]
+                    if qid == "M01"
+                    else [{"name": "질문 접수"}]
+                ),
                 "conversation_ids": [conversation_id] if conversation_id else [],
             }
             for qid, _ in questions

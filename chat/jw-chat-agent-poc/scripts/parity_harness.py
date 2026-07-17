@@ -356,7 +356,9 @@ def _p0g_seed_execution_failures(scenario: str, rows: list[dict[str, Any]]) -> l
     step_names = {
         str(step.get("name", "")).strip()
         for step in seed_row.get("steps", ())
-        if isinstance(step, dict) and str(step.get("name", "")).strip()
+        if isinstance(step, dict)
+        and str(step.get("status", "")).strip() == "done"
+        and str(step.get("name", "")).strip()
     }
     if scenario == "history":
         executed = bool(step_names & P0G_HISTORY_SEED_STAGE_NAMES)
