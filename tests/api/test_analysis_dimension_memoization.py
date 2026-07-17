@@ -1,12 +1,17 @@
+from contextlib import nullcontext
+import json
+
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import (
     _analysis_rows,
     _general_dimensions_from_metrics,
 )
+from pipeline.scripts.api.dynamic_market.analysis_level_series import (
+    with_dimension_series_from_labels_decoded,
+)
 from pipeline.scripts.api.dynamic_market.general_analysis_levels import cause_builder
-from pipeline.scripts.api.dynamic_market import analysis_levels
+from pipeline.scripts.api.dynamic_market import analysis_levels, general_analysis_levels
 from pipeline.scripts.api.dynamic_market.types import MarketDefinition
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
-from contextlib import nullcontext
 
 
 def test_dimension_helpers_reuse_request_row_values() -> None:
@@ -204,6 +209,101 @@ def test_analysis_rows_reuse_windowed_channel_matrix_without_encoding() -> None:
 
     assert rows[0]["channel_specialty_matrix"] == "{}"
     assert rows[0]["__channel_specialty_matrix"] is matrix
+
+
+def test_analysis_rows_can_handoff_decoded_dimension_payloads() -> None:
+    analysis_row = {
+        "by_dimension": '{"seller": "JW중외제약"}',
+        "dimension_data": '{"seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}}',
+    }
+    metric = BrandMetric(
+        "brand-a",
+        "Brand A",
+        "C10A1",
+        1.0,
+        100.0,
+        1,
+        "2026-01",
+        1.0,
+        history_by_period={"2026-01": 1.0},
+        analysis_row=analysis_row,
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=1.0,
+        hhi=10000.0,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 1.0},),
+        brands=(metric,),
+        all_brands=(metric,),
+    )
+
+    default_rows = _analysis_rows(
+        metrics=metrics,
+        focus=metric,
+        general_dimensions={},
+        sidecar_dimensions={},
+        strategic_dimensions={},
+    )
+    rows = _analysis_rows(
+        metrics=metrics,
+        focus=metric,
+        general_dimensions={},
+        sidecar_dimensions={},
+        strategic_dimensions={},
+        retain_decoded_dimensions=True,
+    )
+
+    assert "__by_dimension" not in default_rows[0]
+    assert "__dimension_data" not in default_rows[0]
+    assert rows[0]["__by_dimension"] == {"seller": "JW중외제약"}
+    assert rows[0]["__dimension_data"] == {
+        "seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}
+    }
+
+
+def test_general_aliases_reuse_handed_off_dimension_payloads(monkeypatch) -> None:
+    row = {
+        "by_dimension": '{"seller": "JW중외제약"}',
+        "dimension_data": '{"seller": {"JW중외제약": {"2026-01": {"raw_value": 1}}}}',
+        "dimension_channel_data": "{}",
+        "dimension_specialty_data": "{}",
+    }
+    expected = general_analysis_levels._with_canonical_dimension_aliases(
+        row,
+        general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"],
+        defer_period_series_encoding=True,
+    )
+    encoded, dimension_data, by_dimension = with_dimension_series_from_labels_decoded(
+        row["dimension_data"],
+        row["by_dimension"],
+        {"2026-01": 1.0},
+    )
+    cached_row = {
+        **row,
+        "dimension_data": encoded,
+        "__dimension_data": dimension_data,
+        "__by_dimension": by_dimension,
+    }
+    loads: list[str] = []
+    json_loads = json.loads
+
+    def record_loads(raw: str) -> object:
+        loads.append(raw)
+        return json_loads(raw)
+
+    monkeypatch.setattr(general_analysis_levels.json, "loads", record_loads)
+
+    actual = general_analysis_levels._with_canonical_dimension_aliases(
+        cached_row,
+        general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"],
+        defer_period_series_encoding=True,
+    )
+
+    assert actual == expected
+    assert loads == ["{}", "{}"]
 
 
 def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
