@@ -132,16 +132,31 @@ def test_history_golden_acceptance_requires_live_values() -> None:
 
     assert _history_golden_acceptance("H02", "데이터 존재 여부를 확인하지 못했습니다.") == (
         False,
-        "missing 242.72억원",
+        "fail-closed answer: 데이터 존재 여부를 확인하지 못했습니다",
     )
     assert _history_golden_acceptance("H03", "지원되지 않는 시장입니다.") == (
         False,
-        "missing 29.52%",
+        "fail-closed answer: 지원되지 않는 시장",
     )
     assert _history_golden_acceptance("M02", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
     assert _history_golden_acceptance("M03", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
     assert _history_golden_acceptance("F01", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
     assert _history_golden_acceptance("F02", "상위 5개 합계 시장점유율은 29.52%입니다.") == (True, "")
+
+
+def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() -> None:
+    assert _history_golden_acceptance(
+        "H02",
+        "데이터 존재 여부를 확인하지 못했습니다. 참고값은 242.72억원입니다.",
+    ) == (False, "fail-closed answer: 데이터 존재 여부를 확인하지 못했습니다")
+    assert _history_golden_acceptance(
+        "M03",
+        "현재 지원되지 않는 시장 매핑입니다. 이전 기준은 29.52%입니다.",
+    ) == (False, "fail-closed answer: 지원되지 않는 시장")
+    assert _history_golden_acceptance(
+        "F01",
+        "조회 오류입니다. 캐시된 값은 242.72억원입니다.",
+    ) == (False, "fail-closed answer: 조회 오류")
 
 
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:

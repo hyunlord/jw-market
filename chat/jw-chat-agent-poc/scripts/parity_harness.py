@@ -69,6 +69,11 @@ P0G_FORBIDDEN_GENERAL_STAGE_NAMES = frozenset(
         "최신 웹 자료 검색",
     }
 )
+P0G_FAIL_CLOSED_ANSWER_SENTINELS = (
+    "데이터 존재 여부를 확인하지 못했습니다",
+    "지원되지 않는 시장",
+    "조회 오류",
+)
 
 VOLATILE_KEYS = {
     "answer_cleanup",
@@ -502,6 +507,9 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     requirement = requirements.get(qid)
     if requirement is None:
         return True, ""
+    for sentinel in P0G_FAIL_CLOSED_ANSWER_SENTINELS:
+        if sentinel in answer:
+            return False, f"fail-closed answer: {sentinel}"
     pattern, error = requirement
     return (True, "") if pattern.search(answer) else (False, error)
 
