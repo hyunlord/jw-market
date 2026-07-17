@@ -344,6 +344,68 @@ def test_file_search_client_preserves_public_location_provenance(monkeypatch) ->
     )
 
 
+def test_file_search_client_prioritizes_key_takeaways_for_document_summary(monkeypatch) -> None:
+    body = {
+        "file_context": (
+            "[1] primary.pdf (page=3)\n"
+            "Disease Background\n\n"
+            "[2] primary.pdf (page=2)\n"
+            "Key Takeaways\n"
+            "Biosimilar competition and unmet need for safer drugs.\n\n"
+            "[3] primary.pdf (page=18)\n"
+            "Marketed and Pipeline Drugs"
+        ),
+        "document_count": 1,
+        "file_sources": [{"file_name": "primary.pdf", "i_page": 3}],
+        "errors": [],
+    }
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: body,
+        ),
+    )
+
+    result = search_uploaded_files("이 문서 요약해줘", "conv-summary")
+    conclusion_result = search_uploaded_files("이 보고서의 결론이 뭐야", "conv-conclusion")
+
+    assert result is not None
+    assert result.file_context.startswith("[2] primary.pdf (page=2)\nKey Takeaways")
+    assert result.file_context.count("[1] primary.pdf") == 1
+    assert result.file_context.count("[2] primary.pdf") == 1
+    assert result.file_context.count("[3] primary.pdf") == 1
+    assert conclusion_result is not None
+    assert conclusion_result.file_context.startswith("[2] primary.pdf (page=2)\nKey Takeaways")
+
+
+def test_file_search_client_keeps_retrieval_order_for_specific_file_question(monkeypatch) -> None:
+    context = (
+        "[1] primary.pdf (page=3)\n"
+        "Disease Background\n\n"
+        "[2] primary.pdf (page=2)\n"
+        "Key Takeaways"
+    )
+    body = {
+        "file_context": context,
+        "document_count": 1,
+        "file_sources": [{"file_name": "primary.pdf", "i_page": 3}],
+        "errors": [],
+    }
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: body,
+        ),
+    )
+
+    result = search_uploaded_files("3페이지의 질환 정의를 알려줘", "conv-detail")
+
+    assert result is not None
+    assert result.file_context == context
+
+
 def test_file_search_client_preserves_active_session_when_search_times_out(monkeypatch) -> None:
     def timeout_post(url, json=None, timeout=None):
         raise requests.Timeout("search timeout")

@@ -78,6 +78,7 @@ def search_uploaded_files(
         context = _filter_file_context(context, requested_names)
         raw_sources = _filter_named_sources(raw_sources, requested_names)
         raw_sql_sources = _filter_named_sources(raw_sql_sources, requested_names)
+    context = _prioritize_document_overview_context(question, context)
     sources = []
     items: list[dict[str, Any]] = []
     seen_items: set[tuple[str, str]] = set()
@@ -284,6 +285,37 @@ def _filter_file_context(context: str, requested_names: frozenset[str]) -> str:
         if any(name in block.casefold() for name in requested_names)
     ]
     return "\n\n".join(selected)
+
+
+_DOCUMENT_OVERVIEW_QUESTION_RE = re.compile(
+    r"(?:문서|보고서|파일|발표).{0,16}(?:요약|핵심|결론|뭐에\s*관한|무슨\s*내용)"
+    r"|(?:요약|핵심|결론).{0,16}(?:문서|보고서|파일|발표)",
+    re.IGNORECASE,
+)
+_DOCUMENT_OVERVIEW_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:#{1,6}\s*)?"
+    r"(?:key\s+takeaways?|executive\s+summary|conclusions?|summary|"
+    r"unmet\s+needs?|핵심\s*요약|주요\s*요약|결론|요약)\b",
+    re.IGNORECASE,
+)
+
+
+def _prioritize_document_overview_context(question: str, context: str) -> str:
+    """Move explicit overview sections first without dropping retrieved evidence."""
+
+    if not context or _DOCUMENT_OVERVIEW_QUESTION_RE.search(question) is None:
+        return context
+    blocks = re.split(r"\n\n(?=\[\d+\]\s)", context)
+    if len(blocks) < 2:
+        return context
+    ranked = sorted(
+        enumerate(blocks),
+        key=lambda item: (
+            0 if _DOCUMENT_OVERVIEW_HEADING_RE.search(item[1][:600]) else 1,
+            item[0],
+        ),
+    )
+    return "\n\n".join(block for _, block in ranked)
 
 
 def _active_file_fallback(
