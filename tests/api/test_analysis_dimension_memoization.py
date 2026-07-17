@@ -1,4 +1,7 @@
-from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import _general_dimensions_from_metrics
+from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import (
+    _analysis_rows,
+    _general_dimensions_from_metrics,
+)
 from pipeline.scripts.api.dynamic_market.general_analysis_levels import cause_builder
 from pipeline.scripts.api.dynamic_market import analysis_levels
 from pipeline.scripts.api.dynamic_market.types import MarketDefinition
@@ -159,6 +162,48 @@ def test_general_dimensions_reuse_request_rows() -> None:
         "channel_data": analysis_row["channel_data"],
         "channel_specialty_matrix": analysis_row["channel_specialty_matrix"],
     }
+
+
+def test_analysis_rows_reuse_windowed_channel_matrix_without_encoding() -> None:
+    matrix = {"의원": {"내과": {"2025-06": 20.0, "2026-05": 30.0}}}
+    brand = BrandMetric(
+        brand_key="brand-a",
+        brand_name="Brand A",
+        atc4_code="A10N1",
+        total_value=50.0,
+        market_share_pct=100.0,
+        rank=1,
+        latest_period="2026-05",
+        latest_value=30.0,
+        history_by_period={"2025-06": 20.0, "2026-05": 30.0},
+        channel_specialty_matrix=matrix,
+        analysis_row={"channel_specialty_matrix": '{"stale": true}'},
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=50.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=(
+            {"period": "2025-06", "market_size": 20.0},
+            {"period": "2026-05", "market_size": 30.0},
+        ),
+        brands=(brand,),
+        all_brands=(brand,),
+    )
+
+    rows = _analysis_rows(
+        metrics=metrics,
+        focus=brand,
+        general_dimensions={},
+        sidecar_dimensions={},
+        strategic_dimensions={},
+    )
+
+    assert rows[0]["channel_specialty_matrix"] == "{}"
+    assert rows[0]["__channel_specialty_matrix"] is matrix
 
 
 def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:

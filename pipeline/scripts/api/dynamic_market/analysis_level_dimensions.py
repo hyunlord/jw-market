@@ -230,6 +230,9 @@ def _analysis_rows(
             row.get("by_dimension"),
             brand.history_by_period,
         )
+        if metrics.source == "ubist":
+            row["channel_specialty_matrix"] = "{}"
+            row["__channel_specialty_matrix"] = brand.channel_specialty_matrix
         rows.append(row)
     return rows
 

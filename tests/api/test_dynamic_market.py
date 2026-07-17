@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
 from pipeline.scripts.api.dynamic_market import general_analysis_levels
+from pipeline.scripts.etl import ubist_channel_resolver
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -1608,6 +1609,90 @@ def test_general_analysis_levels_leave_predecoded_dimension_json_unmaterialized(
             mart_db="mart",
             period_range=PeriodRange("2025-01", "2025-12"),
         )
+
+
+def test_general_channel_resolver_reuses_windowed_private_matrix(monkeypatch) -> None:
+    private_matrix = {"의원": {"내과": {"2026-05": 30.0}}}
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        general_analysis_levels,
+        "build_analysis_rows",
+        lambda **_kwargs: [
+            {
+                "brand_key": "brand",
+                "brand_name": "Brand",
+                "channel_specialty_matrix": "{}",
+                "__channel_specialty_matrix": private_matrix,
+            }
+        ],
+    )
+
+    def capture_resolver(**kwargs):
+        captured.update(kwargs["rows"][0])
+        raise RuntimeError("stop after resolver")
+
+    monkeypatch.setattr(general_analysis_levels, "resolve_market_channels", capture_resolver)
+
+    with pytest.raises(RuntimeError, match="stop after resolver"):
+        general_analysis_levels.build_general_analysis_level_sections(
+            definition=SimpleNamespace(market_catalog_row={}),
+            metrics=SimpleNamespace(source="ubist", measure="sales"),
+            focus=None,
+            mart_db="mart",
+            period_range=PeriodRange("2025-06", "2026-05"),
+        )
+
+    assert captured["channel_specialty_matrix"] == "{}"
+    assert captured["__channel_specialty_matrix"] is private_matrix
+
+
+def test_ubist_channel_resolver_prefers_private_matrix_over_empty_wire_field() -> None:
+    private_matrix = {"의원": {"내과": {"2026-05": 30.0}}}
+    rows = [
+        {
+            "brand_key": "brand",
+            "brand_name": "Brand",
+            "channel_specialty_matrix": "{}",
+            "__channel_specialty_matrix": private_matrix,
+        }
+    ]
+
+    assert ubist_channel_resolver._raw_matrices_available(rows)
+    assert list(ubist_channel_resolver._iter_raw_matrix(rows[0])) == [
+        ("의원", "내과", {"2026-05": 30.0})
+    ]
+
+
+def test_window_channel_specialty_matrix_drops_out_of_range_periods() -> None:
+    matrix = {
+        "의원": {
+            "내과": {
+                "2025-05": 10.0,
+                "2025-06": 20.0,
+                "2026-05": 30.0,
+                "2026-06": 40.0,
+            }
+        }
+    }
+
+    result = aggregator_module._window_channel_specialty_matrix(
+        matrix,
+        PeriodRange("2025-06", "2026-05"),
+    )
+
+    assert result == {"의원": {"내과": {"2025-06": 20.0, "2026-05": 30.0}}}
+
+
+def test_window_channel_specialty_matrix_reuses_unbounded_input() -> None:
+    matrix = {"의원": {"내과": {"2026-05": 30.0}}}
+
+    result = aggregator_module._window_channel_specialty_matrix(
+        matrix,
+        PeriodRange(None, None),
+    )
+
+    assert result is matrix
 
 
 @pytest.mark.parametrize(

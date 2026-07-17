@@ -27,6 +27,7 @@ UBIST_CHANNEL_BY_DISPLAY_COLUMN = "ubist_channel_by_display"
 UBIST_CHANNEL_BY_CODE_COLUMN = "ubist_channel_by_code"
 CHANNEL_SPECIALTY_MATRIX_COLUMN = "channel_specialty_matrix"
 _DECODED_CHANNEL_SPECIALTY_MATRIX = "__channel_specialty_matrix_decoded"
+_PRIVATE_CHANNEL_SPECIALTY_MATRIX = "__channel_specialty_matrix"
 _STRATEGIC_CHANNEL_ROWS: ContextVar[tuple[dict[str, Any], ...] | None] = ContextVar(
     "strategic_channel_rows",
     default=None,
@@ -234,7 +235,9 @@ def _normalize_target_channel_series(payload: dict[str, Any]) -> dict[str, dict[
 def _raw_matrices_available(rows: list[dict[str, Any]]) -> bool:
     available = False
     for row in rows:
-        matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
+        matrix = row.get(_PRIVATE_CHANNEL_SPECIALTY_MATRIX)
+        if not isinstance(matrix, dict):
+            matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
         row[_DECODED_CHANNEL_SPECIALTY_MATRIX] = matrix
         available = available or bool(matrix)
     return available
@@ -252,6 +255,8 @@ def _parse_target_label(label: str | None) -> tuple[str, str]:
 
 def _iter_raw_matrix(row: dict[str, Any]) -> Iterator[tuple[str, str, dict[str, Any]]]:
     matrix = row.get(_DECODED_CHANNEL_SPECIALTY_MATRIX)
+    if not isinstance(matrix, dict):
+        matrix = row.get(_PRIVATE_CHANNEL_SPECIALTY_MATRIX)
     if not isinstance(matrix, dict):
         matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
     for facility, specialties in matrix.items():

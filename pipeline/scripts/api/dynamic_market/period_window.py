@@ -36,6 +36,7 @@ _PREDECODED_ROW_SERIES_FIELDS: Final[frozenset[str]] = frozenset(
         "dimension_data",
         "dimension_channel_data",
         "dimension_specialty_data",
+        "channel_specialty_matrix",
     }
 )
 _PeriodBounds = tuple[int | None, int | None]

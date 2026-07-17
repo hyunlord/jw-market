@@ -438,6 +438,7 @@ class MetricAggregator:
                 unit_label = str(row.get("unit_label") or "")
             raw_matrix = parse_channel_specialty_matrix(row.get("channel_specialty_matrix"))
             matrix = slice_channel_specialty_matrix(raw_matrix, channel_axis)
+            window_matrix = _window_channel_specialty_matrix(matrix, period_range)
             raw_audit_matrix = parse_audit_code_matrix(row.get("audit_code_matrix"))
             audit_matrix = slice_audit_code_matrix(raw_audit_matrix, channel_axis)
             history = _history_for_row(
@@ -470,7 +471,7 @@ class MetricAggregator:
                     monthly_series=tuple({"period": period, "value": value} for period, value in history_by_period.items()),
                     ubist_channel_by_display=parse_channel_series(row.get("ubist_channel_by_display")),
                     ubist_channel_by_code=parse_channel_series(row.get("ubist_channel_by_code")),
-                    channel_specialty_matrix=matrix,
+                    channel_specialty_matrix=window_matrix,
                     audit_code_matrix=audit_matrix,
                     history_by_period=history_by_period,
                     analysis_row=analysis_row_for_builder(row, history_by_period=history_by_period),
@@ -714,6 +715,21 @@ def filter_periods(history: dict[str, float], period_range: PeriodRange) -> dict
         for period, value in history.items()
         if (period_range.start is None or period >= period_range.start)
         and (period_range.end is None or period <= period_range.end)
+    }
+
+
+def _window_channel_specialty_matrix(
+    matrix: dict[str, dict[str, dict[str, float]]],
+    period_range: PeriodRange,
+) -> dict[str, dict[str, dict[str, float]]]:
+    if period_range.start is None and period_range.end is None:
+        return matrix
+    return {
+        facility: {
+            specialty: filter_periods(series, period_range)
+            for specialty, series in specialties.items()
+        }
+        for facility, specialties in matrix.items()
     }
 
 

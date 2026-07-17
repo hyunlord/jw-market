@@ -136,6 +136,65 @@ def test_trim_period_rows_can_defer_materializing_predecoded_dimension_series() 
         assert result[f"__{field}"] is period_series
 
 
+def test_trim_period_rows_can_defer_materializing_predecoded_channel_matrix(monkeypatch) -> None:
+    matrix = {
+        "의원": {
+            "내과": {
+                "2025-05": 10.0,
+                "2025-06": 20.0,
+                "2026-05": 30.0,
+            }
+        }
+    }
+    row = {
+        "channel_specialty_matrix": "{}",
+        "__channel_specialty_matrix": matrix,
+    }
+    original_loads = period_window_module.json.loads
+
+    def reject_encoded_matrix(raw: str) -> object:
+        if raw == "{}":
+            raise AssertionError("predecoded channel matrix must bypass json.loads")
+        return original_loads(raw)
+
+    monkeypatch.setattr(period_window_module.json, "loads", reject_encoded_matrix)
+
+    result = trim_period_rows(
+        [row],
+        PeriodRange("2025-06", "2026-05"),
+        materialize_predecoded_fields=False,
+    )[0]
+
+    assert result["channel_specialty_matrix"] == "{}"
+    assert result["__channel_specialty_matrix"] is matrix
+
+
+def test_trim_period_rows_materializes_predecoded_channel_matrix_by_default() -> None:
+    matrix = {
+        "의원": {
+            "내과": {
+                "2025-05": 10.0,
+                "2025-06": 20.0,
+                "2026-05": 30.0,
+            }
+        }
+    }
+
+    result = trim_period_rows(
+        [
+            {
+                "channel_specialty_matrix": "{}",
+                "__channel_specialty_matrix": matrix,
+            }
+        ],
+        PeriodRange("2025-06", "2026-05"),
+    )[0]
+
+    assert json.loads(result["channel_specialty_matrix"]) == {
+        "의원": {"내과": {"2025-06": 20.0, "2026-05": 30.0}}
+    }
+
+
 def test_unbounded_period_range_preserves_payload_byte_shape() -> None:
     raw = json.dumps({"2025-01": 1.0}, separators=(",", ":"))
     rows = [{"metric_history": raw}]
