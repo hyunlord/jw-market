@@ -273,6 +273,14 @@ def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> Non
             "is_expired": False,
             "storage_route": "hybrid",
             "route_reason": "mixed workbook",
+            "file_card": {
+                "file_name": "survey.xlsx",
+                "file_type": "xlsx",
+                "size_bytes": 12345,
+                "title": "Survey Workbook",
+                "sheet_count": 1,
+                "sheets": [{"name": "Raw", "row_count": 10, "column_count": 4}],
+            },
             "sql_tables": [{"logical_name": "data_abc", "sheet_name": "Raw", "row_count": 10, "column_count": 4}],
         }],
         "errors": ["internal error"],
@@ -284,6 +292,8 @@ def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> Non
     document = projected["documents"][0]
     assert document["file_size_bytes"] == 12345
     assert document["storage_route"] == "hybrid"
+    assert document["file_card"]["title"] == "Survey Workbook"
+    assert document["file_card"]["sheets"][0]["column_count"] == 4
     assert document["sql_tables"][0]["logical_name"] == "data_abc"
 
 

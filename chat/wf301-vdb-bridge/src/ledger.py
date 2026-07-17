@@ -139,6 +139,11 @@ def list_session_documents(
                 "is_expired": expired,
                 "storage_route": str(description.get("storage_route") or "vdb"),
                 "route_reason": str(description.get("route_reason") or ""),
+                "file_card": (
+                    description.get("file_card")
+                    if isinstance(description.get("file_card"), dict)
+                    else None
+                ),
                 "sql_tables": (
                     description.get("sql_tables")
                     if isinstance(description.get("sql_tables"), list)

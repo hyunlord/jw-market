@@ -18,6 +18,20 @@ from jw_chat_agent_poc.service.file_sql_query import (
 logger = logging.getLogger(__name__)
 
 
+def _optional_nonnegative_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
 @dataclass(frozen=True, slots=True)
 class UploadedFileSearchResult:
     file_context: str
@@ -37,11 +51,23 @@ class UploadedSqlTableOverview:
 
 
 @dataclass(frozen=True, slots=True)
+class UploadedWorksheetOverview:
+    name: str
+    row_count: int | None = None
+    column_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class UploadedFileOverview:
     file_name: str
     storage_route: str
     chunk_count: int
     sql_tables: tuple[UploadedSqlTableOverview, ...] = ()
+    title: str | None = None
+    sheet_count: int | None = None
+    sheets: tuple[UploadedWorksheetOverview, ...] = ()
+    page_count: int | None = None
+    slide_count: int | None = None
 
 
 def search_uploaded_files(
@@ -261,12 +287,32 @@ def fetch_uploaded_file_overviews(
             chunk_count = max(0, int(raw_document.get("chunk_count") or 0))
         except (TypeError, ValueError):
             chunk_count = 0
+        raw_card = raw_document.get("file_card")
+        card = raw_card if isinstance(raw_card, dict) else {}
+        worksheets: list[UploadedWorksheetOverview] = []
+        raw_sheets = card.get("sheets")
+        if isinstance(raw_sheets, list):
+            for raw_sheet in raw_sheets:
+                if not isinstance(raw_sheet, dict) or not str(raw_sheet.get("name") or "").strip():
+                    continue
+                worksheets.append(
+                    UploadedWorksheetOverview(
+                        name=str(raw_sheet["name"]),
+                        row_count=_optional_nonnegative_int(raw_sheet.get("row_count")),
+                        column_count=_optional_nonnegative_int(raw_sheet.get("column_count")),
+                    )
+                )
         overviews.append(
             UploadedFileOverview(
                 file_name=file_name,
                 storage_route=str(raw_document.get("storage_route") or "vdb"),
                 chunk_count=chunk_count,
                 sql_tables=tuple(tables),
+                title=_optional_text(card.get("title")),
+                sheet_count=_optional_nonnegative_int(card.get("sheet_count")),
+                sheets=tuple(worksheets),
+                page_count=_optional_nonnegative_int(card.get("page_count")),
+                slide_count=_optional_nonnegative_int(card.get("slide_count")),
             )
         )
     return tuple(overviews)

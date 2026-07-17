@@ -14,7 +14,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -107,12 +107,10 @@ SESSION_KEY_EXAMPLE = "puc-004928"
 SESSION_KEY_SCHEMA = {"maxLength": 36, "pattern": "^[A-Za-z0-9_-]{1,36}$"}
 
 
-def _inspect_saved_upload_card(
-    item: upload_adapter.SavedTempDocument,
-) -> StatusUploadFileCard:
-    observed = inspect_upload_machine_card(Path(item.file_path), item.file_name)
+def _inspect_path_upload_card(file_path: str, file_name: str) -> StatusUploadFileCard:
+    observed = inspect_upload_machine_card(Path(file_path), file_name)
     return StatusUploadFileCard(
-        file_name=Path(item.file_name).name,
+        file_name=Path(file_name).name,
         file_type=observed.file_type,
         size_bytes=observed.size_bytes,
         title=observed.title,
@@ -128,6 +126,12 @@ def _inspect_saved_upload_card(
         page_count=observed.page_count,
         slide_count=observed.slide_count,
     )
+
+
+def _inspect_saved_upload_card(
+    item: upload_adapter.SavedTempDocument,
+) -> StatusUploadFileCard:
+    return _inspect_path_upload_card(item.file_path, item.file_name)
 
 
 def _upload_card_payload(card: StatusUploadFileCard) -> dict[str, object]:
@@ -148,6 +152,23 @@ def _upload_card_payload(card: StatusUploadFileCard) -> dict[str, object]:
         "page_count": card.page_count,
         "slide_count": card.slide_count,
     }
+
+
+def _persisted_file_card(
+    temp_doc: TempDocument,
+    observed_file_cards: Mapping[int, dict[str, object]] | None,
+) -> dict[str, object] | None:
+    if observed_file_cards is not None:
+        observed = observed_file_cards.get(temp_doc.temp_document_id)
+        if observed is not None and observed.get("file_name") == Path(temp_doc.file_name).name:
+            return dict(observed)
+    if not temp_doc.file_path:
+        return None
+    return _upload_card_payload(
+        _inspect_path_upload_card(temp_doc.file_path, temp_doc.file_name)
+    )
+
+
 TARGET_VDB_EXAMPLE = settings.TARGET_VDB_ID
 # .xlsm은 매크로(vbaProject)를 무시하고 데이터 시트만 .xlsx와 같은 로컬 전처리 경로로 처리한다.
 LOCAL_XLSX_SUFFIXES = (".xlsx", ".xlsm")
@@ -530,6 +551,7 @@ def _description(
     file_size_bytes: int,
     storage_route: str = "vdb",
     route_reason: str = "",
+    file_card: dict[str, object] | None = None,
     sql_tables: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
@@ -547,6 +569,7 @@ def _description(
         "bridge": "wf301-vdb-bridge",
         "storage_route": storage_route,
         "route_reason": route_reason,
+        "file_card": file_card,
         "sql_tables": sql_tables or [],
     }
 
@@ -1041,18 +1064,36 @@ def commit(req: BridgeRequest, request: Request) -> CommitResponse:
     return _commit_temp_documents(req, request_id=_request_id(request))
 
 
-def _commit_temp_documents(req: BridgeRequest, *, request_id: str | None = None) -> CommitResponse:
+def _commit_temp_documents(
+    req: BridgeRequest,
+    *,
+    request_id: str | None = None,
+    observed_file_cards: Mapping[int, dict[str, object]] | None = None,
+) -> CommitResponse:
     request_id = request_id or _request_id(None)
     if _guard(req) or not settings.COMMIT_ENABLED:
-        return _commit_owned_temp_documents(req, request_id=request_id)
+        return _commit_owned_temp_documents(
+            req,
+            request_id=request_id,
+            observed_file_cards=observed_file_cards,
+        )
     session_id = _session_id(req)
     temp_ids = [item.temp_document_id for item in req.temp_documents]
     with _UPLOAD_OWNERSHIP.commit_guard(session_id, req.workflow_id, temp_ids):
         owned_req = _owned_bridge_request(req, request_id=request_id)
-        return _commit_owned_temp_documents(owned_req, request_id=request_id)
+        return _commit_owned_temp_documents(
+            owned_req,
+            request_id=request_id,
+            observed_file_cards=observed_file_cards,
+        )
 
 
-def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> CommitResponse:
+def _commit_owned_temp_documents(
+    req: BridgeRequest,
+    *,
+    request_id: str,
+    observed_file_cards: Mapping[int, dict[str, object]] | None = None,
+) -> CommitResponse:
     errors = _guard(req)
     if not settings.COMMIT_ENABLED:
         errors.append("commit stage is disabled")
@@ -1320,6 +1361,7 @@ def _commit_owned_temp_documents(req: BridgeRequest, *, request_id: str) -> Comm
                         vdb_chunk_count=chunk_count,
                     ),
                     route_reason=route_reason,
+                    file_card=_persisted_file_card(temp_doc, observed_file_cards),
                     sql_tables=[table.model_dump() for table in sql_tables],
                 )
                 document_id = ledger.insert_document(
@@ -1669,6 +1711,7 @@ def _process_accepted_upload(
     temp_vdb: upload_adapter.TempVdbIndex,
     saved_documents: list[upload_adapter.SavedTempDocument],
     request: BridgeRequest,
+    observed_file_cards: Mapping[int, dict[str, object]] | None = None,
 ) -> None:
     """Complete an accepted upload without retaining request-scoped objects."""
 
@@ -1765,7 +1808,14 @@ def _process_accepted_upload(
                 )
             ),
         )
-        commit_response = _commit_temp_documents(request)
+        commit_response = (
+            _commit_temp_documents(
+                request,
+                observed_file_cards=observed_file_cards,
+            )
+            if observed_file_cards is not None
+            else _commit_temp_documents(request)
+        )
         terminal_files = _terminal_upload_files(saved_documents, commit_response)
         ready = commit_response.file_only_ready and not commit_response.errors
         terminal_state: Literal["ready", "blocked", "failed"]
@@ -1997,11 +2047,15 @@ def upload(
                         file_path=Path(item.file_path),
                         expires_at=expires_at,
                     )
+                file_cards = tuple(
+                    _inspect_saved_upload_card(item) for item in saved_documents
+                )
+                observed_file_cards = {
+                    item.temp_document_id: _upload_card_payload(card)
+                    for item, card in zip(saved_documents, file_cards, strict=True)
+                }
                 if return_when == "accepted":
                     conn.commit()
-                    file_cards = tuple(
-                        _inspect_saved_upload_card(item) for item in saved_documents
-                    )
                     status = _UPLOAD_STATUS.create(
                         session_id=session_value,
                         workflow_id=workflow_id,
@@ -2032,6 +2086,7 @@ def upload(
                         temp_vdb=temp_vdb,
                         saved_documents=saved_documents,
                         request=accepted_request,
+                        observed_file_cards=observed_file_cards,
                     )
                     return UploadResponse(
                         target_vdb_id=vdb_id,
@@ -2146,7 +2201,8 @@ def upload(
                 )
                 for item in saved_documents
             ],
-        )
+        ),
+        observed_file_cards=observed_file_cards,
     )
     upload_errors = list(commit_response.errors)
     if not commit_response.file_only_ready and not upload_errors:

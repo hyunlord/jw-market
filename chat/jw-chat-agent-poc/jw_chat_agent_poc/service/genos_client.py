@@ -1226,6 +1226,11 @@ class GenosClient:
             raise last_error
         return ""
 
+    def uploaded_file_brief(self, messages: list[dict[str, str]]) -> str:
+        """Generate one batched exploratory brief from observed upload metadata."""
+
+        return self._chat_text(messages)
+
     @staticmethod
     def _trend_prose_messages(question: str, trend_fact_md: str, previous_answer: str) -> list[dict[str, str]]:
         return [

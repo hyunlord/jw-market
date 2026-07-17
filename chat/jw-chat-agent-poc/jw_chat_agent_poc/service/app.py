@@ -93,6 +93,14 @@ from jw_chat_agent_poc.service.file_search_client import (
     search_uploaded_files,
 )
 from jw_chat_agent_poc.service.file_brief import render_uploaded_file_machine_brief
+from jw_chat_agent_poc.service.file_llm_brief import (
+    FileBriefValidationError,
+    build_file_brief_messages,
+    deserialize_file_overviews,
+    parse_and_render_file_briefs,
+    render_file_brief_grounding_text,
+    serialize_file_overviews,
+)
 from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_question
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
@@ -1112,14 +1120,25 @@ def _file_only_ready_result(
         answer = f"{answer}\n\n" + "\n".join(f"- {name}" for name in file_names)
     if file_context and not file_names:
         answer = f"{answer}\n\n- 업로드 파일"
+    cleaned_answer = cleanup_markdown_answer(answer)
+    grounding_text = "\n".join(
+        value
+        for value in (
+            cleaned_answer,
+            render_file_brief_grounding_text(file_overviews),
+        )
+        if value
+    )
     return {
-        "answer": cleanup_markdown_answer(answer),
+        "answer": cleaned_answer,
         "sources": ["file_upload"],
         "tool_calls": [],
         "file_only_ready": True,
         "file_names": file_names,
         "file_brief_basis": "observed_schema" if file_overviews else "file_name",
         "file_brief_is_answer_evidence": False,
+        "file_brief_observed": serialize_file_overviews(file_overviews),
+        "file_brief_grounding_text": grounding_text,
     }
 
 def _attach_file_context(
@@ -1548,6 +1567,19 @@ def _stream_resolving_session_events(
                         use_direct_agent_loop=use_direct_agent_loop,
                         timing_sink=emit_step,
                     )
+                    streamed_prefix = _file_ready_prefix(item["result"])
+                    if streamed_prefix:
+                        prefix_emitted = threading.Event()
+                        events.put(
+                            {
+                                "type": "file_ready",
+                                "conversation_id": item.get("conversation_id"),
+                                "sources": tuple(item["result"].get("sources", ())),
+                                "text": streamed_prefix,
+                                "emitted": prefix_emitted,
+                            }
+                        )
+                        prefix_emitted.wait(timeout=2.0)
                     final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
             _record_conversation_history(
                 history_store,
@@ -1556,7 +1588,14 @@ def _stream_resolving_session_events(
                 final_answer=final_answer,
                 projection_context=projection_context,
             )
-            events.put({"type": "result", "item": item, "final_answer": final_answer})
+            events.put(
+                {
+                    "type": "result",
+                    "item": item,
+                    "final_answer": final_answer,
+                    "streamed_prefix": streamed_prefix,
+                }
+            )
         except Exception as exc:
             acquire_finished.set()
             events.put({"type": "error", "error_type": type(exc).__name__, "message": str(exc)})
@@ -1599,8 +1638,25 @@ def _stream_resolving_session_events(
         if event_type == "step":
             yield _sse_json_event("step", event.get("item", {}))
             continue
+        if event_type == "file_ready":
+            yield from _sse_initial_text_events(
+                conversation_id=event.get("conversation_id"),
+                sources=tuple(event.get("sources", ())),
+                text=str(event.get("text") or ""),
+            )
+            emitted = event.get("emitted")
+            if isinstance(emitted, threading.Event):
+                emitted.set()
+            continue
         if event_type == "result":
-            yield from _sse_events_from_final_answer(event["final_answer"])
+            streamed_prefix = str(event.get("streamed_prefix") or "")
+            if streamed_prefix:
+                yield from _sse_events_from_final_answer(
+                    event["final_answer"],
+                    streamed_prefix=streamed_prefix,
+                )
+            else:
+                yield from _sse_events_from_final_answer(event["final_answer"])
             return
         if event_type == "error":
             yield _sse_json_event(
@@ -1664,6 +1720,13 @@ def _sse_events(
     if limiter is not None and not limiter.try_acquire():
         yield from _sse_busy_events()
         return
+    streamed_prefix = _file_ready_prefix(result)
+    if streamed_prefix:
+        yield from _sse_initial_text_events(
+            conversation_id=conversation_id,
+            sources=tuple(result.get("sources", ())),
+            text=streamed_prefix,
+        )
     try:
         final_answer = compute_final_answer(question, result, conversation_id)
         _record_conversation_history(
@@ -1676,7 +1739,13 @@ def _sse_events(
     finally:
         if limiter is not None:
             limiter.release()
-    yield from _sse_events_from_final_answer(final_answer)
+    if streamed_prefix:
+        yield from _sse_events_from_final_answer(
+            final_answer,
+            streamed_prefix=streamed_prefix,
+        )
+    else:
+        yield from _sse_events_from_final_answer(final_answer)
 
 
 def _sse_busy_events():
@@ -1685,8 +1754,30 @@ def _sse_busy_events():
     yield "event: done\ndata: error\n\n"
 
 
-def _sse_events_from_final_answer(final_answer: FinalAnswer):
-    if final_answer.conversation_id:
+def _file_ready_prefix(result: dict[str, Any]) -> str:
+    if not result.get("file_only_ready"):
+        return ""
+    return cleanup_markdown_answer(str(result.get("answer") or ""))
+
+
+def _sse_initial_text_events(
+    *,
+    conversation_id: str | None,
+    sources: tuple[str, ...],
+    text: str,
+):
+    if conversation_id:
+        yield f"event: conversation\ndata: {conversation_id}\n\n"
+    yield f"event: sources\ndata: {','.join(source_labels(sources))}\n\n"
+    yield from iter_markdown_sse_events(text)
+
+
+def _sse_events_from_final_answer(
+    final_answer: FinalAnswer,
+    *,
+    streamed_prefix: str = "",
+):
+    if final_answer.conversation_id and not streamed_prefix:
         yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
     public_file_sources = _project_public_file_sources(final_answer.file_sources)
     labels = source_labels(final_answer.sources)
@@ -1697,10 +1788,15 @@ def _sse_events_from_final_answer(final_answer: FinalAnswer):
         label = f"업로드 문서: {file_name}" if file_name else ""
         if label and label not in labels:
             labels.append(label)
-    yield f"event: sources\ndata: {','.join(labels)}\n\n"
-    if public_file_sources:
+    if not streamed_prefix:
+        yield f"event: sources\ndata: {','.join(labels)}\n\n"
+    if public_file_sources and not streamed_prefix:
         yield _sse_json_event("file_sources", list(public_file_sources))
-    yield from iter_markdown_sse_events(final_answer.text)
+    remaining_text = final_answer.text
+    if streamed_prefix and remaining_text.startswith(streamed_prefix):
+        remaining_text = remaining_text[len(streamed_prefix):].lstrip()
+    if remaining_text:
+        yield from iter_markdown_sse_events(remaining_text)
     if final_answer.charts:
         yield _sse_json_event("charts", final_answer.charts)
     yield _sse_json_event("timing", final_answer.timing)
@@ -1823,8 +1919,17 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             conversation_id=conversation_id,
         )
     if result.get("file_only_ready"):
-        timing_payload = finish(timing)
         answer = cleanup_markdown_answer(str(result.get("answer") or ""))
+        overviews = deserialize_file_overviews(result.get("file_brief_observed"))
+        if overviews:
+            try:
+                generated = client.uploaded_file_brief(build_file_brief_messages(overviews))
+                brief = parse_and_render_file_briefs(generated, overviews)
+            except (requests.RequestException, FileBriefValidationError):
+                brief = ""
+            if brief:
+                answer = cleanup_markdown_answer(f"{answer}\n\n{brief}")
+        timing_payload = finish(timing)
         trace = trace_envelope(
             question=question,
             result=result,

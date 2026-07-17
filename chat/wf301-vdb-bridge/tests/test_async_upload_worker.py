@@ -35,10 +35,81 @@ def _config() -> upload_adapter.FileUploadConfig:
     )
 
 
+def test_persisted_file_card_reuses_matching_observation_without_rescanning(
+    monkeypatch,
+) -> None:
+    temp_doc = _request(
+        upload_adapter.SavedTempDocument(11, "report.pdf", "/tmp/report.pdf")
+    ).temp_documents[0]
+    observed = {
+        11: {
+            "file_name": "report.pdf",
+            "file_type": "pdf",
+            "size_bytes": 3,
+            "title": "Report",
+            "sheet_count": None,
+            "sheets": [],
+            "page_count": 1,
+            "slide_count": None,
+        }
+    }
+    monkeypatch.setattr(
+        main,
+        "_inspect_path_upload_card",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected rescan")),
+    )
+
+    payload = main._persisted_file_card(temp_doc, observed)
+
+    assert payload == observed[11]
+    assert payload is not observed[11]
+
+
+def test_persisted_file_card_recomputes_when_observed_name_does_not_match(
+    monkeypatch,
+) -> None:
+    temp_doc = _request(
+        upload_adapter.SavedTempDocument(11, "report.pdf", "/tmp/report.pdf")
+    ).temp_documents[0]
+    observed = {11: {"file_name": "other.pdf"}}
+    server_card = main.StatusUploadFileCard(
+        file_name="report.pdf",
+        file_type="pdf",
+        size_bytes=3,
+        title="Report",
+        page_count=1,
+    )
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main,
+        "_inspect_path_upload_card",
+        lambda file_path, file_name: calls.append((file_path, file_name)) or server_card,
+    )
+
+    payload = main._persisted_file_card(temp_doc, observed)
+
+    assert calls == [("/tmp/report.pdf", "report.pdf")]
+    assert payload is not None
+    assert payload["file_name"] == "report.pdf"
+
+
 def test_accepted_upload_worker_transitions_to_ready(monkeypatch, tmp_path: Path) -> None:
     saved = upload_adapter.SavedTempDocument(11, "report.pdf", str(tmp_path / "report.pdf"))
     Path(saved.file_path).write_bytes(b"pdf")
     transitions: list[tuple[str, tuple[UploadFileStatus, ...] | None, str | None]] = []
+    observed_file_cards = {
+        11: {
+            "file_name": "report.pdf",
+            "file_type": "pdf",
+            "size_bytes": 3,
+            "title": "Report",
+            "sheet_count": None,
+            "sheets": [],
+            "page_count": 1,
+            "slide_count": None,
+        }
+    }
+    committed_cards: list[dict[int, dict[str, object]] | None] = []
 
     monkeypatch.setattr(
         main._UPLOAD_STATUS,
@@ -48,10 +119,9 @@ def test_accepted_upload_worker_transitions_to_ready(monkeypatch, tmp_path: Path
         ),
     )
     monkeypatch.setattr(upload_adapter, "run_preprocessor", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        main,
-        "_commit_temp_documents",
-        lambda request: CommitResponse(
+    def commit_documents(request, *, observed_file_cards=None):
+        committed_cards.append(observed_file_cards)
+        return CommitResponse(
             commit_enabled=True,
             write_count=1,
             target_vdb_id=139,
@@ -72,8 +142,9 @@ def test_accepted_upload_worker_transitions_to_ready(monkeypatch, tmp_path: Path
             ],
             committed_count=1,
             file_only_ready=True,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(main, "_commit_temp_documents", commit_documents)
 
     main._process_accepted_upload(
         upload_id="upl_7Qz4R4R2Xh9pCkN8",
@@ -82,6 +153,7 @@ def test_accepted_upload_worker_transitions_to_ready(monkeypatch, tmp_path: Path
         temp_vdb=upload_adapter.TempVdbIndex(3, "Temp"),
         saved_documents=[saved],
         request=_request(saved),
+        observed_file_cards=observed_file_cards,
     )
 
     assert [state for state, _, _ in transitions] == ["preprocessing", "committing", "ready"]
@@ -94,6 +166,7 @@ def test_accepted_upload_worker_transitions_to_ready(monkeypatch, tmp_path: Path
             message="파일 처리가 완료되었습니다.",
         ),
     )
+    assert committed_cards == [observed_file_cards]
 
 
 def test_accepted_upload_worker_fails_closed_with_safe_status(monkeypatch, tmp_path: Path) -> None:

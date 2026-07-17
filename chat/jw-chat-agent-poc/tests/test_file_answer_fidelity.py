@@ -693,6 +693,20 @@ def test_uploaded_file_overviews_preserve_public_sql_shape(monkeypatch) -> None:
                         "file_name": "CHSO.xlsx",
                         "storage_route": "hybrid",
                         "chunk_count": 18,
+                        "file_card": {
+                            "file_name": "CHSO.xlsx",
+                            "file_type": "xlsx",
+                            "size_bytes": 16_000_000,
+                            "title": "CHSO Sell Out",
+                            "sheet_count": 1,
+                            "sheets": [
+                                {
+                                    "name": "Sell Out Standard",
+                                    "row_count": 12_269,
+                                    "column_count": 252,
+                                }
+                            ],
+                        },
                         "sql_tables": [
                             {
                                 "logical_name": "data_chso",
@@ -719,6 +733,9 @@ def test_uploaded_file_overviews_preserve_public_sql_shape(monkeypatch) -> None:
     assert overviews[0].sql_tables[0].sheet_name == "Sell Out Standard"
     assert overviews[0].sql_tables[0].row_count == 12_269
     assert overviews[0].sql_tables[0].column_count == 252
+    assert overviews[0].title == "CHSO Sell Out"
+    assert overviews[0].sheet_count == 1
+    assert overviews[0].sheets[0].name == "Sell Out Standard"
 
 
 def _final_answer(file_sources=()) -> FinalAnswer:

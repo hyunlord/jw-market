@@ -567,6 +567,7 @@ class PublicSessionDocument(BaseModel):
     is_expired: bool = False
     storage_route: Literal["vdb", "sql", "hybrid"] = "vdb"
     route_reason: str = ""
+    file_card: UploadFileCard | None = None
     sql_tables: list[PublicSqlTableMetadata] = Field(default_factory=list)
 
 

@@ -115,13 +115,23 @@ def trace_envelope(
         "render_status": _render_status(answer),
         "ungrounded_numeric_spans": _ungrounded_numbers(
             answer,
-            markdown_response,
+            _numeric_grounding_response(result, markdown_response),
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         ),
         "token_usage": _token_usage(timing),
         "chart_count": len(charts),
         "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
     }
+
+
+def _numeric_grounding_response(
+    result: Mapping[str, Any],
+    markdown_response: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    grounding_text = result.get("file_brief_grounding_text")
+    if result.get("file_only_ready") is True and isinstance(grounding_text, str):
+        return {"fact_md": grounding_text}
+    return markdown_response
 
 
 

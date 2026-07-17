@@ -808,6 +808,9 @@ def test_file_only_ready_machine_brief_uses_observed_schema_without_llm() -> Non
         file_name="CHSO.xlsx",
         storage_route="hybrid",
         chunk_count=18,
+        title="CHSO Sell Out",
+        sheet_count=1,
+        page_count=None,
         sql_tables=(
             UploadedSqlTableOverview(
                 sheet_name="Sell Out Standard",
@@ -827,6 +830,7 @@ def test_file_only_ready_machine_brief_uses_observed_schema_without_llm() -> Non
     assert result["file_brief_basis"] == "observed_schema"
     assert result["file_brief_is_answer_evidence"] is False
     assert "파일 확인 완료 - 지금 질문하실 수 있어요" in result["answer"]
+    assert "CHSO Sell Out" in result["answer"]
     assert "Sell Out Standard" in result["answer"]
     assert "12,269행 x 252열" in result["answer"]
     assert "이 파일의 전체 구조를 설명해줘" in result["answer"]
