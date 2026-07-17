@@ -357,6 +357,7 @@ def _is_aggregate_question(question: str) -> bool:
     return (
         _is_monthly_trend_question(question)
         or _is_growth_by_channel_question(question)
+        or _top_n_limit(question) is not None
         or _contains_configured_term(
             question,
             "JW_CHAT_FILE_SQL_AGGREGATE_TERMS",
@@ -782,6 +783,37 @@ def _render_aggregate_answer(
             )
             + " |"
         )
+    count_index = next(
+        (
+            index
+            for index, name in enumerate(columns)
+            if name.casefold() == "response_count"
+        ),
+        None,
+    )
+    label_index = next(
+        (
+            index
+            for index in range(len(columns))
+            if index not in {applied_index, count_index}
+        ),
+        None,
+    )
+    if (
+        count_index is not None
+        and label_index is not None
+        and all(
+            max(label_index, count_index) < len(row)
+            and _is_number(row[count_index])
+            for row in rows
+        )
+    ):
+        dimension_label = labels[label_index]
+        summaries = ", ".join(
+            f"{dimension_label} {row[label_index]}: {_format_number(row[count_index])}건"
+            for row in rows
+        )
+        lines.append(f"건수 요약: {summaries}입니다.")
     if re.search(r"(?:비교|대비|어느|어디|큰가|더\s*크)", question) and len(rows) >= 2:
         value_index = next(
             (
@@ -1059,7 +1091,10 @@ def _resolve_deterministic_select(
                         f" GROUP BY {channel_query} ORDER BY {aggregate_alias} DESC"
                     )
                     resolved.append("channel")
-            elif re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE):
+            elif re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE) or (
+                _top_n_limit(question) is not None
+                and re.search(r"제품(?:명)?", question, re.IGNORECASE)
+            ):
                 product = _find_column(
                     columns,
                     r"(?:^|\b)product(?:\s+name)?(?:\b|$)|제품(?:명)?",

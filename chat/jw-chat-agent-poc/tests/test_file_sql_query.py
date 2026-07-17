@@ -376,6 +376,8 @@ def test_channel_by_count_executes_grouped_rows(monkeypatch) -> None:
     assert "GROUP BY c259 ORDER BY response_count DESC" in captured["sql"]
     assert "| 2 | 100 | 100 |" in outcome.answer_md
     assert "| 1 | 92 | 92 |" in outcome.answer_md
+    assert "채널 2: 100건" in outcome.answer_md
+    assert "채널 1: 92건" in outcome.answer_md
 
 
 def test_fastest_growing_channel_compares_grounded_period_endpoints() -> None:

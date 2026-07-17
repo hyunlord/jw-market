@@ -562,6 +562,19 @@ def test_product_top_n_sellout_groups_by_product_name() -> None:
     assert plan["sql"].endswith("LIMIT 10")
 
 
+def test_natural_product_top_n_groups_by_product_without_by_suffix() -> None:
+    plan = file_sql_query._deterministic_select(
+        "상위 10개 제품",
+        (_wide_chso_schema(),),
+    )
+
+    assert plan is not None
+    assert "SELECT c3, SUM(c72) AS total_value" in plan["sql"]
+    assert "WHERE c3 IS NOT NULL AND TRIM(c3) <> ''" in plan["sql"]
+    assert "GROUP BY c3 ORDER BY total_value DESC" in plan["sql"]
+    assert plan["sql"].endswith("LIMIT 10")
+
+
 def test_unsupported_measure_fails_closed_before_planner(monkeypatch) -> None:
     monkeypatch.setattr(file_sql_query, "_fetch_schema", lambda *_args: _wide_chso_schema())
     monkeypatch.setattr(
