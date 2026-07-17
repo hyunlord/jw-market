@@ -1135,8 +1135,13 @@ def ensure_deep_research_structure(answer: str) -> str:
 
     cleaned = _clean_deep_public_markdown(cleanup_markdown_answer(answer))
     body, source = _split_deep_source_section(cleaned)
+    if not body:
+        return cleaned
+
     headings = tuple(_DEEP_BODY_HEADING_RE.finditer(body))
-    if len(headings) >= 2 or not body:
+    summary_heading = re.search(r"(?m)^##\s+핵심 요약\s*$", body)
+    analysis_heading = re.search(r"(?m)^##\s+종합 분석\s*$", body)
+    if summary_heading and analysis_heading and summary_heading.start() < analysis_heading.start():
         structured_body = body
         return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
 
@@ -1148,17 +1153,47 @@ def ensure_deep_research_structure(answer: str) -> str:
             (
                 "## 핵심 요약",
                 blocks[0],
-                "## 상세 분석",
+                "## 종합 분석",
                 "\n\n".join(blocks[1:]),
+            )
+        )
+    elif len(headings) >= 2:
+        first_heading = headings[0]
+        second_heading = headings[1]
+        leading = body[: first_heading.start()].strip()
+        first_section = body[first_heading.end() : second_heading.start()].strip()
+        first_title = body[first_heading.start() : first_heading.end()].removeprefix("##").strip()
+        second_title = body[second_heading.start() : second_heading.end()].removeprefix("##").strip()
+        remaining_sections = body[second_heading.end() :].strip()
+        first_labeled_section = (
+            first_section if first_title == "핵심 요약" else f"**{first_title}** {first_section}".strip()
+        )
+        summary = "\n\n".join(part for part in (leading, first_labeled_section) if part)
+        remaining_sections = _demote_deep_body_headings(remaining_sections)
+        second_labeled_section = f"**{second_title}** {remaining_sections}".strip()
+        structured_body = "\n\n".join(
+            (
+                "## 핵심 요약",
+                summary,
+                "## 종합 분석",
+                second_labeled_section,
             )
         )
     else:
         first_heading = headings[0]
         leading = body[: first_heading.start()].strip()
         if leading:
-            structured_body = "\n\n".join(("## 핵심 요약", leading, body[first_heading.start() :].strip()))
+            first_title = body[first_heading.start() : first_heading.end()].removeprefix("##").strip()
+            first_content = body[first_heading.end() :].strip()
+            structured_body = "\n\n".join(
+                (
+                    "## 핵심 요약",
+                    leading,
+                    "## 종합 분석",
+                    f"**{first_title}** {first_content}".strip(),
+                )
+            )
         else:
-            heading = body[: first_heading.end()].strip()
             content_blocks = [
                 block.strip()
                 for block in re.split(r"\n{2,}", body[first_heading.end() :].strip())
@@ -1168,14 +1203,18 @@ def ensure_deep_research_structure(answer: str) -> str:
                 return cleaned
             structured_body = "\n\n".join(
                 (
-                    heading,
+                    "## 핵심 요약",
                     content_blocks[0],
-                    "## 상세 분석",
+                    "## 종합 분석",
                     "\n\n".join(content_blocks[1:]),
                 )
             )
 
     return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
+
+
+def _demote_deep_body_headings(markdown: str) -> str:
+    return re.sub(r"(?m)^##\s+", "### ", markdown)
 
 
 def _clean_deep_public_markdown(answer: str) -> str:

@@ -491,8 +491,33 @@ def test_deep_finalizer_keeps_one_source_section_at_the_end() -> None:
     revised = ensure_deep_research_structure(raw)
 
     assert revised.count("## 출처") == 1
-    assert revised.index("## 주요 MI 요약") < revised.index("## 출처")
+    assert revised.index("**주요 MI 요약**") < revised.index("## 출처")
     assert revised.rstrip().endswith("| UBIST | 2026-05 |")
+
+
+def test_deep_finalizer_enforces_required_sections_when_model_uses_other_headings() -> None:
+    raw = """## 시장 현황
+
+로수젯이 선두이고 리바로젯의 점유율은 상승했습니다.
+
+## 경쟁 변화
+
+리피토의 점유율은 같은 기간 하락했습니다.
+
+## 출처
+- UBIST
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert revised.startswith("## 핵심 요약")
+    assert revised.count("## 핵심 요약") == 1
+    assert revised.count("## 종합 분석") == 1
+    assert "로수젯이 선두이고 리바로젯의 점유율은 상승했습니다." in revised
+    assert "**시장 현황**" in revised
+    assert "**경쟁 변화**" in revised
+    assert revised.count("## 출처") == 1
+    assert revised.index("## 핵심 요약") < revised.index("## 종합 분석") < revised.index("## 출처")
 
 
 def test_deep_finalizer_removes_internal_policy_debris_and_duplicate_blocks() -> None:
@@ -724,9 +749,10 @@ def test_compute_final_answer_keeps_deep_synthesis_out_of_general_contracts(
 
     assert contract_calls == []
     assert "## 핵심 요약" in final.text
-    assert "## 시장·경쟁 구도" in final.text
-    assert "## 임상·허가·안전성·환자 맥락" in final.text
-    assert "## 종합 판단과 한계" in final.text
+    assert "## 종합 분석" in final.text
+    assert "**시장·경쟁 구도**" in final.text
+    assert "### 임상·허가·안전성·환자 맥락" in final.text
+    assert "### 종합 판단과 한계" in final.text
 
 
 def test_compute_final_answer_applies_claim_policy_after_deep_text_helpers(
@@ -821,11 +847,11 @@ def test_compute_final_answer_structures_headingless_deep_synthesis(
     )
 
     assert "## 핵심 요약" in final.text
-    assert "## 상세 분석" in final.text
+    assert "## 종합 분석" in final.text
     assert "리바로의 시장 자료와 외부 근거를 함께 보면" in final.text
     assert "시장 수치, 임상 등록, 허가 정보는 서로 다른 범위를 설명" in final.text
-    assert final.text.index("## 핵심 요약") < final.text.index("## 상세 분석")
-    assert final.text.index("## 상세 분석") < final.text.index("## 출처")
+    assert final.text.index("## 핵심 요약") < final.text.index("## 종합 분석")
+    assert final.text.index("## 종합 분석") < final.text.index("## 출처")
 
 
 def test_compute_final_answer_adds_detail_after_single_attached_heading(
@@ -869,10 +895,10 @@ def test_compute_final_answer_adds_detail_after_single_attached_heading(
     )
 
     assert final.text.count("## 핵심 요약") == 1
-    assert final.text.count("## 상세 분석") == 1
+    assert final.text.count("## 종합 분석") == 1
     assert "리바로의 확인된 근거를 먼저 요약합니다" in final.text
     assert "시장 수치와 외부 근거는 범위가 달라" in final.text
-    assert final.text.index("## 상세 분석") < final.text.index("## 출처")
+    assert final.text.index("## 종합 분석") < final.text.index("## 출처")
 
 
 def test_compute_final_answer_drops_unverified_deep_claims(
