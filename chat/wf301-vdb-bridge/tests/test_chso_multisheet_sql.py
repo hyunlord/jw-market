@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from zipfile import ZipFile
 
 from openpyxl import Workbook
 
-from src import main
+from src import main, xlsx_sql_route
 from src.xlsx_preprocessor import extract_xlsx_chunks
 from src.xlsx_sql_route import (
     FileSqlRouteConfig,
     SheetSqlProfile,
     classify_workbook_profiles,
+    _fast_sheet_features,
     inspect_xlsx_for_sql,
     load_sql_sheet,
     logical_names_for_profiles,
@@ -60,6 +62,118 @@ def _config() -> FileSqlRouteConfig:
         min_density=0.10,
         max_merged_ranges=0,
     )
+
+
+def test_fast_sql_profile_matches_dense_sheet_shape_and_used_cells(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "dense-profile.xlsx"
+    sheet_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:C3"/>
+  <sheetData>
+    <row r="1" spans="1:3"><c r="A1"><v>1</v></c><c r="B1"><v>2</v></c><c r="C1"><is><t>x</t></is></c></row>
+    <row r="2" spans="1:3"><c r="A2"><v>3</v></c><c r="B2"/><c r="C2"><v>4</v></c></row>
+    <row r="3" spans="1:3"><c r="A3"><v>5</v></c><c r="B3"><v>6</v></c><c r="C3"><v>7</v></c></row>
+  </sheetData>
+</worksheet>"""
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+    with ZipFile(path) as archive:
+        features = _fast_sheet_features(archive, "xl/worksheets/sheet1.xml")
+
+    assert features is not None
+    assert features.row_count == 3
+    assert features.column_count == 3
+    assert features.used_cell_count == 8
+    assert features.formula_cell_count == 0
+    assert features.merged_range_count == 0
+
+
+def test_fast_sql_profile_falls_back_when_formula_or_span_proof_is_missing(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unsafe-profile.xlsx"
+    formula_xml = b"""<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<dimension ref="A1:B2"/><sheetData><row r="1" spans="1:2"><c r="A1"><f>1+1</f><v>2</v></c></row>
+<row r="2" spans="1:2"><c r="B2"><v>3</v></c></row></sheetData></worksheet>"""
+    missing_span_xml = formula_xml.replace(b'<f>1+1</f>', b'').replace(
+        b' spans="1:2"', b''
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/worksheets/formula.xml", formula_xml)
+        archive.writestr("xl/worksheets/missing-span.xml", missing_span_xml)
+
+    with ZipFile(path) as archive:
+        assert _fast_sheet_features(archive, "xl/worksheets/formula.xml") is None
+        assert _fast_sheet_features(archive, "xl/worksheets/missing-span.xml") is None
+
+
+def test_fast_sql_profile_falls_back_when_row_or_dimension_proof_is_invalid(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "invalid-profile.xlsx"
+    missing_row_xml = b"""<worksheet><dimension ref="A1:B3"/><sheetData>
+<row r="1" spans="1:2"><c r="A1"><v>1</v></c></row>
+<row r="3" spans="1:2"><c r="B3"><v>2</v></c></row></sheetData></worksheet>"""
+    stale_span_xml = missing_row_xml.replace(b'<dimension ref="A1:B3"', b'<dimension ref="A1:B2"').replace(
+        b'<row r="3" spans="1:2"', b'<row r="2" spans="1:3"'
+    )
+    invalid_dimension_xml = missing_row_xml.replace(b"A1:B3", b"A1:\xff3")
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/worksheets/missing-row.xml", missing_row_xml)
+        archive.writestr("xl/worksheets/stale-span.xml", stale_span_xml)
+        archive.writestr("xl/worksheets/invalid-dimension.xml", invalid_dimension_xml)
+
+    with ZipFile(path) as archive:
+        assert _fast_sheet_features(archive, "xl/worksheets/missing-row.xml") is None
+        assert _fast_sheet_features(archive, "xl/worksheets/stale-span.xml") is None
+        assert _fast_sheet_features(archive, "xl/worksheets/invalid-dimension.xml") is None
+
+
+def test_large_sql_inspection_prefers_proven_fast_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Large Dense"
+    sheet.append(["brand", "sales"])
+    sheet.append(["LIVALO", 100])
+    path = tmp_path / "large-dense.xlsx"
+    workbook.save(path)
+    fast_profile = _compact_profile(
+        1,
+        "Large Dense",
+        rows=2,
+        columns=2,
+        used_cells=4,
+    )
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_fast_sheet_features",
+        lambda _archive, _sheet_path: xlsx_sql_route.SheetFeatures(
+            row_count=fast_profile.row_count,
+            column_count=fast_profile.column_count,
+            used_cell_count=fast_profile.used_cell_count,
+            formula_cell_count=fast_profile.formula_cell_count,
+            merged_range_count=fast_profile.merged_range_count,
+        ),
+    )
+    monkeypatch.setattr(
+        xlsx_sql_route,
+        "_sheet_features_streaming",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("structured fallback must not run")
+        ),
+    )
+
+    decision = inspect_xlsx_for_sql(path, _config())
+
+    assert decision.route == "sql"
+    assert decision.profiles[0].audit_dict() == fast_profile.audit_dict()
 
 
 def test_chso_eight_column_dense_sheet_is_sql_candidate() -> None:

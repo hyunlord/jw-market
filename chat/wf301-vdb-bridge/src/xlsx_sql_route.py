@@ -15,8 +15,10 @@ from .xlsx_preprocessor import (
     CROSSTABLE_LINK_RE,
     CROSSTABLE_MIN_INDEX_LINKS,
     SHEET_NS,
+    SheetFeatures,
     SheetRow,
     XlsxPreprocessError,
+    _cell_range,
     _cell_position,
     _cell_value,
     _dedupe_headers,
@@ -27,6 +29,15 @@ from .xlsx_preprocessor import (
     _sheet_paths,
     _style_formats,
 )
+
+
+FAST_SQL_PROFILE_MIN_XML_BYTES = 32 * 1024 * 1024
+FAST_SQL_PROFILE_MAX_XML_BYTES = 256 * 1024 * 1024
+_DIMENSION_REF_RE = re.compile(rb'<dimension\b[^>]*\bref="([^"]+)"')
+_ROW_REF_RE = re.compile(rb'<row\b[^>]*\br="([0-9]+)"')
+_ROW_SPAN_RE = re.compile(rb'<row\b[^>]*\bspans="([0-9]+):([0-9]+)"')
+_EMPTY_VALUE_RE = re.compile(rb'<v(?:\s[^>]*)?>\s*</v>|<v(?:\s[^>]*)?\s*/>')
+_FORMULA_TAG_RE = re.compile(rb'<f(?:\s|/?>)')
 
 
 def _env_int(name: str, default: int) -> int:
@@ -227,7 +238,16 @@ def inspect_xlsx_for_sql(
             crosstable_names = _crosstable_sheet_names(archive, sheet_paths)
             profiles: list[SheetSqlProfile] = []
             for index, (sheet_name, sheet_path) in enumerate(sheet_paths, start=1):
-                features = _sheet_features_streaming(archive, sheet_path)
+                xml_size = archive.getinfo(sheet_path).file_size
+                features = (
+                    _fast_sheet_features(archive, sheet_path)
+                    if FAST_SQL_PROFILE_MIN_XML_BYTES
+                    <= xml_size
+                    <= FAST_SQL_PROFILE_MAX_XML_BYTES
+                    else None
+                )
+                if features is None:
+                    features = _sheet_features_streaming(archive, sheet_path)
                 profiles.append(
                     SheetSqlProfile(
                         sheet_index=index,
@@ -244,6 +264,59 @@ def inspect_xlsx_for_sql(
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError) as exc:
         raise XlsxPreprocessError(f"xlsx SQL inspection failed: {exc}") from exc
     return classify_workbook_profiles(tuple(profiles), route_config)
+
+
+def _fast_sheet_features(archive: ZipFile, sheet_path: str) -> SheetFeatures | None:
+    """Profile a proven dense, formula-free OOXML sheet with C-level byte scans.
+
+    Worksheet dimensions and per-row spans are treated only as consistency proofs.
+    Any unsupported or ambiguous representation falls back to the structured parser.
+    """
+
+    raw = archive.read(sheet_path)
+    dimension_match = _DIMENSION_REF_RE.search(raw)
+    if dimension_match is None or _FORMULA_TAG_RE.search(raw):
+        return None
+    if _EMPTY_VALUE_RE.search(raw) or b"<v " in raw or b"<is " in raw:
+        return None
+
+    try:
+        dimension = dimension_match.group(1).decode("ascii", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    bounds = _cell_range(dimension)
+    if bounds is None:
+        row, column = _cell_position(dimension, 0, 0)
+        if row < 1 or column < 1:
+            return None
+        max_row, max_column = row, column
+    else:
+        _first_row, _first_column, max_row, max_column = bounds
+
+    row_refs = _ROW_REF_RE.findall(raw)
+    row_spans = _ROW_SPAN_RE.findall(raw)
+    if not row_refs or len(row_refs) != len(row_spans):
+        return None
+    row_numbers = tuple(int(value) for value in row_refs)
+    if row_numbers != tuple(range(1, max_row + 1)):
+        return None
+    if any(int(start) != 1 or int(end) != max_column for start, end in row_spans):
+        return None
+
+    value_count = raw.count(b"<v>")
+    inline_string_count = raw.count(b"<is>")
+    used_cell_count = value_count + inline_string_count
+    closed_cell_count = raw.count(b"</c>")
+    if used_cell_count > closed_cell_count or used_cell_count > max_row * max_column:
+        return None
+
+    return SheetFeatures(
+        row_count=max_row,
+        column_count=max_column,
+        used_cell_count=used_cell_count,
+        formula_cell_count=0,
+        merged_range_count=raw.count(b"<mergeCell "),
+    )
 
 
 def load_sql_sheet(path: Path, profile: SheetSqlProfile) -> SqlSheetData:
