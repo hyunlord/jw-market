@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from pipeline.scripts.api.composers.number_format import DISPLAY_KEY_SUFFIXES, format_number
@@ -149,73 +150,65 @@ def _clean_dict_recursive(
     *,
     format_derived_inputs: bool = False,
 ) -> Any:
-    if isinstance(obj, list):
-        return [
-            _clean_dict_recursive(
-                item,
-                measure,
-                source,
-                format_derived_inputs=format_derived_inputs,
-            )
-            for item in obj
-        ]
-    if not isinstance(obj, dict):
-        return format_number(obj)
-
     source_key = MEASURE_TO_SERIES_KEY.get(measure or "")
-    if source_key and any(key in obj for key in ALL_SERIES_KEYS):
-        picked = obj.get(source_key, obj.get("value_series", []))
+    series_keys = ALL_SERIES_KEYS
+    display_key_suffixes = DISPLAY_KEY_SUFFIXES
+    format_value = format_number
+    shape_aliases = _frontend_shape_aliases
+    entry_aliases = _frontend_entry_aliases
+    add_anomaly_aliases = _anomaly_aliases
+    numeric_types = (float, Decimal)
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if not isinstance(value, dict):
+            return format_value(value) if isinstance(value, numeric_types) else value
+
+        if source_key and not value.keys().isdisjoint(series_keys):
+            picked = value.get(source_key, value.get("value_series", []))
+            cleaned = {
+                key: clean(
+                    shape_aliases(
+                        key,
+                        child,
+                        source,
+                        format_derived_inputs=format_derived_inputs,
+                    )
+                )
+                for key, child in value.items()
+                if key not in series_keys and not str(key).endswith(display_key_suffixes)
+            }
+            cleaned["value_series"] = clean(picked)
+            return entry_aliases(add_anomaly_aliases(cleaned))
+
         cleaned = {
-            key: _clean_dict_recursive(
-                _frontend_shape_aliases(
+            key: clean(
+                shape_aliases(
                     key,
-                    value,
+                    child,
                     source,
                     format_derived_inputs=format_derived_inputs,
-                ),
-                measure,
-                source,
-                format_derived_inputs=format_derived_inputs,
+                )
             )
-            for key, value in obj.items()
-            if key not in ALL_SERIES_KEYS and not str(key).endswith(DISPLAY_KEY_SUFFIXES)
+            for key, child in value.items()
+            if not str(key).endswith(display_key_suffixes)
         }
-        cleaned["value_series"] = _clean_dict_recursive(
-            picked,
-            measure,
-            source,
-            format_derived_inputs=format_derived_inputs,
-        )
-        return _frontend_entry_aliases(_anomaly_aliases(cleaned))
+        market_meta = cleaned.get("market_meta")
+        market_series = cleaned.get("market_size_series")
+        data = cleaned.get("data")
+        if not isinstance(market_series, list) and isinstance(data, dict):
+            market_series = data.get("market_size_series")
+        if isinstance(market_meta, dict) and isinstance(market_series, list):
+            values = {
+                str(point.get("period")): point.get("value")
+                for point in market_series
+                if isinstance(point, dict) and point.get("period") is not None
+            }
+            market_meta["mom_growth_meta"] = growth_endpoint_meta(values)
+        return entry_aliases(add_anomaly_aliases(cleaned))
 
-    cleaned = {
-        key: _clean_dict_recursive(
-            _frontend_shape_aliases(
-                key,
-                value,
-                source,
-                format_derived_inputs=format_derived_inputs,
-            ),
-            measure,
-            source,
-            format_derived_inputs=format_derived_inputs,
-        )
-        for key, value in obj.items()
-        if not str(key).endswith(DISPLAY_KEY_SUFFIXES)
-    }
-    market_meta = cleaned.get("market_meta")
-    market_series = cleaned.get("market_size_series")
-    data = cleaned.get("data")
-    if not isinstance(market_series, list) and isinstance(data, dict):
-        market_series = data.get("market_size_series")
-    if isinstance(market_meta, dict) and isinstance(market_series, list):
-        values = {
-            str(point.get("period")): point.get("value")
-            for point in market_series
-            if isinstance(point, dict) and point.get("period") is not None
-        }
-        market_meta["mom_growth_meta"] = growth_endpoint_meta(values)
-    return _frontend_entry_aliases(_anomaly_aliases(cleaned))
+    return clean(obj)
 
 
 def compose_cached_json(raw: Any, measure: str | None = None, source: str | None = None) -> Any:

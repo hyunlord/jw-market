@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -1336,6 +1337,79 @@ def test_dynamic_cleaner_preserves_preformatted_matrix_derivations() -> None:
     expected = compose_cached_json(deep_format_numbers(raw), measure="sales")
 
     assert cache_to_response.compose_dynamic_json(raw, measure="sales") == expected
+
+
+def test_dynamic_cleaner_resolves_measure_context_once_per_payload(monkeypatch) -> None:
+    class CountingSeriesKeys(dict[str, str]):
+        def __init__(self, values: dict[str, str]) -> None:
+            super().__init__(values)
+            self.get_calls = 0
+
+        def get(self, key: str, default: object = None) -> str | object:
+            self.get_calls += 1
+            return super().get(key, default)
+
+    series_keys = CountingSeriesKeys(cache_to_response.MEASURE_TO_SERIES_KEY)
+    monkeypatch.setattr(cache_to_response, "MEASURE_TO_SERIES_KEY", series_keys)
+    raw = {
+        "status": "SUCCESS",
+        "result": {
+            "market_meta": {"market_id": "C10A1"},
+            "data": {
+                "brands": [
+                    {
+                        "brand_name": "LIVALO",
+                        "value_series": {"2026-04": 1.23459},
+                    }
+                ]
+            },
+        },
+    }
+
+    assert cache_to_response.compose_dynamic_json(raw, measure="sales") == {
+        "status": "SUCCESS",
+        "result": {
+            "market_meta": {"market_id": "C10A1"},
+            "data": {
+                "brands": [
+                    {
+                        "brand_name": "LIVALO",
+                        "value_series": {"2026-04": 1.2345},
+                    }
+                ]
+            },
+        },
+    }
+    assert series_keys.get_calls == 1
+
+
+def test_dynamic_cleaner_only_calls_formatter_for_changeable_numeric_values(monkeypatch) -> None:
+    formatted: list[object] = []
+
+    def recording_formatter(value: object) -> object:
+        formatted.append(value)
+        return value
+
+    monkeypatch.setattr(cache_to_response, "format_number", recording_formatter)
+
+    assert cache_to_response.compose_cached_json(
+        {
+            "none": None,
+            "boolean": True,
+            "integer": 7,
+            "text": "unchanged",
+            "floating": 1.25,
+            "decimal": Decimal("2.5"),
+        }
+    ) == {
+        "none": None,
+        "boolean": True,
+        "integer": 7,
+        "text": "unchanged",
+        "floating": 1.25,
+        "decimal": Decimal("2.5"),
+    }
+    assert formatted == [1.25, Decimal("2.5")]
 
 
 def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypatch) -> None:
