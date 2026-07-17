@@ -114,6 +114,10 @@ _ChannelRowsCache = dict[
     tuple[int, str, str, tuple[str, ...]],
     tuple[list[dict[str, Any]], list[dict[str, Any]]],
 ]
+_SegmentRowsCache = dict[
+    tuple[int, str, tuple[str, ...], str, str, str | None, int | None, bool],
+    tuple[list[dict[str, Any]], list[dict[str, Any]]],
+]
 _RankSeriesCache = dict[
     tuple[int, tuple[str, ...]],
     dict[str, list[int | None]],
@@ -1868,6 +1872,62 @@ def _segment_rows_for_level(
     return segments
 
 
+def _cached_segment_rows_for_level(
+    *,
+    rows: list[dict[str, Any]],
+    level: str,
+    periods: list[str],
+    source: str,
+    channel: str,
+    target_name: str | None,
+    top_n: int | None = 5,
+    use_latest_valid_share: bool = False,
+    series_value_cache: _SeriesValueCache | None = None,
+    series_observed_cache: _SeriesObservedCache | None = None,
+    segment_rows_cache: _SegmentRowsCache | None = None,
+) -> list[dict[str, Any]]:
+    if segment_rows_cache is None:
+        return _segment_rows_for_level(
+            rows=rows,
+            level=level,
+            periods=periods,
+            source=source,
+            channel=channel,
+            target_name=target_name,
+            top_n=top_n,
+            use_latest_valid_share=use_latest_valid_share,
+            series_value_cache=series_value_cache,
+            series_observed_cache=series_observed_cache,
+        )
+    cache_key = (
+        id(rows),
+        level,
+        tuple(periods),
+        source,
+        channel,
+        target_name,
+        top_n,
+        use_latest_valid_share,
+    )
+    cached = segment_rows_cache.get(cache_key)
+    if cached is not None and cached[0] is rows:
+        return deepcopy(cached[1])
+    segments = _segment_rows_for_level(
+        rows=rows,
+        level=level,
+        periods=periods,
+        source=source,
+        channel=channel,
+        target_name=target_name,
+        top_n=top_n,
+        use_latest_valid_share=use_latest_valid_share,
+        series_value_cache=series_value_cache,
+        series_observed_cache=series_observed_cache,
+    )
+    segment_rows_cache[cache_key] = (rows, deepcopy(segments))
+    return segments
+
+
 def _rows_for_channel(
     rows: list[dict[str, Any]],
     source: str,
@@ -2309,6 +2369,7 @@ def _build_analysis_levels_from_mart(
     series_value_cache: _SeriesValueCache | None = None,
     series_observed_cache: _SeriesObservedCache | None = None,
     channel_rows_cache: _ChannelRowsCache | None = None,
+    segment_rows_cache: _SegmentRowsCache | None = None,
     resolved_levels: set[str] | None = None,
     resolved_periods: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -2347,7 +2408,7 @@ def _build_analysis_levels_from_mart(
         level_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
         if level in enabled_levels:
             by_channel = {
-                channel: _segment_rows_for_level(
+                channel: _cached_segment_rows_for_level(
                     rows=rows,
                     level=level,
                     periods=periods,
@@ -2358,6 +2419,7 @@ def _build_analysis_levels_from_mart(
                     use_latest_valid_share=use_latest_valid_share,
                     series_value_cache=series_value_cache,
                     series_observed_cache=series_observed_cache,
+                    segment_rows_cache=segment_rows_cache,
                 )
                 for channel in channels
             }
@@ -3783,6 +3845,7 @@ def build_response(
     analysis_series_value_cache: _SeriesValueCache = {}
     analysis_series_observed_cache: _SeriesObservedCache = {}
     analysis_channel_rows_cache: _ChannelRowsCache = {}
+    analysis_segment_rows_cache: _SegmentRowsCache = {}
     analysis_rank_series_cache: _RankSeriesCache = {}
     block_epoch = current_analysis_level_source_epoch()
     precomputed_block = (
@@ -3819,6 +3882,7 @@ def build_response(
             series_value_cache=analysis_series_value_cache,
             series_observed_cache=analysis_series_observed_cache,
             channel_rows_cache=analysis_channel_rows_cache,
+            segment_rows_cache=analysis_segment_rows_cache,
         )
     else:
         resolved_levels = None
@@ -3916,6 +3980,7 @@ def build_response(
                     series_value_cache=analysis_series_value_cache,
                     series_observed_cache=analysis_series_observed_cache,
                     channel_rows_cache=analysis_channel_rows_cache,
+                    segment_rows_cache=analysis_segment_rows_cache,
                 )
             clone_analysis_levels = _ensure_split_class_alias(deepcopy(ANALYSIS_LEVELS_BY_CHANNEL_CACHE[clone_levels_key]))
             if not include_all_d3_options:

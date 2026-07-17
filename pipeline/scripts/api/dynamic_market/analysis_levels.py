@@ -77,6 +77,7 @@ def build_analysis_level_sections(
     series_value_cache: cause_builder._SeriesValueCache = {}
     series_observed_cache: cause_builder._SeriesObservedCache = {}
     channel_rows_cache: cause_builder._ChannelRowsCache = {}
+    segment_rows_cache: cause_builder._SegmentRowsCache = {}
     try:
         analysis_levels = cause_builder._build_analysis_levels_from_mart(
             rows=rows,
@@ -91,6 +92,7 @@ def build_analysis_level_sections(
             series_value_cache=series_value_cache,
             series_observed_cache=series_observed_cache,
             channel_rows_cache=channel_rows_cache,
+            segment_rows_cache=segment_rows_cache,
         )
         analysis_levels = cause_builder._ensure_split_class_alias(analysis_levels)
         rows_by_level = cause_builder._level_rows_by_segment(
@@ -129,6 +131,7 @@ def build_analysis_level_sections(
                     series_value_cache=series_value_cache,
                     series_observed_cache=series_observed_cache,
                     channel_rows_cache=channel_rows_cache,
+                    segment_rows_cache=segment_rows_cache,
                 )
             )
         market_status = cause_builder._ensure_analysis_level_market_status_contract(

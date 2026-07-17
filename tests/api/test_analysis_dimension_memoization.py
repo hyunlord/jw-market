@@ -86,6 +86,54 @@ def test_analysis_level_channels_match_requires_same_ordered_channels() -> None:
     assert not cause_builder._analysis_level_channels_match(analysis_levels, ["전체"])
 
 
+def test_analysis_level_builds_reuse_shared_segment_rows_without_aliasing(monkeypatch) -> None:
+    rows = [
+        {
+            "brand_name": "A",
+            "by_dimension": {"class": "A"},
+            "metric_history": {"2026-01": {"raw_value": 3.0}},
+            "channel_data": {"의원": {"2026-01": {"raw_value": 3.0}}},
+        }
+    ]
+    calls: list[tuple[str, str]] = []
+    original = cause_builder._segment_rows_for_level
+
+    def count_segments(**kwargs):
+        calls.append((kwargs["level"], kwargs["channel"]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(cause_builder, "_segment_rows_for_level", count_segments)
+    shared_cache = {}
+    common = {
+        "rows": rows,
+        "source": "UBIST",
+        "market": {"analyze_class": 1},
+        "view_source_id": "ml_test",
+        "target_name": None,
+        "fallback_level_top5": {},
+        "resolved_levels": {"Class"},
+        "resolved_periods": ["2026-01"],
+        "segment_rows_cache": shared_cache,
+    }
+
+    facility = cause_builder._build_analysis_levels_from_mart(
+        **common,
+        channels_override=["전체", "의원"],
+    )
+    specialty = cause_builder._build_analysis_levels_from_mart(
+        **common,
+        channels_override=["전체", "내과"],
+    )
+
+    assert calls.count(("Class", "전체")) == 1
+    assert calls.count(("Class", "의원")) == 1
+    assert calls.count(("Class", "내과")) == 1
+    facility_total = facility["data"]["Class"]["by_channel"]["전체"]
+    specialty_total = specialty["data"]["Class"]["by_channel"]["전체"]
+    assert facility_total == specialty_total
+    assert facility_total is not specialty_total
+
+
 def test_dimension_segment_index_matches_individual_segment_selection() -> None:
     rows = [
         {
@@ -577,6 +625,7 @@ def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch
     assert len(build_calls) == 2
     assert build_calls[0]["series_value_cache"] is build_calls[1]["series_value_cache"]
     assert build_calls[0]["series_observed_cache"] is build_calls[1]["series_observed_cache"]
+    assert build_calls[0]["segment_rows_cache"] is build_calls[1]["segment_rows_cache"]
     assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]
 
 
