@@ -9,6 +9,10 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.service.file_search_client import (
+    UploadedFileOverview,
+    UploadedSqlTableOverview,
+)
 from jw_chat_agent_poc.service.answer_safety import chunk_text, ensure_file_page_evidence
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
@@ -797,6 +801,108 @@ def test_answer_question_returns_deterministic_file_only_ready_without_agent() -
     assert "파일 2개 저장 완료" in result["answer"]
     assert "A.pdf" in result["answer"]
     assert "B.xlsx" in result["answer"]
+
+
+def test_file_only_ready_machine_brief_uses_observed_schema_without_llm() -> None:
+    overview = UploadedFileOverview(
+        file_name="CHSO.xlsx",
+        storage_route="hybrid",
+        chunk_count=18,
+        sql_tables=(
+            UploadedSqlTableOverview(
+                sheet_name="Sell Out Standard",
+                row_count=12_269,
+                column_count=252,
+            ),
+        ),
+    )
+
+    result = service_app._file_only_ready_result(
+        [Path("/tmp/CHSO.xlsx")],
+        None,
+        file_overviews=(overview,),
+    )
+
+    assert result["file_only_ready"] is True
+    assert result["file_brief_basis"] == "observed_schema"
+    assert result["file_brief_is_answer_evidence"] is False
+    assert "파일 확인 완료 - 지금 질문하실 수 있어요" in result["answer"]
+    assert "Sell Out Standard" in result["answer"]
+    assert "12,269행 x 252열" in result["answer"]
+    assert "이 파일의 전체 구조를 설명해줘" in result["answer"]
+
+
+def test_answer_question_fetches_machine_brief_for_fresh_upload(monkeypatch) -> None:
+    overview = UploadedFileOverview(
+        file_name="CHSO.xlsx",
+        storage_route="sql",
+        chunk_count=0,
+        sql_tables=(
+            UploadedSqlTableOverview(
+                sheet_name="Sell Out Standard",
+                row_count=12_269,
+                column_count=252,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_overviews",
+        lambda _conversation_id: (overview,),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (None, (), True, "", ()),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "",
+        "live",
+        "conv-card",
+        documents=[Path("/tmp/CHSO.xlsx")],
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["file_brief_basis"] == "observed_schema"
+    assert "Sell Out Standard" in item["result"]["answer"]
+    assert "12,269행 x 252열" in item["result"]["answer"]
+
+
+def test_file_only_ready_machine_brief_lists_every_uploaded_file() -> None:
+    overviews = (
+        UploadedFileOverview(
+            file_name="CHSO.xlsx",
+            storage_route="sql",
+            chunk_count=0,
+            sql_tables=(
+                UploadedSqlTableOverview(
+                    sheet_name="Sell Out Standard",
+                    row_count=12_268,
+                    column_count=252,
+                ),
+            ),
+        ),
+        UploadedFileOverview(
+            file_name="guideline.pdf",
+            storage_route="vdb",
+            chunk_count=185,
+        ),
+    )
+
+    result = service_app._file_only_ready_result(
+        None,
+        None,
+        file_overviews=overviews,
+    )
+
+    assert result["file_names"] == ["CHSO.xlsx", "guideline.pdf"]
+    assert "12,268행 x 252열" in result["answer"]
+    assert "검색 가능한 내용 조각: 185개" in result["answer"]
+    assert "이 문서의 핵심 내용을 요약해줘" in result["answer"]
 
 
 def test_chat_rejects_empty_question_without_files() -> None:

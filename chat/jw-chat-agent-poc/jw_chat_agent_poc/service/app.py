@@ -86,10 +86,13 @@ from jw_chat_agent_poc.service.context_scope import (
     resolve_context_scope,
 )
 from jw_chat_agent_poc.service.file_search_client import (
+    UploadedFileOverview,
+    fetch_uploaded_file_overviews,
     fetch_uploaded_file_schema_columns,
     has_active_uploaded_file,
     search_uploaded_files,
 )
+from jw_chat_agent_poc.service.file_brief import render_uploaded_file_machine_brief
 from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_question
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
@@ -512,6 +515,11 @@ def _answer_question(
                 if has_file and not provided_file
                 else ()
             )
+        file_overviews = (
+            fetch_uploaded_file_overviews(state.conversation_id)
+            if has_file and not effective_question.strip()
+            else ()
+        )
         previous_turn = state.turns[-1] if state.turns else None
         routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
@@ -638,7 +646,11 @@ def _answer_question(
                 file_sql_trace,
             ) = _delegated_file_context(file_question, state.conversation_id, file_context)
             if not effective_question.strip() and _has_file_signal(documents, delegated_file_context):
-                result = _file_only_ready_result(documents, delegated_file_context)
+                result = _file_only_ready_result(
+                    documents,
+                    delegated_file_context,
+                    file_overviews=file_overviews,
+                )
             else:
                 result = _file_scoped_result(effective_question)
         else:
@@ -653,7 +665,11 @@ def _answer_question(
                 use_direct_agent_loop=use_direct_agent_loop,
             )
         if not effective_question.strip() and context_scope is ContextScope.FILE and not result.get("file_only_ready"):
-            result = _file_only_ready_result(documents, delegated_file_context)
+            result = _file_only_ready_result(
+                documents,
+                delegated_file_context,
+                file_overviews=file_overviews,
+            )
         if context_scope is ContextScope.MARKET and execution_question != effective_question:
             result = {**result, "effective_question": execution_question}
         result = _enforce_file_scope_isolation(result, effective_question, context_scope)
@@ -1071,13 +1087,28 @@ def _annotate_context_scope(result: dict, scope: ContextScope) -> dict:
     return copied
 
 
-def _file_only_ready_result(documents: list[Path] | None, file_context: str | None) -> dict:
-    file_names = [path.name for path in documents or []]
+def _file_only_ready_result(
+    documents: list[Path] | None,
+    file_context: str | None,
+    *,
+    file_overviews: tuple[UploadedFileOverview, ...] = (),
+) -> dict:
+    file_names = list(
+        dict.fromkeys(
+            [path.name for path in documents or []]
+            + [overview.file_name for overview in file_overviews]
+        )
+    )
     count = len(file_names)
     count_text = f"{count}개" if count else ""
     subject = f"파일 {count_text}".strip()
     answer = f"{subject} 저장 완료했습니다. 이 세션에서 질문하면 업로드한 파일을 참조해 답변합니다."
-    if file_names:
+    if file_overviews:
+        answer = "파일 확인 완료 - 지금 질문하실 수 있어요."
+        answer = f"{answer}\n\n" + "\n\n".join(
+            render_uploaded_file_machine_brief(overview) for overview in file_overviews
+        )
+    elif file_names:
         answer = f"{answer}\n\n" + "\n".join(f"- {name}" for name in file_names)
     if file_context and not file_names:
         answer = f"{answer}\n\n- 업로드 파일"
@@ -1087,8 +1118,9 @@ def _file_only_ready_result(documents: list[Path] | None, file_context: str | No
         "tool_calls": [],
         "file_only_ready": True,
         "file_names": file_names,
+        "file_brief_basis": "observed_schema" if file_overviews else "file_name",
+        "file_brief_is_answer_evidence": False,
     }
-
 
 def _attach_file_context(
     result: dict, file_context: str | None, file_source_items: tuple[dict[str, Any], ...] = ()

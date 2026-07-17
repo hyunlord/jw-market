@@ -29,6 +29,21 @@ class UploadedFileSearchResult:
     sql_trace: tuple[dict[str, str], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class UploadedSqlTableOverview:
+    sheet_name: str
+    row_count: int
+    column_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class UploadedFileOverview:
+    file_name: str
+    storage_route: str
+    chunk_count: int
+    sql_tables: tuple[UploadedSqlTableOverview, ...] = ()
+
+
 def search_uploaded_files(
     question: str,
     conversation_id: str | None,
@@ -185,6 +200,76 @@ def has_active_uploaded_file(conversation_id: str | None) -> bool:
     except (requests.RequestException, ValueError):
         return False
     return bool(body.get("documents"))
+
+
+def fetch_uploaded_file_overviews(
+    conversation_id: str | None,
+) -> tuple[UploadedFileOverview, ...]:
+    """Return schema-only upload metadata without invoking search or an LLM."""
+
+    if not conversation_id or os.getenv("JW_CHAT_FILE_SEARCH_ENABLED", "true").lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return ()
+    base_url = os.getenv("JW_CHAT_FILE_SEARCH_BASE", "http://code-serving-235:8080").rstrip("/")
+    workflow_id = int(os.getenv("JW_CHAT_FILE_WORKFLOW_ID", "301"))
+    timeout_s = float(os.getenv("JW_CHAT_FILE_PROBE_TIMEOUT_S", "3"))
+    try:
+        response = requests.get(
+            f"{base_url}/documents",
+            params={
+                "workflow_id": workflow_id,
+                "app_session_id": conversation_id,
+                "chat_id": conversation_id,
+            },
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError):
+        return ()
+    documents = body.get("documents") if isinstance(body, dict) else None
+    if not isinstance(documents, list):
+        return ()
+    overviews: list[UploadedFileOverview] = []
+    for raw_document in documents:
+        if not isinstance(raw_document, dict):
+            continue
+        file_name = str(raw_document.get("file_name") or "").strip()
+        if not file_name:
+            continue
+        tables: list[UploadedSqlTableOverview] = []
+        raw_tables = raw_document.get("sql_tables")
+        if isinstance(raw_tables, list):
+            for raw_table in raw_tables:
+                if not isinstance(raw_table, dict):
+                    continue
+                try:
+                    tables.append(
+                        UploadedSqlTableOverview(
+                            sheet_name=str(raw_table["sheet_name"]),
+                            row_count=max(0, int(raw_table["row_count"])),
+                            column_count=max(0, int(raw_table["column_count"])),
+                        )
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+        try:
+            chunk_count = max(0, int(raw_document.get("chunk_count") or 0))
+        except (TypeError, ValueError):
+            chunk_count = 0
+        overviews.append(
+            UploadedFileOverview(
+                file_name=file_name,
+                storage_route=str(raw_document.get("storage_route") or "vdb"),
+                chunk_count=chunk_count,
+                sql_tables=tuple(tables),
+            )
+        )
+    return tuple(overviews)
 
 
 def fetch_uploaded_file_schema_columns(conversation_id: str | None) -> tuple[str, ...]:

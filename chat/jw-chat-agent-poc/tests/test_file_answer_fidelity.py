@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.app import FinalAnswer, _sse_events_from_final_answer, create_app
-from jw_chat_agent_poc.service.file_search_client import UploadedFileSearchResult, search_uploaded_files
+from jw_chat_agent_poc.service.file_search_client import (
+    UploadedFileSearchResult,
+    fetch_uploaded_file_overviews,
+    search_uploaded_files,
+)
 from jw_chat_agent_poc.service.genos_client import (
     GenosClient,
     _sanitize_preserving_analysis,
@@ -675,6 +679,46 @@ def test_file_search_client_preserves_active_session_when_search_times_out(monke
     assert result.has_active_file is True
     assert result.file_context == ""
     assert result.errors == ("file search unavailable",)
+
+
+def test_uploaded_file_overviews_preserve_public_sql_shape(monkeypatch) -> None:
+    def documents_get(url, params=None, timeout=None):
+        assert url.endswith("/documents")
+        assert params["chat_id"] == "conv-card"
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "documents": [
+                    {
+                        "file_name": "CHSO.xlsx",
+                        "storage_route": "hybrid",
+                        "chunk_count": 18,
+                        "sql_tables": [
+                            {
+                                "logical_name": "data_chso",
+                                "sheet_name": "Sell Out Standard",
+                                "row_count": 12_269,
+                                "column_count": 252,
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.get",
+        documents_get,
+    )
+
+    overviews = fetch_uploaded_file_overviews("conv-card")
+
+    assert len(overviews) == 1
+    assert overviews[0].file_name == "CHSO.xlsx"
+    assert overviews[0].storage_route == "hybrid"
+    assert overviews[0].sql_tables[0].sheet_name == "Sell Out Standard"
+    assert overviews[0].sql_tables[0].row_count == 12_269
+    assert overviews[0].sql_tables[0].column_count == 252
 
 
 def _final_answer(file_sources=()) -> FinalAnswer:
