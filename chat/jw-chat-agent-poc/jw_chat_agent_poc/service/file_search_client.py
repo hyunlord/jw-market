@@ -64,10 +64,33 @@ def search_uploaded_files(
             timeout_s=timeout_s,
         )
     context = str(body.get("file_context") or "").strip()
+    supplemental_body: dict[str, Any] = {}
+    if body.get("document_count") and _DOCUMENT_CONCLUSION_QUESTION_RE.search(question) is not None:
+        supplemental_payload = {
+            **payload,
+            "question": _DOCUMENT_CONCLUSION_SUPPLEMENT_QUERY,
+        }
+        try:
+            supplemental_response = requests.post(
+                f"{base_url}/search",
+                json=supplemental_payload,
+                timeout=timeout_s,
+            )
+            supplemental_response.raise_for_status()
+            supplemental_body = supplemental_response.json()
+        except (requests.RequestException, ValueError):
+            supplemental_body = {}
+        context = _merge_search_contexts(
+            context,
+            str(supplemental_body.get("file_context") or ""),
+        )
     has_active_file = bool(body.get("document_count"))
     if not context and not has_active_file:
         return None
     raw_sources = body.get("file_sources") or []
+    supplemental_sources = supplemental_body.get("file_sources") or []
+    if isinstance(raw_sources, list) and isinstance(supplemental_sources, list):
+        raw_sources = [*raw_sources, *supplemental_sources]
     raw_sql_sources = body.get("sql_sources") or []
     requested_names = (
         frozenset()
@@ -106,7 +129,11 @@ def search_uploaded_files(
                 if key not in seen_items:
                     seen_items.add(key)
                     items.append(item)
-    errors = [str(error) for error in (body.get("errors") or []) if error]
+    errors = [
+        str(error)
+        for error in [*(body.get("errors") or []), *(supplemental_body.get("errors") or [])]
+        if error
+    ]
     deterministic_answer = ""
     sql_trace: tuple[dict[str, str], ...] = ()
     sql_sources = _sql_sources(raw_sql_sources)
@@ -234,6 +261,18 @@ def _join_contexts(*values: str) -> str:
     return "\n\n".join(value.strip() for value in values if value.strip())
 
 
+def _merge_search_contexts(*values: str) -> str:
+    blocks: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for block in re.split(r"\n\n(?=\[\d+\]\s)", value.strip()):
+            normalized = block.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                blocks.append(normalized)
+    return "\n\n".join(blocks)
+
+
 def _requested_file_names(question: str, *source_groups: Any) -> frozenset[str]:
     lowered = question.casefold()
     names = {
@@ -298,6 +337,31 @@ _DOCUMENT_OVERVIEW_HEADING_RE = re.compile(
     r"unmet\s+needs?|핵심\s*요약|주요\s*요약|결론|요약)\b",
     re.IGNORECASE,
 )
+_DOCUMENT_CONCLUSION_QUESTION_RE = re.compile(r"결론|시사점|요점", re.IGNORECASE)
+_DOCUMENT_CONCLUSION_SIGNAL_RE = re.compile(
+    r"(?:conclusions?|unmet\s+needs?|recommendations?|implications?|결론|시사점|미충족\s*수요|권고)",
+    re.IGNORECASE,
+)
+_DOCUMENT_CONCLUSION_SUPPLEMENT_QUERY = (
+    "문서 전체 결론 핵심 시사점 권고 미충족 수요 "
+    "conclusion key takeaways unmet needs recommendation"
+)
+
+
+def _document_overview_rank(question: str, indexed_block: tuple[int, str]) -> tuple[int, int, int, int]:
+    original_index, block = indexed_block
+    heading_match = _DOCUMENT_OVERVIEW_HEADING_RE.search(block[:600])
+    is_overview = heading_match is not None
+    wants_conclusion = _DOCUMENT_CONCLUSION_QUESTION_RE.search(question) is not None
+    has_conclusion_signal = _DOCUMENT_CONCLUSION_SIGNAL_RE.search(block) is not None
+    body = block[heading_match.end() :] if heading_match is not None else block
+    substance = len(re.findall(r"[0-9A-Za-z가-힣]+", body))
+    return (
+        0 if is_overview else 1,
+        0 if wants_conclusion and has_conclusion_signal else 1,
+        -substance if is_overview else 0,
+        original_index,
+    )
 
 
 def _prioritize_document_overview_context(question: str, context: str) -> str:
@@ -310,10 +374,7 @@ def _prioritize_document_overview_context(question: str, context: str) -> str:
         return context
     ranked = sorted(
         enumerate(blocks),
-        key=lambda item: (
-            0 if _DOCUMENT_OVERVIEW_HEADING_RE.search(item[1][:600]) else 1,
-            item[0],
-        ),
+        key=lambda item: _document_overview_rank(question, item),
     )
     return "\n\n".join(block for _, block in ranked)
 

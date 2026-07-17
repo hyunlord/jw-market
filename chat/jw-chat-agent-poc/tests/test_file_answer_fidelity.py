@@ -375,11 +375,103 @@ def test_file_search_client_prioritizes_key_takeaways_for_document_summary(monke
     assert result.file_context.count("[1] primary.pdf") == 1
     assert result.file_context.count("[2] primary.pdf") == 1
     assert result.file_context.count("[3] primary.pdf") == 1
+    assert result.file_context.index("[1] primary.pdf") < result.file_context.index("[3] primary.pdf")
     assert conclusion_result is not None
     assert conclusion_result.file_context.startswith("[2] primary.pdf (page=2)\nKey Takeaways")
 
 
+def test_file_search_client_prioritizes_substantive_overview_over_title_only_block(monkeypatch) -> None:
+    body = {
+        "file_context": (
+            "[1] primary.pdf (page=2)\n"
+            "Key Takeaways\n"
+            "Disease Analysis\n\n"
+            "[2] primary.pdf (page=2)\n"
+            "Key Takeaways\n"
+            "The market faces biosimilar competition and persistent unmet need.\n"
+            "Three evidence-backed conclusions support the document-level thesis.\n\n"
+            "[3] primary.pdf (page=49)\n"
+            "Future Trends\n"
+            "A specific pipeline asset is discussed."
+        ),
+        "document_count": 1,
+        "file_sources": [{"file_name": "primary.pdf", "i_page": 2}],
+        "errors": [],
+    }
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: body,
+        ),
+    )
+
+    result = search_uploaded_files("이 문서 요약해줘", "conv-substantive-summary")
+
+    assert result is not None
+    assert result.file_context.startswith("[2] primary.pdf (page=2)\nKey Takeaways")
+    assert result.file_context.count("primary.pdf") == 3
+
+
+def test_file_search_client_supplements_truncated_conclusion_context(monkeypatch) -> None:
+    questions: list[str] = []
+
+    def search_response(url, json=None, timeout=None):
+        question = str((json or {}).get("question") or "")
+        questions.append(question)
+        context = (
+            "[1] primary.pdf (page=49)\nFuture Trends\nA pipeline asset is discussed.\n\n"
+            "[2] primary.pdf (page=2)\nKey Takeaways\n- A"
+        )
+        if "unmet needs" in question:
+            context = (
+                "[1] primary.pdf (page=2)\nKey Takeaways\n"
+                "There remains an unmet need for safer and cost-effective therapies."
+            )
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "file_context": context,
+                "document_count": 1,
+                "file_sources": [{"file_name": "primary.pdf", "i_page": 2}],
+                "errors": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.post",
+        search_response,
+    )
+
+    result = search_uploaded_files("이 보고서의 결론이 뭐야", "conv-truncated-conclusion")
+
+    assert result is not None
+    assert len(questions) == 2
+    assert "unmet needs" in questions[1]
+    assert "There remains an unmet need" in result.file_context
+    assert result.file_context.count("There remains an unmet need") == 1
+
+
+def test_markdown_messages_require_document_level_overview_before_background() -> None:
+    context = (
+        "[1] primary.pdf (page=2)\nKey Takeaways\nMarket conclusion.\n\n"
+        "[2] primary.pdf (page=9)\nDisease Background\nDefinition."
+    )
+
+    messages = GenosClient._markdown_messages(
+        "이 보고서의 결론이 뭐야",
+        {"fact_md": ""},
+        "",
+        context,
+    )
+
+    prompt = "\n".join(message["content"] for message in messages)
+    assert "문서 전체 수준의 요약·결론·미충족 수요" in prompt
+    assert "개별 질환 배경이나 단일 표보다 먼저" in prompt
+
+
 def test_file_search_client_keeps_retrieval_order_for_specific_file_question(monkeypatch) -> None:
+    calls = 0
     context = (
         "[1] primary.pdf (page=3)\n"
         "Disease Background\n\n"
@@ -392,17 +484,23 @@ def test_file_search_client_keeps_retrieval_order_for_specific_file_question(mon
         "file_sources": [{"file_name": "primary.pdf", "i_page": 3}],
         "errors": [],
     }
-    monkeypatch.setattr(
-        "jw_chat_agent_poc.service.file_search_client.requests.post",
-        lambda *args, **kwargs: SimpleNamespace(
+    def search_response(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
             raise_for_status=lambda: None,
             json=lambda: body,
-        ),
+        )
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.file_search_client.requests.post",
+        search_response,
     )
 
     result = search_uploaded_files("3페이지의 질환 정의를 알려줘", "conv-detail")
 
     assert result is not None
+    assert calls == 1
     assert result.file_context == context
 
 

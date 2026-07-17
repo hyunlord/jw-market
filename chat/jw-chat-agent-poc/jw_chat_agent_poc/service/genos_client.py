@@ -102,6 +102,16 @@ _FILE_QUOTE_INSTRUCTION = (
     "컨텍스트에 문서 전체 키워드 검색·지정 페이지 직접 조회·SQL 직접 조회가 명시된 경우에만 "
     "찾을 수 없는 대상을 명시한다. 부분 검색 컨텍스트만으로 정보가 없다고 단정하지 않는다."
 )
+_FILE_OVERVIEW_QUESTION_RE = re.compile(
+    r"(?:문서|보고서|파일|발표).{0,16}(?:요약|핵심|결론|뭐에\s*관한|무슨\s*내용)"
+    r"|(?:요약|핵심|결론).{0,16}(?:문서|보고서|파일|발표)",
+    re.IGNORECASE,
+)
+_FILE_OVERVIEW_SYNTHESIS_INSTRUCTION = (
+    " 문서 전체를 묻는 질문이면 제공된 문서 전체 수준의 요약·결론·미충족 수요 블록을 모두 검토해 "
+    "공통 결론과 핵심 시장 맥락을 개별 질환 배경이나 단일 표보다 먼저 종합한다. "
+    "서로 다른 개요 블록의 근거를 빠뜨리거나 같은 내용을 반복하지 않는다."
+)
 
 
 def _apply_final_claim_controls(question: str, answer: str, fact_md: str) -> str:
@@ -1090,6 +1100,11 @@ class GenosClient:
         mandatory_md = mandatory_fact_block(fact_md)
         uploaded_md = file_context.strip() or "- 없음"
         file_instruction = f" {_FILE_QUOTE_INSTRUCTION}" if file_context.strip() else ""
+        overview_instruction = (
+            _FILE_OVERVIEW_SYNTHESIS_INSTRUCTION
+            if file_context.strip() and _FILE_OVERVIEW_QUESTION_RE.search(question) is not None
+            else ""
+        )
         return [
             {
                 "role": "system",
@@ -1134,7 +1149,8 @@ class GenosClient:
                     "숫자, 비율, 순위, 기간, 질병코드는 fact set에 있는 값만 사용하고 새 값을 만들지 않는다. "
                     "검은 별표 같은 장식 기호를 쓰지 말고, 간결한 한국어로 답한다."
                 )
-                + file_instruction,
+                + file_instruction
+                + overview_instruction,
             },
             {
                 "role": "user",
