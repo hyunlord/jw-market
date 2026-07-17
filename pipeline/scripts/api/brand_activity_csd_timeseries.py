@@ -363,6 +363,10 @@ def _activity_series(
     totals = {month: 0.0 for month in activity_months}
     by_brand = {choice.brand_key: {month: 0.0 for month in activity_months} for choice in choices}
     matched = {choice.brand_key: False for choice in choices}
+    brand_keys_by_product: dict[str, list[str]] = {}
+    for brand_key in by_brand:
+        for product_code in product_codes_by_brand.get(brand_key, ()):
+            brand_keys_by_product.setdefault(product_code, []).append(brand_key)
     observed_months: set[str] = set()
     for row in rows:
         month = str(row["period_ym"])
@@ -372,10 +376,9 @@ def _activity_series(
         value = float_value(row.get("value"))
         totals[month] += value
         product = normalize_iqvia_en(str(row["master_product"]))
-        for brand_key, codes in product_codes_by_brand.items():
-            if brand_key in by_brand and product in codes:
-                by_brand[brand_key][month] += value
-                matched[brand_key] = True
+        for brand_key in brand_keys_by_product.get(product, ()):
+            by_brand[brand_key][month] += value
+            matched[brand_key] = True
     return {
         "totals": totals,
         "by_brand": by_brand,

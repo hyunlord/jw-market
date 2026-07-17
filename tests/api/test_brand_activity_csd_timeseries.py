@@ -124,6 +124,36 @@ def test_csd_activity_join_uses_iqvia_codes_instead_of_ubist_codes(monkeypatch) 
     assert activity["by_brand"]["리바로"] == {"2025-01": 17.0}
 
 
+def test_csd_activity_join_preserves_shared_product_mappings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params: [
+            {"period_ym": "2025-01", "master_product": "SHARED", "value": 7.0},
+        ],
+    )
+
+    activity = service._activity_series(
+        "SHARED Market",
+        [
+            shared.BrandChoice("brand-a", "Brand A", 1, True),
+            shared.BrandChoice("brand-b", "Brand B", 2, False),
+        ],
+        {
+            "brand-a": frozenset({"SHARED"}),
+            "brand-b": frozenset({"SHARED"}),
+            "not-returned": frozenset({"SHARED"}),
+        },
+        ("2025-01",),
+    )
+
+    assert activity["by_brand"] == {
+        "brand-a": {"2025-01": 7.0},
+        "brand-b": {"2025-01": 7.0},
+    }
+    assert activity["matched"] == {"brand-a": True, "brand-b": True}
+
+
 def test_resolve_csd_markets_excludes_competitor_only_markets(monkeypatch) -> None:
     monkeypatch.setattr(
         service.db,
