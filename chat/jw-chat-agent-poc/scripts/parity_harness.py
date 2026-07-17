@@ -159,6 +159,8 @@ def capture_p0g_suite(
     history_conversation_id: str | None = None,
     max_general_elapsed_ms: float = 10_000.0,
     portal_equivalent: bool = False,
+    file_base_url: str | None = None,
+    file_workflow_id: int = 301,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenarios = (
@@ -198,11 +200,35 @@ def capture_p0g_suite(
         qualification_failures.append("portal-equivalent evidence requires a deployed base URL")
     if not history_conversation_id:
         qualification_failures.append("uploaded-file history conversation ID was not supplied")
+    file_probe = {
+        "attempted": False,
+        "document_count": 0,
+        "passed": False,
+        "error": "",
+    }
+    if history_conversation_id and not file_base_url:
+        qualification_failures.append("file bridge base URL was not supplied")
+        file_probe["error"] = "file bridge base URL was not supplied"
+    elif history_conversation_id and file_base_url:
+        passed, document_count, error = _probe_uploaded_file_session(
+            file_base_url,
+            history_conversation_id,
+            file_workflow_id,
+        )
+        file_probe.update(
+            attempted=True,
+            document_count=document_count,
+            passed=passed,
+            error=error,
+        )
+        if not passed:
+            qualification_failures.append(f"uploaded-file history session probe failed: {error}")
     report = {
         "evidence_context": {
             "transport": "direct-chat-sse" if base_url else "local-inprocess",
             "portal_equivalent_declared": portal_equivalent,
             "history_conversation_id_supplied": bool(history_conversation_id),
+            "file_probe": file_probe,
         },
         "qualification_failures": qualification_failures,
         "scenarios": summary,
@@ -328,6 +354,31 @@ def _http_sse(
     response = requests.get(url, params=params, timeout=180)
     response.raise_for_status()
     return response.text
+
+
+def _probe_uploaded_file_session(
+    base_url: str,
+    conversation_id: str,
+    workflow_id: int,
+) -> tuple[bool, int, str]:
+    try:
+        response = requests.get(
+            base_url.rstrip("/") + "/documents",
+            params={
+                "workflow_id": workflow_id,
+                "app_session_id": conversation_id,
+                "chat_id": conversation_id,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        return False, 0, f"{type(exc).__name__}: {exc}"
+    documents = body.get("documents") if isinstance(body, dict) else None
+    if not isinstance(documents, list) or not documents:
+        return False, 0, "no documents"
+    return True, len(documents), ""
 
 
 def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
@@ -633,6 +684,11 @@ def main() -> int:
         help="Existing session containing an uploaded file and unrelated prior turns.",
     )
     p0g_parser.add_argument(
+        "--file-base-url",
+        help="235 file bridge base URL used to verify that the history session owns documents.",
+    )
+    p0g_parser.add_argument("--file-workflow-id", type=int, default=301)
+    p0g_parser.add_argument(
         "--max-general-elapsed-ms",
         type=float,
         default=10_000.0,
@@ -670,6 +726,8 @@ def main() -> int:
             history_conversation_id=args.history_conversation_id,
             max_general_elapsed_ms=args.max_general_elapsed_ms,
             portal_equivalent=args.portal_equivalent,
+            file_base_url=args.file_base_url,
+            file_workflow_id=args.file_workflow_id,
         )
     if args.command == "diff":
         return diff_captures(

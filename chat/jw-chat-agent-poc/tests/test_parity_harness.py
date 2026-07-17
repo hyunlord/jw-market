@@ -155,6 +155,10 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         return 0
 
     monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 2, ""),
+    )
 
     status = capture_p0g_suite(
         tmp_path,
@@ -162,6 +166,7 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         "http://portal-equivalent",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
+        file_base_url="http://code-serving-235",
     )
 
     assert status == 0
@@ -174,6 +179,69 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
     assert calls[0][4] is None
     assert calls[1][4] == "uploaded-file-session"
     assert calls[2][4] is not None
+
+
+def test_p0g_suite_requires_nonempty_file_bridge_documents(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (False, 0, "no documents"),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "http://portal-equivalent",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+    ) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["evidence_context"]["file_probe"] == {
+        "attempted": True,
+        "document_count": 0,
+        "passed": False,
+        "error": "no documents",
+    }
+    assert summary["qualification_failures"] == [
+        "uploaded-file history session probe failed: no documents",
+    ]
+
+
+def test_probe_uploaded_file_session_uses_235_documents_contract(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"documents": [{"file_name": "a.xlsx"}, {"file_name": "b.pdf"}]}
+
+    def get(url, *, params, timeout):
+        captured.update(url=url, params=params, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.get", get)
+
+    from scripts.parity_harness import _probe_uploaded_file_session
+
+    assert _probe_uploaded_file_session("http://code-serving-235/", "conv-file", 301) == (True, 2, "")
+    assert captured == {
+        "url": "http://code-serving-235/documents",
+        "params": {"workflow_id": 301, "app_session_id": "conv-file", "chat_id": "conv-file"},
+        "timeout": 10,
+    }
 
 
 def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypatch, tmp_path: Path) -> None:
@@ -193,6 +261,12 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
         "transport": "direct-chat-sse",
         "portal_equivalent_declared": False,
         "history_conversation_id_supplied": False,
+        "file_probe": {
+            "attempted": False,
+            "document_count": 0,
+            "passed": False,
+            "error": "",
+        },
     }
     assert summary["qualification_failures"] == [
         "portal-equivalent entry path was not declared",
@@ -221,6 +295,7 @@ def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypat
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["qualification_failures"] == [
         "portal-equivalent evidence requires a deployed base URL",
+        "file bridge base URL was not supplied",
     ]
 
 
