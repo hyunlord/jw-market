@@ -25,12 +25,34 @@ python -m pipeline.orchestrator run --mode full
 - 상태(checkpoint)는 mart epoch(`ops_forecast_store.mart_source_epoch` = 6개 mart 테이블 지문) 키의 JSON 파일. 같은 epoch 재실행 = no-op(멱등).
 - 관측: JSON 1줄 1이벤트 로그(stdout + `--log-file`).
 
+## 0-a. 트리거 지도 (이벤트 드리븐 아키텍처, 2026-07-17)
+
+> **★ 과도기 주의(PL 범위 확정)**: 정본 아키텍처는 jw market **증분 훅 시스템**(JW_Input_Detection_Contract_v2 — jw-data-input → MinIO manifest 감지 → webhook → G3 검증 → `pipeline.orchestrator --mode incremental` Job → Σ게이트). 아래 센서·kick·poll 3종은 훅 착지 시 **대체·삭제 예정**이며 **resume 금지**(suspend 유지, 과도기 수동 예비용).
+
+| 파이프라인 | 1차 트리거(이벤트) | 안전망(시계) | 판단 주체 |
+|---|---|---|---|
+| 시장 데이터 체인(오케스트레이터) | **ETL 증분 적재 성공 → kick**(`pipeline/etl/kick.py`, `JW_ETL_KICK_ORCHESTRATOR=1`일 때만·성공 경로만) | `jw-pipeline-orchestrator-poll-daily` 매일 01:00 KST(같은 epoch면 수초 no-op) | 오케스트레이터 epoch/coverage 감지 |
+| 브랜드 활동(topic+row-topic) | **CSD 파일 MinIO 도착 → 센서 감지 → 구조 검증 통과 → run Job**(`jw-csd-sensor` 10분 폴링) | 센서 자체가 폴링(주기 단축형 안전망) | 검증 게이트(csd_core 계약) + ingest 내장 게이트 |
+| 크롤 tier1/tier2 | (시계 유지 — 의도) 매일 · tier2는 brand_key 해시 7분할 요일 로테이션 | — | 크롤 완료→스코어링 체인 내장 |
+
+원칙: **kick·트리거는 "깨우기"만** — 실행 여부는 각 파이프라인의 감지·검증이 판단(잘못 깨워도 no-op). 적재 실패·검증 실패 시 kick/실행 없음(fail-closed). 전부 멱등(중복 kick=동일 Job명 no-op, 중복 감지=(key,etag) 마커 no-op).
+
+**장애 시 수동 kick 절차**:
+```bash
+# 시장 데이터 체인 수동 깨우기(판단은 오케스트레이터가 함 — 안전)
+kubectl -n llmops create job --from=cronjob/jw-pipeline-orchestrator-poll-daily orch-manual-$(date +%Y%m%d%H%M)
+# 브랜드 활동 수동 실행(검증 게이트를 우회하므로 CSD 파일 구조를 먼저 육안 확인할 것)
+kubectl -n llmops create job --from=cronjob/jw-brand-activity-run ba-manual-$(date +%Y%m%d%H%M)
+# 센서 1회 수동 감지(dry-run: 감지·검증 결과만 출력, write 0)
+python pipeline/scripts/etl/brand_activity/minio_csd_sensor.py --dry-run
+```
+
 ## 1. 월간 정기 실행 (mart 갱신 후)
 
-1) **mart 갱신 감지는 자동** — epoch가 바뀌면 full 체인이 전 단계를 실행한다. 갱신 전이면 no-op.
-2) 실행(GenOS CronJob): `jw-pipeline-orchestrator-monthly` (ns llmops, 기본 suspend). 수동 트리거:
+1) **mart 갱신 감지는 자동** — ETL 적재 성공 kick(1차) 또는 매일 폴링(안전망)이 오케스트레이터를 깨우고, epoch가 바뀌었을 때만 full 체인이 실행된다. 갱신 전이면 no-op.
+2) 실행(GenOS CronJob): `jw-pipeline-orchestrator-poll-daily` (ns llmops, 기본 suspend). 수동 트리거:
    ```bash
-   kubectl -n llmops create job --from=cronjob/jw-pipeline-orchestrator-monthly orch-manual-$(date +%Y%m%d)
+   kubectl -n llmops create job --from=cronjob/jw-pipeline-orchestrator-poll-daily orch-manual-$(date +%Y%m%d)
    kubectl -n llmops logs -f job/orch-manual-$(date +%Y%m%d)
    ```
    또는 pod 셸에서 직접:
@@ -85,7 +107,7 @@ python -m pipeline.orchestrator run --stages strength
 - 크롤: `deploy/docker/crawl.Dockerfile` — 정본 계보(develop)에서 라이브 레이아웃(`crawl/…`, `/opt/tier2`)을 조립. **빌드 커밋을 stage3_genos.md에 기록**(과거 이미지 커밋 불명 재발 방지).
 - 빌드는 GCP ops VM에서 `--platform linux/amd64`, push는 AR `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/`.
 - CronJob 등록분(전부 suspend=true):
-  - `jw-pipeline-orchestrator-monthly` + state PVC (`deploy/k8s/orchestrator/`)
+  - `jw-pipeline-orchestrator-poll-daily` + state PVC (`deploy/k8s/orchestrator/`)
   - `jw-news-crawl-tier1-daily-canonical` / `jw-news-crawl-tier2-daily-slice-canonical` (`deploy/k8s/crawler/*-canonical.yaml`)
 - **cutover는 PL 판단**: 기존 라이브 CronJob(agent3-refresh, 구 crawl tier1/2)의 digest 교체·삭제는 이 런북 범위 밖.
 

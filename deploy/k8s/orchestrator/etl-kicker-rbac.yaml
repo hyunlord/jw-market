@@ -1,0 +1,37 @@
+# Least-privilege identity for event-driven kicks (ETL -> orchestrator,
+# MinIO sensor -> brand-activity validation Job).
+#
+# Grants Job create/get in llmops only. Inert by itself: nothing runs until
+# a workload using this ServiceAccount is resumed (PL gate).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jw-pipeline-kicker
+  namespace: llmops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jw-pipeline-kicker
+  namespace: llmops
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jw-pipeline-kicker
+  namespace: llmops
+subjects:
+  - kind: ServiceAccount
+    name: jw-pipeline-kicker
+    namespace: llmops
+roleRef:
+  kind: Role
+  name: jw-pipeline-kicker
+  apiGroup: rbac.authorization.k8s.io
