@@ -147,6 +147,7 @@ def capture(
             "error_count": parsed.error_count,
             "answer_chars": parsed.answer_chars,
             "steps": list(parsed.steps),
+            "conversation_ids": list(parsed.conversation_ids),
             "acceptance_pass": acceptance_pass,
             "acceptance_error": acceptance_error,
         }
@@ -200,6 +201,11 @@ def capture_p0g_suite(
         ]
         route_contamination_failures = _p0g_route_contamination_failures(rows)
         step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
+        session_continuity_failures = (
+            _p0g_session_continuity_failures(rows, conversation_id)
+            if portal_equivalent and conversation_id
+            else {}
+        )
         summary.append(
             {
                 "scenario": name,
@@ -207,6 +213,7 @@ def capture_p0g_suite(
                 "latency_failures": latency_failures,
                 "route_contamination_failures": route_contamination_failures,
                 "step_evidence_failures": step_evidence_failures,
+                "session_continuity_failures": session_continuity_failures,
             }
         )
     qualification_failures: list[str] = []
@@ -261,6 +268,7 @@ def capture_p0g_suite(
             and not item["latency_failures"]
             and not item["route_contamination_failures"]
             and not item["step_evidence_failures"]
+            and not item["session_continuity_failures"]
             for item in summary
         )
     ) else 1
@@ -299,6 +307,26 @@ def _p0g_missing_step_evidence(rows: list[dict[str, Any]]) -> list[str]:
             for step in steps
         ):
             failures.append(qid)
+    return failures
+
+
+def _p0g_session_continuity_failures(
+    rows: list[dict[str, Any]],
+    expected_conversation_id: str,
+) -> dict[str, list[str]]:
+    failures: dict[str, list[str]] = {}
+    for row in rows:
+        qid = str(row.get("qid", ""))
+        raw_ids = row.get("conversation_ids", ())
+        returned_ids = (
+            [str(item) for item in raw_ids if str(item).strip()]
+            if isinstance(raw_ids, (list, tuple))
+            else []
+        )
+        if not returned_ids:
+            failures[qid] = ["<missing>"]
+        elif any(item != expected_conversation_id for item in returned_ids):
+            failures[qid] = returned_ids
     return failures
 
 

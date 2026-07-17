@@ -151,7 +151,12 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         (out_dir / "summary.json").write_text(
             json.dumps(
                 [
-                    {"qid": qid, "elapsed_ms": 100.0, "steps": [{"name": "질문 접수"}]}
+                    {
+                        "qid": qid,
+                        "elapsed_ms": 100.0,
+                        "steps": [{"name": "질문 접수"}],
+                        "conversation_ids": [conversation_id] if conversation_id else [],
+                    }
                     for qid, _ in questions
                 ],
                 ensure_ascii=False,
@@ -370,7 +375,17 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
-            json.dumps([{"qid": qid, "elapsed_ms": 100.0, "steps": []} for qid, _ in questions]),
+            json.dumps(
+                [
+                    {
+                        "qid": qid,
+                        "elapsed_ms": 100.0,
+                        "steps": [],
+                        "conversation_ids": [conversation_id] if conversation_id else [],
+                    }
+                    for qid, _ in questions
+                ]
+            ),
             encoding="utf-8",
         )
         return 0
@@ -397,6 +412,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "latency_failures": [],
             "route_contamination_failures": {},
             "step_evidence_failures": ["F01", "F02"],
+            "session_continuity_failures": {},
         },
         {
             "scenario": "history",
@@ -404,6 +420,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "latency_failures": [],
             "route_contamination_failures": {},
             "step_evidence_failures": ["H02", "H03"],
+            "session_continuity_failures": {},
         },
         {
             "scenario": "mode-transition",
@@ -411,8 +428,46 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "latency_failures": [],
             "route_contamination_failures": {},
             "step_evidence_failures": ["M02", "M03"],
+            "session_continuity_failures": {},
         },
     ]
+
+
+def test_p0g_suite_rejects_history_response_from_a_different_session(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
+        out_dir.mkdir(parents=True)
+        rows = []
+        for qid, _ in questions:
+            returned = "wrong-session" if qid == "H02" else conversation_id
+            rows.append(
+                {
+                    "qid": qid,
+                    "elapsed_ms": 100.0,
+                    "steps": [{"name": "질문 접수"}],
+                    "conversation_ids": [returned] if returned else [],
+                }
+            )
+        (out_dir / "summary.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 1, ""),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "http://portal-equivalent",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+    ) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["scenarios"][1]["session_continuity_failures"] == {
+        "H02": ["wrong-session"],
+    }
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:
@@ -491,6 +546,8 @@ def test_sse_parser_preserves_public_step_events(tmp_path: Path) -> None:
         'data: {"index":2,"name":"임상 데이터 조회","detail":"성분 기준 임상시험 확인","status":"done"}\n\n'
         "event: step\n"
         "data: not-json\n\n"
+        "event: conversation\n"
+        "data: dirty-session\n\n"
         "event: done\n"
         "data: ok\n\n",
         encoding="utf-8",
@@ -502,6 +559,7 @@ def test_sse_parser_preserves_public_step_events(tmp_path: Path) -> None:
         {"index": 1, "name": "질문 접수", "detail": "요청 처리 시작", "status": "started"},
         {"index": 2, "name": "임상 데이터 조회", "detail": "성분 기준 임상시험 확인", "status": "done"},
     )
+    assert parsed.conversation_ids == ("dirty-session",)
 
 
 def test_sse_parser_flags_naive_table_join_breakage(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ class SseCapture:
     charts: tuple[dict[str, object], ...]
     timing: dict[str, object]
     steps: tuple[dict[str, object], ...]
+    conversation_ids: tuple[str, ...]
     delta_count: int
     done_count: int
     error_count: int
@@ -37,6 +38,7 @@ def parse_sse_text(raw_text: str) -> SseCapture:
     charts: list[dict[str, object]] = []
     timing: dict[str, object] = {}
     steps: list[dict[str, object]] = []
+    conversation_ids: list[str] = []
     sources = ""
     delta_count = 0
     done_count = 0
@@ -63,7 +65,9 @@ def parse_sse_text(raw_text: str) -> SseCapture:
             case "error":
                 error_count += 1
             case "conversation":
-                continue
+                conversation_id = data.strip()
+                if conversation_id:
+                    conversation_ids.append(conversation_id)
             case _:
                 continue
     answer = "".join(answer_parts)
@@ -74,6 +78,7 @@ def parse_sse_text(raw_text: str) -> SseCapture:
         charts=tuple(charts),
         timing=timing,
         steps=tuple(steps),
+        conversation_ids=tuple(conversation_ids),
         delta_count=delta_count,
         done_count=done_count,
         error_count=error_count,
