@@ -13,6 +13,12 @@ from jw_chat_agent_poc.resolver.molecule_reader import TtlBrandMoleculeReader, s
 from jw_chat_agent_poc.router import BQRouter, BQSubQuestion, LLMFirstBQRouter
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external.cached_client import (
+    CachedExternalApiClient,
+    EXTERNAL_RESULT_CACHE_MAX_ENTRIES_ENV,
+    EXTERNAL_RESULT_CACHE_TTL_ENV,
+)
+from jw_chat_agent_poc.tools.external.result_cache import shared_external_result_cache
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
@@ -66,7 +72,7 @@ def build_agent_loop_dependencies(external_mode: str = "fixture") -> AgentLoopDe
             molecule_reader=default_brand_molecule_reader(),
         ),
         news=DeepAnalysisNewsTool(),
-        external=ExternalApiClient(mode=external_mode),
+        external=default_external_client(external_mode),
         query_layer=query_layer,
     )
 
@@ -85,7 +91,7 @@ def build_chat_agent_dependencies(
             molecule_reader=default_brand_molecule_reader(),
         ),
         metrics=values.metrics or MetricsTool(query_layer=query_layer),
-        external=values.external or ExternalApiClient(mode=external_mode),
+        external=values.external or default_external_client(external_mode),
         news=values.news or DeepAnalysisNewsTool(),
         rag=values.rag or LocalDocumentRag(),
         query_layer=query_layer,
@@ -99,6 +105,19 @@ def build_tool_use_agent(dependencies: AgentLoopDependencies) -> ToolUseAgent:
         news=dependencies.news,
         external=dependencies.external,
         query_layer=dependencies.query_layer,
+    )
+
+
+def default_external_client(external_mode: str) -> ExternalApiClient:
+    if external_mode != "live":
+        return ExternalApiClient(mode=external_mode)
+    ttl_seconds = int(os.environ.get(EXTERNAL_RESULT_CACHE_TTL_ENV, "120"))
+    max_entries = int(os.environ.get(EXTERNAL_RESULT_CACHE_MAX_ENTRIES_ENV, "256"))
+    return CachedExternalApiClient(
+        result_cache=shared_external_result_cache(
+            ttl_seconds=ttl_seconds,
+            max_entries=max_entries,
+        ),
     )
 
 
