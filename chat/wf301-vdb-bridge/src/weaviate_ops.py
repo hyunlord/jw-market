@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from typing import Any
@@ -16,6 +17,7 @@ from .logging_utils import safe_log
 Chunk = dict[str, Any]
 
 TEMP_CHUNK_BATCH_SIZE = 100
+_COLLECTION_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
 class TempChunkCompletenessError(RuntimeError):
@@ -92,6 +94,10 @@ def _temp_chunk_count(client: httpx.Client, collection: str, temp_document_id: i
     return int((rows[0].get("meta") or {}).get("count") or 0)
 
 
+def count_temp_chunks(client: httpx.Client, collection: str, temp_document_id: int) -> int:
+    return _temp_chunk_count(client, _validated_collection(collection), temp_document_id)
+
+
 def _chunk_order(chunk: Chunk) -> tuple[int, int, int, str]:
     def _number(value: Any) -> int:
         try:
@@ -165,6 +171,155 @@ def read_temp_chunks(client: httpx.Client, collection: str, temp_document_id: in
         batches=batches,
     )
     return chunks
+
+
+def _validated_collection(collection: str) -> str:
+    if not _COLLECTION_NAME.fullmatch(collection):
+        raise ValueError("invalid Weaviate collection name")
+    return collection
+
+
+def _temp_doc_id_where(temp_document_ids: list[int]) -> str:
+    if len(temp_document_ids) == 1:
+        return '{path:["temp_doc_id"],operator:Equal,valueNumber:%d}' % temp_document_ids[0]
+    operands = ",".join(
+        '{path:["temp_doc_id"],operator:Equal,valueNumber:%d}' % temp_document_id
+        for temp_document_id in temp_document_ids
+    )
+    return "{operator:Or,operands:[%s]}" % operands
+
+
+def search_temp_chunks(
+    client: httpx.Client,
+    *,
+    collection: str,
+    vector: list[float],
+    temp_document_ids: list[int],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not temp_document_ids:
+        return []
+    collection = _validated_collection(collection)
+    vector_literal = ",".join(str(value) for value in vector)
+    where = _temp_doc_id_where(temp_document_ids)
+    query = {
+        "query": (
+            "{ Get { %s(nearVector:{vector:[%s]}, where:%s, limit:%d)"
+            "{ text temp_doc_id file_name i_page i_chunk_on_doc "
+            "_additional { id distance } } } }"
+            % (collection, vector_literal, where, limit)
+        )
+    }
+    response = client.post(
+        f"{settings.WEAVIATE_BASE}/v1/graphql",
+        json=query,
+        timeout=settings.HTTP_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("errors"):
+        raise RuntimeError(f"weaviate temp search errors: {body['errors'][:1]}")
+    return (body.get("data", {}).get("Get", {}) or {}).get(collection) or []
+
+
+def read_temp_page_chunks(
+    client: httpx.Client,
+    *,
+    collection: str,
+    temp_document_ids: list[int],
+    page_number: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not temp_document_ids:
+        return []
+    collection = _validated_collection(collection)
+    where = (
+        "{operator:And,operands:[%s,{path:[\"i_page\"],operator:Equal,valueNumber:%d}]}"
+        % (_temp_doc_id_where(temp_document_ids), page_number)
+    )
+    query = {
+        "query": (
+            "{ Get { %s(where:%s, limit:%d, "
+            "sort:[{path:[\"i_chunk_on_doc\"],order:asc}])"
+            "{ text temp_doc_id file_name i_page i_chunk_on_doc "
+            "_additional { id } } } }"
+            % (collection, where, limit)
+        )
+    }
+    response = client.post(
+        f"{settings.WEAVIATE_BASE}/v1/graphql",
+        json=query,
+        timeout=settings.HTTP_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("errors"):
+        raise RuntimeError(f"weaviate temp page read errors: {body['errors'][:1]}")
+    return (body.get("data", {}).get("Get", {}) or {}).get(collection) or []
+
+
+def _list_temp_object_ids(
+    client: httpx.Client,
+    *,
+    collection: str,
+    temp_document_id: int,
+    limit: int,
+) -> list[str]:
+    collection = _validated_collection(collection)
+    query = {
+        "query": (
+            "{ Get { %s(where:{path:[\"temp_doc_id\"],operator:Equal,valueNumber:%d}, "
+            "limit:%d){ _additional { id } } } }"
+            % (collection, temp_document_id, limit)
+        )
+    }
+    response = client.post(
+        f"{settings.WEAVIATE_BASE}/v1/graphql",
+        json=query,
+        timeout=settings.HTTP_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("errors"):
+        raise RuntimeError(f"weaviate temp object lookup errors: {body['errors'][:1]}")
+    rows = (body.get("data", {}).get("Get", {}) or {}).get(collection) or []
+    return [
+        str((row.get("_additional") or {}).get("id"))
+        for row in rows
+        if (row.get("_additional") or {}).get("id")
+    ]
+
+
+def delete_temp_objects_for_document(
+    client: httpx.Client,
+    *,
+    collection: str,
+    temp_document_id: int,
+    page_limit: int = 100,
+    max_rounds: int = 1000,
+) -> list[str]:
+    collection = _validated_collection(collection)
+    deleted: list[str] = []
+    for _ in range(max_rounds):
+        object_ids = _list_temp_object_ids(
+            client,
+            collection=collection,
+            temp_document_id=temp_document_id,
+            limit=page_limit,
+        )
+        if not object_ids:
+            return deleted
+        for object_id in object_ids:
+            response = client.delete(
+                f"{settings.WEAVIATE_BASE}/v1/objects/{collection}/{object_id}",
+                timeout=settings.HTTP_TIMEOUT_S,
+            )
+            if response.status_code != 404:
+                response.raise_for_status()
+            deleted.append(object_id)
+    raise RuntimeError(
+        f"weaviate temp delete exceeded max_rounds={max_rounds}"
+    )
 
 
 def first_vector_dim(chunks: list[Chunk]) -> int | None:

@@ -3,9 +3,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 
-from src import main, upload_adapter
+from src import main, pdf_progressive, upload_adapter
 from src.models import BridgeRequest, CommitDocumentResult, CommitResponse
-from src.upload_status import UploadFileStatus
+from src.upload_status import UploadFilePreview, UploadFileStatus
 
 
 def _request(saved: upload_adapter.SavedTempDocument) -> BridgeRequest:
@@ -149,3 +149,135 @@ def test_accepted_upload_worker_fails_closed_with_safe_status(monkeypatch, tmp_p
     serialized = repr(terminal)
     assert "/private/" not in serialized
     assert "httpx" not in serialized
+
+
+def test_long_pdf_becomes_queryable_from_preview_before_full_commit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = upload_adapter.SavedTempDocument(11, "report.pdf", str(tmp_path / "report.pdf"))
+    preview_saved = upload_adapter.SavedTempDocument(
+        1_812_345_678,
+        "report.pdf",
+        str(tmp_path / ".preview_TEMP_DOCUMENT_1812345678_report.pdf"),
+    )
+    Path(source.file_path).write_bytes(b"full")
+    Path(preview_saved.file_path).write_bytes(b"preview")
+    preview = pdf_progressive.PdfPreviewArtifact(
+        preview_saved,
+        indexed_pages=20,
+        total_pages=185,
+        source_temp_document_id=source.temp_document_id,
+    )
+    transitions: list[dict[str, object]] = []
+    preprocess_calls: list[list[int]] = []
+    cleaned: list[int] = []
+
+    monkeypatch.setattr(main.settings, "PDF_PROGRESSIVE_PREVIEW_PAGES", 20)
+    monkeypatch.setattr(main.pdf_progressive, "build_pdf_preview", lambda *args, **kwargs: preview)
+    monkeypatch.setattr(
+        main._UPLOAD_STATUS,
+        "transition",
+        lambda **kwargs: transitions.append(kwargs),
+    )
+    monkeypatch.setattr(
+        upload_adapter,
+        "run_preprocessor",
+        lambda client, *, saved_documents, **kwargs: preprocess_calls.append(
+            [item.temp_document_id for item in saved_documents]
+        ),
+    )
+    chunk_counts = iter((0, 4))
+    monkeypatch.setattr(
+        main.weaviate_ops,
+        "count_temp_chunks",
+        lambda *args, **kwargs: next(chunk_counts),
+    )
+    monkeypatch.setattr(
+        main.weaviate_ops,
+        "delete_temp_objects_for_document",
+        lambda client, *, temp_document_id, **kwargs: cleaned.append(temp_document_id) or ["a"],
+    )
+    monkeypatch.setattr(
+        main,
+        "_commit_temp_documents",
+        lambda request: CommitResponse(
+            commit_enabled=True,
+            write_count=1,
+            target_vdb_id=139,
+            target_collection="File139",
+            workflow_id=301,
+            app_session_id="session-a",
+            documents=[
+                CommitDocumentResult(
+                    temp_document_id=11,
+                    file_name="report.pdf",
+                    source_doc_key="temp:11:report.pdf",
+                    source_collection="Temp",
+                    chunk_count=40,
+                    route="vdb",
+                    vector_dim=768,
+                    status="committed",
+                )
+            ],
+            committed_count=1,
+            file_only_ready=True,
+        ),
+    )
+
+    main._process_accepted_upload(
+        upload_id="upl_7Qz4R4R2Xh9pCkN8",
+        session_id="session-a",
+        config=_config(),
+        temp_vdb=upload_adapter.TempVdbIndex(3, "TempPreview"),
+        saved_documents=[source],
+        request=_request(source),
+    )
+
+    assert preprocess_calls == [[1_812_345_678], [11]]
+    assert [item["state"] for item in transitions] == [
+        "preprocessing",
+        "preprocessing",
+        "committing",
+        "ready",
+    ]
+    preview_files = transitions[1]["files"]
+    assert preview_files == (
+        UploadFileStatus(
+            "report.pdf",
+            state="preprocessing",
+            message="앞 20/185페이지는 지금 질문할 수 있습니다.",
+            preview=UploadFilePreview(
+                temp_document_id=1_812_345_678,
+                collection="TempPreview",
+                indexed_pages=20,
+                total_pages=185,
+                file_name="report.pdf",
+            ),
+        ),
+    )
+    committing_files = transitions[2]["files"]
+    assert committing_files[0].state == "committing"
+    assert committing_files[0].preview == preview_files[0].preview
+    assert "질문할 수 있습니다" in (committing_files[0].message or "")
+    assert cleaned == [1_812_345_678]
+    assert not Path(preview_saved.file_path).exists()
+
+
+def test_preview_status_matches_duplicate_file_names_by_source_document_id() -> None:
+    first = upload_adapter.SavedTempDocument(11, "report.pdf", "/tmp/first.pdf")
+    second = upload_adapter.SavedTempDocument(12, "report.pdf", "/tmp/second.pdf")
+    previews = [
+        pdf_progressive.PdfPreviewArtifact(
+            upload_adapter.SavedTempDocument(1_800_000_011, "report.pdf", "/tmp/p1.pdf"),
+            indexed_pages=10,
+            total_pages=50,
+            source_temp_document_id=11,
+        )
+    ]
+
+    statuses = main._preview_file_statuses([first, second], previews, "TempPreview")
+
+    assert statuses[0].preview is not None
+    assert statuses[0].preview.temp_document_id == 1_800_000_011
+    assert statuses[1].preview is None

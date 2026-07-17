@@ -68,12 +68,24 @@ class UploadFileCard:
 
 
 @dataclass(frozen=True, slots=True)
+class UploadFilePreview:
+    """Internal ownership reference for a searchable partial PDF index."""
+
+    temp_document_id: int
+    collection: str
+    indexed_pages: int
+    total_pages: int
+    file_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class UploadFileStatus:
     file_name: str
     state: UploadJobState = "accepted"
     route: str | None = None
     message: str | None = None
     card: UploadFileCard | None = None
+    preview: UploadFilePreview | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +232,43 @@ class UploadStatusRegistry:
                 return interrupted
             return status
 
+    def queryable_previews(
+        self,
+        *,
+        session_id: str,
+        workflow_id: int,
+        now: datetime | None = None,
+    ) -> tuple[UploadFilePreview, ...]:
+        """Return nonterminal preview indexes owned by one session only."""
+
+        directory = self.session_root(session_id) / ".upload_jobs"
+        if not directory.is_dir():
+            return ()
+        previews: list[UploadFilePreview] = []
+        seen: set[tuple[str, int]] = set()
+        for path in sorted(directory.glob("upl_*.json")):
+            try:
+                status = self.resolve(
+                    session_id=session_id,
+                    workflow_id=workflow_id,
+                    upload_id=path.stem,
+                    now=now,
+                )
+            except UploadJobNotFoundError:
+                continue
+            if status.state in _TERMINAL_STATES:
+                continue
+            for item in status.files:
+                preview = item.preview
+                if preview is None:
+                    continue
+                identity = (preview.collection, preview.temp_document_id)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                previews.append(preview)
+        return tuple(previews)
+
     @contextmanager
     def _guard(self, session_id: str) -> Iterator[None]:
         with self._lock:
@@ -260,6 +309,7 @@ class UploadStatusRegistry:
                             else None
                         ),
                         card=self._parse_card(item.get("card")),
+                        preview=self._parse_preview(item.get("preview")),
                     )
                     for item in payload["files"]
                 ),
@@ -330,6 +380,26 @@ class UploadStatusRegistry:
                 else None
             ),
         )
+
+    @staticmethod
+    def _parse_preview(value: object) -> UploadFilePreview | None:
+        if not isinstance(value, dict):
+            return None
+        preview = UploadFilePreview(
+            temp_document_id=int(value["temp_document_id"]),
+            collection=str(value["collection"]),
+            indexed_pages=int(value["indexed_pages"]),
+            total_pages=int(value["total_pages"]),
+            file_name=str(value.get("file_name") or ""),
+        )
+        if (
+            preview.temp_document_id < 1
+            or not preview.collection
+            or preview.indexed_pages < 1
+            or preview.total_pages < preview.indexed_pages
+        ):
+            raise ValueError("invalid upload preview")
+        return preview
 
     def _write(self, session_id: str, status: UploadJobStatus) -> None:
         path = self.status_path(session_id, status.upload_id)

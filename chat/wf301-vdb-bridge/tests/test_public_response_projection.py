@@ -77,6 +77,9 @@ def test_upload_status_projection_hides_session_and_storage_details() -> None:
                 "state": "preprocessing",
                 "route": None,
                 "message": None,
+                "query_ready": True,
+                "indexed_pages": 20,
+                "total_pages": 185,
                 "card": {
                     "file_name": "wide.xlsx",
                     "file_type": "xlsx",
@@ -103,6 +106,9 @@ def test_upload_status_projection_hides_session_and_storage_details() -> None:
     assert "wide.xlsx" in encoded
     assert "Sell Out Standard" in encoded
     assert "252" in encoded
+    assert '"query_ready": true' in encoded
+    assert '"indexed_pages": 20' in encoded
+    assert '"total_pages": 185' in encoded
 
 
 def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> None:

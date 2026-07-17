@@ -7,6 +7,7 @@ import pytest
 
 from src.upload_status import (
     UploadFileCard,
+    UploadFilePreview,
     UploadFileStatus,
     UploadJobNotFoundError,
     UploadStatusRegistry,
@@ -116,3 +117,97 @@ def test_upload_status_rejects_untrusted_identifier(tmp_path: Path) -> None:
             workflow_id=301,
             upload_id="../../other-session",
         )
+
+
+def test_upload_status_exposes_only_session_owned_queryable_previews(tmp_path: Path) -> None:
+    registry = UploadStatusRegistry(tmp_path)
+    expires_at = datetime.now(UTC) + timedelta(days=1)
+    first = registry.create(
+        session_id="session-a",
+        workflow_id=301,
+        file_names=("report.pdf",),
+        expires_at=expires_at,
+    )
+    second = registry.create(
+        session_id="session-b",
+        workflow_id=301,
+        file_names=("private.pdf",),
+        expires_at=expires_at,
+    )
+    registry.transition(
+        session_id="session-a",
+        workflow_id=301,
+        upload_id=first.upload_id,
+        state="preprocessing",
+        files=(
+            UploadFileStatus(
+                "report.pdf",
+                state="preprocessing",
+                preview=UploadFilePreview(
+                    temp_document_id=1_812_345_678,
+                    collection="TempPreview",
+                    indexed_pages=20,
+                    total_pages=185,
+                ),
+            ),
+        ),
+    )
+    registry.transition(
+        session_id="session-b",
+        workflow_id=301,
+        upload_id=second.upload_id,
+        state="preprocessing",
+        files=(
+            UploadFileStatus(
+                "private.pdf",
+                state="preprocessing",
+                preview=UploadFilePreview(
+                    temp_document_id=1_823_456_789,
+                    collection="PrivatePreview",
+                    indexed_pages=10,
+                    total_pages=90,
+                ),
+            ),
+        ),
+    )
+
+    previews = registry.queryable_previews(
+        session_id="session-a",
+        workflow_id=301,
+    )
+
+    assert previews == (
+        UploadFilePreview(
+            temp_document_id=1_812_345_678,
+            collection="TempPreview",
+            indexed_pages=20,
+            total_pages=185,
+        ),
+    )
+
+
+def test_terminal_upload_is_not_queryable_even_if_stale_preview_metadata_remains(
+    tmp_path: Path,
+) -> None:
+    registry = UploadStatusRegistry(tmp_path)
+    job = registry.create(
+        session_id="session-a",
+        workflow_id=301,
+        file_names=("report.pdf",),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    preview = UploadFilePreview(
+        temp_document_id=1_812_345_678,
+        collection="TempPreview",
+        indexed_pages=20,
+        total_pages=185,
+    )
+    registry.transition(
+        session_id="session-a",
+        workflow_id=301,
+        upload_id=job.upload_id,
+        state="ready",
+        files=(UploadFileStatus("report.pdf", state="ready", preview=preview),),
+    )
+
+    assert registry.queryable_previews(session_id="session-a", workflow_id=301) == ()

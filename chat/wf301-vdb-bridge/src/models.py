@@ -529,6 +529,9 @@ class PublicUploadFileStatus(BaseModel):
     ]
     route: str | None = None
     message: str | None = None
+    query_ready: bool = False
+    indexed_pages: int | None = None
+    total_pages: int | None = None
     card: UploadFileCard | None = None
 
 

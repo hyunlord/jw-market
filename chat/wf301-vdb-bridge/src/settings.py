@@ -98,6 +98,10 @@ PDF_TEXT_LAYER_MIN_CHARS = max(
 PDF_TEXT_PAGE_SECONDS = max(float(os.environ.get("PDF_TEXT_PAGE_SECONDS", "0.38")), 0.0)
 PDF_OCR_PAGE_SECONDS = max(float(os.environ.get("PDF_OCR_PAGE_SECONDS", "3.91")), 0.0)
 PDF_MAX_ESTIMATED_SECONDS = max(float(os.environ.get("PDF_MAX_ESTIMATED_SECONDS", "300")), 0.0)
+PDF_PROGRESSIVE_PREVIEW_PAGES = max(
+    int(os.environ.get("PDF_PROGRESSIVE_PREVIEW_PAGES", "20")),
+    0,
+)
 
 # 로컬 XLSX 전처리(청킹+임베딩+139 복사)의 fail-closed 타임아웃 게이트.
 # XLSX_EMBED_CHUNKS_PER_SEC 근거: 2026-07-11 실측 — crosstab.xlsx 3,166청크가 약 158초

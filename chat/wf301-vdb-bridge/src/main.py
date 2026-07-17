@@ -19,7 +19,16 @@ from typing import Any, Literal
 import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 
-from . import delete_ops, ledger, pdf_vlm, session_wiki, settings, upload_adapter, weaviate_ops
+from . import (
+    delete_ops,
+    ledger,
+    pdf_progressive,
+    pdf_vlm,
+    session_wiki,
+    settings,
+    upload_adapter,
+    weaviate_ops,
+)
 from .file_sql import (
     FileSqlNotFoundError,
     FileSqlRejectedError,
@@ -32,6 +41,7 @@ from .logging_utils import safe_log
 from .upload_ownership import TempDocumentNotFoundError, UploadOwnershipRegistry
 from .upload_status import (
     UploadFileCard as StatusUploadFileCard,
+    UploadFilePreview,
     UploadFileStatus,
     UploadJobNotFoundError,
     UploadStatusRegistry,
@@ -1469,6 +1479,150 @@ def _deactivate_failed_upload(saved_documents: list[upload_adapter.SavedTempDocu
         conn.commit()
 
 
+def _prepare_pdf_previews(
+    *,
+    upload_id: str,
+    config: upload_adapter.FileUploadConfig,
+    temp_vdb: upload_adapter.TempVdbIndex,
+    saved_documents: list[upload_adapter.SavedTempDocument],
+    user_id: int | None,
+) -> list[pdf_progressive.PdfPreviewArtifact]:
+    max_pages = settings.PDF_PROGRESSIVE_PREVIEW_PAGES
+    if max_pages < 1:
+        return []
+    previews: list[pdf_progressive.PdfPreviewArtifact] = []
+    for saved in saved_documents:
+        preview: pdf_progressive.PdfPreviewArtifact | None = None
+        try:
+            preview = pdf_progressive.build_pdf_preview(
+                saved,
+                upload_id=upload_id,
+                max_pages=max_pages,
+            )
+            if preview is None:
+                continue
+            with httpx.Client() as client:
+                if weaviate_ops.count_temp_chunks(
+                    client,
+                    temp_vdb.temp_vdb_index,
+                    preview.saved_document.temp_document_id,
+                ):
+                    safe_log(
+                        "pdf_preview_id_collision",
+                        upload_id=upload_id,
+                        temp_document_id=preview.saved_document.temp_document_id,
+                    )
+                    Path(preview.saved_document.file_path).unlink(missing_ok=True)
+                    continue
+                upload_adapter.run_preprocessor(
+                    client,
+                    temp_vdb_index=temp_vdb.temp_vdb_index,
+                    config=config,
+                    saved_documents=[preview.saved_document],
+                    user_id=user_id,
+                )
+                chunk_count = weaviate_ops.count_temp_chunks(
+                    client,
+                    temp_vdb.temp_vdb_index,
+                    preview.saved_document.temp_document_id,
+                )
+            if chunk_count < 1:
+                Path(preview.saved_document.file_path).unlink(missing_ok=True)
+                safe_log(
+                    "pdf_preview_empty",
+                    upload_id=upload_id,
+                    file_name=saved.file_name,
+                )
+                continue
+            previews.append(preview)
+        except Exception as exc:
+            if preview is not None:
+                try:
+                    with httpx.Client() as client:
+                        weaviate_ops.delete_temp_objects_for_document(
+                            client,
+                            collection=temp_vdb.temp_vdb_index,
+                            temp_document_id=preview.saved_document.temp_document_id,
+                        )
+                except Exception as cleanup_exc:
+                    safe_log(
+                        "pdf_preview_failed_cleanup_failed",
+                        upload_id=upload_id,
+                        temp_document_id=preview.saved_document.temp_document_id,
+                        error_type=type(cleanup_exc).__name__,
+                    )
+                Path(preview.saved_document.file_path).unlink(missing_ok=True)
+            safe_log(
+                "pdf_preview_failed",
+                upload_id=upload_id,
+                file_name=saved.file_name,
+                error_type=type(exc).__name__,
+            )
+    return previews
+
+
+def _preview_file_statuses(
+    saved_documents: list[upload_adapter.SavedTempDocument],
+    previews: list[pdf_progressive.PdfPreviewArtifact],
+    collection: str,
+    *,
+    state: Literal["preprocessing", "committing"] = "preprocessing",
+) -> tuple[UploadFileStatus, ...]:
+    previews_by_source = {
+        item.source_temp_document_id: item
+        for item in previews
+        if item.source_temp_document_id is not None
+    }
+    previews_by_name = {item.saved_document.file_name: item for item in previews}
+    statuses: list[UploadFileStatus] = []
+    for saved in saved_documents:
+        preview = previews_by_source.get(saved.temp_document_id)
+        if preview is None and not previews_by_source:
+            preview = previews_by_name.get(saved.file_name)
+        if preview is None:
+            statuses.append(UploadFileStatus(saved.file_name, state=state))
+            continue
+        statuses.append(
+            UploadFileStatus(
+                saved.file_name,
+                state=state,
+                message=(
+                    f"앞 {preview.indexed_pages}/{preview.total_pages}페이지는 "
+                    "지금 질문할 수 있습니다."
+                ),
+                preview=UploadFilePreview(
+                    temp_document_id=preview.saved_document.temp_document_id,
+                    collection=collection,
+                    indexed_pages=preview.indexed_pages,
+                    total_pages=preview.total_pages,
+                    file_name=saved.file_name,
+                ),
+            )
+        )
+    return tuple(statuses)
+
+
+def _cleanup_pdf_previews(
+    previews: list[pdf_progressive.PdfPreviewArtifact],
+    collection: str,
+) -> None:
+    for preview in previews:
+        try:
+            with httpx.Client() as client:
+                weaviate_ops.delete_temp_objects_for_document(
+                    client,
+                    collection=collection,
+                    temp_document_id=preview.saved_document.temp_document_id,
+                )
+        except Exception as exc:
+            safe_log(
+                "pdf_preview_cleanup_failed",
+                temp_document_id=preview.saved_document.temp_document_id,
+                error_type=type(exc).__name__,
+            )
+        Path(preview.saved_document.file_path).unlink(missing_ok=True)
+
+
 def _terminal_upload_files(
     saved_documents: list[upload_adapter.SavedTempDocument],
     commit_response: CommitResponse,
@@ -1521,6 +1675,7 @@ def _process_accepted_upload(
     external_documents = [
         item for item in saved_documents if upload_adapter.requires_external_preprocessor(item)
     ]
+    previews: list[pdf_progressive.PdfPreviewArtifact] = []
     try:
         if external_documents:
             _UPLOAD_STATUS.transition(
@@ -1533,6 +1688,26 @@ def _process_accepted_upload(
                     for item in saved_documents
                 ),
             )
+            previews = _prepare_pdf_previews(
+                upload_id=upload_id,
+                config=config,
+                temp_vdb=temp_vdb,
+                saved_documents=external_documents,
+                user_id=request.user_id,
+            )
+            if previews:
+                _UPLOAD_STATUS.transition(
+                    session_id=session_id,
+                    workflow_id=request.workflow_id,
+                    upload_id=upload_id,
+                    state="preprocessing",
+                    files=_preview_file_statuses(
+                        saved_documents,
+                        previews,
+                        temp_vdb.temp_vdb_index,
+                    ),
+                    message="앞부분 색인이 완료되어 지금 질문할 수 있습니다.",
+                )
             try:
                 with httpx.Client() as client:
                     upload_adapter.run_preprocessor(
@@ -1576,9 +1751,18 @@ def _process_accepted_upload(
             workflow_id=request.workflow_id,
             upload_id=upload_id,
             state="committing",
-            files=tuple(
-                UploadFileStatus(file_name=item.file_name, state="committing")
-                for item in saved_documents
+            files=(
+                _preview_file_statuses(
+                    saved_documents,
+                    previews,
+                    temp_vdb.temp_vdb_index,
+                    state="committing",
+                )
+                if previews
+                else tuple(
+                    UploadFileStatus(file_name=item.file_name, state="committing")
+                    for item in saved_documents
+                )
             ),
         )
         commit_response = _commit_temp_documents(request)
@@ -1635,6 +1819,8 @@ def _process_accepted_upload(
                 decision="status_write_failed",
                 workflow_id=request.workflow_id,
             )
+    finally:
+        _cleanup_pdf_previews(previews, temp_vdb.temp_vdb_index)
 
 
 @app.post(
@@ -2011,6 +2197,13 @@ def upload_status(
                 "state": item.state,
                 "route": item.route,
                 "message": item.message,
+                "query_ready": item.preview is not None or item.state == "ready",
+                "indexed_pages": (
+                    item.preview.indexed_pages if item.preview is not None else None
+                ),
+                "total_pages": (
+                    item.preview.total_pages if item.preview is not None else None
+                ),
                 "card": (
                     _upload_card_payload(item.card)
                     if item.card is not None
@@ -2324,6 +2517,8 @@ def _search_document_hits(
     question: str,
     doc_ids: list[int],
     limit: int,
+    *,
+    vector: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     page_number = _requested_page_number(question)
     if page_number is not None:
@@ -2351,7 +2546,8 @@ def _search_document_hits(
                 limit=max(limit, 100),
             )
         )
-    vector = weaviate_ops.embed_text(client, question)
+    if vector is None:
+        vector = weaviate_ops.embed_text(client, question)
     hits.extend(
         weaviate_ops.search_target_chunks(
             client,
@@ -2361,6 +2557,106 @@ def _search_document_hits(
         )
     )
     return _unique_hits(hits)
+
+
+def _search_preview_hits(
+    client: httpx.Client,
+    *,
+    question: str,
+    previews: tuple[UploadFilePreview, ...],
+    limit: int,
+    vector: list[float] | None = None,
+) -> list[dict[str, Any]]:
+    if not previews:
+        return []
+    page_number = _requested_page_number(question)
+    if page_number is not None:
+        eligible = tuple(
+            preview for preview in previews if page_number <= preview.indexed_pages
+        )
+        if not eligible:
+            return []
+        grouped: dict[str, list[int]] = {}
+        for preview in eligible:
+            grouped.setdefault(preview.collection, []).append(preview.temp_document_id)
+        hits: list[dict[str, Any]] = []
+        for collection, temp_document_ids in grouped.items():
+            hits.extend(
+                weaviate_ops.read_temp_page_chunks(
+                    client,
+                    collection=collection,
+                    temp_document_ids=temp_document_ids,
+                    page_number=page_number,
+                    limit=max(limit, 100),
+                )
+            )
+        return [
+            {**hit, "doc_id": 0, "summary": "{}"}
+            for hit in _unique_hits(hits)
+        ][:limit]
+    if vector is None:
+        vector = weaviate_ops.embed_text(client, question)
+    grouped: dict[str, list[int]] = {}
+    for preview in previews:
+        grouped.setdefault(preview.collection, []).append(preview.temp_document_id)
+    hits: list[dict[str, Any]] = []
+    for collection, temp_document_ids in grouped.items():
+        for hit in weaviate_ops.search_temp_chunks(
+            client,
+            collection=collection,
+            vector=vector,
+            temp_document_ids=temp_document_ids,
+            limit=limit,
+        ):
+            hits.append({**hit, "doc_id": 0, "summary": "{}"})
+    return _unique_hits(hits)[:limit]
+
+
+def _merge_ranked_hits(
+    target_hits: list[dict[str, Any]],
+    preview_hits: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    def rank(hit: dict[str, Any]) -> float:
+        distance = (hit.get("_additional") or {}).get("distance")
+        try:
+            return float(distance)
+        except (TypeError, ValueError):
+            # Exact-page and keyword hits intentionally outrank vector matches.
+            return -1.0
+
+    return sorted(
+        _unique_hits([*target_hits, *preview_hits]),
+        key=rank,
+    )[:limit]
+
+
+def _progressive_scope_marker(
+    previews: tuple[UploadFilePreview, ...],
+    *,
+    has_hits: bool,
+) -> str:
+    if not previews:
+        return ""
+    if len(previews) == 1:
+        preview = previews[0]
+        scope = f"앞 {preview.indexed_pages}/{preview.total_pages}페이지"
+    else:
+        scopes = ", ".join(
+            f"{preview.file_name or '파일'} 앞 {preview.indexed_pages}/{preview.total_pages}페이지"
+            for preview in previews
+        )
+        scope = f"파일별 앞부분: {scopes}"
+    if has_hits:
+        return (
+            f"※ 인덱싱 진행 중 ({scope} 기준). "
+            "완료 전 답변은 현재 검색 가능 범위만 반영합니다."
+        )
+    return (
+        f"※ 현재까지 인덱싱된 범위({scope})에서는 확인되지 않았습니다. "
+        "전체 인덱싱은 진행 중입니다."
+    )
 
 
 def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2483,6 +2779,10 @@ def search(req: SearchRequest) -> SearchResponse:
             file_sources=[],
             errors=errors,
         )
+    previews = _UPLOAD_STATUS.queryable_previews(
+        session_id=session_id,
+        workflow_id=req.workflow_id,
+    )
     requested_page = _requested_page_number(req.question)
     directed_retrieval = requested_page is not None or bool(_KEYWORD_EVIDENCE_RE.search(req.question))
     wiki_context = ""
@@ -2511,7 +2811,7 @@ def search(req: SearchRequest) -> SearchResponse:
         for row in rows
         if row.get("storage_route") != "sql"
     ]
-    if not rows:
+    if not rows and not previews:
         return SearchResponse(
             target_vdb_id=req.vdb_id,
             workflow_id=req.workflow_id,
@@ -2523,7 +2823,7 @@ def search(req: SearchRequest) -> SearchResponse:
             file_context="",
             file_sources=[],
         )
-    if not doc_ids:
+    if not doc_ids and not previews:
         return SearchResponse(
             target_vdb_id=req.vdb_id,
             workflow_id=req.workflow_id,
@@ -2537,19 +2837,41 @@ def search(req: SearchRequest) -> SearchResponse:
             sql_available=bool(sql_sources),
             sql_sources=sql_sources,
         )
+    limit = req.limit or settings.SEARCH_LIMIT
     with httpx.Client() as client:
-        hits = _search_document_hits(
-            client,
-            req.question,
-            doc_ids,
-            req.limit or settings.SEARCH_LIMIT,
+        shared_vector = (
+            weaviate_ops.embed_text(client, req.question)
+            if previews and requested_page is None
+            else None
         )
+        target_hits = (
+            _search_document_hits(
+                client,
+                req.question,
+                doc_ids,
+                limit,
+                vector=shared_vector,
+            )
+            if doc_ids
+            else []
+        )
+        preview_hits = _search_preview_hits(
+            client,
+            question=req.question,
+            previews=previews,
+            limit=limit,
+            vector=shared_vector,
+        )
+        hits = _merge_ranked_hits(target_hits, preview_hits, limit=limit)
     remaining_chars = max(settings.SEARCH_CONTEXT_CHAR_LIMIT - len(wiki_context) - (2 if wiki_context else 0), 0)
     vdb_context, vdb_sources, empty_page_sources = _context_from_hits(hits, remaining_chars)
     file_context = _join_file_contexts(wiki_context, vdb_context)
     scope_marker = _retrieval_scope_marker(req.question)
     if scope_marker:
         file_context = _join_file_contexts(scope_marker, file_context)
+    progressive_marker = _progressive_scope_marker(previews, has_hits=bool(preview_hits))
+    if progressive_marker:
+        file_context = _join_file_contexts(progressive_marker, file_context)
     file_sources = [*wiki_sources, *vdb_sources]
     return SearchResponse(
         target_vdb_id=req.vdb_id,
@@ -2557,7 +2879,7 @@ def search(req: SearchRequest) -> SearchResponse:
         app_session_id=req.app_session_id,
         session_id=session_id,
         question=req.question,
-        document_count=len(rows),
+        document_count=len(rows) + len(previews),
         result_count=len(hits),
         file_context=file_context,
         file_sources=file_sources,
