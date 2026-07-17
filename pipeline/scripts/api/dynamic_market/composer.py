@@ -14,6 +14,17 @@ from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, MarketD
 class ResponseComposer:
     """Serialize runtime metrics with the same field tree as ``/api/cause``."""
 
+    def compose_unformatted(
+        self,
+        *,
+        definition: MarketDefinition,
+        metrics: AggregatedMetrics,
+        period_range: PeriodRange = PeriodRange(),
+    ) -> dict[str, Any]:
+        """Build the response tree without walking it for number formatting."""
+
+        return build_cause_payload(definition=definition, metrics=metrics, period_range=period_range)
+
     def compose(
         self,
         *,
@@ -24,5 +35,5 @@ class ResponseComposer:
         """Return a JSON-ready cause-compatible dynamic-market response."""
 
         return deep_format_numbers(
-            build_cause_payload(definition=definition, metrics=metrics, period_range=period_range)
+            self.compose_unformatted(definition=definition, metrics=metrics, period_range=period_range)
         )

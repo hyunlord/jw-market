@@ -25,6 +25,7 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
 )
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
+from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.dynamic_market.cause_sections import (
     display_matrix_rows,
     growth_contribution,
@@ -1287,6 +1288,35 @@ def test_compose_when_definition_and_metrics_are_ready() -> None:
     assert response["data"]["market_size_series"][0]["value"] == 100.0
 
 
+def test_unformatted_compose_has_identical_final_route_payload() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["C10B"], "molecule": [], "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.12349,
+        hhi=5000.56789,
+        cagr=None,
+        monthly_series=({"period": "2026-04", "market_size": 100.12349},),
+        brands=(),
+    )
+    composer = ResponseComposer()
+
+    formatted = composer.compose(definition=definition, metrics=metrics)
+    unformatted = composer.compose_unformatted(definition=definition, metrics=metrics)
+
+    assert compose_cached_json(
+        {"status": "SUCCESS", "result": unformatted}, measure="sales"
+    ) == compose_cached_json(
+        {"status": "SUCCESS", "result": formatted}, measure="sales"
+    )
+
+
 def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypatch) -> None:
     bare_payload = {
         "brand": "리바로",
@@ -1304,7 +1334,7 @@ def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypat
             return object()
 
     class FakeComposer:
-        def compose(self, **_: object) -> dict:
+        def compose_unformatted(self, **_: object) -> dict:
             return dict(bare_payload)
 
     definition = SimpleNamespace(
@@ -1357,7 +1387,7 @@ def test_dynamic_market_route_allows_scope_at_brand_row_limit(monkeypatch) -> No
             return object()
 
     class FakeComposer:
-        def compose(self, **_: object) -> dict:
+        def compose_unformatted(self, **_: object) -> dict:
             return dict(bare_payload)
 
     monkeypatch.setattr(

@@ -182,7 +182,7 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
     compose_started = perf_counter() if started is not None else None
-    result = composer.compose(definition=definition, metrics=metrics, period_range=period_range)
+    result = composer.compose_unformatted(definition=definition, metrics=metrics, period_range=period_range)
     compose_ms = (perf_counter() - compose_started) * 1000 if compose_started is not None else 0.0
     serialize_started = perf_counter() if started is not None else None
     response = compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
