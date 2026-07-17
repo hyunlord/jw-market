@@ -31,9 +31,12 @@ def _truncate_float(value: float) -> float:
 
 
 def format_number(value: Any) -> Any:
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, int):
+    value_type = type(value)
+    if value_type is float:
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return _truncate_float(value)
+    if value is None or value_type is bool or value_type is int or value_type is str:
         return value
     if isinstance(value, float):
         if math.isnan(value) or math.isinf(value):

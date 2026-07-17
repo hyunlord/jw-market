@@ -79,3 +79,19 @@ def test_float_fast_path_matches_decimal_at_truncation_boundaries() -> None:
 
 def test_decimal_input_keeps_decimal_quantize_contract() -> None:
     assert number_format.format_number(Decimal("123.456789")) == 123.4567
+
+
+def test_numeric_subclasses_keep_formatting_contract() -> None:
+    class FloatValue(float):
+        pass
+
+    class DecimalValue(Decimal):
+        pass
+
+    assert number_format.format_number(FloatValue(123.456789)) == 123.4567
+    assert number_format.format_number(DecimalValue("123.456789")) == 123.4567
+
+
+@pytest.mark.parametrize("value", [None, True, False, 0, 42, "리바로", object()])
+def test_non_float_values_pass_through_unchanged(value: object) -> None:
+    assert number_format.format_number(value) is value
