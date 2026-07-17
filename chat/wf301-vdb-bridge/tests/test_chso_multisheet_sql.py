@@ -10,6 +10,8 @@ from src.xlsx_sql_route import (
     FileSqlRouteConfig,
     SheetSqlProfile,
     classify_workbook_profiles,
+    inspect_xlsx_for_sql,
+    load_sql_sheet,
     logical_names_for_profiles,
     workbook_storage_route,
 )
@@ -68,6 +70,34 @@ def test_chso_eight_column_dense_sheet_is_sql_candidate() -> None:
 
     assert decision.route == "sql"
     assert [sheet.sheet_name for sheet in decision.selected_sheets] == ["LIVALO Market"]
+
+
+def test_chso_wide_sheet_preserves_all_252_columns_including_last_measure(
+    tmp_path: Path,
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sell Out Standard"
+    headers = ["AUDIT DESC", "MFR NAME KOR", "PRODUCT NAME KOR"]
+    headers.extend(f"COLUMN {index}" for index in range(4, 252))
+    headers.append("VALUES LC SI PRICE\n1/2026")
+    sheet.append(headers)
+    sheet.append(["Sell_Out", "DONG-A", "LIVALO", *range(4, 253)])
+    path = tmp_path / "chso-wide.xlsx"
+    workbook.save(path)
+
+    decision = inspect_xlsx_for_sql(path, _config())
+    sql_sheet = load_sql_sheet(path, decision.selected_sheets[0])
+
+    assert decision.route == "sql"
+    assert len(sql_sheet.columns) == 252
+    assert sql_sheet.columns[:3] == (
+        "AUDIT DESC",
+        "MFR NAME KOR",
+        "PRODUCT NAME KOR",
+    )
+    assert sql_sheet.columns[-1] == "VALUES LC SI PRICE\n1/2026"
+    assert len(next(sql_sheet.rows())) == 252
 
 
 def test_compact_tabular_sheets_are_sql_candidates_but_prose_sheet_stays_vdb() -> None:
