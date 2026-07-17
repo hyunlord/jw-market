@@ -70,7 +70,9 @@ def trim_period_payload(value: Any, period_range: PeriodRange) -> Any:
 
 
 def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
-    if isinstance(value, Mapping):
+    # JSON decoding produces exact dict/list nodes; keep generic containers off this hot path.
+    value_type = type(value)
+    if value_type is dict:
         if value:
             period_items: list[tuple[tuple[int, int], Any, Any]] = []
             for key, item in value.items():
@@ -85,9 +87,44 @@ def _trim_period_payload(value: Any, bounds: _PeriodBounds) -> Any:
                     if _overlaps(interval, bounds)
                 }
         return {str(key): _trim_period_payload(item, bounds) for key, item in value.items()}
-    if isinstance(value, list):
+    if value_type is list:
         if value:
             period_points: list[tuple[tuple[int, int], Mapping[str, Any]]] = []
+            for item in value:
+                if not isinstance(item, Mapping):
+                    break
+                period = _point_period(item)
+                interval = _period_interval(period) if period is not None else None
+                if interval is None:
+                    break
+                period_points.append((interval, item))
+            else:
+                return [
+                    _trim_period_payload(item, bounds)
+                    for interval, item in period_points
+                    if _overlaps(interval, bounds)
+                ]
+        return [_trim_period_payload(item, bounds) for item in value]
+    if value is None or value_type in (str, int, float, bool):
+        return value
+    if isinstance(value, Mapping):
+        if value:
+            period_items = []
+            for key, item in value.items():
+                interval = _period_interval(str(key))
+                if interval is None:
+                    break
+                period_items.append((interval, key, item))
+            else:
+                return {
+                    str(key): _trim_period_payload(item, bounds)
+                    for interval, key, item in period_items
+                    if _overlaps(interval, bounds)
+                }
+        return {str(key): _trim_period_payload(item, bounds) for key, item in value.items()}
+    if isinstance(value, list):
+        if value:
+            period_points = []
             for item in value:
                 if not isinstance(item, Mapping):
                     break

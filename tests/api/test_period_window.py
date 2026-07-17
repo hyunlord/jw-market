@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import UserDict
 import json
 
 from pipeline.scripts.api.dynamic_market import period_window as period_window_module
@@ -191,6 +192,22 @@ def test_non_period_mapping_stops_period_key_probe_after_first_miss(monkeypatch)
     assert "series" not in calls
     assert "metadata" not in calls
     assert "rank" not in calls
+
+
+def test_trim_period_payload_preserves_non_dict_mapping_compatibility() -> None:
+    payload = UserDict(
+        {
+            "series": UserDict({"2025-01": 1.0, "2026-01": 2.0}),
+            "identity": UserDict({"market_id": "ml_006"}),
+        }
+    )
+
+    result = trim_period_payload(payload, PeriodRange("2025-01", "2025-12"))
+
+    assert result == {
+        "series": {"2025-01": 1.0},
+        "identity": {"market_id": "ml_006"},
+    }
 
 
 def test_period_point_list_resolves_each_point_period_once(monkeypatch) -> None:
