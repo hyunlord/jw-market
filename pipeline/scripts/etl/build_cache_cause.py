@@ -1646,6 +1646,90 @@ def _latest_valid_share_pct(
     return 0.0
 
 
+def _finalize_segment_rows(
+    *,
+    grouped: dict[str, list[float]],
+    totals: list[float],
+    observed_periods: dict[str, bool],
+    periods: list[str],
+    level: str,
+    target_name: str | None,
+    top_n: int | None,
+    use_latest_valid_share: bool,
+) -> list[dict[str, Any]]:
+    latest_observed_period = next(
+        (period for period in reversed(periods) if observed_periods[period]),
+        None,
+    )
+    latest_observed_index = (
+        periods.index(latest_observed_period)
+        if latest_observed_period is not None
+        else None
+    )
+
+    ranked = sorted(
+        grouped.items(),
+        key=lambda item: item[1][latest_observed_index] if latest_observed_index is not None else 0.0,
+        reverse=True,
+    )
+    if target_name:
+        ranked = sorted(
+            ranked,
+            key=lambda item: (
+                item[0] != target_name,
+                -(item[1][latest_observed_index] if latest_observed_index is not None else 0.0),
+            ),
+        )
+    selected = ranked if top_n is None else ranked[:top_n]
+
+    segments: list[dict[str, Any]] = []
+    missing_periods = [period for period in periods if not observed_periods[period]]
+    for rank, (name, series_map) in enumerate(selected, start=1):
+        value_series = [
+            round(series_map[index], 4) if observed_periods[period] else None
+            for index, period in enumerate(periods)
+        ]
+        series_pct = []
+        for index, (period, value) in enumerate(zip(periods, value_series)):
+            if value is None:
+                series_pct.append(None)
+                continue
+            total = totals[index]
+            series_pct.append(round(value / total * 100, 4) if total else 0.0)
+        segment = {
+            "name": name,
+            "rank": rank,
+            "recent_share_pct": (
+                None
+                if latest_observed_period is None
+                else _latest_valid_share_pct(
+                    value_series,
+                    [totals[index] if observed_periods[period] else None for index, period in enumerate(periods)],
+                )
+                if use_latest_valid_share
+                else series_pct[-1] if series_pct else None
+            ),
+            "series_pct": series_pct,
+            "value_series": value_series,
+        }
+        if name == UNCLASSIFIED_DIMENSION_NAME:
+            segment["data_quality"] = {
+                "available": False,
+                "reason": "dimension_value_missing",
+                "dimension": level,
+            }
+            if missing_periods:
+                segment["data_quality"]["missing_periods"] = missing_periods
+        elif missing_periods:
+            segment["data_quality"] = {
+                "available": False,
+                "reason": "dimension_period_missing",
+                "missing_periods": missing_periods,
+            }
+        segments.append(segment)
+    return segments
+
+
 def _segment_rows_for_level(
     *,
     rows: list[dict[str, Any]],
@@ -1772,77 +1856,151 @@ def _segment_rows_for_level(
             if isinstance(series, dict):
                 add_observed_series_to_targets(targets, series, also_add_to=totals)
 
-    latest_observed_period = next(
-        (period for period in reversed(periods) if observed_periods[period]),
-        None,
-    )
-    latest_observed_index = (
-        periods.index(latest_observed_period)
-        if latest_observed_period is not None
-        else None
+    return _finalize_segment_rows(
+        grouped=grouped,
+        totals=totals,
+        observed_periods=observed_periods,
+        periods=periods,
+        level=level,
+        target_name=target_name,
+        top_n=top_n,
+        use_latest_valid_share=use_latest_valid_share,
     )
 
-    ranked = sorted(
-        grouped.items(),
-        key=lambda item: item[1][latest_observed_index] if latest_observed_index is not None else 0.0,
-        reverse=True,
-    )
-    if target_name:
-        ranked = sorted(
-            ranked,
-            key=lambda item: (
-                item[0] != target_name,
-                -(item[1][latest_observed_index] if latest_observed_index is not None else 0.0),
-            ),
+
+def _segment_rows_for_channels(
+    *,
+    rows: list[dict[str, Any]],
+    level: str,
+    periods: list[str],
+    source: str,
+    channels: list[str],
+    target_name: str | None,
+    top_n_by_channel: dict[str, int | None],
+    use_latest_valid_share: bool = False,
+    series_value_cache: _SeriesValueCache | None = None,
+    series_observed_cache: _SeriesObservedCache | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    grouped_by_channel = {channel: {} for channel in channels}
+    totals_by_channel = {channel: [0.0 for _ in periods] for channel in channels}
+    observed_by_channel = {
+        channel: {period: False for period in periods}
+        for channel in channels
+    }
+    is_class_level = _is_class_level(level)
+    field = LEVEL_FIELD_BY_LABEL.get(level)
+
+    def add_series(
+        channel: str,
+        targets: list[list[float]],
+        series: dict[str, Any],
+    ) -> None:
+        values, observed = _series_values_with_observed(
+            series,
+            periods,
+            cache=series_observed_cache,
         )
-    selected = ranked if top_n is None else ranked[:top_n]
+        totals = totals_by_channel[channel]
+        observed_periods = observed_by_channel[channel]
+        for index, (period, value, is_observed) in enumerate(zip(periods, values, observed)):
+            totals[index] += value
+            for target in targets:
+                target[index] += value
+            if is_observed:
+                observed_periods[period] = True
 
-    segments: list[dict[str, Any]] = []
-    missing_periods = [period for period in periods if not observed_periods[period]]
-    for rank, (name, series_map) in enumerate(selected, start=1):
-        value_series = [
-            round(series_map[index], 4) if observed_periods[period] else None
-            for index, period in enumerate(periods)
-        ]
-        series_pct = []
-        for index, (period, value) in enumerate(zip(periods, value_series)):
-            if value is None:
-                series_pct.append(None)
+    for row in rows:
+        if is_class_level and _row_is_class_excluded(row):
+            continue
+
+        dimension_series = _dimension_series_map(row, field)
+        dimension_field_present = _has_dimension_field(row, field)
+        dimension_specialty_present = (
+            source == "UBIST" and _has_dimension_specialty_field(row, field)
+        )
+        names: list[str] | None = None
+        channel_data: dict[str, Any] | None = None
+
+        for channel in channels:
+            grouped = grouped_by_channel[channel]
+            is_all_channel = channel == "전체"
+            dimension_specialty_series = (
+                _coalesced_dimension_channel_series(row, field, source, channel)
+                if dimension_specialty_present and not is_all_channel
+                else {}
+            )
+            dual_channel_data = (
+                _dual_channel_data(row, source, channel)
+                if not is_all_channel and not dimension_specialty_present
+                else None
+            )
+            use_dimension_channel = not is_all_channel and not isinstance(dual_channel_data, dict)
+            dimension_channel_series = (
+                _dimension_channel_series_map(row, field, source, channel)
+                if use_dimension_channel
+                else {}
+            )
+            active_dimension_series = (
+                dimension_series
+                if is_all_channel
+                else dimension_specialty_series or dimension_channel_series
+            )
+            if active_dimension_series:
+                for name, series in active_dimension_series.items():
+                    target = grouped.setdefault(name, [0.0 for _ in periods])
+                    add_series(channel, [target], series)
                 continue
-            total = totals[index]
-            series_pct.append(round(value / total * 100, 4) if total else 0.0)
-        segment = {
-                "name": name,
-                "rank": rank,
-                "recent_share_pct": (
-                    None
-                    if latest_observed_period is None
-                    else _latest_valid_share_pct(
-                        value_series,
-                        [totals[index] if observed_periods[period] else None for index, period in enumerate(periods)],
-                    )
-                    if use_latest_valid_share
-                    else series_pct[-1] if series_pct else None
-                ),
-                "series_pct": series_pct,
-                "value_series": value_series,
-            }
-        if name == UNCLASSIFIED_DIMENSION_NAME:
-            segment["data_quality"] = {
-                "available": False,
-                "reason": "dimension_value_missing",
-                "dimension": level,
-            }
-            if missing_periods:
-                segment["data_quality"]["missing_periods"] = missing_periods
-        elif missing_periods:
-            segment["data_quality"] = {
-                "available": False,
-                "reason": "dimension_period_missing",
-                "missing_periods": missing_periods,
-            }
-        segments.append(segment)
-    return segments
+            if is_all_channel and dimension_field_present and dimension_series:
+                continue
+            if dimension_specialty_present and dimension_specialty_series:
+                continue
+            if dimension_channel_series:
+                continue
+
+            if names is None:
+                names = _dimension_values(row, level)
+                if not names and _requires_unclassified_dimension_bucket(level):
+                    names = [UNCLASSIFIED_DIMENSION_NAME]
+            if not names:
+                continue
+            if isinstance(dual_channel_data, dict) and len(names) != 1:
+                continue
+            targets = [
+                grouped.setdefault(name, [0.0 for _ in periods])
+                for name in names
+            ]
+            if is_all_channel:
+                history = _metric_history(row)
+                if history:
+                    add_series(channel, targets, history)
+                continue
+            if isinstance(dual_channel_data, dict):
+                add_series(channel, targets, dual_channel_data)
+                continue
+
+            if channel_data is None:
+                raw_channel_data = row.get("__channel_data")
+                if raw_channel_data is None:
+                    raw_channel_data = decode_json(row.get("channel_data"))
+                    row["__channel_data"] = raw_channel_data
+                channel_data = raw_channel_data if isinstance(raw_channel_data, dict) else {}
+            for raw_channel, series in channel_data.items():
+                if _channel_matches(raw_channel, source, channel) and isinstance(series, dict):
+                    add_series(channel, targets, series)
+
+    return {
+        channel: _finalize_segment_rows(
+            grouped=grouped_by_channel[channel],
+            totals=totals_by_channel[channel],
+            observed_periods=observed_by_channel[channel],
+            periods=periods,
+            level=level,
+            target_name=target_name,
+            top_n=top_n_by_channel[channel],
+            use_latest_valid_share=use_latest_valid_share,
+        )
+        for channel in channels
+    }
 
 
 def _rows_for_channel(
@@ -2323,21 +2481,22 @@ def _build_analysis_levels_from_mart(
     for level in levels:
         level_started = perf_counter() if _latency_stage_timing_enabled() else 0.0
         if level in enabled_levels:
-            by_channel = {
-                channel: _segment_rows_for_level(
-                    rows=rows,
-                    level=level,
-                    periods=periods,
-                    source=source,
-                    channel=channel,
-                    target_name=target_name if level == "Brand" else None,
-                    top_n=None if channel == "전체" and level != "Brand" else 5,
-                    use_latest_valid_share=use_latest_valid_share,
-                    series_value_cache=series_value_cache,
-                    series_observed_cache=series_observed_cache,
-                )
+            top_n_by_channel = {
+                channel: None if channel == "전체" and level != "Brand" else 5
                 for channel in channels
             }
+            by_channel = _segment_rows_for_channels(
+                rows=rows,
+                level=level,
+                periods=periods,
+                source=source,
+                channels=channels,
+                target_name=target_name if level == "Brand" else None,
+                top_n_by_channel=top_n_by_channel,
+                use_latest_valid_share=use_latest_valid_share,
+                series_value_cache=series_value_cache,
+                series_observed_cache=series_observed_cache,
+            )
         else:
             by_channel = {channel: [] for channel in channels}
         data[level] = {"segments": by_channel["전체"], "by_channel": by_channel}

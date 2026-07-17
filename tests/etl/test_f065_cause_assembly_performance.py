@@ -397,6 +397,49 @@ def test_analysis_level_builds_reuse_shared_series_caches(monkeypatch) -> None:
     assert calls == first_calls
 
 
+def test_analysis_level_build_batches_all_channels_once_per_level(monkeypatch) -> None:
+    rows = [
+        {
+            "brand_name": "Brand A",
+            "brand_key": "brand-a",
+            "metric_history": {"2025-01": {"raw_value": 10.0}},
+            "by_dimension": {"class": "Class A"},
+            "channel_data": {
+                "상급종합병원": {"2025-01": {"raw_value": 6.0}},
+                "의원": {"2025-01": {"raw_value": 4.0}},
+            },
+        }
+    ]
+    batch_calls = 0
+    original_batch = cause._segment_rows_for_channels
+
+    def count_batch(**kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+        nonlocal batch_calls
+        batch_calls += 1
+        return original_batch(**kwargs)
+
+    def fail_single_channel(**_kwargs: Any) -> list[dict[str, Any]]:
+        raise AssertionError("analysis-level build must not rescan rows per channel")
+
+    monkeypatch.setattr(cause, "_segment_rows_for_channels", count_batch)
+    monkeypatch.setattr(cause, "_segment_rows_for_level", fail_single_channel)
+
+    payload = cause._build_analysis_levels_from_mart(
+        rows=rows,
+        source="UBIST",
+        market={"analyze_class": 1},
+        view_source_id="synthetic",
+        target_name=None,
+        fallback_level_top5={},
+        channels_override=["전체", "상급종병", "의원"],
+        resolved_levels={"Class"},
+        resolved_periods=["2025-01"],
+    )
+
+    assert payload["levels"] == ["Class", "Brand"]
+    assert batch_calls == 2
+
+
 def test_build_response_does_not_compute_unused_others_display_rows() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cause.build_response)))
     display_calls = [
@@ -539,6 +582,169 @@ def test_segment_rows_preserves_period_alignment_for_array_accumulation() -> Non
 
     assert segments[0]["value_series"] == [10.0, 25.0]
     assert segments[0]["series_pct"] == [100.0, 100.0]
+
+
+def test_segment_rows_for_channels_matches_single_channel_oracle() -> None:
+    periods = ["2025-01", "2025-02"]
+    rows = [
+        {
+            "brand_name": "Brand A",
+            "brand_key": "brand-a",
+            "by_dimension": {"class": "Class A"},
+            "metric_history": {
+                "2025-01": {"raw_value": 10.0},
+                "2025-02": {"raw_value": 20.0},
+            },
+            "dimension_data": {
+                "class": {
+                    "Class A": {
+                        "2025-01": {"raw_value": 10.0},
+                        "2025-02": {"raw_value": 20.0},
+                    }
+                }
+            },
+            "dimension_specialty_data": {
+                "class": {
+                    "Class A": {
+                        "상급종병": {
+                            "2025-01": {"raw_value": 4.0},
+                            "2025-02": {"raw_value": 8.0},
+                        }
+                    }
+                }
+            },
+            "dimension_channel_data": {
+                "class": {
+                    "Class A": {
+                        "종합병원": {
+                            "2025-01": {"raw_value": 3.0},
+                            "2025-02": {"raw_value": 6.0},
+                        }
+                    }
+                }
+            },
+        },
+        {
+            "brand_name": "Brand B",
+            "brand_key": "brand-b",
+            "by_dimension": {"class": "Class B"},
+            "metric_history": {
+                "2025-01": {"raw_value": 5.0},
+                "2025-02": {"raw_value": 7.0},
+            },
+            "channel_data": {
+                "의원": {
+                    "2025-01": {"raw_value": 5.0},
+                    "2025-02": {"raw_value": 7.0},
+                }
+            },
+        },
+        {
+            "brand_name": "Missing",
+            "brand_key": "missing",
+            "by_dimension": {"class": None},
+            "metric_history": {"2025-01": {"raw_value": 2.0}},
+            "__ubist_dual_channel_data": {
+                "병원": {"2025-01": {"raw_value": 2.0}},
+            },
+        },
+    ]
+    channels = ["전체", "상급종병", "종병", cause.UBIST_TGH_FACILITY_CHANNEL, "병원", "의원"]
+    top_n_by_channel = {
+        channel: None if channel == "전체" else 5
+        for channel in channels
+    }
+
+    expected = {
+        channel: cause._segment_rows_for_level(
+            rows=rows,
+            level="Class",
+            periods=periods,
+            source="UBIST",
+            channel=channel,
+            target_name=None,
+            top_n=top_n_by_channel[channel],
+        )
+        for channel in channels
+    }
+
+    actual = cause._segment_rows_for_channels(
+        rows=rows,
+        level="Class",
+        periods=periods,
+        source="UBIST",
+        channels=channels,
+        target_name=None,
+        top_n_by_channel=top_n_by_channel,
+    )
+
+    assert actual == expected
+
+
+def test_segment_rows_for_channels_matches_iqvia_brand_target_oracle() -> None:
+    periods = ["2025-Q1", "2025-Q2"]
+    rows = [
+        {
+            "brand_name": "Target",
+            "brand_key": "target",
+            "metric_history": {
+                "2025-Q1": {"raw_value": 2.0},
+                "2025-Q2": {"raw_value": 3.0},
+            },
+            "channel_data": {
+                "KHPA": {
+                    "2025-Q1": {"raw_value": 1.0},
+                    "2025-Q2": {"raw_value": 2.0},
+                }
+            },
+        },
+        {
+            "brand_name": "Leader",
+            "brand_key": "leader",
+            "metric_history": {
+                "2025-Q1": {"raw_value": 8.0},
+                "2025-Q2": {"raw_value": 12.0},
+            },
+            "channel_data": {
+                "KHPA": {
+                    "2025-Q1": {"raw_value": 4.0},
+                    "2025-Q2": {"raw_value": 6.0},
+                },
+                "KCPA": {
+                    "2025-Q1": {"raw_value": 4.0},
+                    "2025-Q2": {"raw_value": 6.0},
+                },
+            },
+        },
+    ]
+    channels = ["전체", "KHPA", "KCPA", "KPA"]
+    top_n_by_channel = {channel: 5 for channel in channels}
+    expected = {
+        channel: cause._segment_rows_for_level(
+            rows=rows,
+            level="Brand",
+            periods=periods,
+            source="IQVIA",
+            channel=channel,
+            target_name="Target",
+            top_n=5,
+            use_latest_valid_share=True,
+        )
+        for channel in channels
+    }
+
+    actual = cause._segment_rows_for_channels(
+        rows=rows,
+        level="Brand",
+        periods=periods,
+        source="IQVIA",
+        channels=channels,
+        target_name="Target",
+        top_n_by_channel=top_n_by_channel,
+        use_latest_valid_share=True,
+    )
+
+    assert actual == expected
 
 
 def test_channel_bucket_reuses_same_raw_channel() -> None:
