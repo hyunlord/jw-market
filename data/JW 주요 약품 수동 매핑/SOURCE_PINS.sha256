@@ -1,0 +1,4 @@
+# MI Master 정본 핀 — s2 카탈로그 입력 (EXPECTED_SOURCE_FILE_VERSION 정합)
+# 검증: shasum -a 256 -c SOURCE_PINS.sha256  (이 디렉터리에서)
+# 원 소재: 로컬 전달본(2026-06-14 수령분). 구버전(260422)은 미추적 유지(LEGACY_SKELETON 참조용).
+7a5bb0b095acc328b820ee67eece5263638a1f6defe44ec555c4795c3d9304af  MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx
