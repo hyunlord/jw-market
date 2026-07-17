@@ -33,10 +33,13 @@ def test_submit_uses_injected_transport(fake_transport):
     assert body["metadata"]["name"] == name
 
 
-def test_job_image_default_matches_orchestrator_cronjob_pin():
-    """One code identity: ingest Jobs run the exact digest the orchestrator poll chain runs."""
-    cronjob = REPO_ROOT / "deploy" / "k8s" / "orchestrator" / "pipeline-orchestrator-poll-cronjob.yaml"
-    assert config.DEFAULT_JOB_IMAGE in cronjob.read_text(encoding="utf-8")
+def test_ingest_manifests_pin_the_default_job_image():
+    """Internal identity: every tracked ingest manifest runs config.DEFAULT_JOB_IMAGE.
+
+    (The poll CronJob keeps its own ED-round pin; ingest upgrades independently.)"""
+    base = REPO_ROOT / "deploy" / "k8s" / "ingest-hook"
+    for name in ("ingest-trigger-deployment.yaml", "ingest-job-template.yaml", "ingest-sweep-cronjob.yaml"):
+        assert config.DEFAULT_JOB_IMAGE in (base / name).read_text(encoding="utf-8"), name
 
 
 def test_tracked_manifests_stay_inert():
