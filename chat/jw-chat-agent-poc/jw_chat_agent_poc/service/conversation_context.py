@@ -43,6 +43,7 @@ class AnaphoraResolution:
     brand: str | None = None
     reusable_ranked: RankedBrandSlot | None = None
     unresolved_reference: bool = False
+    interpretation_notice: str | None = None
 
 
 def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
@@ -130,7 +131,11 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
         if not intent:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
         brand = contrast.group("brand")
-        return AnaphoraResolution(resolved_question=f"{brand} {intent}는?", brand=brand)
+        return AnaphoraResolution(
+            resolved_question=f"{brand} {intent}는?",
+            brand=brand,
+            interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
+        )
     if not any(pattern.search(question) for pattern in _REFERENCE_RES):
         return AnaphoraResolution(resolved_question=question)
     if previous_turn is None:

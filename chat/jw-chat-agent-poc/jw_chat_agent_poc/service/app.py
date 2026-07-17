@@ -1229,7 +1229,7 @@ def _answer_with_conversation(
         return unresolved_reference_result(question)
     if resolution.reusable_ranked is not None:
         return reused_context_result(question, resolution.reusable_ranked, previous_turn.slots if previous_turn else None)
-    return _answer_without_pending(
+    result = _answer_without_pending(
         market_scope_resolver,
         agent_factory,
         conversation_id,
@@ -1239,6 +1239,9 @@ def _answer_with_conversation(
         store,
         use_direct_agent_loop=use_direct_agent_loop,
     )
+    if resolution.interpretation_notice:
+        return {**result, "conversation_interpretation": resolution.interpretation_notice}
+    return result
 
 
 def _answer_without_pending(
@@ -1926,6 +1929,31 @@ def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
+    final_answer = _compute_final_answer(question, result, conversation_id)
+    notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
+    if not notice or final_answer.text.startswith(notice):
+        return final_answer
+    answer = f"{notice}\n\n{final_answer.text}" if final_answer.text else notice
+    trace = trace_envelope(
+        question=question,
+        result=result,
+        answer=answer,
+        charts=final_answer.charts,
+        timing=final_answer.timing,
+        conversation_id=conversation_id,
+    )
+    return FinalAnswer(
+        text=answer,
+        charts=final_answer.charts,
+        timing=final_answer.timing,
+        trace=trace,
+        sources=final_answer.sources,
+        conversation_id=final_answer.conversation_id,
+        file_sources=final_answer.file_sources,
+    )
+
+
+def _compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
     if result.get("context_scope") == ContextScope.MIXED.value:
         return _compute_mixed_final_answer(question, result, conversation_id)
     deep_mode = result.get("research_mode") == "deep"

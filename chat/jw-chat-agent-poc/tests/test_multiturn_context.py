@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationTurn, RankedBrandSlot, SeriesPoint
 from jw_chat_agent_poc.service.conversation_context import extract_conversation_slots, resolve_anaphora, reused_context_result
+from jw_chat_agent_poc.service.app import compute_final_answer
 
 
 def _ranked_slot() -> RankedBrandSlot:
@@ -120,6 +121,7 @@ def test_resolve_anaphora_inherits_only_missing_intent_for_contrast_followup() -
 
     assert resolved.resolved_question == "리바로 매출 추이는?"
     assert resolved.brand == "리바로"
+    assert resolved.interpretation_notice == "리바로의 매출 추이로 이해했어요."
     assert resolved.unresolved_reference is False
 
 
@@ -145,6 +147,22 @@ def test_resolve_anaphora_refuses_contrast_followup_without_grounded_intent() ->
 
     assert no_history.unresolved_reference is True
     assert vague_history.unresolved_reference is True
+
+
+def test_final_answer_discloses_inherited_contrast_interpretation_once() -> None:
+    result = {
+        "conversation_fallback_ready": True,
+        "answer": "확인된 자료를 기준으로 답변합니다.",
+        "conversation_interpretation": "리바로의 매출 추이로 이해했어요.",
+    }
+
+    final = compute_final_answer("그럼 리바로는?", result, "conversation-1")
+
+    assert final.text == (
+        "리바로의 매출 추이로 이해했어요.\n\n"
+        "확인된 자료를 기준으로 답변합니다."
+    )
+    assert final.text.count("리바로의 매출 추이로 이해했어요.") == 1
 
 
 def test_reused_context_result_contains_verified_series_without_backend_call() -> None:
