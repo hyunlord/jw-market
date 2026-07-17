@@ -211,6 +211,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[etl] 실패 stage={stage.STAGE} rc={rc}")
             return int(rc)
     print("[etl] 완료 rc=0")
+    # Success-path only: wake the orchestrator (opt-in via env; no-op otherwise).
+    # A failed load returns above and never kicks, so stale data cannot propagate.
+    from pipeline.etl.kick import maybe_kick_orchestrator
+
+    maybe_kick_orchestrator(params)
     return 0
 
 

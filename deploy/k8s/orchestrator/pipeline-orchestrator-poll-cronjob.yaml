@@ -1,4 +1,9 @@
-# Monthly pipeline chain: python -m pipeline.orchestrator run --mode full
+# Daily safety-net poll: python -m pipeline.orchestrator run --mode full
+#
+# Event-driven architecture (2026-07-17): the PRIMARY trigger is the ETL
+# success-path kick (pipeline/etl/kick.py) creating a Job from this CronJob.
+# This daily schedule is the safety net for lost kicks - same epoch means
+# the orchestrator no-ops in seconds, so a redundant run costs nothing.
 #
 # Registered suspended (suspend: true). Resume is a PL decision; before
 # resuming, confirm the image digest below matches the intended build and the
@@ -22,12 +27,11 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: jw-pipeline-orchestrator-monthly
+  name: jw-pipeline-orchestrator-poll-daily
   namespace: llmops
 spec:
-  # 03:00 KST on day 3 of each month (after the monthly mart refresh window);
-  # PL adjusts on resume.
-  schedule: "0 18 2 * *"
+  # Daily 01:00 KST safety-net poll (epoch unchanged -> no-op).
+  schedule: "0 16 * * *"
   suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
