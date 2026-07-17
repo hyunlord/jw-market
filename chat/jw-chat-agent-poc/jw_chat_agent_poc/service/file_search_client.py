@@ -90,7 +90,15 @@ def search_uploaded_files(
                 item: dict[str, Any] = {"file_name": name}
                 if source.get("document_id") is not None:
                     item["document_id"] = source["document_id"]
-                for key in ("i_page", "source_channel", "sheet_name", "row_start", "row_end"):
+                for key in (
+                    "i_page",
+                    "slide_number",
+                    "section_title",
+                    "source_channel",
+                    "sheet_name",
+                    "row_start",
+                    "row_end",
+                ):
                     if source.get(key) is not None:
                         item[key] = source[key]
                 key = (name, str(item.get("document_id", "")))

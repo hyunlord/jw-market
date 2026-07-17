@@ -324,6 +324,8 @@ class FileSource(BaseModel):
     distance: float | None = Field(default=None, description="벡터 검색 distance 값입니다. 낮을수록 질문과 가까운 결과입니다.")
     source_channel: str = Field(default="native_text", description="native text 또는 이미지 추출 provenance 채널입니다.")
     visual_model: str | None = Field(default=None, description="이미지 추출 청크를 생성한 모델입니다.")
+    slide_number: int | None = Field(default=None, description="PPTX 원본 내 슬라이드 번호입니다.")
+    section_title: str | None = Field(default=None, description="DOCX 원본 내 가장 가까운 섹션 제목입니다.")
 
 
 class EmptyPageSource(BaseModel):
@@ -480,6 +482,8 @@ class PublicFileSource(BaseModel):
     i_page: int | None = None
     source_channel: str = "native_text"
     visual_model: str | None = None
+    slide_number: int | None = None
+    section_title: str | None = None
 
 
 class PublicEmptyPageSource(BaseModel):

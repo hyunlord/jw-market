@@ -171,7 +171,20 @@ def test_search_projection_hides_ids_and_keeps_provenance() -> None:
         "document_count": 1,
         "result_count": 1,
         "file_context": "Germany: 61/22/13/4",
-        "file_sources": [{"document_id": 42, "file_name": "t2d.pdf", "chunk_id": "object-1", "i_page": 7, "i_chunk_on_doc": 257, "distance": 0.31, "source_channel": "vlm_image_extraction", "visual_model": "gemini-3.1-flash-lite"}],
+        "file_sources": [
+            {
+                "document_id": 42,
+                "file_name": "brief.pptx",
+                "chunk_id": "object-1",
+                "i_page": 7,
+                "i_chunk_on_doc": 257,
+                "distance": 0.31,
+                "source_channel": "vlm_image_extraction",
+                "visual_model": "gemini-3.1-flash-lite",
+                "slide_number": 7,
+                "section_title": "Market outlook",
+            }
+        ],
         "sql_available": True,
         "sql_sources": [{"document_id": 42, "file_name": "survey.xlsx", "logical_name": "data_abc", "sheet_name": "Raw", "row_count": 10, "column_count": 4}],
         "empty_page_sources": [],
@@ -183,6 +196,8 @@ def test_search_projection_hides_ids_and_keeps_provenance() -> None:
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
     assert projected["file_context"] == "Germany: 61/22/13/4"
     assert projected["file_sources"][0]["source_channel"] == "vlm_image_extraction"
+    assert projected["file_sources"][0]["slide_number"] == 7
+    assert projected["file_sources"][0]["section_title"] == "Market outlook"
     assert projected["sql_sources"][0]["logical_name"] == "data_abc"
 
 

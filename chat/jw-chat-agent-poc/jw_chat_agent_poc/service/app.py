@@ -1657,7 +1657,16 @@ def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
 
 
 def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
-    public_keys = ("file_name", "i_page", "source_channel", "sheet_name", "row_start", "row_end")
+    public_keys = (
+        "file_name",
+        "i_page",
+        "slide_number",
+        "section_title",
+        "source_channel",
+        "sheet_name",
+        "row_start",
+        "row_end",
+    )
     projected: list[dict[str, Any]] = []
     for item in items:
         public_item = {key: item[key] for key in public_keys if item.get(key) is not None}

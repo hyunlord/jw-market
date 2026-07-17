@@ -73,7 +73,7 @@ from .xlsx_preprocessor import (
     iter_xlsx_chunks,
     should_stream_xlsx_chunks,
 )
-from .docx_preprocessor import DocxPreprocessError, extract_docx_chunks
+from .docx_preprocessor import DocxPreprocessError, extract_docx_chunk_records
 from .xlsx_sql_route import (
     WorkbookSqlDecision,
     inspect_xlsx_for_sql,
@@ -733,16 +733,21 @@ def _load_local_docx_chunks(
     if not path.is_file():
         return None
     try:
-        texts = extract_docx_chunks(path)
+        records = extract_docx_chunk_records(path)
     except DocxPreprocessError as exc:
         return ("local_docx_preprocessor_failed", [], [f"docx 전용 전처리 실패: {exc}"])
     file_size = path.stat().st_size
     chunks: list[weaviate_ops.Chunk] = []
+    texts = [record.text for record in records]
     vectors = weaviate_ops.embed_texts(client, texts)
-    for index, (text, vector) in enumerate(zip(texts, vectors)):
+    for index, (record, vector) in enumerate(zip(records, vectors)):
+        provenance = {"source_channel": "native_text"}
+        if record.section_title:
+            provenance["section_title"] = record.section_title
         chunks.append(
             {
-                "text": text,
+                "text": record.text,
+                "summary": json.dumps(provenance, ensure_ascii=False, separators=(",", ":")),
                 "temp_doc_id": temp_doc.temp_document_id,
                 "file_name": temp_doc.file_name,
                 "file_path": temp_doc.file_path,
@@ -1884,8 +1889,18 @@ def _context_from_hits(
         used_chars += len(clipped)
         source_channel = str(provenance.get("source_channel") or "native_text")
         label = " [image-derived extraction]" if source_channel == pdf_vlm.SOURCE_CHANNEL else ""
+        section_title = str(provenance.get("section_title") or "").strip() or None
+        slide_number = hit.get("i_page") if file_name.casefold().endswith(".pptx") else None
+        location_parts: list[str] = []
+        if section_title:
+            location_parts.append(f"section={section_title}")
+        if slide_number is not None:
+            location_parts.append(f"slide={slide_number}")
+        location = f" ({', '.join(location_parts)})" if location_parts else ""
         index += 1
-        lines.append(f"[{index}] {file_name} (document_id={doc_id}){label}\n{clipped}")
+        lines.append(
+            f"[{index}] {file_name} (document_id={doc_id}){location}{label}\n{clipped}"
+        )
         sources.append(
             FileSource(
                 document_id=doc_id,
@@ -1896,6 +1911,8 @@ def _context_from_hits(
                 distance=additional.get("distance"),
                 source_channel=source_channel,
                 visual_model=provenance.get("visual_model"),
+                slide_number=slide_number,
+                section_title=section_title,
             )
         )
     return "\n\n".join(lines), sources, empty_pages

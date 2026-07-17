@@ -246,11 +246,20 @@ def test_public_file_sources_exclude_internal_identifiers() -> None:
                 "chunk_id": "chunk-1",
                 "tool_call_id": "call-7",
                 "i_page": 3,
+                "slide_number": 3,
+                "section_title": "시장 전망",
             }
         ]
     }
 
-    assert app._file_source_items(result) == ({"file_name": "brief.pptx", "i_page": 3},)
+    assert app._file_source_items(result) == (
+        {
+            "file_name": "brief.pptx",
+            "i_page": 3,
+            "slide_number": 3,
+            "section_title": "시장 전망",
+        },
+    )
 
 
 @pytest.mark.parametrize("extension", ("xlsx", "csv", "docx", "pptx", "pdf", "txt"))

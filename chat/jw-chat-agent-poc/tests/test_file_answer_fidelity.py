@@ -221,12 +221,14 @@ def test_file_search_client_parses_file_source_items(monkeypatch) -> None:
 
 def test_file_search_client_preserves_public_location_provenance(monkeypatch) -> None:
     body = {
-        "file_context": "[1] report.pdf\n[DA] report.pdf | p.7\n\n전망 1,200억원",
+        "file_context": "[1] brief.pptx\n전망 1,200억원",
         "document_count": 1,
         "file_sources": [
             {
-                "file_name": "report.pdf",
+                "file_name": "brief.pptx",
                 "i_page": 7,
+                "slide_number": 7,
+                "section_title": "시장 전망",
                 "source_channel": "native_text",
             }
         ],
@@ -244,7 +246,13 @@ def test_file_search_client_preserves_public_location_provenance(monkeypatch) ->
 
     assert result is not None
     assert result.file_source_items == (
-        {"file_name": "report.pdf", "i_page": 7, "source_channel": "native_text"},
+        {
+            "file_name": "brief.pptx",
+            "i_page": 7,
+            "slide_number": 7,
+            "section_title": "시장 전망",
+            "source_channel": "native_text",
+        },
     )
 
 
