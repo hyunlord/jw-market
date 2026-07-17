@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -220,6 +221,94 @@ def test_proven_dense_sql_sheet_reuses_validated_xml_for_header_and_rows(
         ("LIVALO & Co", "100", None),
         ("LIPITOR", None, "comparison"),
     ]
+
+
+def test_proven_dense_sql_sheet_reuses_content_proof_without_rescanning_cells(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    source_path = tmp_path / "source.xlsx"
+    path = tmp_path / "dense-proof.xlsx"
+    workbook.save(source_path)
+    sheet_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B2"/><sheetData>
+    <row r="1" spans="1:2"><c r="A1" t="inlineStr"><is><t>brand</t></is></c><c r="B1" t="inlineStr"><is><t>sales</t></is></c></row>
+    <row r="2" spans="1:2"><c r="A2" t="inlineStr"><is><t>LIVALO</t></is></c><c r="B2" t="n"><v>100</v></c></row>
+  </sheetData>
+</worksheet>"""
+    with ZipFile(source_path) as source, ZipFile(path, "w") as target:
+        for item in source.infolist():
+            payload = (
+                sheet_xml
+                if item.filename == "xl/worksheets/sheet1.xml"
+                else source.read(item.filename)
+            )
+            target.writestr(item, payload)
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    decision = inspect_xlsx_for_sql(path, _config())
+    profile = decision.selected_sheets[0]
+    dense_cell_pattern = xlsx_sql_route._DENSE_VALUE_CELL_RE
+
+    class PatternSpy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def finditer(self, raw: bytes):
+            self.calls += 1
+            return dense_cell_pattern.finditer(raw)
+
+    pattern_spy = PatternSpy()
+    monkeypatch.setattr(xlsx_sql_route, "_DENSE_VALUE_CELL_RE", pattern_spy)
+
+    sql_sheet = load_sql_sheet(path, profile)
+
+    assert profile.dense_xml_sha256 == sha256(sheet_xml).hexdigest()
+    assert list(sql_sheet.rows()) == [("LIVALO", "100")]
+    assert pattern_spy.calls == 2
+
+
+def test_proven_dense_sql_sheet_rechecks_content_proof_after_file_change(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workbook = Workbook()
+    source_path = tmp_path / "source.xlsx"
+    path = tmp_path / "dense-change.xlsx"
+    workbook.save(source_path)
+    sheet_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B2"/><sheetData>
+    <row r="1" spans="1:2"><c r="A1" t="inlineStr"><is><t>brand</t></is></c><c r="B1" t="inlineStr"><is><t>sales</t></is></c></row>
+    <row r="2" spans="1:2"><c r="A2" t="inlineStr"><is><t>LIVALO</t></is></c><c r="B2" t="n"><v>100</v></c></row>
+  </sheetData>
+</worksheet>"""
+    with ZipFile(source_path) as source, ZipFile(path, "w") as target:
+        for item in source.infolist():
+            payload = (
+                sheet_xml
+                if item.filename == "xl/worksheets/sheet1.xml"
+                else source.read(item.filename)
+            )
+            target.writestr(item, payload)
+
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MIN_XML_BYTES", 0)
+    monkeypatch.setattr(xlsx_sql_route, "FAST_SQL_PROFILE_MAX_XML_BYTES", 10**9)
+    decision = inspect_xlsx_for_sql(path, _config())
+    with ZipFile(source_path) as source, ZipFile(path, "w") as target:
+        for item in source.infolist():
+            payload = (
+                sheet_xml.replace(b">100<", b">101<")
+                if item.filename == "xl/worksheets/sheet1.xml"
+                else source.read(item.filename)
+            )
+            target.writestr(item, payload)
+
+    sql_sheet = load_sql_sheet(path, decision.selected_sheets[0])
+
+    assert sql_sheet.dense_sheet_xml is None
+    assert list(sql_sheet.rows()) == [("LIVALO", "101")]
 
 
 def test_proven_dense_sql_sheet_falls_back_before_yielding_unsupported_xml(

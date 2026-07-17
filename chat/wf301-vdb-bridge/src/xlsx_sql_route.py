@@ -6,6 +6,7 @@ import os
 import re
 from codecs import getincrementaldecoder
 from dataclasses import dataclass
+from hashlib import sha256
 from html import unescape
 from itertools import islice
 from pathlib import Path
@@ -102,6 +103,7 @@ class SheetSqlProfile:
     merged_range_count: int
     crosstable: bool = False
     proven_dense: bool = False
+    dense_xml_sha256: str | None = None
 
     @property
     def density(self) -> float:
@@ -161,6 +163,11 @@ class SqlSheetData:
             if len(values) < len(self.columns):
                 values.extend("" for _ in range(len(self.columns) - len(values)))
             yield tuple(value if value != "" else None for value in values)
+
+
+@dataclass(frozen=True, slots=True)
+class _ProvenSheetFeatures(SheetFeatures):
+    dense_xml_sha256: str
 
 
 def logical_names_for_profiles(
@@ -283,6 +290,11 @@ def inspect_xlsx_for_sql(
                         merged_range_count=features.merged_range_count,
                         crosstable=sheet_name in crosstable_names,
                         proven_dense=fast_features is not None,
+                        dense_xml_sha256=(
+                            getattr(fast_features, "dense_xml_sha256", None)
+                            if fast_features is not None
+                            else None
+                        ),
                     )
                 )
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError) as exc:
@@ -290,7 +302,9 @@ def inspect_xlsx_for_sql(
     return classify_workbook_profiles(tuple(profiles), route_config)
 
 
-def _fast_sheet_features(archive: ZipFile, sheet_path: str) -> SheetFeatures | None:
+def _fast_sheet_features(
+    archive: ZipFile, sheet_path: str
+) -> _ProvenSheetFeatures | None:
     """Profile a proven dense, formula-free OOXML sheet with C-level byte scans.
 
     Worksheet dimensions and per-row spans are treated only as consistency proofs.
@@ -338,12 +352,13 @@ def _fast_sheet_features(archive: ZipFile, sheet_path: str) -> SheetFeatures | N
     if used_cell_count > closed_cell_count or used_cell_count > max_row * max_column:
         return None
 
-    return SheetFeatures(
+    return _ProvenSheetFeatures(
         row_count=max_row,
         column_count=max_column,
         used_cell_count=used_cell_count,
         formula_cell_count=0,
         merged_range_count=raw.count(b"<mergeCell "),
+        dense_xml_sha256=sha256(raw).hexdigest(),
     )
 
 
@@ -402,6 +417,8 @@ def _validated_dense_sheet_xml(
     if archive.getinfo(profile.sheet_path).file_size > DENSE_SQL_MAX_XML_BYTES:
         return None
     raw = archive.read(profile.sheet_path)
+    if profile.dense_xml_sha256 is not None:
+        return raw if sha256(raw).hexdigest() == profile.dense_xml_sha256 else None
     if any(marker in raw for marker in _UNSAFE_DENSE_XML_MARKERS):
         return None
     if not _is_valid_utf8(raw):
