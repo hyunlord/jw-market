@@ -29,6 +29,19 @@ PUBLIC_FILE_SQL_SOURCE = {
 }
 
 
+def _data_row_count_query_only(
+    _conversation_id: str,
+    _logical_name: str,
+    sql: str,
+) -> dict[str, object]:
+    assert sql == "SELECT COUNT(*) AS data_row_count FROM data"
+    return {
+        "columns": ["data_row_count"],
+        "rows": [[12_268]],
+        "row_count": 1,
+    }
+
+
 def test_sql_source_is_queried_and_rendered_as_file_context(monkeypatch) -> None:
     monkeypatch.setattr(
         file_sql_query,
@@ -685,7 +698,7 @@ def test_file_overview_describes_grounded_dimensions_and_measures(monkeypatch) -
     monkeypatch.setattr(
         file_sql_query,
         "_run_query",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+        _data_row_count_query_only,
     )
 
     outcome = file_sql_query.query_uploaded_sql(
@@ -721,7 +734,7 @@ def test_sellout_measure_explanation_names_only_available_source_columns(
     monkeypatch.setattr(
         file_sql_query,
         "_run_query",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+        _data_row_count_query_only,
     )
 
     outcome = file_sql_query.query_uploaded_sql(
@@ -758,7 +771,7 @@ def test_period_overview_reports_measured_range_and_source_columns(monkeypatch) 
     monkeypatch.setattr(
         file_sql_query,
         "_run_query",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+        _data_row_count_query_only,
     )
 
     outcome = file_sql_query.query_uploaded_sql(
@@ -833,6 +846,16 @@ def test_workbook_structure_uses_only_measured_sheet_and_row_counts(monkeypatch)
         "_generate_select",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("planner must not run")),
     )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_data_row_count",
+        lambda source, conversation_id: {
+            "doc:questions": 14,
+            "doc:sources": 26,
+            "doc:criteria": 8,
+        }[source.logical_name],
+        raising=False,
+    )
 
     outcome = file_sql_query.query_uploaded_sql("이 엑셀 파일 구조를 요약해줘", "conversation-1", sources)
 
@@ -840,6 +863,42 @@ def test_workbook_structure_uses_only_measured_sheet_and_row_counts(monkeypatch)
     assert "질문 수: 14개" in outcome.answer_md
     assert "출처 수: 26개" in outcome.answer_md
     assert "384행" not in outcome.answer_md
+
+
+def test_workbook_structure_reports_sql_data_rows_not_physical_sheet_rows(monkeypatch) -> None:
+    source = SqlFileSource(
+        "doc:chso",
+        "chso.xlsx",
+        "Sell Out Standard",
+        row_count=12_269,
+        column_count=252,
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": source.logical_name,
+            "columns": [
+                {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {"query_name": "c2", "source_name": "VALUES LC SI PRICE 1/2026"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_data_row_count",
+        lambda *_args: 12_268,
+        raising=False,
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "이 파일에 뭐가 있어",
+        "conversation-1",
+        (source,),
+    )
+
+    assert "데이터 행 수: 12,268" in outcome.answer_md
+    assert "데이터 행 수: 12,269" not in outcome.answer_md
 
 
 def test_query_headers_use_original_source_column_names(monkeypatch) -> None:

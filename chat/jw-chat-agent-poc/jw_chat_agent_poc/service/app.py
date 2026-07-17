@@ -88,6 +88,7 @@ from jw_chat_agent_poc.service.file_search_client import (
     has_active_uploaded_file,
     search_uploaded_files,
 )
+from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_question
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
@@ -874,6 +875,8 @@ def _delegated_file_context(
 
 
 def _resolve_file_question(question: str, previous_turn: ConversationTurn | None) -> str:
+    if is_ambiguous_file_analysis_question(question):
+        return question
     if previous_turn is None:
         return question
     previous = previous_turn.question.strip()

@@ -314,6 +314,25 @@ def test_file_followup_inherits_previous_aggregate_and_filename() -> None:
     assert "VALUES LC SI PRICE 1/2026" in resolved
 
 
+@pytest.mark.parametrize("question", ("분석해줘", "이거 어때"))
+def test_ambiguous_file_question_does_not_inherit_previous_complete_slots(
+    question: str,
+) -> None:
+    previous = ConversationTurn(
+        question="CHSO.xlsx에서 동아제약 합계는?",
+        answer="21,978,584,141",
+        applied_filters={},
+        slots=ConversationSlots(
+            file_name="CHSO.xlsx",
+            file_measure="VALUES LC SI PRICE 1/2026",
+            file_manufacturer="동아제약",
+            file_sheet="Sell Out Standard",
+        ),
+    )
+
+    assert service_app._resolve_file_question(question, previous) == question
+
+
 def test_file_followup_keeps_current_manufacturer_and_inherits_only_missing_measure() -> None:
     previous = ConversationTurn(
         question="동아제약의 sell-out 합계는?",

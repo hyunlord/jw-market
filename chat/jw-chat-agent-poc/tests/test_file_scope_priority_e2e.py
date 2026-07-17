@@ -53,13 +53,18 @@ def _post_and_result(client: TestClient, store: SessionStore, question: str, con
     return stored["result"]
 
 
-def _file_client(monkeypatch, answers: dict[str, str]) -> tuple[TestClient, SessionStore, list[str]]:
+def _file_client(
+    monkeypatch,
+    answers: dict[str, str],
+    *,
+    schema_columns: tuple[str, ...] = SCHEMA_COLUMNS,
+) -> tuple[TestClient, SessionStore, list[str]]:
     calls: list[str] = []
     monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
     monkeypatch.setattr(
         service_app,
         "fetch_uploaded_file_schema_columns",
-        lambda _conversation_id: SCHEMA_COLUMNS,
+        lambda _conversation_id: schema_columns,
     )
 
     def search(question: str, _conversation_id: str | None) -> UploadedFileSearchResult:
@@ -69,6 +74,36 @@ def _file_client(monkeypatch, answers: dict[str, str]) -> tuple[TestClient, Sess
     monkeypatch.setattr(service_app, "search_uploaded_files", search)
     store = SessionStore()
     return TestClient(create_app(agent_factory=_market_factory, store=store)), store, calls
+
+
+@pytest.mark.parametrize(
+    ("question", "columns", "answer"),
+    (
+        ("채널별 건수", ("CHANNEL", "응답자 번호"), "온라인 10건 / 병원 7건"),
+        (
+            "상위 10개 제품",
+            ("PRODUCT NAME KOR", "VALUES LC SI PRICE 1/2026"),
+            "상위 10개 제품 집계",
+        ),
+    ),
+)
+def test_chat_route_uses_file_schema_axis_before_scope_clarification(
+    monkeypatch,
+    question: str,
+    columns: tuple[str, ...],
+    answer: str,
+) -> None:
+    client, store, calls = _file_client(
+        monkeypatch,
+        {question: answer},
+        schema_columns=columns,
+    )
+
+    result = _post_and_result(client, store, question, f"schema-axis-{question}")
+
+    assert result["context_scope"] == "FILE"
+    assert result["deterministic_file_answer"] == answer
+    assert calls == [question]
 
 
 @pytest.mark.parametrize(
@@ -199,6 +234,26 @@ def test_chat_route_preserves_file_multiturn_subject(monkeypatch) -> None:
     assert result["context_scope"] == "FILE"
     assert "15,188,575,523" in result["deterministic_file_answer"]
     assert calls == [first, resolved_follow_up]
+
+
+def test_chat_route_does_not_turn_ambiguous_analysis_into_inherited_sum(monkeypatch) -> None:
+    first = "동아제약 합계"
+    broad = "분석해줘"
+    clarification = "어떤 기준으로 분석할까요? 제조사별 합계나 월별 추이를 골라 주세요."
+    client, store, calls = _file_client(
+        monkeypatch,
+        {
+            first: "동아제약 21,978,584,141원",
+            broad: clarification,
+        },
+    )
+
+    _post_and_result(client, store, first, "file-ambiguous-followup")
+    result = _post_and_result(client, store, broad, "file-ambiguous-followup")
+
+    assert result["context_scope"] == "FILE"
+    assert result["deterministic_file_answer"] == clarification
+    assert calls == [first, broad]
 
 
 def test_chat_route_preserves_bpi_deterministic_result(monkeypatch) -> None:

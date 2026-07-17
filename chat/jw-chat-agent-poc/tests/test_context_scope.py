@@ -8,7 +8,12 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.app import SessionStore
 from jw_chat_agent_poc.service.conversation import ConversationSlots
-from jw_chat_agent_poc.service.context_scope import ContextScope, resolve_context_scope
+from jw_chat_agent_poc.service.context_scope import (
+    ContextScope,
+    has_file_reference,
+    matches_file_schema,
+    resolve_context_scope,
+)
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.file_search_client import UploadedFileSearchResult
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
@@ -473,6 +478,24 @@ def test_file_schema_atc4_and_manufacturer_columns_take_priority_over_market_sig
 
     # Then: those terms are interpreted as workbook axes, not a market route.
     assert scope is ContextScope.FILE
+
+
+@pytest.mark.parametrize(
+    ("question", "columns"),
+    (
+        ("채널별 건수", ("CHANNEL", "응답자 번호")),
+        ("상위 10개 제품", ("PRODUCT NAME KOR", "VALUES LC SI PRICE 1/2026")),
+    ),
+)
+def test_file_schema_named_axis_is_recognized_before_scope_clarification(
+    question: str,
+    columns: tuple[str, ...],
+) -> None:
+    assert matches_file_schema(question, columns)
+
+
+def test_plural_report_reference_is_explicitly_file_directed() -> None:
+    assert has_file_reference("두 질환 보고서의 파이프라인 구성 차이를 비교해줘")
 
 
 def test_file_schema_does_not_capture_unrelated_market_brand() -> None:

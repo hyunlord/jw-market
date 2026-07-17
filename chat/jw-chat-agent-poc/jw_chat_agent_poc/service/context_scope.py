@@ -34,6 +34,10 @@ _COMPARISON_RE = re.compile(
     re.IGNORECASE,
 )
 _ATC4_CODE_RE = re.compile(r"(?<![A-Z0-9])[A-Z]\d{2}[A-Z]\d(?![A-Z0-9])", re.IGNORECASE)
+_PLURAL_FILE_REFERENCE_RE = re.compile(
+    r"(?:두|여러)\s+(?:[가-힣A-Za-z0-9_-]+\s+){0,3}(?:보고서|문서|파일)",
+    re.IGNORECASE,
+)
 _EXPLICIT_MARKET_TERMS = (
     "시장 데이터",
     "전체 시장",
@@ -56,7 +60,10 @@ def file_reference_terms() -> tuple[str, ...]:
 
 def has_file_reference(query: str) -> bool:
     normalized = re.sub(r"\s+", " ", query).strip().lower()
-    return any(term.lower() in normalized for term in file_reference_terms())
+    return bool(
+        any(term.lower() in normalized for term in file_reference_terms())
+        or _PLURAL_FILE_REFERENCE_RE.search(normalized)
+    )
 
 
 def resolve_context_scope(
@@ -107,7 +114,19 @@ def matches_file_schema(query: str, columns: Sequence[str]) -> bool:
         any(term in column for term in ("mfr", "manufacturer", "제조사", "업체"))
         for column in normalized_columns
     )
+    has_channel_axis = any(
+        any(term in column for term in ("channel", "채널"))
+        for column in normalized_columns
+    )
+    has_product_axis = any(
+        any(term in column for term in ("product", "제품", "품목"))
+        for column in normalized_columns
+    )
     if has_atc4_axis and _ATC4_CODE_RE.search(query):
+        return True
+    if has_channel_axis and "채널" in query:
+        return True
+    if has_product_axis and any(term in query for term in ("제품", "품목")):
         return True
     return bool(
         has_manufacturer_axis

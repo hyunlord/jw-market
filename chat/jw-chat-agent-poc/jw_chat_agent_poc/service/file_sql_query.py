@@ -114,15 +114,25 @@ def query_uploaded_sql(
             {"stage": "schema", "status": "ok", "table_count": str(len(schemas))}
         )
         if _is_schema_question(question):
-            answer = _render_schema_answer(question, sources, schemas)
+            scoped_sources = sources[: len(schemas)]
+            data_row_counts = tuple(
+                _try_fetch_data_row_count(source, conversation_id)
+                for source in scoped_sources
+            )
+            answer = _render_schema_answer(
+                question,
+                scoped_sources,
+                schemas,
+                data_row_counts=data_row_counts,
+            )
             return SqlQueryOutcome(
                 file_context=answer,
-                file_source_items=_source_items(sources[: len(schemas)]),
+                file_source_items=_source_items(scoped_sources),
                 errors=(),
                 answer_md=answer,
                 trace=tuple(trace),
             )
-        if _is_ambiguous_file_analysis_question(question):
+        if is_ambiguous_file_analysis_question(question):
             answer = _render_file_clarification(schemas)
             trace.append(
                 {
@@ -372,7 +382,7 @@ def _is_growth_by_channel_question(question: str) -> bool:
     )
 
 
-def _is_ambiguous_file_analysis_question(question: str) -> bool:
+def is_ambiguous_file_analysis_question(question: str) -> bool:
     normalized = re.sub(r"[?.!,]+$", "", " ".join(question.split())).strip()
     return normalized in {
         "분석해",
@@ -430,6 +440,8 @@ def _render_schema_answer(
     question: str,
     sources: Sequence[SqlFileSource],
     schemas: Sequence[Mapping[str, Any]],
+    *,
+    data_row_counts: Sequence[int | None],
 ) -> str:
     lines = ["## 업로드 파일 구조", f"시트 수: {len(schemas)}개"]
     observed_months: list[tuple[int, int, str]] = []
@@ -437,6 +449,7 @@ def _render_schema_answer(
     period_source_names: list[str] = []
     for index, schema in enumerate(schemas):
         source = sources[index]
+        data_row_count = data_row_counts[index]
         raw_columns = schema.get("columns")
         columns = raw_columns if isinstance(raw_columns, list) else []
         names = [
@@ -449,7 +462,11 @@ def _render_schema_answer(
             [
                 f"### {source.sheet_name}",
                 f"파일: {source.file_name}",
-                f"행 수: {_format_number(source.row_count) if source.row_count is not None else '확인되지 않음'}",
+                (
+                    f"데이터 행 수: {_format_number(data_row_count)}"
+                    if data_row_count is not None
+                    else "데이터 행 수: 확인되지 않음"
+                ),
                 f"열 수: {len(names)}개",
                 "열 목록: " + (", ".join(names) if names else "확인되지 않음"),
             ]
@@ -513,12 +530,16 @@ def _render_schema_answer(
         lines.append(
             "집계 질문에는 질문에 지정한 기간의 실제 열을 선택해 집계합니다."
         )
-    for source in sources[: len(schemas)]:
+    for source, data_row_count in zip(
+        sources[: len(schemas)],
+        data_row_counts,
+        strict=True,
+    ):
         normalized_sheet = source.sheet_name.casefold()
-        if source.row_count is not None and re.search(r"(?:질문|question)", normalized_sheet, re.IGNORECASE):
-            lines.append(f"질문 수: {_format_number(source.row_count)}개 (SQL 스키마 실측)")
-        if source.row_count is not None and re.search(r"(?:출처|source)", normalized_sheet, re.IGNORECASE):
-            lines.append(f"출처 수: {_format_number(source.row_count)}개 (SQL 스키마 실측)")
+        if data_row_count is not None and re.search(r"(?:질문|question)", normalized_sheet, re.IGNORECASE):
+            lines.append(f"질문 수: {_format_number(data_row_count)}개 (SQL 데이터 실측)")
+        if data_row_count is not None and re.search(r"(?:출처|source)", normalized_sheet, re.IGNORECASE):
+            lines.append(f"출처 수: {_format_number(data_row_count)}개 (SQL 데이터 실측)")
     return "\n".join(lines)
 
 
@@ -1373,6 +1394,41 @@ def _run_query(
     if not isinstance(body, dict):
         raise ValueError("file SQL query response must be an object")
     return body
+
+
+def _fetch_data_row_count(source: SqlFileSource, conversation_id: str) -> int:
+    result = _run_query(
+        conversation_id,
+        source.logical_name,
+        "SELECT COUNT(*) AS data_row_count FROM data",
+    )
+    columns = result.get("columns")
+    rows = result.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list) or not rows:
+        raise ValueError("file SQL row count response is empty")
+    try:
+        index = columns.index("data_row_count")
+        value = rows[0][index]
+    except (ValueError, IndexError, TypeError) as exc:
+        raise ValueError("file SQL row count response is malformed") from exc
+    if not _is_number(value) or float(value) < 0 or not float(value).is_integer():
+        raise ValueError("file SQL row count must be a non-negative integer")
+    return int(value)
+
+
+def _try_fetch_data_row_count(
+    source: SqlFileSource,
+    conversation_id: str,
+) -> int | None:
+    try:
+        return _fetch_data_row_count(source, conversation_id)
+    except (requests.RequestException, ValueError, TypeError, KeyError, RuntimeError) as exc:
+        logger.warning(
+            "file SQL data row count unavailable logical_name=%s reason=%s",
+            source.logical_name,
+            _failure_reason(exc),
+        )
+        return None
 
 
 def _compact_schema(question: str, schema: Mapping[str, Any]) -> dict[str, Any]:
