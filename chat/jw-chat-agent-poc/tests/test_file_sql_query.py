@@ -363,6 +363,118 @@ def test_channel_by_count_executes_grouped_rows(monkeypatch) -> None:
     assert "| 1 | 92 | 92 |" in outcome.answer_md
 
 
+def test_monthly_trend_builds_one_select_over_ordered_month_columns() -> None:
+    schema = {
+        "logical_name": SQL_SOURCE.logical_name,
+        "columns": [
+            {"query_name": "c2", "source_name": "MFR NAME KOR"},
+            {
+                "query_name": "c70",
+                "source_name": "VALUES LC SI PRICE 11/2025",
+            },
+            {
+                "query_name": "c71",
+                "source_name": "VALUES LC SI PRICE 12/2025",
+            },
+            {
+                "query_name": "c72",
+                "source_name": "VALUES LC SI PRICE 1/2026",
+            },
+        ],
+    }
+
+    resolution = file_sql_query._resolve_deterministic_select(
+        "월별 추이",
+        (schema,),
+    )
+
+    assert resolution.missing_slots == ()
+    assert resolution.resolved_slots == ("monthly_measures",)
+    assert resolution.plan == {
+        "logical_name": SQL_SOURCE.logical_name,
+        "sql": (
+            "SELECT SUM(c70) AS period_2025_11, "
+            "SUM(c71) AS period_2025_12, "
+            "SUM(c72) AS period_2026_01, "
+            "COUNT(*) AS applied_rows FROM data"
+        ),
+    }
+
+
+def test_monthly_trend_without_month_columns_fails_closed() -> None:
+    schema = {
+        "logical_name": SQL_SOURCE.logical_name,
+        "columns": [
+            {"query_name": "c2", "source_name": "MFR NAME KOR"},
+            {"query_name": "c5", "source_name": "SALES AMOUNT"},
+        ],
+    }
+
+    resolution = file_sql_query._resolve_deterministic_select(
+        "월별 추이",
+        (schema,),
+    )
+
+    assert resolution.plan is None
+    assert resolution.missing_slots == ("월별 금액 열",)
+
+
+def test_manufacturer_monthly_trend_filters_and_renders_ordered_narrative(
+    monkeypatch,
+) -> None:
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c2", "source_name": "MFR NAME KOR"},
+                {
+                    "query_name": "c70",
+                    "source_name": "VALUES LC SI PRICE 11/2025",
+                },
+                {
+                    "query_name": "c71",
+                    "source_name": "VALUES LC SI PRICE 12/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+
+    def run_query(_conversation_id: str, _logical_name: str, sql: str):
+        captured["sql"] = sql
+        return {
+            "columns": [
+                "period_2025_11",
+                "period_2025_12",
+                "period_2026_01",
+                "applied_rows",
+            ],
+            "rows": [[18_000_000_000, 20_000_000_000, 21_978_584_141, 348]],
+        }
+
+    monkeypatch.setattr(file_sql_query, "_run_query", run_query)
+
+    outcome = file_sql_query.query_uploaded_sql(
+        "동아제약의 월별 합계",
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert "WHERE c2 = '동아제약'" in captured["sql"]
+    assert "| 기간 | 합계 |" in outcome.answer_md
+    assert outcome.answer_md.index("| 2025-11 |") < outcome.answer_md.index(
+        "| 2025-12 |"
+    ) < outcome.answer_md.index("| 2026-01 |")
+    assert "18,000,000,000에서 21,978,584,141로 증가했습니다" in outcome.answer_md
+    assert "사용 열: VALUES LC SI PRICE 11/2025" in outcome.answer_md
+
+
 def test_named_column_sum_is_not_misclassified_as_schema_inspection() -> None:
     question = "VALUES LC SI PRICE 1/2026 컬럼의 전체 합계를 계산해줘."
 

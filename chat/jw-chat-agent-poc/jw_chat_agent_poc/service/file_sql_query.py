@@ -324,10 +324,20 @@ def _is_schema_question(question: str) -> bool:
 
 
 def _is_aggregate_question(question: str) -> bool:
-    return _contains_configured_term(
+    return _is_monthly_trend_question(question) or _contains_configured_term(
         question,
         "JW_CHAT_FILE_SQL_AGGREGATE_TERMS",
         DEFAULT_AGGREGATE_TERMS,
+    )
+
+
+def _is_monthly_trend_question(question: str) -> bool:
+    return bool(
+        re.search(
+            r"월별\s*(?:추이|흐름|변화|합계|금액|매출|집계)",
+            question,
+            re.IGNORECASE,
+        )
     )
 
 
@@ -452,6 +462,50 @@ def _render_aggregate_answer(
     used_columns = _used_source_columns(sql, schema)
     labels = _source_column_labels(columns, schema)
     total_applied = sum(float(row[applied_index]) for row in rows)
+    monthly_periods = _monthly_result_periods(columns, applied_index)
+    if len(rows) == 1 and monthly_periods:
+        values = tuple(
+            (period, rows[0][index])
+            for period, index in monthly_periods
+            if index < len(rows[0])
+        )
+        if not values:
+            return ""
+        lines = [
+            "## 업로드 파일 월별 추이",
+            f"파일: {source.file_name}",
+            f"시트·테이블명: {source.sheet_name} / data",
+            f"필터 조건: {filter_text}",
+            "사용 열: " + (", ".join(used_columns) if used_columns else "집계 결과 열"),
+            "집계 함수: " + ", ".join(aggregate_functions),
+            f"적용 행 수: {_format_number(total_applied)}",
+            "| 기간 | 합계 |",
+            "| --- | --- |",
+        ]
+        lines.extend(
+            f"| {period} | {_format_number(value) if _is_number(value) else _markdown_cell(value)} |"
+            for period, value in values
+        )
+        numeric_values = tuple(
+            (period, float(value))
+            for period, value in values
+            if _is_number(value)
+        )
+        if len(numeric_values) >= 2:
+            first_period, first_value = numeric_values[0]
+            last_period, last_value = numeric_values[-1]
+            if last_value > first_value:
+                direction = "증가했습니다"
+            elif last_value < first_value:
+                direction = "감소했습니다"
+            else:
+                direction = "변동이 없었습니다"
+            lines.append(
+                f"월별 흐름: {_format_number(first_value)}에서 "
+                f"{_format_number(last_value)}로 {direction} "
+                f"({first_period} → {last_period})."
+            )
+        return "\n".join(lines)
     lines = [
         "## 업로드 파일 집계 결과",
         f"파일: {source.file_name}",
@@ -627,8 +681,29 @@ def _resolve_deterministic_select(
         missing: list[str] = []
         manufacturer = _find_column(columns, r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체")
         intent = _question_measure_intent(question) or "amount"
-        measure = None if intent == "count" else _find_measure_column(columns, question)
-        if intent == "count":
+        monthly_trend = _is_monthly_trend_question(question)
+        monthly_measures = (
+            _monthly_measure_columns(columns)
+            if monthly_trend
+            else ()
+        )
+        measure = (
+            None
+            if intent == "count" or monthly_measures
+            else _find_measure_column(columns, question)
+        )
+        if monthly_trend and not monthly_measures:
+            missing.append("월별 금액 열")
+            aggregate_expression = ""
+            aggregate_alias = "total_value"
+        elif monthly_measures:
+            aggregate_expression = ", ".join(
+                f"SUM({query_name}) AS period_{period.replace('-', '_')}"
+                for period, query_name in monthly_measures
+            )
+            aggregate_alias = f"period_{monthly_measures[-1][0].replace('-', '_')}"
+            resolved.append("monthly_measures")
+        elif intent == "count":
             aggregate_expression = "COUNT(*) AS response_count"
             aggregate_alias = "response_count"
             resolved.append("measure")
@@ -851,6 +926,39 @@ def _find_measure_column(
     )
 
 
+def _monthly_measure_columns(
+    columns: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, str], ...]:
+    monthly: list[tuple[str, str]] = []
+    for item in columns:
+        source_name = str(item.get("source_name") or "")
+        query_name = str(item.get("query_name") or "")
+        periods = month_keys(source_name)
+        if (
+            query_name
+            and periods
+            and _is_amount_column(source_name)
+            and not _is_average_column(source_name)
+            and not _is_quantity_column(source_name)
+        ):
+            monthly.extend((period, query_name) for period in periods)
+    return tuple(sorted(dict.fromkeys(monthly)))
+
+
+def _monthly_result_periods(
+    columns: Sequence[str],
+    applied_index: int,
+) -> tuple[tuple[str, int], ...]:
+    periods: list[tuple[str, int]] = []
+    for index, column in enumerate(columns):
+        if index == applied_index:
+            continue
+        match = re.fullmatch(r"period_(20\d{2})_(0[1-9]|1[0-2])", column)
+        if match is not None:
+            periods.append((f"{match.group(1)}-{match.group(2)}", index))
+    return tuple(sorted(periods))
+
+
 def _file_comparison_subjects(question: str) -> tuple[str, ...]:
     match = re.search(
         r"([가-힣A-Za-z0-9_-]+)(?:와|과)\s*([가-힣A-Za-z0-9_-]+)(?:의|\s+비교|\s+대비|$)",
@@ -863,7 +971,8 @@ def _file_comparison_subjects(question: str) -> tuple[str, ...]:
 
 def _single_manufacturer_subject(question: str) -> str:
     matches = re.finditer(
-        r"([가-힣A-Za-z0-9_-]+(?:제약|약품))(?:의|은|는|이|가|에서)?\s*(?:sell[ -]?out|매출|금액|합계|총액)",
+        r"([가-힣A-Za-z0-9_-]+(?:제약|약품))(?:의|은|는|이|가|에서)?\s*"
+        r"(?:월별\s*)?(?:sell[ -]?out|매출|금액|합계|총액)",
         question,
         re.IGNORECASE,
     )
