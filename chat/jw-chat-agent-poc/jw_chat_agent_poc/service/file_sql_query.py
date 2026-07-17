@@ -122,6 +122,22 @@ def query_uploaded_sql(
                 answer_md=answer,
                 trace=tuple(trace),
             )
+        if _is_ambiguous_file_analysis_question(question):
+            answer = _render_file_clarification(schemas)
+            trace.append(
+                {
+                    "stage": "intent",
+                    "status": "clarification_needed",
+                }
+            )
+            return SqlQueryOutcome(
+                file_context=answer,
+                file_source_items=_source_items(sources[: len(schemas)]),
+                errors=(),
+                answer_md=answer,
+                status="clarification_needed",
+                trace=tuple(trace),
+            )
         current_stage = "measure_validation"
         measure = _measure_request(question, schemas)
         if measure.state == "unsupported":
@@ -345,6 +361,18 @@ def _is_monthly_trend_question(question: str) -> bool:
     )
 
 
+def _is_ambiguous_file_analysis_question(question: str) -> bool:
+    normalized = re.sub(r"[?.!,]+$", "", " ".join(question.split())).strip()
+    return normalized in {
+        "분석해",
+        "분석해줘",
+        "분석해주세요",
+        "이거 어때",
+        "이건 어때",
+        "어때",
+    }
+
+
 def _has_aggregate_contract(sql: str) -> bool:
     return bool(re.search(r"\b(?:COUNT|SUM|AVG)\s*\(", sql, re.IGNORECASE)) and bool(
         re.search(r"\bapplied_rows\b", sql, re.IGNORECASE)
@@ -491,6 +519,69 @@ def _is_measure_source_column(source_name: str) -> bool:
             _is_average_column,
             _is_quantity_column,
         )
+    )
+
+
+def _render_file_clarification(
+    schemas: Sequence[Mapping[str, Any]],
+) -> str:
+    column_names = tuple(
+        dict.fromkeys(
+            str(column.get("source_name") or "").strip()
+            for schema in schemas
+            for column in _schema_columns(schema)
+            if str(column.get("source_name") or "").strip()
+        )
+    )
+    measures = tuple(
+        name for name in column_names if _is_measure_source_column(name)
+    )
+    dimensions = tuple(
+        name for name in column_names if not _is_measure_source_column(name)
+    )
+    manufacturer = next(
+        (
+            name
+            for name in dimensions
+            if re.search(
+                r"(?:^|\b)(?:mfr|manufacturer|company)(?:\b|$)|제조사|업체",
+                name,
+                re.IGNORECASE,
+            )
+        ),
+        "",
+    )
+    product = next(
+        (
+            name
+            for name in dimensions
+            if re.search(r"(?:^|\b)product(?:\b|$)|제품", name, re.IGNORECASE)
+        ),
+        "",
+    )
+    latest_measure = max(
+        measures,
+        key=lambda name: max(month_keys(name), default=""),
+        default="",
+    )
+    monthly_measures = tuple(
+        name for name in measures if month_keys(name)
+    )
+    options: list[str] = []
+    if manufacturer and latest_measure:
+        options.append(f"{manufacturer}별 {latest_measure} 합계")
+    if len(monthly_measures) >= 2:
+        options.append(f"{latest_measure} 기준 월별 추이")
+    if product and latest_measure:
+        options.append(f"{product}별 {latest_measure} 상위 10개")
+    if not options:
+        options.append("파일의 시트·열·기간 구조 보기")
+    return "\n".join(
+        [
+            "어떤 분석을 원하시나요?",
+            "현재 파일에서 확인된 열을 기준으로 다음처럼 질문할 수 있습니다.",
+            *(f"- {option}" for option in options),
+        ]
     )
 
 

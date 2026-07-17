@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from jw_chat_agent_poc.orchestrator.provenance_facts import (
     provenance_row_from_file_context,
 )
@@ -675,6 +677,49 @@ def test_period_overview_reports_measured_range_and_source_columns(monkeypatch) 
 
     assert "기간 범위: 2025-11 ~ 2026-01" in outcome.answer_md
     assert "기간 근거 열: VALUES LC SI PRICE 11/2025, VALUES LC SI PRICE 1/2026" in outcome.answer_md
+
+
+@pytest.mark.parametrize("question", ["분석해줘", "이거 어때"])
+def test_ambiguous_file_question_asks_with_schema_grounded_options(
+    monkeypatch,
+    question: str,
+) -> None:
+    monkeypatch.setattr(
+        file_sql_query,
+        "_fetch_schema",
+        lambda *_args: {
+            "logical_name": SQL_SOURCE.logical_name,
+            "columns": [
+                {"query_name": "c1", "source_name": "MFR NAME KOR"},
+                {"query_name": "c2", "source_name": "PRODUCT NAME KOR"},
+                {
+                    "query_name": "c71",
+                    "source_name": "VALUES LC SI PRICE 12/2025",
+                },
+                {
+                    "query_name": "c72",
+                    "source_name": "VALUES LC SI PRICE 1/2026",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        file_sql_query,
+        "_run_query",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("SQL must not run")),
+    )
+
+    outcome = file_sql_query.query_uploaded_sql(
+        question,
+        "conversation-1",
+        (SQL_SOURCE,),
+    )
+
+    assert outcome.status == "clarification_needed"
+    assert "어떤 분석을 원하시나요?" in outcome.answer_md
+    assert "MFR NAME KOR별" in outcome.answer_md
+    assert "VALUES LC SI PRICE 1/2026" in outcome.answer_md
+    assert "월별 추이" in outcome.answer_md
 
 
 def test_workbook_structure_uses_only_measured_sheet_and_row_counts(monkeypatch) -> None:
