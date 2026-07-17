@@ -16,10 +16,11 @@ def _truncate_float(value: float) -> float:
         scaled = value * 10_000.0
         integer = math.trunc(scaled)
         fraction = abs(scaled - integer)
+        truncated = integer / 10_000.0 if integer else math.copysign(0.0, value)
+        if fraction <= _SCALED_BOUNDARY_EPSILON and truncated == value:
+            return truncated
         if _SCALED_BOUNDARY_EPSILON <= fraction <= 1.0 - _SCALED_BOUNDARY_EPSILON:
-            if integer == 0:
-                return math.copysign(0.0, value)
-            return integer / 10_000.0
+            return truncated
 
     text = str(value)
     if "e" not in text and "E" not in text:

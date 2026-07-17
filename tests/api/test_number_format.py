@@ -52,6 +52,14 @@ def test_finite_float_fast_path_does_not_construct_decimal(monkeypatch) -> None:
     assert number_format.format_number(123.456789) == 123.4567
 
 
+def test_already_truncated_float_does_not_render_decimal_text() -> None:
+    class NoStringFloat(float):
+        def __str__(self) -> str:
+            raise AssertionError("an already-truncated float must stay on the numeric fast path")
+
+    assert number_format.format_number(NoStringFloat(123.4567)) == 123.4567
+
+
 def test_float_fast_path_matches_decimal_at_truncation_boundaries() -> None:
     values: list[float] = []
     for numerator in range(-2_000, 2_001):
