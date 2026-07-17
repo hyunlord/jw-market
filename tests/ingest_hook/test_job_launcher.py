@@ -52,3 +52,25 @@ def test_tracked_manifests_stay_inert():
     rbac = list(yaml.safe_load_all((base / "ingest-hook-rbac.yaml").read_text(encoding="utf-8")))
     role = next(doc for doc in rbac if doc["kind"] == "Role")
     assert role["rules"] == [{"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create", "get", "list"]}]
+
+
+def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
+    monkeypatch.setenv("MARIADB_HOST", "db.example")
+    monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
+    monkeypatch.setenv("INGEST_REHEARSAL_ROOT", "/tmp/ingest-rehearsal")
+    body = render_job(category="ubist", manifest_sha=SHA, manifest_path="_manifests/m.json", namespace="llmops")
+    env = body["spec"]["template"]["spec"]["containers"][0]["env"]
+    by_name = {e["name"]: e for e in env}
+    assert by_name["MARIADB_HOST"]["value"] == "db.example"
+    assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
+    assert by_name["MARIADB_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "jw-mart-d2-writer"
+    assert by_name["INGEST_S3_BUCKET"]["valueFrom"]["secretKeyRef"]["key"] == "MINIO_MARKET_BUCKET"
+    assert by_name["MINIO_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-data-portal-secrets"
+
+
+def test_rendered_job_env_minimal_without_s3(monkeypatch):
+    for name in ("INGEST_S3_BUCKET", "MARIADB_HOST", "INGEST_REHEARSAL_ROOT"):
+        monkeypatch.delenv(name, raising=False)
+    body = render_job(category="ubist", manifest_sha=SHA, manifest_path="/m.json", namespace="llmops")
+    names = [e["name"] for e in body["spec"]["template"]["spec"]["containers"][0]["env"]]
+    assert "INGEST_S3_BUCKET" not in names and "MARIADB_USER" in names

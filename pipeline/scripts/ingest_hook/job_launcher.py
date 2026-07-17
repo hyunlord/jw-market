@@ -20,6 +20,37 @@ from pipeline.scripts.ingest_hook import config
 
 _SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 
+# Env the Job inherits from the trigger pod, by reference where secret-backed.
+_PASSTHROUGH_VALUES = (
+    "MARIADB_HOST", "MARIADB_PORT", "MARIADB_DATABASE", "AGENT3_DB_NAME",
+    "MINIO_ENDPOINT", "MINIO_REGION",
+    "AGENT3_WORKFLOW_REV", "AGENT3_EXPECTED_WORKFLOW_REV",
+    "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
+)
+_MART_SECRET = "jw-mart-d2-writer"
+_PORTAL_SECRET = "jw-data-portal-secrets"
+
+
+def _job_env() -> list[dict]:
+    import os
+
+    env: list[dict] = [
+        {"name": name, "value": os.environ[name]}
+        for name in _PASSTHROUGH_VALUES
+        if os.environ.get(name)
+    ]
+
+    def secret_ref(name, secret, key):
+        env.append({"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}})
+
+    secret_ref("MARIADB_USER", _MART_SECRET, "username")
+    secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
+    if os.environ.get("INGEST_S3_BUCKET"):
+        secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")
+        secret_ref("MINIO_ACCESS_KEY", _PORTAL_SECRET, "MINIO_ACCESS_KEY")
+        secret_ref("MINIO_SECRET_KEY", _PORTAL_SECRET, "MINIO_SECRET_KEY")
+    return env
+
 Transport = Callable[[str, dict], dict]
 
 
@@ -61,10 +92,7 @@ def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespac
                                 "--manifest",
                                 manifest_path,
                             ],
-                            # MARIADB_*/AGENT3_* env and the input-root volume are
-                            # pinned in the tracked template manifest; the live
-                            # launcher copies them from its own pod env at
-                            # activation time (PL gate).
+                            "env": _job_env(),
                             "resources": {
                                 "requests": {"cpu": "500m", "memory": "1Gi"},
                                 "limits": {"cpu": "2", "memory": "4Gi"},
